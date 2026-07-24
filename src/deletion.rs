@@ -79,13 +79,16 @@ impl RuntimeHost {
         // Optimistic concurrency guard: re-read the job from the database and
         // check if it's still actionable. If another coordinator already picked
         // it up (status changed to Running or Completed), skip it.
+        // However, if the caller explicitly passed a Running job (crash-restart
+        // resume), allow execution to proceed.
+        let caller_intends_resume = job.status == AgentDeletionStatus::Running;
         if let Some(fresh) = self
             .runtime_db()
             .agent_deletions()
             .latest_for_agent(&job.agent_id)?
         {
-            if fresh.status == AgentDeletionStatus::Running
-                || fresh.status == AgentDeletionStatus::Completed
+            if fresh.status == AgentDeletionStatus::Completed
+                || (fresh.status == AgentDeletionStatus::Running && !caller_intends_resume)
             {
                 debug!(agent_id = %job.agent_id, "deletion job already claimed by another coordinator");
                 return Ok(());
