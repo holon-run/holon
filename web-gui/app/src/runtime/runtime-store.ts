@@ -315,6 +315,7 @@ export interface RuntimeStoreState {
   openSkill: (skillId: string) => void;
   openTemplate: (catalogId: string) => void;
   setDisplayLevel: (displayLevel: DisplayLevel, agentId?: string) => void;
+  disableDeveloperDiagnosticsUi: (agentId?: string) => void;
   setRightPanelOpen: (open: boolean) => void;
   showAgentOverview: (agentId?: string) => void;
   showTimelineEvents: (agentId: string) => void;
@@ -1202,6 +1203,32 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       };
       writeStoredDisplayLevels(displayLevelsByAgentId);
       return { displayLevel, displayLevelsByAgentId };
+    }),
+  disableDeveloperDiagnosticsUi: (agentId) =>
+    set((state) => {
+      const targetAgentId = agentId ?? state.selectedAgentId;
+      const resetStoredDisplayLevel =
+        Boolean(targetAgentId) && state.displayLevelsByAgentId[targetAgentId] === "debug";
+      const resetCurrentDisplayLevel =
+        (!targetAgentId || targetAgentId === state.selectedAgentId) && state.displayLevel === "debug";
+      const displayLevelsByAgentId = resetStoredDisplayLevel && targetAgentId
+        ? { ...state.displayLevelsByAgentId, [targetAgentId]: "info" as const }
+        : state.displayLevelsByAgentId;
+      if (displayLevelsByAgentId !== state.displayLevelsByAgentId) {
+        writeStoredDisplayLevels(displayLevelsByAgentId);
+      }
+
+      const timelineEventsView =
+        state.rightPanelView?.kind === "timeline_events" ? state.rightPanelView : undefined;
+      return {
+        displayLevel: resetCurrentDisplayLevel ? "info" : state.displayLevel,
+        displayLevelsByAgentId,
+        rightPanelOpen: timelineEventsView ? false : state.rightPanelOpen,
+        rightPanelView: timelineEventsView
+          ? { kind: "agent_overview", agentId: timelineEventsView.agentId }
+          : state.rightPanelView,
+        rightPanelViewStack: state.rightPanelViewStack.filter((view) => view.kind !== "timeline_events"),
+      };
     }),
   setRightPanelOpen: (open) => set({ rightPanelOpen: open }),
   showAgentOverview: (agentId) =>

@@ -1563,23 +1563,23 @@ export function SettingsPage({
         <Card className="settings-card" hidden={activeTab !== "advanced"}>
           <div className="settings-card-head">
             <div>
-              <span className="eyebrow">{t("runtimeTrace.diagnostics")}</span>
-              <h2>{t("runtimeTrace.title")}</h2>
+              <span className="eyebrow">{t("developerDiagnostics.eyebrow")}</span>
+              <h2>{t("developerDiagnostics.title")}</h2>
             </div>
             <StatusChip
               className={`settings-status ${runtimeTraceEnabled ? "available" : "unavailable"}`}
               tone={runtimeTraceEnabled ? "success" : "error"}
-              title={t(runtimeTraceEnabled ? "runtimeTrace.recording" : "runtimeTrace.off")}
+              title={t(runtimeTraceEnabled ? "developerDiagnostics.enabled" : "developerDiagnostics.disabled")}
             />
           </div>
-          <p className="settings-muted">{t("runtimeTrace.settingsDescription")}</p>
+          <p className="settings-muted">{t("developerDiagnostics.description")}</p>
           <label className="settings-checkbox runtime-trace-setting">
             <input
               checked={runtimeTraceEnabled}
               type="checkbox"
               onChange={(event) => setRuntimeTraceEnabled(event.target.checked)}
             />
-            <span>{t("runtimeTrace.enableProduction")}</span>
+            <span>{t("developerDiagnostics.enable")}</span>
           </label>
           <div className="settings-callout">
             <strong>{t("runtimeTrace.privacyTitle")}</strong>

@@ -972,6 +972,15 @@ const en = {
     attributes: "Attributes",
   },
 
+  developerDiagnostics: {
+    eyebrow: "Developer tools",
+    title: "Developer diagnostics",
+    enabled: "Developer diagnostics enabled",
+    disabled: "Developer diagnostics disabled",
+    description: "Show Debug and Timeline Events for agents and collect bounded runtime traces in this browser.",
+    enable: "Enable developer diagnostics in this browser",
+  },
+
   timelineEvents: {
     title: "Timeline Events",
     shortTitle: "Timeline Events",

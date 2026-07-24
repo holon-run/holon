@@ -974,6 +974,15 @@ const zh: Record<string, any> = {
     attributes: "属性",
   },
 
+  developerDiagnostics: {
+    eyebrow: "开发者工具",
+    title: "开发者诊断",
+    enabled: "开发者诊断已开启",
+    disabled: "开发者诊断已关闭",
+    description: "显示 Agent 的调试与 Timeline Events，并在此浏览器中采集有界运行时追踪。",
+    enable: "在此浏览器中开启开发者诊断",
+  },
+
   timelineEvents: {
     title: "Timeline Events",
     shortTitle: "Timeline Events",

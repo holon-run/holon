@@ -35,6 +35,7 @@ import { SettingsPage } from "../features/settings/SettingsPage";
 import { SkillDetailPage, SkillsPage } from "../features/skills/SkillsPage";
 import { TemplateDetailPage, TemplatesPage } from "../features/templates/TemplatesPage";
 import { deriveAgentDisplayStatus } from "../runtime/agent-status";
+import { availableDisplayLevels } from "../runtime/display-level";
 import {
   getRuntimeTraceRevision,
   isRuntimeTraceEnabled,
@@ -61,7 +62,7 @@ export function App() {
   const { bootstrap, loading, refresh } = useRuntimeDashboard();
   const { t } = useTranslation();
   useSyncExternalStore(subscribeRuntimeTrace, getRuntimeTraceRevision, getRuntimeTraceRevision);
-  const runtimeTraceEnabled = isRuntimeTraceEnabled();
+  const developerDiagnosticsEnabled = isRuntimeTraceEnabled();
   const [showCreateAgentModal, setShowCreateAgentModal] = useState(false);
   const [createAgentId, setCreateAgentId] = useState("");
   const [createAgentTemplate, setCreateAgentTemplate] = useState("");
@@ -83,6 +84,7 @@ export function App() {
   const openSkill = useRuntimeStore((state) => state.openSkill);
   const openTemplate = useRuntimeStore((state) => state.openTemplate);
   const setDisplayLevel = useRuntimeStore((state) => state.setDisplayLevel);
+  const disableDeveloperDiagnosticsUi = useRuntimeStore((state) => state.disableDeveloperDiagnosticsUi);
   const setRightPanelOpen = useRuntimeStore((state) => state.setRightPanelOpen);
   const inspectActivity = useRuntimeStore((state) => state.inspectActivity);
   const showAgentOverview = useRuntimeStore((state) => state.showAgentOverview);
@@ -191,13 +193,15 @@ export function App() {
   const loadOlderAgentEvents = useRuntimeStore((state) => state.loadOlderAgentEvents);
   const loadAgentWorkItemDetail = useRuntimeStore((state) => state.loadAgentWorkItemDetail);
   const loadAgentTaskDetail = useRuntimeStore((state) => state.loadAgentTaskDetail);
+  const effectiveDisplayLevel =
+    !developerDiagnosticsEnabled && displayLevel === "debug" ? "info" : displayLevel;
   const {
     detail: selectedAgentDetail,
     loading: agentDetailLoading,
     contentStatus: agentContentStatus,
     syncStatus: agentSyncStatus,
     refresh: refreshAgentDetail,
-  } = useAgentDetail(activeAgentId, displayLevel);
+  } = useAgentDetail(activeAgentId, effectiveDisplayLevel);
   const activeAgent = selectedAgent ?? selectedAgentDetail?.agent;
   const selectedAgentLiveStatus = selectedAgentSession?.liveStatus ?? "idle";
   const selectedAgentLiveTitle = liveStatusTitle(selectedAgentLiveStatus, t, selectedAgentSession?.lastStreamActivityAt, selectedAgentSession?.error);
@@ -238,7 +242,7 @@ export function App() {
           </Button>
         </div>
         <SegmentedControl className="display-level" label={t("app.displayLevel")}>
-          {(["info", "verbose", "debug"] as const).map((level) => (
+          {availableDisplayLevels(developerDiagnosticsEnabled).map((level) => (
             <SegmentedControlButton
               active={displayLevel === level}
               className={displayLevel === level ? "is-active" : ""}
@@ -250,7 +254,7 @@ export function App() {
             </SegmentedControlButton>
           ))}
         </SegmentedControl>
-        {activeAgentId ? (
+        {developerDiagnosticsEnabled && activeAgentId ? (
           <Button
             type="button"
             size="sm"
@@ -328,6 +332,12 @@ export function App() {
   useEffect(() => {
     document.title = browserWindowTitle(bootstrap.connection);
   }, [bootstrap.connection.baseUrl, bootstrap.connection.mode]);
+
+  useEffect(() => {
+    if (!developerDiagnosticsEnabled) {
+      disableDeveloperDiagnosticsUi(selectedAgentId);
+    }
+  }, [developerDiagnosticsEnabled, disableDeveloperDiagnosticsUi, selectedAgentId]);
 
   function navigateRoute(nextRoute: RouteKey) {
     setRoute(nextRoute);
@@ -576,7 +586,7 @@ export function App() {
               </div>
             </div>
             <div className="top-actions">
-              {runtimeTraceEnabled ? (
+              {developerDiagnosticsEnabled ? (
                 <button
                   className="runtime-trace-global-indicator"
                   type="button"
@@ -621,7 +631,7 @@ export function App() {
             detailLoading={agentDetailLoading}
             contentStatus={agentContentStatus}
             syncStatus={agentSyncStatus}
-            displayLevel={displayLevel}
+            displayLevel={effectiveDisplayLevel}
             sendingPrompt={selectedAgentSession?.sendingPrompt ?? false}
             promptError={selectedAgentSession?.promptError}
             modelCatalog={modelCatalog}
@@ -633,10 +643,10 @@ export function App() {
             targetEventSeq={selectedAgentSession?.targetEventSeq}
             resumeRevision={resumeRevision}
             onRefreshModels={refreshModelCatalog}
-            onSetModel={(model, reasoningEffort) => setAgentModel(activeAgent.id, model, displayLevel, reasoningEffort)}
-            onClearModel={() => clearAgentModel(activeAgent.id, displayLevel)}
-            onLoadOlderEvents={() => loadOlderAgentEvents(activeAgent.id, displayLevel)}
-            onSendPrompt={(text, attachments) => sendOperatorPrompt(activeAgent.id, text, displayLevel, attachments)}
+            onSetModel={(model, reasoningEffort) => setAgentModel(activeAgent.id, model, effectiveDisplayLevel, reasoningEffort)}
+            onClearModel={() => clearAgentModel(activeAgent.id, effectiveDisplayLevel)}
+            onLoadOlderEvents={() => loadOlderAgentEvents(activeAgent.id, effectiveDisplayLevel)}
+            onSendPrompt={(text, attachments) => sendOperatorPrompt(activeAgent.id, text, effectiveDisplayLevel, attachments)}
             onOpenInspector={() => {
               showAgentOverview(activeAgent.id);
             }}

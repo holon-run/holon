@@ -270,6 +270,36 @@ describe("timeline events state", () => {
     });
   });
 
+  it("returns developer-only UI to a non-debug closed state when diagnostics are disabled", () => {
+    useRuntimeStore.setState({
+      selectedAgentId: "agent-a",
+      displayLevel: "debug",
+      displayLevelsByAgentId: {
+        "agent-a": "debug",
+        "agent-b": "verbose",
+      },
+      rightPanelOpen: true,
+      rightPanelView: { kind: "timeline_events", agentId: "agent-a" },
+      rightPanelViewStack: [
+        { kind: "agent_overview", agentId: "agent-a" },
+        { kind: "timeline_events", agentId: "agent-b" },
+      ],
+    });
+
+    useRuntimeStore.getState().disableDeveloperDiagnosticsUi("agent-a");
+
+    expect(useRuntimeStore.getState()).toMatchObject({
+      displayLevel: "info",
+      displayLevelsByAgentId: {
+        "agent-a": "info",
+        "agent-b": "verbose",
+      },
+      rightPanelOpen: false,
+      rightPanelView: { kind: "agent_overview", agentId: "agent-a" },
+      rightPanelViewStack: [{ kind: "agent_overview", agentId: "agent-a" }],
+    });
+  });
+
   it("appends older pages in sequence order and resets on epoch changes", () => {
     const initial = mergeTimelineEventPage(
       {
