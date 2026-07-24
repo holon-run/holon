@@ -2076,6 +2076,106 @@ pub async fn background_command_task_persists_terminal_state_while_runtime_stopp
     Ok(())
 }
 
+pub async fn command_task_result_enqueue_retries_stale_agent_state() -> Result<()> {
+    let host =
+        RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
+    let runtime = host.default_runtime().await?;
+    runtime.control(ControlAction::Stop).await?;
+    let gate = tempfile::tempdir()?;
+    let release_path = gate.path().join("release");
+    let command = format!(
+        "while [ ! -f '{}' ]; do sleep 0.01; done; printf stale_snapshot_ok",
+        release_path.display()
+    );
+
+    let task = runtime
+        .schedule_command_task(
+            "retry stale result enqueue".into(),
+            holon::types::CommandTaskSpec {
+                cmd: command,
+                workdir: None,
+                shell: None,
+                login: true,
+                tty: false,
+                yield_time_ms: 10_000,
+                max_output_tokens: Some(256),
+                accepts_input: false,
+                terminal_reentry: false,
+            },
+            AuthorityClass::OperatorInstruction,
+        )
+        .await?;
+    assert!(task.work_item_id.is_none());
+
+    eventually_for(Duration::from_secs(10), || {
+        let tasks = runtime.storage().latest_task_records()?;
+        Ok(tasks.iter().any(|record| {
+            record.id == task.id && record.status == holon::types::TaskStatus::Running
+        }))
+    })
+    .await?;
+
+    let mut concurrent_state = runtime
+        .storage()
+        .read_agent()?
+        .expect("agent state should exist");
+    concurrent_state.total_input_tokens = 73;
+    runtime.storage().write_agent(&concurrent_state)?;
+    std::fs::write(&release_path, b"release")?;
+
+    eventually_for(Duration::from_secs(10), || {
+        let tasks = runtime.storage().latest_task_records()?;
+        let messages = runtime.storage().read_recent_messages(20)?;
+        Ok(tasks.iter().any(|record| {
+            record.id == task.id && record.status == holon::types::TaskStatus::Completed
+        }) && messages.iter().any(|message| {
+            message.kind == MessageKind::TaskResult
+                && message.task_id.as_deref() == Some(task.id.as_str())
+        }))
+    })
+    .await?;
+
+    let messages = runtime.storage().read_recent_messages(20)?;
+    let task_results = messages
+        .iter()
+        .filter(|message| {
+            message.kind == MessageKind::TaskResult
+                && message.task_id.as_deref() == Some(task.id.as_str())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(task_results.len(), 1);
+    assert!(task_results[0].work_item_id.is_none());
+    let result_message_id = task_results[0].id.as_str();
+    assert_eq!(
+        runtime
+            .storage()
+            .latest_queue_entries()?
+            .into_iter()
+            .filter(|entry| entry.message_id == result_message_id)
+            .count(),
+        1
+    );
+    assert_eq!(runtime.agent_state().await?.total_input_tokens, 73);
+    let events = runtime.storage().read_recent_events(usize::MAX)?;
+    assert!(!events.iter().any(|event| {
+        event.kind == "command_task_result_enqueue_failed"
+            && event.data["task_id"] == task.id.as_str()
+    }));
+    for kind in ["message_admitted", "message_enqueued"] {
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| {
+                    event.kind == kind && event.data["message_id"] == result_message_id
+                })
+                .count(),
+            1,
+            "{kind} should be committed exactly once"
+        );
+    }
+    Ok(())
+}
+
 pub async fn blocking_command_task_clears_active_state_while_runtime_stopped() -> Result<()> {
     let host =
         RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;

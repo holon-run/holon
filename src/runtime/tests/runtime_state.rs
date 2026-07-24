@@ -5525,6 +5525,216 @@ async fn sleep_wake_task_ignores_stale_sleeping_until() {
 }
 
 #[tokio::test]
+async fn enqueue_retries_stale_agent_state_from_safe_persisted_baseline() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime.control(ControlAction::Stop).await.unwrap();
+
+    let mut concurrent_state = runtime.storage().read_agent().unwrap().unwrap();
+    concurrent_state.total_input_tokens = 41;
+    runtime.storage().write_agent(&concurrent_state).unwrap();
+
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::TaskResult,
+        MessageOrigin::Task {
+            task_id: "task-enqueue-retry".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Next,
+        MessageBody::Text {
+            text: "task completed".into(),
+        },
+    );
+    let message_id = message.id.clone();
+
+    runtime.enqueue(message).await.unwrap();
+
+    let committed_state = runtime.storage().read_agent().unwrap().unwrap();
+    assert_eq!(committed_state.total_input_tokens, 41);
+    assert_eq!(committed_state.pending, 1);
+    assert_eq!(committed_state.total_message_count, 1);
+    assert!(runtime
+        .storage()
+        .read_message_by_id(&message_id)
+        .unwrap()
+        .is_some());
+    assert_eq!(
+        runtime
+            .storage()
+            .latest_queue_entries()
+            .unwrap()
+            .into_iter()
+            .filter(|entry| entry.message_id == message_id)
+            .count(),
+        1
+    );
+    let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
+    for kind in ["message_admitted", "message_enqueued"] {
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| {
+                    event.kind == kind && event.data["message_id"] == message_id.as_str()
+                })
+                .count(),
+            1,
+            "{kind} should be committed exactly once"
+        );
+    }
+}
+
+#[tokio::test]
+async fn enqueue_stale_agent_state_fails_closed_when_local_state_is_dirty() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime.control(ControlAction::Stop).await.unwrap();
+
+    let mut concurrent_state = runtime.storage().read_agent().unwrap().unwrap();
+    concurrent_state.total_input_tokens = 17;
+    runtime.storage().write_agent(&concurrent_state).unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.last_wake_reason = Some("unpersisted-local-change".into());
+    }
+
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::TaskResult,
+        MessageOrigin::Task {
+            task_id: "task-dirty-state".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Next,
+        MessageBody::Text {
+            text: "task completed".into(),
+        },
+    );
+    let message_id = message.id.clone();
+
+    let error = runtime.enqueue(message).await.unwrap_err();
+
+    let conflict = error
+        .downcast_ref::<crate::runtime_db::RuntimeStateTransitionConflict>()
+        .expect("stale state should remain an OCC conflict");
+    assert_eq!(conflict.domain(), "agent_state");
+    assert!(runtime
+        .storage()
+        .read_message_by_id(&message_id)
+        .unwrap()
+        .is_none());
+    assert!(runtime
+        .storage()
+        .latest_queue_entries()
+        .unwrap()
+        .into_iter()
+        .all(|entry| entry.message_id != message_id));
+    assert_eq!(
+        runtime
+            .inner
+            .agent
+            .lock()
+            .await
+            .state
+            .last_wake_reason
+            .as_deref(),
+        Some("unpersisted-local-change")
+    );
+    assert_eq!(
+        runtime
+            .storage()
+            .read_agent()
+            .unwrap()
+            .unwrap()
+            .total_input_tokens,
+        17
+    );
+}
+
+#[tokio::test]
+async fn enqueue_stale_agent_state_fails_closed_when_pending_diverges_from_queue() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime.control(ControlAction::Stop).await.unwrap();
+
+    let mut concurrent_state = runtime.storage().read_agent().unwrap().unwrap();
+    concurrent_state.pending = 1;
+    runtime.storage().write_agent(&concurrent_state).unwrap();
+
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::TaskResult,
+        MessageOrigin::Task {
+            task_id: "task-divergent-queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Next,
+        MessageBody::Text {
+            text: "task completed".into(),
+        },
+    );
+    let message_id = message.id.clone();
+
+    let error = runtime.enqueue(message).await.unwrap_err();
+
+    let conflict = error
+        .downcast_ref::<crate::runtime_db::RuntimeStateTransitionConflict>()
+        .expect("divergent queue should preserve the OCC conflict");
+    assert_eq!(conflict.domain(), "agent_state");
+    assert!(runtime
+        .storage()
+        .read_message_by_id(&message_id)
+        .unwrap()
+        .is_none());
+    assert!(runtime
+        .storage()
+        .latest_queue_entries()
+        .unwrap()
+        .into_iter()
+        .all(|entry| entry.message_id != message_id));
+    assert_eq!(runtime.storage().read_agent().unwrap().unwrap().pending, 1);
+}
+
+#[tokio::test]
 async fn enqueue_normalizes_operator_admission_fields() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
