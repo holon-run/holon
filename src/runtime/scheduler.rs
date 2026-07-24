@@ -1366,9 +1366,9 @@ pub(crate) fn canonical_activation_scenario(
         {
             bail!("canonical task rejoin requires a terminal same-agent task");
         }
-        let work_item_id = task
-            .effective_work_item_id()
-            .ok_or_else(|| anyhow!("canonical task rejoin requires a WorkItem binding"))?;
+        let Some(work_item_id) = task.effective_work_item_id() else {
+            return Ok(None);
+        };
         if message.work_item_id.as_deref() != Some(work_item_id) {
             bail!("canonical task rejoin has inconsistent WorkItem binding");
         }
