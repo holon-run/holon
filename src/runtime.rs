@@ -292,7 +292,7 @@ const SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS_ENV: &str =
 const SCHEDULER_ACCEPTANCE_FIXTURES_ENV: &str = "HOLON_SCHEDULER_ACCEPTANCE_FIXTURES";
 
 fn scheduler_protocol_production_commands_enabled_from_env() -> Result<bool> {
-    boolean_env(SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS_ENV).map(|value| value.unwrap_or(false))
+    crate::scheduler_rollout::production_commands_enabled_from_env()
 }
 
 fn boolean_env(name: &str) -> Result<Option<bool>> {
@@ -308,9 +308,10 @@ fn boolean_env(name: &str) -> Result<Option<bool>> {
 }
 
 pub fn require_scheduler_acceptance_fixtures_enabled() -> Result<()> {
-    if boolean_env(SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS_ENV)? != Some(true) {
+    if !scheduler_protocol_production_commands_enabled_from_env()? {
         return Err(anyhow!(
-            "scheduler acceptance fixtures require {SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS_ENV}=true"
+            "scheduler acceptance fixtures require HOLON_SCHEDULER=authoritative or \
+             {SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS_ENV}=true"
         ));
     }
     if boolean_env(SCHEDULER_ACCEPTANCE_FIXTURES_ENV)? != Some(true) {
@@ -323,6 +324,7 @@ pub fn require_scheduler_acceptance_fixtures_enabled() -> Result<()> {
 
 #[cfg(test)]
 fn scheduler_acceptance_fixtures_enabled_from_values(
+    desired: Option<&str>,
     production_commands: Option<&str>,
     acceptance_fixtures: Option<&str>,
 ) -> Result<bool> {
@@ -336,11 +338,12 @@ fn scheduler_acceptance_fixtures_enabled_from_values(
             _ => Err(anyhow!("{name} expects a boolean")),
         }
     }
-    Ok(parse(
-        SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS_ENV,
-        production_commands,
-    )? == Some(true)
-        && parse(SCHEDULER_ACCEPTANCE_FIXTURES_ENV, acceptance_fixtures)? == Some(true))
+    Ok(
+        crate::scheduler_rollout::production_commands_enabled_from_values(
+            desired.map(std::ffi::OsStr::new),
+            production_commands.map(std::ffi::OsStr::new),
+        )? && parse(SCHEDULER_ACCEPTANCE_FIXTURES_ENV, acceptance_fixtures)? == Some(true),
+    )
 }
 
 #[cfg(test)]
@@ -348,26 +351,63 @@ mod scheduler_acceptance_gate_tests {
     use super::*;
 
     #[test]
-    fn scheduler_acceptance_gate_requires_both_explicit_flags() {
-        assert!(
-            scheduler_acceptance_fixtures_enabled_from_values(Some("true"), Some("true")).unwrap()
-        );
-        assert!(!scheduler_acceptance_fixtures_enabled_from_values(Some("true"), None).unwrap());
-        assert!(!scheduler_acceptance_fixtures_enabled_from_values(None, Some("true")).unwrap());
-        assert!(
-            !scheduler_acceptance_fixtures_enabled_from_values(Some("false"), Some("true"))
-                .unwrap()
-        );
+    fn scheduler_acceptance_gate_uses_scheduler_mode_precedence() {
+        assert!(scheduler_acceptance_fixtures_enabled_from_values(
+            Some("authoritative"),
+            None,
+            Some("true")
+        )
+        .unwrap());
+        assert!(scheduler_acceptance_fixtures_enabled_from_values(
+            Some("authoritative"),
+            Some("false"),
+            Some("true")
+        )
+        .unwrap());
+        assert!(!scheduler_acceptance_fixtures_enabled_from_values(
+            Some("shadow"),
+            Some("true"),
+            Some("true")
+        )
+        .unwrap());
+        assert!(!scheduler_acceptance_fixtures_enabled_from_values(
+            Some("legacy"),
+            Some("true"),
+            Some("true")
+        )
+        .unwrap());
+        assert!(scheduler_acceptance_fixtures_enabled_from_values(
+            None,
+            Some("true"),
+            Some("true")
+        )
+        .unwrap());
+        assert!(!scheduler_acceptance_fixtures_enabled_from_values(
+            Some("authoritative"),
+            None,
+            None
+        )
+        .unwrap());
     }
 
     #[test]
-    fn scheduler_acceptance_gate_rejects_invalid_boolean() {
-        assert!(
-            scheduler_acceptance_fixtures_enabled_from_values(Some("sometimes"), Some("true"))
-                .unwrap_err()
-                .to_string()
-                .contains(SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS_ENV)
-        );
+    fn scheduler_acceptance_gate_rejects_invalid_scheduler_configuration() {
+        assert!(scheduler_acceptance_fixtures_enabled_from_values(
+            Some("enabled"),
+            Some("true"),
+            Some("true")
+        )
+        .unwrap_err()
+        .to_string()
+        .contains(crate::scheduler_rollout::SCHEDULER_ENV));
+        assert!(scheduler_acceptance_fixtures_enabled_from_values(
+            None,
+            Some("sometimes"),
+            Some("true")
+        )
+        .unwrap_err()
+        .to_string()
+        .contains(SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS_ENV));
     }
 }
 

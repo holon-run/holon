@@ -2765,21 +2765,50 @@ mod tests {
                     && blocker.preflight_revision == 1
             }));
 
-            let reauthorized = db.transitions().commit_scheduler_rollout_command(
-                &format!("{scenario_class}-reauthorize-after-missing"),
-                &RolloutCommand::ChangeScenarioAuthority {
-                    scenario_class: scenario_class.into(),
-                    expected_config_revision: 5,
-                    expected_manifest_revision: 1,
-                    expected_preflight_revision: 1,
-                    mode: ScenarioMode::Authoritative,
-                },
-                None,
-            )?;
-            assert_eq!(
-                reauthorized.result.decision,
-                Decision::ScenarioAuthorityChanged
-            );
+            let replacement_manifest = scheduler_phase3_rollout_manifest(scenario_class, 2, 2);
+            for (identity, command, expected_decision) in [
+                (
+                    format!("{scenario_class}-replacement-open"),
+                    RolloutCommand::OpenPreflight {
+                        expected_config_revision: 5,
+                        manifest_revision: 2,
+                    },
+                    Decision::RolloutPreflightOpened,
+                ),
+                (
+                    format!("{scenario_class}-replacement-complete"),
+                    RolloutCommand::CompletePreflight {
+                        expected_config_revision: 5,
+                        expected_preflight_revision: 2,
+                        manifest: replacement_manifest.clone(),
+                    },
+                    Decision::RolloutPreflightCompleted,
+                ),
+                (
+                    format!("{scenario_class}-replacement-install"),
+                    RolloutCommand::InstallManifest {
+                        expected_config_revision: 5,
+                        manifest: replacement_manifest.clone(),
+                    },
+                    Decision::ManifestInstalled,
+                ),
+                (
+                    format!("{scenario_class}-reauthorize-after-missing"),
+                    RolloutCommand::ChangeScenarioAuthority {
+                        scenario_class: scenario_class.into(),
+                        expected_config_revision: 6,
+                        expected_manifest_revision: 2,
+                        expected_preflight_revision: 2,
+                        mode: ScenarioMode::Authoritative,
+                    },
+                    Decision::ScenarioAuthorityChanged,
+                ),
+            ] {
+                let committed = db
+                    .transitions()
+                    .commit_scheduler_rollout_command(&identity, &command, None)?;
+                assert_eq!(committed.result.decision, expected_decision);
+            }
             let authoritative_expectations = db
                 .transitions()
                 .scheduler_rollout_expectations(&[scenario], true)?;
@@ -2831,9 +2860,9 @@ mod tests {
                 .any(|blocker| {
                     blocker.scenario_class == scenario_class
                         && blocker.blocker_code == "phase5h_cutover_mismatch"
-                        && blocker.config_revision == 6
-                        && blocker.manifest_revision == 1
-                        && blocker.preflight_revision == 1
+                        && blocker.config_revision == 7
+                        && blocker.manifest_revision == 2
+                        && blocker.preflight_revision == 2
                 }));
             let fallback_expectations = db
                 .transitions()

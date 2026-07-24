@@ -35,6 +35,7 @@ use crate::{
     provider::{build_provider_from_config, AgentProvider},
     runtime::{InitialWorkspaceBinding, LightweightAgentStateProjection, RuntimeHandle},
     runtime_db::RuntimeDb,
+    scheduler_rollout,
     skills::{
         effective_skill_root_registrations, skills_runtime_view_from_catalog, SkillVisibility,
         SkillsRegistry,
@@ -244,6 +245,7 @@ impl RuntimeHost {
     ) -> Result<Self> {
         let runtime_db =
             RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
+        scheduler_rollout::reconcile_from_env(&runtime_db)?;
         let registry = RuntimeRegistry::new(config, runtime_db.clone())?;
         let host = Self {
             inner: Arc::new(HostInner {
@@ -2501,12 +2503,13 @@ fn child_has_active_lifecycle_blockers(storage: &AppStorage, child_agent_id: &st
 #[cfg(test)]
 mod tests {
     use std::{
+        ffi::OsString,
         fs,
         path::Path,
         path::PathBuf,
         sync::{
             atomic::{AtomicBool, Ordering},
-            Arc,
+            Arc, MutexGuard,
         },
     };
 
@@ -2517,6 +2520,9 @@ mod tests {
 
     use crate::{
         config::{provider_registry_for_tests, ControlAuthMode, ModelRouteRef},
+        domain::scheduler_protocol::{
+            managed_shadow_rollout_manifest, ProtocolMode, RolloutCommand,
+        },
         provider::{AgentProvider, ProviderTurnRequest, ProviderTurnResponse, StubProvider},
         runtime::RuntimeHandle,
         runtime_db::RuntimeDb,
@@ -2538,6 +2544,43 @@ mod tests {
             r#"{"model":{"default":"openai/gpt-5.4"}}"#,
         )
         .unwrap();
+    }
+
+    struct SchedulerEnvGuard {
+        _lock: MutexGuard<'static, ()>,
+        scheduler: Option<OsString>,
+        legacy_production_commands: Option<OsString>,
+    }
+
+    impl SchedulerEnvGuard {
+        fn unset() -> Self {
+            let lock = crate::test_env::lock_env();
+            let scheduler = std::env::var_os(crate::scheduler_rollout::SCHEDULER_ENV);
+            let legacy_production_commands =
+                std::env::var_os("HOLON_SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS");
+            std::env::remove_var(crate::scheduler_rollout::SCHEDULER_ENV);
+            std::env::remove_var("HOLON_SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS");
+            Self {
+                _lock: lock,
+                scheduler,
+                legacy_production_commands,
+            }
+        }
+    }
+
+    impl Drop for SchedulerEnvGuard {
+        fn drop(&mut self) {
+            match &self.scheduler {
+                Some(value) => std::env::set_var(crate::scheduler_rollout::SCHEDULER_ENV, value),
+                None => std::env::remove_var(crate::scheduler_rollout::SCHEDULER_ENV),
+            }
+            match &self.legacy_production_commands {
+                Some(value) => {
+                    std::env::set_var("HOLON_SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS", value)
+                }
+                None => std::env::remove_var("HOLON_SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS"),
+            }
+        }
     }
 
     struct ProviderConfigFixture {
@@ -4865,6 +4908,74 @@ mod tests {
         let fixture = provider_test_config(Some("anthropic-token"));
         let host = RuntimeHost::new(fixture.config);
         assert!(host.is_ok());
+    }
+
+    #[test]
+    fn runtime_host_without_scheduler_env_preserves_persisted_rollout_state() {
+        let _env = SchedulerEnvGuard::unset();
+        let home = tempdir().unwrap();
+        write_test_model_config(home.path());
+        let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        let runtime_db =
+            RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())
+                .unwrap();
+        let schema_revision = u64::try_from(runtime_db.current_schema_version().unwrap()).unwrap();
+        let manifest = managed_shadow_rollout_manifest(
+            1,
+            1,
+            "persisted-build".into(),
+            "persisted-schema".into(),
+            schema_revision,
+        );
+        runtime_db
+            .apply_scheduler_rollout_commands(&[
+                (
+                    "test:preflight:open".into(),
+                    RolloutCommand::OpenPreflight {
+                        expected_config_revision: 0,
+                        manifest_revision: manifest.revision,
+                    },
+                ),
+                (
+                    "test:preflight:complete".into(),
+                    RolloutCommand::CompletePreflight {
+                        expected_config_revision: 0,
+                        expected_preflight_revision: manifest.preflight_revision,
+                        manifest: manifest.clone(),
+                    },
+                ),
+                (
+                    "test:manifest:install".into(),
+                    RolloutCommand::InstallManifest {
+                        expected_config_revision: 0,
+                        manifest,
+                    },
+                ),
+                (
+                    "test:protocol:shadow".into(),
+                    RolloutCommand::ConfigureProtocol {
+                        expected_config_revision: 1,
+                        mode: ProtocolMode::Shadow,
+                    },
+                ),
+            ])
+            .unwrap();
+        let before = runtime_db
+            .transitions()
+            .load_scheduler_rollout_state()
+            .unwrap();
+        drop(runtime_db);
+
+        let host =
+            RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("ok"))).unwrap();
+        let after = host
+            .runtime_db()
+            .transitions()
+            .load_scheduler_rollout_state()
+            .unwrap();
+
+        assert_eq!(after, before);
+        assert_eq!(after.protocol_mode, ProtocolMode::Shadow);
     }
 
     #[test]

@@ -894,6 +894,11 @@ impl RuntimeTransitionRepository<'_> {
         Ok(Some(snapshot))
     }
 
+    pub(crate) fn load_scheduler_rollout_state(&self) -> Result<RolloutState> {
+        let connection = self.db.connection()?;
+        load_rollout(&connection)
+    }
+
     fn load_scheduler_protocol_snapshot_with_hook(
         &self,
         agent_id: &str,
