@@ -282,12 +282,12 @@ fn parse_visual_observation(
             selection_reason: Some(selection.selection_reason.clone()),
         },
         summary,
-        ocr: optional_value_array(object.get("ocr"), "ocr")?,
-        elements: optional_value_array(object.get("elements"), "elements")?,
-        relations: optional_value_array(object.get("relations"), "relations")?,
-        issues: optional_value_array(object.get("issues"), "issues")?,
-        uncertainties: optional_uncertainties(object.get("uncertainties"))?,
-        external_sources: optional_value_array(object.get("external_sources"), "external_sources")?,
+        ocr: optional_value_array(object.get("ocr"), "ocr"),
+        elements: optional_value_array(object.get("elements"), "elements"),
+        relations: optional_value_array(object.get("relations"), "relations"),
+        issues: optional_value_array(object.get("issues"), "issues"),
+        uncertainties: optional_uncertainties(object.get("uncertainties")),
+        external_sources: optional_value_array(object.get("external_sources"), "external_sources"),
     })
 }
 
@@ -321,50 +321,42 @@ fn parse_observation_json(raw: &str) -> Result<Value> {
         .map_err(|error| anyhow!("vision adapter returned invalid observation JSON: {error}"))
 }
 
-fn optional_value_array(value: Option<&Value>, field: &str) -> Result<Vec<Value>> {
+fn optional_value_array(value: Option<&Value>, field: &str) -> Vec<Value> {
     match value {
-        Some(Value::Array(values)) => Ok(values.clone()),
-        Some(_) => Err(anyhow!(
-            "vision adapter response field `{field}` must be an array when present"
-        )),
-        None => Ok(Vec::new()),
+        Some(Value::Array(values)) => values.clone(),
+        Some(Value::Object(object)) => vec![Value::Object(object.clone())],
+        Some(Value::String(text)) if !text.trim().is_empty() => {
+            let text_field = if field == "ocr" {
+                "text"
+            } else {
+                "description"
+            };
+            vec![json!({ text_field: text.trim() })]
+        }
+        Some(Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_)) | None => {
+            Vec::new()
+        }
     }
 }
 
-fn optional_uncertainties(value: Option<&Value>) -> Result<Vec<String>> {
-    let Some(value) = value else {
-        return Ok(Vec::new());
+fn optional_uncertainties(value: Option<&Value>) -> Vec<String> {
+    let values = match value {
+        Some(Value::Array(values)) => values.as_slice(),
+        Some(value) => std::slice::from_ref(value),
+        None => return Vec::new(),
     };
-    let values = value.as_array().ok_or_else(|| {
-        anyhow!("vision adapter response field `uncertainties` must be an array when present")
+    values.iter().filter_map(uncertainty_text).collect()
+}
+
+fn uncertainty_text(value: &Value) -> Option<String> {
+    let text = value.as_str().or_else(|| {
+        let object = value.as_object()?;
+        ["text", "description", "summary", "message"]
+            .iter()
+            .find_map(|field| object.get(*field).and_then(Value::as_str))
     })?;
-    values
-        .iter()
-        .map(|value| {
-            if let Some(text) = value.as_str() {
-                return Ok(text.to_string());
-            }
-            let Some(object) = value.as_object() else {
-                return Err(anyhow!(
-                    "vision adapter response field `uncertainties` must contain strings or objects with text"
-                ));
-            };
-            ["text", "description", "summary", "message"]
-                .iter()
-                .find_map(|field| object.get(*field).and_then(Value::as_str))
-                .map(ToString::to_string)
-                .ok_or_else(|| {
-                    anyhow!(
-                        "vision adapter response field `uncertainties` object entries must include text"
-                    )
-                })
-        })
-        .filter_map(|result| match result {
-            Ok(text) if text.trim().is_empty() => None,
-            Ok(text) => Some(Ok(text)),
-            Err(error) => Some(Err(error)),
-        })
-        .collect()
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_string())
 }
 
 #[derive(Debug, Clone)]
@@ -733,6 +725,75 @@ mod tests {
                 "Small text is hard to read.".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn normalizes_non_array_optional_fields_from_vision_adapter() {
+        let observation = parse_visual_observation(
+            r#"{
+                "type": "visual_observation",
+                "schema": "visual_observation.v1",
+                "summary": "A logo is visible.",
+                "ocr": "HOLON",
+                "elements": {"type": "logo"},
+                "relations": "The logo is above the wordmark.",
+                "issues": null,
+                "uncertainties": {"message": "Small details may be unclear."},
+                "external_sources": 42
+            }"#,
+            &test_visual_reference(),
+            "Describe the image.",
+            &test_vision_selection(),
+        )
+        .unwrap();
+
+        assert_eq!(observation.ocr, vec![json!({"text": "HOLON"})]);
+        assert_eq!(observation.elements, vec![json!({"type": "logo"})]);
+        assert_eq!(
+            observation.relations,
+            vec![json!({"description": "The logo is above the wordmark."})]
+        );
+        assert!(observation.issues.is_empty());
+        assert_eq!(
+            observation.uncertainties,
+            vec!["Small details may be unclear.".to_string()]
+        );
+        assert!(observation.external_sources.is_empty());
+    }
+
+    #[test]
+    fn ignores_unusable_optional_entries_without_hiding_invalid_core_fields() {
+        let observation = parse_visual_observation(
+            r#"{
+                "type": "visual_observation",
+                "schema": "visual_observation.v1",
+                "summary": "A logo is visible.",
+                "ocr": false,
+                "uncertainties": [null, 12, {}, "", {"text": "  "}]
+            }"#,
+            &test_visual_reference(),
+            "Describe the image.",
+            &test_vision_selection(),
+        )
+        .unwrap();
+
+        assert!(observation.ocr.is_empty());
+        assert!(observation.uncertainties.is_empty());
+
+        let error = parse_visual_observation(
+            r#"{
+                "type": "visual_observation",
+                "schema": "visual_observation.v1",
+                "summary": "",
+                "ocr": "HOLON"
+            }"#,
+            &test_visual_reference(),
+            "Describe the image.",
+            &test_vision_selection(),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("non-empty `summary`"));
     }
 
     #[test]
