@@ -52,6 +52,97 @@ pub async fn control_prompt_is_open_on_loopback_auto() -> Result<()> {
     Ok(())
 }
 
+pub async fn control_agent_delete_fences_runtime_and_is_idempotent() -> Result<()> {
+    let host = RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ok")))?;
+    attach_default_workspace(&host).await?;
+    host.create_named_agent("delete-me", None).await?;
+    let loaded = host.get_or_create_agent("delete-me").await?;
+    let (base, server) = spawn_server_for_host(host.clone()).await?;
+    let client = Client::new();
+
+    let first = client
+        .delete(format!("{base}/api/control/agents/delete-me"))
+        .json(&serde_json::json!({ "cascade_private_children": true }))
+        .send()
+        .await?;
+    assert_eq!(first.status(), reqwest::StatusCode::OK);
+    let first_payload: serde_json::Value = first.json().await?;
+    assert_eq!(first_payload["created"], true);
+    assert_eq!(first_payload["identity"]["status"], "deleting");
+    assert_eq!(first_payload["job"]["cascade_private_children"], true);
+    let deletion_id = first_payload["job"]["deletion_id"]
+        .as_str()
+        .expect("deletion id")
+        .to_string();
+
+    let second: serde_json::Value = client
+        .delete(format!("{base}/api/control/agents/delete-me"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(second["created"], false);
+    assert_eq!(second["job"]["deletion_id"], deletion_id);
+
+    let prompt = client
+        .post(format!("{base}/api/control/agents/delete-me/prompt"))
+        .json(&serde_json::json!({ "text": "must be fenced" }))
+        .send()
+        .await?;
+    assert_eq!(prompt.status(), reqwest::StatusCode::CONFLICT);
+    assert_eq!(
+        prompt.json::<serde_json::Value>().await?["code"],
+        "agent_deleting"
+    );
+
+    let status: serde_json::Value = client
+        .get(format!("{base}/api/control/agents/delete-me/delete-status"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(status["identity"]["status"], "deleting");
+    assert_eq!(status["job"]["deletion_id"], deletion_id);
+    assert!(loaded
+        .storage()
+        .read_recent_messages(10)?
+        .iter()
+        .all(|message| !matches!(
+            &message.body,
+            MessageBody::Text { text } if text == "must be fenced"
+        )));
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn control_agent_delete_rejects_default_and_reports_unknown() -> Result<()> {
+    let (_host, base, server) = spawn_server().await?;
+    let client = Client::new();
+
+    let default = client
+        .delete(format!("{base}/api/control/agents/default"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await?;
+    assert_eq!(default.status(), reqwest::StatusCode::CONFLICT);
+    assert_eq!(
+        default.json::<serde_json::Value>().await?["code"],
+        "agent_delete_forbidden"
+    );
+
+    let unknown = client
+        .delete(format!("{base}/api/control/agents/missing-agent"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await?;
+    assert_eq!(unknown.status(), reqwest::StatusCode::NOT_FOUND);
+
+    server.abort();
+    Ok(())
+}
+
 #[cfg(unix)]
 pub async fn control_prompt_is_open_over_unix_socket_auto() -> Result<()> {
     let config = test_config();

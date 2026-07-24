@@ -35,13 +35,13 @@ pub use crate::runtime_db::retention::{
 };
 pub use crate::runtime_db::storage_domain::{ExpectedStorageDomain, StorageDomainSnapshot};
 pub use crate::runtime_db::types::{
-    AgentIdentityRepository, AgentStateRepository, AuditEventSink, ContextEpisodeRepository,
-    EvidenceRepository, ExecutionRootEntryRepository, ExternalTriggerRepository, MessageRepository,
-    OperatorDeliveryRepository, OperatorNotificationRepository, OperatorTransportBindingRepository,
-    QueueEntryRepository, TaskRepository, TimerRepository, TranscriptRepository,
-    TurnRecordRepository, WaitConditionRepository, WorkItemContinuationRepository,
-    WorkItemDelegationRepository, WorkItemRepository, WorkspaceEntryRepository,
-    WorkspaceOccupancyRepository,
+    AgentDeletionRepository, AgentIdentityRepository, AgentStateRepository, AuditEventSink,
+    ContextEpisodeRepository, EvidenceRepository, ExecutionRootEntryRepository,
+    ExternalTriggerRepository, MessageRepository, OperatorDeliveryRepository,
+    OperatorNotificationRepository, OperatorTransportBindingRepository, QueueEntryRepository,
+    TaskRepository, TimerRepository, TranscriptRepository, TurnRecordRepository,
+    WaitConditionRepository, WorkItemContinuationRepository, WorkItemDelegationRepository,
+    WorkItemRepository, WorkspaceEntryRepository, WorkspaceOccupancyRepository,
 };
 #[cfg(test)]
 mod tests;
@@ -385,6 +385,10 @@ impl RuntimeDb {
 
     pub fn agent_identities(&self) -> AgentIdentityRepository<'_> {
         AgentIdentityRepository { db: self }
+    }
+
+    pub fn agent_deletions(&self) -> AgentDeletionRepository<'_> {
+        AgentDeletionRepository { db: self }
     }
 
     pub fn work_item_delegations(&self) -> WorkItemDelegationRepository<'_> {

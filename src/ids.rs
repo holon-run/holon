@@ -110,6 +110,10 @@ pub fn work_item_continuation_id() -> String {
     runtime_id("wic")
 }
 
+pub fn agent_deletion_id() -> String {
+    runtime_id("agentdel")
+}
+
 pub fn capability_id(prefix: &str) -> String {
     format!(
         "{prefix}_{}{}",
@@ -148,6 +152,7 @@ mod tests {
             (operator_notification_id(), "notify"),
             (operator_delivery_intent_id(), "odi"),
             (workspace_occupancy_id(), "occ"),
+            (agent_deletion_id(), "agentdel"),
             (audit_event_id(), "event"),
             (work_item_delegation_id(), "delegation"),
             (work_item_continuation_id(), "wic"),

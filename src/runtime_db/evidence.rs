@@ -10,9 +10,9 @@ use sha2::{Digest, Sha256};
 use crate::runtime_db::index_outbox::RuntimeIndexChange;
 use crate::runtime_db::EVIDENCE_PREVIEW_LIMIT;
 use crate::types::{
-    AgentIdentityRecord, AgentState, AuditEvent, BriefRecord, DeliverySummaryRecord,
-    ExecutionRootEntry, MessageEnvelope, ToolExecutionRecord, TranscriptEntry, WorkspaceEntry,
-    WorkspaceOccupancyRecord,
+    AgentDeletionJob, AgentIdentityRecord, AgentState, AuditEvent, BriefRecord,
+    DeliverySummaryRecord, ExecutionRootEntry, MessageEnvelope, ToolExecutionRecord,
+    TranscriptEntry, WorkspaceEntry, WorkspaceOccupancyRecord,
 };
 
 pub(crate) const AUDIT_EVENT_SEQUENCE_DOMAIN: &str = "audit_event";
@@ -413,7 +413,31 @@ pub(crate) fn upsert_agent_identity_tx(
             record.delegated_from_task_id,
             timestamp(record.created_at),
             timestamp(record.updated_at),
-            record.archived_at.map(timestamp),
+            record.deleted_at.map(timestamp),
+            payload_json,
+        ],
+    )?;
+    Ok(())
+}
+
+pub(crate) fn insert_agent_deletion_job_tx(
+    tx: &Transaction<'_>,
+    job: &AgentDeletionJob,
+) -> Result<()> {
+    let payload_json = serde_json::to_string(job)?;
+    tx.execute(
+        "INSERT INTO agent_deletion_jobs (
+            deletion_id, agent_id, status, phase, created_at, updated_at,
+            completed_at, payload_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            job.deletion_id,
+            job.agent_id,
+            enum_string(&job.status)?,
+            enum_string(&job.phase)?,
+            timestamp(job.created_at),
+            timestamp(job.updated_at),
+            job.completed_at.map(timestamp),
             payload_json,
         ],
     )?;

@@ -15,6 +15,28 @@ pub struct SearchRequest {
     pub types: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct DeleteAgentRequest {
+    #[serde(default)]
+    pub cascade_private_children: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct AgentDeletionResponse {
+    pub ok: bool,
+    pub created: bool,
+    pub identity: crate::types::AgentIdentityView,
+    pub job: crate::types::AgentDeletionJob,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct AgentDeletionStatusResponse {
+    pub identity: crate::types::AgentIdentityView,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<crate::types::AgentDeletionJob>,
+}
+
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct SearchResponse {
     pub query: String,

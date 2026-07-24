@@ -448,6 +448,11 @@ pub fn router(state: AppState) -> Router {
             "/control/agents/{agent_id}/create",
             post(control::create_agent),
         )
+        .route("/control/agents/{agent_id}", delete(control::delete_agent))
+        .route(
+            "/control/agents/{agent_id}/delete-status",
+            get(control::agent_deletion_status),
+        )
         .route(
             "/control/agents/{agent_id}/reset-callback",
             post(control::reset_callback),
@@ -1022,9 +1027,24 @@ pub(crate) fn agent_access_error(error: PublicAgentError) -> (StatusCode, Json<V
         PublicAgentError::NotFound { agent_id } => {
             not_found(format!("agent {} not found", agent_id))
         }
-        PublicAgentError::Archived { agent_id } => {
-            not_found(format!("agent {} is archived", agent_id))
-        }
+        PublicAgentError::Deleted { agent_id } => http_error(
+            StatusCode::GONE,
+            HttpErrorEnvelope::new(format!("agent {} was deleted", agent_id))
+                .code("agent_deleted")
+                .extension("agent_id", agent_id),
+        ),
+        PublicAgentError::Deleting { agent_id } => http_error(
+            StatusCode::CONFLICT,
+            HttpErrorEnvelope::new(format!("agent {} is being deleted", agent_id))
+                .code("agent_deleting")
+                .extension("agent_id", agent_id),
+        ),
+        PublicAgentError::DeleteForbidden { agent_id, reason } => http_error(
+            StatusCode::CONFLICT,
+            HttpErrorEnvelope::new(reason)
+                .code("agent_delete_forbidden")
+                .extension("agent_id", agent_id),
+        ),
         PublicAgentError::Stopped { agent_id } => stopped_agent_conflict(
             format!("agent {} is stopped; start first", agent_id),
             agent_id,

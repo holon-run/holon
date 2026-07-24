@@ -8,8 +8,9 @@ use serde_json::{json, Value};
 use crate::{
     diagnostics::PerformanceDiagnosticsSnapshot,
     http::{
-        BatchGetBriefsRequest, BatchGetMessagesRequest, BatchGetTranscriptEntriesRequest,
-        CancelTimerRequest, CompleteWorkItemRequest, CreateTimerRequest, MemoryGetRequest,
+        AgentDeletionResponse, AgentDeletionStatusResponse, BatchGetBriefsRequest,
+        BatchGetMessagesRequest, BatchGetTranscriptEntriesRequest, CancelTimerRequest,
+        CompleteWorkItemRequest, CreateTimerRequest, DeleteAgentRequest, MemoryGetRequest,
         ModelConfigMigrationRequest, PickWorkItemRequest, PickWorkItemResponse,
         RuntimeConfigReadResponse, RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse,
         SearchRequest, SearchResponse, UpdateWorkItemRequest,
@@ -128,6 +129,8 @@ const ROUTES: &[RouteSpec] = &[
     route_with_response("post", "/control/agents/{agent_id}/timers", "createTimer", "control", "Create timer", "Schedule a timer for an agent.", Some("CreateTimerRequest"), "TimerRecord", AuthKind::Control),
     route_with_response("post", "/control/agents/{agent_id}/timers/{timer_id}/cancel", "cancelTimer", "control", "Cancel timer", "Cancel an active timer. Cancellation is idempotent for already-cancelled timers; completed or missing timers return a shared error envelope.", Some("CancelTimerRequest"), "TimerRecord", AuthKind::Control),
     route("post", "/control/agents/{agent_id}/create", "createAgent", "control", "Create named agent", "Create a public named agent, optionally from a template.", Some("CreateAgentRequest"), AuthKind::Control),
+    route_with_response("delete", "/control/agents/{agent_id}", "deleteAgent", "control", "Delete agent", "Fence a public self-owned agent and create or return its durable deletion job.", Some("DeleteAgentRequest"), "AgentDeletionResponse", AuthKind::Control),
+    route_with_response("get", "/control/agents/{agent_id}/delete-status", "agentDeleteStatus", "control", "Agent deletion status", "Return the identity tombstone and current or completed deletion job.", None, "AgentDeletionStatusResponse", AuthKind::Control),
     route("post", "/control/agents/{agent_id}/reset-callback", "resetCallback", "control", "Reset external trigger callback", "Revoke the current external trigger and provision a fresh one with a new token.", None, AuthKind::Control),
     route("post", "/control/agents/{agent_id}/workspace/attach", "attachWorkspace", "control", "Attach workspace", "Attach a workspace path to an agent.", Some("AttachWorkspaceRequest"), AuthKind::Control),
     route("post", "/control/agents/{agent_id}/workspace/exit", "exitWorkspace", "control", "Exit workspace", "Return an agent to its default AgentHome workspace.", Some("ExitWorkspaceRequest"), AuthKind::Control),
@@ -656,6 +659,18 @@ fn component_schemas() -> Value {
     schemas.insert(
         "ModelConfigMigrationReport".into(),
         component_schema::<ModelConfigMigrationReport>(),
+    );
+    schemas.insert(
+        "DeleteAgentRequest".into(),
+        component_schema::<DeleteAgentRequest>(),
+    );
+    schemas.insert(
+        "AgentDeletionResponse".into(),
+        component_schema::<AgentDeletionResponse>(),
+    );
+    schemas.insert(
+        "AgentDeletionStatusResponse".into(),
+        component_schema::<AgentDeletionStatusResponse>(),
     );
     schemas.insert(
         "PickWorkItemRequest".into(),

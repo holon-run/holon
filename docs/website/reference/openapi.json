@@ -97,6 +97,350 @@
         "title": "AddSkillRequest",
         "type": "object"
       },
+      "AgentDeletionResponse": {
+        "properties": {
+          "created": {
+            "type": "boolean"
+          },
+          "identity": {
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "delegated_from_task_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "is_default_agent": {
+                "type": "boolean"
+              },
+              "kind": {
+                "enum": [
+                  "default",
+                  "named",
+                  "child"
+                ],
+                "type": "string"
+              },
+              "lineage_parent_agent_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "ownership": {
+                "enum": [
+                  "parent_supervised",
+                  "self_owned"
+                ],
+                "type": "string"
+              },
+              "parent_agent_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "profile_preset": {
+                "enum": [
+                  "private_child",
+                  "public_named"
+                ],
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "active",
+                  "deleting",
+                  "deleted"
+                ],
+                "type": "string"
+              },
+              "visibility": {
+                "enum": [
+                  "public",
+                  "private"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "agent_id",
+              "kind",
+              "visibility",
+              "ownership",
+              "profile_preset",
+              "status",
+              "is_default_agent"
+            ],
+            "type": "object"
+          },
+          "job": {
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "attempts": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "cascade_private_children": {
+                "type": "boolean"
+              },
+              "completed_at": {
+                "format": "date-time",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "deletion_id": {
+                "type": "string"
+              },
+              "expected_identity_revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "last_error": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "phase": {
+                "enum": [
+                  "fence",
+                  "quiesce",
+                  "ingress",
+                  "scheduler",
+                  "workspace",
+                  "index",
+                  "home",
+                  "finalize"
+                ],
+                "type": "string"
+              },
+              "requested_by": {
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "pending",
+                  "running",
+                  "retryable_failed",
+                  "completed"
+                ],
+                "type": "string"
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": [
+              "deletion_id",
+              "agent_id",
+              "status",
+              "phase",
+              "requested_by",
+              "expected_identity_revision",
+              "cascade_private_children",
+              "attempts",
+              "created_at",
+              "updated_at"
+            ],
+            "type": "object"
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok",
+          "created",
+          "identity",
+          "job"
+        ],
+        "title": "AgentDeletionResponse",
+        "type": "object"
+      },
+      "AgentDeletionStatusResponse": {
+        "properties": {
+          "identity": {
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "delegated_from_task_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "is_default_agent": {
+                "type": "boolean"
+              },
+              "kind": {
+                "enum": [
+                  "default",
+                  "named",
+                  "child"
+                ],
+                "type": "string"
+              },
+              "lineage_parent_agent_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "ownership": {
+                "enum": [
+                  "parent_supervised",
+                  "self_owned"
+                ],
+                "type": "string"
+              },
+              "parent_agent_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "profile_preset": {
+                "enum": [
+                  "private_child",
+                  "public_named"
+                ],
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "active",
+                  "deleting",
+                  "deleted"
+                ],
+                "type": "string"
+              },
+              "visibility": {
+                "enum": [
+                  "public",
+                  "private"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "agent_id",
+              "kind",
+              "visibility",
+              "ownership",
+              "profile_preset",
+              "status",
+              "is_default_agent"
+            ],
+            "type": "object"
+          },
+          "job": {
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "attempts": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "cascade_private_children": {
+                "type": "boolean"
+              },
+              "completed_at": {
+                "format": "date-time",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "deletion_id": {
+                "type": "string"
+              },
+              "expected_identity_revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "last_error": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "phase": {
+                "enum": [
+                  "fence",
+                  "quiesce",
+                  "ingress",
+                  "scheduler",
+                  "workspace",
+                  "index",
+                  "home",
+                  "finalize"
+                ],
+                "type": "string"
+              },
+              "requested_by": {
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "pending",
+                  "running",
+                  "retryable_failed",
+                  "completed"
+                ],
+                "type": "string"
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": [
+              "deletion_id",
+              "agent_id",
+              "status",
+              "phase",
+              "requested_by",
+              "expected_identity_revision",
+              "cascade_private_children",
+              "attempts",
+              "created_at",
+              "updated_at"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "identity"
+        ],
+        "title": "AgentDeletionStatusResponse",
+        "type": "object"
+      },
       "AgentStateSnapshotDto": {
         "properties": {
           "agent": {
@@ -166,7 +510,8 @@
                         "status": {
                           "enum": [
                             "active",
-                            "archived"
+                            "deleting",
+                            "deleted"
                           ],
                           "type": "string"
                         },
@@ -823,7 +1168,8 @@
                   "status": {
                     "enum": [
                       "active",
-                      "archived"
+                      "deleting",
+                      "deleted"
                     ],
                     "type": "string"
                   },
@@ -932,7 +1278,7 @@
                   "posture": {
                     "enum": [
                       "unknown",
-                      "archived",
+                      "stopped",
                       "active_turn",
                       "has_queued_input",
                       "has_runnable_work",
@@ -2050,6 +2396,17 @@
       "DebugPromptRequest": {
         "additionalProperties": true,
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
+        "type": "object"
+      },
+      "DeleteAgentRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "cascade_private_children": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "title": "DeleteAgentRequest",
         "type": "object"
       },
       "DetachWorkspaceRequest": {
@@ -9739,6 +10096,74 @@
         ]
       }
     },
+    "/api/control/agents/{agent_id}": {
+      "delete": {
+        "description": "Fence a public self-owned agent and create or return its durable deletion job.",
+        "operationId": "deleteAgent",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteAgentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentDeletionResponse"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Delete agent",
+        "tags": [
+          "control"
+        ]
+      }
+    },
     "/api/control/agents/{agent_id}/control": {
       "post": {
         "description": "Submit a lifecycle control action.",
@@ -10006,6 +10431,64 @@
           }
         ],
         "summary": "Debug prompt",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/api/control/agents/{agent_id}/delete-status": {
+      "get": {
+        "description": "Return the identity tombstone and current or completed deletion job.",
+        "operationId": "agentDeleteStatus",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentDeletionStatusResponse"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Agent deletion status",
         "tags": [
           "control"
         ]

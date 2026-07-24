@@ -1764,6 +1764,26 @@ CREATE INDEX IF NOT EXISTS idx_scheduler_activation_inputs_activation
   ON scheduler_activation_inputs(agent_id, activation_id, round);
 "#,
     },
+    Migration {
+        version: 35,
+        name: "agent_deletion_jobs",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS agent_deletion_jobs (
+  deletion_id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL,
+  phase TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT,
+  payload_json TEXT NOT NULL,
+  FOREIGN KEY (agent_id) REFERENCES agent_identities(agent_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_deletion_jobs_status_updated
+  ON agent_deletion_jobs(status, updated_at);
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

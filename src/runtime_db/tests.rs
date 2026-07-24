@@ -5483,8 +5483,8 @@ CREATE TABLE working_memory_deltas (
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
         let older = agent_identity("agent-a", 1);
         let mut newer = agent_identity("agent-a", 5);
-        newer.status = AgentRegistryStatus::Archived;
-        newer.archived_at = Some(newer.updated_at);
+        newer.status = AgentRegistryStatus::Deleted;
+        newer.deleted_at = Some(newer.updated_at);
 
         db.agent_identities()
             .import_legacy(vec![older.clone(), newer.clone()])?;
@@ -5494,11 +5494,55 @@ CREATE TABLE working_memory_deltas (
             .agent_identities()
             .latest("agent-a")?
             .expect("agent identity");
-        assert_eq!(identity.status, AgentRegistryStatus::Archived);
-        assert!(identity.archived_at.is_some());
+        assert_eq!(identity.status, AgentRegistryStatus::Deleted);
+        assert!(identity.deleted_at.is_some());
         let identities = db.agent_identities().latest_all()?;
         assert_eq!(identities.len(), 1);
         assert_eq!(identities[0].agent_id, "agent-a");
+        Ok(())
+    }
+
+    #[test]
+    fn agent_deletion_begin_is_idempotent_and_survives_reopen() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let identity = agent_identity("agent-delete", 1);
+        db.agent_identities().upsert(&identity)?;
+
+        let (deleting, first_job, created) =
+            db.agent_deletions()
+                .begin("agent-delete", identity.revision, "operator:test", true)?;
+        assert!(created);
+        assert_eq!(deleting.status, AgentRegistryStatus::Deleting);
+        assert_eq!(deleting.revision, identity.revision + 1);
+        assert!(first_job.cascade_private_children);
+
+        let (same_identity, same_job, created) = db.agent_deletions().begin(
+            "agent-delete",
+            deleting.revision,
+            "operator:retry",
+            false,
+        )?;
+        assert!(!created);
+        assert_eq!(same_identity, deleting);
+        assert_eq!(same_job, first_job);
+
+        drop(db);
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        assert_eq!(
+            reopened
+                .agent_deletions()
+                .latest_for_agent("agent-delete")?,
+            Some(first_job)
+        );
+        assert_eq!(
+            reopened
+                .agent_identities()
+                .latest("agent-delete")?
+                .expect("deleting identity")
+                .status,
+            AgentRegistryStatus::Deleting
+        );
         Ok(())
     }
 

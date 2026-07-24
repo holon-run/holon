@@ -898,7 +898,7 @@ fn stable_active_activity_timestamp() -> DateTime<chrono::Utc> {
 fn agent_has_active_activity(agent: &AgentSummary) -> bool {
     match agent.scheduling_posture.posture {
         crate::types::AgentSchedulingPosture::Unknown => {}
-        crate::types::AgentSchedulingPosture::Archived
+        crate::types::AgentSchedulingPosture::Stopped
         | crate::types::AgentSchedulingPosture::Idle => {
             return false;
         }
@@ -967,7 +967,7 @@ fn is_progress_event(event: &crate::tui::projection::ProjectionEventRecord) -> b
 fn active_activity_speaker(agent: &AgentSummary) -> String {
     match agent.scheduling_posture.posture {
         crate::types::AgentSchedulingPosture::Unknown => {}
-        crate::types::AgentSchedulingPosture::Archived => return "Holon (stopped)".into(),
+        crate::types::AgentSchedulingPosture::Stopped => return "Holon (stopped)".into(),
         crate::types::AgentSchedulingPosture::ActiveTurn => return "Holon (working)".into(),
         crate::types::AgentSchedulingPosture::HasQueuedInput => return "Holon (queued)".into(),
         crate::types::AgentSchedulingPosture::HasRunnableWork => {

@@ -208,7 +208,7 @@ impl RuntimeReadModels {
     ) -> Result<Option<AgentPostureProjection>> {
         if matches!(agent.status, AgentStatus::Stopped) {
             return Ok(Some(AgentPostureProjection {
-                posture: AgentSchedulingPosture::Archived,
+                posture: AgentSchedulingPosture::Stopped,
                 reason: "agent lifecycle is stopped".into(),
                 work_item_id: None,
                 task_id: None,

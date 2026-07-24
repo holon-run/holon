@@ -420,6 +420,95 @@ impl AgentIdentityRepository<'_> {
     }
 }
 
+impl AgentDeletionRepository<'_> {
+    pub fn latest_for_agent(&self, agent_id: &str) -> Result<Option<AgentDeletionJob>> {
+        let connection = self.db.connection()?;
+        connection
+            .query_row(
+                "SELECT payload_json FROM agent_deletion_jobs WHERE agent_id = ?1",
+                [agent_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|payload| {
+                serde_json::from_str(&payload).context("decoding agent deletion job payload")
+            })
+            .transpose()
+    }
+
+    pub fn begin(
+        &self,
+        agent_id: &str,
+        expected_identity_revision: u64,
+        requested_by: &str,
+        cascade_private_children: bool,
+    ) -> Result<(AgentIdentityRecord, AgentDeletionJob, bool)> {
+        self.db.transaction(|tx| {
+            let payload = tx
+                .query_row(
+                    "SELECT payload_json FROM agent_identities WHERE agent_id = ?1",
+                    [agent_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .ok_or_else(|| anyhow!("agent {agent_id} not found"))?;
+            let mut identity = decode_agent_identity_payload(&payload)?;
+
+            if identity.status != AgentRegistryStatus::Active {
+                let job = tx
+                    .query_row(
+                        "SELECT payload_json FROM agent_deletion_jobs WHERE agent_id = ?1",
+                        [agent_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?
+                    .map(|payload| {
+                        serde_json::from_str(&payload)
+                            .context("decoding existing agent deletion job payload")
+                    })
+                    .transpose()?
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "agent {agent_id} has terminal identity status without a deletion job"
+                        )
+                    })?;
+                return Ok((identity, job, false));
+            }
+            if identity.revision != expected_identity_revision {
+                return Err(anyhow!(
+                    "agent {agent_id} identity revision mismatch: expected {expected_identity_revision}, current {}",
+                    identity.revision
+                ));
+            }
+
+            let now = std::cmp::max(
+                Utc::now(),
+                identity.updated_at + chrono::Duration::nanoseconds(1),
+            );
+            let job = AgentDeletionJob {
+                deletion_id: crate::ids::agent_deletion_id(),
+                agent_id: agent_id.to_string(),
+                status: AgentDeletionStatus::Pending,
+                phase: AgentDeletionPhase::Fence,
+                requested_by: requested_by.to_string(),
+                expected_identity_revision,
+                cascade_private_children,
+                attempts: 0,
+                last_error: None,
+                created_at: now,
+                updated_at: now,
+                completed_at: None,
+            };
+            identity.status = AgentRegistryStatus::Deleting;
+            identity.revision = identity.revision.saturating_add(1);
+            identity.updated_at = now;
+            upsert_agent_identity_tx(tx, &identity)?;
+            insert_agent_deletion_job_tx(tx, &job)?;
+            Ok((identity, job, true))
+        })
+    }
+}
+
 impl WorkItemDelegationRepository<'_> {
     pub fn import_legacy(&self, records: Vec<WorkItemDelegationRecord>) -> Result<()> {
         if self

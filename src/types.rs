@@ -410,7 +410,9 @@ pub enum AgentDurability {
 #[serde(rename_all = "snake_case")]
 pub enum AgentRegistryStatus {
     Active,
-    Archived,
+    Deleting,
+    #[serde(alias = "archived")]
+    Deleted,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -425,6 +427,8 @@ pub struct AgentIdentityRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub durability: Option<AgentDurability>,
     pub status: AgentRegistryStatus,
+    #[serde(default)]
+    pub revision: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_agent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -433,8 +437,12 @@ pub struct AgentIdentityRecord {
     pub delegated_from_task_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub archived_at: Option<DateTime<Utc>>,
+    #[serde(
+        default,
+        alias = "archived_at",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub deleted_at: Option<DateTime<Utc>>,
 }
 
 impl AgentIdentityRecord {
@@ -456,12 +464,13 @@ impl AgentIdentityRecord {
             profile_preset: Some(profile_preset),
             durability: None,
             status: AgentRegistryStatus::Active,
+            revision: 0,
             parent_agent_id,
             lineage_parent_agent_id: None,
             delegated_from_task_id,
             created_at: now,
             updated_at: now,
-            archived_at: None,
+            deleted_at: None,
         }
     }
 
@@ -500,6 +509,46 @@ impl AgentIdentityRecord {
             }
         })
     }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentDeletionStatus {
+    Pending,
+    Running,
+    RetryableFailed,
+    Completed,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentDeletionPhase {
+    Fence,
+    Quiesce,
+    Ingress,
+    Scheduler,
+    Workspace,
+    Index,
+    Home,
+    Finalize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct AgentDeletionJob {
+    pub deletion_id: String,
+    pub agent_id: String,
+    pub status: AgentDeletionStatus,
+    pub phase: AgentDeletionPhase,
+    pub requested_by: String,
+    pub expected_identity_revision: u64,
+    pub cascade_private_children: bool,
+    pub attempts: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -3745,7 +3794,8 @@ pub struct CommandTaskSpec {
 #[serde(rename_all = "snake_case")]
 pub enum AgentSchedulingPosture {
     Unknown,
-    Archived,
+    #[serde(alias = "archived")]
+    Stopped,
     ActiveTurn,
     HasQueuedInput,
     HasRunnableWork,

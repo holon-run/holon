@@ -3816,7 +3816,7 @@ mod tests {
         agent.status = AgentStatus::Stopped;
         assert_eq!(
             storage.agent_posture_projection(&agent).unwrap().posture,
-            AgentSchedulingPosture::Archived
+            AgentSchedulingPosture::Stopped
         );
     }
 

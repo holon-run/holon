@@ -10,7 +10,7 @@ This page defines the current contract for agent state, lifecycle, and
 runtime projection in Holon. It is verified against implementation and tests
 as of the last review date noted below.
 
-> **Last verified:** 2026-05-27 against `src/types.rs` `AgentState`,
+> **Last verified:** 2026-07-24 against `src/types.rs` `AgentState`,
 > `AgentStatus`, `AgentIdentityView`, `AgentSchedulingPosture`,
 > `AgentPostureProjection`, `ClosureDecision`, `ContinuationResolution`,
 > `RuntimePosture`, and `AgentSummary`; `src/storage/mod.rs`
@@ -24,6 +24,7 @@ as of the last review date noted below.
 - [Agent Control Plane Model](https://github.com/holon-run/holon/blob/main/docs/rfcs/agent-control-plane-model.md)
 - [Agent Profile Model](https://github.com/holon-run/holon/blob/main/docs/rfcs/agent-profile-model.md)
 - [Agent Initialization and Template](https://github.com/holon-run/holon/blob/main/docs/rfcs/agent-initialization-and-template.md)
+- [Agent Deletion Lifecycle](https://github.com/holon-run/holon/blob/main/docs/rfcs/agent-deletion-lifecycle.md)
 
 ## Authoritative records vs projections
 
@@ -33,6 +34,7 @@ single opaque status field. The key distinction is:
 | Layer | What | Authority |
 |-------|------|-----------|
 | **Identity** | `agent_id`, kind, visibility, ownership, profile preset | Agent registry record |
+| **Identity lifecycle** | `AgentRegistryStatus` — Active, Deleting, Deleted | Agent identity repository |
 | **Lifecycle status** | `AgentStatus` — Booting, AwakeIdle, AwakeRunning, AwaitingTask, Asleep, Stopped | Scheduler executor (single writer) |
 | **Scheduling posture** | `AgentSchedulingPosture` — derived from queue, WorkItems, tasks, wait state | Scheduler `derive_posture` projection |
 | **Runtime posture** | `RuntimePosture` — Awake or Sleeping | Closure decision at turn end |
@@ -125,7 +127,7 @@ uses this precedence:
 
 | Posture | Condition |
 |---------|-----------|
-| `Archived` | Agent lifecycle is stopped (`AgentStatus::Stopped`) |
+| `Stopped` | Agent lifecycle is stopped (`AgentStatus::Stopped`) |
 | `ActiveTurn` | `AgentState.current_run_id` is set |
 | `HasQueuedInput` | Queue contains a pending queued entry for the agent |
 | `HasRunnableWork` | Current or queued WorkItem is runnable |
@@ -141,7 +143,7 @@ uses this precedence:
 - Posture is derived from queue depth, WorkItem readiness, waiting state,
   task blocking state, and external triggers.
 - Posture is snapshot-derived; it is not persisted as durable state.
-- Stopped lifecycle wins the exposed projection (`Archived`) before transient
+- Stopped lifecycle wins the exposed projection (`Stopped`) before transient
   run, queue, work, or wait facts.
 - Queue and runnable work outrank passive sleep posture. An `Asleep` agent with
   queued input or runnable WorkItems is projected as `HasQueuedInput` or
@@ -212,7 +214,7 @@ projection facts and current turn facts to choose a `ClosureOutcome`,
 
 ## Lifecycle control
 
-Agent lifecycle control is `Start` / `Stop`:
+Agent execution lifecycle control is `Start` / `Stop`:
 
 - `Start` hands the agent to the scheduler. It does **not** directly start a
   model turn; the scheduler decides whether the agent should be idle or

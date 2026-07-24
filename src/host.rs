@@ -44,14 +44,14 @@ use crate::{
     system::{ExecutionScopeKind, HostLocalBoundary, WorkspaceAccessMode},
     tool::{apply_patch::ApplyPatchSurface, ToolRegistry},
     types::{
-        AdmissionContext, AgentIdentityRecord, AgentIdentityView, AgentKind, AgentLifecycleHint,
-        AgentListEntry, AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentState,
-        AgentStatus, AgentSummary, AgentVisibility, AuthorityClass, ChildAgentSummary,
-        ClosureOutcome, ExternalTriggerRecord, MessageBody, MessageDeliverySurface,
-        MessageEnvelope, MessageKind, MessageOrigin, OperatorNotificationRecord, Priority,
-        RuntimeFailureSummary, SpawnAgentModelResolution, SpawnAgentModelResolutionStatus,
-        TaskKind, TaskRecord, TaskStatus, TimerRecord, TranscriptEntry, TranscriptEntryKind,
-        WorkspaceEntry, WorkspaceOccupancyRecord,
+        AdmissionContext, AgentDeletionJob, AgentIdentityRecord, AgentIdentityView, AgentKind,
+        AgentLifecycleHint, AgentListEntry, AgentOwnership, AgentProfilePreset,
+        AgentRegistryStatus, AgentState, AgentStatus, AgentSummary, AgentVisibility,
+        AuthorityClass, ChildAgentSummary, ClosureOutcome, ExternalTriggerRecord, MessageBody,
+        MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin,
+        OperatorNotificationRecord, Priority, RuntimeFailureSummary, SpawnAgentModelResolution,
+        SpawnAgentModelResolutionStatus, TaskKind, TaskRecord, TaskStatus, TimerRecord,
+        TranscriptEntry, TranscriptEntryKind, WorkspaceEntry, WorkspaceOccupancyRecord,
     },
 };
 
@@ -103,7 +103,9 @@ const HOST_SHUTDOWN_GRACE: Duration = Duration::from_millis(50);
 #[derive(Debug)]
 pub enum PublicAgentError {
     NotFound { agent_id: String },
-    Archived { agent_id: String },
+    Deleting { agent_id: String },
+    Deleted { agent_id: String },
+    DeleteForbidden { agent_id: String, reason: String },
     Private { agent_id: String },
     Stopped { agent_id: String },
     Runtime(anyhow::Error),
@@ -112,8 +114,15 @@ pub enum PublicAgentError {
 impl std::fmt::Display for PublicAgentError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NotFound { agent_id } => write!(f, "agent {} not found", agent_id),
-            Self::Archived { agent_id } => write!(f, "agent {} is archived", agent_id),
+            Self::NotFound { agent_id } => write!(
+                f,
+                "agent {agent_id} not found; create it first with 'holon agent create {agent_id}'"
+            ),
+            Self::Deleting { agent_id } => write!(f, "agent {} is being deleted", agent_id),
+            Self::Deleted { agent_id } => write!(f, "agent {} was deleted", agent_id),
+            Self::DeleteForbidden { agent_id, reason } => {
+                write!(f, "agent {} cannot be deleted: {}", agent_id, reason)
+            }
             Self::Private { agent_id } => write!(f, "agent {} is private", agent_id),
             Self::Stopped { agent_id } => {
                 write!(f, "agent {} is stopped; start first", agent_id)
@@ -610,13 +619,11 @@ impl RuntimeHost {
     }
 
     pub async fn default_runtime(&self) -> Result<RuntimeHandle> {
-        self.ensure_default_agent_identity()?;
-        self.ensure_default_agent_home_initialized().await?;
         self.get_or_create_agent(&self.config().default_agent_id)
             .await
     }
 
-    fn public_agent_identity(
+    fn active_agent_identity(
         &self,
         agent_id: &str,
     ) -> std::result::Result<AgentIdentityRecord, PublicAgentError> {
@@ -626,11 +633,22 @@ impl RuntimeHost {
             .ok_or_else(|| PublicAgentError::NotFound {
                 agent_id: agent_id.to_string(),
             })?;
-        if identity.status != AgentRegistryStatus::Active {
-            return Err(PublicAgentError::Archived {
+        match identity.status {
+            AgentRegistryStatus::Active => Ok(identity),
+            AgentRegistryStatus::Deleting => Err(PublicAgentError::Deleting {
                 agent_id: agent_id.to_string(),
-            });
+            }),
+            AgentRegistryStatus::Deleted => Err(PublicAgentError::Deleted {
+                agent_id: agent_id.to_string(),
+            }),
         }
+    }
+
+    fn public_agent_identity(
+        &self,
+        agent_id: &str,
+    ) -> std::result::Result<AgentIdentityRecord, PublicAgentError> {
+        let identity = self.active_agent_identity(agent_id)?;
         if identity.visibility != AgentVisibility::Public {
             return Err(PublicAgentError::Private {
                 agent_id: agent_id.to_string(),
@@ -647,6 +665,78 @@ impl RuntimeHost {
         self.get_or_create_agent(agent_id)
             .await
             .map_err(PublicAgentError::Runtime)
+    }
+
+    pub async fn begin_public_agent_deletion(
+        &self,
+        agent_id: &str,
+        cascade_private_children: bool,
+        requested_by: &str,
+    ) -> std::result::Result<(AgentIdentityRecord, AgentDeletionJob, bool), PublicAgentError> {
+        self.validate_agent_id(agent_id)
+            .map_err(PublicAgentError::Runtime)?;
+        let identity = self
+            .agent_identity_record(agent_id)
+            .map_err(PublicAgentError::Runtime)?
+            .ok_or_else(|| PublicAgentError::NotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        if agent_id == self.config().default_agent_id {
+            return Err(PublicAgentError::DeleteForbidden {
+                agent_id: agent_id.to_string(),
+                reason: "the configured default agent cannot be deleted".into(),
+            });
+        }
+        if identity.visibility != AgentVisibility::Public
+            || identity.ownership() != AgentOwnership::SelfOwned
+        {
+            return Err(PublicAgentError::DeleteForbidden {
+                agent_id: agent_id.to_string(),
+                reason: "only public self-owned agents have an operator delete surface".into(),
+            });
+        }
+        let (updated_identity, job, created) = self
+            .runtime_db()
+            .agent_deletions()
+            .begin(
+                agent_id,
+                identity.revision,
+                requested_by,
+                cascade_private_children,
+            )
+            .map_err(PublicAgentError::Runtime)?;
+        self.append_agent_identity(&updated_identity)
+            .map_err(PublicAgentError::Runtime)?;
+        self.unload_runtime(agent_id).await;
+        Ok((updated_identity, job, created))
+    }
+
+    pub fn public_agent_deletion_status(
+        &self,
+        agent_id: &str,
+    ) -> std::result::Result<(AgentIdentityRecord, Option<AgentDeletionJob>), PublicAgentError>
+    {
+        self.validate_agent_id(agent_id)
+            .map_err(PublicAgentError::Runtime)?;
+        let identity = self
+            .agent_identity_record(agent_id)
+            .map_err(PublicAgentError::Runtime)?
+            .ok_or_else(|| PublicAgentError::NotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        if identity.visibility != AgentVisibility::Public
+            || identity.ownership() != AgentOwnership::SelfOwned
+        {
+            return Err(PublicAgentError::Private {
+                agent_id: agent_id.to_string(),
+            });
+        }
+        let job = self
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent(agent_id)
+            .map_err(PublicAgentError::Runtime)?;
+        Ok((identity, job))
     }
 
     pub(crate) async fn public_agent_state_projection(
@@ -791,17 +881,7 @@ impl RuntimeHost {
         &self,
         agent_id: &str,
     ) -> std::result::Result<RuntimeHandle, PublicAgentError> {
-        let identity = self
-            .agent_identity_record(agent_id)
-            .map_err(PublicAgentError::Runtime)?
-            .ok_or_else(|| PublicAgentError::NotFound {
-                agent_id: agent_id.to_string(),
-            })?;
-        if identity.status != AgentRegistryStatus::Active {
-            return Err(PublicAgentError::Archived {
-                agent_id: agent_id.to_string(),
-            });
-        }
+        self.active_agent_identity(agent_id)?;
         // Allow both Public and Private agents through the local status API.
         self.get_or_create_agent(agent_id)
             .await
@@ -918,8 +998,10 @@ impl RuntimeHost {
         }
         let existing = self.agent_identity_record(agent_id)?;
         if let Some(existing) = existing {
-            if existing.status == AgentRegistryStatus::Archived {
-                return Err(anyhow!("agent {} is archived", agent_id));
+            if existing.status != AgentRegistryStatus::Active {
+                return Err(anyhow!(self
+                    .active_agent_identity(agent_id)
+                    .expect_err("non-active identity must be fenced")));
             }
             if existing.kind != AgentKind::Named
                 || existing.visibility != AgentVisibility::Public
@@ -983,6 +1065,14 @@ impl RuntimeHost {
     ) -> Pin<Box<dyn Future<Output = Result<RuntimeHandle>> + Send + 'a>> {
         Box::pin(async move {
             self.validate_agent_id(agent_id)?;
+            if agent_id == self.config().default_agent_id {
+                self.ensure_default_agent_identity()?;
+            }
+            self.active_agent_identity(agent_id)
+                .map_err(anyhow::Error::new)?;
+            if agent_id == self.config().default_agent_id {
+                self.ensure_default_agent_home_initialized().await?;
+            }
             {
                 let agents = self.inner.agents.read().await;
                 if let Some(entry) = agents.get(agent_id) {
@@ -1007,29 +1097,14 @@ impl RuntimeHost {
                 let _ = entry.task.await;
             }
 
-            if agent_id == self.config().default_agent_id {
-                self.ensure_default_agent_identity()?;
-                self.ensure_default_agent_home_initialized().await?;
-            } else {
-                match self.agent_identity_record(agent_id)? {
-                    Some(identity) if identity.status == AgentRegistryStatus::Archived => {
-                        return Err(anyhow!("agent {} is archived", agent_id));
-                    }
-                    Some(_) => {}
-                    None => {
-                        return Err(anyhow!(
-                            "agent {} not found; create it first with 'holon agent create {}'",
-                            agent_id,
-                            agent_id
-                        ));
-                    }
-                }
-            }
-
             let (runtime, runtime_task) = self.spawn_runtime(agent_id)?;
 
             let mut stale_entry = None;
             let mut agents = self.inner.agents.write().await;
+            if let Err(error) = self.active_agent_identity(agent_id) {
+                runtime_task.abort();
+                return Err(anyhow::Error::new(error));
+            }
             if let Some(entry) = agents.get(agent_id) {
                 if !entry.task.is_finished() {
                     runtime_task.abort();
@@ -1313,9 +1388,8 @@ impl RuntimeHost {
                 )
             })?
         };
-        if identity.status == AgentRegistryStatus::Archived {
-            return Err(anyhow!("agent {} is archived", agent_id));
-        }
+        self.active_agent_identity(agent_id)
+            .map_err(anyhow::Error::new)?;
         self.preview_agent_prompt_from_storage(&identity, text, authority_class)
             .await
     }
@@ -1608,9 +1682,9 @@ impl RuntimeHost {
 
     async fn archive_private_agent(&self, agent_id: &str) -> Result<()> {
         if let Some(mut identity) = self.agent_identity_record(agent_id)? {
-            if identity.status != AgentRegistryStatus::Archived {
-                identity.status = AgentRegistryStatus::Archived;
-                identity.archived_at = Some(chrono::Utc::now());
+            if identity.status != AgentRegistryStatus::Deleted {
+                identity.status = AgentRegistryStatus::Deleted;
+                identity.deleted_at = Some(chrono::Utc::now());
                 identity.updated_at = chrono::Utc::now();
                 self.append_agent_identity(&identity)?;
             }
@@ -1715,9 +1789,9 @@ impl RuntimeHost {
 
     fn archive_private_agent_identity_record(&self, agent_id: &str) -> Result<()> {
         if let Some(mut identity) = self.agent_identity_record(agent_id)? {
-            if identity.status != AgentRegistryStatus::Archived {
-                identity.status = AgentRegistryStatus::Archived;
-                identity.archived_at = Some(chrono::Utc::now());
+            if identity.status != AgentRegistryStatus::Deleted {
+                identity.status = AgentRegistryStatus::Deleted;
+                identity.deleted_at = Some(chrono::Utc::now());
                 identity.updated_at = chrono::Utc::now();
                 self.append_agent_identity(&identity)?;
             }
@@ -4061,7 +4135,7 @@ mod tests {
             .agent_identity_record("child_recover")
             .unwrap()
             .expect("child identity should remain recorded");
-        assert_eq!(child_identity.status, AgentRegistryStatus::Archived);
+        assert_eq!(child_identity.status, AgentRegistryStatus::Deleted);
 
         runtime_task.abort();
     }
@@ -4329,7 +4403,7 @@ mod tests {
             .agent_identity_record("child_orphan")
             .unwrap()
             .expect("child identity should still be recorded after archive");
-        assert_eq!(identity.status, AgentRegistryStatus::Archived);
+        assert_eq!(identity.status, AgentRegistryStatus::Deleted);
         assert!(!restarted.agent_data_dir("child_orphan").exists());
     }
 
@@ -4406,7 +4480,7 @@ mod tests {
             .agent_identity_record("child_parent_missing")
             .unwrap()
             .expect("child identity should remain recorded after archive");
-        assert_eq!(identity.status, AgentRegistryStatus::Archived);
+        assert_eq!(identity.status, AgentRegistryStatus::Deleted);
         assert!(!restarted.agent_data_dir("child_parent_missing").exists());
         assert!(!restarted.agent_data_dir("parent_missing").exists());
     }
@@ -4475,7 +4549,7 @@ mod tests {
             .agent_identity_record("child_stop")
             .unwrap()
             .expect("child identity should remain recorded after archive");
-        assert_eq!(identity.status, AgentRegistryStatus::Archived);
+        assert_eq!(identity.status, AgentRegistryStatus::Deleted);
         assert!(!restarted.agent_data_dir("child_stop").exists());
     }
 
@@ -5063,7 +5137,7 @@ mod tests {
             Some(host.config().default_agent_id.clone()),
             Some("task-1".into()),
         );
-        child.status = AgentRegistryStatus::Archived;
+        child.status = AgentRegistryStatus::Deleted;
         host.append_agent_identity(&child).unwrap();
 
         let err = host
@@ -5072,7 +5146,7 @@ mod tests {
             .err()
             .expect("archived agent should be rejected");
         match err {
-            PublicAgentError::Archived { agent_id } => {
+            PublicAgentError::Deleted { agent_id } => {
                 assert_eq!(agent_id, "child_archived_1");
             }
             other => panic!("expected Archived error, got: {other}"),

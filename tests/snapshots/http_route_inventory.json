@@ -1,6 +1,28 @@
 [
   {
     "method": "delete",
+    "path": "/api/control/agents/{agent_id}",
+    "handler": "delete_agent",
+    "operation_id": "deleteAgent",
+    "tag": "control",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "DeleteAgentRequest",
+    "request_strict": true,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "delete",
     "path": "/api/control/runtime/credentials/{profile}",
     "handler": "delete_credential",
     "operation_id": "deleteRuntimeCredential",
@@ -540,6 +562,28 @@
     "operation_id": "defaultBriefs",
     "tag": "compat",
     "parameters": [],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/api/control/agents/{agent_id}/delete-status",
+    "handler": "agent_deletion_status",
+    "operation_id": "agentDeleteStatus",
+    "tag": "control",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
     "request_schema": null,
     "request_strict": null,
     "response_content_types": [

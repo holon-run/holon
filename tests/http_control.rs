@@ -34,6 +34,8 @@ http_async_tests!(
     skill_library_reconcile_and_check_lock_file,
     control_agent_model_override_set_and_clear_updates_status,
     control_agent_model_override_validates_codex_reasoning_effort,
+    control_agent_delete_fences_runtime_and_is_idempotent,
+    control_agent_delete_rejects_default_and_reports_unknown,
     control_prompt_requires_bearer_token_when_required,
     control_prompt_rejects_oversized_body,
     remote_tcp_surfaces_require_bearer_token_when_required,

@@ -455,6 +455,52 @@ pub async fn create_agent(
     Ok(Json(agent))
 }
 
+pub async fn delete_agent(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<DeleteAgentRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let (identity, job, created) = state
+        .host
+        .begin_public_agent_deletion(
+            &agent_id,
+            request.cascade_private_children,
+            "authenticated_operator_control",
+        )
+        .await
+        .map_err(agent_access_error)?;
+    Ok(Json(AgentDeletionResponse {
+        ok: true,
+        created,
+        identity: crate::types::AgentIdentityView::from_record(
+            &identity,
+            &state.host.config().default_agent_id,
+        ),
+        job,
+    }))
+}
+
+pub async fn agent_deletion_status(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let (identity, job) = state
+        .host
+        .public_agent_deletion_status(&agent_id)
+        .map_err(agent_access_error)?;
+    Ok(Json(AgentDeletionStatusResponse {
+        identity: crate::types::AgentIdentityView::from_record(
+            &identity,
+            &state.host.config().default_agent_id,
+        ),
+        job,
+    }))
+}
+
 pub async fn control(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
