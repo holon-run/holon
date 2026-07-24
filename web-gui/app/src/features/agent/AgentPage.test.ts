@@ -11,6 +11,7 @@ import {
   timelineLayoutRevision,
   writeStoredComposerDraft,
 } from "./AgentPage";
+import { availableDisplayLevels } from "../../runtime/display-level";
 import type { TimelineTurn } from "./timeline-utils";
 
 class MemoryStorage implements Storage {
@@ -150,6 +151,11 @@ describe("timeline virtual layout reconciliation", () => {
 });
 
 describe("timeline display levels", () => {
+  it("only exposes Debug while developer diagnostics are enabled", () => {
+    expect(availableDisplayLevels(false)).toEqual(["info", "verbose"]);
+    expect(availableDisplayLevels(true)).toEqual(["info", "verbose", "debug"]);
+  });
+
   it("keeps debug on the semantic timeline instead of replacing it with raw events", () => {
     const semanticItem = timelineTurn("turn:assistant", "Semantic result").items[0];
     const debugItem = {
