@@ -1090,6 +1090,86 @@ describe("agent event catch-up", () => {
       syncStatus: "idle",
     });
   });
+
+  it("does not advance the consumed cursor from an empty newer page", async () => {
+    const localStorage = new MemoryStorage();
+    const sessionStorage = new MemoryStorage();
+    vi.stubGlobal("window", {
+      localStorage,
+      sessionStorage,
+      setTimeout,
+      clearTimeout,
+      location: { hostname: "localhost", protocol: "http:" },
+    });
+    const event = {
+      id: "event-1",
+      event_seq: 1,
+      event_log_epoch: "epoch-1",
+      contract_version: 1,
+      ts: "2026-07-24T00:00:00Z",
+      agent_id: "agent-a",
+      type: "legacy_event",
+      payload_schema: "holon.runtime_event.legacy",
+      payload_schema_version: 1,
+      provenance: {},
+      payload: {},
+    };
+    const fetchMock = vi.fn((input: string | URL | Request) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname.endsWith("/handshake")) return Promise.resolve(jsonResponse({}));
+      if (url.pathname.endsWith("/agents/list")) return Promise.resolve(jsonResponse([]));
+      if (url.pathname.endsWith("/agents/agent-a/events")) {
+        return Promise.resolve(jsonResponse({
+          events: [],
+          event_log_epoch: "epoch-1",
+          cursor_seq: 1428,
+          newest_seq: 1428,
+          oldest_seq: null,
+          has_older: false,
+          has_newer: true,
+          order: "asc",
+          limit: 100,
+        }));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    fetchMock.mockClear();
+    const now = Date.now();
+    useRuntimeStore.setState({
+      globalStreamStatus: "idle",
+      sessionsByAgentId: {
+        "agent-a": sessionState({
+          cacheStatus: "hit",
+          contentStatus: "available",
+          syncStatus: "stale",
+          detailValidatedAt: now,
+          eventsValidatedAt: now,
+          detail: {
+            agent: agentSummary({ id: "agent-a" }),
+            source: "http",
+            timeline: [],
+          },
+          eventsBySeq: { 1: event },
+          eventSeqs: [1],
+          newestSeq: 1,
+          oldestSeq: 1,
+          eventLogEpoch: "epoch-1",
+        }),
+      },
+    });
+
+    await useRuntimeStore.getState().ensureAgentSession("agent-a", "info");
+
+    expect(useRuntimeStore.getState().sessionsByAgentId["agent-a"]).toMatchObject({
+      eventSeqs: [1],
+      newestSeq: 1,
+      syncStatus: "error",
+      error: "Agent event catch-up page did not advance its consumed cursor.",
+    });
+  });
 });
 
 describe("brief hydration retry limits", () => {

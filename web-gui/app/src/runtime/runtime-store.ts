@@ -4428,10 +4428,7 @@ async function catchUpAgentEvents(
         return;
       }
       const pageEvents = page.events ?? [];
-      const consumedSeq = Math.max(
-        page.newest_seq ?? 0,
-        ...pageEvents.map((event) => event.event_seq ?? 0),
-      ) || undefined;
+      const consumedSeq = Math.max(...pageEvents.map((event) => event.event_seq ?? 0)) || undefined;
       set((state) =>
         mergeEventPageIntoSession(state, agentId, pageEvents, page.oldest_seq ?? undefined, page.has_older, "debug", {
           newestSeq: consumedSeq,
