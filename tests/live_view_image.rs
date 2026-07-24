@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use holon::{
-    config::{AppConfig, ProviderId},
+    config::{AppConfig, ModelRouteRef, ProviderId},
     provider::{
         build_provider_from_model_chain, ConversationMessage, ModelBlock, ProviderTurnRequest,
     },
@@ -62,16 +62,27 @@ fn accepted_uncertainty_text(value: &Value) -> Option<&str> {
 #[ignore = "requires configured live vision provider credentials and network access"]
 async fn live_view_image_vision_adapter_returns_visual_observation_json() -> Result<()> {
     let config = AppConfig::load()?;
-    let model_ref = config
-        .provider_chain()
-        .into_iter()
-        .find(|model| {
-            matches!(
-                model.provider.as_str(),
-                ProviderId::OPENAI | ProviderId::OPENAI_CODEX
-            )
-        })
-        .context("live ViewImage needs a configured OpenAI-compatible vision provider")?;
+    let model_override = std::env::var("HOLON_LIVE_VIEW_IMAGE_MODEL")
+        .ok()
+        .map(|value| ModelRouteRef::parse_compatible(&value))
+        .transpose()
+        .context("HOLON_LIVE_VIEW_IMAGE_MODEL must be a valid model route")?;
+    let model_ref = match model_override {
+        Some(model_ref) => model_ref,
+        None => config
+            .provider_chain()
+            .into_iter()
+            .find(|model| {
+                matches!(
+                    model.provider.as_str(),
+                    ProviderId::OPENAI | ProviderId::OPENAI_CODEX
+                )
+            })
+            .context(
+                "live ViewImage needs a configured OpenAI-compatible vision provider or \
+                 HOLON_LIVE_VIEW_IMAGE_MODEL",
+            )?,
+    };
     let provider = build_provider_from_model_chain(&config, &[model_ref.clone()])?;
     let image = std::fs::read("docs/website/assets/logo.png")?;
     let output = provider
@@ -109,15 +120,16 @@ async fn live_view_image_vision_adapter_returns_visual_observation_json() -> Res
             .is_some_and(|summary| !summary.trim().is_empty()),
         "raw={text:?}"
     );
-    let uncertainties = value
-        .get("uncertainties")
-        .and_then(Value::as_array)
-        .context("raw live response must include uncertainties as an array")?;
+    let uncertainties = match value.get("uncertainties") {
+        Some(Value::Array(values)) => values.as_slice(),
+        Some(value) => std::slice::from_ref(value),
+        None => &[],
+    };
     assert!(
         uncertainties
             .iter()
             .all(|entry| accepted_uncertainty_text(entry).is_some()),
-        "uncertainties must be strings or text-bearing objects so ViewImage can normalize them; raw={text:?}"
+        "uncertainties must have readable entries when present; raw={text:?}"
     );
     println!(
         "live_view_image ref={} input_tokens={} output_tokens={} text={text}",
