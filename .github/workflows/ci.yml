@@ -56,6 +56,8 @@ jobs:
       pull-requests: read
     outputs:
       docker: ${{ steps.filter.outputs.docker }}
+      rust: ${{ steps.filter.outputs.rust }}
+      web: ${{ steps.filter.outputs.web }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -74,6 +76,20 @@ jobs:
               - 'scripts/docker-e2e.py'
               - 'scripts/docker-live-acceptance.py'
               - 'scripts/docker_e2e/**'
+            rust:
+              - '.github/workflows/ci.yml'
+              - 'src/**'
+              - 'tests/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'build.rs'
+              - 'Makefile'
+              - 'agent_templates/**'
+              - 'builtin_templates/**'
+              - 'web-gui/**'
+            web:
+              - 'web-gui/**'
+              - '.github/workflows/ci.yml'
 
   docker:
     name: Docker
@@ -123,6 +139,8 @@ jobs:
 
   rust:
     name: Rust
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     env:
       RUSTFLAGS: -D warnings
@@ -139,6 +157,7 @@ jobs:
             web-gui/openapi-tools/package-lock.json
 
       - name: Test and build web GUI
+        if: needs.changes.outputs.web == 'true'
         run: make web-ci
 
       - name: Set up Rust
@@ -168,6 +187,8 @@ jobs:
 
   rust-concurrent:
     name: Rust Concurrent
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     env:
       RUSTFLAGS: -D warnings
@@ -186,6 +207,8 @@ jobs:
 
   coverage:
     name: Coverage
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -198,6 +221,7 @@ jobs:
           cache-dependency-path: web-gui/app/package-lock.json
 
       - name: Build web GUI
+        if: needs.changes.outputs.web == 'true'
         run: make web
 
       - name: Set up Rust
