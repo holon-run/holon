@@ -1041,6 +1041,12 @@ struct RuntimeAgent {
 impl RuntimeAgent {
     fn persist_state(&mut self, storage: &AppStorage) -> Result<()> {
         let started = std::time::Instant::now();
+        // persist_state bypasses OCC (uses upsert, not expected-snapshot
+        // validation). This is intentional for control-plane operations
+        // (Start/Stop/shutdown) that need to force-write agent state.
+        // After a successful write, last_persisted_state is set to
+        // self.state so subsequent commit_queue OCC checks use the
+        // correct baseline. On failure, self.state is reverted.
         if let Err(error) = storage.write_agent(&self.state) {
             self.state = self.last_persisted_state.clone();
             crate::diagnostics::record_storage_persist_state(started.elapsed());
@@ -2893,6 +2899,7 @@ impl RuntimeHandle {
         let mut recovered = 0;
 
         for mut entry in claimed {
+            let _guard = self.inner.agent.lock().await;
             let expected_entry = entry.clone();
             let activation_id = scheduler_executor::canonical_activation_id(&entry.message_id);
             let Some(activation) = snapshot.activations.get(&activation_id) else {
