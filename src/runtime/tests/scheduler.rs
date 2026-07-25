@@ -2141,19 +2141,17 @@ fn delivery_shadow_comparison_detects_divergence_when_turn_aborted_but_settled_p
     });
     storage.write_agent(&agent).unwrap();
     let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
-    // Queue settled as Processed but the turn was Aborted
+    // Queue settled as Processed and the turn was Aborted — shadow now delegates
+    // to turn_terminal_delivery_category so both sides agree on "failed".
     let record = make_settlement_record("msg-1", QueueEntryStatus::Processed);
     let comparison = scheduler::shadow_comparison_for_delivery(&projection, &record)
         .expect("should produce comparison even with divergence");
-    assert!(!comparison.matched);
-    assert_eq!(
-        comparison.divergence_code,
-        Some("delivery_outcome_mismatch"),
-    );
+    assert!(comparison.matched);
+    assert_eq!(comparison.divergence_code, None);
     let observation = serde_json::to_value(&comparison.legacy_observation).unwrap();
     assert_eq!(observation["turn_terminal"], "aborted");
     let candidate = serde_json::to_value(&comparison.shadow_candidate).unwrap();
-    assert_eq!(candidate["delivery_disposition"], "completed");
+    assert_eq!(candidate["delivery_disposition"], "failed");
 }
 
 #[test]
@@ -2197,12 +2195,14 @@ fn delivery_shadow_comparison_matches_interrupted_settlement() {
     let record = make_settlement_record("msg-1", QueueEntryStatus::Interrupted);
     let comparison = scheduler::shadow_comparison_for_delivery(&projection, &record)
         .expect("interrupted delivery should produce comparison");
-    // No turn terminal → "none", restricted says "interrupted" → divergence
-    assert!(!comparison.matched);
+    // No turn terminal → both sides now delegate to turn_terminal_delivery_category
+    // which returns "none" for (None, Interrupted) → match.
+    assert!(comparison.matched);
+    assert_eq!(comparison.divergence_code, None);
     let observation = serde_json::to_value(&comparison.legacy_observation).unwrap();
     assert_eq!(observation["turn_terminal"], "none");
     let candidate = serde_json::to_value(&comparison.shadow_candidate).unwrap();
-    assert_eq!(candidate["delivery_disposition"], "interrupted");
+    assert_eq!(candidate["delivery_disposition"], "none");
 }
 
 #[test]
@@ -2242,13 +2242,16 @@ fn delivery_shadow_comparison_detects_divergence_when_turn_in_progress() {
     agent.current_run_id = Some("run-1".into());
     storage.write_agent(&agent).unwrap();
     let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
-    // Queue settled as Processed but turn is still in progress
+    // Queue settled as Processed but turn is still in progress. This state is
+    // structurally unreachable in production but tested here to document the
+    // residual divergence: legacy returns "none" (no terminal), shadow returns
+    // "completed" via the (none, Processed) → "completed" mapping.
     let record = make_settlement_record("msg-1", QueueEntryStatus::Processed);
     let comparison = scheduler::shadow_comparison_for_delivery(&projection, &record)
         .expect("should produce comparison even with divergence");
     assert!(!comparison.matched);
     let candidate = serde_json::to_value(&comparison.shadow_candidate).unwrap();
-    assert_eq!(candidate["delivery_disposition"], "pending");
+    assert_eq!(candidate["delivery_disposition"], "completed");
 }
 
 // --- operator interjection shadow comparison (per-boundary) ---

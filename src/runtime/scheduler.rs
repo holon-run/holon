@@ -1945,6 +1945,12 @@ fn restricted_delivery_disposition(
     {
         return "failed";
     }
+    // Delegate to the legacy classifier so the shadow candidate uses the same
+    // terminal-kind + queue-status logic. The `turn_in_progress` field is
+    // intentionally not consulted: a Processed entry with turn_in_progress is
+    // structurally unreachable in production (settlement and turn termination
+    // are coupled by the run-loop), so the last_turn_terminal is never stale
+    // when this function is reached for a settled entry.
     let category = turn_terminal_delivery_category(projection.last_turn_terminal, &record.status);
     match (category, &record.status) {
         ("none", QueueEntryStatus::Processed) => "completed",
