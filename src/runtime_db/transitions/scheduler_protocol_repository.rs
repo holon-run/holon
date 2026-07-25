@@ -537,6 +537,21 @@ pub(super) fn validate_shadow_comparison_tx(
     }))
 }
 
+pub(super) fn delete_shadow_comparisons_for_message_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    message_id: &str,
+) -> Result<()> {
+    let suffix = format!(":{message_id}");
+    tx.execute(
+        "DELETE FROM scheduler_shadow_comparisons
+         WHERE agent_id = ?1
+           AND comparison_identity LIKE '%' || ?2",
+        params![agent_id, suffix],
+    )?;
+    Ok(())
+}
+
 pub(super) fn validate_semantic_shadow_decision_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
