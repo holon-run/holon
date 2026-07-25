@@ -62,6 +62,10 @@ pub(super) enum OverlayState {
     HelpView {
         scroll: u16,
     },
+    DeleteConfirm {
+        agent_id: String,
+        cascade_private_children: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,6 +166,10 @@ pub(super) fn draw_overlay(frame: &mut Frame<'_>, app: &TuiApp) {
             scroll,
         } => draw_large_text_overlay(frame, title, dump, *scroll),
         OverlayState::HelpView { scroll } => draw_help_overlay(frame, *scroll),
+        OverlayState::DeleteConfirm {
+            agent_id,
+            cascade_private_children,
+        } => draw_delete_confirm_overlay(frame, app, agent_id, *cascade_private_children),
     }
 }
 
@@ -184,11 +192,16 @@ fn draw_agents_overlay(frame: &mut Frame<'_>, app: &TuiApp, selected: usize) {
                 } else {
                     " "
                 };
+                let deleting_tag = match agent.identity.status {
+                    crate::types::AgentRegistryStatus::Deleting => " [deleting]",
+                    _ => "",
+                };
                 let label = format!(
-                    "{} {} [{}]",
+                    "{} {} [{}]{}",
                     marker,
                     agent.identity.agent_id,
-                    render::trim(&format!("{:?}", agent.agent.status), 12)
+                    render::trim(&format!("{:?}", agent.agent.status), 12),
+                    deleting_tag
                 );
                 ListItem::new(label)
             })
@@ -864,6 +877,41 @@ fn wrapped_rows(line: &str, visible_line_width: u16) -> u16 {
 
 fn display_width(text: &str) -> u16 {
     UnicodeWidthStr::width(text).min(u16::MAX as usize) as u16
+}
+
+fn draw_delete_confirm_overlay(
+    frame: &mut Frame<'_>,
+    app: &TuiApp,
+    agent_id: &str,
+    cascade_private_children: bool,
+) {
+    let popup = centered_rect(70, 40, frame.area());
+    frame.render_widget(Clear, popup);
+
+    let cascade_note = if cascade_private_children {
+        "  (cascade private children)"
+    } else {
+        ""
+    };
+    let text = format!(
+        "Delete agent `{agent_id}`?\n\n\
+         This permanently removes the agent identity, home directory,\n\
+         workspaces, and all runtime state. This cannot be undone.\n\
+         \n\
+         Press [y] to confirm or [n]/Esc to cancel.{cascade_note}"
+    );
+    let block = Block::default()
+        .title(format!(" Confirm Delete {cascade_note}"))
+        .borders(Borders::ALL)
+        .style(Style::default().fg(Color::Red));
+    let paragraph = Paragraph::new(text)
+        .block(block)
+        .wrap(Wrap { trim: false })
+        .alignment(Alignment::Left);
+    frame.render_widget(paragraph, popup);
+
+    // Keep agent list fresh so [deleting] markers appear promptly.
+    let _ = app;
 }
 
 pub(super) fn centered_rect(width_percent: u16, height_percent: u16, area: Rect) -> Rect {

@@ -186,6 +186,7 @@ fn overlay_hint(app: &TuiApp, slash_visible: bool) -> Option<&'static str> {
         OverlayState::TemplateCatalog { .. } => KeyContext::TemplatesOverlay,
         OverlayState::ModelPicker { .. } => KeyContext::ModelPicker,
         OverlayState::ModelEffortPicker { .. } => KeyContext::ModelEffortPicker,
+        OverlayState::DeleteConfirm { .. } => KeyContext::ScrollOverlay,
         OverlayState::DebugPromptInput { .. } | OverlayState::TemplateUrlInput { .. } => {
             KeyContext::DebugPromptInput
         }

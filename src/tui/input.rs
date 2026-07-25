@@ -84,6 +84,10 @@ enum AgentSlashAction {
         action: crate::types::ControlAction,
         agent_id: Option<String>,
     },
+    Delete {
+        agent_id: Option<String>,
+        cascade_private_children: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -229,7 +233,7 @@ const SLASH_COMMAND_SPECS: [SlashCommandSpec; 22] = [
     SlashCommandSpec {
         name: "/agent",
         description: "switch or control an agent",
-        usage: "/agent switch <agent-id>|create <name>|start [agent-id]|stop [agent-id]",
+        usage: "/agent switch <agent-id>|create <name>|start [agent-id]|stop [agent-id]|delete [agent-id]",
         arg_hint: SlashArgHint::Agent,
         category: SlashCommandCategory::Agent,
         arg_rule: SlashArgRule::Agent,
@@ -378,7 +382,7 @@ fn slash_command_argument_error(spec: SlashCommandSpec, args: usize) -> anyhow::
 fn parse_agent_slash_action(args: &[String]) -> Result<AgentSlashAction> {
     let Some(first) = args.first() else {
         return Err(anyhow!(
-            "/agent requires a subcommand; usage: /agent switch <agent-id>|create <name>|start [agent-id]|stop [agent-id]"
+            "/agent requires a subcommand; usage: /agent switch <agent-id>|create <name>|start [agent-id]|stop [agent-id]|delete [agent-id]"
         ));
     };
     match first.as_str() {
@@ -396,6 +400,25 @@ fn parse_agent_slash_action(args: &[String]) -> Result<AgentSlashAction> {
             Ok(AgentSlashAction::Control {
                 action,
                 agent_id: args.get(1).cloned(),
+            })
+        }
+        "delete" => {
+            let mut agent_id: Option<String> = None;
+            let mut cascade_private_children = false;
+            for arg in &args[1..] {
+                if arg == "--cascade-private-children" {
+                    cascade_private_children = true;
+                } else if agent_id.is_none() {
+                    agent_id = Some(arg.clone());
+                } else {
+                    return Err(anyhow!(
+                        "/agent delete accepts at most one agent id and optionally --cascade-private-children; usage: /agent delete [agent-id] [--cascade-private-children]"
+                    ));
+                }
+            }
+            Ok(AgentSlashAction::Delete {
+                agent_id,
+                cascade_private_children,
             })
         }
         "switch" => {
@@ -1033,6 +1056,18 @@ impl TuiApp {
                         self.schedule_agent_list_refresh();
                     }
                 }
+                AgentSlashAction::Delete {
+                    agent_id,
+                    cascade_private_children,
+                } => {
+                    let agent_id = agent_id
+                        .or_else(|| self.selected_agent_id().map(ToString::to_string))
+                        .ok_or_else(|| anyhow!("no agent selected"))?;
+                    self.overlay = OverlayState::DeleteConfirm {
+                        agent_id,
+                        cascade_private_children,
+                    };
+                }
             },
             SlashCommand::Skills => {
                 self.show_selected_agent_skills().await?;
@@ -1585,6 +1620,37 @@ impl TuiApp {
                         self.overlay = OverlayState::HelpView { scroll };
                     }
                     _ => self.overlay = OverlayState::HelpView { scroll },
+                }
+                Ok(())
+            }
+            OverlayState::DeleteConfirm {
+                agent_id,
+                cascade_private_children,
+            } => {
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {}
+                    KeyCode::Char('y') | KeyCode::Char('Y') => {
+                        let response = self
+                            .client
+                            .delete_agent(&agent_id, cascade_private_children)
+                            .await?;
+                        self.overlay = OverlayState::None;
+                        self.status_line = match response.identity.status {
+                            crate::types::AgentRegistryStatus::Deleted => {
+                                format!("Deleted agent {agent_id}")
+                            }
+                            _ => {
+                                format!("Deletion initiated for agent {agent_id}")
+                            }
+                        };
+                        self.schedule_agent_list_refresh();
+                    }
+                    _ => {
+                        self.overlay = OverlayState::DeleteConfirm {
+                            agent_id,
+                            cascade_private_children,
+                        };
+                    }
                 }
                 Ok(())
             }
@@ -2957,6 +3023,47 @@ mod tests {
     }
 
     #[test]
+    fn agent_slash_delete_action_parses() {
+        assert_eq!(
+            parse_agent_slash_action(&["delete".into()]).unwrap(),
+            AgentSlashAction::Delete {
+                agent_id: None,
+                cascade_private_children: false,
+            }
+        );
+        assert_eq!(
+            parse_agent_slash_action(&["delete".into(), "agent-1".into()]).unwrap(),
+            AgentSlashAction::Delete {
+                agent_id: Some("agent-1".into()),
+                cascade_private_children: false,
+            }
+        );
+        assert_eq!(
+            parse_agent_slash_action(&["delete".into(), "--cascade-private-children".into()])
+                .unwrap(),
+            AgentSlashAction::Delete {
+                agent_id: None,
+                cascade_private_children: true,
+            }
+        );
+        assert_eq!(
+            parse_agent_slash_action(&[
+                "delete".into(),
+                "agent-1".into(),
+                "--cascade-private-children".into()
+            ])
+            .unwrap(),
+            AgentSlashAction::Delete {
+                agent_id: Some("agent-1".into()),
+                cascade_private_children: true,
+            }
+        );
+        let err = parse_agent_slash_action(&["delete".into(), "agent-1".into(), "agent-2".into()])
+            .unwrap_err();
+        assert!(err.to_string().contains("accepts at most one agent id"));
+    }
+
+    #[test]
     fn unknown_slash_inputs_submit_as_chat() {
         assert_eq!(
             parse_composer_submission("/unknown").unwrap(),
@@ -3046,7 +3153,7 @@ mod tests {
             "/display <info|verbose|debug|3|4|5|reset>",
             "/abort",
             "/vim",
-            "/agent switch <agent-id>|create <name>|start [agent-id]|stop [agent-id]",
+            "/agent switch <agent-id>|create <name>|start [agent-id]|stop [agent-id]|delete [agent-id]",
             "/skills",
             "/skill-catalog",
             "/skill-add <source> [--remote] [--skill <name>] [--copy]",
