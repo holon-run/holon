@@ -2733,6 +2733,28 @@ mod tests {
     }
 
     #[test]
+    fn delivery_processed_turn_in_progress_invariant() {
+        // Documents the invariant reviewed in PR #2425: a Processed entry
+        // with turn_in_progress == true is structurally unreachable in
+        // production (settlement and turn termination are coupled by the
+        // run-loop). The function intentionally does not consult
+        // turn_in_progress; it delegates to last_turn_terminal instead.
+        let mut proj = test_projection();
+        proj.turn_in_progress = true;
+        proj.last_turn_terminal = Some(TurnTerminalKind::Completed);
+        let record = test_queue_record(QueueEntryStatus::Processed);
+        assert_eq!(restricted_delivery_disposition(&proj, &record), "completed");
+    }
+
+    #[test]
+    fn delivery_interjected_completed() {
+        let mut proj = test_projection();
+        proj.last_turn_terminal = Some(TurnTerminalKind::Completed);
+        let record = test_queue_record(QueueEntryStatus::Interjected);
+        assert_eq!(restricted_delivery_disposition(&proj, &record), "completed");
+    }
+
+    #[test]
     fn delivery_none_terminal_processed() {
         let proj = test_projection();
         let record = test_queue_record(QueueEntryStatus::Processed);
