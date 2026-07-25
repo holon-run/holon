@@ -1940,19 +1940,15 @@ fn restricted_delivery_disposition(
     projection: &SchedulerProjection,
     record: &QueueEntryRecord,
 ) -> &'static str {
-    match record.status {
-        QueueEntryStatus::Aborted | QueueEntryStatus::Dropped => "failed",
-        QueueEntryStatus::Interrupted | QueueEntryStatus::Interjected => "interrupted",
-        QueueEntryStatus::Processed => {
-            if matches!(projection.status, AgentStatus::Stopped) {
-                "failed"
-            } else if projection.turn_in_progress {
-                "pending"
-            } else {
-                "completed"
-            }
-        }
-        QueueEntryStatus::Queued | QueueEntryStatus::Dequeued => "none",
+    if matches!(projection.status, AgentStatus::Stopped)
+        && matches!(record.status, QueueEntryStatus::Processed)
+    {
+        return "failed";
+    }
+    let category = turn_terminal_delivery_category(projection.last_turn_terminal, &record.status);
+    match (category, &record.status) {
+        ("none", QueueEntryStatus::Processed) => "completed",
+        _ => category,
     }
 }
 
@@ -2123,13 +2119,14 @@ fn restricted_message_model_reentry(
         ) | (
             Some(crate::types::WaitingReason::AwaitingTimer),
             crate::types::ContinuationTriggerKind::TimerFire
-        )
+        ) | (_, crate::types::ContinuationTriggerKind::InternalFollowup)
     );
     if expected {
         return match trigger_kind {
             crate::types::ContinuationTriggerKind::TaskResult => task_terminal && same_work_item,
             crate::types::ContinuationTriggerKind::ExternalEvent
             | crate::types::ContinuationTriggerKind::SystemTick => contentful,
+            crate::types::ContinuationTriggerKind::InternalFollowup => contentful,
             _ => true,
         };
     }
@@ -2661,5 +2658,155 @@ mod tests {
             AdmissionContext::RuntimeOwned,
         );
         assert!(!is_operator_interjection_message(&msg));
+    }
+
+    // --- restricted_delivery_disposition ---
+
+    fn test_projection() -> SchedulerProjection {
+        SchedulerProjection {
+            now: Utc::now(),
+            status: AgentStatus::AwakeIdle,
+            queue_len: 0,
+            active_run_id: None,
+            active_tasks: Vec::new(),
+            has_blocking_active_tasks: false,
+            current_work_item: None,
+            current_work_item_scheduling_state: None,
+            queued_runnable_work_items: Vec::new(),
+            queued_work_items: 0,
+            pending_wake_hint: false,
+            active_waiting_intents: 0,
+            active_work_item_waiting_intents: 0,
+            active_agent_waiting_intents: 0,
+            active_timers: 0,
+            waiting_work_item: None,
+            waiting_work_item_scheduling_state: None,
+            last_turn_terminal: None,
+            turn_in_progress: false,
+            runtime_error: false,
+            semantic_waits: Vec::new(),
+            activation_waits: Vec::new(),
+            canonical_work_statuses: None,
+            semantic_work_items: Vec::new(),
+        }
+    }
+
+    fn test_queue_record(status: QueueEntryStatus) -> QueueEntryRecord {
+        QueueEntryRecord {
+            message_id: "msg-test".into(),
+            agent_id: "agent-test".into(),
+            priority: Priority::Normal,
+            status,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn delivery_completed_processed() {
+        let mut proj = test_projection();
+        proj.last_turn_terminal = Some(TurnTerminalKind::Completed);
+        let record = test_queue_record(QueueEntryStatus::Processed);
+        assert_eq!(restricted_delivery_disposition(&proj, &record), "completed");
+    }
+
+    #[test]
+    fn delivery_deferred_to_fallback_processed() {
+        let mut proj = test_projection();
+        proj.last_turn_terminal = Some(TurnTerminalKind::DeferredToFallback);
+        let record = test_queue_record(QueueEntryStatus::Processed);
+        assert_eq!(restricted_delivery_disposition(&proj, &record), "pending");
+    }
+
+    #[test]
+    fn delivery_provider_failed_processed() {
+        let mut proj = test_projection();
+        proj.last_turn_terminal = Some(TurnTerminalKind::ProviderFailedNeedsRecovery);
+        let record = test_queue_record(QueueEntryStatus::Processed);
+        assert_eq!(restricted_delivery_disposition(&proj, &record), "failed");
+    }
+
+    #[test]
+    fn delivery_none_terminal_processed() {
+        let proj = test_projection();
+        let record = test_queue_record(QueueEntryStatus::Processed);
+        assert_eq!(restricted_delivery_disposition(&proj, &record), "completed");
+    }
+
+    #[test]
+    fn delivery_stopped_processed() {
+        let mut proj = test_projection();
+        proj.status = AgentStatus::Stopped;
+        proj.last_turn_terminal = Some(TurnTerminalKind::Completed);
+        let record = test_queue_record(QueueEntryStatus::Processed);
+        assert_eq!(restricted_delivery_disposition(&proj, &record), "failed");
+    }
+
+    #[test]
+    fn delivery_aborted_status() {
+        let mut proj = test_projection();
+        proj.last_turn_terminal = Some(TurnTerminalKind::Aborted);
+        let record = test_queue_record(QueueEntryStatus::Aborted);
+        assert_eq!(restricted_delivery_disposition(&proj, &record), "failed");
+    }
+
+    // --- restricted_message_model_reentry ---
+
+    fn internal_followup_msg(text: &str) -> MessageEnvelope {
+        MessageEnvelope::new(
+            "agent-1",
+            MessageKind::InternalFollowup,
+            MessageOrigin::System {
+                subsystem: "runtime".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Normal,
+            MessageBody::Text { text: text.into() },
+        )
+        .with_admission(
+            MessageDeliverySurface::RuntimeSystem,
+            AdmissionContext::RuntimeOwned,
+        )
+    }
+
+    #[test]
+    fn internal_followup_with_external_wait_contentful_admits_model_turn() {
+        let mut proj = test_projection();
+        proj.active_agent_waiting_intents = 1;
+        let msg = internal_followup_msg("recovery continuation");
+        assert!(restricted_message_model_reentry(&proj, &msg));
+    }
+
+    #[test]
+    fn internal_followup_with_external_wait_empty_body_reduces_message_only() {
+        let mut proj = test_projection();
+        proj.active_agent_waiting_intents = 1;
+        let msg = internal_followup_msg("  ");
+        assert!(!restricted_message_model_reentry(&proj, &msg));
+    }
+
+    #[test]
+    fn internal_followup_without_wait_admits_model_turn() {
+        let proj = test_projection();
+        let msg = internal_followup_msg("continuation");
+        assert!(restricted_message_model_reentry(&proj, &msg));
+    }
+
+    #[test]
+    fn external_event_with_external_wait_empty_body_reduces_message_only() {
+        let mut proj = test_projection();
+        proj.active_agent_waiting_intents = 1;
+        let msg = MessageEnvelope::new(
+            "agent-1",
+            MessageKind::ChannelEvent,
+            MessageOrigin::Channel {
+                channel_id: "ch".into(),
+                sender_id: None,
+            },
+            AuthorityClass::ExternalEvidence,
+            Priority::Normal,
+            MessageBody::Text { text: "  ".into() },
+        );
+        assert!(!restricted_message_model_reentry(&proj, &msg));
     }
 }
