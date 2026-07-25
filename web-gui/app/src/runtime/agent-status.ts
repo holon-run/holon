@@ -4,7 +4,7 @@ import type { AgentSummary } from "./types";
 export interface AgentDisplayStatus {
   label: string;
   title: string;
-  tone: "stopped" | "running" | "needs-input" | "waiting" | "ready" | "muted";
+  tone: "stopped" | "running" | "needs-input" | "waiting" | "ready" | "muted" | "deleting";
 }
 
 export function deriveAgentDisplayStatus(agent: AgentSummary, t: TFunction): AgentDisplayStatus {
@@ -22,6 +22,10 @@ export function deriveAgentDisplayStatus(agent: AgentSummary, t: TFunction): Age
     agent.waitingCount > 0 ? t("statusDetail.waitingConditions", { count: agent.waitingCount }) : undefined,
   ].filter(Boolean);
   const title = details.join(" · ") || t("statusDetail.noDetails");
+
+  if (lifecycle === "deleting") {
+    return { label: t("badge.deleting"), title, tone: "deleting" };
+  }
 
   if (isStoppedOrArchived(lifecycle) || isStoppedOrArchived(posture)) {
     return { label: t("badge.stopped"), title, tone: "stopped" };

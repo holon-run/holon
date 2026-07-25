@@ -162,6 +162,7 @@ interface AgentStateBadgeProps extends Omit<StatusBadgeProps, "kind"> {
 function toneToBadge(tone: string) {
   if (tone === "live" || tone === "streaming" || tone === "success" || tone === "ready") return "success";
   if (tone === "connecting" || tone === "syncing" || tone === "running" || tone === "active") return "accent";
+  if (tone === "deleting") return "danger";
   if (tone === "error" || tone === "disconnected" || tone === "stale" || tone === "stopped") return "danger";
   if (tone === "preview" || tone === "waiting" || tone === "needs-input") return "warning";
   if (tone === "muted") return "muted";
@@ -233,6 +234,7 @@ function statusLabel(kind: StatusKind, value: string, t: TFunction): string {
   if (value === "stale") return t("badge.stale");
   if (value === "stopped") return t("badge.stopped");
   if (value === "disconnected") return t("badge.disconnected");
+  if (value === "deleting") return t("badge.deleting");
   if (value === "awake-idle" || value === "has-queued-input" || value === "has-runnable-work") return t("badge.ready");
   if (value === "waiting-for-operator") return t("badge.needsInput");
   if (value === "waiting-for-task" || value === "waiting-for-external") return t("badge.waiting");
@@ -259,6 +261,7 @@ function statusTone(kind: StatusKind, value: string): string {
   if (value === "error" || value === "stale" || value === "stopped" || value === "disconnected" || value === "failed" || value === "interrupted") return "error";
   if (value === "blocked") return "error";
   if (value === "yielded" || value === "cancelled" || value === "archived") return "muted";
+  if (value === "deleting") return "deleting";
   if (value === "runnable" || value === "has-queued-input" || value === "has-runnable-work" || value === "awake-idle") return "ready";
   return "muted";
 }

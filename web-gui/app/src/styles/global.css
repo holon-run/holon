@@ -5240,6 +5240,126 @@ code {
   line-height: 1.4;
 }
 
+.lifecycle-controls {
+  margin-top: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.lifecycle-buttons {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.lifecycle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.lifecycle-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.lifecycle-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.lifecycle-btn.lifecycle-delete {
+  color: var(--danger, #e53e3e);
+  border-color: color-mix(in srgb, var(--danger, #e53e3e) 40%, var(--line));
+}
+
+.lifecycle-btn.lifecycle-delete:hover:not(:disabled) {
+  border-color: var(--danger, #e53e3e);
+  background: color-mix(in srgb, var(--danger, #e53e3e) 8%, var(--surface));
+}
+
+.delete-confirm {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface) 92%, var(--page));
+}
+
+.delete-confirm p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.delete-confirm input[type="text"] {
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 12px;
+  background: var(--page);
+  color: var(--text);
+}
+
+.delete-cascade {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.delete-confirm-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.delete-confirm-actions button {
+  padding: 4px 12px;
+ border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.delete-confirm-actions button.danger {
+  color: var(--danger, #e53e3e);
+  border-color: var(--danger, #e53e3e);
+}
+
+.delete-confirm-actions button.danger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.deletion-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface) 92%, var(--page));
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.deletion-progress .deletion-error {
+  color: var(--danger, #e53e3e);
+  font-size: 11px;
+}
+
 .inspector-list,
 .inspector-nested-stack {
   display: grid;

@@ -190,6 +190,8 @@ export function App() {
   const sendOperatorPrompt = useRuntimeStore((state) => state.sendOperatorPrompt);
   const setAgentModel = useRuntimeStore((state) => state.setAgentModel);
   const clearAgentModel = useRuntimeStore((state) => state.clearAgentModel);
+  const controlAgent = useRuntimeStore((state) => state.controlAgent);
+  const deleteAgent = useRuntimeStore((state) => state.deleteAgent);
   const loadOlderAgentEvents = useRuntimeStore((state) => state.loadOlderAgentEvents);
   const loadAgentWorkItemDetail = useRuntimeStore((state) => state.loadAgentWorkItemDetail);
   const loadAgentTaskDetail = useRuntimeStore((state) => state.loadAgentTaskDetail);
@@ -270,6 +272,7 @@ export function App() {
       </div>
     ) : null;
   const isInitialBootstrapping = loading && bootstrap.agents.length === 0 && !bootstrap.connection.error;
+  const visibleAgents = bootstrap.agents.filter((a) => a.lifecycle.toLowerCase() !== "deleting");
 
   useLayoutEffect(() => {
     const applyBrowserRoute = () => {
@@ -511,7 +514,7 @@ export function App() {
               <span>{loading ? t("boot.body") : t("dashboard.startAgent")}</span>
             </div>
           ) : (
-            bootstrap.agents.map((agent) => {
+            visibleAgents.map((agent) => {
               const status = deriveAgentDisplayStatus(agent, t);
               const workSummary = agent.currentWork?.objective;
               const unreadCount = rosterActivityByAgentId[agent.id]?.unreadCount ?? 0;
@@ -613,7 +616,7 @@ export function App() {
 
         {route === "dashboard" ? (
           <DashboardPage
-            agents={bootstrap.agents}
+            agents={visibleAgents}
             metrics={bootstrap.metrics}
             connection={bootstrap.connection}
             loading={loading}
@@ -755,6 +758,8 @@ export function App() {
       {selectedAgent ? (
         <RightSidePanel
           agent={selectedAgent}
+          onControlAgent={async (action) => { await controlAgent(selectedAgent.id, action); }}
+          onDeleteAgent={async (cascade) => { await deleteAgent(selectedAgent.id, cascade); }}
           connection={bootstrap.connection}
           skillCatalog={agentSkillCatalog}
           availableSkillCatalog={skillCatalog}

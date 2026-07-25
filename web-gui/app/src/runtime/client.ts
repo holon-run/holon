@@ -5,6 +5,9 @@ import type {
   AddSkillInput,
   AgentDetail,
   AgentSummary,
+  AgentControlAction,
+  AgentDeletionResult,
+  AgentDeletionStatus,
   AgentTemplateCatalogDiagnostic,
   AgentTemplateCatalogEntry,
   AgentTemplateCatalogState,
@@ -331,6 +334,34 @@ interface AgentModelStateDto {
 
 interface AgentModelResponseDto {
   model?: AgentModelStateDto;
+}
+
+interface AgentDeletionIdentityDto {
+  agent_id: string;
+  status: string;
+}
+
+interface AgentDeletionJobDto {
+  deletion_id: string;
+  status: string;
+  phase: string;
+  attempts: number;
+  last_error?: string | null;
+  created_at: string;
+  updated_at: string;
+  completed_at?: string | null;
+}
+
+interface AgentDeletionResultDto {
+  created: boolean;
+  ok: boolean;
+  identity: AgentDeletionIdentityDto;
+  job: AgentDeletionJobDto;
+}
+
+interface AgentDeletionStatusDto {
+  identity: AgentDeletionIdentityDto;
+  job?: AgentDeletionJobDto | null;
 }
 
 interface RuntimeConfigResponseDto {
@@ -989,7 +1020,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
       }
-      await deleteJson<unknown>(fetchImpl, baseUrl, `/control/runtime/credentials/${encodeURIComponent(profile)}`, requestHeaders);
+      await deleteJson<unknown>(fetchImpl, baseUrl, `/control/runtime/credentials/${encodeURIComponent(profile)}`, null, requestHeaders);
     },
     async startCodexDeviceLogin(providerId = "openai-codex"): Promise<CodexDeviceLoginResponse> {
       if (!baseUrl) {
@@ -1096,6 +1127,47 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         requestHeaders,
       );
       return response.model;
+    },
+    async controlAgent(agentId: string, action: AgentControlAction): Promise<void> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      await postJson<unknown>(
+        fetchImpl,
+        baseUrl,
+        `/control/agents/${encodeURIComponent(agentId)}/control`,
+        { action },
+        requestHeaders,
+      );
+    },
+    async deleteAgent(agentId: string, cascadePrivateChildren = false): Promise<AgentDeletionResult> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      const response = await deleteJson<AgentDeletionResultDto>(
+        fetchImpl,
+        baseUrl,
+        `/control/agents/${encodeURIComponent(agentId)}`,
+        { cascade_private_children: cascadePrivateChildren },
+        requestHeaders,
+      );
+      return projectDeletionResult(response);
+    },
+    async getAgentDeletionStatus(agentId: string): Promise<AgentDeletionStatus | null> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      try {
+        const response = await getJson<AgentDeletionStatusDto>(
+          fetchImpl,
+          baseUrl,
+          `/control/agents/${encodeURIComponent(agentId)}/delete-status`,
+          { headers: requestHeaders },
+        );
+        return projectDeletionStatus(response);
+      } catch {
+        return null;
+      }
     },
     async browseWorkspaceDir(workspaceId: string, path?: string, executionRootId?: string): Promise<WorkspaceDirectoryListing> {
       if (!baseUrl) {
@@ -1707,6 +1779,7 @@ async function deleteJson<T>(
   fetchImpl: typeof fetch,
   baseUrl: string,
   path: string,
+  body?: Record<string, unknown> | null,
   headers: Record<string, string> = {},
 ): Promise<T> {
   const controller = new AbortController();
@@ -1715,8 +1788,10 @@ async function deleteJson<T>(
     method: "DELETE",
     headers: {
       Accept: "application/json",
+      ...(body ? { "Content-Type": "application/json" } : {}),
       ...headers,
     },
+    ...(body ? { body: JSON.stringify(body) } : {}),
     signal: controller.signal,
   }).finally(() => window.clearTimeout(timeout));
   if (!response.ok) {
@@ -1725,6 +1800,35 @@ async function deleteJson<T>(
 
   const text = await response.text();
   return (text ? JSON.parse(text) : undefined) as T;
+}
+
+function projectDeletionResult(response: AgentDeletionResultDto): AgentDeletionResult {
+  return {
+    created: response.created,
+    ok: response.ok,
+    identityStatus: response.identity.status,
+    job: projectDeletionJob(response.job),
+  };
+}
+
+function projectDeletionStatus(response: AgentDeletionStatusDto): AgentDeletionStatus {
+  return {
+    identityStatus: response.identity.status,
+    job: response.job ? projectDeletionJob(response.job) : null,
+  };
+}
+
+function projectDeletionJob(job: AgentDeletionJobDto): AgentDeletionResult["job"] {
+  return {
+    deletionId: job.deletion_id,
+    status: job.status as AgentDeletionResult["job"]["status"],
+    phase: job.phase as AgentDeletionResult["job"]["phase"],
+    attempts: job.attempts,
+    lastError: job.last_error,
+    createdAt: job.created_at,
+    updatedAt: job.updated_at,
+    completedAt: job.completed_at,
+  };
 }
 
 function projectRuntimeConfigState(response: RuntimeConfigResponseDto): RuntimeConfigState {

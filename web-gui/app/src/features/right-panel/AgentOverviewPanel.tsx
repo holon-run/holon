@@ -1,17 +1,18 @@
 import { useMemo, useState } from "react";
-import { Inbox } from "lucide-react";
+import { Inbox, Loader2, Trash2, Play, Square } from "lucide-react";
 import type React from "react";
 
 import { EmptyState } from "../../components/ui/EmptyState";
 import { StatusBadge } from "../../components/ui/StatusChip";
 import { compactModelRouteDisplay } from "../../lib/model-route-ref";
 import { ToolExecutionContent } from "./ToolExecutionRenderers";
-import type { AgentSummary, SkillCatalogEntry, SkillCatalogState, TaskSummary, ToolExecutionDetailState, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
+import type { AgentSummary, AgentControlAction, AgentDeletionStatus, SkillCatalogEntry, SkillCatalogState, TaskSummary, ToolExecutionDetailState, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
 import { useTranslation } from "react-i18next";
 import i18next from "i18next";
 
 interface AgentOverviewPanelProps {
   agent: AgentSummary;
+  deletionStatus?: AgentDeletionStatus | null;
   skillCatalog?: SkillCatalogState;
   availableSkillCatalog?: SkillCatalogState;
   skillCatalogLoading?: boolean;
@@ -24,6 +25,8 @@ interface AgentOverviewPanelProps {
   onOpenSkill: (skillId: string) => void;
   onOpenSkillManager: () => void;
   onBrowseFiles: (workspaceId: string, executionRootId?: string) => void;
+  onControlAgent?: (action: AgentControlAction) => Promise<void>;
+  onDeleteAgent?: (cascadePrivateChildren: boolean) => Promise<void>;
 }
 
 function AgentSkillItem({
@@ -87,6 +90,7 @@ function ManageAgentSkillItem({
 
 export function AgentOverviewPanel({
   agent,
+  deletionStatus,
   skillCatalog,
   availableSkillCatalog,
   skillCatalogLoading,
@@ -99,9 +103,15 @@ export function AgentOverviewPanel({
   onOpenSkill,
   onOpenSkillManager,
   onBrowseFiles,
+  onControlAgent,
+  onDeleteAgent,
 }: AgentOverviewPanelProps) {
   const { t } = useTranslation();
   const workspace = agent.workspaceSummary;
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
+  const [cascadeChildren, setCascadeChildren] = useState(false);
+  const [pendingAction, setPendingAction] = useState<AgentControlAction | "delete" | null>(null);
   const workItems = agent.workItems ?? (agent.currentWork ? [agent.currentWork] : []);
   const currentWorkItems = workItems.filter((item) => item.current);
   const openWorkItems = workItems.filter((item) => !item.current && item.state !== "completed");
@@ -116,6 +126,27 @@ export function AgentOverviewPanel({
     onOpenWorkItemDetail(workItem);
     onLoadWorkItemDetail(workItem.id);
   };
+  async function handleControl(action: AgentControlAction) {
+    if (!onControlAgent) return;
+    setPendingAction(action);
+    try {
+      await onControlAgent(action);
+    } finally {
+      setPendingAction(null);
+    }
+  }
+  async function handleDelete() {
+    if (!onDeleteAgent) return;
+    setPendingAction("delete");
+    try {
+      await onDeleteAgent(cascadeChildren);
+    } finally {
+      setPendingAction(null);
+      setShowDeleteConfirm(false);
+      setDeleteConfirmText("");
+      setCascadeChildren(false);
+    }
+  }
 
   return (
     <div className="inspector-stack">
@@ -139,6 +170,91 @@ export function AgentOverviewPanel({
             <dd>{compactMeta([agent.posture, agent.postureReason])}</dd>
           </div>
         </dl>
+        {onControlAgent || onDeleteAgent ? (
+          <div className="lifecycle-controls">
+            {deletionStatus?.job ? (
+              <div className="deletion-progress" role="status">
+                <Loader2 size={14} className="animate-spin" />
+                <span>{t("agent.deletingPhase", { phase: deletionStatus.job.phase })}</span>
+                {deletionStatus.job.lastError ? (
+                  <small className="deletion-error">{deletionStatus.job.lastError}</small>
+                ) : null}
+              </div>
+            ) : (
+              <>
+                <div className="lifecycle-buttons">
+                  {onControlAgent ? (
+                    <button
+                      type="button"
+                      className="lifecycle-btn lifecycle-stop"
+                      disabled={pendingAction !== null}
+                      onClick={() => void handleControl("stop")}
+                    >
+                      {pendingAction === "stop" ? <Loader2 size={14} className="animate-spin" /> : <Square size={14} />}
+                      {t("agent.stop")}
+                    </button>
+                  ) : null}
+                  {onControlAgent ? (
+                    <button
+                      type="button"
+                      className="lifecycle-btn lifecycle-start"
+                      disabled={pendingAction !== null}
+                      onClick={() => void handleControl("start")}
+                    >
+                      {pendingAction === "start" ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
+                      {t("agent.start")}
+                    </button>
+                  ) : null}
+                  {onDeleteAgent ? (
+                    <button
+                      type="button"
+                      className="lifecycle-btn lifecycle-delete"
+                      disabled={pendingAction !== null}
+                      onClick={() => setShowDeleteConfirm(true)}
+                    >
+                      <Trash2 size={14} />
+                      {t("agent.delete")}
+                    </button>
+                  ) : null}
+                </div>
+                {showDeleteConfirm ? (
+                  <div className="delete-confirm" role="dialog" aria-label={t("agent.deleteConfirmTitle")}>
+                    <p>{t("agent.deleteConfirmPrompt", { id: agent.id })}</p>
+                    <input
+                      type="text"
+                      value={deleteConfirmText}
+                      placeholder={agent.id}
+                      onChange={(e) => setDeleteConfirmText(e.target.value)}
+                      aria-label={t("agent.deleteConfirmLabel")}
+                    />
+                    <label className="delete-cascade">
+                      <input
+                        type="checkbox"
+                        checked={cascadeChildren}
+                        onChange={(e) => setCascadeChildren(e.target.checked)}
+                      />
+                      {t("agent.cascadePrivateChildren")}
+                    </label>
+                    <div className="delete-confirm-actions">
+                      <button type="button" onClick={() => { setShowDeleteConfirm(false); setDeleteConfirmText(""); setCascadeChildren(false); }}>
+                        {t("common.cancel")}
+                      </button>
+                      <button
+                        type="button"
+                        className="danger"
+                        disabled={deleteConfirmText !== agent.id || pendingAction !== null}
+                        onClick={() => void handleDelete()}
+                      >
+                        {pendingAction === "delete" ? <Loader2 size={14} className="animate-spin" /> : null}
+                        {t("agent.delete")}
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+              </>
+            )}
+          </div>
+        ) : null}
       </CollapsibleInspectorCard>
 
       {(() => {

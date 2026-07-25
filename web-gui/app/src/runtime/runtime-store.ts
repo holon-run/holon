@@ -44,6 +44,7 @@ import { canApplySessionEvent } from "./session-events";
 import type {
   AddSkillInput,
   AgentDetail,
+  AgentControlAction,
   AgentTemplateCatalogDiagnostic,
   AgentSummary,
   AgentTemplateCatalogState,
@@ -389,6 +390,8 @@ export interface RuntimeStoreState {
   sendOperatorPrompt: (agentId: string | undefined, text: string, displayLevel: DisplayLevel, attachments?: OperatorPromptAttachment[]) => Promise<void>;
   setAgentModel: (agentId: string | undefined, model: string, displayLevel: DisplayLevel, reasoningEffort?: string) => Promise<void>;
   clearAgentModel: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
+  controlAgent: (agentId: string | undefined, action: AgentControlAction) => Promise<void>;
+  deleteAgent: (agentId: string | undefined, cascadePrivateChildren?: boolean) => Promise<void>;
   startAgentEventStream: (agentId: string | undefined, displayLevel: DisplayLevel) => void;
   stopAgentEventStream: (agentId: string | undefined) => void;
   startGlobalEventStream: () => void;
@@ -3042,6 +3045,31 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       if (previousAgent) {
         set((state) => updateAgentModelInState(state, agentId, previousAgent));
       }
+      throw error;
+    }
+  },
+
+  controlAgent: async (agentId, action) => {
+    if (!agentId) return;
+    const request = captureClientRequest();
+    try {
+      await request.client.controlAgent(agentId, action);
+      if (!isCurrentClientRequest(request)) return;
+      await get().refreshBootstrap({ background: true });
+    } catch (error) {
+      if (!isCurrentClientRequest(request)) return;
+      throw error;
+    }
+  },
+  deleteAgent: async (agentId, cascadePrivateChildren = false) => {
+    if (!agentId) return;
+    const request = captureClientRequest();
+    try {
+      await request.client.deleteAgent(agentId, cascadePrivateChildren);
+      if (!isCurrentClientRequest(request)) return;
+      await get().refreshBootstrap({ background: true });
+    } catch (error) {
+      if (!isCurrentClientRequest(request)) return;
       throw error;
     }
   },

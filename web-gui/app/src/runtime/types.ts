@@ -810,6 +810,31 @@ export interface AgentDetail {
   transcriptEntriesById?: Record<string, RuntimeTranscriptEntry>;
 }
 
+export type AgentControlAction = "stop" | "start";
+
+export interface AgentDeletionJob {
+  deletionId: string;
+  status: "pending" | "running" | "retryable_failed" | "completed";
+  phase: "fence" | "quiesce" | "ingress" | "scheduler" | "workspace" | "index" | "home" | "finalize";
+  attempts: number;
+  lastError?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string | null;
+}
+
+export interface AgentDeletionResult {
+  created: boolean;
+  ok: boolean;
+  identityStatus: string;
+  job: AgentDeletionJob;
+}
+
+export interface AgentDeletionStatus {
+  identityStatus: string;
+  job: AgentDeletionJob | null;
+}
+
 export interface RuntimeBootstrap {
   attentionCount: number;
   connection: RuntimeConnection;

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { AgentSummary, RightPanelView, RuntimeConnection, SkillCatalogState, TaskDetailState, ToolExecutionDetailState, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
+import type { AgentControlAction, AgentDeletionStatus } from "../../runtime/types";
 import type { AgentSessionState, TimelineEventsState } from "../../runtime/runtime-store";
 import type { TaskSummary } from "../../runtime/types";
 import { ActivityInspectorPanel, activityInspectorTitle } from "../inspector/ActivityInspectorPanel";
@@ -13,6 +14,7 @@ import { useTranslation } from "react-i18next";
 
 interface RightSidePanelProps {
   agent: AgentSummary;
+  deletionStatus?: AgentDeletionStatus | null;
   connection: RuntimeConnection;
   skillCatalog?: SkillCatalogState;
   availableSkillCatalog?: SkillCatalogState;
@@ -40,11 +42,14 @@ interface RightSidePanelProps {
   onNavigateBack: () => void;
   onBrowseFiles: (workspaceId: string, executionRootId?: string) => void;
   onOpenPlanFile?: (workspaceId: string, filePath: string) => void;
+  onControlAgent?: (action: AgentControlAction) => Promise<void>;
+  onDeleteAgent?: (cascadePrivateChildren: boolean) => Promise<void>;
   onClose: () => void;
 }
 
 export function RightSidePanel({
   agent,
+  deletionStatus,
   connection,
   skillCatalog,
   availableSkillCatalog,
@@ -72,6 +77,8 @@ export function RightSidePanel({
   onNavigateBack,
   onBrowseFiles,
   onOpenPlanFile,
+  onControlAgent,
+  onDeleteAgent,
   onClose,
 }: RightSidePanelProps) {
   const { t } = useTranslation();
@@ -250,6 +257,7 @@ export function RightSidePanel({
         ) : (
           <AgentOverviewPanel
             agent={agent}
+            deletionStatus={deletionStatus}
             skillCatalog={skillCatalog}
             availableSkillCatalog={availableSkillCatalog}
             skillCatalogLoading={skillCatalogLoading}
@@ -262,6 +270,8 @@ export function RightSidePanel({
             onOpenSkill={onOpenSkill}
             onOpenSkillManager={openSkillManager}
             onBrowseFiles={onBrowseFiles}
+            onControlAgent={onControlAgent}
+            onDeleteAgent={onDeleteAgent}
           />
         )}
       </div>
