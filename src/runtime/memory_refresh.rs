@@ -763,86 +763,122 @@ impl RuntimeHandle {
                 &MessageLifecycleAuditEvent::from_message(&message),
             )?,
         ]);
+        let base_audit_events = audit_events.clone();
         let mut commit = {
-            let mut guard = self.inner.agent.lock().await;
-            let expected_persisted_state = guard.last_persisted_state.clone();
-            let mut committed_state = guard.state.clone();
-            let previous_status = committed_state.status.clone();
-            let previous_sleeping_until = committed_state.sleeping_until;
-            committed_state.pending = guard.queue.len().saturating_add(1);
-            committed_state.last_wake_reason = Some(format!("{:?}", message.kind));
-            committed_state.total_message_count =
-                self.inner.storage.count_messages()?.saturating_add(1);
-            if scheduler::apply_message_wake_projection(&mut committed_state) {
-                audit_events.push(AuditEvent::legacy(
-                    "scheduler_posture_decision",
-                    serde_json::json!({
-                        "boundary": "message_admission",
-                        "reason": "message_admission_wake",
-                        "previous_status": previous_status,
-                        "next_status": committed_state.status,
-                        "evidence": [
-                            format!("message_id={}", message.id),
-                            format!("message_kind={:?}", message.kind),
-                            format!("previous_sleeping_until={previous_sleeping_until:?}"),
-                        ],
-                    }),
-                ));
-            }
-            let queue_record = QueueEntryRecord {
-                message_id: message.id.clone(),
-                agent_id: message.agent_id.clone(),
-                priority: message.priority.clone(),
-                status: QueueEntryStatus::Queued,
-                created_at: message.created_at,
-                updated_at: Utc::now(),
-            };
-            let scheduler_rollout_expectations = self
-                .inner
-                .runtime_db
-                .transitions()
-                .scheduler_rollout_expectations(
-                    &[scheduler::WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO],
-                    self.scheduler_protocol_production_commands_enabled(),
-                )?;
-            let mut commit = self.inner.runtime_db.transitions().commit_queue(
-                &crate::runtime_db::transitions::QueueTransitionCommand {
+            let agent_id = message.agent_id.clone();
+            let mut attempt = 0;
+            loop {
+                if attempt >= super::ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
+                    return Err(anyhow!(
+                        "work queue tick admission OCC retry exhausted for agent {}",
+                        agent_id
+                    ));
+                }
+                let mut guard = self.inner.agent.lock().await;
+                let expected_persisted_state = guard.last_persisted_state.clone();
+                let mut committed_state = guard.state.clone();
+                let previous_status = committed_state.status.clone();
+                let previous_sleeping_until = committed_state.sleeping_until;
+                committed_state.pending = guard.queue.len().saturating_add(1);
+                committed_state.last_wake_reason = Some(format!("{:?}", message.kind));
+                committed_state.total_message_count =
+                    self.inner.storage.count_messages()?.saturating_add(1);
+                let mut audit_events = base_audit_events.clone();
+                if scheduler::apply_message_wake_projection(&mut committed_state) {
+                    audit_events.push(AuditEvent::legacy(
+                        "scheduler_posture_decision",
+                        serde_json::json!({
+                            "boundary": "message_admission",
+                            "reason": "message_admission_wake",
+                            "previous_status": previous_status,
+                            "next_status": committed_state.status,
+                            "evidence": [
+                                format!("message_id={}", message.id),
+                                format!("message_kind={:?}", message.kind),
+                                format!("previous_sleeping_until={previous_sleeping_until:?}"),
+                            ],
+                        }),
+                    ));
+                }
+                let queue_record = QueueEntryRecord {
+                    message_id: message.id.clone(),
                     agent_id: message.agent_id.clone(),
-                    operation: crate::runtime_db::transitions::QueueOperation::Admit,
-                    mutation: crate::runtime_db::transitions::QueueMutation::Upsert(queue_record),
-                    scheduler_claim_work_item: None,
-                    scheduler_protocol_bootstrap: None,
-                    scheduler_protocol_commands: Vec::new(),
-                    scheduler_authority_scenarios: vec![
-                        scheduler::WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO,
-                    ],
-                    scheduler_rollout_expectations,
-                    agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
-                        expected: Some(Box::new(expected_persisted_state)),
-                        record: Box::new(committed_state.clone()),
-                    }),
-                    message_evidence: vec![message.clone()],
-                    transcript_entries: Vec::new(),
-                    turn_record: None,
-                    audit_events,
-                    scheduler_shadow_comparison,
-                    scheduler_delivery_shadow_comparison: None,
-                    scheduler_semantic_shadow: None,
-                    notify_scheduler: true,
-                    fault: self.take_transition_fault(),
-                    brief_evidence: Vec::new(),
-                },
-            )?;
-            if !commit.applied {
-                return Err(anyhow!(
-                    "work queue tick admission made no durable progress"
-                ));
+                    priority: message.priority.clone(),
+                    status: QueueEntryStatus::Queued,
+                    created_at: message.created_at,
+                    updated_at: Utc::now(),
+                };
+                let scheduler_rollout_expectations = self
+                    .inner
+                    .runtime_db
+                    .transitions()
+                    .scheduler_rollout_expectations(
+                        &[scheduler::WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO],
+                        self.scheduler_protocol_production_commands_enabled(),
+                    )?;
+                let commit_result = self.inner.runtime_db.transitions().commit_queue(
+                    &crate::runtime_db::transitions::QueueTransitionCommand {
+                        agent_id: message.agent_id.clone(),
+                        operation: crate::runtime_db::transitions::QueueOperation::Admit,
+                        mutation:
+                            crate::runtime_db::transitions::QueueMutation::Upsert(queue_record),
+                        scheduler_claim_work_item: None,
+                        scheduler_protocol_bootstrap: None,
+                        scheduler_protocol_commands: Vec::new(),
+                        scheduler_authority_scenarios: vec![
+                            scheduler::WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO,
+                        ],
+                        scheduler_rollout_expectations,
+                        agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
+                            expected: Some(Box::new(expected_persisted_state)),
+                            record: Box::new(committed_state.clone()),
+                        }),
+                        message_evidence: vec![message.clone()],
+                        transcript_entries: Vec::new(),
+                        turn_record: None,
+                        audit_events,
+                        scheduler_shadow_comparison: scheduler_shadow_comparison.clone(),
+                        scheduler_delivery_shadow_comparison: None,
+                        scheduler_semantic_shadow: None,
+                        notify_scheduler: true,
+                        fault: self.take_transition_fault(),
+                        brief_evidence: Vec::new(),
+                    },
+                );
+                let mut commit = match commit_result {
+                    Ok(commit) => commit,
+                    Err(error) => {
+                        let can_retry = attempt + 1
+                            < super::ENQUEUE_AGENT_STATE_MAX_ATTEMPTS
+                            && super::retryable_enqueue_agent_state_conflict(
+                                &error,
+                                &agent_id,
+                            );
+                        if !can_retry {
+                            return Err(error);
+                        }
+                        drop(guard);
+                        if !self
+                            .refresh_enqueue_agent_state_baseline(&agent_id)
+                            .await?
+                        {
+                            return Err(error);
+                        }
+                        attempt += 1;
+                        continue;
+                    }
+                };
+                if !commit.applied {
+                    return Err(anyhow!(
+                        "work queue tick admission made no durable progress"
+                    ));
+                }
+                guard.queue.push(message.clone());
+                guard.state = committed_state.clone();
+                guard.last_persisted_state = committed_state;
+                commit.effects.agent_state = None;
+                break commit;
             }
-            guard.queue.push(message);
-            guard.state = committed_state.clone();
-            guard.last_persisted_state = committed_state;
-            commit.effects.agent_state = None;
-            commit
         };
         commit.effects.notify_scheduler = true;
         self.apply_transition_commit(commit).await;

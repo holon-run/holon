@@ -349,144 +349,176 @@ impl RuntimeHandle {
     ) -> Result<Vec<String>> {
         let boundary_str = boundary.as_str();
         let mut follow_up_texts = Vec::new();
-        loop {
+        'outer: loop {
             let committed = {
-                let mut guard = self.inner.agent.lock().await;
-                let Some(message) = guard
-                    .queue
-                    .peek_next_matching(scheduler::is_operator_interjection_message)
-                    .cloned()
-                else {
-                    break;
-                };
-                let expected_state = guard.state.clone();
-                let production_commands_enabled =
-                    self.scheduler_protocol_production_commands_enabled();
-                let protocol_commands = self.operator_interjection_protocol_commands(
-                    agent_id,
-                    &expected_state,
-                    &message,
-                    round,
-                    boundary_str,
-                    production_commands_enabled,
-                )?;
-                let mut committed_state = expected_state.clone();
-                committed_state.pending = guard.queue.len().saturating_sub(1);
-                let text = render_operator_interjection_text(&message);
-                let shadow_comparison =
-                    scheduler::SchedulerProjection::from_state_with_queue_len_at(
-                        &self.inner.storage,
-                        &guard.state,
-                        guard.queue.len(),
-                        self.now(),
-                    )
-                    .ok()
-                    .and_then(|projection| {
-                        scheduler::shadow_comparison_for_operator_interjection(
-                            &projection,
-                            &message,
-                            boundary,
-                        )
-                    })
-                    .map(scheduler_executor::scheduler_shadow_comparison_command)
-                    .transpose()?;
-                let transcript = TranscriptEntry::new(
-                    message.agent_id.clone(),
-                    TranscriptEntryKind::IncomingMessage,
-                    None,
-                    Some(message.id.clone()),
-                    serde_json::json!({
-                        "authority_class": message.authority_class,
-                        "delivery_surface": message.delivery_surface,
-                        "admission_context": message.admission_context,
-                        "trigger_kind": message.trigger_kind,
-                        "work_item_id": message.work_item_id.clone(),
-                        "task_id": message.task_id.clone(),
-                        "source_refs": message.source_refs.clone(),
-                        "correlation_id": message.correlation_id.clone(),
-                        "causation_id": message.causation_id.clone(),
-                    }),
-                );
-                let queue_record = QueueEntryRecord {
-                    message_id: message.id.clone(),
-                    agent_id: message.agent_id.clone(),
-                    priority: message.priority.clone(),
-                    status: QueueEntryStatus::Interjected,
-                    created_at: message.created_at,
-                    updated_at: chrono::Utc::now(),
-                };
-                let audit_event = AuditEvent::legacy(
-                    "operator_interjection_admitted",
-                    serde_json::json!({
-                        "agent_id": agent_id,
-                        "round": round,
-                        "boundary": boundary_str,
-                        "message_id": message.id,
-                        "origin": message.origin,
-                        "authority_class": message.authority_class,
-                        "priority": message.priority,
-                        "delivery_surface": message.delivery_surface,
-                        "admission_context": message.admission_context,
-                        "text_preview": truncate_preview(
-                            &message_text(&message.body),
-                            ROUND_TEXT_PREVIEW_LIMIT
-                        ),
-                    }),
-                );
-                let scheduler_rollout_expectations = self
-                    .inner
-                    .runtime_db
-                    .transitions()
-                    .scheduler_rollout_expectations(
-                        &[scheduler::INTERJECTION_SCENARIO],
+                let mut attempt = 0;
+                loop {
+                    if attempt >= crate::runtime::ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
+                        return Err(anyhow::anyhow!(
+                            "interjection OCC retry exhausted for agent {}",
+                            agent_id
+                        ));
+                    }
+                    let mut guard = self.inner.agent.lock().await;
+                    let Some(message) = guard
+                        .queue
+                        .peek_next_matching(scheduler::is_operator_interjection_message)
+                        .cloned()
+                    else {
+                        break 'outer;
+                    };
+                    let expected_state = guard.state.clone();
+                    let production_commands_enabled =
+                        self.scheduler_protocol_production_commands_enabled();
+                    let protocol_commands = self.operator_interjection_protocol_commands(
+                        agent_id,
+                        &expected_state,
+                        &message,
+                        round,
+                        boundary_str,
                         production_commands_enabled,
                     )?;
-                let mut commit = self.inner.runtime_db.transitions().commit_queue(
-                    &crate::runtime_db::transitions::QueueTransitionCommand {
-                        agent_id: message.agent_id.clone(),
-                        operation: crate::runtime_db::transitions::QueueOperation::Interject,
-                        mutation: crate::runtime_db::transitions::QueueMutation::Consume(
-                            queue_record,
-                        ),
-                        scheduler_claim_work_item: None,
-                        scheduler_protocol_bootstrap: None,
-                        scheduler_protocol_commands: protocol_commands,
-                        scheduler_authority_scenarios: vec![scheduler::INTERJECTION_SCENARIO],
-                        scheduler_rollout_expectations,
-                        agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
-                            expected: Some(Box::new(expected_state)),
-                            record: Box::new(committed_state.clone()),
+                    let mut committed_state = expected_state.clone();
+                    committed_state.pending = guard.queue.len().saturating_sub(1);
+                    let text = render_operator_interjection_text(&message);
+                    let shadow_comparison =
+                        scheduler::SchedulerProjection::from_state_with_queue_len_at(
+                            &self.inner.storage,
+                            &guard.state,
+                            guard.queue.len(),
+                            self.now(),
+                        )
+                        .ok()
+                        .and_then(|projection| {
+                            scheduler::shadow_comparison_for_operator_interjection(
+                                &projection,
+                                &message,
+                                boundary,
+                            )
+                        })
+                        .map(scheduler_executor::scheduler_shadow_comparison_command)
+                        .transpose()?;
+                    let transcript = TranscriptEntry::new(
+                        message.agent_id.clone(),
+                        TranscriptEntryKind::IncomingMessage,
+                        None,
+                        Some(message.id.clone()),
+                        serde_json::json!({
+                            "authority_class": message.authority_class,
+                            "delivery_surface": message.delivery_surface,
+                            "admission_context": message.admission_context,
+                            "trigger_kind": message.trigger_kind,
+                            "work_item_id": message.work_item_id.clone(),
+                            "task_id": message.task_id.clone(),
+                            "source_refs": message.source_refs.clone(),
+                            "correlation_id": message.correlation_id.clone(),
+                            "causation_id": message.causation_id.clone(),
                         }),
-                        message_evidence: Vec::new(),
-                        transcript_entries: vec![transcript],
-                        turn_record: None,
-                        audit_events: vec![audit_event],
-                        scheduler_shadow_comparison: shadow_comparison,
-                        scheduler_delivery_shadow_comparison: None,
-                        scheduler_semantic_shadow: None,
-                        notify_scheduler: false,
-                        fault: self.take_transition_fault(),
-                        brief_evidence: Vec::new(),
-                    },
-                )?;
-                if commit.scheduler_authority_blocked {
-                    drop(guard);
-                    self.apply_transition_commit(commit).await;
-                    break;
+                    );
+                    let queue_record = QueueEntryRecord {
+                        message_id: message.id.clone(),
+                        agent_id: message.agent_id.clone(),
+                        priority: message.priority.clone(),
+                        status: QueueEntryStatus::Interjected,
+                        created_at: message.created_at,
+                        updated_at: chrono::Utc::now(),
+                    };
+                    let audit_event = AuditEvent::legacy(
+                        "operator_interjection_admitted",
+                        serde_json::json!({
+                            "agent_id": agent_id,
+                            "round": round,
+                            "boundary": boundary_str,
+                            "message_id": message.id,
+                            "origin": message.origin,
+                            "authority_class": message.authority_class,
+                            "priority": message.priority,
+                            "delivery_surface": message.delivery_surface,
+                            "admission_context": message.admission_context,
+                            "text_preview": truncate_preview(
+                                &message_text(&message.body),
+                                ROUND_TEXT_PREVIEW_LIMIT
+                            ),
+                        }),
+                    );
+                    let scheduler_rollout_expectations = self
+                        .inner
+                        .runtime_db
+                        .transitions()
+                        .scheduler_rollout_expectations(
+                            &[scheduler::INTERJECTION_SCENARIO],
+                            production_commands_enabled,
+                        )?;
+                    let commit_result = self.inner.runtime_db.transitions().commit_queue(
+                        &crate::runtime_db::transitions::QueueTransitionCommand {
+                            agent_id: message.agent_id.clone(),
+                            operation: crate::runtime_db::transitions::QueueOperation::Interject,
+                            mutation: crate::runtime_db::transitions::QueueMutation::Consume(
+                                queue_record,
+                            ),
+                            scheduler_claim_work_item: None,
+                            scheduler_protocol_bootstrap: None,
+                            scheduler_protocol_commands: protocol_commands,
+                            scheduler_authority_scenarios: vec![scheduler::INTERJECTION_SCENARIO],
+                            scheduler_rollout_expectations,
+                            agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
+                                expected: Some(Box::new(expected_state)),
+                                record: Box::new(committed_state.clone()),
+                            }),
+                            message_evidence: Vec::new(),
+                            transcript_entries: vec![transcript],
+                            turn_record: None,
+                            audit_events: vec![audit_event],
+                            scheduler_shadow_comparison: shadow_comparison,
+                            scheduler_delivery_shadow_comparison: None,
+                            scheduler_semantic_shadow: None,
+                            notify_scheduler: false,
+                            fault: self.take_transition_fault(),
+                            brief_evidence: Vec::new(),
+                        },
+                    );
+                    let mut commit = match commit_result {
+                        Ok(commit) => commit,
+                        Err(error) => {
+                            let can_retry = attempt + 1
+                                < crate::runtime::ENQUEUE_AGENT_STATE_MAX_ATTEMPTS
+                                && crate::runtime::retryable_enqueue_agent_state_conflict(
+                                    &error,
+                                    agent_id,
+                                );
+                            if !can_retry {
+                                return Err(error);
+                            }
+                            drop(guard);
+                            if !self
+                                .refresh_enqueue_agent_state_baseline(agent_id)
+                                .await?
+                            {
+                                return Err(error);
+                            }
+                            attempt += 1;
+                            continue;
+                        }
+                    };
+                    if commit.scheduler_authority_blocked {
+                        drop(guard);
+                        self.apply_transition_commit(commit).await;
+                        break 'outer;
+                    }
+                    if !commit.applied {
+                        return Err(anyhow::anyhow!(
+                            "interjection settlement made no durable progress"
+                        ));
+                    }
+                    guard
+                        .queue
+                        .pop_next_matching(|candidate| candidate.id == message.id)
+                        .expect("peeked interjection remains queued while agent lock is held");
+                    guard.state = committed_state.clone();
+                    guard.last_persisted_state = committed_state;
+                    commit.effects.agent_state = None;
+                    break (text, commit);
                 }
-                if !commit.applied {
-                    return Err(anyhow::anyhow!(
-                        "interjection settlement made no durable progress"
-                    ));
-                }
-                guard
-                    .queue
-                    .pop_next_matching(|candidate| candidate.id == message.id)
-                    .expect("peeked interjection remains queued while agent lock is held");
-                guard.state = committed_state.clone();
-                guard.last_persisted_state = committed_state;
-                commit.effects.agent_state = None;
-                (text, commit)
             };
             self.apply_transition_commit(committed.1).await;
             follow_up_texts.push(committed.0);

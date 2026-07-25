@@ -449,21 +449,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         )?;
 
         let (message, running_state, transition_commit) = {
-            let mut guard = self.runtime.inner.agent.lock().await;
-            if self.runtime.inner.shutdown_requested.load(Ordering::SeqCst) {
-                return self.shutdown(guard);
-            }
-            if matches!(guard.state.status, AgentStatus::Stopped) {
-                return Ok(RunLoopPoll::Stopped(guard.state.clone(), guard.queue.len()));
-            }
-            if !guard
-                .queue
-                .peek()
-                .is_some_and(|message| message.id == candidate.message.id)
-            {
-                return Ok(RunLoopPoll::Idle);
-            }
-
             let queue_record = QueueEntryRecord {
                 message_id: candidate.message.id.clone(),
                 agent_id: candidate.message.agent_id.clone(),
@@ -474,82 +459,124 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             };
             let run_id = crate::ids::run_id();
             let abort_token = CancellationToken::new();
-            let mut running_state = guard.state.clone();
-            running_state.pending = guard.queue.len().saturating_sub(1);
-            scheduler::apply_running_projection(&mut running_state, run_id.clone());
-            running_state.last_wake_reason = Some(format!("{:?}", candidate.message.kind));
-            let mut commit = self.runtime.inner.runtime_db.transitions().commit_queue(
-                &crate::runtime_db::transitions::QueueTransitionCommand {
-                    agent_id: candidate.message.agent_id.clone(),
-                    operation: crate::runtime_db::transitions::QueueOperation::Claim,
-                    mutation: crate::runtime_db::transitions::QueueMutation::Consume(
-                        queue_record.clone(),
-                    ),
-                    scheduler_claim_work_item: canonical_claim
-                        .as_ref()
-                        .and_then(|plan| plan.scheduler_claim_work_item.clone()),
-                    scheduler_protocol_bootstrap: canonical_claim
-                        .as_ref()
-                        .and_then(|plan| plan.bootstrap.clone()),
-                    scheduler_protocol_commands: canonical_claim
-                        .as_ref()
-                        .map(|plan| plan.commands.clone())
-                        .unwrap_or_default(),
-                    scheduler_authority_scenarios,
-                    scheduler_rollout_expectations,
-                    agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
-                        expected: Some(Box::new(guard.state.clone())),
-                        record: Box::new(running_state.clone()),
+            let claim_audit_events = vec![
+                scheduler_decision_events[0].clone(),
+                scheduler_decision_events[1].clone(),
+                AuditEvent::legacy(
+                    "queue_entry_claimed",
+                    serde_json::json!({
+                        "message_id": queue_record.message_id,
+                        "agent_id": queue_record.agent_id,
+                        "status": QueueEntryStatus::Dequeued,
+                        "run_id": run_id,
                     }),
-                    message_evidence: Vec::new(),
-                    transcript_entries: Vec::new(),
-                    turn_record: None,
-                    audit_events: vec![
-                        scheduler_decision_events[0].clone(),
-                        scheduler_decision_events[1].clone(),
-                        AuditEvent::legacy(
-                            "queue_entry_claimed",
-                            serde_json::json!({
-                                "message_id": queue_record.message_id,
-                                "agent_id": queue_record.agent_id,
-                                "status": QueueEntryStatus::Dequeued,
-                                "run_id": run_id,
-                            }),
+                ),
+            ];
+            let agent_id = candidate.message.agent_id.clone();
+            let mut attempt = 0;
+            loop {
+                if attempt >= super::ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
+                    return Err(anyhow!("claim OCC retry exhausted for agent {}", agent_id));
+                }
+                let mut guard = self.runtime.inner.agent.lock().await;
+                if self.runtime.inner.shutdown_requested.load(Ordering::SeqCst) {
+                    return self.shutdown(guard);
+                }
+                if matches!(guard.state.status, AgentStatus::Stopped) {
+                    return Ok(RunLoopPoll::Stopped(guard.state.clone(), guard.queue.len()));
+                }
+                if !guard
+                    .queue
+                    .peek()
+                    .is_some_and(|message| message.id == candidate.message.id)
+                {
+                    return Ok(RunLoopPoll::Idle);
+                }
+                let mut running_state = guard.state.clone();
+                running_state.pending = guard.queue.len().saturating_sub(1);
+                scheduler::apply_running_projection(&mut running_state, run_id.clone());
+                running_state.last_wake_reason = Some(format!("{:?}", candidate.message.kind));
+                let commit_result = self.runtime.inner.runtime_db.transitions().commit_queue(
+                    &crate::runtime_db::transitions::QueueTransitionCommand {
+                        agent_id: agent_id.clone(),
+                        operation: crate::runtime_db::transitions::QueueOperation::Claim,
+                        mutation: crate::runtime_db::transitions::QueueMutation::Consume(
+                            queue_record.clone(),
                         ),
-                    ],
-                    scheduler_shadow_comparison: shadow_comparison,
-                    scheduler_delivery_shadow_comparison: None,
-                    scheduler_semantic_shadow: semantic_shadow,
-                    notify_scheduler: false,
-                    fault: self.runtime.take_transition_fault(),
-                    brief_evidence: Vec::new(),
-                },
-            )?;
-            if commit.scheduler_authority_blocked {
+                        scheduler_claim_work_item: canonical_claim
+                            .as_ref()
+                            .and_then(|plan| plan.scheduler_claim_work_item.clone()),
+                        scheduler_protocol_bootstrap: canonical_claim
+                            .as_ref()
+                            .and_then(|plan| plan.bootstrap.clone()),
+                        scheduler_protocol_commands: canonical_claim
+                            .as_ref()
+                            .map(|plan| plan.commands.clone())
+                            .unwrap_or_default(),
+                        scheduler_authority_scenarios: scheduler_authority_scenarios.clone(),
+                        scheduler_rollout_expectations: scheduler_rollout_expectations.clone(),
+                        agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
+                            expected: Some(Box::new(guard.state.clone())),
+                            record: Box::new(running_state.clone()),
+                        }),
+                        message_evidence: Vec::new(),
+                        transcript_entries: Vec::new(),
+                        turn_record: None,
+                        audit_events: claim_audit_events.clone(),
+                        scheduler_shadow_comparison: shadow_comparison.clone(),
+                        scheduler_delivery_shadow_comparison: None,
+                        scheduler_semantic_shadow: semantic_shadow.clone(),
+                        notify_scheduler: false,
+                        fault: self.runtime.take_transition_fault(),
+                        brief_evidence: Vec::new(),
+                    },
+                );
+                let mut commit = match commit_result {
+                    Ok(commit) => commit,
+                    Err(error) => {
+                        let can_retry = attempt + 1 < super::ENQUEUE_AGENT_STATE_MAX_ATTEMPTS
+                            && super::retryable_enqueue_agent_state_conflict(&error, &agent_id);
+                        if !can_retry {
+                            return Err(error);
+                        }
+                        drop(guard);
+                        if !self
+                            .runtime
+                            .refresh_enqueue_agent_state_baseline(&agent_id)
+                            .await?
+                        {
+                            return Err(error);
+                        }
+                        attempt += 1;
+                        continue;
+                    }
+                };
+                if commit.scheduler_authority_blocked {
+                    commit.effects.agent_state = None;
+                    drop(guard);
+                    self.runtime.apply_transition_commit(commit).await;
+                    return Ok(RunLoopPoll::Idle);
+                }
+                if !commit.applied {
+                    let _ = guard.queue.pop_if_next(&candidate.message.id);
+                    guard.state.pending = guard.queue.len();
+                    guard.persist_state(&self.runtime.inner.storage)?;
+                    return Ok(RunLoopPoll::Idle);
+                }
+                let message = guard
+                    .queue
+                    .pop_if_next(&candidate.message.id)
+                    .expect("queue head was just checked");
+                guard.state = running_state.clone();
+                guard.last_persisted_state = running_state.clone();
+                guard.current_run_abort = Some(CurrentRunAbortHandle {
+                    run_id: run_id.clone(),
+                    token: abort_token,
+                    reason: Arc::new(StdMutex::new("operator_aborted".into())),
+                });
                 commit.effects.agent_state = None;
-                drop(guard);
-                self.runtime.apply_transition_commit(commit).await;
-                return Ok(RunLoopPoll::Idle);
+                break (message, running_state, commit);
             }
-            if !commit.applied {
-                let _ = guard.queue.pop_if_next(&candidate.message.id);
-                guard.state.pending = guard.queue.len();
-                guard.persist_state(&self.runtime.inner.storage)?;
-                return Ok(RunLoopPoll::Idle);
-            }
-            let message = guard
-                .queue
-                .pop_if_next(&candidate.message.id)
-                .expect("queue head was just checked");
-            guard.state = running_state.clone();
-            guard.last_persisted_state = running_state.clone();
-            guard.current_run_abort = Some(CurrentRunAbortHandle {
-                run_id: run_id.clone(),
-                token: abort_token,
-                reason: Arc::new(StdMutex::new("operator_aborted".into())),
-            });
-            commit.effects.agent_state = None;
-            (message, running_state, commit)
         };
         self.runtime
             .apply_transition_commit(transition_commit)
