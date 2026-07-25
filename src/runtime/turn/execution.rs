@@ -483,17 +483,13 @@ impl RuntimeHandle {
                             let can_retry = attempt + 1
                                 < crate::runtime::ENQUEUE_AGENT_STATE_MAX_ATTEMPTS
                                 && crate::runtime::retryable_enqueue_agent_state_conflict(
-                                    &error,
-                                    agent_id,
+                                    &error, agent_id,
                                 );
                             if !can_retry {
                                 return Err(error);
                             }
                             drop(guard);
-                            if !self
-                                .refresh_enqueue_agent_state_baseline(agent_id)
-                                .await?
-                            {
+                            if !self.refresh_enqueue_agent_state_baseline(agent_id).await? {
                                 return Err(error);
                             }
                             attempt += 1;

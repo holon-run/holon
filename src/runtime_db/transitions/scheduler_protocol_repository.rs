@@ -518,14 +518,28 @@ pub(super) fn validate_shadow_comparison_tx(
             |row| row.get::<_, String>(0),
         )
         .optional()?;
+    let mut already_recorded = existing_payload_hash.is_some();
     if let Some(existing_payload_hash) = existing_payload_hash.as_ref() {
         if existing_payload_hash != &payload_hash {
-            bail!(
-                "scheduler shadow comparison identity conflict for agent {}, scenario {}, comparison {}",
-                agent_id,
-                command.scenario_class,
-                command.comparison_identity
-            );
+            // Identity conflict: the existing record was written during a prior
+            // claim that failed (settlement error → interrupted). Fix 1 should
+            // have cleaned it up on Release/Settle→Interrupted, but if a stale
+            // record survives, allow the new record to overwrite it instead of
+            // permanently blocking the agent in a failure loop.
+            // Mark not already_recorded so persist_shadow_comparison_tx
+            // inserts the new record.
+            tx.execute(
+                "DELETE FROM scheduler_shadow_comparisons
+                 WHERE agent_id = ?1
+                   AND scenario_class = ?2
+                   AND comparison_identity = ?3",
+                params![
+                    agent_id,
+                    command.scenario_class,
+                    command.comparison_identity
+                ],
+            )?;
+            already_recorded = false;
         }
     }
 
@@ -533,7 +547,7 @@ pub(super) fn validate_shadow_comparison_tx(
         command: command.clone(),
         payload_hash,
         authority_mode,
-        already_recorded: existing_payload_hash.is_some(),
+        already_recorded,
     }))
 }
 

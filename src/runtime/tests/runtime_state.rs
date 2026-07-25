@@ -8870,3 +8870,231 @@ async fn post_commit_agent_state_projection_does_not_overwrite_newer_memory() {
         Some(runtime.agent_state().await.unwrap())
     );
 }
+
+#[tokio::test]
+async fn release_interrupts_message_and_cleans_up_shadow_comparison_records() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let connection = runtime.inner.runtime_db.connection().unwrap();
+    connection
+        .execute(
+            "UPDATE scheduler_protocol_config
+             SET protocol_mode = 'shadow',
+                 config_revision = 1,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE config_id = 1",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO scheduler_scenario_authorities (
+               scenario_class, mode, rollback_target,
+               manifest_revision, preflight_revision, updated_at
+             ) VALUES (
+               'reducer_only_candidates', 'shadow', 'off',
+               NULL, NULL, CURRENT_TIMESTAMP
+             )",
+            [],
+        )
+        .unwrap();
+
+    let message = runtime
+        .enqueue(MessageEnvelope::new(
+            "default",
+            MessageKind::WebhookEvent,
+            MessageOrigin::Webhook {
+                source: "shadow-cleanup-test".into(),
+                event_type: Some("ping".into()),
+            },
+            AuthorityClass::ExternalEvidence,
+            Priority::Normal,
+            MessageBody::Text {
+                text: String::new(),
+            },
+        ))
+        .await
+        .unwrap();
+
+    // Claim the message — this writes a shadow comparison record.
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    assert!(matches!(poll, scheduler_executor::RunLoopPoll::Message(_)));
+
+    // Verify the shadow comparison record exists.
+    let shadow_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM scheduler_shadow_comparisons WHERE agent_id = 'default'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        shadow_count > 0,
+        "shadow comparison records should exist after claim"
+    );
+
+    // Release the message (interrupt it).
+    let interrupted = QueueEntryRecord {
+        message_id: message.id.clone(),
+        agent_id: "default".to_string(),
+        priority: Priority::Normal,
+        status: QueueEntryStatus::Interrupted,
+        created_at: message.created_at,
+        updated_at: Utc::now(),
+    };
+    runtime
+        .commit_queue_settlement(interrupted, Vec::new(), false)
+        .await
+        .unwrap();
+
+    // Verify the shadow comparison records for this message are cleaned up.
+    let remaining_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM scheduler_shadow_comparisons
+             WHERE agent_id = 'default'
+               AND comparison_identity LIKE '%' || ?1",
+            [&message.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        remaining_count, 0,
+        "shadow comparison records should be cleaned up after release"
+    );
+}
+
+#[tokio::test]
+async fn shadow_comparison_identity_conflict_allows_overwrite() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let conn = runtime.inner.runtime_db.connection().unwrap();
+    conn.execute(
+        "UPDATE scheduler_protocol_config
+         SET protocol_mode = 'shadow',
+             config_revision = 1,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE config_id = 1",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO scheduler_scenario_authorities (
+           scenario_class, mode, rollback_target,
+           manifest_revision, preflight_revision, updated_at
+         ) VALUES (
+           'reducer_only_candidates', 'shadow', 'off',
+           NULL, NULL, CURRENT_TIMESTAMP
+         )",
+        [],
+    )
+    .unwrap();
+
+    // Insert a stale shadow comparison record directly.
+    conn.execute(
+        "INSERT INTO scheduler_shadow_comparisons (
+           agent_id, scenario_class, comparison_identity,
+           canonical_schema_version, payload_hash, boundary, input_identity,
+           authority_mode, legacy_observation_json, shadow_candidate_json,
+           comparison_outcome, divergence_code, created_at
+         ) VALUES ('default', 'reducer_only_candidates', 'message_admission:msg_stale',
+           1, 'sha256:old_hash', 'run_loop', 'old_input',
+           'shadow', '{}', '{}', 'matched', NULL, '2025-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    // Build a new shadow comparison with the same identity but different payload.
+    let new_command = crate::runtime_db::transitions::scheduler_protocol_repository::SchedulerShadowComparisonCommand {
+        scenario_class: "reducer_only_candidates".into(),
+        comparison_identity: "message_admission:msg_stale".into(),
+        boundary: "run_loop".into(),
+        input_identity: "new_input".into(),
+        legacy_observation: serde_json::json!({}),
+        shadow_candidate: serde_json::json!({}),
+        matched: true,
+        divergence_code: None,
+    };
+
+    // Validate via commit_queue — should NOT fail with identity conflict.
+    let record = QueueEntryRecord {
+        message_id: "msg_stale".into(),
+        agent_id: "default".into(),
+        priority: Priority::Normal,
+        status: QueueEntryStatus::Queued,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    };
+    let result = runtime.inner.runtime_db.transitions().commit_queue(
+        &crate::runtime_db::transitions::QueueTransitionCommand {
+            agent_id: "default".into(),
+            operation: crate::runtime_db::transitions::QueueOperation::Admit,
+            mutation: crate::runtime_db::transitions::QueueMutation::Upsert(record),
+            scheduler_claim_work_item: None,
+            scheduler_protocol_bootstrap: None,
+            scheduler_protocol_commands: Vec::new(),
+            scheduler_authority_scenarios: Vec::new(),
+            scheduler_rollout_expectations: Vec::new(),
+            agent_state: None,
+            message_evidence: Vec::new(),
+            transcript_entries: Vec::new(),
+            turn_record: None,
+            audit_events: Vec::new(),
+            scheduler_shadow_comparison: Some(new_command),
+            scheduler_delivery_shadow_comparison: None,
+            scheduler_semantic_shadow: None,
+            notify_scheduler: false,
+            fault: None,
+            brief_evidence: Vec::new(),
+        },
+    );
+
+    assert!(
+        result.is_ok(),
+        "identity conflict should allow overwrite, not fail: {:?}",
+        result.err()
+    );
+
+    // Verify the new record replaced the old one.
+    let new_hash: String = conn
+        .query_row(
+            "SELECT payload_hash FROM scheduler_shadow_comparisons
+             WHERE agent_id = 'default'
+               AND comparison_identity = 'message_admission:msg_stale'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_ne!(
+        new_hash, "sha256:old_hash",
+        "stale record should be replaced"
+    );
+}

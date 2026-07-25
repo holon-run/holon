@@ -2246,7 +2246,10 @@ impl RuntimeHandle {
         Ok(commit)
     }
 
-    pub(crate) async fn refresh_enqueue_agent_state_baseline(&self, agent_id: &str) -> Result<bool> {
+    pub(crate) async fn refresh_enqueue_agent_state_baseline(
+        &self,
+        agent_id: &str,
+    ) -> Result<bool> {
         let mut guard = self.inner.agent.lock().await;
         let Some(latest_persisted_state) = self.inner.runtime_db.agent_states().latest(agent_id)?
         else {
@@ -2347,7 +2350,9 @@ impl RuntimeHandle {
             // Rebuild guard-dependent fields from the current baseline.
             let (agent_state, shadow_comparison, delivery_shadow_comparison) = {
                 let guard = self.inner.agent.lock().await;
-                let mut state = committed_agent_state.clone().unwrap_or_else(|| guard.state.clone());
+                let mut state = committed_agent_state
+                    .clone()
+                    .unwrap_or_else(|| guard.state.clone());
                 let agent_state = if let Some(transition) = terminal_transition {
                     state.current_turn_id = Some(transition.terminal.turn_id.clone());
                     state.last_turn_terminal = Some(transition.terminal.clone());
@@ -2365,18 +2370,14 @@ impl RuntimeHandle {
                     queue_len,
                     self.now(),
                 )?;
-                let shadow_comparison = scheduler::shadow_comparison_for_settlement(
-                    &projection,
-                    &record,
-                )
-                .map(scheduler_executor::scheduler_shadow_comparison_command)
-                .transpose()?;
-                let delivery_shadow_comparison = scheduler::shadow_comparison_for_delivery(
-                    &projection,
-                    &record,
-                )
-                .map(scheduler_executor::scheduler_shadow_comparison_command)
-                .transpose()?;
+                let shadow_comparison =
+                    scheduler::shadow_comparison_for_settlement(&projection, &record)
+                        .map(scheduler_executor::scheduler_shadow_comparison_command)
+                        .transpose()?;
+                let delivery_shadow_comparison =
+                    scheduler::shadow_comparison_for_delivery(&projection, &record)
+                        .map(scheduler_executor::scheduler_shadow_comparison_command)
+                        .transpose()?;
                 (agent_state, shadow_comparison, delivery_shadow_comparison)
             };
             command.agent_state = agent_state;
@@ -3438,7 +3439,10 @@ fn normalized_turn_id(turn_id: Option<&str>) -> Option<String> {
         .map(ToString::to_string)
 }
 
-pub(crate) fn retryable_enqueue_agent_state_conflict(error: &anyhow::Error, agent_id: &str) -> bool {
+pub(crate) fn retryable_enqueue_agent_state_conflict(
+    error: &anyhow::Error,
+    agent_id: &str,
+) -> bool {
     error.chain().any(|source| {
         source
             .downcast_ref::<RuntimeStateTransitionConflict>()

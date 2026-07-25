@@ -820,8 +820,9 @@ impl RuntimeHandle {
                     &crate::runtime_db::transitions::QueueTransitionCommand {
                         agent_id: message.agent_id.clone(),
                         operation: crate::runtime_db::transitions::QueueOperation::Admit,
-                        mutation:
-                            crate::runtime_db::transitions::QueueMutation::Upsert(queue_record),
+                        mutation: crate::runtime_db::transitions::QueueMutation::Upsert(
+                            queue_record,
+                        ),
                         scheduler_claim_work_item: None,
                         scheduler_protocol_bootstrap: None,
                         scheduler_protocol_commands: Vec::new(),
@@ -848,20 +849,13 @@ impl RuntimeHandle {
                 let mut commit = match commit_result {
                     Ok(commit) => commit,
                     Err(error) => {
-                        let can_retry = attempt + 1
-                            < super::ENQUEUE_AGENT_STATE_MAX_ATTEMPTS
-                            && super::retryable_enqueue_agent_state_conflict(
-                                &error,
-                                &agent_id,
-                            );
+                        let can_retry = attempt + 1 < super::ENQUEUE_AGENT_STATE_MAX_ATTEMPTS
+                            && super::retryable_enqueue_agent_state_conflict(&error, &agent_id);
                         if !can_retry {
                             return Err(error);
                         }
                         drop(guard);
-                        if !self
-                            .refresh_enqueue_agent_state_baseline(&agent_id)
-                            .await?
-                        {
+                        if !self.refresh_enqueue_agent_state_baseline(&agent_id).await? {
                             return Err(error);
                         }
                         attempt += 1;
