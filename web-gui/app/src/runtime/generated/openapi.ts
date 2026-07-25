@@ -621,6 +621,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/control/agents/{agent_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete agent
+         * @description Fence a public self-owned agent and create or return its durable deletion job.
+         */
+        delete: operations["deleteAgent"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/control/agents/{agent_id}/control": {
         parameters: {
             query?: never;
@@ -695,6 +715,26 @@ export interface paths {
          * @description Render a diagnostic prompt preview.
          */
         post: operations["debugPrompt"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/control/agents/{agent_id}/delete-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Agent deletion status
+         * @description Return the identity tombstone and current or completed deletion job.
+         */
+        get: operations["agentDeleteStatus"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1949,6 +1989,90 @@ export interface components {
                 skill?: string | null;
             };
         };
+        /** AgentDeletionResponse */
+        AgentDeletionResponse: {
+            created: boolean;
+            identity: {
+                agent_id: string;
+                delegated_from_task_id?: string | null;
+                is_default_agent: boolean;
+                /** @enum {string} */
+                kind: "default" | "named" | "child";
+                lineage_parent_agent_id?: string | null;
+                /** @enum {string} */
+                ownership: "parent_supervised" | "self_owned";
+                parent_agent_id?: string | null;
+                /** @enum {string} */
+                profile_preset: "private_child" | "public_named";
+                /** @enum {string} */
+                status: "active" | "deleting" | "deleted";
+                /** @enum {string} */
+                visibility: "public" | "private";
+            };
+            job: {
+                agent_id: string;
+                /** Format: uint32 */
+                attempts: number;
+                cascade_private_children: boolean;
+                /** Format: date-time */
+                completed_at?: string | null;
+                /** Format: date-time */
+                created_at: string;
+                deletion_id: string;
+                /** Format: uint64 */
+                expected_identity_revision: number;
+                last_error?: string | null;
+                /** @enum {string} */
+                phase: "fence" | "quiesce" | "ingress" | "scheduler" | "workspace" | "index" | "home" | "finalize";
+                requested_by: string;
+                /** @enum {string} */
+                status: "pending" | "running" | "retryable_failed" | "completed";
+                /** Format: date-time */
+                updated_at: string;
+            };
+            ok: boolean;
+        };
+        /** AgentDeletionStatusResponse */
+        AgentDeletionStatusResponse: {
+            identity: {
+                agent_id: string;
+                delegated_from_task_id?: string | null;
+                is_default_agent: boolean;
+                /** @enum {string} */
+                kind: "default" | "named" | "child";
+                lineage_parent_agent_id?: string | null;
+                /** @enum {string} */
+                ownership: "parent_supervised" | "self_owned";
+                parent_agent_id?: string | null;
+                /** @enum {string} */
+                profile_preset: "private_child" | "public_named";
+                /** @enum {string} */
+                status: "active" | "deleting" | "deleted";
+                /** @enum {string} */
+                visibility: "public" | "private";
+            };
+            job?: {
+                agent_id: string;
+                /** Format: uint32 */
+                attempts: number;
+                cascade_private_children: boolean;
+                /** Format: date-time */
+                completed_at?: string | null;
+                /** Format: date-time */
+                created_at: string;
+                deletion_id: string;
+                /** Format: uint64 */
+                expected_identity_revision: number;
+                last_error?: string | null;
+                /** @enum {string} */
+                phase: "fence" | "quiesce" | "ingress" | "scheduler" | "workspace" | "index" | "home" | "finalize";
+                requested_by: string;
+                /** @enum {string} */
+                status: "pending" | "running" | "retryable_failed" | "completed";
+                /** Format: date-time */
+                updated_at: string;
+            } | null;
+        };
         /** AgentStateSnapshotDto */
         AgentStateSnapshotDto: {
             agent: {
@@ -1969,7 +2093,7 @@ export interface components {
                         /** @enum {string} */
                         profile_preset: "private_child" | "public_named";
                         /** @enum {string} */
-                        status: "active" | "archived";
+                        status: "active" | "deleting" | "deleted";
                         /** @enum {string} */
                         visibility: "public" | "private";
                     };
@@ -2118,7 +2242,7 @@ export interface components {
                     /** @enum {string} */
                     profile_preset: "private_child" | "public_named";
                     /** @enum {string} */
-                    status: "active" | "archived";
+                    status: "active" | "deleting" | "deleted";
                     /** @enum {string} */
                     visibility: "public" | "private";
                 };
@@ -2152,7 +2276,7 @@ export interface components {
                  */
                 scheduling_posture: {
                     /** @enum {string} */
-                    posture: "unknown" | "archived" | "active_turn" | "has_queued_input" | "has_runnable_work" | "waiting_for_task" | "waiting_for_external" | "waiting_for_operator" | "blocked" | "idle";
+                    posture: "unknown" | "stopped" | "active_turn" | "has_queued_input" | "has_runnable_work" | "waiting_for_task" | "waiting_for_external" | "waiting_for_operator" | "blocked" | "idle";
                     reason: string;
                     run_id?: string | null;
                     task_id?: string | null;
@@ -2467,6 +2591,11 @@ export interface components {
         /** @description Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize. */
         DebugPromptRequest: {
             [key: string]: unknown;
+        };
+        /** DeleteAgentRequest */
+        DeleteAgentRequest: {
+            /** @default false */
+            cascade_private_children: boolean;
         };
         /** @description Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize. */
         DetachWorkspaceRequest: {
@@ -5276,6 +5405,51 @@ export interface operations {
             };
         };
     };
+    deleteAgent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Agent id. */
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeleteAgentRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentDeletionResponse"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     controlAgent: {
         parameters: {
             query?: never;
@@ -5434,6 +5608,47 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["JsonValue"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    agentDeleteStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Agent id. */
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentDeletionStatusResponse"];
                 };
             };
             /** @description Client error JSON response. */
