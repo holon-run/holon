@@ -748,6 +748,7 @@ fn find_sse_event_end(buffer: &[u8]) -> Option<usize> {
 fn parse_sse_event(raw: &[u8]) -> std::result::Result<Option<AnthropicStreamEvent>, String> {
     let text = std::str::from_utf8(raw).map_err(|error| error.to_string())?;
     let mut data = Vec::new();
+    let mut event_type: Option<&str> = None;
     for line in text.lines() {
         let line = line.trim_end_matches('\r');
         if line.is_empty() || line.starts_with(':') {
@@ -755,6 +756,8 @@ fn parse_sse_event(raw: &[u8]) -> std::result::Result<Option<AnthropicStreamEven
         }
         if let Some(value) = line.strip_prefix("data:") {
             data.push(value.strip_prefix(' ').unwrap_or(value));
+        } else if let Some(value) = line.strip_prefix("event:") {
+            event_type = Some(value.trim());
         }
     }
     if data.is_empty() {
@@ -764,9 +767,46 @@ fn parse_sse_event(raw: &[u8]) -> std::result::Result<Option<AnthropicStreamEven
     if data.trim() == "[DONE]" {
         return Ok(None);
     }
-    serde_json::from_str(&data)
-        .map(Some)
-        .map_err(|error| error.to_string())
+    match serde_json::from_str::<AnthropicStreamEvent>(&data) {
+        Ok(event) => Ok(Some(event)),
+        Err(_) if event_type == Some("error") => parse_fallback_error_event(&data),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// Fallback parser for non-standard SSE error events where `message` is a string
+/// (e.g. DashScope sends `{"code":"InvalidParameter","message":"..."}` with an
+/// `event: error` SSE line, instead of the Anthropic `{"error": {...}}` shape).
+fn parse_fallback_error_event(
+    data: &str,
+) -> std::result::Result<Option<AnthropicStreamEvent>, String> {
+    #[derive(Deserialize)]
+    struct FallbackError {
+        #[serde(default, rename = "type")]
+        kind: Option<String>,
+        #[serde(default)]
+        code: Option<String>,
+        #[serde(default)]
+        message: Option<String>,
+        error: Option<AnthropicStreamError>,
+    }
+    let parsed: FallbackError = serde_json::from_str(data).map_err(|e| e.to_string())?;
+    Ok(Some(AnthropicStreamEvent {
+        kind: parsed.kind.unwrap_or_else(|| "error".into()),
+        message: None,
+        index: None,
+        content_block: None,
+        delta: None,
+        usage: None,
+        error: Some(AnthropicStreamError {
+            kind: parsed
+                .code
+                .or_else(|| parsed.error.as_ref().and_then(|e| e.kind.clone())),
+            message: parsed
+                .message
+                .or_else(|| parsed.error.and_then(|e| e.message)),
+        }),
+    }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -3293,5 +3333,78 @@ mod tests {
             // The function returns () — if it doesn't panic/warn, we're good.
             warn_unsupported_anthropic_response_block(&block, "test", "model", 0, None, false);
         }
+    }
+
+    #[test]
+    fn parse_sse_error_event_dashscope_fallback() {
+        // DashScope sends non-standard error events: `message` is a string,
+        // wrapped in an SSE `event: error` line instead of the Anthropic
+        // `{"type":"error","error":{...}}` shape.
+        let raw = b"event: error\ndata: {\"request_id\":\"req_1\",\"code\":\"InvalidParameter\",\"message\":\"Inference engine abort\"}";
+        let event = parse_sse_event(raw)
+            .expect("parse should succeed via fallback")
+            .expect("should produce an event");
+        assert_eq!(event.kind, "error");
+        let error = event.error.expect("error field should be populated");
+        assert_eq!(error.kind.as_deref(), Some("InvalidParameter"));
+        assert_eq!(error.message.as_deref(), Some("Inference engine abort"));
+    }
+
+    #[test]
+    fn parse_sse_error_event_standard_anthropic() {
+        // Standard Anthropic error event should still parse normally.
+        let raw = b"data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}";
+        let event = parse_sse_event(raw)
+            .expect("parse should succeed")
+            .expect("should produce an event");
+        assert_eq!(event.kind, "error");
+        let error = event.error.expect("error field should be populated");
+        assert_eq!(error.kind.as_deref(), Some("overloaded_error"));
+        assert_eq!(error.message.as_deref(), Some("Overloaded"));
+    }
+
+    #[test]
+    fn sse_accumulator_classifies_dashscope_error_as_retryable() {
+        // End-to-end: DashScope error event should flow through SseParser,
+        // then AnthropicStreamAccumulator::apply, and be classified as
+        // ServerError + Retryable (not InvalidResponse + FailFast).
+        let sse = b"event: error\ndata: {\"code\":\"InvalidParameter\",\"message\":\"Inference engine abort\"}\n\n";
+        let mut parser = SseParser::default();
+        let events = parser.push(sse).expect("push should succeed");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "error");
+
+        let mut acc = AnthropicStreamAccumulator::default();
+        let err = acc
+            .apply(
+                events.into_iter().next().unwrap(),
+                "test-model",
+                "test-url",
+                None,
+            )
+            .expect_err("error event should fail the accumulator");
+        let classification = crate::provider::retry::classify_provider_error(&err);
+        assert_eq!(
+            classification.kind,
+            ProviderFailureKind::ServerError,
+            "DashScope error should be ServerError, not InvalidResponse"
+        );
+        assert_eq!(
+            classification.disposition,
+            RetryDisposition::Retryable,
+            "DashScope error should be Retryable, not FailFast"
+        );
+    }
+
+    #[test]
+    fn parse_sse_non_error_event_with_string_message_still_fails() {
+        // A non-error event with a string `message` should still fail to parse,
+        // because the fallback only applies when the SSE event type is "error".
+        let raw = b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":\"oops\"}";
+        let result = parse_sse_event(raw);
+        assert!(
+            result.is_err(),
+            "non-error event with string message should still fail"
+        );
     }
 }
