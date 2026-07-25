@@ -632,6 +632,26 @@ pub enum AgentCommands {
     Stop {
         agent_id: Option<String>,
     },
+    /// Permanently delete an agent and its associated data
+    #[command(name = "delete")]
+    Delete {
+        agent_id: String,
+        /// Skip interactive confirmation (required in non-interactive mode)
+        #[arg(short = 'y', long)]
+        yes: bool,
+        /// Also delete private supervised child agents
+        #[arg(long)]
+        cascade_private_children: bool,
+        /// Wait for the deletion job to complete
+        #[arg(long)]
+        wait: bool,
+        /// Timeout in seconds for --wait (default: 300)
+        #[arg(long)]
+        timeout: Option<u64>,
+        /// Output structured JSON
+        #[arg(long)]
+        json: bool,
+    },
     Abort {
         agent_id: Option<String>,
     },

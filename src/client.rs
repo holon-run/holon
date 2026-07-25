@@ -11,12 +11,14 @@ use crate::{
     daemon::{RuntimeShutdownResponse, RuntimeStatusResponse},
     diagnostics::PerformanceDiagnosticsSnapshot,
     http::{
-        AttachWorkspaceRequest, BatchGetBriefsRequest, BatchGetBriefsResponse,
-        BatchGetMessagesRequest, BatchGetMessagesResponse, BatchGetTranscriptEntriesRequest,
+        AgentDeletionResponse, AgentDeletionStatusResponse, AttachWorkspaceRequest,
+        BatchGetBriefsRequest, BatchGetBriefsResponse, BatchGetMessagesRequest,
+        BatchGetMessagesResponse, BatchGetTranscriptEntriesRequest,
         BatchGetTranscriptEntriesResponse, ClearAgentModelRequest, ControlPromptRequest,
-        CreateAgentRequest, DebugPromptRequest, DetachWorkspaceRequest, ExitWorkspaceRequest,
-        ModelConfigMigrationRequest, RuntimeConfigReadResponse, RuntimeConfigUpdateRequest,
-        RuntimeConfigUpdateResponse, SetAgentModelRequest, TaskInputRequest, TaskStopRequest,
+        CreateAgentRequest, DebugPromptRequest, DeleteAgentRequest, DetachWorkspaceRequest,
+        ExitWorkspaceRequest, ModelConfigMigrationRequest, RuntimeConfigReadResponse,
+        RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse, SetAgentModelRequest,
+        TaskInputRequest, TaskStopRequest,
     },
     http_dto::AgentStateSnapshotDto,
     model_catalog::BuiltInModelMetadata,
@@ -634,6 +636,28 @@ impl LocalClient {
         .await
     }
 
+    pub async fn delete_agent(
+        &self,
+        agent_id: &str,
+        cascade_private_children: bool,
+    ) -> Result<AgentDeletionResponse> {
+        self.delete_control_json(
+            &format!("/control/agents/{agent_id}"),
+            &DeleteAgentRequest {
+                cascade_private_children,
+            },
+        )
+        .await
+    }
+
+    pub async fn get_agent_deletion_status(
+        &self,
+        agent_id: &str,
+    ) -> Result<AgentDeletionStatusResponse> {
+        self.get_control_json(&format!("/control/agents/{agent_id}/delete-status"))
+            .await
+    }
+
     pub async fn create_agent(&self, agent_id: &str) -> Result<Value> {
         self.create_agent_with_template(agent_id, None).await
     }
@@ -936,6 +960,19 @@ impl LocalClient {
             .with_context(|| format!("failed to decode response body for POST {}", path))
     }
 
+    pub async fn delete_control_json<B: Serialize, T: DeserializeOwned>(
+        &self,
+        path: &str,
+        payload: &B,
+    ) -> Result<T> {
+        let path = api_path(path);
+        let body = self
+            .send(RequestSpec::delete_json(&path, payload)?, true)
+            .await?;
+        serde_json::from_slice(&body)
+            .with_context(|| format!("failed to decode response body for DELETE {}", path))
+    }
+
     async fn patch_control_json<B: Serialize, T: DeserializeOwned>(
         &self,
         path: &str,
@@ -1020,6 +1057,7 @@ impl LocalClient {
         let mut builder = match request.method {
             HttpMethod::Get => self.http.get(self.http_url_for(&request.path)),
             HttpMethod::Post => self.http.post(self.http_url_for(&request.path)),
+            HttpMethod::Delete => self.http.delete(self.http_url_for(&request.path)),
             HttpMethod::Patch => self.http.patch(self.http_url_for(&request.path)),
         };
         if let Some(remote) = &self.remote {
@@ -1071,6 +1109,7 @@ impl LocalClient {
         let method = match request.method {
             HttpMethod::Get => "GET",
             HttpMethod::Post => "POST",
+            HttpMethod::Delete => "DELETE",
             HttpMethod::Patch => "PATCH",
         };
         let mut raw = format!(
@@ -1242,6 +1281,14 @@ impl RequestSpec {
         })
     }
 
+    fn delete_json<B: Serialize>(path: &str, payload: &B) -> Result<Self> {
+        Ok(Self {
+            method: HttpMethod::Delete,
+            path: path.to_string(),
+            body: Some(serde_json::to_vec(payload)?),
+        })
+    }
+
     fn patch_json<B: Serialize>(path: &str, payload: &B) -> Result<Self> {
         Ok(Self {
             method: HttpMethod::Patch,
@@ -1255,6 +1302,7 @@ impl RequestSpec {
 enum HttpMethod {
     Get,
     Post,
+    Delete,
     Patch,
 }
 
