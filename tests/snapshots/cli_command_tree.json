@@ -40,6 +40,67 @@
     "aliases": []
   },
   {
+    "path": "agent.delete",
+    "positionals": [
+      {
+        "name": "agent_id",
+        "value_name": "AGENT_ID",
+        "index": null,
+        "required": true
+      }
+    ],
+    "flags": [
+      {
+        "long": "cascade-private-children",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
+        "long": "json",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
+        "long": "timeout",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "wait",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
+        "long": "yes",
+        "short": "-y",
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
     "path": "agent.list",
     "positionals": [],
     "flags": [],

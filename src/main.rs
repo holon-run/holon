@@ -32,10 +32,7 @@ use holon::{
     },
     fd_limit::{apply_nofile_limit_policy, DEFAULT_NOFILE_TARGET},
     host::RuntimeHost,
-    http::{
-        self, AgentDeletionStatusResponse, AppState, ControlRequest, CreateCommandTaskRequest,
-        CreateTimerRequest,
-    },
+    http::{self, AppState, ControlRequest, CreateCommandTaskRequest, CreateTimerRequest},
     memory::{rebuild_memory_index, request_memory_index_rebuild},
     model_discovery::{discovery_cache_path, refresh_provider_models},
     onboarding::{
@@ -3162,12 +3159,12 @@ async fn handle_agent_command(config: &AppConfig, command: Option<AgentCommands>
             match client.agent_status(&agent).await {
                 Ok(summary) => print_json(&serde_json::to_value(summary)?),
                 Err(err) => {
-                    // If the agent is being deleted, show deletion progress instead.
+                    // If the agent is being deleted, show deletion status as JSON instead.
                     if let Some(http_err) = err.downcast_ref::<LocalHttpError>() {
                         if http_err.has_code("agent_deleting") || http_err.has_code("agent_deleted")
                         {
                             let deletion = client.get_agent_deletion_status(&agent).await?;
-                            return print_deletion_status(&deletion);
+                            return print_json(&serde_json::to_value(&deletion)?);
                         }
                     }
                     Err(err)
@@ -3365,7 +3362,7 @@ async fn wait_for_deletion(client: &LocalClient, agent_id: &str, timeout_secs: u
                     );
                     return Ok(());
                 }
-                _ => {} // Pending or Running: continue polling
+                AgentDeletionStatus::Pending | AgentDeletionStatus::Running => {}
             }
         }
         match status.identity.status {
@@ -3394,43 +3391,6 @@ fn format_deletion_phase(phase: &AgentDeletionPhase) -> &'static str {
         Home => "Home",
         Finalize => "Finalize",
     }
-}
-
-fn format_deletion_job_status(status: &AgentDeletionStatus) -> &'static str {
-    use AgentDeletionStatus::*;
-    match status {
-        Pending => "pending",
-        Running => "in progress",
-        RetryableFailed => "failed (retryable)",
-        Completed => "completed",
-    }
-}
-
-fn print_deletion_status(deletion: &AgentDeletionStatusResponse) -> Result<()> {
-    let agent_id = &deletion.identity.agent_id;
-    let status_str = match deletion.identity.status {
-        AgentRegistryStatus::Active => "active",
-        AgentRegistryStatus::Deleting => "deleting",
-        AgentRegistryStatus::Deleted => "deleted",
-    };
-    println!("Agent: {agent_id}");
-    println!("Status: {status_str}");
-    if let Some(ref job) = deletion.job {
-        println!();
-        println!("Deletion Progress:");
-        println!(
-            "  Phase: {} ({})",
-            format_deletion_phase(&job.phase),
-            format_deletion_job_status(&job.status)
-        );
-        println!("  Attempts: {}", job.attempts);
-        if let Some(ref err) = job.last_error {
-            println!("  Last error: {err}");
-        } else {
-            println!("  Last error: (none)");
-        }
-    }
-    Ok(())
 }
 
 async fn handle_skills_command(config: &AppConfig, command: SkillsCommands) -> Result<()> {
