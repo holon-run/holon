@@ -3421,4 +3421,86 @@ diff --git a/new.txt b/new.txt
             "error should suggest space character"
         );
     }
+
+    #[tokio::test]
+    async fn apply_patch_multiple_hunks_same_file_first_hunk_inserts_lines() {
+        // First hunk adds 2 lines, shifting the file content down.
+        // Second hunk must locate its context on the modified (longer) file,
+        // verifying offset accumulation in apply_hunks.
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("sample.txt");
+        tokio::fs::write(&file, "header\nmiddle\nfooter\n")
+            .await
+            .unwrap();
+
+        let patch = "--- a/sample.txt\n+++ b/sample.txt\n@@ -1,1 +1,3 @@\n header\n+inserted_a\n+inserted_b\n middle\n@@ -3,1 +5,1 @@\n-footer\n+FOOTER\n";
+
+        apply_patch(dir.path(), patch).await.unwrap();
+        assert_eq!(
+            tokio::fs::read_to_string(&file).await.unwrap(),
+            "header\ninserted_a\ninserted_b\nmiddle\nFOOTER\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_patch_multiple_hunks_same_file_first_hunk_removes_lines() {
+        // First hunk removes 2 lines, shifting the file content up.
+        // Second hunk must locate its context on the modified (shorter) file,
+        // verifying offset accumulation in the negative direction.
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("sample.txt");
+        tokio::fs::write(&file, "header\nline_a\nline_b\nmiddle\nfooter\n")
+            .await
+            .unwrap();
+
+        let patch = "--- a/sample.txt\n+++ b/sample.txt\n@@ -1,3 +1,1 @@\n header\n-line_a\n-line_b\n middle\n@@ -5,1 +3,1 @@\n-footer\n+FOOTER\n";
+
+        apply_patch(dir.path(), patch).await.unwrap();
+        assert_eq!(
+            tokio::fs::read_to_string(&file).await.unwrap(),
+            "header\nmiddle\nFOOTER\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_patch_multiple_hunks_same_file_replace_with_different_count() {
+        // First hunk replaces 1 line with 3 (net +2), second hunk replaces
+        // 2 lines with 1 (net -1). Verifies that offset from the first hunk
+        // does not corrupt the second hunk's context matching.
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("sample.txt");
+        tokio::fs::write(&file, "alpha\nbeta\ngamma\ndelta\n")
+            .await
+            .unwrap();
+
+        let patch = "--- a/sample.txt\n+++ b/sample.txt\n@@ -1,1 +1,3 @@\n-alpha\n+alpha_a\n+alpha_b\n+alpha_c\n beta\n@@ -3,2 +5,1 @@\n-gamma\n-delta\n+GAMMA\n";
+
+        apply_patch(dir.path(), patch).await.unwrap();
+        assert_eq!(
+            tokio::fs::read_to_string(&file).await.unwrap(),
+            "alpha_a\nalpha_b\nalpha_c\nbeta\nGAMMA\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_patch_multiple_hunks_same_file_with_stale_line_numbers() {
+        // Two hunks on the same file where old line numbers in the second
+        // hunk reflect the ORIGINAL file (not the post-first-hunk state).
+        // The matcher must still locate unique context by content search,
+        // not by the (now-drifted) line hint. This hunk pair has no net
+        // line count change from hunk 1, testing the normal sequential path.
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("sample.txt");
+        tokio::fs::write(&file, "one\ntwo\nthree\nfour\nfive\n")
+            .await
+            .unwrap();
+
+        let patch = "--- a/sample.txt\n+++ b/sample.txt\n@@ -1,1 +1,1 @@\n-one\n+ONE\n two\n@@ -5,1 +5,1 @@\n-five\n+FIVE\n";
+
+        apply_patch(dir.path(), patch).await.unwrap();
+        assert_eq!(
+            tokio::fs::read_to_string(&file).await.unwrap(),
+            "ONE\ntwo\nthree\nfour\nFIVE\n"
+        );
+    }
 }
