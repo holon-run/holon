@@ -3068,6 +3068,17 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       await request.client.deleteAgent(agentId, cascadePrivateChildren);
       if (!isCurrentClientRequest(request)) return;
       await get().refreshBootstrap({ background: true });
+      // If we deleted the currently selected agent, clean up and reset to dashboard
+      // so the UI doesn't stay on a stale agent page that errors on refresh.
+      if (get().selectedAgentId === agentId) {
+        stopAgentEventStream(agentId, set);
+        set({
+          selectedAgentId: "",
+          route: "dashboard",
+          rightPanelView: undefined,
+          rightPanelViewStack: [],
+        });
+      }
     } catch (error) {
       if (!isCurrentClientRequest(request)) return;
       throw error;

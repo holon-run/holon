@@ -68,6 +68,12 @@ export function pushBrowserRoute(route: RouteKey, agentId?: string, templateId?:
   window.history.pushState(null, "", nextPath);
 }
 
+export function replaceBrowserRoute(route: RouteKey, agentId?: string, templateId?: string, query?: Record<string, string | number | undefined>): void {
+  const nextPath = pathForRoute(route, agentId, templateId, query);
+  if (`${window.location.pathname}${window.location.search}` === nextPath) return;
+  window.history.replaceState(null, "", nextPath);
+}
+
 function safeDecodeURIComponent(value: string): string {
   try {
     return decodeURIComponent(value);

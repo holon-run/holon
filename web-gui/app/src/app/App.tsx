@@ -46,7 +46,7 @@ import { canUseRemoteRuntimeConnections, readStoredRemoteConnectionProfiles, use
 import { useAgentDetail } from "../runtime/useAgentDetail";
 import { useRuntimeDashboard } from "../runtime/useRuntimeDashboard";
 import type { AgentSummary, DisplayLevel, RouteKey, RuntimeConnection, RuntimeConnectionConfig, RuntimeConnectionProfile } from "../runtime/types";
-import { pushBrowserRoute, routeFromLocation } from "./routes";
+import { pushBrowserRoute, replaceBrowserRoute, routeFromLocation } from "./routes";
 
 const globalRoutes: Array<{ key: RouteKey; labelKey: string; icon: LucideIcon }> = [
   { key: "dashboard", labelKey: "nav.dashboard", icon: LayoutDashboard },
@@ -341,6 +341,16 @@ export function App() {
       disableDeveloperDiagnosticsUi(selectedAgentId);
     }
   }, [developerDiagnosticsEnabled, disableDeveloperDiagnosticsUi, selectedAgentId]);
+
+  // Redirect to dashboard when the user opens a non-existent agent (e.g. typed
+  // a stale URL). Wait for both bootstrap and agent-detail loading to finish
+  // so we don't redirect during initial load.
+  useEffect(() => {
+    if (route === "agent" && !loading && !bootstrap.connection.error && !activeAgent && !agentDetailLoading) {
+      setRoute("dashboard");
+      replaceBrowserRoute("dashboard");
+    }
+  }, [route, loading, bootstrap.connection.error, activeAgent, agentDetailLoading, setRoute]);
 
   function navigateRoute(nextRoute: RouteKey) {
     setRoute(nextRoute);
@@ -759,7 +769,10 @@ export function App() {
         <RightSidePanel
           agent={selectedAgent}
           onControlAgent={async (action) => { await controlAgent(selectedAgent.id, action); }}
-          onDeleteAgent={async (cascade) => { await deleteAgent(selectedAgent.id, cascade); }}
+          onDeleteAgent={async (cascade) => {
+            await deleteAgent(selectedAgent.id, cascade);
+            pushBrowserRoute("dashboard");
+          }}
           connection={bootstrap.connection}
           skillCatalog={agentSkillCatalog}
           availableSkillCatalog={skillCatalog}
