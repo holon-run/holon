@@ -327,6 +327,16 @@ def seed_wait(
         f"report containing {completion}, and immediately call CompleteWorkItem for "
         "the exact current WorkItem. Do not create another WorkItem or modify files.",
     )
+    # Detect premature completion from a spurious queued message.
+    early_items = harness.work_items(f"{label}-early-check")
+    early_matches = [
+        item for item in early_items if objective in item.get("objective", "")
+    ]
+    if early_matches and early_matches[0].get("state") == "completed":
+        raise AssertionError(
+            f"WorkItem {objective} completed before {label} wait was observed; "
+            "a spurious queued message likely woke the agent."
+        )
     item = harness.wait_work_item_scheduling_state(
         objective_marker=objective,
         expected_scheduling_state="waiting_external",
@@ -391,6 +401,18 @@ def exercise_wait_triggers(harness: CaseHarness, marker: str) -> None:
         f"completion report containing {callback_completion}, and immediately call "
         "CompleteWorkItem for the exact current WorkItem.",
     )
+    # Detect premature completion caused by a spurious queued message
+    # waking the agent before the harness can observe waiting_external.
+    early_items = harness.work_items("callback-early-check")
+    early_matches = [
+        item for item in early_items if callback_objective in item.get("objective", "")
+    ]
+    if early_matches and early_matches[0].get("state") == "completed":
+        raise AssertionError(
+            f"WorkItem {callback_objective} completed before the harness could "
+            "observe waiting_external; a spurious queued message likely woke "
+            "the agent. Ensure wait_queue_drained() runs before this scenario."
+        )
     harness.wait_work_item_scheduling_state(
         objective_marker=callback_objective,
         expected_scheduling_state="waiting_external",
@@ -656,6 +678,7 @@ def exercise_scenarios(args: argparse.Namespace) -> int:
     selected = set(args.scenario or record["parameters"]["scenarios"])
     marker = secrets.token_hex(5)
     if "reducer_only_candidates" in selected:
+        harness.wait_queue_drained()
         exercise_reducer_ingress(harness, marker)
     if selected.intersection(
         {
@@ -664,6 +687,7 @@ def exercise_scenarios(args: argparse.Namespace) -> int:
             "delivery",
         }
     ):
+        harness.wait_queue_drained()
         exercise_wait_triggers(harness, marker)
     if selected.intersection(
         {
@@ -673,10 +697,13 @@ def exercise_scenarios(args: argparse.Namespace) -> int:
             "delivery",
         }
     ):
+        harness.wait_queue_drained()
         exercise_continuations(harness, marker)
     if "explicitly_bound_operator_input" in selected:
+        harness.wait_queue_drained()
         exercise_bound_operator(harness, marker)
     if "operator_interjection" in selected:
+        harness.wait_queue_drained()
         exercise_interjection(harness, marker)
     harness.capture_context("exercise-final")
     append_phase(

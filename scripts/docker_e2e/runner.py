@@ -532,6 +532,27 @@ class CaseHarness:
         self.capture_logs()
         raise TimeoutError("default agent did not become idle after readiness")
 
+    def wait_queue_drained(self, *, stable_checks: int = 3) -> None:
+        """Wait until the agent is idle *and* the queue stays empty for
+        ``stable_checks`` consecutive polls.  This closes the race window
+        where ``wait_agent_idle`` returns between a message being enqueued
+        and the scheduler claiming it."""
+        deadline = time.monotonic() + 90
+        consecutive = 0
+        while time.monotonic() < deadline:
+            state = self.request("GET", self.agent_path("state"))
+            agent = state["agent"]["agent"]
+            idle = (
+                agent["status"] in TERMINAL_STATUSES
+                and agent.get("current_run_id") is None
+                and int(state["session"]["pending_count"]) == 0
+            )
+            consecutive = consecutive + 1 if idle else 0
+            if consecutive >= stable_checks:
+                return
+            time.sleep(1)
+        raise TimeoutError("queue did not drain within 90 s")
+
     def state(self, label: str) -> dict[str, Any]:
         value = self.request("GET", self.agent_path("state"))
         write_json(self.evidence / f"{label}-state.json", value)
