@@ -337,8 +337,12 @@ def seed_wait(
         + "1. Call CreateWorkItem with objective "
         f"{json.dumps(objective)}, plan_status ready, and one todo named resume pending.\n"
         "2. Call PickWorkItem for that WorkItem.\n"
-        f"3. Call WaitFor with wake={wake}{resource_argument} and a concrete reason.\n"
+        f"3. Call WaitFor with wake={wake}{resource_argument} and a concrete reason. "
+        "The wait trigger has NOT fired yet. You MUST call WaitFor even if you believe "
+        "the trigger has already fired. Do NOT skip WaitFor.\n"
         "4. STOP. Do not complete the WorkItem in this turn.\n"
+        "Do NOT call UpdateWorkItem or CompleteWorkItem in this turn. "
+        "The WorkItem MUST remain open and waiting after this turn.\n"
         "When this WorkItem resumes later: call GetWorkItem, update the todo to "
         f"completed, emit a report containing {completion}, and call CompleteWorkItem.",
     )
@@ -449,6 +453,7 @@ def exercise_wait_triggers(harness: CaseHarness, marker: str) -> None:
         label="callback-completed",
     )
 
+    harness.wait_queue_drained()
     webhook_seed = seed_wait(
         harness,
         label="webhook",
@@ -462,6 +467,7 @@ def exercise_wait_triggers(harness: CaseHarness, marker: str) -> None:
     )
     wait_seed_completion(harness, webhook_seed, "webhook")
 
+    harness.wait_queue_drained()
     channel_seed = seed_wait(
         harness,
         label="channel",
@@ -483,6 +489,7 @@ def exercise_wait_triggers(harness: CaseHarness, marker: str) -> None:
     )
     wait_seed_completion(harness, channel_seed, "channel")
 
+    harness.wait_queue_drained()
     timer = harness.request(
         "POST",
         harness.agent_path("timers", control=True),
@@ -502,6 +509,7 @@ def exercise_wait_triggers(harness: CaseHarness, marker: str) -> None:
     )
     wait_seed_completion(harness, timer_seed, "timer")
 
+    harness.wait_queue_drained()
     system_seed = seed_wait(
         harness,
         label="system",
@@ -517,6 +525,7 @@ def exercise_wait_triggers(harness: CaseHarness, marker: str) -> None:
     write_json(harness.evidence / "wait-system.json", system_wake)
     wait_seed_completion(harness, system_seed, "system")
 
+    harness.wait_queue_drained()
     wake_seed = seed_wait(
         harness,
         label="wake-hint",

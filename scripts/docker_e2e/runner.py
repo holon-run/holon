@@ -602,6 +602,13 @@ class CaseHarness:
             matches = [
                 item for item in items if objective_marker in item.get("objective", "")
             ]
+            if matches and matches[0].get("state") == "completed":
+                write_json(self.evidence / f"{label}-premature-work-items.json", items)
+                self.capture_context(f"{label}-premature")
+                raise AssertionError(
+                    f"WorkItem {objective_marker} completed before reaching "
+                    f"{expected_scheduling_state}; the agent likely skipped WaitFor"
+                )
             if (
                 len(matches) == 1
                 and matches[0].get("scheduling_state")
