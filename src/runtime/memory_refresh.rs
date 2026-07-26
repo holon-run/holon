@@ -377,9 +377,16 @@ impl RuntimeHandle {
         &self,
         work_item: &crate::types::WorkItemRecord,
     ) -> Result<Option<String>> {
-        if let Some(message_id) = self.duplicate_work_queue_tick_message_id(
+        if let Some((message_id, message_created_at)) = self.duplicate_work_queue_tick_message_id(
             &scheduler::work_queue_tick_idempotency_key(work_item, "queued_available"),
         )? {
+            // Even when the idempotency key matches, a provider failure may have
+            // left the WorkItem still runnable. Check whether any work signal
+            // appeared after the matched tick so we do not permanently suppress
+            // the retry tick.
+            if self.has_work_signal_after(work_item, message_created_at, "queued_available")? {
+                return Ok(None);
+            }
             return Ok(Some(message_id));
         }
         let recent_messages = self
@@ -411,9 +418,15 @@ impl RuntimeHandle {
         &self,
         work_item: &crate::types::WorkItemRecord,
     ) -> Result<Option<String>> {
-        if let Some(message_id) = self.duplicate_work_queue_tick_message_id(
+        if let Some((message_id, message_created_at)) = self.duplicate_work_queue_tick_message_id(
             &scheduler::work_queue_tick_idempotency_key(work_item, "continue_active"),
         )? {
+            // Same rationale as duplicate_queued_available_message_id: a provider
+            // failure during the active continuation turn must not permanently
+            // suppress the retry tick when the WorkItem still has pending work.
+            if self.has_work_signal_after(work_item, message_created_at, "continue_active")? {
+                return Ok(None);
+            }
             return Ok(Some(message_id));
         }
         let recent_briefs = self
@@ -436,7 +449,7 @@ impl RuntimeHandle {
     fn duplicate_work_queue_tick_message_id(
         &self,
         idempotency_key: &str,
-    ) -> Result<Option<String>> {
+    ) -> Result<Option<(String, chrono::DateTime<chrono::Utc>)>> {
         Ok(self
             .inner
             .storage
@@ -459,7 +472,7 @@ impl RuntimeHandle {
                     .and_then(|value| value.as_str())
                     == Some(idempotency_key)
             })
-            .map(|message| message.id))
+            .map(|message| (message.id, message.created_at)))
     }
 
     fn duplicate_wake_hint_message_id(&self, pending: &PendingWakeHint) -> Result<Option<String>> {
