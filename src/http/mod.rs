@@ -558,6 +558,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/enqueue", post(state::enqueue_default))
         .route("/agents/{agent_id}/skills", get(skills::list_skills))
+        .route(
+            "/agents/{agent_id}/skills/{skill_id}",
+            get(skills::agent_skill_detail),
+        )
         .route("/skills/catalog", get(skills::skills_catalog))
         .route("/skills/catalog/{skill_id}", get(skills::skill_detail))
         .route("/skills/catalog/add", post(skills::add_skill_to_catalog))

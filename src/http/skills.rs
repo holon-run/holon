@@ -371,6 +371,15 @@ pub async fn skill_detail(
     })))
 }
 
+pub async fn agent_skill_detail(
+    Path((agent_id, skill_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    agent_scoped_skill_detail(&agent_id, &skill_id, &state).await
+}
+
 /// If `skill_id` starts with `agent_home:{owner}:`, return the owner agent_id.
 fn parse_agent_owner_from_skill_id(skill_id: &str) -> Option<String> {
     let rest = skill_id.strip_prefix("agent_home:")?;
@@ -392,26 +401,16 @@ async fn agent_scoped_skill_detail(
         .get_public_agent(agent_id)
         .await
         .map_err(agent_access_error)?;
-    let agent_home = runtime.agent_home();
-
-    let roots =
-        crate::skills::existing_skill_roots(Some(&agent_home), &crate::skills::SKILL_ROOT_SUFFIXES)
-            .into_iter()
-            .map(|root| {
-                crate::skills::skill_root_registration(
-                    crate::types::SkillRootSourceKind::AgentHome,
-                    Some(agent_id.to_string()),
-                    root,
-                )
-            })
-            .collect::<Vec<_>>();
-
-    let mut registry = state.skills_registry.write().await;
-    registry
-        .sync_effective_roots(roots.clone())
+    let identity = runtime
+        .agent_identity_view()
+        .await
         .map_err(error_response)?;
-    let Some(skill) = registry
-        .catalog_for_roots(&roots, Some(crate::types::SkillScope::Agent))
+    let skills = runtime
+        .skills_runtime_view(&identity)
+        .await
+        .map_err(error_response)?;
+    let Some(skill) = skills
+        .discoverable_skills
         .into_iter()
         .find(|entry| entry.skill_id == skill_id)
     else {

@@ -1465,16 +1465,16 @@ impl RuntimeHost {
         let loaded_agent_memory = load_agent_memory(agent_home.as_path())?;
         let skill_visibility = skill_visibility(&identity_view);
         let user_home = self.config().home_dir.clone();
-        let workspace_anchor = state
+        let workspace_skill_root = state
             .active_workspace_entry
             .as_ref()
-            .map(|entry| entry.workspace_anchor.as_path());
+            .map(|entry| entry.execution_root.as_path());
         let skill_roots = effective_skill_root_registrations(
             skill_visibility,
             Some(user_home.as_path()),
             &state.id,
             agent_home.as_path(),
-            workspace_anchor,
+            workspace_skill_root,
         );
         let mut skill_registry = self.inner.skills_registry.write().await;
         skill_registry.sync_effective_roots(skill_roots.clone())?;

@@ -209,6 +209,35 @@ describe("projectModelOptions", () => {
 });
 
 describe("createRuntimeClient", () => {
+  it("uses the agent-scoped endpoint when loading an agent skill detail", async () => {
+    const seen: string[] = [];
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: (async (input: RequestInfo | URL) => {
+        seen.push(String(input));
+        return Response.json({
+          skill: {
+            skill_id: "workspace:root:trace-report-analysis",
+            name: "trace-report-analysis",
+            description: "Analyze traces",
+            scope: "workspace",
+          },
+          content: "# Trace report analysis",
+        });
+      }) as typeof fetch,
+    });
+
+    await expect(
+      client.getSkillDetail("workspace:root:trace-report-analysis", "holon-dev2"),
+    ).resolves.toEqual(expect.objectContaining({
+      content: "# Trace report analysis",
+    }));
+    expect(seen).toEqual([
+      "http://example.test:7878/api/agents/holon-dev2/skills/workspace%3Aroot%3Atrace-report-analysis",
+    ]);
+  });
+
   it("loads agent state without fetching the full roster", async () => {
     const seen: string[] = [];
     const client = createRuntimeClient({

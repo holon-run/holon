@@ -25,6 +25,7 @@ http_async_tests!(
     list_skills_includes_all_agent_skill_roots,
     agent_skills_endpoint_uses_effective_registry_snapshot,
     agent_skills_endpoint_does_not_leak_stale_roots_between_agents,
+    agent_skill_detail_follows_active_execution_root_without_canonical_fallback,
     skills_catalog_returns_global_user_library_only,
     skill_detail_returns_catalog_skill_markdown,
     install_skill_existing_destination_returns_conflict,

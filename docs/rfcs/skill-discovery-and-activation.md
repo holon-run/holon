@@ -44,9 +44,27 @@ Agent-scoped discovery is rooted under `agent_home`.
 
 ### Workspace Scope
 
-Workspace-scoped discovery is rooted under `workspace_anchor`.
+Workspace-scoped discovery is rooted under the agent's active
+`execution_root`. A canonical projection therefore reads the canonical
+workspace, while a Git worktree projection reads that worktree.
 
-Skill discovery should not drift with shell cwd.
+Worktree discovery does not merge or fall back to `workspace_anchor`: a skill
+removed from the worktree must not reappear from the canonical checkout, and an
+untracked canonical skill must not leak into the worktree. Skill discovery
+should not drift with shell cwd.
+
+Skills created or changed during a turn become available on the next runtime
+skill-view or prompt-context build; Holon does not mutate an already-built
+system prompt.
+
+Agent-scoped detail lookup uses the target agent as execution-root/version
+context:
+
+`GET /agents/{agent_id}/skills/{skill_id}`
+
+Skill content is not an agent isolation boundary. A caller with remote-access
+permission may read another public agent's effective skill detail, while each
+agent's own catalog and prompt still load only its active execution root.
 
 ## Catalog Precedence
 

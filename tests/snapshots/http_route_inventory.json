@@ -214,6 +214,33 @@
   },
   {
     "method": "get",
+    "path": "/api/agents/{agent_id}/skills/{skill_id}",
+    "handler": "agent_skill_detail",
+    "operation_id": "agentSkillDetail",
+    "tag": "skills",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      },
+      {
+        "name": "skill_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
     "path": "/api/agents/{agent_id}/state",
     "handler": "agent_state",
     "operation_id": "agentState",

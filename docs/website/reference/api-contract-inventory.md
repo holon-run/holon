@@ -172,6 +172,7 @@ response directly.
 | `GET` | `/agents/:agent_id/transcript` | Path `agent_id`; query `limit?`. | `TranscriptEntry[]` | Experimental | Transcript data can include provider/tool internals. |
 | `GET` | `/agents/:agent_id/worktree-summary` | Path `agent_id`. | `{ agent_id, summary }` | Experimental | Summary shape follows managed worktree internals. |
 | `GET` | `/agents/:agent_id/skills` | Path `agent_id`; auth header when bearer mode is active. | `{ ok, agent_id, skills }` | Experimental | Skills list shape follows local skill catalog records. |
+| `GET` | `/agents/:agent_id/skills/:skill_id` | Path `agent_id`, `skill_id`; auth header when bearer mode is active. | `{ ok, skill, content }` | Experimental | Resolves detail from the target agent's effective catalog and active execution root. |
 
 Default-agent aliases:
 
@@ -332,6 +333,7 @@ Skill management separates library operations from agent enablement:
 | `POST` | `/api/skills/catalog/refresh` | `{ }` | `{ ok, catalog }` | Experimental | Refreshes runtime catalog by rescanning local skill roots. Does not reconcile with lock file or fetch remote updates. |
 | `POST` | `/api/skills/catalog/check` | `{ name? }` | `{ ... }` | Experimental | Checks library consistency. |
 | `GET` | `/agents/:agent_id/skills` | none | `{ skills: [...] }` | Experimental | Lists skills enabled for an agent. |
+| `GET` | `/agents/:agent_id/skills/:skill_id` | none | `{ skill, content }` | Experimental | Returns an effective skill using the target agent's active execution root as version context. |
 | `POST` | `/control/agents/:agent_id/skills/enable` | `{ name, copy? }` | `{ ok, agent_id, skill_name }` | Experimental | Enables a library skill for an agent. |
 | `POST` | `/control/agents/:agent_id/skills/disable` | `{ name }` | `{ ok, agent_id, skill_name }` | Experimental | Disables a skill for an agent. |
 | `POST` | `/control/agents/:agent_id/skills/install` | `{ kind }` | `{ ok, agent_id, skill_name }` | Deprecated | Compatibility alias for add/enable. |

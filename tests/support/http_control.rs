@@ -899,6 +899,122 @@ pub async fn agent_skills_endpoint_does_not_leak_stale_roots_between_agents() ->
     Ok(())
 }
 
+pub async fn agent_skill_detail_follows_active_execution_root_without_canonical_fallback(
+) -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
+    let runtime = host.default_runtime().await?;
+    let workspace_root = host.config().workspace_dir.clone();
+    let canonical_shared = workspace_root.join("skills/shared-detail");
+    let canonical_only = workspace_root.join("skills/canonical-only");
+    for (skill_dir, name, body) in [
+        (&canonical_shared, "shared-detail", "canonical body"),
+        (&canonical_only, "canonical-only", "canonical only body"),
+    ] {
+        std::fs::create_dir_all(skill_dir)?;
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: canonical\n---\n{body}"),
+        )?;
+    }
+
+    let client = Client::new();
+    let canonical_catalog: serde_json::Value = client
+        .get(format!("{base}/api/agents/default/skills"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let canonical_skill_id = canonical_catalog["skills"]
+        .as_array()
+        .and_then(|skills| {
+            skills
+                .iter()
+                .find(|skill| skill["name"] == "shared-detail")
+                .and_then(|skill| skill["skill_id"].as_str())
+        })
+        .ok_or_else(|| anyhow::anyhow!("canonical workspace skill should be listed"))?;
+    let canonical_detail: serde_json::Value = client
+        .get(format!(
+            "{base}/api/agents/default/skills/{canonical_skill_id}"
+        ))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert!(canonical_detail["content"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("canonical body"));
+
+    let worktree_root = tempdir()?.keep();
+    let worktree_shared = worktree_root.join("skills/shared-detail");
+    let worktree_only = worktree_root.join("skills/worktree-only");
+    for (skill_dir, name, body) in [
+        (&worktree_shared, "shared-detail", "worktree body"),
+        (&worktree_only, "worktree-only", "worktree only body"),
+    ] {
+        std::fs::create_dir_all(skill_dir)?;
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: worktree\n---\n{body}"),
+        )?;
+    }
+    runtime
+        .enter_worktree(
+            workspace_root,
+            "main".into(),
+            worktree_root,
+            "skill-detail-test".into(),
+        )
+        .await?;
+
+    let worktree_catalog: serde_json::Value = client
+        .get(format!("{base}/api/agents/default/skills"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let worktree_skills = worktree_catalog["skills"]
+        .as_array()
+        .expect("worktree skills should be an array");
+    assert!(worktree_skills
+        .iter()
+        .any(|skill| skill["name"] == "worktree-only"));
+    assert!(!worktree_skills
+        .iter()
+        .any(|skill| skill["name"] == "canonical-only"));
+    let worktree_skill_id = worktree_skills
+        .iter()
+        .find(|skill| skill["name"] == "shared-detail")
+        .and_then(|skill| skill["skill_id"].as_str())
+        .ok_or_else(|| anyhow::anyhow!("worktree workspace skill should be listed"))?;
+    assert_ne!(worktree_skill_id, canonical_skill_id);
+
+    let worktree_detail: serde_json::Value = client
+        .get(format!(
+            "{base}/api/agents/default/skills/{worktree_skill_id}"
+        ))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert!(worktree_detail["content"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("worktree body"));
+
+    let stale_canonical = client
+        .get(format!(
+            "{base}/api/agents/default/skills/{canonical_skill_id}"
+        ))
+        .send()
+        .await?;
+    assert_eq!(stale_canonical.status(), reqwest::StatusCode::NOT_FOUND);
+
+    server.abort();
+    Ok(())
+}
+
 pub async fn skills_catalog_returns_global_user_library_only() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let skill_name = format!("http-global-catalog-{}", std::process::id());

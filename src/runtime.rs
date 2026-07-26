@@ -1790,7 +1790,7 @@ impl RuntimeHandle {
             state
                 .active_workspace_entry
                 .as_ref()
-                .map(|entry| entry.workspace_anchor.as_path()),
+                .map(|entry| entry.execution_root.as_path()),
         );
         let mut view = if let Some(bridge) = self.inner.host_bridge.as_ref() {
             let registry = bridge.skills_registry()?;
@@ -1829,7 +1829,7 @@ impl RuntimeHandle {
             state
                 .active_workspace_entry
                 .as_ref()
-                .map(|entry| entry.workspace_anchor.as_path()),
+                .map(|entry| entry.execution_root.as_path()),
         );
         let registry = bridge.skills_registry()?;
         registry.write().await.sync_effective_roots(skill_roots)?;

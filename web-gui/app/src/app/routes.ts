@@ -21,6 +21,14 @@ export function routeFromLocation(location: Pick<Location, "pathname" | "search"
   if (path === "/") return { route: "dashboard" };
   if (path === "/search") return { route: "search" };
   if (path === "/skills") return { route: "skills" };
+  const agentSkillMatch = path.match(/^\/agents\/([^/]+)\/skills\/([^/]+)$/);
+  if (agentSkillMatch) {
+    return {
+      route: "skillDetail",
+      agentId: safeDecodeURIComponent(agentSkillMatch[1]),
+      skillId: safeDecodeURIComponent(agentSkillMatch[2]),
+    };
+  }
   const skillMatch = path.match(/^\/skills\/([^/]+)$/);
   if (skillMatch) {
     return {
@@ -50,11 +58,15 @@ export function routeFromLocation(location: Pick<Location, "pathname" | "search"
   return { route: "dashboard" };
 }
 
-export function pathForRoute(route: RouteKey, agentId?: string, templateId?: string, query?: Record<string, string | number | undefined>): string {
+export function pathForRoute(route: RouteKey, agentId?: string, templateId?: string, query?: Record<string, string | number | undefined>, skillAgentId?: string): string {
   const queryString = query ? new URLSearchParams(Object.entries(query).flatMap(([key, value]) => (value == null ? [] : [[key, String(value)]]))).toString() : "";
   if (route === "search") return "/search";
   if (route === "skills") return "/skills";
-  if (route === "skillDetail" && agentId) return `/skills/${encodeURIComponent(agentId)}`;
+  if (route === "skillDetail" && agentId) {
+    return skillAgentId
+      ? `/agents/${encodeURIComponent(skillAgentId)}/skills/${encodeURIComponent(agentId)}`
+      : `/skills/${encodeURIComponent(agentId)}`;
+  }
   if (route === "templates") return "/templates";
   if (route === "templateDetail" && templateId) return `/templates/${encodeURIComponent(templateId)}`;
   if (route === "settings") return "/settings";
@@ -62,14 +74,14 @@ export function pathForRoute(route: RouteKey, agentId?: string, templateId?: str
   return "/";
 }
 
-export function pushBrowserRoute(route: RouteKey, agentId?: string, templateId?: string, query?: Record<string, string | number | undefined>): void {
-  const nextPath = pathForRoute(route, agentId, templateId, query);
+export function pushBrowserRoute(route: RouteKey, agentId?: string, templateId?: string, query?: Record<string, string | number | undefined>, skillAgentId?: string): void {
+  const nextPath = pathForRoute(route, agentId, templateId, query, skillAgentId);
   if (`${window.location.pathname}${window.location.search}` === nextPath) return;
   window.history.pushState(null, "", nextPath);
 }
 
-export function replaceBrowserRoute(route: RouteKey, agentId?: string, templateId?: string, query?: Record<string, string | number | undefined>): void {
-  const nextPath = pathForRoute(route, agentId, templateId, query);
+export function replaceBrowserRoute(route: RouteKey, agentId?: string, templateId?: string, query?: Record<string, string | number | undefined>, skillAgentId?: string): void {
+  const nextPath = pathForRoute(route, agentId, templateId, query, skillAgentId);
   if (`${window.location.pathname}${window.location.search}` === nextPath) return;
   window.history.replaceState(null, "", nextPath);
 }

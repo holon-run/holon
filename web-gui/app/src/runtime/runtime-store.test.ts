@@ -20,6 +20,7 @@ import {
   readStoredRuntimeConnectionConfig,
   runWithConcurrencyLimit,
   sessionForEventLogEpoch,
+  skillDetailCacheKey,
   streamEventFromBackfill,
   useRuntimeStore,
   writeStoredRuntimeConnectionConfig,
@@ -74,6 +75,15 @@ function sessionState(overrides: Partial<AgentSessionState> = {}): AgentSessionS
     ...overrides,
   };
 }
+
+describe("skillDetailCacheKey", () => {
+  it("keeps global and agent-scoped versions separate", () => {
+    expect(skillDetailCacheKey("workspace:root:demo")).toBe("workspace:root:demo");
+    expect(skillDetailCacheKey("workspace:root:demo", "agent-a")).toBe(
+      "agent-a\u0000workspace:root:demo",
+    );
+  });
+});
 
 function agentSummary(overrides: Partial<AgentSummary> = {}): AgentSummary {
   return {

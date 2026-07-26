@@ -42,7 +42,7 @@ import {
   subscribeRuntimeTrace,
 } from "../runtime/runtime-trace";
 import { selectSelectedAgent } from "../runtime/runtime-selectors";
-import { canUseRemoteRuntimeConnections, readStoredRemoteConnectionProfiles, useRuntimeStore } from "../runtime/runtime-store";
+import { canUseRemoteRuntimeConnections, readStoredRemoteConnectionProfiles, skillDetailCacheKey, useRuntimeStore } from "../runtime/runtime-store";
 import { useAgentDetail } from "../runtime/useAgentDetail";
 import { useRuntimeDashboard } from "../runtime/useRuntimeDashboard";
 import type { AgentSummary, DisplayLevel, RouteKey, RuntimeConnection, RuntimeConnectionConfig, RuntimeConnectionProfile } from "../runtime/types";
@@ -71,6 +71,7 @@ export function App() {
   const route = useRuntimeStore((state) => state.route);
   const selectedAgentId = useRuntimeStore((state) => state.selectedAgentId);
   const selectedSkillId = useRuntimeStore((state) => state.selectedSkillId);
+  const selectedSkillAgentId = useRuntimeStore((state) => state.selectedSkillAgentId);
   const selectedTemplateId = useRuntimeStore((state) => state.selectedTemplateId);
   const displayLevel = useRuntimeStore((state) =>
     state.displayLevelsByAgentId[selectedAgentId] ?? "info",
@@ -124,14 +125,17 @@ export function App() {
   const skillCatalog = useRuntimeStore((state) => state.skillCatalog);
   const skillCatalogLoading = useRuntimeStore((state) => state.skillCatalogLoading);
   const skillCatalogError = useRuntimeStore((state) => state.skillCatalogError);
+  const selectedSkillCacheKey = selectedSkillId
+    ? skillDetailCacheKey(selectedSkillId, selectedSkillAgentId || undefined)
+    : "";
   const skillDetail = useRuntimeStore((state) =>
-    selectedSkillId ? state.skillDetailById[selectedSkillId] : undefined,
+    selectedSkillCacheKey ? state.skillDetailById[selectedSkillCacheKey] : undefined,
   );
   const skillDetailLoading = useRuntimeStore((state) =>
-    selectedSkillId ? state.skillDetailLoadingById[selectedSkillId] ?? false : false,
+    selectedSkillCacheKey ? state.skillDetailLoadingById[selectedSkillCacheKey] ?? false : false,
   );
   const skillDetailError = useRuntimeStore((state) =>
-    selectedSkillId ? state.skillDetailErrorById[selectedSkillId] : undefined,
+    selectedSkillCacheKey ? state.skillDetailErrorById[selectedSkillCacheKey] : undefined,
   );
   const templateCatalog = useRuntimeStore((state) => state.templateCatalog);
   const templateCatalogLoading = useRuntimeStore((state) => state.templateCatalogLoading);
@@ -282,7 +286,7 @@ export function App() {
         return;
       }
       if (nextRoute.route === "skillDetail" && nextRoute.skillId) {
-        openSkill(nextRoute.skillId);
+        openSkill(nextRoute.skillId, nextRoute.agentId);
         return;
       }
       if (nextRoute.route === "templateDetail" && nextRoute.templateId) {
@@ -314,8 +318,8 @@ export function App() {
 
   useEffect(() => {
     if (route !== "skillDetail" || !selectedSkillId || skillDetailLoading || skillDetail) return;
-    void refreshSkillDetail(selectedSkillId);
-  }, [refreshSkillDetail, route, selectedSkillId, skillDetail, skillDetailLoading]);
+    void refreshSkillDetail(selectedSkillId, selectedSkillAgentId || undefined);
+  }, [refreshSkillDetail, route, selectedSkillAgentId, selectedSkillId, skillDetail, skillDetailLoading]);
 
   useEffect(() => {
     if ((route !== "templates" && route !== "templateDetail") || templateCatalogLoading || templateCatalog.source !== "fixture") return;
@@ -357,9 +361,9 @@ export function App() {
     pushBrowserRoute(nextRoute, selectedAgentId);
   }
 
-  function navigateSkill(skillId: string) {
-    openSkill(skillId);
-    pushBrowserRoute("skillDetail", skillId);
+  function navigateSkill(skillId: string, agentId?: string) {
+    openSkill(skillId, agentId);
+    pushBrowserRoute("skillDetail", skillId, undefined, undefined, agentId);
   }
 
   function navigateTemplate(catalogId: string) {
@@ -707,7 +711,7 @@ export function App() {
             loading={skillDetailLoading}
             error={skillDetailError}
             onBack={() => navigateRoute("skills")}
-            onRefresh={() => refreshSkillDetail(selectedSkillId)}
+            onRefresh={() => refreshSkillDetail(selectedSkillId, selectedSkillAgentId || undefined)}
           />
         ) : null}
         {route === "templates" ? (
@@ -805,7 +809,7 @@ export function App() {
           onDisableAgentSkill={(name) => {
             void disableAgentSkill(selectedAgent.id, name);
           }}
-          onOpenSkill={navigateSkill}
+          onOpenSkill={(skillId) => navigateSkill(skillId, selectedAgent.id)}
           onShowAgentOverview={showAgentOverview}
           onRefreshTimelineEvents={() => {
             void refreshTimelineEvents(selectedAgent.id);

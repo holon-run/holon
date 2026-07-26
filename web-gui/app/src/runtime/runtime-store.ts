@@ -258,6 +258,7 @@ export interface RuntimeStoreState {
   route: RouteKey;
   selectedAgentId: string;
   selectedSkillId: string;
+  selectedSkillAgentId: string;
   selectedTemplateId: string;
   displayLevel: DisplayLevel;
   displayLevelsByAgentId: Record<string, DisplayLevel>;
@@ -313,7 +314,7 @@ export interface RuntimeStoreState {
 
   setRoute: (route: RouteKey) => void;
   openAgent: (agentId: string, targetEventSeq?: number) => void;
-  openSkill: (skillId: string) => void;
+  openSkill: (skillId: string, agentId?: string) => void;
   openTemplate: (catalogId: string) => void;
   setDisplayLevel: (displayLevel: DisplayLevel, agentId?: string) => void;
   disableDeveloperDiagnosticsUi: (agentId?: string) => void;
@@ -350,7 +351,7 @@ export interface RuntimeStoreState {
   refreshRuntimeConfig: () => Promise<void>;
   updateRuntimeConfig: (updates: Array<{ key: string; value?: unknown; unset?: boolean }>) => Promise<RuntimeConfigState | undefined>;
   refreshSkillCatalog: () => Promise<void>;
-  refreshSkillDetail: (skillId: string | undefined) => Promise<void>;
+  refreshSkillDetail: (skillId: string | undefined, agentId?: string) => Promise<void>;
   refreshTemplateCatalog: () => Promise<void>;
   refreshTemplateDetail: (catalogId: string | undefined) => Promise<void>;
   installTemplate: (githubUrl: string) => Promise<boolean>;
@@ -548,6 +549,10 @@ function isCurrentClientGeneration(generation: number): boolean {
 }
 
 type RuntimeClient = ReturnType<typeof createRuntimeClient>;
+
+export function skillDetailCacheKey(skillId: string, agentId?: string): string {
+  return agentId ? `${agentId}\u0000${skillId}` : skillId;
+}
 
 interface ClientRequest {
   client: RuntimeClient;
@@ -1115,6 +1120,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   route: "dashboard",
   selectedAgentId: "",
   selectedSkillId: "",
+  selectedSkillAgentId: "",
   selectedTemplateId: "",
   displayLevel: "info",
   displayLevelsByAgentId: readStoredDisplayLevels(),
@@ -1164,7 +1170,12 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   resumeRevision: 0,
 
   setRoute: (route) => set({ route }),
-  openSkill: (skillId) => set({ route: "skillDetail", selectedSkillId: skillId }),
+  openSkill: (skillId, agentId) =>
+    set({
+      route: "skillDetail",
+      selectedSkillId: skillId,
+      selectedSkillAgentId: agentId ?? "",
+    }),
   openTemplate: (catalogId) => set({ route: "templateDetail", selectedTemplateId: catalogId }),
   openAgent: (agentId, targetEventSeq) =>
     set((state) => {
@@ -1569,6 +1580,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       rosterActivityByAgentId: readStoredRosterActivity(currentRemoteKey(normalizedConfig)),
       selectedAgentId: "",
       selectedSkillId: "",
+      selectedSkillAgentId: "",
       selectedTemplateId: "",
       route: "dashboard",
       resumeRevision: get().resumeRevision + 1,
@@ -1811,21 +1823,21 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     }
   },
 
-  refreshSkillDetail: async (skillId) => {
+  refreshSkillDetail: async (skillId, agentId) => {
     if (!skillId) return;
+    const cacheKey = skillDetailCacheKey(skillId, agentId);
     const request = captureClientRequest();
     set((state) => ({
-      skillDetailLoadingById: { ...state.skillDetailLoadingById, [skillId]: true },
-      skillDetailErrorById: { ...state.skillDetailErrorById, [skillId]: undefined },
+      skillDetailLoadingById: { ...state.skillDetailLoadingById, [cacheKey]: true },
+      skillDetailErrorById: { ...state.skillDetailErrorById, [cacheKey]: undefined },
     }));
     try {
-      // The backend resolves scope from the skill_id prefix automatically.
-      const detail = await request.client.getSkillDetail(skillId);
+      const detail = await request.client.getSkillDetail(skillId, agentId);
       if (!isCurrentClientRequest(request)) return;
       set((state) => ({
-        skillDetailById: { ...state.skillDetailById, [skillId]: detail },
-        skillDetailLoadingById: { ...state.skillDetailLoadingById, [skillId]: false },
-        skillDetailErrorById: { ...state.skillDetailErrorById, [skillId]: detail.error },
+        skillDetailById: { ...state.skillDetailById, [cacheKey]: detail },
+        skillDetailLoadingById: { ...state.skillDetailLoadingById, [cacheKey]: false },
+        skillDetailErrorById: { ...state.skillDetailErrorById, [cacheKey]: detail.error },
       }));
     } catch (error) {
       if (!isCurrentClientRequest(request)) return;
@@ -1833,10 +1845,10 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       set((state) => ({
         skillDetailById: {
           ...state.skillDetailById,
-          [skillId]: { source: "http", error: message },
+          [cacheKey]: { source: "http", error: message },
         },
-        skillDetailLoadingById: { ...state.skillDetailLoadingById, [skillId]: false },
-        skillDetailErrorById: { ...state.skillDetailErrorById, [skillId]: message },
+        skillDetailLoadingById: { ...state.skillDetailLoadingById, [cacheKey]: false },
+        skillDetailErrorById: { ...state.skillDetailErrorById, [cacheKey]: message },
       }));
     }
   },

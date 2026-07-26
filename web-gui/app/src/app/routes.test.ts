@@ -31,4 +31,15 @@ describe("routeFromLocation", () => {
       skillId: "user_global:ghx",
     });
   });
+
+  it("parses agent-scoped skill detail links", () => {
+    expect(routeFromLocation({
+      pathname: "/agents/holon-dev2/skills/workspace%3Aroot%3Atrace-report-analysis",
+      search: "",
+    })).toEqual({
+      route: "skillDetail",
+      agentId: "holon-dev2",
+      skillId: "workspace:root:trace-report-analysis",
+    });
+  });
 });
