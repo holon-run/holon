@@ -261,6 +261,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
                     "container": "drill-container",
                     "workspace_parent": str(workspace),
                 },
+                control_token="stable-control-token",
             )
             commands: list[tuple[str, ...]] = []
 
@@ -286,6 +287,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
             self.assertEqual(harness.network, "drill-network")
             self.assertEqual(harness.container, "drill-container")
             self.assertEqual(harness.workspace_parent, workspace)
+            self.assertEqual(harness.token, "stable-control-token")
             self.assertIn("HOLON_DISABLE_PROVIDER_FALLBACK=false", docker_run)
             self.assertIn(
                 'HOLON_MODEL_FALLBACKS=["dashscope@token-plan/qwen3.8-max-preview"]',

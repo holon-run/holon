@@ -137,6 +137,7 @@ class CaseHarness:
         timeout_seconds: int,
         keep: bool,
         resource_names: dict[str, str] | None = None,
+        control_token: str | None = None,
     ) -> None:
         suffix = secrets.token_hex(4)
         self.case_id = case_id
@@ -161,7 +162,7 @@ class CaseHarness:
         self.volume = names.get("volume", f"holon-live-{case_id}-{suffix}")
         self.network = names.get("network", f"holon-live-{case_id}-{suffix}")
         self.container = names.get("container", f"holon-live-{case_id}-{suffix}")
-        self.token = secrets.token_urlsafe(24)
+        self.token = control_token or secrets.token_urlsafe(24)
         self.base_url = ""
         self.agent_id = ""
         workspace_parent = names.get("workspace_parent")
