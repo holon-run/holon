@@ -1186,8 +1186,10 @@ def prepare(args: argparse.Namespace) -> int:
     )
     paths = DrillPaths.from_root(args.run_dir or default_run_root(run_id))
     require(not paths.root.exists(), f"run directory already exists: {paths.root}")
-    git_status = run(["git", "status", "--porcelain"]).stdout.strip()
-    require(not git_status, "prepare requires a clean Git worktree")
+    tracked_status = run(
+        ["git", "status", "--porcelain", "--untracked-files=no"]
+    ).stdout.strip()
+    require(not tracked_status, "prepare requires no tracked Git changes")
     if not args.skip_build:
         run(["docker", "build", "--tag", args.image, str(ROOT)], capture=False)
     identity = image_identity(args.image)
