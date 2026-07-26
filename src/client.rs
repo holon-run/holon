@@ -603,6 +603,24 @@ impl LocalClient {
             &format!("/control/agents/{agent_id}/prompt"),
             &ControlPromptRequest {
                 text: text.into(),
+                work_item_id: None,
+                attachments: Vec::new(),
+            },
+        )
+        .await
+    }
+
+    pub async fn control_prompt_for_work_item(
+        &self,
+        agent_id: &str,
+        work_item_id: impl Into<String>,
+        text: impl Into<String>,
+    ) -> Result<ControlPromptResponse> {
+        self.post_control_json(
+            &format!("/control/agents/{agent_id}/prompt"),
+            &ControlPromptRequest {
+                text: text.into(),
+                work_item_id: Some(work_item_id.into()),
                 attachments: Vec::new(),
             },
         )

@@ -560,12 +560,11 @@ mod tests {
             .find(|s| s.name == "tool_wait_for")
             .expect("wait for section");
         assert!(section.content.contains("`wake=task_result`"));
+        assert!(section.content.contains("`wake=timer`"));
+        assert!(section.content.contains("`wake=system`"));
         assert!(section.content.contains("`wake=external`"));
         assert!(section.content.contains("`wake=operator_input`"));
         assert!(section.content.contains("`recheck_after_ms`"));
-        assert!(section
-            .content
-            .contains("timer and system are not wake values"));
         assert!(section
             .content
             .contains("Do not use UpdateWorkItem blocked fields"));

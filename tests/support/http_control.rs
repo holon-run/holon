@@ -1947,7 +1947,10 @@ pub async fn control_prompt_records_message_admission_fields() -> Result<()> {
 
     let response = client
         .post(format!("{base}/api/control/agents/default/prompt"))
-        .json(&serde_json::json!({ "text": "hello" }))
+        .json(&serde_json::json!({
+            "text": "hello",
+            "work_item_id": "work-control-bound",
+        }))
         .send()
         .await?;
     assert!(response.status().is_success());
@@ -1971,6 +1974,7 @@ pub async fn control_prompt_records_message_admission_fields() -> Result<()> {
                 && message.admission_context == Some(AdmissionContext::LocalProcess)
                 && message.authority_class == AuthorityClass::OperatorInstruction
                 && message.priority == Priority::Interject
+                && message.work_item_id.as_deref() == Some("work-control-bound")
         }) && events.iter().any(|event| {
             event.kind == "message_admitted"
                 && event.data["delivery_surface"] == "http_control_prompt"

@@ -237,6 +237,7 @@ pub async fn run_once_with_host(
         },
         delivery_surface: MessageDeliverySurface::RunOnce,
         admission_context: AdmissionContext::LocalProcess,
+        work_item_id: None,
         metadata: None,
         correlation_id: None,
         causation_id: None,

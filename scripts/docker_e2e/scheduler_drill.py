@@ -250,6 +250,375 @@ def attach_running(harness: CaseHarness) -> None:
     harness.wait_readiness()
 
 
+def wait_for_turn_after(harness: CaseHarness, baseline_turn: int, label: str) -> None:
+    deadline = datetime.now(timezone.utc).timestamp() + harness.timeout_seconds
+    last_state: dict[str, Any] | None = None
+    while datetime.now(timezone.utc).timestamp() < deadline:
+        last_state = harness.request("GET", harness.agent_path("state"))
+        agent = last_state["agent"]["agent"]
+        if (
+            int(agent["turn_index"]) > baseline_turn
+            and agent["status"] in {"awake_idle", "asleep", "awaiting_task"}
+            and agent.get("current_run_id") is None
+            and int(last_state["session"]["pending_count"]) == 0
+        ):
+            write_json(harness.evidence / f"{label}-state.json", last_state)
+            return
+        import time
+
+        time.sleep(1)
+    write_json(harness.evidence / f"{label}-timeout-state.json", last_state)
+    raise TimeoutError(f"timed out waiting for {label}")
+
+
+def wait_for_running_turn(
+    harness: CaseHarness,
+    *,
+    baseline_turn: int,
+    label: str,
+) -> None:
+    import time
+
+    deadline = time.monotonic() + harness.timeout_seconds
+    while time.monotonic() < deadline:
+        state = harness.request("GET", harness.agent_path("state"))
+        agent = state["agent"]["agent"]
+        if (
+            int(agent["turn_index"]) >= baseline_turn
+            and agent.get("current_run_id") is not None
+        ):
+            write_json(harness.evidence / f"{label}-state.json", state)
+            return
+        time.sleep(0.5)
+    raise TimeoutError(f"timed out waiting for running turn in {label}")
+
+
+def seed_wait(
+    harness: CaseHarness,
+    *,
+    label: str,
+    marker: str,
+    wake: str = "external",
+    resource: str | None = None,
+) -> dict[str, Any]:
+    objective = f"DRILL-WAIT-{label}-{marker}"
+    completion = f"DRILL-WAIT-COMPLETE-{label}-{marker}"
+    resource_argument = (
+        f", resource={json.dumps(resource)}"
+        if resource is not None
+        else ""
+    )
+    baseline, _ = harness.prompt(
+        f"{label}-seed",
+        "Scheduler drill. Create exactly one WorkItem with objective "
+        f"{objective}, plan_status ready, and one todo named resume pending. "
+        f"Pick that WorkItem. Call WaitFor with wake={wake}"
+        f"{resource_argument}, and a concrete reason. "
+        "Do not complete it in this turn. When this exact WorkItem resumes, call "
+        "GetWorkItem, update the existing todo to completed, emit a concise completion "
+        f"report containing {completion}, and immediately call CompleteWorkItem for "
+        "the exact current WorkItem. Do not create another WorkItem or modify files.",
+    )
+    item = harness.wait_work_item_scheduling_state(
+        objective_marker=objective,
+        expected_scheduling_state="waiting_external",
+        label=f"{label}-waiting",
+    )
+    return {
+        "baseline_turn": baseline,
+        "objective": objective,
+        "completion": completion,
+        "work_item_id": item["id"],
+    }
+
+
+def wait_seed_completion(
+    harness: CaseHarness,
+    seed: dict[str, Any],
+    label: str,
+) -> dict[str, Any]:
+    return harness.wait_work_item(
+        objective_marker=seed["objective"],
+        expected_state="completed",
+        label=f"{label}-completed",
+    )
+
+
+def exercise_reducer_ingress(harness: CaseHarness, marker: str) -> None:
+    webhook = harness.request(
+        "POST",
+        f"/api/webhooks/generic/{harness.agent_id}",
+        {"drill": marker, "surface": "webhook"},
+    )
+    write_json(harness.evidence / "reducer-webhook.json", webhook)
+    harness.wait_agent_idle()
+    channel = harness.request(
+        "POST",
+        harness.agent_path("enqueue"),
+        {
+            "kind": "channel_event",
+            "json": {"drill": marker, "surface": "channel"},
+            "origin": {
+                "kind": "channel",
+                "channel_id": f"drill-{marker}",
+                "sender_id": "scheduler-drill",
+            },
+        },
+    )
+    write_json(harness.evidence / "reducer-channel.json", channel)
+    harness.wait_agent_idle()
+
+
+def exercise_wait_triggers(harness: CaseHarness, marker: str) -> None:
+    callback_seed = seed_wait(
+        harness,
+        label="callback",
+        marker=marker,
+        resource=f"drill:callback:{marker}",
+    )
+    callback = harness.reset_callback("wait-callback-capability")
+    harness.fire_callback(
+        "wait-callback-trigger",
+        callback["trigger_url"],
+        {"drill": marker, "trigger": "callback"},
+    )
+    wait_seed_completion(harness, callback_seed, "callback")
+
+    webhook_seed = seed_wait(
+        harness,
+        label="webhook",
+        marker=marker,
+        resource=f"drill:webhook:{marker}",
+    )
+    harness.request(
+        "POST",
+        f"/api/webhooks/generic/{harness.agent_id}",
+        {"drill": marker, "trigger": "webhook"},
+    )
+    wait_seed_completion(harness, webhook_seed, "webhook")
+
+    channel_seed = seed_wait(
+        harness,
+        label="channel",
+        marker=marker,
+        resource=f"drill:channel:{marker}",
+    )
+    harness.request(
+        "POST",
+        harness.agent_path("enqueue"),
+        {
+            "kind": "channel_event",
+            "json": {"drill": marker, "trigger": "channel"},
+            "origin": {
+                "kind": "channel",
+                "channel_id": f"drill-wait-{marker}",
+                "sender_id": "scheduler-drill",
+            },
+        },
+    )
+    wait_seed_completion(harness, channel_seed, "channel")
+
+    timer = harness.request(
+        "POST",
+        harness.agent_path("timers", control=True),
+        {
+            "duration_ms": 5000,
+            "summary": f"scheduler drill timer {marker}",
+        },
+    )
+    write_json(harness.evidence / "wait-timer.json", timer)
+    timer_seed = seed_wait(
+        harness,
+        label="timer",
+        marker=marker,
+        wake="timer",
+        resource=timer["id"],
+    )
+    wait_seed_completion(harness, timer_seed, "timer")
+
+    wake_seed = seed_wait(
+        harness,
+        label="wake-hint",
+        marker=marker,
+        wake="system",
+    )
+    wake = harness.request(
+        "POST",
+        harness.agent_path("wake", control=True),
+        {
+            "reason": f"scheduler drill wake {marker}",
+            "source": "scheduler-drill",
+        },
+    )
+    write_json(harness.evidence / "wait-wake-hint.json", wake)
+    wait_seed_completion(harness, wake_seed, "wake-hint")
+
+
+def exercise_continuations(harness: CaseHarness, marker: str) -> None:
+    objective_marker = f"DRILL-CONTINUATIONS-{marker}"
+    completion_marker = f"DRILL-CONTINUATIONS-COMPLETE-{marker}"
+    objective = (
+        f"{objective_marker}. On the first autonomous WorkItem turn, call ExecCommand "
+        f"with cmd `sleep 2; printf DRILL-TASK-{marker}`, yield_time_ms=50, and a "
+        "bounded max_output_tokens. Call WaitFor with wake=task_result and the exact "
+        "promoted task_id. Do not poll. On task-result rejoin, call GetWorkItem and "
+        f"WaitFor with wake=external, resource=drill:continuation:{marker}. On the "
+        "external resume, call GetWorkItem, update the two existing todos to completed, "
+        f"emit a concise result containing {completion_marker}, and immediately call "
+        "CompleteWorkItem for the exact current WorkItem. Do not create another item."
+    )
+    harness.prompt(
+        "continuation-seed",
+        "Scheduler drill. Create exactly one WorkItem whose objective is "
+        f"{json.dumps(objective)}, plan_status ready, with exactly two todos: "
+        "task-rejoin pending and external-resume pending. Do not PickWorkItem, "
+        "ExecCommand, WaitFor, UpdateWorkItem, or CompleteWorkItem in this "
+        "operator-triggered turn. End after CreateWorkItem succeeds.",
+    )
+    task_waiting = harness.wait_work_item_scheduling_state(
+        objective_marker=objective_marker,
+        expected_scheduling_state="waiting_task",
+        label="continuation-task-wait",
+    )
+    external_waiting = harness.wait_work_item_scheduling_state(
+        objective_marker=objective_marker,
+        expected_scheduling_state="waiting_external",
+        label="continuation-external-wait",
+    )
+    require(
+        task_waiting["id"] == external_waiting["id"],
+        "continuation WorkItem identity changed",
+    )
+    callback = harness.reset_callback("continuation-callback")
+    harness.fire_callback(
+        "continuation-external-resume",
+        callback["trigger_url"],
+        {"drill": marker, "trigger": "continuation"},
+    )
+    item = harness.wait_work_item(
+        objective_marker=objective_marker,
+        expected_state="completed",
+        label="continuation-completed",
+    )
+    require(
+        item.get("result_brief_id"),
+        "continuation WorkItem did not produce a result brief",
+    )
+
+
+def exercise_bound_operator(harness: CaseHarness, marker: str) -> None:
+    objective = f"DRILL-BOUND-OPERATOR-{marker}"
+    completion = f"DRILL-BOUND-OPERATOR-COMPLETE-{marker}"
+    harness.prompt(
+        "bound-operator-seed",
+        "Scheduler drill. Create exactly one WorkItem with objective "
+        f"{objective}, plan_status ready, and one todo named bound-input pending. "
+        "Pick it and call WaitFor with wake=operator_input and a concrete reason. "
+        "Do not complete it in this turn. When resumed, call GetWorkItem, update the "
+        f"todo to completed, emit a concise report containing {completion}, and "
+        "immediately call CompleteWorkItem for the exact current WorkItem.",
+    )
+    waiting = harness.wait_work_item_scheduling_state(
+        objective_marker=objective,
+        expected_scheduling_state="waiting_for_operator",
+        label="bound-operator-waiting",
+    )
+    response = harness.request(
+        "POST",
+        harness.agent_path("prompt", control=True),
+        {
+            "text": f"Resume the exact bound WorkItem and follow its objective. {marker}",
+            "work_item_id": waiting["id"],
+        },
+    )
+    write_json(harness.evidence / "bound-operator-response.json", response)
+    harness.wait_work_item(
+        objective_marker=objective,
+        expected_state="completed",
+        label="bound-operator-completed",
+    )
+
+
+def exercise_interjection(harness: CaseHarness, marker: str) -> None:
+    before = harness.state("interjection-before")
+    baseline = int(before["agent"]["agent"]["turn_index"])
+    first = harness.request(
+        "POST",
+        harness.agent_path("prompt", control=True),
+        {
+            "text": "Scheduler drill interjection boundary. Call ExecCommand with "
+            f"cmd `sleep 4; printf DRILL-INTERJECTION-{marker}`, yield_time_ms=10000, "
+            "and bounded output. After the tool result, answer with "
+            f"DRILL-INTERJECTION-DONE-{marker}.",
+        },
+    )
+    write_json(harness.evidence / "interjection-first.json", first)
+    wait_for_running_turn(
+        harness,
+        baseline_turn=baseline,
+        label="interjection-tool-start",
+    )
+    second = harness.request(
+        "POST",
+        harness.agent_path("prompt", control=True),
+        {
+            "text": f"Operator interjection {marker}: keep the requested marker and finish.",
+        },
+    )
+    write_json(harness.evidence / "interjection-second.json", second)
+    wait_for_turn_after(harness, baseline, "interjection-finished")
+
+
+def exercise_scenarios(args: argparse.Namespace) -> int:
+    paths = DrillPaths.from_root(args.run_dir)
+    record = load_record(paths)
+    validate_record(paths, record)
+    require(container_running(record["resources"]["container"]), "candidate is not running")
+    harness = make_harness(
+        paths,
+        record,
+        label=f"exercise-{len(record['phase_history']) + 1}",
+        mode=record.get("last_mode") or "shadow",
+        env_file=None,
+        require_credentials=False,
+    )
+    attach_running(harness)
+    selected = set(args.scenario or record["parameters"]["scenarios"])
+    marker = secrets.token_hex(5)
+    if "reducer_only_candidates" in selected:
+        exercise_reducer_ingress(harness, marker)
+    if selected.intersection(
+        {
+            "exact_wait_resume",
+            "settlement",
+            "delivery",
+        }
+    ):
+        exercise_wait_triggers(harness, marker)
+    if selected.intersection(
+        {
+            "work_item_autonomous_continuation",
+            "exact_task_rejoin",
+            "settlement",
+            "delivery",
+        }
+    ):
+        exercise_continuations(harness, marker)
+    if "explicitly_bound_operator_input" in selected:
+        exercise_bound_operator(harness, marker)
+    if "operator_interjection" in selected:
+        exercise_interjection(harness, marker)
+    harness.capture_context("exercise-final")
+    append_phase(
+        paths,
+        record,
+        action="exercise",
+        status="completed",
+        detail={"scenarios": sorted(selected), "marker": marker},
+    )
+    return 0
+
+
 def container_running(container: str) -> bool:
     result = run(
         ["docker", "inspect", "--format", "{{.State.Running}}", container],
@@ -1012,6 +1381,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     for command, handler in (
         ("start", start_candidate),
+        ("exercise", exercise_scenarios),
         ("stop", stop_candidate),
         ("kill", kill_candidate),
         ("collect", collect),
@@ -1027,6 +1397,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                 required=True,
             )
             command_parser.add_argument("--env-file")
+        if command == "exercise":
+            command_parser.add_argument(
+                "--scenario",
+                action="append",
+                choices=PRODUCTION_SCENARIOS,
+            )
         if command == "collect":
             command_parser.add_argument("--label")
         command_parser.set_defaults(handler=handler)

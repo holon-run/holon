@@ -21,6 +21,8 @@ pub(crate) enum WaitForWakeKind {
     OperatorInput,
     TaskResult,
     External,
+    Timer,
+    System,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -78,7 +80,29 @@ impl RuntimeHandle {
         }
 
         let now = self.now();
-        let (kind, subject_ref, wake_sources) = wait_condition_parts(wake, resource.clone())?;
+        let timer_wake_at = if wake == WaitForWakeKind::Timer {
+            let timer_id = wait_resource_required(wake, resource.clone())?;
+            let timer = self
+                .inner
+                .storage
+                .latest_timer_record(&timer_id)?
+                .ok_or_else(|| anyhow!("wait_for timer does not exist: {timer_id}"))?;
+            if timer.agent_id != agent_id {
+                return Err(anyhow!("wait_for timer agent mismatch: {timer_id}"));
+            }
+            if timer.status != TimerStatus::Active {
+                return Err(anyhow!("wait_for timer is not active: {timer_id}"));
+            }
+            Some(
+                timer
+                    .next_fire_at
+                    .ok_or_else(|| anyhow!("wait_for timer has no next fire time: {timer_id}"))?,
+            )
+        } else {
+            None
+        };
+        let (kind, subject_ref, wake_sources) =
+            wait_condition_parts(wake, resource.clone(), timer_wake_at)?;
         let recheck_at = recheck_after_ms.map(|delay| recheck_at_from(now, delay));
         let mut state = self.agent_state().await?;
         let expected_state = state.clone();
@@ -801,6 +825,7 @@ fn reconciliation_signals_for_message(
 fn wait_condition_parts(
     wake: WaitForWakeKind,
     resource: Option<String>,
+    timer_wake_at: Option<DateTime<Utc>>,
 ) -> Result<(WaitConditionKind, Option<String>, Vec<WakeSource>)> {
     match wake {
         WaitForWakeKind::OperatorInput => Ok((
@@ -823,6 +848,21 @@ fn wait_condition_parts(
                 external_trigger_id: None,
             }],
         )),
+        WaitForWakeKind::Timer => {
+            let timer_id = wait_resource_required(wake, resource)?;
+            let wake_at =
+                timer_wake_at.ok_or_else(|| anyhow!("wait_for timer wake time is unavailable"))?;
+            Ok((
+                WaitConditionKind::Timer,
+                Some(timer_id),
+                vec![WakeSource::Timer { wake_at }],
+            ))
+        }
+        WaitForWakeKind::System => Ok((
+            WaitConditionKind::System,
+            optional_wait_resource(resource),
+            vec![WakeSource::SystemTick],
+        )),
     }
 }
 
@@ -835,6 +875,36 @@ fn optional_wait_resource(resource: Option<String>) -> Option<String> {
 fn wait_resource_required(wake: WaitForWakeKind, resource: Option<String>) -> Result<String> {
     optional_wait_resource(resource)
         .ok_or_else(|| anyhow!("wait_for {:?} requires non-empty resource", wake))
+}
+
+#[cfg(test)]
+mod wait_condition_parts_tests {
+    use super::*;
+
+    #[test]
+    fn timer_wait_uses_supplied_timer_identity_and_deadline() {
+        let wake_at = Utc::now() + chrono::Duration::seconds(30);
+        let (kind, subject_ref, wake_sources) = wait_condition_parts(
+            WaitForWakeKind::Timer,
+            Some("timer-1".into()),
+            Some(wake_at),
+        )
+        .unwrap();
+
+        assert_eq!(kind, WaitConditionKind::Timer);
+        assert_eq!(subject_ref.as_deref(), Some("timer-1"));
+        assert_eq!(wake_sources, vec![WakeSource::Timer { wake_at }]);
+    }
+
+    #[test]
+    fn system_wait_uses_system_tick_source() {
+        let (kind, subject_ref, wake_sources) =
+            wait_condition_parts(WaitForWakeKind::System, None, None).unwrap();
+
+        assert_eq!(kind, WaitConditionKind::System);
+        assert_eq!(subject_ref, None);
+        assert_eq!(wake_sources, vec![WakeSource::SystemTick]);
+    }
 }
 
 fn recheck_at_from(now: DateTime<Utc>, recheck_after_ms: u64) -> DateTime<Utc> {

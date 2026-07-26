@@ -36,10 +36,8 @@ Prepare a fresh candidate and record its run directory:
 ```bash
 RUN_DIR=$(
   python3 scripts/scheduler-drill.py prepare \
-    --iterations 2000 \
-    --concurrency 8 \
-    --duplicate-ratio 0.10 \
-    --stale-ratio 0.05
+    --iterations 1 \
+    --concurrency 1
 )
 ```
 
@@ -47,6 +45,7 @@ Start or restart the same volume in a requested scheduler mode:
 
 ```bash
 python3 scripts/scheduler-drill.py start --run-dir "$RUN_DIR" --mode shadow
+python3 scripts/scheduler-drill.py exercise --run-dir "$RUN_DIR"
 python3 scripts/scheduler-drill.py stop --run-dir "$RUN_DIR"
 python3 scripts/scheduler-drill.py collect \
   --run-dir "$RUN_DIR" \
@@ -77,6 +76,11 @@ python3 scripts/scheduler-drill.py start \
 Stop between mode changes. Inspect resumable state with `status`; remove the
 container, network, volume, and private control token with `cleanup` only after
 all reports have been retained.
+
+`exercise` currently runs one real model-driven pass for each selected scenario.
+The persisted iterations, concurrency, duplicate, and stale parameters describe
+the later stress matrix and are not silently expanded into repeated model turns.
+Keep them at their defaults until the stress executor is enabled.
 
 ## Evidence decision
 
