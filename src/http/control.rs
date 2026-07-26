@@ -817,7 +817,7 @@ pub async fn control_prompt(
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
         .host
-        .get_public_agent(&agent_id)
+        .get_public_agent_for_external_ingress(&agent_id)
         .await
         .map_err(agent_access_error)?;
     let work_item_id = request.work_item_id.clone().and_then(non_empty_opt);
