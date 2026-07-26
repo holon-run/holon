@@ -184,6 +184,8 @@ pub(crate) struct QueueTransitionCommand {
     pub audit_events: Vec<AuditEvent>,
     pub scheduler_shadow_comparison:
         Option<scheduler_protocol_repository::SchedulerShadowComparisonCommand>,
+    pub scheduler_wait_resume_shadow_comparison:
+        Option<scheduler_protocol_repository::SchedulerShadowComparisonCommand>,
     pub scheduler_delivery_shadow_comparison:
         Option<scheduler_protocol_repository::SchedulerShadowComparisonCommand>,
     pub scheduler_semantic_shadow:
@@ -468,6 +470,7 @@ impl RuntimeTransitionRepository<'_> {
                     &command.scheduler_rollout_expectations,
                     [
                         command.scheduler_shadow_comparison.as_ref(),
+                        command.scheduler_wait_resume_shadow_comparison.as_ref(),
                         command.scheduler_delivery_shadow_comparison.as_ref(),
                     ],
                 )?
@@ -529,6 +532,12 @@ impl RuntimeTransitionRepository<'_> {
                 &command.agent_id,
                 command.scheduler_shadow_comparison.as_ref(),
             )?;
+            let wait_resume_shadow_comparison =
+                scheduler_protocol_repository::validate_shadow_comparison_tx(
+                    tx,
+                    &command.agent_id,
+                    command.scheduler_wait_resume_shadow_comparison.as_ref(),
+                )?;
             let delivery_shadow_comparison =
                 scheduler_protocol_repository::validate_shadow_comparison_tx(
                     tx,
@@ -559,6 +568,11 @@ impl RuntimeTransitionRepository<'_> {
                 tx,
                 &command.agent_id,
                 shadow_comparison,
+            )?;
+            scheduler_protocol_repository::persist_shadow_comparison_tx(
+                tx,
+                &command.agent_id,
+                wait_resume_shadow_comparison,
             )?;
             scheduler_protocol_repository::persist_shadow_comparison_tx(
                 tx,
@@ -1626,6 +1640,7 @@ mod tests {
                     audit_events: vec![AuditEvent::legacy("queue_settled", serde_json::json!({}))],
                     scheduler_semantic_shadow: None,
                     scheduler_shadow_comparison: None,
+                    scheduler_wait_resume_shadow_comparison: None,
                     scheduler_delivery_shadow_comparison: None,
                     notify_scheduler: true,
                     fault: Some(fault),
@@ -1685,6 +1700,7 @@ mod tests {
             )],
             scheduler_semantic_shadow: None,
             scheduler_shadow_comparison: None,
+            scheduler_wait_resume_shadow_comparison: None,
             scheduler_delivery_shadow_comparison: None,
             notify_scheduler: true,
             fault: None,
@@ -1742,6 +1758,7 @@ mod tests {
                 )],
                 scheduler_semantic_shadow: None,
                 scheduler_shadow_comparison: None,
+                scheduler_wait_resume_shadow_comparison: None,
                 scheduler_delivery_shadow_comparison: None,
                 notify_scheduler: false,
                 fault: None,
@@ -1854,6 +1871,7 @@ mod tests {
                             divergence_code: None,
                         },
                     ),
+                    scheduler_wait_resume_shadow_comparison: None,
                     scheduler_delivery_shadow_comparison: None,
                     notify_scheduler: false,
                     fault: Some(fault),
@@ -1929,6 +1947,7 @@ mod tests {
                     divergence_code: None,
                 },
             ),
+            scheduler_wait_resume_shadow_comparison: None,
             scheduler_delivery_shadow_comparison: None,
             notify_scheduler: false,
             fault: None,
@@ -2005,6 +2024,7 @@ mod tests {
                     divergence_code: Some("message_admission_outcome_mismatch".into()),
                 },
             ),
+            scheduler_wait_resume_shadow_comparison: None,
             scheduler_delivery_shadow_comparison: None,
             notify_scheduler: false,
             fault: None,

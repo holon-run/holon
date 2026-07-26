@@ -108,16 +108,20 @@ Use one environment variable to select the desired scheduler mode:
 ```bash
 HOLON_SCHEDULER=legacy        # explicitly request legacy scheduler ownership
 HOLON_SCHEDULER=shadow        # new scheduler compares decisions without ownership
-HOLON_SCHEDULER=authoritative # request production ownership after safety gates pass
+HOLON_SCHEDULER=authoritative # explicitly grant production ownership at startup
 ```
 
 Holon reconciles this desired state before starting agent runtimes. `shadow`
 installs a runtime-managed shadow manifest when no rollout manifest exists and
-enables the production scenario classes for comparison. `authoritative` does
-the same, but a scenario takes ownership only when its installed manifest
-contains complete approved evidence and no matching hard blocker. The
-environment variable never fabricates authoritative evidence or bypasses the
-rollout reducer's revision, preflight, and rollback fences.
+enables the production scenario classes for comparison. `authoritative`
+directly promotes the eight `PRODUCTION_AUTHORITY` classes after installing or
+resuming that manifest. This startup path does not read drill reports, sample
+counts, observation duration, or `verified_evidence`, and it does not fabricate
+those fields. It still rejects unresolved hard blockers and preserves the
+rollout reducer's revision, manifest/preflight identity, transition-order, and
+rollback fences. `OrdinarySemanticOperatorBinding` is not included; ordinary
+operator prompts without an explicit WorkItem binding continue through legacy
+dispatch.
 
 Changing the value to `legacy` and restarting lowers authoritative scenarios
 through `shadow` to `off` before lowering the protocol ceiling. Invalid values

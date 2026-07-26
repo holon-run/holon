@@ -153,6 +153,7 @@ pub(crate) struct SchedulerProjection {
     semantic_waits: Vec<WaitConditionRecord>,
     activation_waits: Vec<WaitConditionRecord>,
     canonical_work_statuses: Option<HashMap<String, WorkStatus>>,
+    canonical_wait_generations: HashMap<String, u64>,
     semantic_work_items: Vec<WorkItemSchedulingProjection>,
 }
 
@@ -279,7 +280,7 @@ impl SchedulerProjection {
                         && condition.kind == WaitConditionKind::Task)
             })
             .collect();
-        let canonical_work_statuses = storage
+        let canonical_snapshot = storage
             .runtime_db()?
             .map(|runtime_db| {
                 runtime_db
@@ -287,14 +288,23 @@ impl SchedulerProjection {
                     .load_scheduler_protocol_snapshot_if_initialized(&snapshot.id)
             })
             .transpose()?
-            .flatten()
+            .flatten();
+        let canonical_work_statuses = canonical_snapshot.as_ref().map(|snapshot| {
+            snapshot
+                .work
+                .iter()
+                .map(|(work_item_id, demand)| (work_item_id.clone(), demand.status.clone()))
+                .collect()
+        });
+        let canonical_wait_generations = canonical_snapshot
             .map(|snapshot| {
                 snapshot
-                    .work
+                    .waits
                     .into_iter()
-                    .map(|(work_item_id, demand)| (work_item_id, demand.status))
+                    .map(|(wait_id, wait)| (wait_id, wait.current_generation))
                     .collect()
-            });
+            })
+            .unwrap_or_default();
         let active_work_item_waiting_intents = active_wait_conditions
             .iter()
             .filter(|condition| condition.work_item_id.is_some())
@@ -344,6 +354,7 @@ impl SchedulerProjection {
             semantic_waits: active_wait_conditions,
             activation_waits,
             canonical_work_statuses,
+            canonical_wait_generations,
             semantic_work_items: work_queue.items,
         })
     }
@@ -734,6 +745,7 @@ pub(crate) struct LegacyWaitResumeObservation {
     input_kind: MessageKind,
     wake_source: String,
     resolved_wait_condition_ids: Vec<String>,
+    wait_signatures: Vec<String>,
     legacy_decision: &'static str,
     model_reentry: bool,
     work_item_id: Option<String>,
@@ -747,6 +759,7 @@ pub(crate) struct RestrictedWaitResumeCandidate {
     schema_version: u32,
     action: &'static str,
     consumed_wait_condition_ids: Vec<String>,
+    wait_signatures: Vec<String>,
     binding_work_item_id: Option<String>,
     queue_disposition: &'static str,
     resulting_posture: &'static str,
@@ -1586,7 +1599,11 @@ pub(crate) fn shadow_comparison_for_wait_resume(
     if !wait_resume_scenario_applies(projection, message) {
         return None;
     }
-    let matching_waits = matching_wait_conditions(projection, message);
+    let matching_waits = matching_wait_conditions_for_work_item(
+        projection,
+        message,
+        message.work_item_id.as_deref(),
+    );
     if matching_waits.is_empty() {
         return None;
     }
@@ -1594,16 +1611,26 @@ pub(crate) fn shadow_comparison_for_wait_resume(
         .iter()
         .map(|condition| condition.id.clone())
         .collect();
+    let wait_signatures = matching_waits
+        .iter()
+        .map(|condition| {
+            let generation = projection
+                .canonical_wait_generations
+                .get(&condition.id)
+                .map(u64::to_string)
+                .unwrap_or_else(|| "legacy".into());
+            format!(
+                "{}:{generation}:{}",
+                condition.id,
+                condition.work_item_id.as_deref().unwrap_or("agent")
+            )
+        })
+        .collect::<Vec<_>>();
     let binding_work_item_id = matching_waits
         .iter()
         .filter_map(|condition| condition.work_item_id.clone())
         .next();
-    let wake_source = match message.kind {
-        MessageKind::TaskResult => "task_result",
-        MessageKind::SystemTick => "system_tick",
-        _ => "unknown",
-    }
-    .to_string();
+    let wake_source = wait_resume_trigger_kind(message).to_string();
     let input_identity = format!("message:{}", message.id);
     let candidate_model_reentry = restricted_wait_resume_model_reentry(projection);
     let observation = LegacySchedulerObservation::WaitResume(LegacyWaitResumeObservation {
@@ -1613,6 +1640,7 @@ pub(crate) fn shadow_comparison_for_wait_resume(
         input_kind: message.kind.clone(),
         wake_source,
         resolved_wait_condition_ids: resolved_wait_condition_ids.clone(),
+        wait_signatures: wait_signatures.clone(),
         legacy_decision: decision.kind.as_str(),
         model_reentry: decision.model_reentry,
         work_item_id: decision.work_item_id.clone(),
@@ -1624,6 +1652,7 @@ pub(crate) fn shadow_comparison_for_wait_resume(
         schema_version: 1,
         action: "wait_resume",
         consumed_wait_condition_ids: resolved_wait_condition_ids,
+        wait_signatures,
         binding_work_item_id: binding_work_item_id.clone(),
         queue_disposition: "claim",
         resulting_posture: "running",
@@ -1654,8 +1683,28 @@ pub(crate) fn shadow_comparison_for_wait_resume(
 fn wait_resume_scenario_class(message: &MessageEnvelope) -> Option<SchedulerScenarioClass> {
     match message.kind {
         MessageKind::TaskResult => Some(EXACT_TASK_REJOIN_SCENARIO),
-        MessageKind::SystemTick => Some(EXACT_WAIT_RESUME_SCENARIO),
+        MessageKind::CallbackEvent
+        | MessageKind::WebhookEvent
+        | MessageKind::ChannelEvent
+        | MessageKind::TimerTick
+        | MessageKind::SystemTick => Some(EXACT_WAIT_RESUME_SCENARIO),
         _ => None,
+    }
+}
+
+fn wait_resume_trigger_kind(message: &MessageEnvelope) -> &'static str {
+    match (&message.kind, &message.origin) {
+        (MessageKind::TaskResult, _) => "task_result",
+        (MessageKind::CallbackEvent | MessageKind::WebhookEvent, _) => "external_callback",
+        (MessageKind::ChannelEvent, _) => "channel_signal",
+        (MessageKind::TimerTick, _) => "wait_deadline",
+        (MessageKind::SystemTick, MessageOrigin::System { subsystem })
+            if subsystem == "wake_hint" =>
+        {
+            "operator_wake_hint"
+        }
+        (MessageKind::SystemTick, _) => "system_tick",
+        _ => "unknown",
     }
 }
 
@@ -1665,7 +1714,12 @@ fn wait_resume_scenario_applies(
 ) -> bool {
     matches!(
         message.kind,
-        MessageKind::TaskResult | MessageKind::SystemTick
+        MessageKind::TaskResult
+            | MessageKind::CallbackEvent
+            | MessageKind::WebhookEvent
+            | MessageKind::ChannelEvent
+            | MessageKind::TimerTick
+            | MessageKind::SystemTick
     ) && !matching_wait_conditions(projection, message).is_empty()
 }
 
@@ -2693,6 +2747,7 @@ mod tests {
             semantic_waits: Vec::new(),
             activation_waits: Vec::new(),
             canonical_work_statuses: None,
+            canonical_wait_generations: HashMap::new(),
             semantic_work_items: Vec::new(),
         }
     }

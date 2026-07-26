@@ -2055,6 +2055,79 @@ fn rollout_authority_requires_complete_evidence_and_fenced_rollback() {
     assert_eq!(duplicate.snapshot, reloaded);
 }
 
+#[test]
+fn explicit_startup_authority_bypasses_only_evidence_completion() {
+    let snapshot = minimal_snapshot(1);
+    let mut manifest = rollout_manifest();
+    let class = manifest
+        .classes
+        .get_mut("exact_wait_resume")
+        .expect("class");
+    class.configured_mode = ScenarioMode::Shadow;
+    class.observed_shadow_samples = 0;
+    class.observed_shadow_duration_secs = 0;
+    class.verified_evidence.clear();
+    let (preflight, manifest) = complete_rollout_preflight(&snapshot, manifest);
+    let installed = apply_event(
+        &preflight,
+        &Event::InstallRolloutManifest {
+            expected_config_revision: 0,
+            manifest,
+        },
+    );
+    assert_eq!(installed.decision, Decision::ManifestInstalled);
+    let configured = apply_event(
+        &installed.snapshot,
+        &Event::ConfigureProtocol {
+            expected_config_revision: 1,
+            mode: ProtocolMode::Authoritative,
+        },
+    );
+    let shadowed = apply_event(
+        &configured.snapshot,
+        &Event::ChangeScenarioAuthority {
+            scenario_class: "exact_wait_resume".into(),
+            expected_config_revision: 2,
+            expected_manifest_revision: 1,
+            expected_preflight_revision: 1,
+            mode: ScenarioMode::Shadow,
+        },
+    );
+    assert_eq!(shadowed.decision, Decision::ScenarioAuthorityChanged);
+
+    let ordinary = apply_event(
+        &shadowed.snapshot,
+        &Event::ChangeScenarioAuthority {
+            scenario_class: "exact_wait_resume".into(),
+            expected_config_revision: 3,
+            expected_manifest_revision: 1,
+            expected_preflight_revision: 1,
+            mode: ScenarioMode::Authoritative,
+        },
+    );
+    assert_eq!(ordinary.decision, Decision::Rejected);
+    assert_eq!(
+        ordinary.diagnostics,
+        ["scenario_not_approved_for_authority"]
+    );
+
+    let explicit = apply_event(
+        &shadowed.snapshot,
+        &Event::ChangeScenarioAuthorityFromExplicitMode {
+            scenario_class: "exact_wait_resume".into(),
+            expected_config_revision: 3,
+            expected_manifest_revision: 1,
+            expected_preflight_revision: 1,
+        },
+    );
+    assert_eq!(explicit.decision, Decision::ScenarioAuthorityChanged);
+    assert_eq!(
+        explicit.snapshot.rollout.scenarios["exact_wait_resume"].mode,
+        ScenarioMode::Authoritative
+    );
+    assert!(assert_invariants(&explicit.snapshot).is_ok());
+}
+
 fn assert_rollout_manifest_rejected(snapshot: &Snapshot, manifest: RolloutManifest) {
     let rejected = apply_event(
         snapshot,

@@ -1712,6 +1712,125 @@ fn wake_hint_system_tick_matches_external_ingress_wait() {
         .expect("wake hint matching an external wait should produce a comparison");
     assert_eq!(comparison.scenario_class.as_str(), "exact_wait_resume");
     assert!(comparison.matched);
+    let observation = serde_json::to_value(&comparison.legacy_observation).unwrap();
+    assert_eq!(observation["wake_source"], "operator_wake_hint");
+    assert_eq!(
+        observation["wait_signatures"],
+        serde_json::json!(["wait-external:legacy:work-external"])
+    );
+}
+
+#[test]
+fn exact_wait_resume_shadow_covers_external_channel_and_timer_triggers() {
+    let cases = [
+        (
+            "external_callback",
+            MessageKind::CallbackEvent,
+            MessageOrigin::Callback {
+                descriptor_id: "trigger-external".into(),
+                source: Some("test".into()),
+            },
+            WaitConditionKind::External,
+            WakeSource::ExternalIngress {
+                external_trigger_id: Some("trigger-external".into()),
+            },
+        ),
+        (
+            "channel_signal",
+            MessageKind::ChannelEvent,
+            MessageOrigin::Channel {
+                channel_id: "channel-1".into(),
+                sender_id: Some("sender-1".into()),
+            },
+            WaitConditionKind::External,
+            WakeSource::ExternalIngress {
+                external_trigger_id: Some("trigger-external".into()),
+            },
+        ),
+        (
+            "wait_deadline",
+            MessageKind::TimerTick,
+            MessageOrigin::Timer {
+                timer_id: "timer-1".into(),
+            },
+            WaitConditionKind::Timer,
+            WakeSource::Timer {
+                wake_at: Utc::now(),
+            },
+        ),
+    ];
+
+    for (expected_trigger, kind, origin, wait_kind, wake_source) in cases {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
+        let agent = AgentState::new("default");
+        storage.write_agent(&agent).unwrap();
+        append_open_work_item(&storage, "work-wait", "default");
+        storage
+            .append_wait_condition(&WaitConditionRecord {
+                id: "wait-1".into(),
+                agent_id: "default".into(),
+                work_item_id: Some("work-wait".into()),
+                status: WaitConditionStatus::Active,
+                kind: wait_kind,
+                source: Some("test".into()),
+                subject_ref: None,
+                waiting_for: expected_trigger.into(),
+                wake_sources: vec![wake_source],
+                continuation: None,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                expires_at: None,
+                resolved_at: None,
+                cancelled_at: None,
+                turn_id: None,
+            })
+            .unwrap();
+        let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+        let mut message = MessageEnvelope::new(
+            "default",
+            kind,
+            origin,
+            AuthorityClass::RuntimeInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: String::new(),
+            },
+        );
+        message.work_item_id = Some("work-wait".into());
+        message
+            .source_refs
+            .insert("external_trigger_id".into(), "trigger-external".into());
+        message
+            .source_refs
+            .insert("timer_id".into(), "timer-1".into());
+        let decision = scheduler::SchedulerDecision::new(
+            scheduler::SchedulerDecisionKind::StartModelTurn,
+            expected_trigger,
+        )
+        .message(&message)
+        .work_item_id("work-wait")
+        .model_reentry(true);
+
+        assert_eq!(
+            scheduler::authority_scenarios_for_message_claim(&projection, &message, None),
+            vec![
+                scheduler::REDUCER_ONLY_CANDIDATES_SCENARIO,
+                scheduler::EXACT_WAIT_RESUME_SCENARIO
+            ]
+        );
+        let comparison =
+            scheduler::shadow_comparison_for_wait_resume(&projection, &message, &decision)
+                .expect("matching wait trigger should produce a comparison");
+        assert!(comparison.matched);
+        assert_eq!(comparison.scenario_class.as_str(), "exact_wait_resume");
+        let observation = serde_json::to_value(&comparison.legacy_observation).unwrap();
+        assert_eq!(observation["wake_source"], expected_trigger);
+        assert_eq!(
+            observation["wait_signatures"],
+            serde_json::json!(["wait-1:legacy:work-wait"])
+        );
+    }
 }
 
 #[test]

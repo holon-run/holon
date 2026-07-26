@@ -7,9 +7,9 @@ use anyhow::{anyhow, bail, Result};
 
 use crate::{
     domain::scheduler_protocol::{
-        managed_shadow_rollout_manifest, rollout_class_evidence_is_complete, ProtocolMode,
-        RolloutCommand, RolloutManifest, RolloutPreflightState, RolloutState,
-        ScenarioHardBlockerRecord, ScenarioMode,
+        managed_shadow_rollout_manifest, ProtocolMode, RolloutCommand, RolloutManifest,
+        RolloutPreflightState, RolloutState, ScenarioHardBlockerRecord, ScenarioMode,
+        SchedulerScenarioClass,
     },
     runtime_db::RuntimeDb,
 };
@@ -254,7 +254,37 @@ impl ReconciliationPlanner {
 
     fn plan_authoritative(&mut self) -> Result<()> {
         self.configure_protocol(ProtocolMode::Authoritative);
-        self.converge_manifest_scenarios(true)
+        self.ensure_manifest_scenarios_shadow()?;
+        for scenario in SchedulerScenarioClass::PRODUCTION_AUTHORITY {
+            let scenario = scenario.as_str();
+            if self.scenario_mode(scenario) == ScenarioMode::Shadow
+                && !self.has_hard_blocker(scenario)
+            {
+                self.change_scenario_from_explicit_mode(scenario)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn ensure_manifest_scenarios_shadow(&mut self) -> Result<()> {
+        let manifest_classes = self
+            .manifest
+            .as_ref()
+            .map(|manifest| manifest.classes.clone())
+            .unwrap_or_default();
+        for scenario in self.known_scenarios() {
+            if !manifest_classes.contains_key(&scenario) {
+                if self.scenario_mode(&scenario) == ScenarioMode::Authoritative {
+                    self.change_scenario(&scenario, ScenarioMode::Shadow)?;
+                }
+                if self.scenario_mode(&scenario) == ScenarioMode::Shadow {
+                    self.change_scenario(&scenario, ScenarioMode::Off)?;
+                }
+            } else if self.scenario_mode(&scenario) == ScenarioMode::Off {
+                self.change_scenario(&scenario, ScenarioMode::Shadow)?;
+            }
+        }
+        Ok(())
     }
 
     fn lower_authoritative_scenarios(&mut self) -> Result<()> {
@@ -300,9 +330,6 @@ impl ReconciliationPlanner {
             if allow_authoritative
                 && configured == Some(ScenarioMode::Authoritative)
                 && self.scenario_mode(&scenario) == ScenarioMode::Shadow
-                && manifest_classes
-                    .get(&scenario)
-                    .is_some_and(|class| rollout_class_evidence_is_complete(&scenario, class))
                 && !self.has_hard_blocker(&scenario)
             {
                 self.change_scenario(&scenario, ScenarioMode::Authoritative)?;
@@ -350,6 +377,23 @@ impl ReconciliationPlanner {
         });
         self.config_revision += 1;
         self.scenario_modes.insert(scenario.to_string(), mode);
+        Ok(())
+    }
+
+    fn change_scenario_from_explicit_mode(&mut self, scenario: &str) -> Result<()> {
+        let manifest = self.manifest.as_ref().ok_or_else(|| {
+            anyhow!("cannot enable explicit scheduler authority without a manifest")
+        })?;
+        self.commands
+            .push(RolloutCommand::ChangeScenarioAuthorityFromExplicitMode {
+                scenario_class: scenario.to_string(),
+                expected_config_revision: self.config_revision,
+                expected_manifest_revision: manifest.revision,
+                expected_preflight_revision: manifest.preflight_revision,
+            });
+        self.config_revision += 1;
+        self.scenario_modes
+            .insert(scenario.to_string(), ScenarioMode::Authoritative);
         Ok(())
     }
 
@@ -487,7 +531,7 @@ mod tests {
     }
 
     #[test]
-    fn fresh_authoritative_stays_shadow_without_approved_evidence() {
+    fn fresh_authoritative_promotes_production_scope_without_rollout_evidence() {
         let commands = reconciliation_commands_for_state(
             SchedulerDesiredMode::Authoritative,
             &RolloutState::default(),
@@ -508,12 +552,12 @@ mod tests {
         );
         assert_eq!(
             scenario_transitions(&commands, ScenarioMode::Authoritative),
-            0
+            SchedulerScenarioClass::PRODUCTION_AUTHORITY.len()
         );
     }
 
     #[test]
-    fn authoritative_promotes_only_manifest_approved_classes() {
+    fn authoritative_promotes_the_full_production_scope() {
         let mut rollout = approved_authoritative_rollout();
         let excluded = SchedulerScenarioClass::Delivery.as_str();
         rollout
@@ -531,13 +575,12 @@ mod tests {
 
         assert_eq!(
             scenario_transitions(&commands, ScenarioMode::Authoritative),
-            SchedulerScenarioClass::PRODUCTION_AUTHORITY.len() - 1
+            SchedulerScenarioClass::PRODUCTION_AUTHORITY.len()
         );
-        assert!(!commands.iter().any(|(_, command)| matches!(
+        assert!(commands.iter().any(|(_, command)| matches!(
             command,
-            RolloutCommand::ChangeScenarioAuthority {
+            RolloutCommand::ChangeScenarioAuthorityFromExplicitMode {
                 scenario_class,
-                mode: ScenarioMode::Authoritative,
                 ..
             } if scenario_class == excluded
         )));
@@ -565,9 +608,8 @@ mod tests {
 
         assert!(!commands.iter().any(|(_, command)| matches!(
             command,
-            RolloutCommand::ChangeScenarioAuthority {
+            RolloutCommand::ChangeScenarioAuthorityFromExplicitMode {
                 scenario_class,
-                mode: ScenarioMode::Authoritative,
                 ..
             } if scenario_class == blocked
         )));
@@ -728,7 +770,7 @@ mod tests {
         assert!(rollout
             .scenarios
             .values()
-            .all(|authority| authority.mode == ScenarioMode::Shadow));
+            .all(|authority| authority.mode == ScenarioMode::Authoritative));
         assert!(reconciliation_commands_for_state(
             SchedulerDesiredMode::Authoritative,
             &rollout,
@@ -746,8 +788,17 @@ mod tests {
             .iter()
             .filter(|(_, command)| {
                 matches!(
-                    command,
-                    RolloutCommand::ChangeScenarioAuthority { mode, .. } if *mode == expected
+                    (command, expected),
+                    (
+                        RolloutCommand::ChangeScenarioAuthority { mode, .. },
+                        expected
+                    ) if *mode == expected
+                ) || matches!(
+                    (command, expected),
+                    (
+                        RolloutCommand::ChangeScenarioAuthorityFromExplicitMode { .. },
+                        ScenarioMode::Authoritative
+                    )
                 )
             })
             .count()

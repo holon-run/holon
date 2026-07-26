@@ -839,6 +839,7 @@ impl RuntimeHandle {
                         turn_record: None,
                         audit_events,
                         scheduler_shadow_comparison: scheduler_shadow_comparison.clone(),
+                        scheduler_wait_resume_shadow_comparison: None,
                         scheduler_delivery_shadow_comparison: None,
                         scheduler_semantic_shadow: None,
                         notify_scheduler: true,

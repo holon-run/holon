@@ -368,33 +368,48 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 &scheduler_authority_scenarios,
                 production_commands_enabled,
             )?;
-        let shadow_comparison = scheduler::shadow_comparison_for_message_admission(
+        let admission_shadow_comparison = scheduler::shadow_comparison_for_message_admission(
             &projection,
             &candidate.message,
             &decision,
             dispatch_plan.continuation_resolution.as_ref(),
-        )
-        .or_else(|| {
-            scheduler::shadow_comparison_for_wait_resume(&projection, &candidate.message, &decision)
-        });
+        );
+        let wait_resume_shadow_comparison = scheduler::shadow_comparison_for_wait_resume(
+            &projection,
+            &candidate.message,
+            &decision,
+        );
+        let diagnostic_shadow_comparison = wait_resume_shadow_comparison
+            .as_ref()
+            .or(admission_shadow_comparison.as_ref());
         let scheduler_decision_events = scheduler::scheduler_decision_events(
             &candidate.message.agent_id,
             &decision,
-            shadow_comparison.as_ref(),
+            diagnostic_shadow_comparison,
         )?;
-        let shadow_comparison = shadow_comparison
+        let shadow_comparison = admission_shadow_comparison
+            .map(scheduler_shadow_comparison_command)
+            .transpose()?;
+        let wait_resume_shadow_comparison = wait_resume_shadow_comparison
             .map(scheduler_shadow_comparison_command)
             .transpose()?;
         #[cfg(test)]
-        let shadow_comparison = if self
+        let omit_shadow_comparisons = self
             .runtime
             .inner
             .omit_next_scheduler_claim_shadow_comparison
-            .swap(false, Ordering::SeqCst)
-        {
+            .swap(false, Ordering::SeqCst);
+        #[cfg(test)]
+        let shadow_comparison = if omit_shadow_comparisons {
             None
         } else {
             shadow_comparison
+        };
+        #[cfg(test)]
+        let wait_resume_shadow_comparison = if omit_shadow_comparisons {
+            None
+        } else {
+            wait_resume_shadow_comparison
         };
         let persisted_message = self
             .runtime
@@ -524,6 +539,8 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                         turn_record: None,
                         audit_events: claim_audit_events.clone(),
                         scheduler_shadow_comparison: shadow_comparison.clone(),
+                        scheduler_wait_resume_shadow_comparison: wait_resume_shadow_comparison
+                            .clone(),
                         scheduler_delivery_shadow_comparison: None,
                         scheduler_semantic_shadow: semantic_shadow.clone(),
                         notify_scheduler: false,
@@ -609,7 +626,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         else {
             return Ok(None);
         };
-        let rollout_expectations = self
+        let mut rollout_expectations = self
             .runtime
             .inner
             .runtime_db
@@ -967,6 +984,30 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             expected_dispatch_revision,
         };
         let mut commands = Vec::with_capacity(4);
+        if register.is_some() {
+            let autonomous_expectations = self
+                .runtime
+                .inner
+                .runtime_db
+                .transitions()
+                .scheduler_rollout_expectations(
+                    &[scheduler::WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO],
+                    production_commands_enabled,
+                )?;
+            for expectation in autonomous_expectations {
+                if !rollout_expectations
+                    .iter()
+                    .any(|current| current.scenario_class == expectation.scenario_class)
+                {
+                    rollout_expectations.push(expectation);
+                }
+            }
+        }
+        if rollout_expectations.iter().any(|expectation| {
+            expectation.mode != crate::domain::scheduler_protocol::ScenarioMode::Authoritative
+        }) {
+            return Ok(None);
+        }
         commands.extend(register);
         if let Some(resume) = resume {
             commands.push(ProtocolCommand::TriggerWait(TriggerWaitCommand {

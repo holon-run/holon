@@ -867,6 +867,12 @@ pub enum RolloutCommand {
         expected_preflight_revision: u64,
         mode: ScenarioMode,
     },
+    ChangeScenarioAuthorityFromExplicitMode {
+        scenario_class: String,
+        expected_config_revision: u64,
+        expected_manifest_revision: u64,
+        expected_preflight_revision: u64,
+    },
     ReportScenarioHardBlocker {
         scenario_class: String,
         blocker_code: String,
@@ -949,6 +955,12 @@ pub enum Event {
         expected_manifest_revision: u64,
         expected_preflight_revision: u64,
         mode: ScenarioMode,
+    },
+    ChangeScenarioAuthorityFromExplicitMode {
+        scenario_class: String,
+        expected_config_revision: u64,
+        expected_manifest_revision: u64,
+        expected_preflight_revision: u64,
     },
     ReportScenarioHardBlocker {
         scenario_class: String,
@@ -1216,6 +1228,17 @@ pub fn reduce_rollout_command(
             expected_manifest_revision: *expected_manifest_revision,
             expected_preflight_revision: *expected_preflight_revision,
             mode: *mode,
+        },
+        RolloutCommand::ChangeScenarioAuthorityFromExplicitMode {
+            scenario_class,
+            expected_config_revision,
+            expected_manifest_revision,
+            expected_preflight_revision,
+        } => Event::ChangeScenarioAuthorityFromExplicitMode {
+            scenario_class: scenario_class.clone(),
+            expected_config_revision: *expected_config_revision,
+            expected_manifest_revision: *expected_manifest_revision,
+            expected_preflight_revision: *expected_preflight_revision,
         },
         RolloutCommand::ReportScenarioHardBlocker {
             scenario_class,
@@ -1556,6 +1579,21 @@ fn reduce_event(snapshot: &Snapshot, event: &Event) -> Outcome {
             *expected_manifest_revision,
             *expected_preflight_revision,
             *mode,
+            false,
+        ),
+        Event::ChangeScenarioAuthorityFromExplicitMode {
+            scenario_class,
+            expected_config_revision,
+            expected_manifest_revision,
+            expected_preflight_revision,
+        } => change_scenario_authority(
+            snapshot,
+            scenario_class,
+            *expected_config_revision,
+            *expected_manifest_revision,
+            *expected_preflight_revision,
+            ScenarioMode::Authoritative,
+            true,
         ),
         Event::ReportScenarioHardBlocker {
             scenario_class,
@@ -3492,6 +3530,7 @@ fn change_scenario_authority(
     expected_manifest_revision: u64,
     expected_preflight_revision: u64,
     mode: ScenarioMode,
+    explicit_mode: bool,
 ) -> Outcome {
     if snapshot.rollout.config_revision != expected_config_revision {
         return rejected(snapshot, "stale_rollout_config_revision");
@@ -3544,11 +3583,20 @@ fn change_scenario_authority(
         let Some(class) = class else {
             return rejected(snapshot, "scenario_not_approved_for_authority");
         };
-        if class.configured_mode != ScenarioMode::Authoritative {
-            return rejected(snapshot, "scenario_not_approved_for_authority");
-        }
-        if !rollout_class_evidence_is_complete(scenario_class, class) {
-            return rejected(snapshot, "rollout_class_evidence_incomplete");
+        if explicit_mode {
+            if !SchedulerScenarioClass::PRODUCTION_AUTHORITY
+                .iter()
+                .any(|candidate| candidate.as_str() == scenario_class)
+            {
+                return rejected(snapshot, "scenario_not_in_production_authority_scope");
+            }
+        } else {
+            if class.configured_mode != ScenarioMode::Authoritative {
+                return rejected(snapshot, "scenario_not_approved_for_authority");
+            }
+            if !rollout_class_evidence_is_complete(scenario_class, class) {
+                return rejected(snapshot, "rollout_class_evidence_incomplete");
+            }
         }
         if snapshot.rollout.hard_blockers.iter().any(|blocker| {
             blocker.scenario_class == scenario_class
@@ -4425,8 +4473,6 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
                     .get(scenario_class)
                     .ok_or_else(|| "authoritative scenario has no class evidence".to_string())?;
                 if !manifest.preflight_succeeded
-                    || class.configured_mode != ScenarioMode::Authoritative
-                    || !rollout_class_evidence_is_complete(scenario_class, class)
                     || scenario.manifest_revision != Some(manifest.revision)
                     || scenario.preflight_revision != Some(manifest.preflight_revision)
                     || scenario.rollback_target != rollback_target(&class.rollback_policy)

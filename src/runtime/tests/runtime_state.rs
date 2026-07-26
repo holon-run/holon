@@ -837,6 +837,125 @@ async fn run_loop_claim_atomically_persists_scheduler_events_and_shadow_comparis
 }
 
 #[tokio::test]
+async fn wait_resume_claim_persists_admission_and_wait_comparisons_atomically() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let connection = runtime.inner.runtime_db.connection().unwrap();
+    connection
+        .execute(
+            "UPDATE scheduler_protocol_config
+             SET protocol_mode = 'shadow',
+                 config_revision = 1,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE config_id = 1",
+            [],
+        )
+        .unwrap();
+    for scenario in ["reducer_only_candidates", "exact_wait_resume"] {
+        connection
+            .execute(
+                "INSERT INTO scheduler_scenario_authorities (
+                   scenario_class, mode, rollback_target,
+                   manifest_revision, preflight_revision, updated_at
+                 ) VALUES (?1, 'shadow', 'off', NULL, NULL, CURRENT_TIMESTAMP)",
+                [scenario],
+            )
+            .unwrap();
+    }
+    let mut work_item = WorkItemRecord::new("default", "wait for callback", WorkItemState::Open);
+    work_item.id = "work-callback".into();
+    runtime.inner.storage.append_work_item(&work_item).unwrap();
+    runtime
+        .inner
+        .storage
+        .append_wait_condition(&WaitConditionRecord {
+            id: "wait-callback".into(),
+            agent_id: "default".into(),
+            work_item_id: Some(work_item.id.clone()),
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::External,
+            source: Some("test".into()),
+            subject_ref: None,
+            waiting_for: "callback".into(),
+            wake_sources: vec![WakeSource::ExternalIngress {
+                external_trigger_id: Some("trigger-callback".into()),
+            }],
+            continuation: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: None,
+        })
+        .unwrap();
+
+    let message = runtime
+        .enqueue(MessageEnvelope::new(
+            "default",
+            MessageKind::CallbackEvent,
+            MessageOrigin::Callback {
+                descriptor_id: "trigger-callback".into(),
+                source: Some("test".into()),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: String::new(),
+            },
+        ))
+        .await
+        .unwrap();
+
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    assert!(matches!(poll, scheduler_executor::RunLoopPoll::Message(_)));
+
+    let comparisons = connection
+        .prepare(
+            "SELECT scenario_class, comparison_identity
+             FROM scheduler_shadow_comparisons
+             WHERE agent_id = 'default' AND input_identity = ?1
+             ORDER BY scenario_class",
+        )
+        .unwrap()
+        .query_map([format!("message:{}", message.id)], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(
+        comparisons,
+        vec![
+            (
+                "exact_wait_resume".into(),
+                format!("wait_resume:{}", message.id)
+            ),
+            (
+                "reducer_only_candidates".into(),
+                format!("message_admission:{}", message.id)
+            ),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn run_loop_claim_fault_rolls_back_scheduler_events_with_claim_facts() {
     for fault in PRE_COMMIT_FAULTS {
         let dir = tempdir().unwrap();
@@ -1877,6 +1996,7 @@ async fn stale_bootstrap_recovery_command_cannot_settle_successor_generation() {
                 serde_json::json!({"message_id": first_message.id}),
             )],
             scheduler_shadow_comparison: None,
+            scheduler_wait_resume_shadow_comparison: None,
             scheduler_delivery_shadow_comparison: None,
             scheduler_semantic_shadow: None,
             notify_scheduler: true,
@@ -8833,6 +8953,7 @@ async fn post_commit_agent_state_projection_does_not_overwrite_newer_memory() {
             audit_events: Vec::new(),
             scheduler_semantic_shadow: None,
             scheduler_shadow_comparison: None,
+            scheduler_wait_resume_shadow_comparison: None,
             scheduler_delivery_shadow_comparison: None,
             notify_scheduler: false,
             fault: None,
@@ -9069,6 +9190,7 @@ async fn shadow_comparison_identity_conflict_allows_overwrite() {
             turn_record: None,
             audit_events: Vec::new(),
             scheduler_shadow_comparison: Some(new_command),
+            scheduler_wait_resume_shadow_comparison: None,
             scheduler_delivery_shadow_comparison: None,
             scheduler_semantic_shadow: None,
             notify_scheduler: false,

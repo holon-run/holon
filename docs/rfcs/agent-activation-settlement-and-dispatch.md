@@ -1079,6 +1079,18 @@ are otherwise unchanged. Configuration parsing must reject an authoritative
 class without a matching successful manifest and consumed canonical
 preflight record.
 
+For the local-tool cutover surface, `HOLON_SCHEDULER=authoritative` is an
+explicit startup authority command for
+`SchedulerScenarioClass::PRODUCTION_AUTHORITY`. It may bypass the manifest's
+sample-count, observation-duration, and verified-evidence completion gates
+after operator-run external drills, but it does not create or mutate evidence.
+The command still requires an installed manifest and exact revision/preflight
+identity, follows `off -> shadow -> authoritative`, rejects unresolved hard
+blockers, and preserves automatic rollback. This exception does not include
+`OrdinarySemanticOperatorBinding` or ordinary operator input without an
+explicit WorkItem binding. Normal rollout authority commands remain
+evidence-gated.
+
 ### Phase 0: RFC And Executable Baseline
 
 - maintain the deterministic MVP reducer and fixture corpus;

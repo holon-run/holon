@@ -470,6 +470,7 @@ impl RuntimeHandle {
                             turn_record: None,
                             audit_events: vec![audit_event],
                             scheduler_shadow_comparison: shadow_comparison,
+                            scheduler_wait_resume_shadow_comparison: None,
                             scheduler_delivery_shadow_comparison: None,
                             scheduler_semantic_shadow: None,
                             notify_scheduler: false,

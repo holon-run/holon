@@ -194,7 +194,7 @@ pub(super) fn validate_required_shadow_comparisons_tx(
     tx: &Transaction<'_>,
     required_scenarios: &[SchedulerScenarioClass],
     expectations: &[SchedulerRolloutExpectation],
-    commands: [Option<&SchedulerShadowComparisonCommand>; 2],
+    commands: [Option<&SchedulerShadowComparisonCommand>; 3],
 ) -> Result<Option<SchedulerAuthorityHardBlocker>> {
     let rollout = load_rollout(tx)?;
     validate_rollout_expectations(&rollout, expectations)?;
@@ -1233,6 +1233,9 @@ fn rollout_command_kind(command: &RolloutCommand) -> &'static str {
         RolloutCommand::CompletePreflight { .. } => "complete_rollout_preflight",
         RolloutCommand::InstallManifest { .. } => "install_rollout_manifest",
         RolloutCommand::ChangeScenarioAuthority { .. } => "change_scenario_authority",
+        RolloutCommand::ChangeScenarioAuthorityFromExplicitMode { .. } => {
+            "change_scenario_authority_from_explicit_mode"
+        }
         RolloutCommand::ReportScenarioHardBlocker { .. } => "report_scenario_hard_blocker",
     }
 }
@@ -1266,6 +1269,7 @@ fn rollout_command_fact_references(
             vec![format!("rollout:manifest:{}", manifest.revision)]
         }
         RolloutCommand::ChangeScenarioAuthority { scenario_class, .. }
+        | RolloutCommand::ChangeScenarioAuthorityFromExplicitMode { scenario_class, .. }
         | RolloutCommand::ReportScenarioHardBlocker { scenario_class, .. } => {
             vec![format!("rollout:scenario:{scenario_class}")]
         }
