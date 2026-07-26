@@ -2415,6 +2415,12 @@ fn print_scheduler_recovery_report(
             candidate.target_queue_status
         );
     }
+    for candidate in report.legacy_adoptions {
+        println!(
+            "- work_item:{}: adoption eligible={} reason={}",
+            candidate.work_item_id, candidate.eligible, candidate.reason
+        );
+    }
     Ok(())
 }
 

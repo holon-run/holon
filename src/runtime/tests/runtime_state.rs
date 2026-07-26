@@ -2877,6 +2877,121 @@ async fn exact_task_rejoin_claim_is_atomic_and_restart_safe() {
 }
 
 #[tokio::test]
+async fn authoritative_task_rejoin_missing_demand_rolls_back_and_retains_queue_entry() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime.set_scheduler_protocol_production_commands_enabled(true);
+    enable_production_protocol_authority_for(&runtime, &[SchedulerScenarioClass::ExactTaskRejoin]);
+    let work_item = runtime
+        .create_work_item("legacy-only task rejoin".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(work_item.id.clone()).await.unwrap();
+    runtime
+        .register_wait_for(
+            "default",
+            Some(work_item.id.clone()),
+            WaitForWakeKind::TaskResult,
+            Some("task-missing-demand".into()),
+            "waiting for task-missing-demand".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    runtime
+        .persist_task_transition(
+            &TaskRecord {
+                id: "task-missing-demand".into(),
+                agent_id: "default".into(),
+                kind: TaskKind::CommandTask,
+                status: TaskStatus::Completed,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                parent_message_id: None,
+                work_item_id: Some(work_item.id.clone()),
+                summary: Some("task-missing-demand".into()),
+                detail: None,
+                recovery: None,
+            },
+            "task_completed",
+        )
+        .await
+        .unwrap();
+    let mut message = task_result_message("task-missing-demand").with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    message.work_item_id = Some(work_item.id.clone());
+    message.metadata = Some(serde_json::json!({
+        "task_id": "task-missing-demand",
+        "task_kind": "command_task",
+        "task_status": "completed",
+        "task_result_id": "result-missing-demand",
+        "work_item_id": work_item.id,
+    }));
+    let message = runtime.enqueue(message).await.unwrap();
+
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Idle
+    ));
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest_all()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == message.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Queued)
+    );
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .scheduler_scenario_mode(SchedulerScenarioClass::ExactTaskRejoin)
+            .unwrap(),
+        ScenarioMode::Shadow
+    );
+    assert!(runtime
+        .storage()
+        .read_recent_events(64)
+        .unwrap()
+        .iter()
+        .any(|event| {
+            event.kind == "scheduler_authority_hard_blocker"
+                && event.data["message_id"] == message.id
+        }));
+
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Message(_)
+    ));
+}
+
+#[tokio::test]
 async fn terminal_task_result_without_work_item_uses_ordinary_dispatch() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
@@ -5556,6 +5671,7 @@ async fn lifecycle_sleep_work_queue_override_allows_matched_authoritative_eviden
     )
     .unwrap();
     let work_item_id = seed_bound_work_item(&runtime, WorkItemState::Open, None, None).await;
+    enable_production_protocol_authority(&runtime);
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.status = AgentStatus::AwakeRunning;
@@ -5563,7 +5679,6 @@ async fn lifecycle_sleep_work_queue_override_allows_matched_authoritative_eviden
         guard.state.current_work_item_id = Some(work_item_id.clone());
         guard.persist_state(&runtime.inner.storage).unwrap();
     }
-    enable_production_protocol_authority(&runtime);
     let connection = runtime.inner.runtime_db.connection().unwrap();
 
     runtime.transition_to_sleep(None).await.unwrap();

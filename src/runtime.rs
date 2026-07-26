@@ -590,6 +590,15 @@ pub struct SchedulerRecoveryReport {
     pub agent_id: String,
     pub partition_initialized: bool,
     pub candidates: Vec<SchedulerRecoveryCandidate>,
+    pub legacy_adoptions: Vec<SchedulerLegacyAdoptionCandidate>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SchedulerLegacyAdoptionCandidate {
+    pub work_item_id: String,
+    pub eligible: bool,
+    pub reason: String,
+    pub proposed_command: Option<crate::domain::scheduler_protocol::ProtocolCommand>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -720,6 +729,17 @@ pub fn scheduler_recovery_report(
             agent_id: agent_id.to_string(),
             partition_initialized: false,
             candidates: Vec::new(),
+            legacy_adoptions: runtime_db
+                .transitions()
+                .legacy_scheduler_adoption_candidates(agent_id)?
+                .into_iter()
+                .map(|candidate| SchedulerLegacyAdoptionCandidate {
+                    work_item_id: candidate.work_item_id,
+                    eligible: candidate.eligible,
+                    reason: candidate.reason,
+                    proposed_command: candidate.command,
+                })
+                .collect(),
         });
     };
     let all_queue_entries = runtime_db
@@ -1009,6 +1029,17 @@ pub fn scheduler_recovery_report(
         agent_id: agent_id.to_string(),
         partition_initialized: true,
         candidates,
+        legacy_adoptions: runtime_db
+            .transitions()
+            .legacy_scheduler_adoption_candidates(agent_id)?
+            .into_iter()
+            .map(|candidate| SchedulerLegacyAdoptionCandidate {
+                work_item_id: candidate.work_item_id,
+                eligible: candidate.eligible,
+                reason: candidate.reason,
+                proposed_command: candidate.command,
+            })
+            .collect(),
     })
 }
 
@@ -1018,22 +1049,22 @@ pub fn apply_scheduler_recovery_plan(
     agent_id: &str,
     report: &SchedulerRecoveryReport,
 ) -> Result<usize> {
-    let Some(candidate) = report.candidates.iter().find(|candidate| {
+    let mut commands = report
+        .legacy_adoptions
+        .iter()
+        .filter(|candidate| candidate.eligible)
+        .filter_map(|candidate| candidate.proposed_command.clone())
+        .collect::<Vec<_>>();
+    if let Some(candidate) = report.candidates.iter().find(|candidate| {
         candidate.kind == SchedulerRecoveryCandidateKind::NeedsSettlement && candidate.eligible
-    }) else {
-        return Ok(0);
-    };
-    if candidate.proposed_commands.is_empty() {
-        return Ok(0);
+    }) {
+        commands.extend(candidate.proposed_commands.clone());
     }
-    let mut changed = false;
-    for command in &candidate.proposed_commands {
-        let commit = runtime_db
+    Ok(usize::from(
+        runtime_db
             .transitions()
-            .commit_scheduler_recovery_command(agent_id, command, None)?;
-        changed |= commit.applied;
-    }
-    Ok(usize::from(changed))
+            .commit_scheduler_recovery_plan(agent_id, &commands)?,
+    ))
 }
 
 fn runtime_error_queue_settlement(
@@ -2111,6 +2142,57 @@ impl RuntimeHandle {
         operator_binding_id: Option<&str>,
         operator_reply_route_id: Option<&str>,
     ) -> Result<()> {
+        if let Some(message) = message {
+            let work_item_id = message.work_item_id.clone().or_else(|| {
+                self.inner.agent.try_lock().ok().and_then(|guard| {
+                    guard
+                        .state
+                        .current_turn_work_item_id
+                        .clone()
+                        .or_else(|| guard.state.current_work_item_id.clone())
+                })
+            });
+            let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+            let scenario = match message.delivery_surface {
+                Some(MessageDeliverySurface::TaskRejoin) => {
+                    Some(scheduler::EXACT_TASK_REJOIN_SCENARIO)
+                }
+                Some(MessageDeliverySurface::RuntimeSystem) => {
+                    Some(scheduler::WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO)
+                }
+                _ => None,
+            };
+            let authoritative_without_activation = work_item_id.is_some()
+                && message.authority_class == AuthorityClass::RuntimeInstruction
+                && self.scheduler_protocol_production_commands_enabled()
+                && scenario
+                    .map(|scenario| {
+                        self.inner
+                            .runtime_db
+                            .transitions()
+                            .scheduler_scenario_mode(scenario)
+                    })
+                    .transpose()?
+                    == Some(crate::domain::scheduler_protocol::ScenarioMode::Authoritative)
+                && self
+                    .inner
+                    .runtime_db
+                    .transitions()
+                    .load_scheduler_protocol_snapshot_if_initialized(&message.agent_id)?
+                    .is_none_or(|snapshot| !snapshot.activations.contains_key(&activation_id));
+            if authoritative_without_activation {
+                self.inner.storage.append_event(&AuditEvent::legacy(
+                    "authoritative_work_item_turn_without_activation",
+                    serde_json::json!({
+                        "agent_id": message.agent_id,
+                        "message_id": message.id,
+                        "work_item_id": work_item_id,
+                        "scenario_class": scenario.map(|scenario| scenario.as_str()),
+                        "delivery_surface": message.delivery_surface,
+                    }),
+                ))?;
+            }
+        }
         let state = {
             let mut guard = self.inner.agent.lock().await;
             guard.state.turn_index += 1;
@@ -3558,6 +3640,7 @@ impl RuntimeHandle {
     }
 
     async fn bootstrap_recovery(&self) -> Result<()> {
+        let mut interrupted_for_delivery = self.missing_interrupted_task_results().await?;
         if let Some(tasks) = self.inner.recovered_tasks.lock().await.take() {
             let (reattached, interrupted_tasks) =
                 self.recover_supervised_child_tasks(tasks).await?;
@@ -3571,10 +3654,13 @@ impl RuntimeHandle {
                     }),
                 ))?;
             }
-            if !interrupted.is_empty() {
-                self.emit_system_tick_from_interrupted_tasks(&interrupted)
-                    .await?;
-            }
+            interrupted_for_delivery.extend(interrupted);
+        }
+        interrupted_for_delivery.sort_by(|left, right| left.id.cmp(&right.id));
+        interrupted_for_delivery.dedup_by(|left, right| left.id == right.id);
+        if !interrupted_for_delivery.is_empty() {
+            self.emit_task_results_from_interrupted_tasks(&interrupted_for_delivery)
+                .await?;
         }
         if let Some(timers) = self.inner.recovered_timers.lock().await.take() {
             self.recover_active_timers(timers).await?;

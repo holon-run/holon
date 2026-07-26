@@ -789,6 +789,27 @@ pub struct RegisterWorkDemandCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LegacyWaitAdoption {
+    pub wait_id: String,
+    pub generation: u64,
+    pub owner_work_item_id: String,
+    pub source_updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdoptLegacyWorkStateCommand {
+    pub work_item_id: String,
+    pub source_work_item_revision: u64,
+    pub demand: WorkDemand,
+    #[serde(default)]
+    pub wait: Option<LegacyWaitAdoption>,
+    #[serde(default)]
+    pub focus: bool,
+    #[serde(default)]
+    pub reserve_dispatch: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LegacyCompletionReport {
     pub turn_terminal: String,
     pub operator_delivery: String,
@@ -854,6 +875,7 @@ pub struct AttachActivationInputCommand {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProtocolCommand {
     RegisterWorkDemand(RegisterWorkDemandCommand),
+    AdoptLegacyWorkState(AdoptLegacyWorkStateCommand),
     IssueActivationAuthority(IssueActivationAuthorityCommand),
     AdmitActivation(AdmitActivationCommand),
     SettleActivation(SettleActivationCommand),
@@ -1192,6 +1214,7 @@ pub struct Outcome {
 #[serde(rename_all = "snake_case")]
 pub enum Decision {
     WorkDemandRegistered,
+    LegacyWorkStateAdopted,
     AuthorityIssued,
     Admitted,
     Settled,
@@ -1679,6 +1702,9 @@ pub fn reduce_command(snapshot: &Snapshot, command: &ProtocolCommand) -> Protoco
     if let ProtocolCommand::RegisterWorkDemand(command) = command {
         return register_work_demand(snapshot, command);
     }
+    if let ProtocolCommand::AdoptLegacyWorkState(command) = command {
+        return adopt_legacy_work_state(snapshot, command);
+    }
     if let ProtocolCommand::IssueActivationAuthority(command) = command {
         return issue_activation_authority(snapshot, command);
     }
@@ -1776,6 +1802,55 @@ fn replay_or_conflict(
                         ),
                     )
                 });
+            }
+        }
+        ProtocolCommand::AdoptLegacyWorkState(command) => {
+            if let Some(existing) = snapshot.work.get(&command.work_item_id) {
+                if existing.metadata_revision != command.source_work_item_revision {
+                    return None;
+                }
+                let wait_matches = match &command.wait {
+                    Some(wait) => snapshot.waits.get(&wait.wait_id).is_some_and(|existing| {
+                        existing.current_generation == wait.generation
+                            && existing.generations.get(&wait.generation)
+                                == Some(&WaitGenerationRecord {
+                                    owner_work_item_id: wait.owner_work_item_id.clone(),
+                                    state: WaitState::Active,
+                                    trigger: None,
+                                    consuming_activation_id: None,
+                                })
+                    }),
+                    None => true,
+                };
+                let focus_matches = !command.focus
+                    || snapshot.focus.as_deref() == Some(command.work_item_id.as_str());
+                let dispatch_matches = !command.reserve_dispatch
+                    || command.wait.as_ref().is_some_and(|wait| {
+                        snapshot.dispatch
+                            == (AgentDispatchState::Awaiting {
+                                wait: WaitIdentity {
+                                    id: wait.wait_id.clone(),
+                                    generation: wait.generation,
+                                },
+                            })
+                    });
+                return Some(
+                    if existing == &command.demand
+                        && wait_matches
+                        && focus_matches
+                        && dispatch_matches
+                    {
+                        duplicate_command(snapshot, "legacy_work_state_already_adopted")
+                    } else {
+                        rejected_command(
+                            snapshot,
+                            command_conflict(
+                                ProtocolConflictKind::IdentityConflict,
+                                "legacy_work_state_adoption_conflict",
+                            ),
+                        )
+                    },
+                );
             }
         }
         ProtocolCommand::IssueActivationAuthority(command) => {
@@ -1932,8 +2007,8 @@ fn lower_command(
     command: &ProtocolCommand,
 ) -> Result<Event, ProtocolConflict> {
     match command {
-        ProtocolCommand::RegisterWorkDemand(_) => {
-            unreachable!("work demand registration is reduced directly")
+        ProtocolCommand::RegisterWorkDemand(_) | ProtocolCommand::AdoptLegacyWorkState(_) => {
+            unreachable!("work demand mutations are reduced directly")
         }
         ProtocolCommand::IssueActivationAuthority(_) => {
             unreachable!("authority issuance is reduced directly")
@@ -2065,6 +2140,155 @@ fn register_work_demand(
             decision: Decision::WorkDemandRegistered,
             transitions: vec![format!(
                 "work:{}:registered:generation:{}",
+                command.work_item_id, command.demand.scheduling_generation
+            )],
+            diagnostics: Vec::new(),
+            snapshot: next,
+        },
+        conflict: None,
+    }
+}
+
+fn adopt_legacy_work_state(
+    snapshot: &Snapshot,
+    command: &AdoptLegacyWorkStateCommand,
+) -> ProtocolCommandOutcome {
+    if command.work_item_id.is_empty()
+        || command.source_work_item_revision == 0
+        || command.demand.metadata_revision != command.source_work_item_revision
+        || command.demand.scheduling_generation == 0
+        || command.demand.locality.is_empty()
+        || command.demand.cost_class.is_empty()
+    {
+        return rejected_command(
+            snapshot,
+            command_conflict(
+                ProtocolConflictKind::InvalidCommand,
+                "legacy_work_state_adoption_fields_required",
+            ),
+        );
+    }
+    match (&command.demand.status, &command.wait) {
+        (WorkStatus::Runnable, None) => {}
+        (WorkStatus::Waiting { wait_id }, Some(wait))
+            if wait_id == &wait.wait_id
+                && wait.owner_work_item_id == command.work_item_id
+                && wait.generation == command.demand.scheduling_generation
+                && !wait.source_updated_at.is_empty() => {}
+        (WorkStatus::Yielded { .. } | WorkStatus::Paused { .. }, None) => {}
+        _ => {
+            return rejected_command(
+                snapshot,
+                command_conflict(
+                    ProtocolConflictKind::UnsupportedCommand,
+                    "legacy_work_state_adoption_shape_unsupported",
+                ),
+            );
+        }
+    }
+    if command.reserve_dispatch && command.wait.is_none() {
+        return rejected_command(
+            snapshot,
+            command_conflict(
+                ProtocolConflictKind::InvalidCommand,
+                "legacy_dispatch_adoption_requires_wait",
+            ),
+        );
+    }
+    if command.focus
+        && snapshot
+            .focus
+            .as_deref()
+            .is_some_and(|focus| focus != command.work_item_id)
+    {
+        return rejected_command(
+            snapshot,
+            command_conflict(
+                ProtocolConflictKind::StateConflict,
+                "legacy_focus_adoption_conflict",
+            ),
+        );
+    }
+    if command.reserve_dispatch && snapshot.dispatch != AgentDispatchState::Open {
+        return rejected_command(
+            snapshot,
+            command_conflict(
+                ProtocolConflictKind::StateConflict,
+                "legacy_dispatch_adoption_conflict",
+            ),
+        );
+    }
+    if snapshot
+        .work
+        .get(&command.work_item_id)
+        .is_some_and(|existing| {
+            existing.metadata_revision > command.source_work_item_revision
+                || matches!(
+                    existing.status,
+                    WorkStatus::NeedsSettlement { .. } | WorkStatus::Terminal
+                )
+        })
+    {
+        return rejected_command(
+            snapshot,
+            command_conflict(
+                ProtocolConflictKind::StaleRevision,
+                "legacy_work_state_adoption_stale",
+            ),
+        );
+    }
+
+    let mut next = snapshot.clone();
+    if let Some(existing) = next.work.get(&command.work_item_id) {
+        if let WorkStatus::Waiting { wait_id } = &existing.status {
+            if command.wait.as_ref().map(|wait| wait.wait_id.as_str()) != Some(wait_id.as_str()) {
+                if let Some(wait) = next.waits.get_mut(wait_id) {
+                    if let Some(generation) = wait.generations.get_mut(&wait.current_generation) {
+                        if matches!(generation.state, WaitState::Active | WaitState::Triggered) {
+                            generation.state = WaitState::Resolved;
+                            generation.trigger = None;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    next.work
+        .insert(command.work_item_id.clone(), command.demand.clone());
+    if let Some(wait) = &command.wait {
+        next.waits.insert(
+            wait.wait_id.clone(),
+            WaitRecord {
+                current_generation: wait.generation,
+                generations: BTreeMap::from([(
+                    wait.generation,
+                    WaitGenerationRecord {
+                        owner_work_item_id: wait.owner_work_item_id.clone(),
+                        state: WaitState::Active,
+                        trigger: None,
+                        consuming_activation_id: None,
+                    },
+                )]),
+            },
+        );
+        if command.reserve_dispatch {
+            next.dispatch = AgentDispatchState::Awaiting {
+                wait: WaitIdentity {
+                    id: wait.wait_id.clone(),
+                    generation: wait.generation,
+                },
+            };
+            next.dispatch_revision += 1;
+        }
+    }
+    if command.focus {
+        next.focus = Some(command.work_item_id.clone());
+    }
+    ProtocolCommandOutcome {
+        outcome: Outcome {
+            decision: Decision::LegacyWorkStateAdopted,
+            transitions: vec![format!(
+                "work:{}:legacy_state_adopted:generation:{}",
                 command.work_item_id, command.demand.scheduling_generation
             )],
             diagnostics: Vec::new(),

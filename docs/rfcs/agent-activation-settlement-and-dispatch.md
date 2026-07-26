@@ -1379,6 +1379,58 @@ and later re-authorization. Every class mode (`off`, `shadow`, or
 `authoritative`) must reject a rollback action whose target is
 `authoritative`.
 
+#### Legacy Cutover Adoption
+
+Promotion from `shadow` to any authoritative scenario is also a migration
+boundary. Before the first authority-granting command in a rollout batch, the
+same database transaction must inspect every open legacy WorkItem and adopt
+its uniquely reconstructable scheduling state into the canonical partition:
+
+- the WorkItem revision becomes both the metadata fence and the initial
+  scheduling generation;
+- one active WorkItem-owned wait becomes a canonical active wait at that
+  generation;
+- current focus is copied independently from execution ownership; and
+- an agent-wide wait reserves dispatch only when the legacy agent posture
+  actually held the lane.
+
+Adoption is a typed, idempotent protocol command. Existing equal state is a
+replay; existing different state at the same fence is a conflict. A running
+legacy turn, dequeued queue claim, ambiguous wait, cross-agent ownership,
+generic blocker, or yielded state without settlement history rejects the
+whole rollout batch. Adoption and authority therefore either commit together
+or leave both the canonical partition and rollout state unchanged.
+
+`holon debug scheduler-recovery` reports the same adoption candidates and
+stable ineligibility reasons. `--apply` executes the same reducer-backed
+commands and never edits scheduler tables directly.
+
+#### Restart Task Rejoin
+
+Daemon restart marks each non-reattached in-flight task `interrupted` exactly
+once and enqueues one standard runtime-owned `TaskResult` per task. The
+message preserves the original task id and effective WorkItem binding and
+uses the ordinary `TaskRejoin` delivery surface. Tasks from different
+WorkItems never share an aggregate model turn. The former unbound
+`task_restart` content message is not an execution or scheduling mechanism;
+restart aggregation may remain only as audit evidence.
+
+#### Pre-claim Authority Failure
+
+Canonical activation planning has explicit `not applicable`, `plan`, and
+`hard blocker` outcomes. Once a candidate scenario is authoritative, missing
+demand, missing or mismatched wait generation, unresolved canonical
+scenario, or incompatible WorkItem state cannot silently fall back to a
+legacy model turn and cannot return an ordinary pre-claim error that leaves a
+hot retry loop.
+
+The runtime reports a fenced scenario hard blocker before queue claim. That
+transaction records the stable blocker code and rolls the scenario back to
+its manifest target. The queue entry remains unclaimed; the next poll
+observes the downgraded authority and may consume the original message
+through the compatibility path. No activation, wait trigger, queue claim, or
+partial agent-state mutation is committed with the blocker.
+
 ### Phase 5: Semantic Proposal Providers
 
 - structural resolution remains first;

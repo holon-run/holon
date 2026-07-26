@@ -944,65 +944,65 @@ impl RuntimeHandle {
         Ok(())
     }
 
-    pub(super) async fn emit_system_tick_from_interrupted_tasks(
+    pub(super) async fn emit_task_results_from_interrupted_tasks(
         &self,
         tasks: &[TaskRecord],
     ) -> Result<()> {
-        let items = tasks
-            .iter()
-            .map(|task| {
-                serde_json::json!({
+        let agent_id = self.agent_id().await?;
+        let mut message_ids = Vec::with_capacity(tasks.len());
+        for task in tasks {
+            let status_before_restart = task
+                .detail
+                .as_ref()
+                .and_then(|detail| detail.get("status_before_restart"))
+                .and_then(|value| value.as_str())
+                .unwrap_or("running");
+            let message = MessageEnvelope {
+                id: super::tasks::restart_task_result_message_id(&task.id),
+                turn_id: Some(crate::ids::turn_id()),
+                work_item_id: task.effective_work_item_id().map(ToString::to_string),
+                metadata: Some(serde_json::json!({
                     "task_id": task.id,
-                    "kind": task.kind,
-                    "status_before_restart": task
-                        .detail
-                        .as_ref()
-                        .and_then(|detail| detail.get("status_before_restart"))
-                        .and_then(|value| value.as_str())
-                        .unwrap_or("running"),
-                    "summary": task.summary,
-                    "wait_policy": task.wait_policy()
-                })
-            })
-            .collect::<Vec<_>>();
-        let mut message = MessageEnvelope::new(
-            self.agent_id().await?,
-            MessageKind::SystemTick,
-            MessageOrigin::System {
-                subsystem: "task_restart".into(),
-            },
-            AuthorityClass::RuntimeInstruction,
-            Priority::Next,
-            MessageBody::Text {
-                text: format!(
-                    "runtime restarted and interrupted {} task{}",
-                    tasks.len(),
-                    if tasks.len() == 1 { "" } else { "s" }
-                ),
-            },
-        )
-        .with_admission(
-            MessageDeliverySurface::RuntimeSystem,
-            AdmissionContext::RuntimeOwned,
-        );
-        message.metadata = Some(serde_json::json!({
-            "interrupted_tasks": {
-                "count": tasks.len(),
-                "items": items
-            }
-        }));
+                    "task_kind": task.kind,
+                    "task_status": "interrupted",
+                    "task_summary": task.summary,
+                    "task_detail": task.detail,
+                    "task_recovery": task.recovery,
+                    "work_item_id": task.effective_work_item_id(),
+                    "status_before_restart": status_before_restart,
+                    "interrupted_reason": "runtime_restarted"
+                })),
+                ..MessageEnvelope::new(
+                    agent_id.clone(),
+                    MessageKind::TaskResult,
+                    MessageOrigin::Task {
+                        task_id: task.id.clone(),
+                    },
+                    AuthorityClass::RuntimeInstruction,
+                    Priority::Next,
+                    MessageBody::Text {
+                        text: format!(
+                            "task {} was interrupted because the runtime restarted",
+                            task.id
+                        ),
+                    },
+                )
+                .with_admission(
+                    MessageDeliverySurface::TaskRejoin,
+                    AdmissionContext::RuntimeOwned,
+                )
+            };
+            message_ids.push(message.id.clone());
+            let _ = self.enqueue(message).await?;
+        }
         self.inner.storage.append_event(&AuditEvent::legacy(
-            "system_tick_emitted",
+            "task_restart_results_emitted",
             serde_json::json!({
-                "subsystem": "task_restart",
-                "interrupted_tasks": message
-                    .metadata
-                    .as_ref()
-                    .and_then(|value| value.get("interrupted_tasks"))
-                    .cloned()
+                "agent_id": agent_id,
+                "task_ids": tasks.iter().map(|task| task.id.clone()).collect::<Vec<_>>(),
+                "message_ids": message_ids,
             }),
         ))?;
-        let _ = self.enqueue(message).await?;
         Ok(())
     }
 }

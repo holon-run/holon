@@ -1,3 +1,7 @@
+use crate::types::{
+    WaitConditionRecord, WorkItemContinuationFrame, WorkItemPlanStatus, WorkItemRecord,
+    WorkItemSchedulingState,
+};
 use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error as StdError,
@@ -13,10 +17,11 @@ use sha2::{Digest, Sha256};
 
 use crate::domain::scheduler_protocol::{
     self, ActivationAdmissionAuthority, ActivationCause, ActivationInputAttachment,
-    ActivationRecord, ActivationSlot, ActivationState, AdmitActivationCommand, AgentDispatchState,
-    ContinuationAdmissionRecord, Decision, MissingSettlementRecord, ProtocolCommand,
-    ProtocolConflict, ProtocolConflictKind, ProtocolMode, RollbackAction, RollbackTrigger,
-    RolloutCommand, RolloutManifest, RolloutPreflightRecord, RolloutPreflightState, RolloutState,
+    ActivationRecord, ActivationSlot, ActivationState, AdmitActivationCommand,
+    AdoptLegacyWorkStateCommand, AgentDispatchState, ContinuationAdmissionRecord, Decision,
+    LegacyWaitAdoption, MissingSettlementRecord, ProtocolCommand, ProtocolConflict,
+    ProtocolConflictKind, ProtocolMode, RollbackAction, RollbackTrigger, RolloutCommand,
+    RolloutManifest, RolloutPreflightRecord, RolloutPreflightState, RolloutState,
     ScenarioAuthority, ScenarioHardBlockerRecord, ScenarioMode, SchedulerScenarioClass, Snapshot,
     WaitGenerationRecord, WaitIdentity, WaitRecord, WaitState, WorkDemand, WorkStatus,
 };
@@ -61,6 +66,15 @@ pub(crate) struct SchedulerRolloutExpectation {
     pub config_revision: u64,
     pub manifest_revision: Option<u64>,
     pub preflight_revision: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LegacySchedulerAdoptionCandidate {
+    pub agent_id: String,
+    pub work_item_id: String,
+    pub eligible: bool,
+    pub reason: String,
+    pub command: Option<ProtocolCommand>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -311,6 +325,7 @@ fn required_protocol_command_scenarios(
             ProtocolCommand::RegisterWorkDemand(_) => {
                 required_scenarios.insert(SchedulerScenarioClass::WorkItemAutonomousContinuation);
             }
+            ProtocolCommand::AdoptLegacyWorkState(_) => {}
             ProtocolCommand::IssueActivationAuthority(command) => {
                 required_scenarios.insert(activation_authority_scenario(&command.activation));
                 required_scenarios.insert(SchedulerScenarioClass::Settlement);
@@ -387,6 +402,9 @@ pub(super) fn validate_protocol_commands_tx(
     let mut results = Vec::new();
 
     for command in commands {
+        if let ProtocolCommand::AdoptLegacyWorkState(command) = command {
+            validate_legacy_adoption_source_tx(tx, agent_id, command)?;
+        }
         let (command_kind, command_identity) = command_identity(command)?;
         let payload_hash = canonical_command_hash(command_kind, command)?;
         if let Some(stored) =
@@ -928,6 +946,54 @@ impl RuntimeTransitionRepository<'_> {
         load_rollout(&connection)
     }
 
+    pub(crate) fn legacy_scheduler_adoption_candidates(
+        &self,
+        agent_id: &str,
+    ) -> Result<Vec<LegacySchedulerAdoptionCandidate>> {
+        self.db
+            .transaction(|tx| legacy_scheduler_adoption_candidates_tx(tx, Some(agent_id)))
+    }
+
+    pub(crate) fn commit_scheduler_recovery_plan(
+        &self,
+        agent_id: &str,
+        commands: &[ProtocolCommand],
+    ) -> Result<bool> {
+        if commands.is_empty() {
+            return Ok(false);
+        }
+        self.db.transaction(|tx| {
+            for command in commands {
+                match command {
+                    ProtocolCommand::AdoptLegacyWorkState(_)
+                    | ProtocolCommand::RegisterWorkDemand(_)
+                    | ProtocolCommand::SettleActivation(_)
+                    | ProtocolCommand::RecordMissingSettlement(_) => {}
+                    ProtocolCommand::IssueActivationAuthority(command)
+                        if matches!(
+                            command.activation.cause,
+                            ActivationCause::SettlementRecovery { .. }
+                        ) => {}
+                    ProtocolCommand::AdmitActivation(command)
+                        if matches!(
+                            command.activation.cause,
+                            ActivationCause::SettlementRecovery { .. }
+                        ) => {}
+                    _ => bail!("scheduler recovery plan contains a non-recovery protocol command"),
+                }
+            }
+            let bootstrap = (!scheduler_protocol_partition_exists_tx(tx, agent_id)?)
+                .then(|| rollout_snapshot(load_rollout(tx).expect("rollout state is readable")));
+            let prepared =
+                validate_protocol_commands_tx(tx, agent_id, bootstrap.as_ref(), commands)?;
+            let changed = prepared
+                .as_ref()
+                .is_some_and(PreparedProtocolCommands::has_writes);
+            persist_protocol_commands_tx(tx, agent_id, prepared)?;
+            Ok(changed)
+        })
+    }
+
     fn load_scheduler_protocol_snapshot_with_hook(
         &self,
         agent_id: &str,
@@ -957,31 +1023,6 @@ impl RuntimeTransitionRepository<'_> {
         fault: Option<TransitionFaultPoint>,
     ) -> Result<SchedulerProtocolTransitionCommit> {
         self.commit_scheduler_protocol_command_inner(agent_id, command, fault, true)
-    }
-
-    pub(crate) fn commit_scheduler_recovery_command(
-        &self,
-        agent_id: &str,
-        command: &ProtocolCommand,
-        fault: Option<TransitionFaultPoint>,
-    ) -> Result<SchedulerProtocolTransitionCommit> {
-        match command {
-            ProtocolCommand::RegisterWorkDemand(_) => {}
-            ProtocolCommand::IssueActivationAuthority(command)
-                if matches!(
-                    command.activation.cause,
-                    ActivationCause::SettlementRecovery { .. }
-                ) => {}
-            ProtocolCommand::AdmitActivation(command)
-                if matches!(
-                    command.activation.cause,
-                    ActivationCause::SettlementRecovery { .. }
-                ) => {}
-            ProtocolCommand::SettleActivation(_) => {}
-            ProtocolCommand::RecordMissingSettlement(_) => {}
-            _ => bail!("scheduler recovery commit only accepts settlement recovery commands"),
-        }
-        self.commit_scheduler_protocol_command_inner(agent_id, command, fault, false)
     }
 
     #[cfg(test)]
@@ -1044,6 +1085,9 @@ impl RuntimeTransitionRepository<'_> {
             }
 
             let snapshot = load_snapshot_tx(tx, agent_id)?;
+            if let ProtocolCommand::AdoptLegacyWorkState(command) = command {
+                validate_legacy_adoption_source_tx(tx, agent_id, command)?;
+            }
             let outcome = scheduler_protocol::reduce_command(&snapshot, command);
             scheduler_protocol::assert_invariants(&outcome.outcome.snapshot).map_err(|error| {
                 anyhow!("scheduler protocol reducer produced invalid state: {error}")
@@ -1097,6 +1141,9 @@ impl RuntimeTransitionRepository<'_> {
         fault: Option<TransitionFaultPoint>,
     ) -> Result<SchedulerRolloutTransitionCommit> {
         let outcome = self.db.transaction(|tx| {
+            if rollout_command_grants_authority(command) {
+                adopt_legacy_scheduler_state_tx(tx)?;
+            }
             apply_scheduler_rollout_command_tx(tx, command_identity, command, fault)
         })?;
         match outcome {
@@ -1114,6 +1161,12 @@ impl RuntimeTransitionRepository<'_> {
             bail!("scheduler rollout command list must not be empty");
         }
         self.db.transaction(|tx| {
+            if commands
+                .iter()
+                .any(|(_, command)| rollout_command_grants_authority(command))
+            {
+                adopt_legacy_scheduler_state_tx(tx)?;
+            }
             let mut commits = Vec::with_capacity(commands.len());
             for (command_identity, command) in commands {
                 let commit =
@@ -1213,6 +1266,290 @@ fn apply_scheduler_rollout_command_tx(
             result,
         },
     ))
+}
+
+fn rollout_command_grants_authority(command: &RolloutCommand) -> bool {
+    matches!(
+        command,
+        RolloutCommand::ChangeScenarioAuthority {
+            mode: ScenarioMode::Authoritative,
+            ..
+        } | RolloutCommand::ChangeScenarioAuthorityFromExplicitMode { .. }
+    )
+}
+
+fn adopt_legacy_scheduler_state_tx(tx: &Transaction<'_>) -> Result<()> {
+    let candidates = legacy_scheduler_adoption_candidates_tx(tx, None)?;
+    if let Some(candidate) = candidates.iter().find(|candidate| !candidate.eligible) {
+        bail!(
+            "scheduler authoritative promotion blocked by legacy state {}:{}: {}",
+            candidate.agent_id,
+            candidate.work_item_id,
+            candidate.reason
+        );
+    }
+    let mut by_agent = BTreeMap::<String, Vec<ProtocolCommand>>::new();
+    for candidate in candidates {
+        if let Some(command) = candidate.command {
+            by_agent
+                .entry(candidate.agent_id)
+                .or_default()
+                .push(command);
+        }
+    }
+    for (agent_id, commands) in by_agent {
+        let bootstrap = (!scheduler_protocol_partition_exists_tx(tx, &agent_id)?)
+            .then(|| rollout_snapshot(load_rollout(tx).expect("rollout state was just readable")));
+        let prepared = validate_protocol_commands_tx(tx, &agent_id, bootstrap.as_ref(), &commands)?;
+        persist_protocol_commands_tx(tx, &agent_id, prepared)?;
+    }
+    Ok(())
+}
+
+fn legacy_scheduler_adoption_candidates_tx(
+    tx: &Transaction<'_>,
+    agent_filter: Option<&str>,
+) -> Result<Vec<LegacySchedulerAdoptionCandidate>> {
+    let mut statement = tx.prepare(
+        "SELECT payload_json
+         FROM work_items
+         WHERE state = 'open' AND (?1 IS NULL OR agent_id = ?1)
+         ORDER BY agent_id, work_item_id",
+    )?;
+    let work_items = statement
+        .query_map([agent_filter], |row| row.get::<_, String>(0))?
+        .map(|row| crate::runtime_db::repositories::decode_work_item_payload(&row?))
+        .collect::<Result<Vec<_>>>()?;
+    let mut candidates = Vec::with_capacity(work_items.len());
+    for work_item in work_items {
+        candidates.push(legacy_scheduler_adoption_candidate_tx(tx, &work_item)?);
+    }
+    Ok(candidates)
+}
+
+fn legacy_scheduler_adoption_candidate_tx(
+    tx: &Transaction<'_>,
+    work_item: &WorkItemRecord,
+) -> Result<LegacySchedulerAdoptionCandidate> {
+    let agent_state = tx
+        .query_row(
+            "SELECT payload_json FROM agent_states WHERE agent_id = ?1",
+            [&work_item.agent_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|payload| crate::runtime_db::repositories::decode_agent_state_payload(&payload))
+        .transpose()?;
+    if agent_state.as_ref().is_some_and(|state| {
+        state.current_run_id.is_some()
+            || matches!(state.status, crate::types::AgentStatus::AwakeRunning)
+    }) {
+        return Ok(ineligible_legacy_adoption(
+            work_item,
+            "legacy_agent_turn_running",
+        ));
+    }
+    let dequeued = tx.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM queue_entries
+             WHERE agent_id = ?1 AND status = 'dequeued'
+         )",
+        [&work_item.agent_id],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if dequeued {
+        return Ok(ineligible_legacy_adoption(
+            work_item,
+            "legacy_queue_claim_in_progress",
+        ));
+    }
+
+    let mut wait_statement = tx.prepare(
+        "SELECT payload_json
+         FROM wait_conditions
+         WHERE agent_id = ?1 AND work_item_id = ?2 AND status = 'active'
+         ORDER BY created_at, wait_condition_id",
+    )?;
+    let active_waits = wait_statement
+        .query_map(
+            [work_item.agent_id.as_str(), work_item.id.as_str()],
+            |row| row.get::<_, String>(0),
+        )?
+        .map(|row| serde_json::from_str::<WaitConditionRecord>(&row?).map_err(Into::into))
+        .collect::<Result<Vec<_>>>()?;
+    if active_waits.len() > 1 {
+        return Ok(ineligible_legacy_adoption(
+            work_item,
+            "multiple_active_legacy_waits",
+        ));
+    }
+
+    let mut continuation_statement = tx.prepare(
+        "SELECT payload_json
+         FROM work_item_continuations
+         WHERE agent_id = ?1 AND suspended_work_item_id = ?2 AND state = 'active'",
+    )?;
+    let continuations = continuation_statement
+        .query_map(
+            [work_item.agent_id.as_str(), work_item.id.as_str()],
+            |row| row.get::<_, String>(0),
+        )?
+        .map(|row| crate::runtime_db::repositories::decode_work_item_continuation_payload(&row?))
+        .collect::<Result<Vec<WorkItemContinuationFrame>>>()?;
+    if !continuations.is_empty() {
+        return Ok(ineligible_legacy_adoption(
+            work_item,
+            "legacy_yielded_work_item_requires_settlement_history",
+        ));
+    }
+
+    let is_current = agent_state
+        .as_ref()
+        .and_then(|state| state.current_work_item_id.as_deref())
+        == Some(work_item.id.as_str());
+    let trigger_delivery_by_id = BTreeMap::new();
+    let scheduling = crate::work_item_scheduling::derive_work_item_scheduling(
+        crate::work_item_scheduling::WorkItemSchedulingFacts {
+            work_item,
+            is_current,
+            is_yielded: false,
+            active_wait_conditions: &active_waits,
+            trigger_delivery_by_id: &trigger_delivery_by_id,
+        },
+    );
+    let generation = work_item.revision.max(1);
+    let (status, wait) = match scheduling.scheduling_state {
+        WorkItemSchedulingState::Runnable => (WorkStatus::Runnable, None),
+        WorkItemSchedulingState::WaitingTask
+        | WorkItemSchedulingState::WaitingExternal
+        | WorkItemSchedulingState::WaitingTimer
+        | WorkItemSchedulingState::WaitingSystem
+        | WorkItemSchedulingState::WaitingOperator
+            if active_waits.len() == 1 =>
+        {
+            let wait = &active_waits[0];
+            (
+                WorkStatus::Waiting {
+                    wait_id: wait.id.clone(),
+                },
+                Some(LegacyWaitAdoption {
+                    wait_id: wait.id.clone(),
+                    generation,
+                    owner_work_item_id: work_item.id.clone(),
+                    source_updated_at: wait.updated_at.to_rfc3339(),
+                }),
+            )
+        }
+        WorkItemSchedulingState::WaitingOperator
+            if work_item.plan_status == WorkItemPlanStatus::NeedsInput =>
+        {
+            (
+                WorkStatus::Paused {
+                    hold_id: format!("legacy-plan-needs-input:{}", work_item.id),
+                },
+                None,
+            )
+        }
+        WorkItemSchedulingState::Blocked => {
+            return Ok(ineligible_legacy_adoption(
+                work_item,
+                "legacy_blocked_work_item_requires_operator_resolution",
+            ));
+        }
+        WorkItemSchedulingState::YieldedToWorkItem => {
+            return Ok(ineligible_legacy_adoption(
+                work_item,
+                "legacy_yielded_work_item_requires_settlement_history",
+            ));
+        }
+        WorkItemSchedulingState::Completed => {
+            return Ok(ineligible_legacy_adoption(
+                work_item,
+                "legacy_open_work_item_projects_completed",
+            ));
+        }
+        _ => {
+            return Ok(ineligible_legacy_adoption(
+                work_item,
+                "legacy_waiting_work_item_has_no_unique_active_wait",
+            ));
+        }
+    };
+    let reserve_dispatch = wait.is_some()
+        && is_current
+        && agent_state.as_ref().is_some_and(|state| {
+            matches!(
+                state.status,
+                crate::types::AgentStatus::AwaitingTask | crate::types::AgentStatus::Asleep
+            )
+        });
+    let command = ProtocolCommand::AdoptLegacyWorkState(AdoptLegacyWorkStateCommand {
+        work_item_id: work_item.id.clone(),
+        source_work_item_revision: work_item.revision,
+        demand: WorkDemand {
+            metadata_revision: work_item.revision,
+            scheduling_generation: generation,
+            status,
+            capabilities: Default::default(),
+            locks: Default::default(),
+            locality: "runtime".into(),
+            cost_class: "default".into(),
+        },
+        wait,
+        focus: is_current,
+        reserve_dispatch,
+    });
+    Ok(LegacySchedulerAdoptionCandidate {
+        agent_id: work_item.agent_id.clone(),
+        work_item_id: work_item.id.clone(),
+        eligible: true,
+        reason: "eligible".into(),
+        command: Some(command),
+    })
+}
+
+fn ineligible_legacy_adoption(
+    work_item: &WorkItemRecord,
+    reason: &str,
+) -> LegacySchedulerAdoptionCandidate {
+    LegacySchedulerAdoptionCandidate {
+        agent_id: work_item.agent_id.clone(),
+        work_item_id: work_item.id.clone(),
+        eligible: false,
+        reason: reason.into(),
+        command: None,
+    }
+}
+
+fn validate_legacy_adoption_source_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    command: &AdoptLegacyWorkStateCommand,
+) -> Result<()> {
+    let work_item = tx
+        .query_row(
+            "SELECT payload_json FROM work_items
+             WHERE work_item_id = ?1 AND agent_id = ?2 AND state = 'open'",
+            [command.work_item_id.as_str(), agent_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|payload| crate::runtime_db::repositories::decode_work_item_payload(&payload))
+        .transpose()?
+        .ok_or_else(|| anyhow!("legacy adoption source WorkItem is missing or closed"))?;
+    let candidate = legacy_scheduler_adoption_candidate_tx(tx, &work_item)?;
+    if !candidate.eligible
+        || candidate.command.as_ref()
+            != Some(&ProtocolCommand::AdoptLegacyWorkState(command.clone()))
+    {
+        bail!(
+            "legacy adoption source changed for {}:{} ({})",
+            agent_id,
+            command.work_item_id,
+            candidate.reason
+        );
+    }
+    Ok(())
 }
 
 fn decision_fact_references(decision: &Decision, references: Vec<String>) -> Vec<String> {
@@ -1330,6 +1667,13 @@ fn command_identity(command: &ProtocolCommand) -> Result<(&'static str, String)>
         ProtocolCommand::RegisterWorkDemand(command) => {
             ("register_work_demand", command.work_item_id.clone())
         }
+        ProtocolCommand::AdoptLegacyWorkState(command) => (
+            "adopt_legacy_work_state",
+            format!(
+                "{}:{}",
+                command.work_item_id, command.source_work_item_revision
+            ),
+        ),
         ProtocolCommand::IssueActivationAuthority(command) => {
             ("issue_activation_authority", command.authority_id.clone())
         }
@@ -1366,6 +1710,16 @@ fn command_fact_references(command: &ProtocolCommand) -> Vec<String> {
         ProtocolCommand::RegisterWorkDemand(command) => {
             vec![format!("work:{}", command.work_item_id)]
         }
+        ProtocolCommand::AdoptLegacyWorkState(command) => {
+            let mut references = vec![format!("work:{}", command.work_item_id)];
+            if let Some(wait) = &command.wait {
+                references.push(format!(
+                    "wait:{}:generation:{}",
+                    wait.wait_id, wait.generation
+                ));
+            }
+            references
+        }
         ProtocolCommand::IssueActivationAuthority(command) => {
             vec![format!("activation_authority:{}", command.authority_id)]
         }
@@ -1394,7 +1748,7 @@ fn command_fact_references(command: &ProtocolCommand) -> Vec<String> {
 
 fn validate_command_agent(agent_id: &str, command: &ProtocolCommand) -> Result<()> {
     let command_agent_id = match command {
-        ProtocolCommand::RegisterWorkDemand(_) => None,
+        ProtocolCommand::RegisterWorkDemand(_) | ProtocolCommand::AdoptLegacyWorkState(_) => None,
         ProtocolCommand::IssueActivationAuthority(command) => Some(&command.activation.agent_id),
         ProtocolCommand::AdmitActivation(command) => Some(&command.activation.agent_id),
         ProtocolCommand::SettleActivation(_)

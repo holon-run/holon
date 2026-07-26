@@ -175,6 +175,10 @@ fn task_with_result_message(
     terminal_task
 }
 
+pub(super) fn restart_task_result_message_id(task_id: &str) -> String {
+    format!("message:task-restart:{task_id}")
+}
+
 impl RuntimeHandle {
     pub(super) async fn task_work_item_binding(&self) -> Option<String> {
         let guard = self.inner.agent.lock().await;
@@ -1465,7 +1469,7 @@ impl RuntimeHandle {
                 status: TaskStatus::Interrupted,
                 created_at: task.created_at,
                 updated_at: Utc::now(),
-                parent_message_id: None,
+                parent_message_id: Some(restart_task_result_message_id(&task.id)),
                 work_item_id: task.work_item_id.clone(),
                 summary: task.summary.clone(),
                 detail: Some(detail),
@@ -1476,6 +1480,32 @@ impl RuntimeHandle {
             interrupted.push(interrupted_task);
         }
         Ok(interrupted)
+    }
+
+    pub(super) async fn missing_interrupted_task_results(&self) -> Result<Vec<TaskRecord>> {
+        let agent_id = self.agent_id().await?;
+        let mut missing = Vec::new();
+        for task in self
+            .inner
+            .runtime_db
+            .tasks()
+            .latest_for_agent(&agent_id, usize::MAX)?
+        {
+            if task.status != TaskStatus::Interrupted {
+                continue;
+            }
+            let Some(message_id) = task
+                .parent_message_id
+                .as_deref()
+                .filter(|message_id| message_id.starts_with("message:task-restart:"))
+            else {
+                continue;
+            };
+            if self.inner.storage.read_message_by_id(message_id)?.is_none() {
+                missing.push(task);
+            }
+        }
+        Ok(missing)
     }
 
     pub(super) async fn interrupt_active_tasks_for_lifecycle_stop(

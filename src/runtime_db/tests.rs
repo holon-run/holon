@@ -83,11 +83,11 @@ mod tests {
             ActivationTrust, AdmitActivationCommand, AgentActivation, AgentDispatchDisposition,
             AgentDispatchState, AttachActivationInputCommand, Continuation, Decision,
             IssueActivationAuthorityCommand, ObservationalDivergenceAllowance, PreemptionPolicy,
-            ProtocolCommand, ProtocolMode, RollbackAction, RollbackPolicy, RollbackTrigger,
-            RolloutClassEvidence, RolloutCommand, RolloutManifest, RolloutPreflightState,
-            ScenarioMode, SchedulerScenarioClass, SettleActivationCommand, Snapshot,
-            TriggerWaitCommand, WaitGenerationRecord, WaitIdentity, WaitRecord, WaitResumeClaim,
-            WaitState, WaitTrigger, WorkDemand, WorkStatus,
+            ProtocolCommand, ProtocolMode, RegisterWorkDemandCommand, RollbackAction,
+            RollbackPolicy, RollbackTrigger, RolloutClassEvidence, RolloutCommand, RolloutManifest,
+            RolloutPreflightState, ScenarioMode, SchedulerScenarioClass, SettleActivationCommand,
+            Snapshot, TriggerWaitCommand, WaitGenerationRecord, WaitIdentity, WaitRecord,
+            WaitResumeClaim, WaitState, WaitTrigger, WorkDemand, WorkStatus,
         },
         runtime_db::repositories::{enum_string, slim_task_record_for_payload},
         runtime_db::transitions::{
@@ -384,6 +384,217 @@ mod tests {
             |row| row.get(0),
         )?;
         assert_eq!(stored_results, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn scheduler_authoritative_promotion_atomically_adopts_legacy_work_state() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let db = RuntimeDb::open_and_migrate(
+            dir.path().join("runtime.sqlite"),
+            dir.path().join("runtime.lock"),
+        )?;
+        let mut work = WorkItemRecord::new("agent-a", "legacy runnable", WorkItemState::Open);
+        work.id = "work-legacy-adoption".into();
+        db.work_items().insert_new(&work)?;
+        let mut state = AgentState::new("agent-a");
+        state.current_work_item_id = Some(work.id.clone());
+        db.agent_states().upsert(&state)?;
+        let manifest = scheduler_rollout_manifest(1, 1);
+        let commands = vec![
+            (
+                "adoption-open".into(),
+                RolloutCommand::OpenPreflight {
+                    expected_config_revision: 0,
+                    manifest_revision: 1,
+                },
+            ),
+            (
+                "adoption-complete".into(),
+                RolloutCommand::CompletePreflight {
+                    expected_config_revision: 0,
+                    expected_preflight_revision: 1,
+                    manifest: manifest.clone(),
+                },
+            ),
+            (
+                "adoption-install".into(),
+                RolloutCommand::InstallManifest {
+                    expected_config_revision: 0,
+                    manifest,
+                },
+            ),
+            (
+                "adoption-protocol".into(),
+                RolloutCommand::ConfigureProtocol {
+                    expected_config_revision: 1,
+                    mode: ProtocolMode::Authoritative,
+                },
+            ),
+            (
+                "adoption-shadow".into(),
+                RolloutCommand::ChangeScenarioAuthority {
+                    scenario_class: "exact_wait_resume".into(),
+                    expected_config_revision: 2,
+                    expected_manifest_revision: 1,
+                    expected_preflight_revision: 1,
+                    mode: ScenarioMode::Shadow,
+                },
+            ),
+            (
+                "adoption-authority".into(),
+                RolloutCommand::ChangeScenarioAuthorityFromExplicitMode {
+                    scenario_class: "exact_wait_resume".into(),
+                    expected_config_revision: 3,
+                    expected_manifest_revision: 1,
+                    expected_preflight_revision: 1,
+                },
+            ),
+        ];
+
+        db.apply_scheduler_rollout_commands(&commands)?;
+        let snapshot = db
+            .transitions()
+            .load_scheduler_protocol_snapshot("agent-a")?;
+        assert_eq!(snapshot.focus.as_deref(), Some(work.id.as_str()));
+        assert_eq!(snapshot.work[&work.id].metadata_revision, 1);
+        assert_eq!(snapshot.work[&work.id].status, WorkStatus::Runnable);
+        assert_eq!(
+            snapshot.rollout.scenarios["exact_wait_resume"].mode,
+            ScenarioMode::Authoritative
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn scheduler_recovery_plan_rolls_back_adoption_when_later_command_rejects() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let db = RuntimeDb::open_and_migrate(
+            dir.path().join("runtime.sqlite"),
+            dir.path().join("runtime.lock"),
+        )?;
+        let mut work = WorkItemRecord::new("agent-a", "legacy recovery", WorkItemState::Open);
+        work.id = "work-legacy-recovery".into();
+        db.work_items().insert_new(&work)?;
+        let adoption = db
+            .transitions()
+            .legacy_scheduler_adoption_candidates("agent-a")?
+            .into_iter()
+            .find(|candidate| candidate.work_item_id == work.id)
+            .and_then(|candidate| candidate.command)
+            .expect("eligible legacy adoption command");
+        let rejected = ProtocolCommand::RegisterWorkDemand(RegisterWorkDemandCommand {
+            work_item_id: "work-invalid-recovery".into(),
+            demand: WorkDemand {
+                metadata_revision: 0,
+                scheduling_generation: 1,
+                status: WorkStatus::Runnable,
+                capabilities: Default::default(),
+                locks: Default::default(),
+                locality: "runtime".into(),
+                cost_class: "default".into(),
+            },
+        });
+
+        let error = db
+            .transitions()
+            .commit_scheduler_recovery_plan("agent-a", &[adoption, rejected])
+            .expect_err("rejected recovery command should roll back the whole plan");
+        assert!(error
+            .to_string()
+            .contains("work_demand_registration_fields_required"));
+        assert!(db
+            .transitions()
+            .load_scheduler_protocol_snapshot_if_initialized("agent-a")?
+            .is_none());
+        let stored_results: i64 = db.connection()?.query_row(
+            "SELECT COUNT(*) FROM scheduler_protocol_command_results
+             WHERE agent_id = 'agent-a'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(stored_results, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn scheduler_authoritative_promotion_rejects_running_legacy_turn_without_partial_adoption(
+    ) -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let db = RuntimeDb::open_and_migrate(
+            dir.path().join("runtime.sqlite"),
+            dir.path().join("runtime.lock"),
+        )?;
+        let mut work = WorkItemRecord::new("agent-a", "legacy running", WorkItemState::Open);
+        work.id = "work-legacy-running".into();
+        db.work_items().insert_new(&work)?;
+        let mut state = AgentState::new("agent-a");
+        state.status = AgentStatus::AwakeRunning;
+        state.current_run_id = Some("run-legacy".into());
+        state.current_work_item_id = Some(work.id.clone());
+        db.agent_states().upsert(&state)?;
+        let manifest = scheduler_rollout_manifest(1, 1);
+        let commands = vec![
+            (
+                "running-open".into(),
+                RolloutCommand::OpenPreflight {
+                    expected_config_revision: 0,
+                    manifest_revision: 1,
+                },
+            ),
+            (
+                "running-complete".into(),
+                RolloutCommand::CompletePreflight {
+                    expected_config_revision: 0,
+                    expected_preflight_revision: 1,
+                    manifest: manifest.clone(),
+                },
+            ),
+            (
+                "running-install".into(),
+                RolloutCommand::InstallManifest {
+                    expected_config_revision: 0,
+                    manifest,
+                },
+            ),
+            (
+                "running-protocol".into(),
+                RolloutCommand::ConfigureProtocol {
+                    expected_config_revision: 1,
+                    mode: ProtocolMode::Authoritative,
+                },
+            ),
+            (
+                "running-shadow".into(),
+                RolloutCommand::ChangeScenarioAuthority {
+                    scenario_class: "exact_wait_resume".into(),
+                    expected_config_revision: 2,
+                    expected_manifest_revision: 1,
+                    expected_preflight_revision: 1,
+                    mode: ScenarioMode::Shadow,
+                },
+            ),
+            (
+                "running-authority".into(),
+                RolloutCommand::ChangeScenarioAuthorityFromExplicitMode {
+                    scenario_class: "exact_wait_resume".into(),
+                    expected_config_revision: 3,
+                    expected_manifest_revision: 1,
+                    expected_preflight_revision: 1,
+                },
+            ),
+        ];
+
+        let error = db.apply_scheduler_rollout_commands(&commands).unwrap_err();
+        assert!(error.to_string().contains("legacy_agent_turn_running"));
+        assert!(db
+            .transitions()
+            .load_scheduler_protocol_snapshot_if_initialized("agent-a")?
+            .is_none());
+        assert_eq!(
+            db.transitions().load_scheduler_rollout_state()?,
+            Default::default()
+        );
         Ok(())
     }
 

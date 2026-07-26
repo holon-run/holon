@@ -7,8 +7,9 @@ use std::{
 };
 
 use holon::domain::scheduler_protocol::{
-    ActivationOrigin, ActivationSlot, ActivationTrust, AgentDispatchState, ProtocolCommand,
-    Snapshot, WaitGenerationRecord, WaitRecord, WaitState, WorkDemand, WorkStatus,
+    ActivationOrigin, ActivationSlot, ActivationTrust, AdoptLegacyWorkStateCommand,
+    AgentDispatchState, Decision, LegacyWaitAdoption, ProtocolCommand, Snapshot,
+    WaitGenerationRecord, WaitRecord, WaitState, WorkDemand, WorkStatus,
 };
 use holon::domain::scheduler_semantic::{
     resolve_semantic_proposal, validate_semantic_decision_input, validate_semantic_decision_inputs,
@@ -22,6 +23,103 @@ use model::{
 
 fn fixture_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/scheduler_intent_mvp")
+}
+
+#[test]
+fn legacy_work_state_adoption_is_typed_and_idempotent() {
+    let snapshot = Snapshot {
+        slot: ActivationSlot::Idle,
+        dispatch: AgentDispatchState::Open,
+        dispatch_revision: 0,
+        focus: None,
+        work: BTreeMap::new(),
+        waits: BTreeMap::new(),
+        activations: BTreeMap::new(),
+        activation_authorities: BTreeMap::new(),
+        activation_admissions: BTreeMap::new(),
+        settlements: BTreeMap::new(),
+        missing_settlements: BTreeMap::new(),
+        rollout: Default::default(),
+        admitted_generations: Default::default(),
+        continuation_admissions: BTreeMap::new(),
+        activation_inputs: BTreeMap::new(),
+    };
+    let command = ProtocolCommand::AdoptLegacyWorkState(AdoptLegacyWorkStateCommand {
+        work_item_id: "work-restart".into(),
+        source_work_item_revision: 4,
+        demand: WorkDemand {
+            metadata_revision: 4,
+            scheduling_generation: 4,
+            status: WorkStatus::Waiting {
+                wait_id: "wait-task".into(),
+            },
+            capabilities: Default::default(),
+            locks: Default::default(),
+            locality: "runtime".into(),
+            cost_class: "default".into(),
+        },
+        wait: Some(LegacyWaitAdoption {
+            wait_id: "wait-task".into(),
+            generation: 4,
+            owner_work_item_id: "work-restart".into(),
+            source_updated_at: "2026-07-26T00:00:00Z".into(),
+        }),
+        focus: true,
+        reserve_dispatch: true,
+    });
+
+    let adopted = holon::domain::scheduler_protocol::reduce_command(&snapshot, &command);
+    assert_eq!(adopted.outcome.decision, Decision::LegacyWorkStateAdopted);
+    holon::domain::scheduler_protocol::assert_invariants(&adopted.outcome.snapshot).unwrap();
+    let replay =
+        holon::domain::scheduler_protocol::reduce_command(&adopted.outcome.snapshot, &command);
+    assert_eq!(replay.outcome.decision, Decision::DuplicateIgnored);
+}
+
+#[test]
+fn legacy_work_state_adoption_rejects_same_revision_conflicts() {
+    let mut snapshot = semantic_authority_snapshot();
+    snapshot.dispatch = AgentDispatchState::Open;
+    snapshot.focus = None;
+    snapshot.work.clear();
+    snapshot.waits.clear();
+    snapshot.work.insert(
+        "work-restart".into(),
+        WorkDemand {
+            metadata_revision: 4,
+            scheduling_generation: 4,
+            status: WorkStatus::Runnable,
+            capabilities: Default::default(),
+            locks: Default::default(),
+            locality: "runtime".into(),
+            cost_class: "default".into(),
+        },
+    );
+    let conflicting = ProtocolCommand::AdoptLegacyWorkState(AdoptLegacyWorkStateCommand {
+        work_item_id: "work-restart".into(),
+        source_work_item_revision: 4,
+        demand: WorkDemand {
+            metadata_revision: 4,
+            scheduling_generation: 4,
+            status: WorkStatus::Paused {
+                hold_id: "legacy-plan-needs-input:work-restart".into(),
+            },
+            capabilities: Default::default(),
+            locks: Default::default(),
+            locality: "runtime".into(),
+            cost_class: "default".into(),
+        },
+        wait: None,
+        focus: false,
+        reserve_dispatch: false,
+    });
+
+    let rejected = holon::domain::scheduler_protocol::reduce_command(&snapshot, &conflicting);
+    assert_eq!(rejected.outcome.decision, Decision::Rejected);
+    assert_eq!(
+        rejected.conflict.unwrap().code,
+        "legacy_work_state_adoption_conflict"
+    );
 }
 
 #[test]
