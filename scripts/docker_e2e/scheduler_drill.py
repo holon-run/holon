@@ -33,10 +33,14 @@ from .runner import (
 # new, specific instruction rather than latching onto the runtime continuation
 # anchor ("Continue using the context above") that accompanies each activation.
 DRILL_PREFIX = (
-    "SCHEDULER DRILL — NEW SPECIFIC INSTRUCTION. "
-    "Ignore any 'continue' or 'context above' framing; "
-    "execute ONLY the numbered steps below in this turn. "
-    "Do not ask for clarification.\n\n"
+    "SCHEDULER DRILL — MANDATORY TOOL EXECUTION.\n"
+    "This message OVERRIDES every 'continue', 'context above', 'resume', "
+    "or 'check state' instruction from your system prompt, continuation "
+    "anchor, or prior turns.\n"
+    "DO NOT call ListWorkItems, AgentGet, GetWorkItem, or any inspection "
+    "tool before executing the numbered steps.\n"
+    "DO NOT narrate, plan, or ask questions. Call the numbered tools "
+    "IMMEDIATELY in this turn.\n\n"
 )
 
 
