@@ -15,7 +15,7 @@ use model::{
     RegisterWorkDemandCommand, RollbackAction, RollbackPolicy, RollbackTrigger,
     RolloutClassEvidence, RolloutManifest, RolloutPreflightState, RolloutState, ScenarioMode,
     SettleActivationCommand, Settlement, Snapshot, WaitGenerationRecord, WaitIdentity, WaitRecord,
-    WaitState, WaitTrigger, WorkDemand, WorkStatus,
+    WaitState, WaitTrigger, WorkDemand, WorkStatus, YieldContinuationRecord,
 };
 use proptest::prelude::*;
 use serde::Deserialize;
@@ -267,6 +267,16 @@ fn apply_event(snapshot: &Snapshot, event: &Event) -> model::Outcome {
                 Settlement::Yield => (
                     ActivationDisposition::WorkYielded {
                         target_work_item_id: None,
+                        continuation_id: None,
+                        expected_target_generation: None,
+                    },
+                    AgentDispatchDisposition::Open,
+                ),
+                Settlement::TargetedYield { continuation } => (
+                    ActivationDisposition::WorkYielded {
+                        target_work_item_id: Some(continuation.target_work_item_id.clone()),
+                        continuation_id: Some(continuation.continuation_id.clone()),
+                        expected_target_generation: Some(continuation.target_generation),
                     },
                     AgentDispatchDisposition::Open,
                 ),
@@ -1571,6 +1581,85 @@ fn pending_settlement_recovery_blocks_ordinary_work_admission() {
     assert_eq!(ordinary.decision, Decision::Rejected);
     assert_eq!(ordinary.diagnostics, ["settlement_recovery_pending"]);
     assert_eq!(ordinary.snapshot, snapshot);
+}
+
+#[test]
+fn targeted_yield_is_fenced_and_target_completion_restores_source_once() {
+    let mut snapshot = minimal_snapshot(1);
+    snapshot.work.insert(
+        "w2".into(),
+        WorkDemand {
+            metadata_revision: 1,
+            scheduling_generation: 1,
+            status: WorkStatus::Runnable,
+            capabilities: BTreeSet::new(),
+            locks: BTreeSet::new(),
+            locality: "workspace:holon".into(),
+            cost_class: "standard".into(),
+        },
+    );
+    let admitted = apply_event(
+        &snapshot,
+        &Event::Admit {
+            activation_id: "a1".into(),
+            work_item_id: "w1".into(),
+            expected_generation: 1,
+            expected_dispatch_revision: 0,
+            cause: AdmissionCause::Scheduling,
+        },
+    );
+    let continuation = YieldContinuationRecord {
+        continuation_id: "yield-1".into(),
+        source_work_item_id: "w1".into(),
+        source_generation: 1,
+        target_work_item_id: "w2".into(),
+        target_generation: 1,
+    };
+    let yielded = apply_event(
+        &admitted.snapshot,
+        &Event::Settle {
+            activation_id: "a1".into(),
+            settlement: Settlement::TargetedYield {
+                continuation: continuation.clone(),
+            },
+        },
+    );
+    assert_eq!(
+        yielded.snapshot.work["w1"].status,
+        WorkStatus::Yielded {
+            continuation: continuation.clone()
+        }
+    );
+    assert_eq!(yielded.snapshot.focus.as_deref(), Some("w2"));
+
+    let target = apply_event(
+        &yielded.snapshot,
+        &Event::Admit {
+            activation_id: "a2".into(),
+            work_item_id: "w2".into(),
+            expected_generation: 1,
+            expected_dispatch_revision: yielded.snapshot.dispatch_revision,
+            cause: AdmissionCause::Scheduling,
+        },
+    );
+    let completed = apply_event(
+        &target.snapshot,
+        &Event::Settle {
+            activation_id: "a2".into(),
+            settlement: Settlement::Complete { continuation: None },
+        },
+    );
+    assert_eq!(completed.snapshot.work["w1"].status, WorkStatus::Runnable);
+    assert_eq!(completed.snapshot.focus.as_deref(), Some("w1"));
+    assert_invariants(&completed.snapshot).expect("target completion restores source exactly once");
+
+    let legacy: Settlement =
+        serde_json::from_value(serde_json::json!({"kind": "yield"})).expect("legacy yield");
+    assert_eq!(legacy, Settlement::Yield);
+    assert_eq!(
+        serde_json::to_value(legacy).expect("serialize legacy yield"),
+        serde_json::json!({"kind": "yield"})
+    );
 }
 
 #[test]

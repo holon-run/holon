@@ -1,6 +1,124 @@
 use super::super::*;
 use super::support::*;
 
+struct PickThenExecProvider {
+    calls: Mutex<usize>,
+    target_work_item_id: String,
+}
+
+#[tokio::test]
+async fn terminal_pick_ends_turn_before_later_tools_or_provider_rounds() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let caller = runtime
+        .create_work_item("activation caller".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let target = runtime
+        .create_work_item("next activation target".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(caller.id.clone()).await.unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.current_turn_id = Some("turn-terminal-pick".into());
+        guard.state.current_turn_work_item_id = Some(caller.id.clone());
+        guard.state.current_execution_binding = Some(crate::types::WorkItemExecutionBinding {
+            activation_id: Some("activation-terminal-pick".into()),
+            source_message_id: "message-terminal-pick".into(),
+            turn_id: "turn-terminal-pick".into(),
+            work_item_id: Some(caller.id.clone()),
+            claimed_work_revision: Some(caller.revision),
+        });
+        guard.persist_state(&runtime.inner.storage).unwrap();
+    }
+    let provider = Arc::new(PickThenExecProvider {
+        calls: Mutex::new(0),
+        target_work_item_id: target.id.clone(),
+    });
+    *runtime.inner.provider.write().await = provider.clone();
+
+    let outcome = runtime
+        .run_agent_loop(
+            "default",
+            AuthorityClass::OperatorInstruction,
+            test_effective_prompt(),
+            LoopControlOptions {
+                max_tool_rounds: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(*provider.calls.lock().await, 1);
+    assert_eq!(outcome.terminal_kind, TurnTerminalKind::Completed);
+    assert!(outcome.should_sleep);
+    let tool_executions = runtime.storage().read_recent_tool_executions(10).unwrap();
+    assert!(tool_executions
+        .iter()
+        .any(|record| record.tool_name == "PickWorkItem"));
+    assert!(!tool_executions
+        .iter()
+        .any(|record| record.tool_name == "ExecCommand"));
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(
+        state.current_work_item_id.as_deref(),
+        Some(target.id.as_str())
+    );
+    assert_eq!(
+        state.current_turn_work_item_id.as_deref(),
+        Some(caller.id.as_str())
+    );
+}
+
+#[async_trait]
+impl AgentProvider for PickThenExecProvider {
+    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let mut calls = self.calls.lock().await;
+        *calls += 1;
+        if *calls > 1 {
+            panic!("terminal PickWorkItem should end the turn");
+        }
+        Ok(ProviderTurnResponse {
+            blocks: vec![
+                ModelBlock::ToolUse {
+                    id: "pick-target".into(),
+                    name: "PickWorkItem".into(),
+                    input: serde_json::json!({
+                        "work_item_id": self.target_work_item_id,
+                    }),
+                    kind: crate::provider::ModelToolCallKind::Function,
+                },
+                ModelBlock::ToolUse {
+                    id: "must-not-run".into(),
+                    name: "ExecCommand".into(),
+                    input: serde_json::json!({
+                        "cmd": "printf should-not-run",
+                    }),
+                    kind: crate::provider::ModelToolCallKind::Function,
+                },
+            ],
+            stop_reason: Some("tool_use".into()),
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
+            request_diagnostics: None,
+        })
+    }
+}
+
 #[tokio::test]
 async fn runtime_recovers_from_max_token_truncation() {
     let dir = tempdir().unwrap();

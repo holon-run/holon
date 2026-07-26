@@ -959,6 +959,31 @@ impl RuntimeTransitionRepository<'_> {
         self.commit_scheduler_protocol_command_inner(agent_id, command, fault, true)
     }
 
+    pub(crate) fn commit_scheduler_recovery_command(
+        &self,
+        agent_id: &str,
+        command: &ProtocolCommand,
+        fault: Option<TransitionFaultPoint>,
+    ) -> Result<SchedulerProtocolTransitionCommit> {
+        match command {
+            ProtocolCommand::RegisterWorkDemand(_) => {}
+            ProtocolCommand::IssueActivationAuthority(command)
+                if matches!(
+                    command.activation.cause,
+                    ActivationCause::SettlementRecovery { .. }
+                ) => {}
+            ProtocolCommand::AdmitActivation(command)
+                if matches!(
+                    command.activation.cause,
+                    ActivationCause::SettlementRecovery { .. }
+                ) => {}
+            ProtocolCommand::SettleActivation(_) => {}
+            ProtocolCommand::RecordMissingSettlement(_) => {}
+            _ => bail!("scheduler recovery commit only accepts settlement recovery commands"),
+        }
+        self.commit_scheduler_protocol_command_inner(agent_id, command, fault, false)
+    }
+
     #[cfg(test)]
     pub(crate) fn commit_scheduler_protocol_command_unchecked_for_test(
         &self,
@@ -1787,6 +1812,31 @@ fn persist_agent_snapshot_tx(
                 &now,
             ],
         )?;
+    }
+
+    tx.execute(
+        "DELETE FROM scheduler_yield_continuations WHERE agent_id = ?1",
+        [agent_id],
+    )?;
+    for demand in snapshot.work.values() {
+        if let WorkStatus::Yielded { continuation } = &demand.status {
+            tx.execute(
+                "INSERT INTO scheduler_yield_continuations (
+                   agent_id, continuation_id, source_work_item_id, source_generation,
+                   target_work_item_id, target_generation, payload_json, created_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    agent_id,
+                    &continuation.continuation_id,
+                    &continuation.source_work_item_id,
+                    to_i64(continuation.source_generation, "yield source generation")?,
+                    &continuation.target_work_item_id,
+                    to_i64(continuation.target_generation, "yield target generation")?,
+                    serde_json::to_string(continuation)?,
+                    &now,
+                ],
+            )?;
+        }
     }
 
     for (wait_id, wait) in &snapshot.waits {
@@ -2704,6 +2754,9 @@ fn work_status_columns(status: &WorkStatus) -> (&'static str, Option<&str>) {
     match status {
         WorkStatus::Runnable => ("runnable", None),
         WorkStatus::Waiting { wait_id } => ("waiting", Some(wait_id)),
+        WorkStatus::Yielded { continuation } => {
+            ("paused", Some(continuation.continuation_id.as_str()))
+        }
         WorkStatus::NeedsSettlement { activation_id } => ("needs_settlement", Some(activation_id)),
         WorkStatus::Paused { hold_id } => ("paused", Some(hold_id)),
         WorkStatus::Terminal => ("terminal", None),

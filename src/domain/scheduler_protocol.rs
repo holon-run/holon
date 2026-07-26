@@ -214,10 +214,28 @@ pub struct WorkDemand {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WorkStatus {
     Runnable,
-    Waiting { wait_id: String },
-    NeedsSettlement { activation_id: String },
-    Paused { hold_id: String },
+    Waiting {
+        wait_id: String,
+    },
+    Yielded {
+        continuation: YieldContinuationRecord,
+    },
+    NeedsSettlement {
+        activation_id: String,
+    },
+    Paused {
+        hold_id: String,
+    },
     Terminal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct YieldContinuationRecord {
+    pub continuation_id: String,
+    pub source_work_item_id: String,
+    pub source_generation: u64,
+    pub target_work_item_id: String,
+    pub target_generation: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -722,6 +740,10 @@ pub enum ActivationDisposition {
     WorkYielded {
         #[serde(default)]
         target_work_item_id: Option<String>,
+        #[serde(default)]
+        continuation_id: Option<String>,
+        #[serde(default)]
+        expected_target_generation: Option<u64>,
     },
     WorkFailed {
         failure_policy: String,
@@ -1011,6 +1033,9 @@ pub enum AdmissionCause {
 pub enum Settlement {
     Continue,
     Yield,
+    TargetedYield {
+        continuation: YieldContinuationRecord,
+    },
     Wait {
         wait: WaitIdentity,
         mode: WaitMode,
@@ -1031,7 +1056,10 @@ impl Serialize for Settlement {
         #[serde(tag = "kind", rename_all = "snake_case")]
         enum Wire<'a> {
             Continue,
-            Yield,
+            Yield {
+                #[serde(skip_serializing_if = "Option::is_none")]
+                continuation: Option<&'a YieldContinuationRecord>,
+            },
             Wait {
                 #[serde(skip_serializing_if = "Option::is_none")]
                 wait: Option<&'a WaitIdentity>,
@@ -1047,7 +1075,10 @@ impl Serialize for Settlement {
 
         let wire = match self {
             Self::Continue => Wire::Continue,
-            Self::Yield => Wire::Yield,
+            Self::Yield => Wire::Yield { continuation: None },
+            Self::TargetedYield { continuation } => Wire::Yield {
+                continuation: Some(continuation),
+            },
             Self::Wait {
                 wait,
                 mode,
@@ -1073,7 +1104,10 @@ impl<'de> Deserialize<'de> for Settlement {
         #[serde(tag = "kind", rename_all = "snake_case")]
         enum Wire {
             Continue,
-            Yield,
+            Yield {
+                #[serde(default)]
+                continuation: Option<YieldContinuationRecord>,
+            },
             Wait {
                 #[serde(default)]
                 wait: Option<WaitIdentity>,
@@ -1090,7 +1124,10 @@ impl<'de> Deserialize<'de> for Settlement {
 
         match Wire::deserialize(deserializer)? {
             Wire::Continue => Ok(Self::Continue),
-            Wire::Yield => Ok(Self::Yield),
+            Wire::Yield { continuation: None } => Ok(Self::Yield),
+            Wire::Yield {
+                continuation: Some(continuation),
+            } => Ok(Self::TargetedYield { continuation }),
             Wire::Wait {
                 wait: Some(wait),
                 wait_id: None,
@@ -1418,6 +1455,16 @@ pub fn migrate_legacy_event(
                 Settlement::Yield => (
                     ActivationDisposition::WorkYielded {
                         target_work_item_id: None,
+                        continuation_id: None,
+                        expected_target_generation: None,
+                    },
+                    AgentDispatchDisposition::Open,
+                ),
+                Settlement::TargetedYield { continuation } => (
+                    ActivationDisposition::WorkYielded {
+                        target_work_item_id: Some(continuation.target_work_item_id.clone()),
+                        continuation_id: Some(continuation.continuation_id.clone()),
+                        expected_target_generation: Some(continuation.target_generation),
                     },
                     AgentDispatchDisposition::Open,
                 ),
@@ -2427,9 +2474,36 @@ fn lower_activation_settlement(
         (
             ActivationDisposition::WorkYielded {
                 target_work_item_id: None,
+                continuation_id: None,
+                expected_target_generation: None,
             },
             AgentDispatchDisposition::Open,
         ) => Settlement::Yield,
+        (
+            ActivationDisposition::WorkYielded {
+                target_work_item_id: Some(target_work_item_id),
+                continuation_id: Some(continuation_id),
+                expected_target_generation: Some(target_generation),
+            },
+            AgentDispatchDisposition::Open,
+        ) => Settlement::TargetedYield {
+            continuation: YieldContinuationRecord {
+                continuation_id: continuation_id.clone(),
+                source_work_item_id: snapshot.activations[&settlement.activation_id]
+                    .work_item_id
+                    .clone(),
+                source_generation: snapshot.activations[&settlement.activation_id]
+                    .admitted_generation,
+                target_work_item_id: target_work_item_id.clone(),
+                target_generation: *target_generation,
+            },
+        },
+        (ActivationDisposition::WorkYielded { .. }, AgentDispatchDisposition::Open) => {
+            return Err(command_conflict(
+                ProtocolConflictKind::InvalidCommand,
+                "yield_continuation_identity_required",
+            ));
+        }
         (ActivationDisposition::WorkWaits { .. }, AgentDispatchDisposition::Awaiting { .. })
         | (
             ActivationDisposition::WorkContinues
@@ -2867,6 +2941,19 @@ fn admit(
             {
                 return rejected(snapshot, "work_item_not_awaiting_settlement_recovery");
             }
+            let first_pending = snapshot
+                .work
+                .iter()
+                .filter_map(|(candidate_work_item_id, demand)| match &demand.status {
+                    WorkStatus::NeedsSettlement { activation_id } => {
+                        Some((candidate_work_item_id.as_str(), activation_id.as_str()))
+                    }
+                    _ => None,
+                })
+                .min();
+            if first_pending != Some((work_item_id, missing_activation_id.as_str())) {
+                return rejected(snapshot, "settlement_recovery_not_first_pending");
+            }
             recovery_for = Some(missing_activation_id.clone());
             transitions.push(format!(
                 "settlement:{missing_activation_id}:awaiting_recovery->running:{activation_id}"
@@ -3004,6 +3091,72 @@ fn settle(snapshot: &Snapshot, activation_id: &str, settlement: &Settlement) -> 
             return rejected(snapshot, code);
         }
     }
+    if let Settlement::TargetedYield { continuation } = settlement {
+        if continuation.continuation_id.is_empty()
+            || continuation.source_work_item_id != *work_item_id
+            || continuation.source_generation != *admitted_generation
+        {
+            return rejected(snapshot, "yield_continuation_identity_mismatch");
+        }
+        if continuation.target_work_item_id == *work_item_id {
+            return rejected(snapshot, "yield_target_is_source_work_item");
+        }
+        let Some(target) = snapshot.work.get(&continuation.target_work_item_id) else {
+            return rejected(snapshot, "yield_target_missing");
+        };
+        if target.scheduling_generation != continuation.target_generation {
+            return rejected(snapshot, "stale_yield_target_generation");
+        }
+        if target.status != WorkStatus::Runnable {
+            return rejected(snapshot, "yield_target_not_runnable");
+        }
+        if snapshot.settlements.values().any(|settlement| {
+            matches!(
+                &settlement.disposition,
+                ActivationDisposition::WorkYielded {
+                    continuation_id: Some(existing_id),
+                    ..
+                } if existing_id == &continuation.continuation_id
+            )
+        }) || snapshot.work.values().any(|demand| {
+            matches!(
+                &demand.status,
+                WorkStatus::Yielded {
+                    continuation: existing,
+                } if existing.continuation_id == continuation.continuation_id
+            )
+        }) {
+            return rejected(snapshot, "yield_continuation_already_used");
+        }
+        if snapshot.work.values().any(|demand| {
+            matches!(
+                &demand.status,
+                WorkStatus::Yielded {
+                    continuation: existing,
+                } if existing.target_work_item_id == continuation.target_work_item_id
+                    && existing.target_generation == continuation.target_generation
+            )
+        }) {
+            return rejected(snapshot, "yield_target_generation_already_reserved");
+        }
+    }
+    if matches!(settlement, Settlement::Complete { .. }) {
+        let matching_yields = snapshot
+            .work
+            .values()
+            .filter(|demand| {
+                matches!(
+                    &demand.status,
+                    WorkStatus::Yielded { continuation }
+                        if continuation.target_work_item_id == *work_item_id
+                            && continuation.target_generation == *admitted_generation
+                )
+            })
+            .count();
+        if matching_yields > 1 {
+            return rejected(snapshot, "ambiguous_yield_continuation");
+        }
+    }
     let settlement_owner_activation = recovery_for
         .as_deref()
         .unwrap_or(running_activation_id.as_str());
@@ -3087,6 +3240,21 @@ fn settle(snapshot: &Snapshot, activation_id: &str, settlement: &Settlement) -> 
                 .status = WorkStatus::Runnable;
             set_dispatch_state(&mut next, AgentDispatchState::Open);
             transitions.push(format!("work:{work_item_id}:runnable"));
+        }
+        Settlement::TargetedYield { continuation } => {
+            resolve_consumed_wait(&mut next, consumed_wait_id.as_deref(), &mut transitions);
+            next.work
+                .get_mut(work_item_id)
+                .expect("running work item exists")
+                .status = WorkStatus::Yielded {
+                continuation: continuation.clone(),
+            };
+            set_dispatch_state(&mut next, AgentDispatchState::Open);
+            next.focus = Some(continuation.target_work_item_id.clone());
+            transitions.push(format!(
+                "work:{work_item_id}:yielded:{}:{}",
+                continuation.continuation_id, continuation.target_work_item_id
+            ));
         }
         Settlement::Wait {
             wait,
@@ -3242,6 +3410,28 @@ fn settle(snapshot: &Snapshot, activation_id: &str, settlement: &Settlement) -> 
             if next.focus.as_deref() == Some(work_item_id) {
                 next.focus = restored_focus;
                 transitions.push(format!("focus:{work_item_id}:released"));
+            }
+            let yielded_source =
+                next.work
+                    .iter()
+                    .find_map(|(source_id, demand)| match &demand.status {
+                        WorkStatus::Yielded { continuation }
+                            if continuation.target_work_item_id == *work_item_id
+                                && continuation.target_generation == *admitted_generation =>
+                        {
+                            Some((source_id.clone(), continuation.continuation_id.clone()))
+                        }
+                        _ => None,
+                    });
+            if let Some((source_id, continuation_id)) = yielded_source {
+                next.work
+                    .get_mut(&source_id)
+                    .expect("yield source exists")
+                    .status = WorkStatus::Runnable;
+                next.focus = Some(source_id.clone());
+                transitions.push(format!(
+                    "yield_continuation:{continuation_id}:{source_id}:runnable"
+                ));
             }
         }
         Settlement::Missing => unreachable!("handled above"),
@@ -4158,6 +4348,25 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
                     return Err(
                         "canonical runnable settlement disagrees with authoritative work state"
                             .into(),
+                    );
+                }
+            }
+            Settlement::TargetedYield { continuation } => {
+                let restored = work.status == WorkStatus::Runnable
+                    && snapshot.activations.values().any(|candidate| {
+                        candidate.work_item_id == continuation.target_work_item_id
+                            && candidate.admitted_generation == continuation.target_generation
+                            && candidate.state == ActivationState::Settled
+                    });
+                if projects_current_work_state
+                    && work.status
+                        != (WorkStatus::Yielded {
+                            continuation: continuation.clone(),
+                        })
+                    && !restored
+                {
+                    return Err(
+                        "canonical targeted yield disagrees with authoritative work state".into(),
                     );
                 }
             }

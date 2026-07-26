@@ -22,6 +22,7 @@ for:
 - WorkItem demand reservation;
 - wait trigger and consume;
 - revision and generation fences;
+- terminal evidence classification and settlement recovery;
 - trust, permission, lifecycle, and runtime constraints;
 - atomic durable commit; and
 - replay, recovery, and public projections.
@@ -341,6 +342,10 @@ An unbound activation cannot mutate WorkItem lifecycle, scheduling, waits,
 manual holds, or completion state. WorkItem mutation tools use activation
 binding as their default authority, never durable focus alone.
 
+Activation binding is immutable after admission. Changing durable focus or
+creating a continuation does not transfer the running activation's mutation
+authority to another WorkItem.
+
 Binding may be resolved from:
 
 1. explicit trusted identifiers;
@@ -514,6 +519,17 @@ AgentDispatchDisposition =
   | Awaiting(wait_id)
 ```
 
+`WorkYielded(target, mode)` has two distinct forms:
+
+- an untargeted yield may offer a later generation of the same WorkItem; and
+- a targeted yield records the source WorkItem and admitted generation, target
+  WorkItem and expected generation, and a unique continuation identity.
+
+A cross-WorkItem `PickWorkItem` issued by an execution-bound activation is a
+terminal targeted yield. It ends the current Turn and activation. The target
+becomes durable focus but may execute only in a later activation; no target
+tool, task, or mutation may run under the source activation.
+
 All terminal tools lower into the same runtime settlement command:
 
 - `WaitFor`;
@@ -536,10 +552,40 @@ Activation -> SettlementMissing
 WorkItem   -> NeedsSettlement(activation_id)
 ```
 
-The runtime may admit at most one `SettlementRecovery` activation. Recovery
-chooses a disposition from existing evidence and must not repeat external side
-effects. A second failure moves the WorkItem to a typed system hold for
-operator review.
+The runtime admits deterministic `SettlementRecovery` before ordinary
+admission. Recovery is a non-model reducer path: it makes no provider call,
+executes no tool, publishes no delivery or brief, and repeats no external side
+effect. Multiple missing settlements are selected in stable canonical order.
+
+Recovery may settle only from typed terminal evidence:
+
+```text
+TerminalEvidence =
+    TerminalToolTransition(tool_call_id, disposition)
+  | TurnTerminalDisposition(turn_id, disposition)
+  | QueueTerminalDisposition(message_id, disposition)
+  | ContinuationTransition(continuation_id, source_fence, target_fence)
+  | CompletionCommit(completion_id)
+  | WaitCommit(wait_id, wait_generation)
+  | InterruptionCommit(interruption_id)
+```
+
+Each evidence item carries its source identity, activation identity, WorkItem
+binding, expected scheduling generation, and committed revision where
+applicable. Mutable focus, compatibility readiness, and rendered tool output
+are not terminal evidence.
+
+Exactly one compatible disposition is recoverable. Missing, contradictory,
+stale, wrong-owner, or reused evidence is ambiguous and fails closed into a
+typed system hold with a structured diagnostic. The hold clears the
+partition-wide `NeedsSettlement` admission block while keeping that WorkItem
+non-runnable. A recovery activation that itself reaches missing settlement
+also enters this hold instead of recursively admitting recovery.
+
+Successful recovery atomically settles both the original missing activation
+and the recovery activation. Authority issuance, admission, settlement, and
+hold commands use stable identities, so restart or command replay cannot
+duplicate settlement or side effects.
 
 The runtime must not infer Continue, Wait, Complete, or lane posture from:
 
@@ -572,12 +618,28 @@ Executing(activation_id)
 Runnable(scheduling_generation)
 Waiting(wait_ids)
 Paused(hold_id)
-Yielded(frame_id)
+Yielded(continuation)
 NeedsSettlement(activation_id)
 Closed(outcome)
 ```
 
 Durable focus is a separate facet.
+
+`Yielded` is a canonical `WorkStatus`, not an alias for `Runnable`. Its
+continuation records:
+
+```text
+continuation_id
+source_work_item_id
+source_scheduling_generation
+target_work_item_id
+target_scheduling_generation
+```
+
+The source remains yielded until the exact target generation completes and
+resolves that continuation. Resolution resumes the source exactly once by
+offering a new source generation. Stale generations, duplicate resolution,
+wrong owners, and reused continuation identities are typed conflicts.
 
 A WorkItem scheduling generation may be offered only when:
 
@@ -756,6 +818,15 @@ records:
   activation identity;
 - `scheduler_missing_settlements`: the canonical recovery requirement for an
   agent activation that left execution without a valid settlement;
+- `scheduler_terminal_evidence`: immutable typed evidence that may justify one
+  terminal disposition, partitioned and fenced by activation and WorkItem
+  generation;
+- `scheduler_recovery_holds`: typed system holds for ambiguous or failed
+  settlement recovery, including stable diagnostic and proposed command
+  identities;
+- `scheduler_yield_continuations`: one canonical targeted-yield record per
+  continuation identity, containing source and target WorkItems and generation
+  fences;
 - `scheduler_continuation_admissions`: the immutable completion-to-caller
   generation transition record, with both WorkItems in the same agent
   partition;
@@ -927,6 +998,19 @@ records the missing settlement before terminally aborting that queue claim.
 This releases the canonical slot without replaying the original provider turn
 or tool calls.
 
+Canonical settlement recovery runs in both `shadow` and `authoritative` mode.
+In shadow mode it repairs and validates the canonical partition without
+changing legacy dispatch authority. In authoritative mode it runs before
+ordinary candidate admission. Legacy queue state, including whether the
+source entry is already processed, does not determine whether canonical
+`NeedsSettlement` is discoverable or repairable.
+
+Automatic recovery and `holon debug scheduler-recovery --apply` call the same
+restricted transition implementation. The debug command without `--apply` is
+read-only and reports the same ordered recovery plan, typed evidence,
+conflicts, holds, and stable command identities that the apply path would use.
+No debug path may repair protocol state through direct SQL.
+
 An optional serialized snapshot may be stored only as a versioned,
 checksummed recovery cache. Canonical rows remain the source of truth, and the
 cache must be discarded and rebuilt when its schema version, checksum, or
@@ -1025,6 +1109,13 @@ expose it initially.
 32. Stale revisions and generations are typed conflicts.
 33. Equivalent command replay is idempotent and does not duplicate audit,
     delivery, or outbox facts.
+34. A targeted yield preserves immutable source and target generation fences
+    and resolves its continuation at most once.
+35. Settlement recovery is admitted before ordinary work and never invokes a
+    model, tool, delivery, or external side effect.
+36. Recovery uses only typed terminal evidence; ambiguous evidence creates a
+    typed system hold and removes the partition-wide settlement block.
+37. Shadow and authoritative modes maintain the same canonical recovery facts.
 
 ## Migration
 
@@ -1363,7 +1454,11 @@ Required diagnostics include:
 - shadow divergences;
 - stale command conflicts;
 - incomplete rollback prerequisites; and
-- completion intent without terminal publication.
+- completion intent without terminal publication;
+- typed terminal evidence available for each missing settlement;
+- conflicting or insufficient recovery evidence and its system hold;
+- deterministic recovery order and proposed command identities; and
+- unresolved targeted-yield continuations and their generation fences.
 
 Host supervision must also expose a top-level runtime-loop failure as a
 durable audit event and agent health signal before the failed loop exits.
@@ -1386,6 +1481,13 @@ Each implementation phase must retain:
 - ambiguous binding tests;
 - single-slot and duplicate-claim concurrency tests;
 - stale scheduling and wait-generation tests;
+- targeted-yield terminality, continuation fencing, and exactly-once resume
+  tests;
+- deterministic settlement-recovery ordering and typed-evidence tests;
+- ambiguous-evidence system-hold tests;
+- recovery authority/admit/settle crash and restart-idempotency tests;
+- shadow and authoritative canonical-recovery tests;
+- read-only debug report and shared `--apply` implementation tests;
 - completion atomicity tests;
 - shadow divergence tests; and
 - rollback drills.

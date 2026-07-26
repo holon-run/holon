@@ -37,6 +37,7 @@ pub(crate) struct PickWorkItemResult {
     pub(crate) continuation_created: Option<WorkItemContinuationSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) continuation_resolved: Option<WorkItemContinuationSummary>,
+    pub(crate) terminal_transition: bool,
     pub(crate) binding_note: String,
 }
 
@@ -77,7 +78,8 @@ pub(crate) async fn execute(
     let previous_work_item = picked.previous_work_item;
     let current_work_item = picked.current_work_item;
     let current_work_item_id = current_work_item.id.clone();
-    serialize_success(
+    let terminal_transition = picked.transition.terminal_transition;
+    let mut result = serialize_success(
         NAME,
         &PickWorkItemResult {
             previous_work_item,
@@ -86,7 +88,17 @@ pub(crate) async fn execute(
             transition: picked.transition,
             continuation_created: picked.continuation_created,
             continuation_resolved: picked.continuation_resolved,
-            binding_note: "subsequent tool calls in this turn are bound to the new current work item unless they explicitly specify another work_item_id".into(),
+            terminal_transition,
+            binding_note: if terminal_transition {
+                "the current activation yielded; the target work item becomes effective in the next activation".into()
+            } else {
+                "the selected work item is now the durable current focus".into()
+            },
         },
-    )
+    )?;
+    if terminal_transition {
+        result.should_sleep = true;
+        result.terminal_transition = true;
+    }
+    Ok(result)
 }

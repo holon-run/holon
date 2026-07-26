@@ -47,6 +47,7 @@ pub struct WorkItemFocusTransition {
     pub previous_readiness: Option<WorkItemReadiness>,
     pub current_readiness: WorkItemReadiness,
     pub switch_kind: String,
+    pub terminal_transition: bool,
     pub current_focus_mode: String,
     pub blocker_cleared: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -2451,6 +2452,14 @@ impl RuntimeHandle {
             "explicit_focus_pick"
         }
         .to_string();
+        let terminal_transition = yield_current
+            && state
+                .current_execution_binding
+                .as_ref()
+                .is_some_and(|binding| {
+                    binding.activation_id.is_some()
+                        && binding.work_item_id.as_deref() == current_id.as_deref()
+                });
         let current_focus_mode = if current_readiness == WorkItemReadiness::Runnable {
             "runnable"
         } else {
@@ -2464,6 +2473,7 @@ impl RuntimeHandle {
             previous_readiness,
             current_readiness,
             switch_kind,
+            terminal_transition,
             current_focus_mode,
             blocker_cleared,
             cancelled_wait_condition_ids,
@@ -2479,6 +2489,7 @@ impl RuntimeHandle {
                 "previous_readiness": transition.previous_readiness,
                 "current_readiness": transition.current_readiness,
                 "switch_kind": transition.switch_kind.clone(),
+                "terminal_transition": transition.terminal_transition,
                 "current_focus_mode": transition.current_focus_mode.clone(),
                 "blocker_cleared": transition.blocker_cleared,
                 "cancelled_wait_condition_ids": transition.cancelled_wait_condition_ids.clone(),
@@ -2489,7 +2500,9 @@ impl RuntimeHandle {
         ));
         let mut next_state = state.clone();
         next_state.current_work_item_id = Some(record.id.clone());
-        next_state.current_turn_work_item_id = Some(record.id.clone());
+        if !terminal_transition {
+            next_state.current_turn_work_item_id = Some(record.id.clone());
+        }
         let work_items = expected_revision
             .map(|expected_revision| {
                 vec![crate::runtime_db::transitions::WorkItemMutation::Update {

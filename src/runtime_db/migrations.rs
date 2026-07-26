@@ -1784,6 +1784,29 @@ CREATE INDEX IF NOT EXISTS idx_agent_deletion_jobs_status_updated
   ON agent_deletion_jobs(status, updated_at);
 "#,
     },
+    Migration {
+        version: 36,
+        name: "scheduler_targeted_yield_continuations",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS scheduler_yield_continuations (
+  agent_id TEXT NOT NULL,
+  continuation_id TEXT NOT NULL,
+  source_work_item_id TEXT NOT NULL,
+  source_generation INTEGER NOT NULL CHECK (source_generation >= 0),
+  target_work_item_id TEXT NOT NULL,
+  target_generation INTEGER NOT NULL CHECK (target_generation >= 0),
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, continuation_id),
+  UNIQUE (agent_id, source_work_item_id),
+  FOREIGN KEY (agent_id, source_work_item_id)
+    REFERENCES scheduler_work_demands(agent_id, work_item_id),
+  FOREIGN KEY (agent_id, target_work_item_id)
+    REFERENCES scheduler_work_demands(agent_id, work_item_id),
+  CHECK (source_work_item_id != target_work_item_id)
+);
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

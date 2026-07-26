@@ -39,6 +39,8 @@ pub struct ToolCall {
 pub struct ToolResult {
     pub envelope: ToolResultEnvelope,
     pub should_sleep: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub terminal_transition: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sleep_duration_ms: Option<u64>,
 }
@@ -78,6 +80,7 @@ impl ToolResult {
         Self {
             envelope,
             should_sleep: false,
+            terminal_transition: false,
             sleep_duration_ms: None,
         }
     }
@@ -98,6 +101,7 @@ impl ToolResult {
         Self {
             envelope,
             should_sleep: true,
+            terminal_transition: false,
             sleep_duration_ms,
         }
     }
@@ -113,6 +117,7 @@ impl ToolResult {
         Self {
             envelope,
             should_sleep: false,
+            terminal_transition: false,
             sleep_duration_ms: None,
         }
     }

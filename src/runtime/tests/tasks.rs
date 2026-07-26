@@ -423,6 +423,7 @@ async fn pick_second_runnable_work_item_yields_current() {
         .await
         .unwrap();
     assert_eq!(picked.transition.switch_kind, "yield_current");
+    assert!(!picked.transition.terminal_transition);
     assert!(
         picked.continuation_created.is_some(),
         "continuation frame should be created when yielding current runnable work item"
@@ -430,6 +431,68 @@ async fn pick_second_runnable_work_item_yields_current() {
     let continuation = picked.continuation_created.unwrap();
     assert_eq!(continuation.suspended_work_item_id, first.id);
     assert_eq!(continuation.active_work_item_id, second.id);
+}
+
+#[tokio::test]
+async fn execution_bound_pick_yields_without_rebinding_current_turn() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let first = runtime
+        .create_work_item("first execution owner".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let second = runtime
+        .create_work_item("next activation target".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(first.id.clone()).await.unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.current_turn_id = Some("turn-yield".into());
+        guard.state.current_turn_work_item_id = Some(first.id.clone());
+        guard.state.current_execution_binding = Some(crate::types::WorkItemExecutionBinding {
+            activation_id: Some("activation-yield".into()),
+            source_message_id: "message-yield".into(),
+            turn_id: "turn-yield".into(),
+            work_item_id: Some(first.id.clone()),
+            claimed_work_revision: Some(first.revision),
+        });
+        guard.persist_state(&runtime.inner.storage).unwrap();
+    }
+
+    let picked = runtime
+        .pick_work_item_with_reason(second.id.clone(), None)
+        .await
+        .unwrap();
+
+    assert_eq!(picked.transition.switch_kind, "yield_current");
+    assert!(picked.transition.terminal_transition);
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(
+        state.current_work_item_id.as_deref(),
+        Some(second.id.as_str())
+    );
+    assert_eq!(
+        state.current_turn_work_item_id.as_deref(),
+        Some(first.id.as_str())
+    );
+    assert_eq!(
+        state
+            .current_execution_binding
+            .as_ref()
+            .and_then(|binding| binding.work_item_id.as_deref()),
+        Some(first.id.as_str())
+    );
 }
 
 // ── bootstrap: fresh-start workspace initialization ─────────────────

@@ -582,6 +582,8 @@ pub enum DebugCommands {
         agent: Option<String>,
         #[arg(long)]
         json: bool,
+        #[arg(long)]
+        apply: bool,
     },
     #[command(hide = true)]
     SchedulerRolloutApply {

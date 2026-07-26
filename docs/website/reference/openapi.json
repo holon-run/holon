@@ -4045,6 +4045,9 @@
               "switch_kind": {
                 "type": "string"
               },
+              "terminal_transition": {
+                "type": "boolean"
+              },
               "warnings": {
                 "items": {
                   "properties": {
@@ -4068,6 +4071,7 @@
               "current_work_item_id",
               "current_readiness",
               "switch_kind",
+              "terminal_transition",
               "current_focus_mode",
               "blocker_cleared"
             ],

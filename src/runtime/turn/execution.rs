@@ -1847,6 +1847,7 @@ impl TurnExecution<'_> {
             let mut tool_result_envelopes = Vec::new();
             let mut tool_execution_refs: Vec<(String, String)> = Vec::new();
             let mut all_tool_results_should_sleep = !round_tool_calls.is_empty();
+            let mut terminal_tool_transition = false;
             for call in tool_calls {
                 if let Err(err) = runtime.ensure_not_aborted().await {
                     if let Some(aborted) = err.downcast_ref::<CurrentRunAborted>() {
@@ -2128,6 +2129,10 @@ impl TurnExecution<'_> {
                             is_error: result.is_error(),
                             error: result.tool_error().cloned(),
                         });
+                        if result.terminal_transition {
+                            terminal_tool_transition = true;
+                            break;
+                        }
                     }
                     Err(err) => {
                         if let Some(aborted) = err.downcast_ref::<CurrentRunAborted>() {
@@ -2314,8 +2319,8 @@ impl TurnExecution<'_> {
             }
             completed_rounds.push(round_record);
 
-            if all_tool_results_should_sleep
-                && !has_operator_interjections
+            if (all_tool_results_should_sleep || terminal_tool_transition)
+                && (!has_operator_interjections || terminal_tool_transition)
                 && !checkpoint_state.operator_delivery_pending()
             {
                 let final_text = last_assistant_message.clone().unwrap_or_default();

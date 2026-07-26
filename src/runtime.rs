@@ -594,6 +594,7 @@ pub struct SchedulerRecoveryReport {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SchedulerRecoveryCandidate {
+    pub kind: SchedulerRecoveryCandidateKind,
     pub message_id: String,
     pub activation_id: String,
     pub work_item_id: Option<String>,
@@ -604,6 +605,106 @@ pub struct SchedulerRecoveryCandidate {
     pub target_queue_status: Option<QueueEntryStatus>,
     pub evidence: Vec<String>,
     pub proposed_commands: Vec<crate::domain::scheduler_protocol::ProtocolCommand>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SchedulerRecoveryCandidateKind {
+    NeedsSettlement,
+    LegacyDequeued,
+}
+
+fn canonical_settlement_recovery_commands(
+    snapshot: &crate::domain::scheduler_protocol::Snapshot,
+    agent_id: &str,
+    work_item_id: &str,
+    missing_activation_id: &str,
+    target_demand: Option<(String, crate::domain::scheduler_protocol::WorkDemand)>,
+    resolution: Option<(
+        crate::domain::scheduler_protocol::ActivationDisposition,
+        Option<String>,
+        Option<String>,
+        Vec<String>,
+    )>,
+    created_at: String,
+) -> Vec<crate::domain::scheduler_protocol::ProtocolCommand> {
+    use crate::domain::scheduler_protocol::{
+        ActivationBinding, ActivationCause, ActivationLifecycleState, ActivationOrigin,
+        ActivationPriority, ActivationProvenance, ActivationSettlement, ActivationTrust,
+        AdmitActivationCommand, AgentActivation, AgentDispatchDisposition,
+        IssueActivationAuthorityCommand, MissingSettlementRecord, PreemptionPolicy,
+        ProtocolCommand, RegisterWorkDemandCommand, SettleActivationCommand,
+    };
+    let activation_id = format!("settlement-recovery:{missing_activation_id}");
+    let authority_id = format!("authority:{activation_id}");
+    let generation = snapshot.work[work_item_id].scheduling_generation;
+    let activation = AgentActivation {
+        id: activation_id.clone(),
+        agent_id: agent_id.to_string(),
+        state: ActivationLifecycleState::Admitted,
+        cause: ActivationCause::SettlementRecovery {
+            activation_id: missing_activation_id.to_string(),
+        },
+        binding: ActivationBinding::WorkItem {
+            work_item_id: work_item_id.to_string(),
+        },
+        priority: ActivationPriority::Interject,
+        preemption: PreemptionPolicy::AllowOperatorInterjection,
+        source_revision: None,
+        idempotency_key: activation_id.clone(),
+        provenance: ActivationProvenance {
+            origin: ActivationOrigin::RuntimeRecovery,
+            trust: ActivationTrust::RuntimeInstruction,
+            source_id: missing_activation_id.to_string(),
+            correlation_id: None,
+            causation_id: Some(missing_activation_id.to_string()),
+        },
+    };
+    let mut commands = Vec::new();
+    if let Some((target_work_item_id, demand)) = target_demand {
+        commands.push(ProtocolCommand::RegisterWorkDemand(
+            RegisterWorkDemandCommand {
+                work_item_id: target_work_item_id,
+                demand,
+            },
+        ));
+    }
+    commands.extend([
+        ProtocolCommand::IssueActivationAuthority(IssueActivationAuthorityCommand {
+            authority_id: authority_id.clone(),
+            activation: activation.clone(),
+            expected_scheduling_generation: generation,
+            expected_dispatch_revision: snapshot.dispatch_revision,
+        }),
+        ProtocolCommand::AdmitActivation(AdmitActivationCommand {
+            authority_id,
+            activation,
+            expected_scheduling_generation: generation,
+            expected_dispatch_revision: snapshot.dispatch_revision,
+        }),
+    ]);
+    commands.push(match resolution {
+        Some((disposition, turn_terminal, operator_delivery, evidence)) => {
+            ProtocolCommand::SettleActivation(SettleActivationCommand {
+                settlement: ActivationSettlement {
+                    id: format!("settlement:{activation_id}"),
+                    activation_id,
+                    turn_terminal,
+                    disposition,
+                    agent_dispatch: AgentDispatchDisposition::Open,
+                    operator_delivery,
+                    evidence,
+                    created_at,
+                },
+            })
+        }
+        None => ProtocolCommand::RecordMissingSettlement(MissingSettlementRecord {
+            id: format!("missing-settlement:{activation_id}"),
+            activation_id,
+            created_at,
+        }),
+    });
+    commands
 }
 
 pub fn scheduler_recovery_report(
@@ -621,6 +722,151 @@ pub fn scheduler_recovery_report(
             candidates: Vec::new(),
         });
     };
+    let all_queue_entries = runtime_db
+        .queue_entries()
+        .recent(Some(agent_id), usize::MAX)?;
+    let active_continuations = runtime_db
+        .work_item_continuations()
+        .active_for_agent(agent_id)?;
+    let mut candidates = Vec::new();
+    for (work_item_id, demand) in &snapshot.work {
+        let crate::domain::scheduler_protocol::WorkStatus::NeedsSettlement { activation_id } =
+            &demand.status
+        else {
+            continue;
+        };
+        let Some(admission) = snapshot.activation_admissions.get(activation_id) else {
+            continue;
+        };
+        let message_id = admission.activation.provenance.source_id.clone();
+        let queue_entry = all_queue_entries
+            .iter()
+            .find(|entry| entry.message_id == message_id);
+        let message = storage.read_message_by_id(&message_id)?;
+        let frame = active_continuations.iter().find(|frame| {
+            frame.suspended_work_item_id == *work_item_id
+                && frame.turn_id.as_deref()
+                    == message
+                        .as_ref()
+                        .and_then(|message| message.turn_id.as_deref())
+        });
+        let mut evidence = vec![
+            format!("work_item:{work_item_id}"),
+            format!("missing_activation:{activation_id}"),
+        ];
+        let mut target_demand = None;
+        let (resolution, terminal_turn_id, reason) = if let Some(frame) = frame {
+            evidence.extend([
+                format!("continuation:{}", frame.id),
+                format!("source_work_item:{}", frame.suspended_work_item_id),
+                format!("target_work_item:{}", frame.active_work_item_id),
+            ]);
+            let target_generation =
+                if let Some(target) = snapshot.work.get(&frame.active_work_item_id) {
+                    (target.status == crate::domain::scheduler_protocol::WorkStatus::Runnable)
+                        .then_some(target.scheduling_generation)
+                } else {
+                    storage
+                        .latest_work_item(&frame.active_work_item_id)?
+                        .filter(|target| {
+                            target.agent_id == agent_id
+                                && target.state == crate::types::WorkItemState::Open
+                                && target.readiness() == crate::types::WorkItemReadiness::Runnable
+                        })
+                        .map(|target| {
+                            let generation = target.revision.max(1);
+                            target_demand = Some((
+                                target.id,
+                                crate::domain::scheduler_protocol::WorkDemand {
+                                    metadata_revision: generation,
+                                    scheduling_generation: generation,
+                                    status: crate::domain::scheduler_protocol::WorkStatus::Runnable,
+                                    capabilities: Default::default(),
+                                    locks: Default::default(),
+                                    locality: "runtime".into(),
+                                    cost_class: "default".into(),
+                                },
+                            ));
+                            generation
+                        })
+                };
+            let resolution = target_generation.map(|target_generation| {
+                (
+                    crate::domain::scheduler_protocol::ActivationDisposition::WorkYielded {
+                        target_work_item_id: Some(frame.active_work_item_id.clone()),
+                        continuation_id: Some(frame.id.clone()),
+                        expected_target_generation: Some(target_generation),
+                    },
+                    frame.turn_id.clone(),
+                    None,
+                    evidence.clone(),
+                )
+            });
+            (
+                resolution,
+                frame.turn_id.clone(),
+                if target_generation.is_some() {
+                    "needs_settlement_continuation"
+                } else {
+                    "needs_settlement_continuation_target_unavailable"
+                },
+            )
+        } else if let Some(entry) = queue_entry {
+            let mut processed = entry.clone();
+            processed.status = QueueEntryStatus::Processed;
+            match canonical_queue_settlement_commands_from_facts(storage, runtime_db, &processed)?
+                .as_slice()
+            {
+                [crate::domain::scheduler_protocol::ProtocolCommand::SettleActivation(command)] => {
+                    evidence.extend(command.settlement.evidence.clone());
+                    (
+                        Some((
+                            command.settlement.disposition.clone(),
+                            command.settlement.turn_terminal.clone(),
+                            command.settlement.operator_delivery.clone(),
+                            evidence.clone(),
+                        )),
+                        command.settlement.turn_terminal.clone(),
+                        "needs_settlement_persisted_evidence",
+                    )
+                }
+                _ => (None, None, "needs_settlement_evidence_missing"),
+            }
+        } else {
+            (None, None, "needs_settlement_evidence_missing")
+        };
+        candidates.push(SchedulerRecoveryCandidate {
+            kind: SchedulerRecoveryCandidateKind::NeedsSettlement,
+            message_id,
+            activation_id: activation_id.clone(),
+            work_item_id: Some(work_item_id.clone()),
+            queue_status: queue_entry
+                .map(|entry| entry.status.clone())
+                .unwrap_or(QueueEntryStatus::Processed),
+            terminal_turn_id: terminal_turn_id.clone(),
+            eligible: true,
+            reason: reason.into(),
+            target_queue_status: None,
+            evidence: evidence.clone(),
+            proposed_commands: canonical_settlement_recovery_commands(
+                &snapshot,
+                agent_id,
+                work_item_id,
+                activation_id,
+                target_demand,
+                resolution,
+                queue_entry
+                    .map(|entry| entry.updated_at.to_rfc3339())
+                    .unwrap_or_else(|| Utc::now().to_rfc3339()),
+            ),
+        });
+    }
+    candidates.sort_by(|left, right| {
+        left.work_item_id
+            .cmp(&right.work_item_id)
+            .then_with(|| left.activation_id.cmp(&right.activation_id))
+    });
+
     // This debug-only report intentionally scans retained history so it cannot
     // omit an old recovery candidate; its cost scales with agent history.
     let turns = runtime_db
@@ -633,11 +879,10 @@ pub fn scheduler_recovery_report(
         .filter(|entry| entry.status == QueueEntryStatus::Dequeued)
         .collect::<Vec<_>>();
     entries.sort_by(|left, right| left.message_id.cmp(&right.message_id));
-    let mut candidates = Vec::with_capacity(entries.len());
-
     for entry in entries {
         let activation_id = scheduler_executor::canonical_activation_id(&entry.message_id);
         let mut candidate = SchedulerRecoveryCandidate {
+            kind: SchedulerRecoveryCandidateKind::LegacyDequeued,
             message_id: entry.message_id.clone(),
             activation_id: activation_id.clone(),
             work_item_id: None,
@@ -765,6 +1010,30 @@ pub fn scheduler_recovery_report(
         partition_initialized: true,
         candidates,
     })
+}
+
+pub fn apply_scheduler_recovery_plan(
+    _storage: &AppStorage,
+    runtime_db: &RuntimeDb,
+    agent_id: &str,
+    report: &SchedulerRecoveryReport,
+) -> Result<usize> {
+    let Some(candidate) = report.candidates.iter().find(|candidate| {
+        candidate.kind == SchedulerRecoveryCandidateKind::NeedsSettlement && candidate.eligible
+    }) else {
+        return Ok(0);
+    };
+    if candidate.proposed_commands.is_empty() {
+        return Ok(0);
+    }
+    let mut changed = false;
+    for command in &candidate.proposed_commands {
+        let commit = runtime_db
+            .transitions()
+            .commit_scheduler_recovery_command(agent_id, command, None)?;
+        changed |= commit.applied;
+    }
+    Ok(usize::from(changed))
 }
 
 fn runtime_error_queue_settlement(
@@ -2451,6 +2720,15 @@ impl RuntimeHandle {
 
     pub async fn run(self) -> Result<()> {
         self.bootstrap_recovery().await?;
+        let agent_id = self.inner.agent.lock().await.state.id.clone();
+        let recovery =
+            scheduler_recovery_report(&self.inner.storage, &self.inner.runtime_db, &agent_id)?;
+        apply_scheduler_recovery_plan(
+            &self.inner.storage,
+            &self.inner.runtime_db,
+            &agent_id,
+            &recovery,
+        )?;
         scheduler_executor::SchedulerDecisionExecutor::new(&self)
             .bootstrap_recovered()
             .await?;

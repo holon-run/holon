@@ -1363,6 +1363,157 @@ async fn bootstrap_recovery_marks_dequeued_canonical_activation_as_missing_settl
 }
 
 #[tokio::test]
+async fn settlement_recovery_repairs_processed_cross_work_item_pick_as_targeted_yield() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime.set_scheduler_protocol_production_commands_enabled(true);
+    enable_production_protocol_authority(&runtime);
+    let caller = runtime
+        .create_work_item("yield caller".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let target = runtime
+        .create_work_item("yield target".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(caller.id.clone()).await.unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "yield caller activation".into(),
+        },
+    );
+    message.work_item_id = Some(caller.id.clone());
+    message.turn_id = Some("turn-targeted-yield-recovery".into());
+    let message = runtime.enqueue(message).await.unwrap();
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    assert!(matches!(poll, scheduler_executor::RunLoopPoll::Message(_)));
+    runtime
+        .begin_interactive_turn(Some(&message), None, None)
+        .await
+        .unwrap();
+    let picked = runtime
+        .pick_work_item_with_reason(target.id.clone(), None)
+        .await
+        .unwrap();
+    assert!(picked.transition.terminal_transition);
+    let continuation_id = picked
+        .continuation_created
+        .expect("cross-work-item pick creates continuation")
+        .frame_id;
+    finish_claimed_test_run(&runtime).await;
+
+    assert!(runtime
+        .commit_queue_settlement(
+            QueueEntryRecord {
+                message_id: message.id.clone(),
+                agent_id: message.agent_id.clone(),
+                priority: message.priority.clone(),
+                status: QueueEntryStatus::Processed,
+                created_at: message.created_at,
+                updated_at: Utc::now(),
+            },
+            Vec::new(),
+            true,
+        )
+        .await
+        .unwrap());
+
+    let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+    let missing = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    assert_eq!(
+        missing.work[&caller.id].status,
+        WorkStatus::NeedsSettlement {
+            activation_id: activation_id.clone(),
+        }
+    );
+    assert!(!missing.work.contains_key(&target.id));
+
+    let report =
+        scheduler_recovery_report(&runtime.inner.storage, &runtime.inner.runtime_db, "default")
+            .unwrap();
+    let candidate = report
+        .candidates
+        .iter()
+        .find(|candidate| candidate.kind == SchedulerRecoveryCandidateKind::NeedsSettlement)
+        .expect("needs-settlement candidate");
+    assert_eq!(candidate.reason, "needs_settlement_continuation");
+    assert!(candidate
+        .evidence
+        .contains(&format!("continuation:{continuation_id}")));
+    assert_eq!(
+        apply_scheduler_recovery_plan(
+            &runtime.inner.storage,
+            &runtime.inner.runtime_db,
+            "default",
+            &report,
+        )
+        .unwrap(),
+        1
+    );
+
+    let recovered = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    let WorkStatus::Yielded { continuation } = &recovered.work[&caller.id].status else {
+        panic!("caller should be canonically yielded after recovery");
+    };
+    assert_eq!(continuation.continuation_id, continuation_id);
+    assert_eq!(continuation.source_work_item_id, caller.id);
+    assert_eq!(continuation.target_work_item_id, target.id);
+    assert_eq!(recovered.work[&target.id].status, WorkStatus::Runnable);
+    assert_eq!(
+        recovered.activations[&activation_id].state,
+        crate::domain::scheduler_protocol::ActivationState::Settled
+    );
+    assert_eq!(
+        apply_scheduler_recovery_plan(
+            &runtime.inner.storage,
+            &runtime.inner.runtime_db,
+            "default",
+            &scheduler_recovery_report(
+                &runtime.inner.storage,
+                &runtime.inner.runtime_db,
+                "default",
+            )
+            .unwrap(),
+        )
+        .unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
 async fn bootstrap_recovery_settles_dequeued_activation_from_terminal_turn() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
