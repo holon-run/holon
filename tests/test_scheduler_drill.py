@@ -50,8 +50,29 @@ class SchedulerDrillTests(unittest.TestCase):
                 {
                     "scenario_class": scenario,
                     "comparison_outcome": "matched",
+                    "legacy_observation_json": "{}",
                 }
                 for scenario in drill.PRODUCTION_SCENARIOS
+            ]
+            + [
+                {
+                    "scenario_class": "exact_wait_resume",
+                    "comparison_outcome": "matched",
+                    "legacy_observation_json": json.dumps(
+                        {
+                            "input_kind": input_kind,
+                            "wake_source": wake_source,
+                        }
+                    ),
+                }
+                for input_kind, wake_source in (
+                    ("callback_event", "external_callback"),
+                    ("webhook_event", "external_callback"),
+                    ("channel_event", "channel_signal"),
+                    ("timer_tick", "wait_deadline"),
+                    ("system_tick", "system_tick"),
+                    ("system_tick", "operator_wake_hint"),
+                )
             ],
             "hard_blockers": [],
             "work_demands": [],

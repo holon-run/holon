@@ -49,6 +49,14 @@ PRODUCTION_SCENARIOS = (
     "settlement",
     "delivery",
 )
+EXACT_WAIT_RESUME_TRIGGERS = (
+    "callback",
+    "webhook",
+    "channel",
+    "timer",
+    "system",
+    "operator_wake",
+)
 RUN_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{5,63}$")
 
 
@@ -370,19 +378,62 @@ def exercise_reducer_ingress(harness: CaseHarness, marker: str) -> None:
 
 
 def exercise_wait_triggers(harness: CaseHarness, marker: str) -> None:
-    callback_seed = seed_wait(
-        harness,
-        label="callback",
-        marker=marker,
-        resource=f"drill:callback:{marker}",
+    callback_objective = f"DRILL-WAIT-callback-{marker}"
+    callback_completion = f"DRILL-WAIT-COMPLETE-callback-{marker}"
+    callback_baseline, _ = harness.prompt(
+        "callback-seed",
+        "Scheduler drill. Create exactly one WorkItem with objective "
+        f"{callback_objective}, plan_status ready, and one todo named resume pending. "
+        "Pick it. Call CreateExternalTrigger with delivery_mode=enqueue_message. "
+        "Then call WaitFor with wake=external, resource=drill:callback:"
+        f"{marker}, and a concrete reason. Do not complete it in this turn. "
+        "When resumed, call GetWorkItem, update the todo to completed, emit a concise "
+        f"completion report containing {callback_completion}, and immediately call "
+        "CompleteWorkItem for the exact current WorkItem.",
     )
-    callback = harness.reset_callback("wait-callback-capability")
+    harness.wait_work_item_scheduling_state(
+        objective_marker=callback_objective,
+        expected_scheduling_state="waiting_external",
+        label="callback-waiting",
+    )
+    trigger_event = next(
+        event
+        for event in harness.successful_tool_events(
+            "callback-trigger-tool",
+            callback_baseline,
+        )
+        if event["payload"].get("tool_name") == "CreateExternalTrigger"
+    )
+    trigger_detail = harness.tool_detail(trigger_event, "callback-trigger")
+    trigger_result = (
+        trigger_detail.get("output", {})
+        .get("envelope", {})
+        .get(
+            "result",
+            trigger_detail.get("output", {}).get(
+                "result",
+                trigger_detail.get("output", {}),
+            ),
+        )
+    )
+    trigger_url = (
+        trigger_result.get("trigger_url")
+        or trigger_result.get("external_trigger", {}).get("trigger_url")
+    )
+    require(
+        isinstance(trigger_url, str) and trigger_url,
+        f"CreateExternalTrigger omitted trigger_url: {trigger_result}",
+    )
     harness.fire_callback(
         "wait-callback-trigger",
-        callback["trigger_url"],
+        trigger_url,
         {"drill": marker, "trigger": "callback"},
     )
-    wait_seed_completion(harness, callback_seed, "callback")
+    harness.wait_work_item(
+        objective_marker=callback_objective,
+        expected_state="completed",
+        label="callback-completed",
+    )
 
     webhook_seed = seed_wait(
         harness,
@@ -435,6 +486,25 @@ def exercise_wait_triggers(harness: CaseHarness, marker: str) -> None:
         resource=timer["id"],
     )
     wait_seed_completion(harness, timer_seed, "timer")
+
+    system_objective = f"DRILL-WAIT-system-{marker}"
+    system_completion = f"DRILL-WAIT-COMPLETE-system-{marker}"
+    harness.prompt(
+        "system-seed",
+        "Scheduler drill. Create exactly one WorkItem with objective "
+        f"{system_objective}, plan_status ready, and one todo named resume pending. "
+        "Pick it. Call Enqueue with priority=next and text="
+        f"{json.dumps(f'system follow-up {marker}')}. Then call WaitFor with wake=system "
+        "and a concrete reason. Do not complete it in this turn. When resumed, call "
+        "GetWorkItem, update the todo to completed, emit a concise completion report "
+        f"containing {system_completion}, and immediately call CompleteWorkItem for "
+        "the exact current WorkItem.",
+    )
+    harness.wait_work_item(
+        objective_marker=system_objective,
+        expected_state="completed",
+        label="system-completed",
+    )
 
     wake_seed = seed_wait(
         harness,
@@ -723,6 +793,7 @@ def collect_database(database: Path) -> dict[str, Any]:
                 "scheduler_shadow_comparisons",
                 "SELECT agent_id, scenario_class, boundary, comparison_identity, "
                 "comparison_outcome, divergence_code, authority_mode, input_identity, "
+                "legacy_observation_json, shadow_candidate_json, "
                 "created_at FROM scheduler_shadow_comparisons ORDER BY created_at",
             ),
             "hard_blockers": optional_rows(
@@ -847,6 +918,7 @@ def parse_json_columns(evidence: dict[str, Any]) -> list[str]:
         "missing_settlements",
         "briefs",
         "operator_deliveries",
+        "shadow_comparisons",
     ):
         for index, row in enumerate(evidence[collection]):
             for key, value in list(row.items()):
@@ -878,7 +950,56 @@ def current_hard_blockers(evidence: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
-def evidence_summary(evidence: dict[str, Any]) -> dict[str, Any]:
+def wait_resume_trigger_coverage(evidence: dict[str, Any]) -> dict[str, int]:
+    coverage = {trigger: 0 for trigger in EXACT_WAIT_RESUME_TRIGGERS}
+    for row in evidence["shadow_comparisons"]:
+        if row["scenario_class"] != "exact_wait_resume":
+            continue
+        observation = row.get("legacy_observation_json_value") or {}
+        input_kind = observation.get("input_kind")
+        wake_source = observation.get("wake_source")
+        trigger = {
+            "callback_event": "callback",
+            "webhook_event": "webhook",
+            "channel_event": "channel",
+            "timer_tick": "timer",
+        }.get(input_kind)
+        if input_kind == "system_tick":
+            trigger = (
+                "operator_wake"
+                if wake_source == "operator_wake_hint"
+                else "system"
+            )
+        if trigger is not None:
+            coverage[trigger] += 1
+    return coverage
+
+
+def scenario_mode_mismatches(
+    evidence: dict[str, Any],
+    expected_mode: str | None,
+) -> list[dict[str, Any]]:
+    if expected_mode not in {"shadow", "authoritative"}:
+        return []
+    authorities = {
+        row["scenario_class"]: row for row in evidence["scenario_authorities"]
+    }
+    return [
+        {
+            "scenario_class": scenario,
+            "expected_mode": expected_mode,
+            "actual_mode": authorities.get(scenario, {}).get("mode"),
+        }
+        for scenario in PRODUCTION_SCENARIOS
+        if authorities.get(scenario, {}).get("mode") != expected_mode
+    ]
+
+
+def evidence_summary(
+    evidence: dict[str, Any],
+    *,
+    expected_mode: str | None = None,
+) -> dict[str, Any]:
     json_failures = parse_json_columns(evidence)
     counts = {scenario: 0 for scenario in PRODUCTION_SCENARIOS}
     divergences: list[dict[str, Any]] = []
@@ -897,7 +1018,7 @@ def evidence_summary(evidence: dict[str, Any]) -> dict[str, Any]:
     active_waits = [
         row
         for row in evidence["wait_generations"]
-        if row["lifecycle_state"] in {"triggered", "consumed"}
+        if row["lifecycle_state"] in {"active", "triggered", "consumed"}
     ]
     needs_settlement = [
         row for row in evidence["work_demands"] if row["status"] == "needs_settlement"
@@ -942,11 +1063,17 @@ def evidence_summary(evidence: dict[str, Any]) -> dict[str, Any]:
                 }
             )
     blockers = current_hard_blockers(evidence)
+    wait_trigger_counts = wait_resume_trigger_coverage(evidence)
+    mode_mismatches = scenario_mode_mismatches(evidence, expected_mode)
     queue_tail = [
-        row for row in evidence["queue_status"] if row["status"] != "processed"
+        row
+        for row in evidence["queue_status"]
+        if row["status"] in {"queued", "dequeued"}
     ]
     checks = {
         "all_scenarios_observed": all(counts.values()),
+        "all_wait_resume_triggers_observed": all(wait_trigger_counts.values()),
+        "scenario_modes_match_requested_mode": not mode_mismatches,
         "json_columns_valid": not json_failures,
         "no_divergence": not divergences,
         "no_current_hard_blocker": not blockers,
@@ -964,6 +1091,8 @@ def evidence_summary(evidence: dict[str, Any]) -> dict[str, Any]:
         "status": "go" if all(checks.values()) else "no-go",
         "checks": checks,
         "scenario_counts": counts,
+        "wait_resume_trigger_counts": wait_trigger_counts,
+        "scenario_mode_mismatches": mode_mismatches,
         "divergences": divergences,
         "json_failures": json_failures,
         "current_hard_blockers": blockers,
@@ -1193,7 +1322,7 @@ def collect(args: argparse.Namespace) -> int:
     database = copy_stopped_volume(record, destination)
     evidence = collect_database(database)
     shutil.rmtree(destination / "state")
-    summary = evidence_summary(evidence)
+    summary = evidence_summary(evidence, expected_mode=record.get("last_mode"))
     payload = {
         "schema_version": EVIDENCE_SCHEMA_VERSION,
         "drill_run_id": record["drill_run_id"],
