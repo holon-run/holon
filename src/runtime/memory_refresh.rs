@@ -303,7 +303,8 @@ impl RuntimeHandle {
                     &self.inner.default_agent_id,
                     &decision,
                 )?;
-                self.emit_system_tick_from_wake_hint(&pending).await?;
+                self.emit_system_tick_from_wake_hint(&pending, decision.work_item_id.as_deref())
+                    .await?;
 
                 #[cfg(test)]
                 if crate::runtime::test_util::checkpoint_matches_agent(&self.agent_id().await?) {
@@ -541,7 +542,8 @@ impl RuntimeHandle {
         ) {
             return Ok(false);
         }
-        self.emit_system_tick_from_wake_hint(pending).await?;
+        self.emit_system_tick_from_wake_hint(pending, decision.work_item_id.as_deref())
+            .await?;
         Ok(true)
     }
 
@@ -630,12 +632,17 @@ impl RuntimeHandle {
     pub(super) async fn emit_system_tick_from_wake_hint(
         &self,
         pending: &PendingWakeHint,
+        work_item_id_override: Option<&str>,
     ) -> Result<()> {
         let correlation_id = pending.correlation_id.clone();
         let causation_id = pending.causation_id.clone();
-        let work_item_id = self
-            .wake_hint_work_item_id(pending.external_trigger_id.as_deref())
-            .await?;
+        let work_item_id = match work_item_id_override {
+            Some(id) => Some(id.to_string()),
+            None => {
+                self.wake_hint_work_item_id(pending.external_trigger_id.as_deref())
+                    .await?
+            }
+        };
         let idempotency_key = scheduler::wake_hint_idempotency_key(pending);
         let mut message = MessageEnvelope::new(
             self.agent_id().await?,
