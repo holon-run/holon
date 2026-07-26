@@ -240,6 +240,58 @@ class DockerE2ERunnerTests(unittest.TestCase):
             )
             self.assertEqual(harness.runtime_env["HOLON_TEST_MARKER"], "true")
 
+    def test_harness_accepts_stable_resources_and_model_fallbacks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / "workspace"
+            harness = runner.CaseHarness(
+                case_id="scheduler-drill",
+                image="holon:test",
+                model="volcengine@plan/glm-5.2",
+                model_fallbacks=["dashscope@token-plan/qwen3.8-max-preview"],
+                disable_provider_fallback=False,
+                credential_envs=[],
+                env_file=None,
+                runtime_env={},
+                evidence_root=Path(directory),
+                timeout_seconds=1,
+                keep=True,
+                resource_names={
+                    "volume": "drill-volume",
+                    "network": "drill-network",
+                    "container": "drill-container",
+                    "workspace_parent": str(workspace),
+                },
+            )
+            commands: list[tuple[str, ...]] = []
+
+            def fake_docker(
+                *args: str, **_: object
+            ) -> subprocess.CompletedProcess[str]:
+                commands.append(args)
+                if args[:2] == ("network", "inspect"):
+                    return subprocess.CompletedProcess(["docker", *args], 1, "", "")
+                if args[:2] == ("port", "drill-container"):
+                    return subprocess.CompletedProcess(
+                        ["docker", *args], 0, "127.0.0.1:49152\n", ""
+                    )
+                return subprocess.CompletedProcess(["docker", *args], 0, "", "")
+
+            harness.docker = fake_docker
+            harness.wait_readiness = lambda: None
+            harness.wait_agent_idle = lambda: None
+            harness.start()
+
+            docker_run = next(command for command in commands if command[0] == "run")
+            self.assertEqual(harness.volume, "drill-volume")
+            self.assertEqual(harness.network, "drill-network")
+            self.assertEqual(harness.container, "drill-container")
+            self.assertEqual(harness.workspace_parent, workspace)
+            self.assertIn("HOLON_DISABLE_PROVIDER_FALLBACK=false", docker_run)
+            self.assertIn(
+                'HOLON_MODEL_FALLBACKS=["dashscope@token-plan/qwen3.8-max-preview"]',
+                docker_run,
+            )
+
     def test_scheduler_extended_cases_declare_rollout_modes(self) -> None:
         selected = runner.select_cases(
             self.manifest, requested=None, suite="extended", tags=["scheduler"]

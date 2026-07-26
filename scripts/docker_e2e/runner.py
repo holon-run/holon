@@ -127,6 +127,8 @@ class CaseHarness:
         case_id: str,
         image: str,
         model: str,
+        model_fallbacks: list[str] | None = None,
+        disable_provider_fallback: bool = True,
         requires_model: bool = True,
         credential_envs: list[str],
         env_file: Path | None,
@@ -134,11 +136,16 @@ class CaseHarness:
         evidence_root: Path,
         timeout_seconds: int,
         keep: bool,
+        resource_names: dict[str, str] | None = None,
     ) -> None:
         suffix = secrets.token_hex(4)
         self.case_id = case_id
         self.image = image
         self.model = model if requires_model else DEFAULT_MODEL
+        self.model_fallbacks = list(model_fallbacks or []) if requires_model else []
+        self.disable_provider_fallback = (
+            disable_provider_fallback if requires_model else True
+        )
         self.credential_envs = credential_envs if requires_model else []
         self.env_file = env_file if requires_model else None
         self.runtime_env = dict(runtime_env)
@@ -150,13 +157,17 @@ class CaseHarness:
         self.evidence = evidence_root / case_id
         self.timeout_seconds = timeout_seconds
         self.keep = keep
-        self.volume = f"holon-live-{case_id}-{suffix}"
-        self.network = f"holon-live-{case_id}-{suffix}"
-        self.container = f"holon-live-{case_id}-{suffix}"
+        names = resource_names or {}
+        self.volume = names.get("volume", f"holon-live-{case_id}-{suffix}")
+        self.network = names.get("network", f"holon-live-{case_id}-{suffix}")
+        self.container = names.get("container", f"holon-live-{case_id}-{suffix}")
         self.token = secrets.token_urlsafe(24)
         self.base_url = ""
         self.agent_id = ""
-        self.workspace_parent = self.evidence / "workspace"
+        workspace_parent = names.get("workspace_parent")
+        self.workspace_parent = (
+            Path(workspace_parent) if workspace_parent else self.evidence / "workspace"
+        )
         self.log_index = 0
         self.evidence.mkdir(parents=True, exist_ok=True)
 
@@ -270,7 +281,8 @@ class CaseHarness:
             "--env",
             f"HOLON_MODEL={self.model}",
             "--env",
-            "HOLON_DISABLE_PROVIDER_FALLBACK=true",
+            "HOLON_DISABLE_PROVIDER_FALLBACK="
+            + str(self.disable_provider_fallback).lower(),
             "--publish",
             "127.0.0.1::7878",
             "--volume",
@@ -278,6 +290,14 @@ class CaseHarness:
             "--volume",
             f"{self.workspace_parent}:/acceptance",
         ]
+        if self.model_fallbacks:
+            args.extend(
+                [
+                    "--env",
+                    "HOLON_MODEL_FALLBACKS="
+                    + json.dumps(self.model_fallbacks, separators=(",", ":")),
+                ]
+            )
         for name in self.credential_envs:
             args.extend(["--env", name])
         for name, value in sorted(self.runtime_env.items()):
