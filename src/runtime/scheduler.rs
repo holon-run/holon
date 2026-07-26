@@ -2338,7 +2338,9 @@ fn restricted_waiting_reason(
         Some(WorkItemSchedulingState::WaitingOperator) => {
             Some(Some(crate::types::WaitingReason::AwaitingOperatorInput))
         }
-        Some(WorkItemSchedulingState::WaitingSystem) => Some(None),
+        Some(WorkItemSchedulingState::WaitingSystem) => {
+            Some(Some(crate::types::WaitingReason::AwaitingExternalChange))
+        }
         _ => None,
     }
 }
