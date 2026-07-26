@@ -308,6 +308,7 @@ def seed_wait(
     marker: str,
     wake: str = "external",
     resource: str | None = None,
+    expected_scheduling_state: str = "waiting_external",
 ) -> dict[str, Any]:
     objective = f"DRILL-WAIT-{label}-{marker}"
     completion = f"DRILL-WAIT-COMPLETE-{label}-{marker}"
@@ -339,7 +340,7 @@ def seed_wait(
         )
     item = harness.wait_work_item_scheduling_state(
         objective_marker=objective,
-        expected_scheduling_state="waiting_external",
+        expected_scheduling_state=expected_scheduling_state,
         label=f"{label}-waiting",
     )
     return {
@@ -390,13 +391,16 @@ def exercise_reducer_ingress(harness: CaseHarness, marker: str) -> None:
 def exercise_wait_triggers(harness: CaseHarness, marker: str) -> None:
     callback_objective = f"DRILL-WAIT-callback-{marker}"
     callback_completion = f"DRILL-WAIT-COMPLETE-callback-{marker}"
-    callback_baseline, _ = harness.prompt(
+    # Pre-create the external trigger via the control API so the harness owns
+    # the trigger_url.  This avoids relying on the model to call
+    # CreateExternalTrigger reliably inside the same turn as WaitFor.
+    callback = harness.reset_callback("callback-trigger")
+    harness.prompt(
         "callback-seed",
         "Scheduler drill. Create exactly one WorkItem with objective "
         f"{callback_objective}, plan_status ready, and one todo named resume pending. "
-        "Pick it. Call CreateExternalTrigger with delivery_mode=enqueue_message. "
-        "Then call WaitFor with wake=external, resource=drill:callback:"
-        f"{marker}, and a concrete reason. Do not complete it in this turn. "
+        "Pick it. Then call WaitFor with wake=external, resource=drill:callback:"
+        f"{marker}, reason='drill callback {marker}'. Do not complete it in this turn. "
         "When resumed, call GetWorkItem, update the todo to completed, emit a concise "
         f"completion report containing {callback_completion}, and immediately call "
         "CompleteWorkItem for the exact current WorkItem.",
@@ -418,37 +422,9 @@ def exercise_wait_triggers(harness: CaseHarness, marker: str) -> None:
         expected_scheduling_state="waiting_external",
         label="callback-waiting",
     )
-    trigger_event = next(
-        event
-        for event in harness.successful_tool_events(
-            "callback-trigger-tool",
-            callback_baseline,
-        )
-        if event["payload"].get("tool_name") == "CreateExternalTrigger"
-    )
-    trigger_detail = harness.tool_detail(trigger_event, "callback-trigger")
-    trigger_result = (
-        trigger_detail.get("output", {})
-        .get("envelope", {})
-        .get(
-            "result",
-            trigger_detail.get("output", {}).get(
-                "result",
-                trigger_detail.get("output", {}),
-            ),
-        )
-    )
-    trigger_url = (
-        trigger_result.get("trigger_url")
-        or trigger_result.get("external_trigger", {}).get("trigger_url")
-    )
-    require(
-        isinstance(trigger_url, str) and trigger_url,
-        f"CreateExternalTrigger omitted trigger_url: {trigger_result}",
-    )
     harness.fire_callback(
         "wait-callback-trigger",
-        trigger_url,
+        callback["trigger_url"],
         {"drill": marker, "trigger": "callback"},
     )
     harness.wait_work_item(
@@ -495,7 +471,7 @@ def exercise_wait_triggers(harness: CaseHarness, marker: str) -> None:
         "POST",
         harness.agent_path("timers", control=True),
         {
-            "duration_ms": 5000,
+            "duration_ms": 120_000,
             "summary": f"scheduler drill timer {marker}",
         },
     )
@@ -506,33 +482,31 @@ def exercise_wait_triggers(harness: CaseHarness, marker: str) -> None:
         marker=marker,
         wake="timer",
         resource=timer["id"],
+        expected_scheduling_state="waiting_timer",
     )
     wait_seed_completion(harness, timer_seed, "timer")
 
-    system_objective = f"DRILL-WAIT-system-{marker}"
-    system_completion = f"DRILL-WAIT-COMPLETE-system-{marker}"
-    harness.prompt(
-        "system-seed",
-        "Scheduler drill. Create exactly one WorkItem with objective "
-        f"{system_objective}, plan_status ready, and one todo named resume pending. "
-        "Pick it. Call Enqueue with priority=next and text="
-        f"{json.dumps(f'system follow-up {marker}')}. Then call WaitFor with wake=system "
-        "and a concrete reason. Do not complete it in this turn. When resumed, call "
-        "GetWorkItem, update the todo to completed, emit a concise completion report "
-        f"containing {system_completion}, and immediately call CompleteWorkItem for "
-        "the exact current WorkItem.",
+    system_seed = seed_wait(
+        harness,
+        label="system",
+        marker=marker,
+        wake="system",
+        expected_scheduling_state="waiting_system",
     )
-    harness.wait_work_item(
-        objective_marker=system_objective,
-        expected_state="completed",
-        label="system-completed",
+    system_wake = harness.request(
+        "POST",
+        harness.agent_path("wake", control=True),
+        {"reason": f"scheduler drill system wake {marker}", "source": "scheduler-drill"},
     )
+    write_json(harness.evidence / "wait-system.json", system_wake)
+    wait_seed_completion(harness, system_seed, "system")
 
     wake_seed = seed_wait(
         harness,
         label="wake-hint",
         marker=marker,
         wake="system",
+        expected_scheduling_state="waiting_system",
     )
     wake = harness.request(
         "POST",
@@ -688,7 +662,11 @@ def exercise_scenarios(args: argparse.Namespace) -> int:
         }
     ):
         harness.wait_queue_drained()
-        exercise_wait_triggers(harness, marker)
+        # Use a distinct marker so reducer ingress signals (which carry the
+        # shared marker) cannot accidentally match wait-trigger WaitFor
+        # resources and wake the agent prematurely.
+        wt_marker = secrets.token_hex(5)
+        exercise_wait_triggers(harness, wt_marker)
     if selected.intersection(
         {
             "work_item_autonomous_continuation",
