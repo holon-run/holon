@@ -4450,7 +4450,13 @@ async function catchUpAgentEvents(
   const span = startRuntimeSpan(trace, "events.catch_up");
   const request = (async () => {
     const generation = clientGeneration;
-    const initialAfterSeq = get().sessionsByAgentId[agentId]?.newestSeq;
+    const catchUpSession = get().sessionsByAgentId[agentId];
+    // When the session has event gaps (e.g. from missed stream events or a
+    // failed backfill), newestSeq is ahead of the contiguous range.  Fetching
+    // from newestSeq would skip the gap entirely.  Use the last contiguous seq
+    // instead so the catch-up fills the missing events.
+    const catchUpGaps = catchUpSession?.gaps ?? [];
+    const initialAfterSeq = catchUpGaps.length > 0 ? catchUpGaps[0].afterSeq : catchUpSession?.newestSeq;
     let afterSeq = initialAfterSeq;
     let eventCount = 0;
     let pageCount = 0;
@@ -4499,6 +4505,8 @@ async function catchUpAgentEvents(
     scheduleCacheWrite(get, agentId);
     span.end("ok", {
       afterSeq: initialAfterSeq,
+      gapRecovery: catchUpGaps.length > 0,
+      gapCount: catchUpGaps.length,
       eventCount,
       pageCount,
     });
