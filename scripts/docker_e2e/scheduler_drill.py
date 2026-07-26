@@ -28,6 +28,16 @@ from .runner import (
     utc_now,
     write_json,
 )
+#
+# Prefix prepended to every drill operator prompt so the model treats it as a
+# new, specific instruction rather than latching onto the runtime continuation
+# anchor ("Continue using the context above") that accompanies each activation.
+DRILL_PREFIX = (
+    "SCHEDULER DRILL — NEW SPECIFIC INSTRUCTION. "
+    "Ignore any 'continue' or 'context above' framing; "
+    "execute ONLY the numbered steps below in this turn. "
+    "Do not ask for clarification.\n\n"
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -319,14 +329,14 @@ def seed_wait(
     )
     baseline, _ = harness.prompt(
         f"{label}-seed",
-        "Scheduler drill. Create exactly one WorkItem with objective "
-        f"{objective}, plan_status ready, and one todo named resume pending. "
-        f"Pick that WorkItem. Call WaitFor with wake={wake}"
-        f"{resource_argument}, and a concrete reason. "
-        "Do not complete it in this turn. When this exact WorkItem resumes, call "
-        "GetWorkItem, update the existing todo to completed, emit a concise completion "
-        f"report containing {completion}, and immediately call CompleteWorkItem for "
-        "the exact current WorkItem. Do not create another WorkItem or modify files.",
+        DRILL_PREFIX
+        + "1. Call CreateWorkItem with objective "
+        f"{json.dumps(objective)}, plan_status ready, and one todo named resume pending.\n"
+        "2. Call PickWorkItem for that WorkItem.\n"
+        f"3. Call WaitFor with wake={wake}{resource_argument} and a concrete reason.\n"
+        "4. STOP. Do not complete the WorkItem in this turn.\n"
+        "When this WorkItem resumes later: call GetWorkItem, update the todo to "
+        f"completed, emit a report containing {completion}, and call CompleteWorkItem.",
     )
     # Detect premature completion from a spurious queued message.
     early_items = harness.work_items(f"{label}-early-check")
@@ -397,13 +407,15 @@ def exercise_wait_triggers(harness: CaseHarness, marker: str) -> None:
     callback = harness.reset_callback("callback-trigger")
     harness.prompt(
         "callback-seed",
-        "Scheduler drill. Create exactly one WorkItem with objective "
-        f"{callback_objective}, plan_status ready, and one todo named resume pending. "
-        "Pick it. Then call WaitFor with wake=external, resource=drill:callback:"
-        f"{marker}, reason='drill callback {marker}'. Do not complete it in this turn. "
-        "When resumed, call GetWorkItem, update the todo to completed, emit a concise "
-        f"completion report containing {callback_completion}, and immediately call "
-        "CompleteWorkItem for the exact current WorkItem.",
+        DRILL_PREFIX
+        + "1. Call CreateWorkItem with objective "
+        f"{json.dumps(callback_objective)}, plan_status ready, and one todo named resume pending.\n"
+        "2. Call PickWorkItem for that WorkItem.\n"
+        "3. Call WaitFor with wake=external, resource=drill:callback:"
+        f"{marker}, reason='drill callback {marker}'.\n"
+        "4. STOP. Do not complete the WorkItem in this turn.\n"
+        "When resumed later: call GetWorkItem, update the todo to completed, emit a "
+        f"report containing {callback_completion}, and call CompleteWorkItem.",
     )
     # Detect premature completion caused by a spurious queued message
     # waking the agent before the harness can observe waiting_external.
@@ -535,11 +547,12 @@ def exercise_continuations(harness: CaseHarness, marker: str) -> None:
     )
     harness.prompt(
         "continuation-seed",
-        "Scheduler drill. Create exactly one WorkItem whose objective is "
+        DRILL_PREFIX
+        + "1. Call CreateWorkItem with objective "
         f"{json.dumps(objective)}, plan_status ready, with exactly two todos: "
-        "task-rejoin pending and external-resume pending. Do not PickWorkItem, "
-        "ExecCommand, WaitFor, UpdateWorkItem, or CompleteWorkItem in this "
-        "operator-triggered turn. End after CreateWorkItem succeeds.",
+        "task-rejoin pending and external-resume pending.\n"
+        "2. STOP immediately after CreateWorkItem succeeds. Do NOT call PickWorkItem, "
+        "ExecCommand, WaitFor, UpdateWorkItem, or CompleteWorkItem in this turn.",
     )
     task_waiting = harness.wait_work_item_scheduling_state(
         objective_marker=objective_marker,
@@ -577,12 +590,14 @@ def exercise_bound_operator(harness: CaseHarness, marker: str) -> None:
     completion = f"DRILL-BOUND-OPERATOR-COMPLETE-{marker}"
     harness.prompt(
         "bound-operator-seed",
-        "Scheduler drill. Create exactly one WorkItem with objective "
-        f"{objective}, plan_status ready, and one todo named bound-input pending. "
-        "Pick it and call WaitFor with wake=operator_input and a concrete reason. "
-        "Do not complete it in this turn. When resumed, call GetWorkItem, update the "
-        f"todo to completed, emit a concise report containing {completion}, and "
-        "immediately call CompleteWorkItem for the exact current WorkItem.",
+        DRILL_PREFIX
+        + "1. Call CreateWorkItem with objective "
+        f"{json.dumps(objective)}, plan_status ready, and one todo named bound-input pending.\n"
+        "2. Call PickWorkItem for that WorkItem.\n"
+        "3. Call WaitFor with wake=operator_input and a concrete reason.\n"
+        "4. STOP. Do not complete the WorkItem in this turn.\n"
+        "When resumed later: call GetWorkItem, update the todo to completed, emit a "
+        f"report containing {completion}, and call CompleteWorkItem.",
     )
     waiting = harness.wait_work_item_scheduling_state(
         objective_marker=objective,
@@ -612,9 +627,11 @@ def exercise_interjection(harness: CaseHarness, marker: str) -> None:
         "POST",
         harness.agent_path("prompt", control=True),
         {
-            "text": "Scheduler drill interjection boundary. Call ExecCommand with "
+            "text": DRILL_PREFIX
+            + "1. Call ExecCommand with "
             f"cmd `sleep 4; printf DRILL-INTERJECTION-{marker}`, yield_time_ms=10000, "
-            "and bounded output. After the tool result, answer with "
+            "and bounded output.\n"
+            "2. After the tool result, answer with "
             f"DRILL-INTERJECTION-DONE-{marker}.",
         },
     )
@@ -1434,9 +1451,11 @@ def preflight(args: argparse.Namespace) -> int:
             marker = f"MODEL-PREFLIGHT-{secrets.token_hex(6)}"
             baseline, _ = harness.prompt(
                 "tool-round",
-                "Scheduler drill model preflight. Call AgentGet, ListModelProviders, "
-                f"and ListProviderModels for provider {provider} with limit 5. "
-                f"Then answer with the literal marker {marker}.",
+                DRILL_PREFIX
+                + "1. Call AgentGet.\n"
+                "2. Call ListModelProviders.\n"
+                f"3. Call ListProviderModels for provider {provider} with limit 5.\n"
+                f"4. Answer with the literal marker {marker}.",
             )
             harness.assert_tools(
                 "tool-round",
