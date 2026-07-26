@@ -21,13 +21,20 @@ Phase-1 skill behavior should be:
 
 ## Discovery Roots
 
-Phase-1 compatibility roots should remain:
+Agent and workspace discovery search these roots in declaration order:
 
+- `skills`
 - `.agents/skills`
 - `.codex/skills`
 - `.claude/skills`
 
-Discovery should search agent scope and workspace scope separately.
+User-global discovery remains limited to the three hidden compatibility roots
+and does not search a bare `~/skills` directory.
+
+Discovery searches agent scope and workspace scope separately. Within one
+scope, all physically distinct roots are merged. If multiple configured paths
+resolve to the same physical directory, discovery keeps the first path in the
+order above and scans that directory only once.
 
 ## Root Selection
 
@@ -40,6 +47,18 @@ Agent-scoped discovery is rooted under `agent_home`.
 Workspace-scoped discovery is rooted under `workspace_anchor`.
 
 Skill discovery should not drift with shell cwd.
+
+## Catalog Precedence
+
+When multiple scopes provide a skill with the same declared name, the catalog
+keeps the highest-precedence entry:
+
+1. workspace
+2. agent
+3. user-global
+
+This precedence only selects the effective skill catalog entry. Skill content
+does not gain authority over system, developer, or operator instructions.
 
 ## Visibility Rules
 

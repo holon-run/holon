@@ -20,7 +20,7 @@ use crate::types::{
 /// Read-only skills registry.
 ///
 /// The registry maintains skill entries from registered roots and provides
-/// a catalog view with precedence resolution (agent > workspace > user).
+/// a catalog view with precedence resolution (workspace > agent > user).
 #[derive(Debug, Clone, Default)]
 pub struct SkillsRegistry {
     roots: Vec<SkillRootRegistration>,
@@ -216,7 +216,7 @@ impl SkillsRegistry {
             .fold(BTreeMap::new(), |mut acc, entry| {
                 let existing = acc.get(&entry.name);
                 if existing.map_or(true, |existing| {
-                    self.skill_wins_catalog_selection(entry, existing)
+                    crate::skills::skill_wins_catalog_selection(entry, existing)
                 }) {
                     acc.insert(entry.name.clone(), entry);
                 }
@@ -228,26 +228,6 @@ impl SkillsRegistry {
     /// Get all registered roots.
     pub fn roots(&self) -> &[SkillRootRegistration] {
         &self.roots
-    }
-
-    fn skill_wins_catalog_selection(
-        &self,
-        candidate: &SkillCatalogEntry,
-        existing: &SkillCatalogEntry,
-    ) -> bool {
-        let candidate_precedence = self.skill_precedence(candidate.scope);
-        let existing_precedence = self.skill_precedence(existing.scope);
-        candidate_precedence > existing_precedence
-            || (candidate_precedence == existing_precedence
-                && (&candidate.skill_id, &candidate.path) < (&existing.skill_id, &existing.path))
-    }
-
-    fn skill_precedence(&self, scope: SkillScope) -> u8 {
-        match scope {
-            SkillScope::Agent => 3,
-            SkillScope::Workspace => 2,
-            SkillScope::UserGlobal => 1,
-        }
     }
 }
 
@@ -324,10 +304,20 @@ mod tests {
             scope: SkillScope::Agent,
         });
 
+        registry.entries.push(SkillCatalogEntry {
+            skill_id: "workspace_skill".to_string(),
+            root_id: "workspace:test-root".to_string(),
+            skill_dir: "test".to_string(),
+            name: "test".to_string(),
+            description: "workspace".to_string(),
+            path: PathBuf::from("/workspace/test"),
+            scope: SkillScope::Workspace,
+        });
+
         let catalog = registry.catalog();
         assert_eq!(catalog.len(), 1);
-        assert_eq!(catalog[0].scope, SkillScope::Agent);
-        assert_eq!(catalog[0].description, "agent");
+        assert_eq!(catalog[0].scope, SkillScope::Workspace);
+        assert_eq!(catalog[0].description, "workspace");
     }
 
     #[test]

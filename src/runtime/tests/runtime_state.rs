@@ -8000,7 +8000,7 @@ async fn runtime_does_not_force_completion_after_post_verification_stagnation() 
 async fn runtime_skills_view_filters_active_skills_to_effective_registry_snapshot() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let skill_dir = workspace.path().join(".agents/skills/demo");
+    let skill_dir = workspace.path().join("skills/demo");
     let skill_path = skill_dir.join("SKILL.md");
     std::fs::create_dir_all(&skill_dir).unwrap();
     std::fs::write(
@@ -8019,7 +8019,7 @@ async fn runtime_skills_view_filters_active_skills_to_effective_registry_snapsho
         context_config(),
     )
     .unwrap();
-    let ws_skill_root = workspace.path().join(".agents/skills");
+    let ws_skill_root = workspace.path().join("skills");
     let ws_demo_skill_id = format!(
         "{}:demo",
         crate::skills::skill_root_id_for_scope(SkillScope::Workspace, &ws_skill_root)

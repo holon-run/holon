@@ -803,10 +803,7 @@ pub async fn agent_skills_endpoint_uses_effective_registry_snapshot() -> Result<
         "---\nname: shared-demo\ndescription: agent\n---\nbody",
     )?;
 
-    let workspace_skill_dir = host
-        .config()
-        .workspace_dir
-        .join(".agents/skills/workspace-demo");
+    let workspace_skill_dir = host.config().workspace_dir.join("skills/workspace-demo");
     std::fs::create_dir_all(&workspace_skill_dir)?;
     std::fs::write(
         workspace_skill_dir.join("SKILL.md"),

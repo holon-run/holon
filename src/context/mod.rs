@@ -431,7 +431,7 @@ pub fn build_context_with_default_external_ingress(
             section(
                 "skills_catalog",
                 format!(
-                    "Discovered skills catalog (same-name precedence: agent > workspace > user; lower-precedence duplicates are omitted):\n{rendered}"
+                    "Discovered skills catalog (same-name precedence: workspace > agent > user; lower-precedence duplicates are omitted):\n{rendered}"
                 ),
             ),
             None,
@@ -5092,7 +5092,7 @@ mod tests {
             .expect("skills_catalog section should be present");
         assert!(catalog
             .content
-            .contains("same-name precedence: agent > workspace > user"));
+            .contains("same-name precedence: workspace > agent > user"));
         assert!(catalog.content.contains("agent demo skill summary"));
         assert!(catalog.content.contains("/tmp/agent/skills/demo/SKILL.md"));
         assert!(catalog.content.contains("other skill summary"));

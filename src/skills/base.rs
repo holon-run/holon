@@ -48,7 +48,7 @@ pub fn load_skills_runtime_view(
     let mut discoverable_skills = Vec::new();
 
     if matches!(visibility, SkillVisibility::DefaultAgent) {
-        if let Some(root) = select_skill_root(user_home, &COMPAT_SKILL_ROOT_SUFFIXES) {
+        for root in user_global_skill_roots(user_home) {
             discoverable_skills.extend(load_catalog_for_scope(SkillScope::UserGlobal, &root)?);
             discovered_roots.push(SkillRootView {
                 scope: SkillScope::UserGlobal,
@@ -57,7 +57,7 @@ pub fn load_skills_runtime_view(
         }
     }
 
-    for root in existing_skill_roots(Some(agent_home), &SKILL_ROOT_SUFFIXES) {
+    for root in agent_skill_roots(agent_home) {
         discoverable_skills.extend(load_catalog_for_scope(SkillScope::Agent, &root)?);
         discovered_roots.push(SkillRootView {
             scope: SkillScope::Agent,
@@ -65,7 +65,7 @@ pub fn load_skills_runtime_view(
         });
     }
 
-    if let Some(root) = select_skill_root(workspace_anchor, &COMPAT_SKILL_ROOT_SUFFIXES) {
+    for root in workspace_skill_roots(workspace_anchor) {
         discoverable_skills.extend(load_catalog_for_scope(SkillScope::Workspace, &root)?);
         discovered_roots.push(SkillRootView {
             scope: SkillScope::Workspace,
@@ -122,11 +122,29 @@ pub(crate) fn existing_skill_roots(base: Option<&Path>, suffixes: &[&str]) -> Ve
     let Some(base) = base else {
         return Vec::new();
     };
+    let mut seen = BTreeSet::new();
     suffixes
         .iter()
         .map(|suffix| base.join(suffix))
         .filter(|candidate| candidate.is_dir())
+        .filter(|candidate| {
+            let identity = fs::canonicalize(candidate)
+                .unwrap_or_else(|_| candidate.components().collect::<PathBuf>());
+            seen.insert(identity)
+        })
         .collect()
+}
+
+pub(crate) fn user_global_skill_roots(user_home: Option<&Path>) -> Vec<PathBuf> {
+    existing_skill_roots(user_home, &COMPAT_SKILL_ROOT_SUFFIXES)
+}
+
+pub(crate) fn agent_skill_roots(agent_home: &Path) -> Vec<PathBuf> {
+    existing_skill_roots(Some(agent_home), &SKILL_ROOT_SUFFIXES)
+}
+
+pub(crate) fn workspace_skill_roots(workspace_anchor: Option<&Path>) -> Vec<PathBuf> {
+    existing_skill_roots(workspace_anchor, &SKILL_ROOT_SUFFIXES)
 }
 
 pub fn load_catalog_for_scope(scope: SkillScope, root: &Path) -> Result<Vec<SkillCatalogEntry>> {
@@ -214,26 +232,22 @@ pub fn effective_skill_root_registrations(
     let mut roots = Vec::new();
     if matches!(visibility, SkillVisibility::DefaultAgent) {
         roots.extend(
-            existing_skill_roots(user_home, &COMPAT_SKILL_ROOT_SUFFIXES)
+            user_global_skill_roots(user_home)
                 .into_iter()
                 .map(|root_path| {
                     skill_root_registration(SkillRootSourceKind::UserGlobal, None, root_path)
                 }),
         );
     }
+    roots.extend(agent_skill_roots(agent_home).into_iter().map(|root_path| {
+        skill_root_registration(
+            SkillRootSourceKind::AgentHome,
+            Some(agent_id.to_string()),
+            root_path,
+        )
+    }));
     roots.extend(
-        existing_skill_roots(Some(agent_home), &SKILL_ROOT_SUFFIXES)
-            .into_iter()
-            .map(|root_path| {
-                skill_root_registration(
-                    SkillRootSourceKind::AgentHome,
-                    Some(agent_id.to_string()),
-                    root_path,
-                )
-            }),
-    );
-    roots.extend(
-        existing_skill_roots(workspace_anchor, &COMPAT_SKILL_ROOT_SUFFIXES)
+        workspace_skill_roots(workspace_anchor)
             .into_iter()
             .map(|root_path| {
                 skill_root_registration(SkillRootSourceKind::Workspace, None, root_path)
@@ -279,8 +293,8 @@ fn collect_discovered_roots_from_registrations(
         })
         .collect::<Vec<_>>();
     roots.sort_by(|left, right| {
-        skill_precedence(left.scope)
-            .cmp(&skill_precedence(right.scope))
+        skill_scope_precedence(right.scope)
+            .cmp(&skill_scope_precedence(left.scope))
             .then_with(|| left.path.cmp(&right.path))
     });
     roots.dedup_by(|left, right| left.scope == right.scope && left.path == right.path);
@@ -368,21 +382,21 @@ fn retain_active_skills_for_catalog(
         .collect()
 }
 
-fn skill_wins_catalog_selection(
+pub(crate) fn skill_wins_catalog_selection(
     candidate: &SkillCatalogEntry,
     existing: &SkillCatalogEntry,
 ) -> bool {
-    let candidate_precedence = skill_precedence(candidate.scope);
-    let existing_precedence = skill_precedence(existing.scope);
+    let candidate_precedence = skill_scope_precedence(candidate.scope);
+    let existing_precedence = skill_scope_precedence(existing.scope);
     candidate_precedence > existing_precedence
         || (candidate_precedence == existing_precedence
             && (&candidate.skill_id, &candidate.path) < (&existing.skill_id, &existing.path))
 }
 
-fn skill_precedence(scope: SkillScope) -> u8 {
+pub(crate) fn skill_scope_precedence(scope: SkillScope) -> u8 {
     match scope {
-        SkillScope::Agent => 3,
-        SkillScope::Workspace => 2,
+        SkillScope::Workspace => 3,
+        SkillScope::Agent => 2,
         SkillScope::UserGlobal => 1,
     }
 }
@@ -2790,6 +2804,79 @@ mod tests {
     }
 
     #[test]
+    fn workspace_skill_discovery_merges_bare_and_compatible_roots() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        let agent_home = dir.path().join("agent");
+        let bare_root = workspace.join("skills");
+        let compat_root = workspace.join(".codex/skills");
+        for (root, name) in [(&bare_root, "alpha"), (&compat_root, "beta")] {
+            fs::create_dir_all(root.join(name)).unwrap();
+            fs::write(
+                root.join(name).join(SKILL_ENTRYPOINT),
+                format!("---\nname: {name}\ndescription: {name}\n---\nbody"),
+            )
+            .unwrap();
+        }
+
+        let view = load_skills_runtime_view(
+            SkillVisibility::NonDefaultAgent,
+            None,
+            &agent_home,
+            Some(&workspace),
+            &[],
+        )
+        .unwrap();
+
+        assert_eq!(view.discovered_roots.len(), 2);
+        assert_eq!(
+            view.discovered_roots
+                .iter()
+                .map(|root| root.path.as_path())
+                .collect::<Vec<_>>(),
+            vec![bare_root.as_path(), compat_root.as_path()]
+        );
+        let mut names = view
+            .discoverable_skills
+            .iter()
+            .map(|skill| skill.name.as_str())
+            .collect::<Vec<_>>();
+        names.sort();
+        assert_eq!(names, vec!["alpha", "beta"]);
+        assert!(view
+            .discoverable_skills
+            .iter()
+            .all(|skill| skill.scope == SkillScope::Workspace));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_skill_roots_deduplicate_symlink_aliases() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path();
+        let bare_root = workspace.join("skills");
+        fs::create_dir_all(&bare_root).unwrap();
+        fs::create_dir_all(workspace.join(".codex")).unwrap();
+        create_symlink(Path::new("../skills"), &workspace.join(".codex/skills")).unwrap();
+
+        assert_eq!(
+            workspace_skill_roots(Some(workspace)),
+            vec![bare_root.clone()]
+        );
+
+        let registrations = effective_skill_root_registrations(
+            SkillVisibility::NonDefaultAgent,
+            None,
+            "default",
+            &workspace.join("agent"),
+            Some(workspace),
+        );
+        assert_eq!(registrations.len(), 1);
+        assert_eq!(registrations[0].root_path, bare_root);
+        assert_eq!(registrations[0].source_kind, SkillRootSourceKind::Workspace);
+    }
+
+    #[test]
     fn default_agent_sees_user_scope_but_non_default_does_not() {
         let dir = tempdir().unwrap();
         let user_home = dir.path().join("user");
@@ -2900,9 +2987,9 @@ mod tests {
         assert_eq!(view.discoverable_skills.len(), 1);
         assert!(view.discoverable_skills[0]
             .skill_id
-            .starts_with("agent_home:"));
+            .starts_with("workspace:"));
         assert!(view.discoverable_skills[0].skill_id.ends_with(":ghx"));
-        assert_eq!(view.discoverable_skills[0].description, "agent skill");
+        assert_eq!(view.discoverable_skills[0].description, "workspace skill");
         assert_eq!(view.active_skills.len(), 1);
         assert_eq!(
             view.active_skills[0].skill_id,
