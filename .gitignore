@@ -6,6 +6,8 @@ coverage/
 target/
 /bin/
 _testwork/
+__pycache__/
+*.pyc
 
 # Dependencies
 node_modules
