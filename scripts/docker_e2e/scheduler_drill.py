@@ -550,7 +550,7 @@ def exercise_continuations(harness: CaseHarness, marker: str) -> None:
     completion_marker = f"DRILL-CONTINUATIONS-COMPLETE-{marker}"
     objective = (
         f"{objective_marker}. On the first autonomous WorkItem turn, call ExecCommand "
-        f"with cmd `sleep 2; printf DRILL-TASK-{marker}`, yield_time_ms=50, and a "
+        f"with cmd `sleep 15; printf DRILL-TASK-{marker}`, yield_time_ms=50, and a "
         "bounded max_output_tokens. Call WaitFor with wake=task_result and the exact "
         "promoted task_id. Do not poll. On task-result rejoin, call GetWorkItem and "
         f"WaitFor with wake=external, resource=drill:continuation:{marker}. On the "
