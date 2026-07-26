@@ -419,8 +419,8 @@ def exercise_wait_triggers(harness: CaseHarness, marker: str) -> None:
         + "1. Call CreateWorkItem with objective "
         f"{json.dumps(callback_objective)}, plan_status ready, and one todo named resume pending.\n"
         "2. Call PickWorkItem for that WorkItem.\n"
-        "3. Call WaitFor with wake=external, resource=drill:callback:"
-        f"{marker}, reason='drill callback {marker}'.\n"
+        "3. Call WaitFor with wake=external and a concrete reason "
+        f"(e.g. 'drill callback {marker}'). Do NOT pass a resource parameter.\n"
         "4. STOP. Do not complete the WorkItem in this turn.\n"
         "When resumed later: call GetWorkItem, update the todo to completed, emit a "
         f"report containing {callback_completion}, and call CompleteWorkItem.",
@@ -442,6 +442,9 @@ def exercise_wait_triggers(harness: CaseHarness, marker: str) -> None:
         expected_scheduling_state="waiting_external",
         label="callback-waiting",
     )
+    # Ensure the agent has fully transitioned to asleep before firing the
+    # callback; firing during the awake_idle→asleep window loses the wake.
+    harness.wait_agent_asleep()
     harness.fire_callback(
         "wait-callback-trigger",
         callback["trigger_url"],
@@ -582,6 +585,7 @@ def exercise_continuations(harness: CaseHarness, marker: str) -> None:
         "continuation WorkItem identity changed",
     )
     callback = harness.reset_callback("continuation-callback")
+    harness.wait_agent_asleep()
     harness.fire_callback(
         "continuation-external-resume",
         callback["trigger_url"],
@@ -614,7 +618,7 @@ def exercise_bound_operator(harness: CaseHarness, marker: str) -> None:
     )
     waiting = harness.wait_work_item_scheduling_state(
         objective_marker=objective,
-        expected_scheduling_state="waiting_for_operator",
+        expected_scheduling_state="waiting_operator",
         label="bound-operator-waiting",
     )
     response = harness.request(

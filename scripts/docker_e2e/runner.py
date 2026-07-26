@@ -532,6 +532,23 @@ class CaseHarness:
         self.capture_logs()
         raise TimeoutError("default agent did not become idle after readiness")
 
+    def wait_agent_asleep(self, *, timeout: float = 30) -> None:
+        """Wait until the agent reaches the *asleep* status specifically.
+
+        ``wait_agent_idle`` returns for any terminal status (including
+        ``awake_idle``), but external wake hints fired while the agent is
+        still transitioning from ``awake_idle`` to ``asleep`` can be lost.
+        Call this before ``fire_callback`` to close that race window.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            state = self.request("GET", self.agent_path("state"))
+            agent = state["agent"]["agent"]
+            if agent["status"] == "asleep":
+                return
+            time.sleep(0.5)
+        raise TimeoutError(f"agent did not reach asleep within {timeout} s")
+
     def wait_queue_drained(self, *, stable_checks: int = 3) -> None:
         """Wait until the agent is idle *and* the queue stays empty for
         ``stable_checks`` consecutive polls.  This closes the race window
