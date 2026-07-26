@@ -946,7 +946,8 @@ pub async fn agent_skill_detail_follows_active_execution_root_without_canonical_
         .unwrap_or_default()
         .contains("canonical body"));
 
-    let worktree_root = tempdir()?.keep();
+    let worktree_dir = tempdir()?;
+    let worktree_root = worktree_dir.path().to_path_buf();
     let worktree_shared = worktree_root.join("skills/shared-detail");
     let worktree_only = worktree_root.join("skills/worktree-only");
     for (skill_dir, name, body) in [
