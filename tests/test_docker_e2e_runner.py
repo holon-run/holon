@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 
 import importlib.util
+import io
 import json
 import subprocess
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -223,6 +226,61 @@ class DockerE2ERunnerTests(unittest.TestCase):
             captured = (harness.evidence / "container-1.log").read_text()
             self.assertNotIn("cb_secret-capability", captured)
             self.assertIn("/api/callbacks/wake/<redacted>", captured)
+
+    def test_request_retries_retryable_projection_busy(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            harness = runner.CaseHarness(
+                case_id="projection-retry-test",
+                image="holon:test",
+                model="deepseek/deepseek-v4-flash",
+                credential_envs=[],
+                env_file=None,
+                runtime_env={},
+                evidence_root=Path(directory),
+                timeout_seconds=1,
+                keep=False,
+            )
+            harness.base_url = "http://127.0.0.1:7878"
+            busy = urllib.error.HTTPError(
+                harness.base_url + "/api/agents/default/state",
+                429,
+                "Too Many Requests",
+                {"Retry-After": "0"},
+                io.BytesIO(
+                    json.dumps(
+                        {
+                            "code": "projection_busy",
+                            "retryable": True,
+                        }
+                    ).encode()
+                ),
+            )
+
+            class Response:
+                status = 200
+                headers: dict[str, str] = {}
+
+                def __enter__(self) -> "Response":
+                    return self
+
+                def __exit__(self, *_: object) -> None:
+                    return None
+
+                def read(self) -> bytes:
+                    return b'{"ok":true}'
+
+            with (
+                patch.object(
+                    runner.urllib.request,
+                    "urlopen",
+                    side_effect=[busy, Response()],
+                ) as urlopen,
+                patch.object(runner.time, "sleep"),
+            ):
+                result = harness.request("GET", "/api/agents/default/state")
+
+            self.assertEqual(result, {"ok": True})
+            self.assertEqual(urlopen.call_count, 2)
 
     def test_runtime_db_snapshot_records_docker_copy_timeout(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

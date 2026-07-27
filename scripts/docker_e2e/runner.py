@@ -504,19 +504,40 @@ class CaseHarness:
         if body is not None:
             data = json.dumps(body).encode()
             headers["Content-Type"] = "application/json"
-        request = urllib.request.Request(
-            f"{self.base_url}{path}",
-            data=data,
-            headers=headers,
-            method=method,
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                status = response.status
-                payload = response.read()
-        except urllib.error.HTTPError as error:
-            status = error.code
-            payload = error.read()
+        retry_deadline = time.monotonic() + min(self.timeout_seconds, 30)
+        while True:
+            request = urllib.request.Request(
+                f"{self.base_url}{path}",
+                data=data,
+                headers=headers,
+                method=method,
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    status = response.status
+                    payload = response.read()
+                    response_headers = response.headers
+            except urllib.error.HTTPError as error:
+                status = error.code
+                payload = error.read()
+                response_headers = error.headers
+            if status != 429 or time.monotonic() >= retry_deadline:
+                break
+            try:
+                error_body = json.loads(payload)
+            except json.JSONDecodeError:
+                break
+            if (
+                error_body.get("code") != "projection_busy"
+                or error_body.get("retryable") is not True
+            ):
+                break
+            retry_after = response_headers.get("Retry-After", "1")
+            try:
+                retry_delay = max(0.05, float(retry_after))
+            except ValueError:
+                retry_delay = 1.0
+            time.sleep(min(retry_delay, max(0.0, retry_deadline - time.monotonic())))
         if status != expected_status:
             raise AssertionError(
                 f"{method} {path} returned {status}, expected {expected_status}: "

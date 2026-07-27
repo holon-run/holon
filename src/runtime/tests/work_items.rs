@@ -4691,6 +4691,70 @@ async fn wait_for_uses_lifecycle_owner_for_lifecycle_execution_even_with_focus()
 }
 
 #[tokio::test]
+async fn wait_for_tool_uses_bound_turn_work_item_without_durable_focus() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let work = runtime
+        .create_work_item("bound turn wait".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.current_work_item_id = None;
+        guard.state.current_turn_work_item_id = Some(work.id.clone());
+        guard.persist_state(&runtime.inner.storage).unwrap();
+    }
+
+    let registry = crate::tool::ToolRegistry::new(runtime.workspace_root());
+    let (result, _) = registry
+        .execute(
+            &runtime,
+            "default",
+            &AuthorityClass::OperatorInstruction,
+            &crate::tool::ToolCall {
+                id: "bound-turn-wait".into(),
+                name: "WaitFor".into(),
+                input: serde_json::json!({
+                    "wake": "external",
+                    "resource": "github:holon-run/holon#bound-turn",
+                    "reason": "wait from explicitly bound turn"
+                }),
+            },
+        )
+        .await
+        .unwrap();
+
+    let payload = result.envelope.result.unwrap();
+    assert_eq!(payload["scope"].as_str(), Some("work_item"));
+    assert_eq!(payload["work_item_id"].as_str(), Some(work.id.as_str()));
+    let waits = runtime
+        .storage()
+        .active_wait_conditions_for_agent("default")
+        .unwrap();
+    assert_eq!(waits.len(), 1);
+    assert_eq!(waits[0].work_item_id.as_deref(), Some(work.id.as_str()));
+    let updated = runtime.latest_work_item(&work.id).await.unwrap().unwrap();
+    assert_eq!(
+        updated.blocked_by.as_deref(),
+        Some("wait from explicitly bound turn")
+    );
+    let state = runtime.agent_state().await.unwrap();
+    assert!(state.current_work_item_id.is_none());
+    assert!(state.current_turn_work_item_id.is_none());
+}
+
+#[tokio::test]
 async fn needs_input_current_work_item_keeps_focus_until_operator_wait() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
