@@ -180,7 +180,9 @@ fn apply_event(snapshot: &Snapshot, event: &Event) -> model::Outcome {
                     },
                     ActivationBinding::WaitOwner {
                         wait_id: wait_id.clone(),
-                        owner_work_item_id: work_item_id.clone(),
+                        owner: SchedulerOwner::WorkItem {
+                            work_item_id: work_item_id.clone(),
+                        },
                     },
                     ActivationOrigin::System,
                     ActivationTrust::RuntimeInstruction,
@@ -1564,7 +1566,7 @@ fn settlement_recovery_rejects_a_current_revision_with_an_awaiting_reservation()
         "settlement-a-wait-1".into(),
         waiting.snapshot.settlements["settlement-a-wait-1"].clone(),
     );
-    combined.admitted_generations.insert("w2:1".into());
+    combined.admitted_generations.insert("work:w2:1".into());
 
     let mut recovery = typed_admission("a-recovery", "key-recovery", 1);
     recovery.expected_dispatch_revision = combined.dispatch_revision;
@@ -2639,7 +2641,7 @@ fn typed_wait_settlement_rejects_empty_wait_identity_without_mutation() {
 #[test]
 fn already_admitted_generation_is_classified_as_duplicate() {
     let mut snapshot = minimal_snapshot(1);
-    snapshot.admitted_generations.insert("w1:1".into());
+    snapshot.admitted_generations.insert("work:w1:1".into());
     let command = typed_admission("a2", "key-2", 1);
     authorize_admission(&mut snapshot, &command);
     let rejected = reduce_command(&snapshot, &ProtocolCommand::AdmitActivation(command));
@@ -2766,17 +2768,17 @@ fn canonical_admissions_rebuild_exact_unique_reservation_fences() {
 
     let mut missing_fence = snapshot.clone();
     missing_fence.admitted_generations.clear();
-    assert_eq!(
-        assert_invariants(&missing_fence),
-        Err("canonical admission fences disagree with activation admissions".into())
-    );
+    assert!(assert_invariants(&missing_fence)
+        .expect_err("missing fence must violate canonical admissions")
+        .starts_with("canonical admission fences disagree with activation admissions"));
 
     let mut fabricated_fence = snapshot.clone();
-    fabricated_fence.admitted_generations.insert("w1:99".into());
-    assert_eq!(
-        assert_invariants(&fabricated_fence),
-        Err("canonical admission fences disagree with activation admissions".into())
-    );
+    fabricated_fence
+        .admitted_generations
+        .insert("work:w1:99".into());
+    assert!(assert_invariants(&fabricated_fence)
+        .expect_err("fabricated fence must violate canonical admissions")
+        .starts_with("canonical admission fences disagree with activation admissions"));
 
     let mut duplicate = snapshot;
     let duplicate_command = typed_admission("a2", "key-2", 1);

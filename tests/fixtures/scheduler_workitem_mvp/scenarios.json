@@ -101,7 +101,10 @@
           "admitted_generation": 1,
           "recovery_for": null,
           "state": "settled",
-          "work_item_id": "w1"
+          "owner": {
+            "kind": "work_item",
+            "work_item_id": "w1"
+          }
         }
       },
       "decisions": [
@@ -155,8 +158,11 @@
           "current_generation": 2,
           "generations": {
             "2": {
-              "owner_work_item_id": "w1",
-              "state": "active"
+              "state": "active",
+              "owner": {
+                "kind": "work_item",
+                "work_item_id": "w1"
+              }
             }
           }
         }
@@ -181,7 +187,7 @@
         }
       },
       "admitted_generations": [
-        "w1:1"
+        "work:w1:1"
       ],
       "continuation_admissions": []
     },
@@ -191,7 +197,10 @@
           "admitted_generation": 1,
           "recovery_for": null,
           "state": "running",
-          "work_item_id": "w1"
+          "owner": {
+            "kind": "work_item",
+            "work_item_id": "w1"
+          }
         }
       },
       "dispatch": {
@@ -210,7 +219,10 @@
         "admitted_generation": 1,
         "kind": "running",
         "recovery_for": null,
-        "work_item_id": "w1"
+        "owner": {
+          "kind": "work_item",
+          "work_item_id": "w1"
+        }
       },
       "work": {
         "w1": {
@@ -298,7 +310,7 @@
       "settlements": {},
       "missing_settlements": {},
       "admitted_generations": [
-        "w1:1"
+        "work:w1:1"
       ],
       "continuation_admissions": {},
       "waits": {}
@@ -529,18 +541,24 @@
           "admitted_generation": 1,
           "recovery_for": null,
           "state": "settled",
-          "work_item_id": "w1"
+          "owner": {
+            "kind": "work_item",
+            "work_item_id": "w1"
+          }
         },
         "a2": {
           "admitted_generation": 7,
           "recovery_for": null,
           "state": "running",
-          "work_item_id": "w2"
+          "owner": {
+            "kind": "work_item",
+            "work_item_id": "w2"
+          }
         }
       },
       "admitted_generations": [
-        "w1:1",
-        "w2:7"
+        "work:w1:1",
+        "work:w2:7"
       ],
       "decisions": [
         "settled",
@@ -583,15 +601,21 @@
         "admitted_generation": 7,
         "kind": "running",
         "recovery_for": null,
-        "work_item_id": "w2"
+        "owner": {
+          "kind": "work_item",
+          "work_item_id": "w2"
+        }
       },
       "waits": {
         "wait-1": {
           "current_generation": 2,
           "generations": {
             "2": {
-              "owner_work_item_id": "w1",
-              "state": "active"
+              "state": "active",
+              "owner": {
+                "kind": "work_item",
+                "work_item_id": "w1"
+              }
             }
           }
         }
@@ -638,7 +662,10 @@
           "admitted_generation": 1,
           "recovery_for": null,
           "state": "running",
-          "work_item_id": "w1"
+          "owner": {
+            "kind": "work_item",
+            "work_item_id": "w1"
+          }
         }
       },
       "dispatch": {
@@ -657,7 +684,10 @@
         "admitted_generation": 1,
         "kind": "running",
         "recovery_for": null,
-        "work_item_id": "w1"
+        "owner": {
+          "kind": "work_item",
+          "work_item_id": "w1"
+        }
       },
       "work": {
         "w1": {
@@ -760,7 +790,7 @@
       "settlements": {},
       "missing_settlements": {},
       "admitted_generations": [
-        "w1:1"
+        "work:w1:1"
       ],
       "continuation_admissions": {},
       "waits": {}
@@ -787,8 +817,11 @@
             "agent_id": "agent-1",
             "binding": {
               "kind": "wait_owner",
-              "owner_work_item_id": "w1",
-              "wait_id": "wait-1"
+              "wait_id": "wait-1",
+              "owner": {
+                "kind": "work_item",
+                "work_item_id": "w1"
+              }
             },
             "cause": {
               "kind": "wait_resume",
@@ -821,8 +854,11 @@
             "agent_id": "agent-1",
             "binding": {
               "kind": "wait_owner",
-              "owner_work_item_id": "w1",
-              "wait_id": "wait-1"
+              "wait_id": "wait-1",
+              "owner": {
+                "kind": "work_item",
+                "work_item_id": "w1"
+              }
             },
             "cause": {
               "kind": "wait_resume",
@@ -868,8 +904,11 @@
             "agent_id": "agent-1",
             "binding": {
               "kind": "wait_owner",
-              "owner_work_item_id": "w1",
-              "wait_id": "wait-1"
+              "wait_id": "wait-1",
+              "owner": {
+                "kind": "work_item",
+                "work_item_id": "w1"
+              }
             },
             "cause": {
               "kind": "wait_resume",
@@ -904,8 +943,11 @@
             "agent_id": "agent-1",
             "binding": {
               "kind": "wait_owner",
-              "owner_work_item_id": "w1",
-              "wait_id": "wait-1"
+              "wait_id": "wait-1",
+              "owner": {
+                "kind": "work_item",
+                "work_item_id": "w1"
+              }
             },
             "cause": {
               "kind": "wait_resume",
@@ -938,11 +980,14 @@
           "admitted_generation": 2,
           "recovery_for": null,
           "state": "running",
-          "work_item_id": "w1"
+          "owner": {
+            "kind": "work_item",
+            "work_item_id": "w1"
+          }
         }
       },
       "admitted_generations": [
-        "w1:2"
+        "work:w1:2"
       ],
       "decisions": [
         "wait_triggered",
@@ -967,7 +1012,10 @@
         "admitted_generation": 2,
         "kind": "running",
         "recovery_for": null,
-        "work_item_id": "w1"
+        "owner": {
+          "kind": "work_item",
+          "work_item_id": "w1"
+        }
       },
       "waits": {
         "wait-1": {
@@ -975,11 +1023,14 @@
           "generations": {
             "2": {
               "consuming_activation_id": "a2",
-              "owner_work_item_id": "w1",
               "state": "consumed",
               "trigger": {
                 "trigger_generation": 1,
                 "trigger_id": "wait-1-trigger-2"
+              },
+              "owner": {
+                "kind": "work_item",
+                "work_item_id": "w1"
               }
             }
           }
@@ -1031,8 +1082,11 @@
           "current_generation": 2,
           "generations": {
             "2": {
-              "owner_work_item_id": "w1",
-              "state": "active"
+              "state": "active",
+              "owner": {
+                "kind": "work_item",
+                "work_item_id": "w1"
+              }
             }
           }
         }
@@ -1107,8 +1161,11 @@
           "current_generation": 2,
           "generations": {
             "2": {
-              "owner_work_item_id": "w1",
-              "state": "active"
+              "state": "active",
+              "owner": {
+                "kind": "work_item",
+                "work_item_id": "w1"
+              }
             }
           }
         }
@@ -1160,8 +1217,11 @@
           "current_generation": 2,
           "generations": {
             "2": {
-              "owner_work_item_id": "w1",
-              "state": "active"
+              "state": "active",
+              "owner": {
+                "kind": "work_item",
+                "work_item_id": "w1"
+              }
             }
           }
         }
@@ -1277,7 +1337,10 @@
           "admitted_generation": 4,
           "recovery_for": null,
           "state": "settlement_missing",
-          "work_item_id": "w1"
+          "owner": {
+            "kind": "work_item",
+            "work_item_id": "w1"
+          }
         }
       },
       "decisions": [
@@ -1325,7 +1388,7 @@
         }
       },
       "admitted_generations": [
-        "w1:4"
+        "work:w1:4"
       ],
       "continuation_admissions": [],
       "waits": {}
@@ -1336,7 +1399,10 @@
           "admitted_generation": 4,
           "recovery_for": null,
           "state": "running",
-          "work_item_id": "w1"
+          "owner": {
+            "kind": "work_item",
+            "work_item_id": "w1"
+          }
         }
       },
       "dispatch": {
@@ -1355,7 +1421,10 @@
         "admitted_generation": 4,
         "kind": "running",
         "recovery_for": null,
-        "work_item_id": "w1"
+        "owner": {
+          "kind": "work_item",
+          "work_item_id": "w1"
+        }
       },
       "work": {
         "w1": {
@@ -1443,7 +1512,7 @@
       "settlements": {},
       "missing_settlements": {},
       "admitted_generations": [
-        "w1:4"
+        "work:w1:4"
       ],
       "continuation_admissions": {},
       "waits": {}
@@ -1525,8 +1594,11 @@
             "agent_id": "agent-1",
             "binding": {
               "kind": "wait_owner",
-              "owner_work_item_id": "w1",
-              "wait_id": "wait-1"
+              "wait_id": "wait-1",
+              "owner": {
+                "kind": "work_item",
+                "work_item_id": "w1"
+              }
             },
             "cause": {
               "kind": "wait_resume",
@@ -1559,8 +1631,11 @@
             "agent_id": "agent-1",
             "binding": {
               "kind": "wait_owner",
-              "owner_work_item_id": "w1",
-              "wait_id": "wait-1"
+              "wait_id": "wait-1",
+              "owner": {
+                "kind": "work_item",
+                "work_item_id": "w1"
+              }
             },
             "cause": {
               "kind": "wait_resume",
@@ -1596,8 +1671,11 @@
             "agent_id": "agent-1",
             "binding": {
               "kind": "wait_owner",
-              "owner_work_item_id": "w1",
-              "wait_id": "wait-1"
+              "wait_id": "wait-1",
+              "owner": {
+                "kind": "work_item",
+                "work_item_id": "w1"
+              }
             },
             "cause": {
               "kind": "wait_resume",
@@ -1632,8 +1710,11 @@
             "agent_id": "agent-1",
             "binding": {
               "kind": "wait_owner",
-              "owner_work_item_id": "w1",
-              "wait_id": "wait-1"
+              "wait_id": "wait-1",
+              "owner": {
+                "kind": "work_item",
+                "work_item_id": "w1"
+              }
             },
             "cause": {
               "kind": "wait_resume",
@@ -1666,11 +1747,14 @@
           "admitted_generation": 2,
           "recovery_for": null,
           "state": "running",
-          "work_item_id": "w1"
+          "owner": {
+            "kind": "work_item",
+            "work_item_id": "w1"
+          }
         }
       },
       "admitted_generations": [
-        "w1:2"
+        "work:w1:2"
       ],
       "decisions": [
         "rejected",
@@ -1694,7 +1778,10 @@
         "admitted_generation": 2,
         "kind": "running",
         "recovery_for": null,
-        "work_item_id": "w1"
+        "owner": {
+          "kind": "work_item",
+          "work_item_id": "w1"
+        }
       },
       "waits": {
         "wait-1": {
@@ -1702,11 +1789,14 @@
           "generations": {
             "2": {
               "consuming_activation_id": "a-resume",
-              "owner_work_item_id": "w1",
               "state": "consumed",
               "trigger": {
                 "trigger_generation": 1,
                 "trigger_id": "wait-1-trigger-2"
+              },
+              "owner": {
+                "kind": "work_item",
+                "work_item_id": "w1"
               }
             }
           }
@@ -1773,11 +1863,14 @@
           "current_generation": 2,
           "generations": {
             "2": {
-              "owner_work_item_id": "w1",
               "state": "triggered",
               "trigger": {
                 "trigger_generation": 1,
                 "trigger_id": "wait-1-trigger-2"
+              },
+              "owner": {
+                "kind": "work_item",
+                "work_item_id": "w1"
               }
             }
           }
@@ -1965,11 +2058,14 @@
           "admitted_generation": 3,
           "recovery_for": null,
           "state": "running",
-          "work_item_id": "w2"
+          "owner": {
+            "kind": "work_item",
+            "work_item_id": "w2"
+          }
         }
       },
       "admitted_generations": [
-        "w2:3"
+        "work:w2:3"
       ],
       "decisions": [
         "admitted"
@@ -1992,15 +2088,21 @@
         "admitted_generation": 3,
         "kind": "running",
         "recovery_for": null,
-        "work_item_id": "w2"
+        "owner": {
+          "kind": "work_item",
+          "work_item_id": "w2"
+        }
       },
       "waits": {
         "wait-1": {
           "current_generation": 2,
           "generations": {
             "2": {
-              "owner_work_item_id": "w1",
-              "state": "active"
+              "state": "active",
+              "owner": {
+                "kind": "work_item",
+                "work_item_id": "w1"
+              }
             }
           }
         }
@@ -2062,8 +2164,11 @@
           "current_generation": 2,
           "generations": {
             "2": {
-              "owner_work_item_id": "w1",
-              "state": "active"
+              "state": "active",
+              "owner": {
+                "kind": "work_item",
+                "work_item_id": "w1"
+              }
             }
           }
         }
@@ -2250,11 +2355,14 @@
           "admitted_generation": 4,
           "recovery_for": null,
           "state": "running",
-          "work_item_id": "background"
+          "owner": {
+            "kind": "work_item",
+            "work_item_id": "background"
+          }
         }
       },
       "admitted_generations": [
-        "background:4"
+        "work:background:4"
       ],
       "decisions": [
         "admitted"
@@ -2277,15 +2385,21 @@
         "admitted_generation": 4,
         "kind": "running",
         "recovery_for": null,
-        "work_item_id": "background"
+        "owner": {
+          "kind": "work_item",
+          "work_item_id": "background"
+        }
       },
       "waits": {
         "wait-discussion": {
           "current_generation": 9,
           "generations": {
             "9": {
-              "owner_work_item_id": "discussion",
-              "state": "active"
+              "state": "active",
+              "owner": {
+                "kind": "work_item",
+                "work_item_id": "discussion"
+              }
             }
           }
         }
@@ -2342,8 +2456,11 @@
           "current_generation": 9,
           "generations": {
             "9": {
-              "owner_work_item_id": "discussion",
-              "state": "active"
+              "state": "active",
+              "owner": {
+                "kind": "work_item",
+                "work_item_id": "discussion"
+              }
             }
           }
         }
@@ -2416,8 +2533,11 @@
             "agent_id": "agent-1",
             "binding": {
               "kind": "wait_owner",
-              "owner_work_item_id": "w1",
-              "wait_id": "wait-1"
+              "wait_id": "wait-1",
+              "owner": {
+                "kind": "work_item",
+                "work_item_id": "w1"
+              }
             },
             "cause": {
               "kind": "wait_resume",
@@ -2450,8 +2570,11 @@
             "agent_id": "agent-1",
             "binding": {
               "kind": "wait_owner",
-              "owner_work_item_id": "w1",
-              "wait_id": "wait-1"
+              "wait_id": "wait-1",
+              "owner": {
+                "kind": "work_item",
+                "work_item_id": "w1"
+              }
             },
             "cause": {
               "kind": "wait_resume",
@@ -2497,8 +2620,11 @@
             "agent_id": "agent-1",
             "binding": {
               "kind": "wait_owner",
-              "owner_work_item_id": "w1",
-              "wait_id": "wait-1"
+              "wait_id": "wait-1",
+              "owner": {
+                "kind": "work_item",
+                "work_item_id": "w1"
+              }
             },
             "cause": {
               "kind": "wait_resume",
@@ -2533,8 +2659,11 @@
             "agent_id": "agent-1",
             "binding": {
               "kind": "wait_owner",
-              "owner_work_item_id": "w1",
-              "wait_id": "wait-1"
+              "wait_id": "wait-1",
+              "owner": {
+                "kind": "work_item",
+                "work_item_id": "w1"
+              }
             },
             "cause": {
               "kind": "wait_resume",
@@ -2567,11 +2696,14 @@
           "admitted_generation": 2,
           "recovery_for": null,
           "state": "running",
-          "work_item_id": "w1"
+          "owner": {
+            "kind": "work_item",
+            "work_item_id": "w1"
+          }
         }
       },
       "admitted_generations": [
-        "w1:2"
+        "work:w1:2"
       ],
       "decisions": [
         "wait_triggered",
@@ -2597,7 +2729,10 @@
         "admitted_generation": 2,
         "kind": "running",
         "recovery_for": null,
-        "work_item_id": "w1"
+        "owner": {
+          "kind": "work_item",
+          "work_item_id": "w1"
+        }
       },
       "waits": {
         "wait-1": {
@@ -2605,11 +2740,14 @@
           "generations": {
             "2": {
               "consuming_activation_id": "a2",
-              "owner_work_item_id": "w1",
               "state": "consumed",
               "trigger": {
                 "trigger_generation": 1,
                 "trigger_id": "wait-1-trigger-2"
+              },
+              "owner": {
+                "kind": "work_item",
+                "work_item_id": "w1"
               }
             }
           }
@@ -2657,8 +2795,11 @@
           "current_generation": 2,
           "generations": {
             "2": {
-              "owner_work_item_id": "w1",
-              "state": "active"
+              "state": "active",
+              "owner": {
+                "kind": "work_item",
+                "work_item_id": "w1"
+              }
             }
           }
         }
@@ -2819,7 +2960,10 @@
           "admitted_generation": 3,
           "recovery_for": null,
           "state": "settled",
-          "work_item_id": "child"
+          "owner": {
+            "kind": "work_item",
+            "work_item_id": "child"
+          }
         }
       },
       "continuation_admissions": [
@@ -2901,7 +3045,7 @@
         }
       },
       "admitted_generations": [
-        "child:3"
+        "work:child:3"
       ],
       "waits": {}
     },
@@ -2911,7 +3055,10 @@
           "admitted_generation": 3,
           "recovery_for": null,
           "state": "running",
-          "work_item_id": "child"
+          "owner": {
+            "kind": "work_item",
+            "work_item_id": "child"
+          }
         }
       },
       "dispatch": {
@@ -2930,7 +3077,10 @@
         "admitted_generation": 3,
         "kind": "running",
         "recovery_for": null,
-        "work_item_id": "child"
+        "owner": {
+          "kind": "work_item",
+          "work_item_id": "child"
+        }
       },
       "work": {
         "caller": {
@@ -3033,7 +3183,7 @@
       "settlements": {},
       "missing_settlements": {},
       "admitted_generations": [
-        "child:3"
+        "work:child:3"
       ],
       "continuation_admissions": {},
       "waits": {}
@@ -3134,7 +3284,10 @@
           "admitted_generation": 1,
           "recovery_for": null,
           "state": "settled",
-          "work_item_id": "w1"
+          "owner": {
+            "kind": "work_item",
+            "work_item_id": "w1"
+          }
         }
       },
       "decisions": [
@@ -3190,7 +3343,7 @@
         }
       },
       "admitted_generations": [
-        "w1:1"
+        "work:w1:1"
       ],
       "continuation_admissions": [],
       "waits": {}
@@ -3201,7 +3354,10 @@
           "admitted_generation": 1,
           "recovery_for": null,
           "state": "running",
-          "work_item_id": "w1"
+          "owner": {
+            "kind": "work_item",
+            "work_item_id": "w1"
+          }
         }
       },
       "dispatch": {
@@ -3220,7 +3376,10 @@
         "admitted_generation": 1,
         "kind": "running",
         "recovery_for": null,
-        "work_item_id": "w1"
+        "owner": {
+          "kind": "work_item",
+          "work_item_id": "w1"
+        }
       },
       "work": {
         "w1": {
@@ -3308,7 +3467,7 @@
       "settlements": {},
       "missing_settlements": {},
       "admitted_generations": [
-        "w1:1"
+        "work:w1:1"
       ],
       "continuation_admissions": {},
       "waits": {}

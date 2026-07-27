@@ -1013,7 +1013,9 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     },
                     ActivationBinding::WaitOwner {
                         wait_id: wait_id.clone(),
-                        owner_work_item_id: work_item.id.clone(),
+                        owner: crate::domain::scheduler_protocol::SchedulerOwner::WorkItem {
+                            work_item_id: work_item.id.clone(),
+                        },
                     },
                     canonical_activation_origin(message),
                     canonical_activation_trust(message),
@@ -1551,7 +1553,10 @@ fn canonical_admission_matches_scenario(
             ActivationCause::WaitResume { wait_id, .. },
             ActivationBinding::WaitOwner {
                 wait_id: bound_wait_id,
-                owner_work_item_id,
+                owner:
+                    crate::domain::scheduler_protocol::SchedulerOwner::WorkItem {
+                        work_item_id: owner_work_item_id,
+                    },
             },
             scheduler::CanonicalActivationScenario::ExactWaitResume {
                 owner: crate::domain::scheduler_protocol::SchedulerOwner::WorkItem { work_item_id },

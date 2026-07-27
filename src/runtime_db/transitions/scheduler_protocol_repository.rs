@@ -3154,11 +3154,7 @@ fn activation_owner(activation: &scheduler_protocol::AgentActivation) -> Result<
                 work_item_id: work_item_id.clone(),
             })
         }
-        scheduler_protocol::ActivationBinding::WaitOwner {
-            owner_work_item_id, ..
-        } => Ok(SchedulerOwner::WorkItem {
-            work_item_id: owner_work_item_id.clone(),
-        }),
+        scheduler_protocol::ActivationBinding::WaitOwner { owner, .. } => Ok(owner.clone()),
         scheduler_protocol::ActivationBinding::Lifecycle { agent_id } => {
             Ok(SchedulerOwner::AgentLifecycle {
                 agent_id: agent_id.clone(),
@@ -3177,6 +3173,13 @@ fn scheduler_owner_columns(owner: &SchedulerOwner) -> (&'static str, &str, Optio
             ("work_item", work_item_id, Some(work_item_id))
         }
         SchedulerOwner::AgentLifecycle { agent_id } => ("agent_lifecycle", agent_id, None),
+    }
+}
+
+fn scheduler_owner_fence_prefix(owner: &SchedulerOwner) -> String {
+    match owner {
+        SchedulerOwner::WorkItem { work_item_id } => format!("work:{work_item_id}"),
+        SchedulerOwner::AgentLifecycle { agent_id } => format!("lifecycle:{agent_id}"),
     }
 }
 
@@ -3258,11 +3261,12 @@ fn persisted_admission_fence(admission: &AdmitActivationCommand) -> Result<Strin
             ActivationCause::WaitResume { wait_id, .. },
             scheduler_protocol::ActivationBinding::WaitOwner {
                 wait_id: bound_wait_id,
-                owner_work_item_id,
+                owner,
             },
         ) if wait_id == bound_wait_id => {
             return Ok(format!(
-                "work:{owner_work_item_id}:{}",
+                "{}:{}",
+                scheduler_owner_fence_prefix(owner),
                 admission.expected_scheduling_generation
             ));
         }

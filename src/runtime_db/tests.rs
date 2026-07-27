@@ -1742,7 +1742,9 @@ mod tests {
             },
             binding: ActivationBinding::WaitOwner {
                 wait_id: wait_id.into(),
-                owner_work_item_id: "work-a".into(),
+                owner: SchedulerOwner::WorkItem {
+                    work_item_id: "work-a".into(),
+                },
             },
             priority: ActivationPriority::Normal,
             preemption: PreemptionPolicy::NonPreemptive,

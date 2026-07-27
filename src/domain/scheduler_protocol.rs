@@ -668,7 +668,7 @@ pub enum ActivationBinding {
     },
     WaitOwner {
         wait_id: String,
-        owner_work_item_id: String,
+        owner: SchedulerOwner,
     },
     Interaction {
         interaction_id: String,
@@ -1438,7 +1438,9 @@ pub fn migrate_legacy_event(
                     },
                     ActivationBinding::WaitOwner {
                         wait_id: wait_id.clone(),
-                        owner_work_item_id: work_item_id.clone(),
+                        owner: SchedulerOwner::WorkItem {
+                            work_item_id: work_item_id.clone(),
+                        },
                     },
                 ),
                 AdmissionCause::LifecycleExternalNudge { .. } => {
@@ -2542,12 +2544,10 @@ fn lower_admit_activation(
             },
             ActivationBinding::WaitOwner {
                 wait_id: bound_wait_id,
-                owner_work_item_id,
+                owner,
             },
         ) if wait_id == bound_wait_id => (
-            SchedulerOwner::WorkItem {
-                work_item_id: owner_work_item_id.clone(),
-            },
+            owner.clone(),
             AdmissionCause::WaitResume {
                 wait_id: wait_id.clone(),
                 wait_generation: *wait_generation,
@@ -2879,9 +2879,14 @@ fn activation_work_item_id(activation: &AgentActivation) -> Option<&str> {
     match &activation.binding {
         ActivationBinding::WorkItem { work_item_id } => Some(work_item_id),
         ActivationBinding::WaitOwner {
-            owner_work_item_id, ..
-        } => Some(owner_work_item_id),
-        ActivationBinding::Interaction { .. }
+            owner: SchedulerOwner::WorkItem { work_item_id },
+            ..
+        } => Some(work_item_id),
+        ActivationBinding::WaitOwner {
+            owner: SchedulerOwner::AgentLifecycle { .. },
+            ..
+        }
+        | ActivationBinding::Interaction { .. }
         | ActivationBinding::Lifecycle { .. }
         | ActivationBinding::Unbound => None,
     }
@@ -2957,10 +2962,13 @@ fn activation_binding_has_identity(binding: &ActivationBinding) -> bool {
     match binding {
         ActivationBinding::Unbound => true,
         ActivationBinding::WorkItem { work_item_id } => !work_item_id.is_empty(),
-        ActivationBinding::WaitOwner {
-            wait_id,
-            owner_work_item_id,
-        } => !wait_id.is_empty() && !owner_work_item_id.is_empty(),
+        ActivationBinding::WaitOwner { wait_id, owner } => {
+            !wait_id.is_empty()
+                && match owner {
+                    SchedulerOwner::WorkItem { work_item_id } => !work_item_id.is_empty(),
+                    SchedulerOwner::AgentLifecycle { agent_id } => !agent_id.is_empty(),
+                }
+        }
         ActivationBinding::Interaction { interaction_id } => !interaction_id.is_empty(),
         ActivationBinding::Lifecycle { agent_id } => !agent_id.is_empty(),
     }
