@@ -78,12 +78,25 @@ pub(crate) async fn execute(
 ) -> Result<crate::tool::ToolResult> {
     let surface = runtime.current_apply_patch_surface().await;
     let patch_input = extract_patch_input(input, surface)?;
+    let contains_replacement_character = patch_input.contains('\u{FFFD}');
     let execution = runtime
         .effective_execution(ExecutionScopeKind::AgentTurn)
         .await?;
-    let outcome =
+    let mut outcome =
         apply_patch::apply_patch(execution.workspace.execution_root(), &patch_input, surface)
-            .await?;
+            .await
+            .map_err(|error| {
+                if contains_replacement_character {
+                    anyhow::Error::new(add_replacement_character_recovery_hint(
+                        ToolError::from_anyhow(&error),
+                    ))
+                } else {
+                    error
+                }
+            })?;
+    if contains_replacement_character {
+        outcome.diagnostics.push(replacement_character_diagnostic());
+    }
     let mut summary_text = if outcome.changed_files.is_empty() {
         "patched no files".to_string()
     } else {
@@ -111,6 +124,23 @@ pub(crate) async fn execute(
             summary_text: Some(summary_text),
         },
     )
+}
+
+fn replacement_character_diagnostic() -> ApplyPatchDiagnostic {
+    ApplyPatchDiagnostic {
+        path: String::new(),
+        kind: "replacement_character_in_input".into(),
+        message: "patch input contains U+FFFD (�), which may be original content or upstream decoding damage; reread the exact target region before constructing another patch".into(),
+    }
+}
+
+fn add_replacement_character_recovery_hint(mut error: ToolError) -> ToolError {
+    let warning = "The patch input contains U+FFFD (�), which may come from upstream streaming decode damage. Reread the exact target region and rebuild the patch from the fresh content; do not retry the old U+FFFD-containing context unchanged.";
+    error.recovery_hint = Some(match error.recovery_hint.take() {
+        Some(existing) => format!("{existing} {warning}"),
+        None => warning.to_string(),
+    });
+    error
 }
 
 pub(crate) fn render_for_model(result: &ToolResult) -> Result<String> {
@@ -396,6 +426,42 @@ mod tests {
         assert!(rendered.contains("Diagnostics:"));
         assert!(rendered.contains("hunk_count_mismatch"));
         assert!(rendered.contains("Inspect the affected target region"));
+    }
+
+    #[test]
+    fn apply_patch_replacement_character_warning_is_model_visible() {
+        let diagnostic = replacement_character_diagnostic();
+        assert_eq!(diagnostic.kind, "replacement_character_in_input");
+        assert!(render_diagnostic_for_model(&diagnostic).contains("U+FFFD"));
+
+        let error = add_replacement_character_recovery_hint(ToolError::new(
+            "context_not_found",
+            "patch context was not found",
+        ));
+        assert_eq!(error.kind, "context_not_found");
+        assert!(error
+            .recovery_hint
+            .as_deref()
+            .is_some_and(|hint| hint.contains("do not retry")));
+    }
+
+    #[test]
+    fn apply_patch_both_surfaces_preserve_replacement_character_for_warning() {
+        let codex = extract_patch_input(
+            &json!("*** Begin Patch\n*** Add File: x\n+�\n*** End Patch\n"),
+            ApplyPatchSurface::CodexDslFreeform,
+        )
+        .unwrap();
+        let unified = extract_patch_input(
+            &json!({
+                "patch": "--- /dev/null\n+++ b/x\n@@ -0,0 +1 @@\n+�\n"
+            }),
+            ApplyPatchSurface::UnifiedDiffJson,
+        )
+        .unwrap();
+
+        assert!(codex.contains('\u{FFFD}'));
+        assert!(unified.contains('\u{FFFD}'));
     }
 
     #[test]

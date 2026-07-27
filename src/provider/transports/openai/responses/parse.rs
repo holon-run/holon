@@ -20,6 +20,7 @@ async fn read_openai_streaming_response_with_timeout(
     let mut pending = String::new();
     let mut data_lines = Vec::new();
     let mut streamed_output_items = Vec::new();
+    let mut text_decoder = crate::utf8::IncrementalUtf8LossyDecoder::new();
 
     while let Some(chunk) = tokio::time::timeout(idle_timeout, response.chunk())
         .await
@@ -50,7 +51,7 @@ async fn read_openai_streaming_response_with_timeout(
         })?
     {
         trace_stream_chunk(trace, &chunk);
-        pending.push_str(&String::from_utf8_lossy(&chunk));
+        pending.push_str(&text_decoder.push(&chunk));
         while let Some(newline_idx) = pending.find('\n') {
             let mut line = pending[..newline_idx].to_string();
             pending.drain(..=newline_idx);
@@ -84,6 +85,7 @@ async fn read_openai_streaming_response_with_timeout(
         }
     }
 
+    pending.push_str(&text_decoder.finish());
     if !pending.is_empty() {
         let line = pending.trim_end_matches('\r');
         if let Some(data) = line.strip_prefix("data:") {

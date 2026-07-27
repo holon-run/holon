@@ -11,6 +11,8 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::utf8::IncrementalUtf8LossyDecoder;
+
 static PROVIDER_HTTP_TRACE_SEQ: AtomicU64 = AtomicU64::new(1);
 
 const PROVIDER_HTTP_TRACE_ENV: &str = "HOLON_PROVIDER_HTTP_TRACE";
@@ -59,6 +61,7 @@ struct ProviderHttpTraceRequestState {
     sequence: u64,
     file_path: Option<PathBuf>,
     events: VecDeque<Value>,
+    stream_text_decoder: IncrementalUtf8LossyDecoder,
 }
 
 impl ProviderHttpTrace {
@@ -116,6 +119,7 @@ impl ProviderHttpTrace {
                 sequence,
                 file_path: None,
                 events: VecDeque::new(),
+                stream_text_decoder: IncrementalUtf8LossyDecoder::new(),
             })),
         };
         request.write_event(json!({
@@ -157,24 +161,39 @@ impl ProviderHttpTraceRequest {
     }
 
     pub(crate) fn write_stream_chunk(&self, chunk: &[u8]) {
-        self.write_event(json!({
-            "type": "stream_chunk",
-            "created_at_ms": current_time_millis(),
-            "bytes": chunk.len(),
-            "text": String::from_utf8_lossy(chunk),
-        }));
+        let Ok(mut guard) = self.inner.lock() else {
+            return;
+        };
+        let text = guard.stream_text_decoder.push(chunk);
+        write_event(
+            &mut guard,
+            json!({
+                "type": "stream_chunk",
+                "created_at_ms": current_time_millis(),
+                "bytes": chunk.len(),
+                "text": text,
+            }),
+        );
     }
 
     pub(crate) fn write_stream_terminal(&self, body: &Value) {
-        self.write_event(json!({
-            "type": "stream_terminal_response",
-            "created_at_ms": current_time_millis(),
-            "body": body,
-        }));
+        let Ok(mut guard) = self.inner.lock() else {
+            return;
+        };
+        flush_stream_text(&mut guard);
+        write_event(
+            &mut guard,
+            json!({
+                "type": "stream_terminal_response",
+                "created_at_ms": current_time_millis(),
+                "body": body,
+            }),
+        );
     }
 
     pub(crate) fn diagnostics(&self, status: Option<u16>) -> Option<ProviderHttpTraceDiagnostics> {
         let mut guard = self.inner.lock().ok()?;
+        flush_stream_text(&mut guard);
         let path = ensure_trace_file(&mut guard)?;
         Some(ProviderHttpTraceDiagnostics {
             mode: guard.mode.as_str().to_string(),
@@ -187,18 +206,37 @@ impl ProviderHttpTraceRequest {
         let Ok(mut guard) = self.inner.lock() else {
             return;
         };
-        match guard.mode {
-            ProviderHttpTraceMode::All => {
-                let Some(path) = ensure_trace_file(&mut guard) else {
-                    return;
-                };
-                append_trace_event(&path, &event);
-            }
-            ProviderHttpTraceMode::FailureOnly => {
-                guard.events.push_back(event);
-                if guard.events.len() > PROVIDER_HTTP_FAILURE_TRACE_MAX_EVENTS {
-                    guard.events.pop_front();
-                }
+        write_event(&mut guard, event);
+    }
+}
+
+fn flush_stream_text(state: &mut ProviderHttpTraceRequestState) {
+    let text = state.stream_text_decoder.finish();
+    if text.is_empty() {
+        return;
+    }
+    write_event(
+        state,
+        json!({
+            "type": "stream_text_flush",
+            "created_at_ms": current_time_millis(),
+            "text": text,
+        }),
+    );
+}
+
+fn write_event(state: &mut ProviderHttpTraceRequestState, event: Value) {
+    match state.mode {
+        ProviderHttpTraceMode::All => {
+            let Some(path) = ensure_trace_file(state) else {
+                return;
+            };
+            append_trace_event(&path, &event);
+        }
+        ProviderHttpTraceMode::FailureOnly => {
+            state.events.push_back(event);
+            if state.events.len() > PROVIDER_HTTP_FAILURE_TRACE_MAX_EVENTS {
+                state.events.pop_front();
             }
         }
     }
@@ -521,6 +559,83 @@ mod tests {
         assert!(trace_text.contains("\"name\":\"ExecCommand\""));
         assert!(trace_text.contains("[REDACTED]"));
         assert!(!trace_text.contains("Bearer secret"));
+    }
+
+    #[test]
+    fn provider_http_trace_preserves_utf8_across_stream_chunks() {
+        let home = tempfile::tempdir().unwrap();
+        let trace = ProviderHttpTrace {
+            home_dir: home.path().to_path_buf(),
+            mode: super::ProviderHttpTraceMode::All,
+        };
+        let request = trace
+            .begin_request(
+                Some("agent/one"),
+                "openai",
+                Some("openai/gpt-test"),
+                "https://api.example.com/v1/responses",
+                "responses",
+                &[],
+                &json!({}),
+            )
+            .unwrap();
+
+        for byte in "😀".as_bytes() {
+            request.write_stream_chunk(std::slice::from_ref(byte));
+        }
+        request.write_stream_terminal(&json!({ "status": "completed" }));
+
+        let trace_dir = home.path().join(".holon/http-trace/agent_one");
+        let path = fs::read_dir(trace_dir)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let events = fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        let text = events
+            .iter()
+            .filter_map(|event| {
+                matches!(
+                    event["type"].as_str(),
+                    Some("stream_chunk" | "stream_text_flush")
+                )
+                .then(|| event["text"].as_str().unwrap_or_default())
+            })
+            .collect::<String>();
+
+        assert_eq!(text, "😀");
+        assert!(!text.contains('\u{FFFD}'));
+    }
+
+    #[test]
+    fn provider_http_failure_trace_flushes_incomplete_utf8_lossily() {
+        let home = tempfile::tempdir().unwrap();
+        let trace = ProviderHttpTrace {
+            home_dir: home.path().to_path_buf(),
+            mode: super::ProviderHttpTraceMode::FailureOnly,
+        };
+        let request = trace
+            .begin_request(
+                Some("agent/one"),
+                "openai",
+                Some("openai/gpt-test"),
+                "https://api.example.com/v1/responses",
+                "responses",
+                &[],
+                &json!({}),
+            )
+            .unwrap();
+        request.write_stream_chunk(&[0xF0, 0x9F]);
+
+        let diagnostics = request.diagnostics(Some(500)).unwrap();
+        let trace_text = fs::read_to_string(diagnostics.path).unwrap();
+        assert!(trace_text.contains("\"type\":\"stream_text_flush\""));
+        assert!(trace_text.contains('�'));
     }
 
     #[test]

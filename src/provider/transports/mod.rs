@@ -19,6 +19,7 @@ pub(crate) use openai::{
     accumulate_chat_completion_stream_events, build_chat_completion_messages,
     build_chat_completion_request, build_openai_input, build_openai_responses_request,
     classify_openai_chat_completion_error, parse_chat_completion_response, parse_openai_response,
+    send_chat_completion_stream_request,
 };
 pub use openai::{OpenAiChatCompletionsProvider, OpenAiCodexProvider, OpenAiProvider};
 

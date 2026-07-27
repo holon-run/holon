@@ -96,6 +96,17 @@ pub async fn spawn_raw_http_server_scripted(responses: Vec<Vec<(u64, Vec<u8>)>>)
     format!("http://{}", addr)
 }
 
+pub fn chunked_http_response(chunks: &[&[u8]]) -> Vec<u8> {
+    let mut response = b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n".to_vec();
+    for chunk in chunks {
+        response.extend_from_slice(format!("{:X}\r\n", chunk.len()).as_bytes());
+        response.extend_from_slice(chunk);
+        response.extend_from_slice(b"\r\n");
+    }
+    response.extend_from_slice(b"0\r\n\r\n");
+    response
+}
+
 async fn drain_http_request(stream: &mut TcpStream) {
     let mut buffer = [0u8; 1024];
     let mut request = Vec::new();

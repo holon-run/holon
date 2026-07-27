@@ -159,6 +159,34 @@ fn openai_reasoning_and_tool_call_sse_response(response_id: &str) -> String {
     )
 }
 
+fn openai_unicode_text_and_tool_call_sse_response(response_id: &str) -> String {
+    let response = json!({
+        "id": response_id,
+        "status": "completed",
+        "usage": { "input_tokens": 4, "output_tokens": 4 },
+        "output": [{
+            "type": "message",
+            "id": "msg_unicode",
+            "status": "completed",
+            "role": "assistant",
+            "content": [{ "type": "output_text", "text": "中文😀" }]
+        }, {
+            "type": "function_call",
+            "id": "fc_unicode",
+            "call_id": "call_unicode",
+            "name": "ApplyPatch",
+            "arguments": "{\"path\":\"目录/文件😀.rs\"}"
+        }]
+    });
+    format!(
+        "event: response.completed\ndata: {}\n\n",
+        json!({
+            "type": "response.completed",
+            "response": response,
+        })
+    )
+}
+
 fn provider_large_window_request_with_prompt_frame() -> ProviderTurnRequest {
     let mut request = provider_turn_request_with_prompt_frame();
     request.conversation = (0..8)
@@ -1532,6 +1560,37 @@ async fn openai_codex_streaming_incomplete_max_output_tokens_returns_recoverable
     assert!(matches!(
         &response.blocks[0],
         ModelBlock::Text { text } if text == "partial report"
+    ));
+}
+
+#[tokio::test]
+async fn openai_codex_streaming_preserves_utf8_across_every_http_chunk_boundary() {
+    let body = openai_unicode_text_and_tool_call_sse_response("resp_unicode");
+    let chunks = body.as_bytes().chunks(1).collect::<Vec<_>>();
+    let raw_response = chunked_http_response(&chunks);
+    let base_url = spawn_raw_http_server_bytes_sequence(vec![raw_response]).await;
+    let mut fixture = test_config("openai-codex/gpt-5.4", &[], None, None, true);
+    fixture
+        .config
+        .providers
+        .get_mut(&ProviderId::openai_codex())
+        .unwrap()
+        .base_url = base_url;
+    let provider = build_provider_from_config(&fixture.config).unwrap();
+
+    let response = provider
+        .complete_turn(provider_turn_request())
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        &response.blocks[0],
+        ModelBlock::Text { text } if text == "中文😀"
+    ));
+    assert!(matches!(
+        &response.blocks[1],
+        ModelBlock::ToolUse { name, input, .. }
+            if name == "ApplyPatch" && *input == json!({"path": "目录/文件😀.rs"})
     ));
 }
 

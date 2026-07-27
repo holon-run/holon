@@ -6,7 +6,10 @@ use crate::config::{ModelRef, ModelRouteRef, ProviderId, ProviderTransportKind};
 use crate::model_catalog::{ModelRuntimeOverride, ModelVerbosity};
 use crate::provider::provider_transport_diagnostics;
 use crate::provider::retry::{classify_provider_error, ProviderFailureKind, RetryDisposition};
-use crate::provider::transports::{build_chat_completion_messages, OpenAiChatCompletionsProvider};
+use crate::provider::transports::{
+    build_chat_completion_messages, send_chat_completion_stream_request,
+    OpenAiChatCompletionsProvider,
+};
 use crate::tool::ToolSpec;
 use axum::{routing::post, Json, Router};
 use serde_json::json;
@@ -587,6 +590,36 @@ fn chat_completion_streaming_processes_content_delta_events() {
     let message = &result["choices"][0]["message"];
     assert_eq!(message["content"], "Hello world!");
     assert!(message.get("tool_calls").is_none());
+}
+
+#[tokio::test]
+async fn chat_completion_streaming_preserves_utf8_across_every_http_chunk_boundary() {
+    let body = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"中文😀\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_unicode\",\"function\":{\"name\":\"ApplyPatch\",\"arguments\":\"{\\\"path\\\":\\\"目录/文件😀.rs\\\"}\"}}]}}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let chunks = body.as_bytes().chunks(1).collect::<Vec<_>>();
+    let raw_response = chunked_http_response(&chunks);
+    let base_url = spawn_raw_http_server_bytes_sequence(vec![raw_response]).await;
+    let parsed = send_chat_completion_stream_request(
+        &reqwest::Client::new(),
+        format!("{base_url}/v1/chat/completions"),
+        json!({ "model": "gpt-test", "stream": true }),
+        Vec::new(),
+    )
+    .await
+    .unwrap();
+
+    assert!(matches!(
+        &parsed.response.blocks[0],
+        ModelBlock::Text { text } if text == "中文😀"
+    ));
+    assert!(matches!(
+        &parsed.response.blocks[1],
+        ModelBlock::ToolUse { name, input, .. }
+            if name == "ApplyPatch" && *input == json!({"path": "目录/文件😀.rs"})
+    ));
 }
 
 #[test]

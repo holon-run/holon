@@ -27,6 +27,7 @@ use crate::{
         ExternalTriggerStatus, MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority,
         TaskHandle, TaskKind, TaskRecord, TaskRecoverySpec, TaskStatus, ToolArtifactRef,
     },
+    utf8::IncrementalUtf8LossyDecoder,
 };
 
 use super::{task_state_reducer, RuntimeHandle};
@@ -1125,17 +1126,22 @@ where
     R: AsyncRead + Unpin + Send + 'static,
 {
     let mut buffer = [0u8; 4096];
+    let mut decoder = IncrementalUtf8LossyDecoder::new();
     loop {
         match reader.read(&mut buffer).await {
             Ok(0) => break,
             Ok(read) => {
-                let text = String::from_utf8_lossy(&buffer[..read]).to_string();
-                if tx.send(OutputChunk { stream, text }).await.is_err() {
+                let text = decoder.push(&buffer[..read]);
+                if !text.is_empty() && tx.send(OutputChunk { stream, text }).await.is_err() {
                     break;
                 }
             }
             Err(_) => break,
         }
+    }
+    let text = decoder.finish();
+    if !text.is_empty() {
+        let _ = tx.send(OutputChunk { stream, text }).await;
     }
 }
 
@@ -1320,7 +1326,7 @@ fn trim_to_tail(buffer: &mut String, max_chars: usize) {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, path::Path, sync::Arc};
+    use std::{collections::BTreeMap, io::Cursor, path::Path, sync::Arc};
 
     use anyhow::Result;
     use async_trait::async_trait;
@@ -1541,6 +1547,33 @@ mod tests {
 
     fn resolved_env(resolved: &ResolvedCommandTask) -> BTreeMap<String, String> {
         resolved.env.iter().cloned().collect()
+    }
+
+    async fn read_output_text(bytes: Vec<u8>, stream: OutputStream) -> String {
+        let (tx, mut rx) = mpsc::channel(OUTPUT_CHANNEL_CAPACITY);
+        read_output(Cursor::new(bytes), stream, tx).await;
+        let mut output = String::new();
+        while let Some(chunk) = rx.recv().await {
+            assert!(matches!(
+                (chunk.stream, stream),
+                (OutputStream::Stdout, OutputStream::Stdout)
+                    | (OutputStream::Stderr, OutputStream::Stderr)
+            ));
+            output.push_str(&chunk.text);
+        }
+        output
+    }
+
+    #[tokio::test]
+    async fn command_output_preserves_utf8_across_the_4096_byte_read_boundary() {
+        for stream in [OutputStream::Stdout, OutputStream::Stderr] {
+            let mut bytes = vec![b'a'; 4095];
+            bytes.extend_from_slice("中".as_bytes());
+            let output = read_output_text(bytes, stream).await;
+
+            assert_eq!(output, format!("{}中", "a".repeat(4095)));
+            assert!(!output.contains('\u{FFFD}'));
+        }
     }
 
     #[tokio::test]

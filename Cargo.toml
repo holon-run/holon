@@ -19,6 +19,7 @@ arc-swap = "1.7"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.5", features = ["derive"] }
 crossterm = "0.28"
+encoding_rs = "0.8"
 hyper = { version = "1.5", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server-auto", "tokio", "service", "http1", "http2"] }
 libc = "0.2"

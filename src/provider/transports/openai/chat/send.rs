@@ -277,6 +277,7 @@ async fn read_chat_completion_stream(response: Response) -> Result<Value> {
     let mut response = response;
     let mut pending = String::new();
     let mut data_lines = Vec::new();
+    let mut text_decoder = crate::utf8::IncrementalUtf8LossyDecoder::new();
 
     while let Some(chunk) = response.chunk().await.map_err(|error| {
         crate::provider::retry::classify_reqwest_transport_error_with_trace(
@@ -289,7 +290,7 @@ async fn read_chat_completion_stream(response: Response) -> Result<Value> {
             None,
         )
     })? {
-        pending.push_str(&String::from_utf8_lossy(&chunk));
+        pending.push_str(&text_decoder.push(&chunk));
         while let Some(newline_idx) = pending.find('\n') {
             let mut line = pending[..newline_idx].to_string();
             pending.drain(..newline_idx + 1);
@@ -335,6 +336,7 @@ async fn read_chat_completion_stream(response: Response) -> Result<Value> {
         }
     }
 
+    pending.push_str(&text_decoder.finish());
     // Process remaining data
     if !pending.is_empty() {
         let line = pending.trim();
