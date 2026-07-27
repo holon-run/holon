@@ -168,29 +168,11 @@ def build_stress_plan(
     )
     unknown = sorted(set(scenarios) - set(PRODUCTION_SCENARIOS))
     require(not unknown, f"unknown stress scenarios: {', '.join(unknown)}")
-    operation_count = iterations * len(scenarios)
     blueprints = [
         (iteration, scenario)
         for iteration in range(1, iterations + 1)
         for scenario in scenarios
     ]
-    duplicate_candidates = {
-        sequence
-        for sequence, (_, scenario) in enumerate(blueprints)
-        if scenario in {"exact_wait_resume", "settlement", "delivery"}
-    }
-    duplicate_target = min(
-        len(duplicate_candidates),
-        ceil(operation_count * duplicate_ratio),
-    )
-    duplicates = set(
-        sorted(
-            duplicate_candidates,
-            key=lambda sequence: hashlib.sha256(
-                f"{seed}:duplicate:{sequence}".encode()
-            ).digest(),
-        )[:duplicate_target]
-    )
     fault_candidates: dict[str, list[int]] = {
         fault: [] for fault in dict.fromkeys(FAULT_SCENARIOS.values())
     }
@@ -208,7 +190,10 @@ def build_stress_plan(
         sum(len(sequences) for sequences in fault_candidates.values()),
         max(
             available_fault_types if stale_ratio > 0 else 0,
-            ceil(operation_count * stale_ratio),
+            ceil(
+                sum(len(sequences) for sequences in fault_candidates.values())
+                * stale_ratio
+            ),
         ),
     )
     selected_faults: dict[int, str] = {}
@@ -223,6 +208,33 @@ def build_stress_plan(
                     break
         if not advanced:
             break
+    duplicate_candidates = [
+        sequence
+        for sequence, (_, scenario) in enumerate(blueprints)
+        if scenario in {"exact_wait_resume", "settlement", "delivery"}
+        and sequence not in selected_faults
+    ]
+    duplicate_eligible_count = sum(
+        scenario in {"exact_wait_resume", "settlement", "delivery"}
+        for _, scenario in blueprints
+    )
+    duplicate_target = min(
+        duplicate_eligible_count,
+        ceil(duplicate_eligible_count * duplicate_ratio),
+    )
+    require(
+        len(duplicate_candidates) >= duplicate_target,
+        "stress plan requires independent operations for duplicate and fault "
+        "injections; increase iterations or reduce duplicate/stale ratios",
+    )
+    duplicates = set(
+        sorted(
+            duplicate_candidates,
+            key=lambda sequence: hashlib.sha256(
+                f"{seed}:duplicate:{sequence}".encode()
+            ).digest(),
+        )[:duplicate_target]
+    )
     plan: list[StressOperation] = []
     for sequence, (iteration, scenario) in enumerate(blueprints):
         digest = hashlib.sha256(
@@ -450,6 +462,7 @@ def make_harness(
         runtime_env={
             "HOLON_SCHEDULER": mode,
             "HOLON_SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS": "true",
+            "HOLON_SCHEDULER_ACCEPTANCE_FIXTURES": "true",
         },
         evidence_root=paths.phases,
         timeout_seconds=int(record["parameters"]["timeout_seconds"]),
@@ -715,6 +728,19 @@ def exercise_wait_rearm_race(
     objective = f"DRILL-WAIT-REARM-{marker}"
     completion = f"DRILL-WAIT-REARM-COMPLETE-{marker}"
     callback = harness.reset_callback("wait-rearm-callback")
+    barrier = harness.request(
+        "POST",
+        harness.agent_path("tasks", control=True),
+        {
+            "summary": f"scheduler drill wait-rearm barrier {marker}",
+            "cmd": "read -r scheduler_drill_release",
+            "login": False,
+            "accepts_input": True,
+            "yield_time_ms": 1,
+        },
+    )
+    write_json(harness.evidence / "wait-rearm-barrier-task.json", barrier)
+    barrier_task_id = barrier["id"]
     harness.prompt(
         "wait-rearm-seed",
         DRILL_PREFIX
@@ -725,8 +751,11 @@ def exercise_wait_rearm_race(
         "3. Call WaitFor with wake=external and a concrete reason. Do not pass a resource.\n"
         "4. STOP without completing the WorkItem.\n"
         "On the first later resume: call GetWorkItem, mark only rearm completed, "
-        "call WaitFor with wake=external again without a resource, and STOP.\n"
-        "On the second later resume: call GetWorkItem, mark both todos completed, "
+        "call WaitFor with wake=task_result, "
+        f"resource={json.dumps(barrier_task_id)}, and STOP.\n"
+        "On the task-result resume: call GetWorkItem, call WaitFor with wake=external "
+        "again without a resource, and STOP.\n"
+        "On the next external resume: call GetWorkItem, mark both todos completed, "
         f"emit a report containing {completion}, and call CompleteWorkItem.",
     )
     initial = harness.wait_work_item_scheduling_state(
@@ -734,6 +763,29 @@ def exercise_wait_rearm_race(
         expected_scheduling_state="waiting_external",
         label="wait-rearm-initial",
     )
+    initial_snapshot = harness.runtime_db_snapshot("wait-rearm-initial-generation")
+    initial_waits = [
+        row
+        for row in initial_snapshot["wait_conditions"]
+        if row["work_item_id"] == initial["id"] and row["status"] == "active"
+    ]
+    require(
+        len(initial_waits) == 1,
+        f"expected one initial active external wait: {initial_waits}",
+    )
+    initial_wait_id = initial_waits[0]["wait_condition_id"]
+    initial_generations = [
+        row
+        for row in initial_snapshot["scheduler_wait_generations"]
+        if row["owner_work_item_id"] == initial["id"]
+        and row["wait_id"] == initial_wait_id
+    ]
+    require(
+        len(initial_generations) == 1
+        and initial_generations[0]["lifecycle_state"] == "active",
+        f"initial canonical wait generation is not active: {initial_generations}",
+    )
+    initial_generation = initial_generations[0]["generation"]
     harness.wait_agent_asleep()
     before = harness.state("wait-rearm-before-first")
     baseline = int(before["agent"]["agent"]["turn_index"])
@@ -760,10 +812,76 @@ def exercise_wait_rearm_race(
         duplicate.get("disposition") == "coalesced",
         f"duplicate callback did not land in the running generation: {duplicate}",
     )
+    task_waiting = harness.wait_work_item_scheduling_state(
+        objective_marker=objective,
+        expected_scheduling_state="waiting_task",
+        label="wait-rearm-task-barrier",
+    )
+    require(
+        task_waiting["id"] == initial["id"],
+        "wait-rearm WorkItem identity changed at the task barrier",
+    )
+    harness.wait_queue_drained()
+    duplicate_snapshot = harness.runtime_db_snapshot(
+        "wait-rearm-duplicate-processed"
+    )
+    duplicate_messages = [
+        row
+        for row in duplicate_snapshot["messages"]
+        if row["kind"] == "system_tick"
+        and marker in row.get("payload_json", "")
+        and "duplicate-second" in row.get("payload_json", "")
+    ]
+    require(
+        len(duplicate_messages) == 1,
+        f"coalesced duplicate did not produce one durable wake message: {duplicate_messages}",
+    )
+    duplicate_message_id = duplicate_messages[0]["message_id"]
+    duplicate_queue = [
+        row
+        for row in duplicate_snapshot["queue_entries"]
+        if row["message_id"] == duplicate_message_id
+    ]
+    require(
+        len(duplicate_queue) == 1
+        and duplicate_queue[0]["status"] == "processed",
+        f"coalesced duplicate was not processed before rearm: {duplicate_queue}",
+    )
+    old_generation = [
+        row
+        for row in duplicate_snapshot["scheduler_wait_generations"]
+        if row["wait_id"] == initial_wait_id
+        and row["generation"] == initial_generation
+    ]
+    require(
+        len(old_generation) == 1
+        and old_generation[0]["lifecycle_state"] in {"consumed", "resolved"}
+        and old_generation[0]["trigger_generation"] is not None,
+        f"initial wait generation lacks consumed trigger evidence: {old_generation}",
+    )
+    active_waits = [
+        row
+        for row in duplicate_snapshot["wait_conditions"]
+        if row["work_item_id"] == initial["id"] and row["status"] == "active"
+    ]
+    require(
+        len(active_waits) == 1 and active_waits[0]["kind"] == "task",
+        f"duplicate was not drained while only the task barrier was active: {active_waits}",
+    )
+    task_input = harness.request(
+        "POST",
+        harness.agent_path(f"tasks/{barrier_task_id}/input", control=True),
+        {"text": "release\n"},
+    )
+    write_json(harness.evidence / "wait-rearm-barrier-release.json", task_input)
+    require(
+        task_input.get("accepted_input") is True,
+        f"wait-rearm barrier rejected input: {task_input}",
+    )
     rearmed = wait_for_rearmed_work_item(
         harness,
         objective=objective,
-        previous_revision=int(initial.get("revision", 0)),
+        previous_revision=int(task_waiting.get("revision", 0)),
         label="wait-rearm-second-generation",
     )
     final = harness.fire_callback(
@@ -781,6 +899,9 @@ def exercise_wait_rearm_race(
         label="wait-rearm-completed",
     )
     return {
+        "initial_wait_id": initial_wait_id,
+        "initial_wait_generation": initial_generation,
+        "duplicate_message_id": duplicate_message_id,
         "initial_revision": int(initial.get("revision", 0)),
         "rearmed_revision": int(rearmed.get("revision", 0)),
         "first_disposition": first.get("disposition"),
@@ -1352,6 +1473,159 @@ def exercise_scenarios(args: argparse.Namespace) -> int:
         f"{summary['failed_count']} stress operations failed; see {harness.evidence}",
     )
     return 0
+
+
+def exercise_restart_checkpoint(args: argparse.Namespace) -> int:
+    paths = DrillPaths.from_root(args.run_dir)
+    record = load_record(paths)
+    validate_record(paths, record)
+    require(
+        not container_running(record["resources"]["container"]),
+        "restart checkpoint requires the candidate container to be stopped",
+    )
+    checkpoint = args.checkpoint
+    mode = record.get("last_mode") or "shadow"
+    completed_restart_checkpoints = {
+        phase.get("detail", {}).get("restart", {}).get("checkpoint")
+        for phase in record.get("phase_history", [])
+        if phase.get("action") == "restart_checkpoint"
+        and phase.get("status") == "completed"
+    }
+    require(
+        "authority_rollback" not in completed_restart_checkpoints,
+        "authority_rollback must be the final restart checkpoint",
+    )
+    if checkpoint == "authority_rollback":
+        require(mode == "authoritative", "authority_rollback requires authoritative mode")
+    phase_label = (
+        f"restart-{checkpoint}-{len(record.get('phase_history', [])) + 1}"
+    )
+    evidence_path = paths.phases / phase_label
+    mode_session = int(record.get("mode_session", 0))
+    agent = re.sub(
+        r"[^a-z0-9-]",
+        "-",
+        f"drill-restart-{mode_session}-{checkpoint}".lower(),
+    )[-63:]
+    objective = (
+        f"scheduler restart checkpoint {checkpoint} "
+        f"for {record['drill_run_id']} mode-session {mode_session}"
+    )
+    try:
+        harness = make_harness(
+            paths,
+            record,
+            label=phase_label,
+            mode=mode,
+            env_file=None,
+            require_credentials=False,
+        )
+        prepare = harness.seed_scheduler_restart_fixture(
+            "prepare",
+            agent=agent,
+            checkpoint=checkpoint,
+            stage="prepare",
+            objective=objective,
+        )
+        replay = harness.seed_scheduler_restart_fixture(
+            "replay",
+            agent=agent,
+            checkpoint=checkpoint,
+            stage="replay",
+            objective=objective,
+        )
+        verify = harness.seed_scheduler_restart_fixture(
+            "verify",
+            agent=agent,
+            checkpoint=checkpoint,
+            stage="verify",
+            objective=objective,
+        )
+        identity_fields = (
+            "message_id",
+            "work_item_id",
+            "activation_id",
+            "command_identity",
+        )
+        identity_stable = all(
+            prepare.get(field) is None
+            or (
+                prepare.get(field) == replay.get(field)
+                and replay.get(field) == verify.get(field)
+            )
+            for field in identity_fields
+        )
+        restart = {
+            "checkpoint": checkpoint,
+            "cut_kind": RESTART_CHECKPOINT_CUT_KINDS[checkpoint],
+            "agent_id": agent,
+            "first_restart_recovered": replay.get("replay_exactly_once") is True,
+            "second_restart_idempotent": (
+                verify.get("replay_exactly_once") is True and identity_stable
+            ),
+            "replay_exactly_once": (
+                replay.get("replay_exactly_once") is True
+                and verify.get("replay_exactly_once") is True
+                and identity_stable
+            ),
+            "subsequent_progress": replay.get("replay_applied") is True,
+            "prepare": prepare,
+            "replay": replay,
+            "verify": verify,
+        }
+        require(
+            all(
+                restart[field] is True
+                for field in (
+                    "first_restart_recovered",
+                    "second_restart_idempotent",
+                    "replay_exactly_once",
+                    "subsequent_progress",
+                )
+            ),
+            f"restart checkpoint verification failed: {restart}",
+        )
+        write_json(evidence_path / "restart-summary.json", restart)
+        append_phase(
+            paths,
+            record,
+            action="restart_checkpoint",
+            status="completed",
+            detail={
+                "mode": mode,
+                "mode_session": mode_session,
+                "evidence": str(evidence_path),
+                "restart": restart,
+            },
+        )
+        return 0
+    except Exception as error:
+        evidence_path.mkdir(parents=True, exist_ok=True)
+        restart = {
+            "checkpoint": checkpoint,
+            "cut_kind": RESTART_CHECKPOINT_CUT_KINDS[checkpoint],
+            "first_restart_recovered": False,
+            "second_restart_idempotent": False,
+            "replay_exactly_once": False,
+            "subsequent_progress": False,
+            "error": f"{type(error).__name__}: {error}",
+        }
+        write_json(evidence_path / "restart-summary.json", restart)
+        append_phase(
+            paths,
+            record,
+            action="restart_checkpoint",
+            status="failed",
+            detail={
+                "mode": mode,
+                "mode_session": mode_session,
+                "evidence": str(evidence_path),
+                "restart": restart,
+            },
+        )
+        raise AssertionError(
+            f"restart checkpoint failed; see {evidence_path}: {error}"
+        ) from error
 
 
 def container_running(container: str) -> bool:
@@ -2472,6 +2746,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     for command, handler in (
         ("start", start_candidate),
         ("exercise", exercise_scenarios),
+        ("restart-checkpoint", exercise_restart_checkpoint),
         ("stop", stop_candidate),
         ("kill", kill_candidate),
         ("collect", collect),
@@ -2492,6 +2767,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                 "--scenario",
                 action="append",
                 choices=PRODUCTION_SCENARIOS,
+            )
+        if command == "restart-checkpoint":
+            command_parser.add_argument(
+                "--checkpoint",
+                choices=RESTART_CHECKPOINTS,
+                required=True,
             )
         if command == "collect":
             command_parser.add_argument("--label")

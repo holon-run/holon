@@ -601,6 +601,19 @@ pub enum DebugCommands {
         #[arg(long)]
         json: bool,
     },
+    #[command(hide = true)]
+    SchedulerRestartFixture {
+        #[arg(long)]
+        agent: Option<String>,
+        #[arg(long)]
+        checkpoint: String,
+        #[arg(long, default_value = "prepare")]
+        stage: String,
+        #[arg(long)]
+        objective: String,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

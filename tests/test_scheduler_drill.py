@@ -7,6 +7,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts.docker_e2e import scheduler_drill as drill
 
@@ -176,12 +177,29 @@ class SchedulerDrillTests(unittest.TestCase):
             [operation.worker for operation in first],
             [index % 3 for index in range(12)],
         )
-        self.assertEqual(sum(operation.duplicate for operation in first), 3)
+        self.assertEqual(sum(operation.duplicate for operation in first), 1)
         self.assertEqual(sum(operation.fault is not None for operation in first), 6)
         self.assertEqual(
             {operation.fault for operation in first if operation.fault},
             {"stale", "out_of_order", "wrong_fence"},
         )
+        self.assertFalse(
+            any(operation.duplicate and operation.fault for operation in first)
+        )
+
+    def test_stress_plan_rejects_overlapping_duplicate_and_fault_slots(self) -> None:
+        with self.assertRaisesRegex(
+            AssertionError,
+            "independent operations for duplicate and fault injections",
+        ):
+            drill.build_stress_plan(
+                scenarios=["exact_wait_resume"],
+                iterations=1,
+                concurrency=1,
+                duplicate_ratio=1.0,
+                stale_ratio=1.0,
+                seed="overlap-test",
+            )
 
     def test_stress_executor_respects_worker_bound_and_collects_failures(self) -> None:
         plan = drill.build_stress_plan(
@@ -278,6 +296,162 @@ class SchedulerDrillTests(unittest.TestCase):
         self.assertEqual(summary["injection_completed"]["stale"], 0)
         self.assertEqual(summary["injection_completed"]["duplicate"], 1)
         self.assertEqual(summary["injection_completed"]["out_of_order"], 1)
+
+    def test_exercise_records_failed_phase_when_harness_setup_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            paths = drill.DrillPaths.from_root(Path(directory))
+            record = {
+                "schema_version": drill.RUN_SCHEMA_VERSION,
+                "drill_run_id": "drill-setup-failure",
+                "last_mode": "shadow",
+                "mode_session": 1,
+                "phase_history": [],
+                "parameters": {
+                    "scenarios": ["reducer_only_candidates"],
+                    "iterations": 1,
+                    "concurrency": 1,
+                    "duplicate_ratio": 0.0,
+                    "stale_ratio": 0.0,
+                },
+                "resources": {"container": "candidate"},
+            }
+            drill.save_record(paths, record)
+            args = drill.argparse.Namespace(run_dir=paths.root, scenario=None)
+
+            with (
+                patch.object(drill, "validate_record"),
+                patch.object(drill, "container_running", return_value=True),
+                patch.object(
+                    drill,
+                    "make_harness",
+                    side_effect=RuntimeError("injected harness failure"),
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    AssertionError,
+                    "stress setup failed",
+                ):
+                    drill.exercise_scenarios(args)
+
+            persisted = drill.load_record(paths)
+            self.assertEqual(len(persisted["phase_history"]), 1)
+            phase = persisted["phase_history"][0]
+            self.assertEqual(phase["action"], "exercise")
+            self.assertEqual(phase["status"], "failed")
+            self.assertIn(
+                "injected harness failure",
+                phase["detail"]["stress"]["setup_error"],
+            )
+            self.assertTrue(
+                (paths.phases / "exercise-1" / "stress-summary.json").is_file()
+            )
+
+    def test_restart_checkpoint_records_three_process_verification(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            paths = drill.DrillPaths.from_root(Path(directory))
+            record = {
+                "schema_version": drill.RUN_SCHEMA_VERSION,
+                "drill_run_id": "drill-restart-success",
+                "last_mode": "shadow",
+                "mode_session": 1,
+                "phase_history": [],
+                "parameters": {"timeout_seconds": 30},
+                "resources": {"container": "candidate"},
+            }
+            drill.save_record(paths, record)
+            args = drill.argparse.Namespace(
+                run_dir=paths.root,
+                checkpoint="queue_claim_activation_admission",
+            )
+            calls = []
+
+            class Harness:
+                evidence = paths.phases / "restart-fixture"
+
+                def seed_scheduler_restart_fixture(
+                    self,
+                    label,
+                    *,
+                    agent,
+                    checkpoint,
+                    stage,
+                    objective,
+                ):
+                    calls.append((label, agent, checkpoint, stage, objective))
+                    return {
+                        "message_id": "message-1",
+                        "work_item_id": "work-1",
+                        "activation_id": "activation-1",
+                        "replay_applied": stage == "replay",
+                        "replay_exactly_once": stage in {"replay", "verify"},
+                    }
+
+            with (
+                patch.object(drill, "validate_record"),
+                patch.object(drill, "container_running", return_value=False),
+                patch.object(drill, "make_harness", return_value=Harness()),
+            ):
+                self.assertEqual(drill.exercise_restart_checkpoint(args), 0)
+
+            self.assertEqual(
+                [call[3] for call in calls],
+                ["prepare", "replay", "verify"],
+            )
+            persisted = drill.load_record(paths)
+            phase = persisted["phase_history"][0]
+            self.assertEqual(phase["action"], "restart_checkpoint")
+            self.assertEqual(phase["status"], "completed")
+            restart = phase["detail"]["restart"]
+            self.assertTrue(restart["first_restart_recovered"])
+            self.assertTrue(restart["second_restart_idempotent"])
+            self.assertTrue(restart["replay_exactly_once"])
+            self.assertTrue(restart["subsequent_progress"])
+
+    def test_restart_checkpoint_records_failed_stage(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            paths = drill.DrillPaths.from_root(Path(directory))
+            record = {
+                "schema_version": drill.RUN_SCHEMA_VERSION,
+                "drill_run_id": "drill-restart-failure",
+                "last_mode": "shadow",
+                "mode_session": 1,
+                "phase_history": [],
+                "parameters": {"timeout_seconds": 30},
+                "resources": {"container": "candidate"},
+            }
+            drill.save_record(paths, record)
+            args = drill.argparse.Namespace(
+                run_dir=paths.root,
+                checkpoint="ingress_queue_admission",
+            )
+
+            class Harness:
+                evidence = paths.phases / "restart-fixture"
+
+                def seed_scheduler_restart_fixture(self, label, **kwargs):
+                    if kwargs["stage"] == "replay":
+                        raise RuntimeError("injected replay failure")
+                    return {"replay_exactly_once": False}
+
+            with (
+                patch.object(drill, "validate_record"),
+                patch.object(drill, "container_running", return_value=False),
+                patch.object(drill, "make_harness", return_value=Harness()),
+            ):
+                with self.assertRaisesRegex(
+                    AssertionError,
+                    "restart checkpoint failed",
+                ):
+                    drill.exercise_restart_checkpoint(args)
+
+            persisted = drill.load_record(paths)
+            phase = persisted["phase_history"][0]
+            self.assertEqual(phase["action"], "restart_checkpoint")
+            self.assertEqual(phase["status"], "failed")
+            self.assertIn(
+                "injected replay failure",
+                phase["detail"]["restart"]["error"],
+            )
 
     def test_aggregate_stress_coverage_detects_missing_executions(self) -> None:
         def stress(

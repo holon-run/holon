@@ -1,9 +1,9 @@
 #[cfg(test)]
-use std::sync::{atomic::AtomicUsize, Mutex as StdMutex};
+use std::sync::atomic::AtomicUsize;
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
-    sync::{atomic::AtomicBool, Arc},
+    sync::{atomic::AtomicBool, Arc, Mutex as StdMutex},
 };
 
 use anyhow::{anyhow, Result};
@@ -389,7 +389,6 @@ impl RuntimeHandle {
                 scheduler_protocol_production_commands_enabled: AtomicBool::new(
                     scheduler_protocol_production_commands_enabled_from_env()?,
                 ),
-                #[cfg(test)]
                 transition_faults: StdMutex::new(std::collections::VecDeque::new()),
                 #[cfg(test)]
                 task_transition_conflicts_remaining: AtomicUsize::new(0),
@@ -397,7 +396,6 @@ impl RuntimeHandle {
                 omit_next_scheduler_claim_shadow_comparison: AtomicBool::new(false),
                 #[cfg(test)]
                 fail_after_next_runtime_claim: AtomicBool::new(false),
-                #[cfg(test)]
                 transition_warnings: StdMutex::new(Vec::new()),
             }),
         };

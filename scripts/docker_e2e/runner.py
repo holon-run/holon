@@ -245,6 +245,28 @@ class CaseHarness:
             objective,
         )
 
+    def seed_scheduler_restart_fixture(
+        self,
+        label: str,
+        *,
+        agent: str,
+        checkpoint: str,
+        stage: str = "prepare",
+        objective: str,
+    ) -> dict[str, Any]:
+        return self.offline_debug(
+            label,
+            "scheduler-restart-fixture",
+            "--agent",
+            agent,
+            "--checkpoint",
+            checkpoint,
+            "--stage",
+            stage,
+            "--objective",
+            objective,
+        )
+
     def initialize_workspace(self) -> None:
         self.workspace_parent.mkdir(parents=True, exist_ok=True)
         self.workspace_parent.chmod(0o777)
