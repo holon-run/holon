@@ -210,6 +210,27 @@
           "prompt": "This phase is driven by the checked-in offline acceptance fixture and real holon serve restart path; no model prompt is issued."
         }
       ]
+    },
+    {
+      "id": "scheduler-provider-failure-work-queue-retry",
+      "tier": "extended",
+      "tags": ["scheduler", "provider", "failure", "retry", "workitem", "restart"],
+      "timeout_seconds": 600,
+      "description": "Force a real provider transport failure for a current WorkItem, restore the provider endpoint across a serve restart, and verify the same continue-active idempotency key is retried to successful completion.",
+      "phases": [
+        {
+          "id": "provider-failure-and-retry",
+          "required_tools": [
+            "ListWorkItems",
+            "CompleteWorkItem"
+          ],
+          "forbidden_tools": [
+            "CreateWorkItem",
+            "WaitFor"
+          ],
+          "prompt": "This case creates and focuses the WorkItem through the public control API. The first autonomous turn uses an intentionally unreachable provider endpoint. After a real serve restart with the normal endpoint restored, the WorkItem objective requires ListWorkItems and CompleteWorkItem."
+        }
+      ]
     }
   ]
 }

@@ -120,6 +120,28 @@ def normalize_model_route(model: str) -> str:
     return f"{provider}/{name}"
 
 
+def provider_base_url_env(model: str) -> str:
+    route = model.split("/", 1)[0]
+    provider, separator, endpoint = route.partition("@")
+    if provider == "anthropic":
+        return "ANTHROPIC_BASE_URL"
+    endpoint_overrides = {
+        ("volcengine", "plan"): "HOLON_VOLCENGINE_AGENT_BASE_URL",
+    }
+    if separator and endpoint != "default":
+        override = endpoint_overrides.get((provider, endpoint))
+        require(
+            override is not None,
+            f"provider failure retry does not know the base URL environment for {route}",
+        )
+        return override
+    fragment = "".join(
+        character.upper() if character.isalnum() else "_"
+        for character in provider
+    )
+    return f"HOLON_{fragment}_BASE_URL"
+
+
 class CaseHarness:
     def __init__(
         self,
@@ -2287,6 +2309,179 @@ def run_scheduler_terminal_recovery_case(
     )
 
 
+def work_queue_message_evidence(
+    snapshot: dict[str, Any],
+    *,
+    work_item_id: str,
+    reason: str,
+) -> list[dict[str, Any]]:
+    queue_status = {
+        row["message_id"]: row["status"] for row in snapshot["queue_entries"]
+    }
+    evidence = []
+    for row in snapshot["messages"]:
+        if row.get("work_item_id") != work_item_id:
+            continue
+        try:
+            payload = json.loads(row["payload_json"])
+        except (TypeError, json.JSONDecodeError):
+            continue
+        work_queue = (payload.get("metadata") or {}).get("work_queue") or {}
+        if work_queue.get("reason") != reason:
+            continue
+        evidence.append(
+            {
+                "message_id": row["message_id"],
+                "idempotency_key": work_queue.get("idempotency_key"),
+                "status": queue_status.get(row["message_id"]),
+            }
+        )
+    return evidence
+
+
+def run_scheduler_provider_failure_retry_case(
+    harness: CaseHarness, case: dict[str, Any]
+) -> None:
+    harness.initialize_workspace()
+    base_url_env = provider_base_url_env(harness.model)
+    original_base_url = harness.runtime_env.get(base_url_env)
+    harness.runtime_env[base_url_env] = "http://127.0.0.1:9"
+    harness.start()
+
+    harness.request(
+        "POST",
+        harness.agent_path("control", control=True),
+        {"action": "stop"},
+    )
+    marker = secrets.token_hex(4)
+    objective_marker = f"SCHEDULER-PROVIDER-RETRY-{marker}"
+    completion_marker = f"SCHEDULER-PROVIDER-RETRY-COMPLETE-{marker}"
+    objective = (
+        f"{objective_marker}. This WorkItem is being resumed by an autonomous "
+        "work_queue retry after a provider transport failure. Call ListWorkItems "
+        "with filter current, then emit a concise completion report containing "
+        f"{completion_marker} immediately followed by CompleteWorkItem for the "
+        "exact current WorkItem. Do not create another WorkItem or wait for input."
+    )
+    created = harness.request(
+        "POST",
+        harness.agent_path("work-items", control=True),
+        {"objective": objective},
+    )
+    write_json(harness.evidence / "provider-retry-created.json", created)
+    work_item_id = created["id"]
+    picked = harness.request(
+        "POST",
+        harness.agent_path(f"work-items/{work_item_id}/pick", control=True),
+        {"reason": "prepare deterministic provider failure retry"},
+    )
+    write_json(harness.evidence / "provider-retry-picked.json", picked)
+    harness.request(
+        "POST",
+        harness.agent_path("control", control=True),
+        {"action": "start"},
+    )
+
+    deadline = time.monotonic() + harness.timeout_seconds
+    runtime_errors: list[dict[str, Any]] = []
+    while time.monotonic() < deadline:
+        runtime_errors = [
+            event
+            for event in harness.events("provider-retry-failure-poll")
+            if event["type"] == "runtime_error"
+        ]
+        if runtime_errors:
+            break
+        time.sleep(0.5)
+    require(runtime_errors, "invalid provider endpoint did not produce runtime_error")
+    harness.request(
+        "POST",
+        harness.agent_path("control", control=True),
+        {"action": "stop"},
+    )
+    failed = harness.runtime_db_snapshot("provider-retry-failed")
+    failed_item = next(
+        row for row in failed["work_items"] if row["work_item_id"] == work_item_id
+    )
+    require(
+        failed_item["state"] == "open",
+        f"provider failure closed the retry WorkItem: {failed_item}",
+    )
+    failed_ticks = work_queue_message_evidence(
+        failed,
+        work_item_id=work_item_id,
+        reason="continue_active",
+    )
+    require(
+        failed_ticks
+        and any(tick["status"] == "aborted" for tick in failed_ticks)
+        and not any(tick["status"] == "processed" for tick in failed_ticks),
+        f"provider failure did not abort continue-active ticks: {failed_ticks}",
+    )
+    failed_keys = {tick["idempotency_key"] for tick in failed_ticks}
+    require(
+        len(failed_keys) == 1 and None not in failed_keys,
+        f"failed continue-active ticks lost stable idempotency: {failed_ticks}",
+    )
+
+    harness.stop()
+    if original_base_url is None:
+        harness.runtime_env.pop(base_url_env, None)
+    else:
+        harness.runtime_env[base_url_env] = original_base_url
+    harness.start(wait_idle=False)
+    harness.request(
+        "POST",
+        harness.agent_path("control", control=True),
+        {"action": "start"},
+    )
+    completed = harness.wait_work_item(
+        objective_marker=objective_marker,
+        expected_state="completed",
+        label="provider-retry-completed",
+    )
+    result_brief_id = completed.get("result_brief_id")
+    require(
+        isinstance(result_brief_id, str) and result_brief_id,
+        f"provider retry completion omitted result brief: {completed}",
+    )
+    result_brief = harness.brief(result_brief_id, "provider-retry-result")
+    require(
+        completion_marker in (result_brief.get("text") or ""),
+        f"provider retry completion marker is missing: {result_brief}",
+    )
+    recovered = harness.runtime_db_snapshot("provider-retry-recovered")
+    recovered_ticks = work_queue_message_evidence(
+        recovered,
+        work_item_id=work_item_id,
+        reason="continue_active",
+    )
+    require(
+        len(recovered_ticks) > len(failed_ticks)
+        and any(tick["status"] == "processed" for tick in recovered_ticks),
+        f"provider recovery did not process a retry tick: {recovered_ticks}",
+    )
+    require(
+        {tick["idempotency_key"] for tick in recovered_ticks} == failed_keys,
+        f"provider recovery changed continue-active idempotency: {recovered_ticks}",
+    )
+    tool_names = [
+        event["payload"].get("tool_name")
+        for event in harness.events("provider-retry-tools")
+        if event["type"] == "tool_executed"
+        and event["payload"].get("status") == "success"
+    ]
+    required, forbidden = phase_tools(case["phases"][0])
+    require(
+        all(name in tool_names for name in required),
+        f"provider retry omitted required tools {required}: {tool_names}",
+    )
+    require(
+        not set(tool_names).intersection(forbidden),
+        f"provider retry used forbidden tools {forbidden}: {tool_names}",
+    )
+
+
 CASE_RUNNERS = {
     "runtime-auth-model-delivery": run_runtime_case,
     "memory-agent-home-persistence": run_memory_case,
@@ -2299,6 +2494,9 @@ CASE_RUNNERS = {
     ),
     "scheduler-terminal-before-settlement-restart": (
         run_scheduler_terminal_recovery_case
+    ),
+    "scheduler-provider-failure-work-queue-retry": (
+        run_scheduler_provider_failure_retry_case
     ),
 }
 

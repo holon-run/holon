@@ -47,6 +47,73 @@ class DockerE2ERunnerTests(unittest.TestCase):
             ["workitem-wait-restart-complete"],
         )
 
+    def test_provider_base_url_env_matches_builtin_provider_contract(self) -> None:
+        self.assertEqual(
+            runner.provider_base_url_env("deepseek/deepseek-v4-flash"),
+            "HOLON_DEEPSEEK_BASE_URL",
+        )
+        self.assertEqual(
+            runner.provider_base_url_env("volcengine@plan/glm-5.2"),
+            "HOLON_VOLCENGINE_AGENT_BASE_URL",
+        )
+        self.assertEqual(
+            runner.provider_base_url_env("anthropic/claude-sonnet-4-6"),
+            "ANTHROPIC_BASE_URL",
+        )
+
+    def test_work_queue_message_evidence_extracts_retry_identity(self) -> None:
+        snapshot = {
+            "messages": [
+                {
+                    "message_id": "message-1",
+                    "work_item_id": "work-1",
+                    "payload_json": json.dumps(
+                        {
+                            "metadata": {
+                                "work_queue": {
+                                    "reason": "continue_active",
+                                    "idempotency_key": "work_queue:continue_active:work-1:1",
+                                }
+                            }
+                        }
+                    ),
+                },
+                {
+                    "message_id": "message-other",
+                    "work_item_id": "work-1",
+                    "payload_json": json.dumps(
+                        {
+                            "metadata": {
+                                "work_queue": {
+                                    "reason": "queued_available",
+                                    "idempotency_key": "other",
+                                }
+                            }
+                        }
+                    ),
+                },
+            ],
+            "queue_entries": [
+                {"message_id": "message-1", "status": "aborted"},
+                {"message_id": "message-other", "status": "processed"},
+            ],
+        }
+
+        self.assertEqual(
+            runner.work_queue_message_evidence(
+                snapshot,
+                work_item_id="work-1",
+                reason="continue_active",
+            ),
+            [
+                {
+                    "message_id": "message-1",
+                    "idempotency_key": "work_queue:continue_active:work-1:1",
+                    "status": "aborted",
+                }
+            ],
+        )
+
     def test_manifest_rejects_unregistered_case(self) -> None:
         invalid = json.loads(json.dumps(self.manifest))
         invalid["cases"][0]["id"] = "not-implemented"
@@ -304,29 +371,32 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 "scheduler-autonomous-legacy",
                 "scheduler-rollout-authoritative-autonomous",
                 "scheduler-terminal-before-settlement-restart",
+                "scheduler-provider-failure-work-queue-retry",
             ],
         )
+        rollout_cases = selected[:3]
         self.assertEqual(
             [
                 case["runtime_env"][
                     "HOLON_SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS"
                 ]
-                for case in selected
+                for case in rollout_cases
             ],
             ["false", "true", "true"],
         )
         self.assertNotIn(
-            "HOLON_SCHEDULER_ACCEPTANCE_FIXTURES", selected[0]["runtime_env"]
+            "HOLON_SCHEDULER_ACCEPTANCE_FIXTURES",
+            rollout_cases[0]["runtime_env"],
         )
         self.assertEqual(
             [
                 case["runtime_env"]["HOLON_SCHEDULER_ACCEPTANCE_FIXTURES"]
-                for case in selected[1:]
+                for case in rollout_cases[1:]
             ],
             ["true", "true"],
         )
-        authoritative = selected[1]
-        recovery = selected[2]
+        authoritative = rollout_cases[1]
+        recovery = rollout_cases[2]
         self.assertEqual(len(authoritative["phases"]), 2)
         self.assertIn(
             "WaitFor", authoritative["phases"][0]["required_tools"]
