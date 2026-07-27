@@ -31,6 +31,7 @@ OFFLINE_MODEL_CREDENTIAL_ENV = "DEEPSEEK_API_KEY"
 OFFLINE_MODEL_CREDENTIAL = "docker-e2e-offline-provider-unused"
 EVIDENCE_SCHEMA_VERSION = 1
 TERMINAL_STATUSES = {"awake_idle", "asleep", "awaiting_task"}
+RUNTIME_DB_COPY_TIMEOUT_SECONDS = 120
 
 
 def run(
@@ -39,6 +40,7 @@ def run(
     check: bool = True,
     capture: bool = True,
     env: dict[str, str] | None = None,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         args,
@@ -46,6 +48,7 @@ def run(
         text=True,
         capture_output=capture,
         env=env,
+        timeout=timeout,
     )
 
 
@@ -827,11 +830,25 @@ class CaseHarness:
         if snapshot_dir.exists():
             shutil.rmtree(snapshot_dir)
         snapshot_dir.mkdir(parents=True)
-        self.docker(
-            "cp",
-            f"{self.container}:/var/lib/holon/state/.",
-            str(snapshot_dir),
-        )
+        try:
+            self.docker(
+                "cp",
+                f"{self.container}:/var/lib/holon/state/.",
+                str(snapshot_dir),
+                timeout=RUNTIME_DB_COPY_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as error:
+            write_json(
+                self.evidence / f"{label}-runtime-state-copy-failure.json",
+                {
+                    "status": "timeout",
+                    "timeout_seconds": RUNTIME_DB_COPY_TIMEOUT_SECONDS,
+                    "command": error.cmd,
+                    "stdout": error.stdout or "",
+                    "stderr": error.stderr or "",
+                },
+            )
+            raise
         database = snapshot_dir / "runtime.sqlite"
         require(database.is_file(), "runtime database snapshot is missing")
         connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)

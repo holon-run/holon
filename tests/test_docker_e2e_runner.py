@@ -224,6 +224,52 @@ class DockerE2ERunnerTests(unittest.TestCase):
             self.assertNotIn("cb_secret-capability", captured)
             self.assertIn("/api/callbacks/wake/<redacted>", captured)
 
+    def test_runtime_db_snapshot_records_docker_copy_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            harness = runner.CaseHarness(
+                case_id="snapshot-timeout-test",
+                image="holon:test",
+                model="deepseek/deepseek-v4-flash",
+                credential_envs=[],
+                env_file=None,
+                runtime_env={},
+                evidence_root=Path(directory),
+                timeout_seconds=1,
+                keep=False,
+            )
+
+            def timeout_docker(
+                *args: str, **kwargs: object
+            ) -> subprocess.CompletedProcess[str]:
+                self.assertEqual(
+                    kwargs["timeout"],
+                    runner.RUNTIME_DB_COPY_TIMEOUT_SECONDS,
+                )
+                raise subprocess.TimeoutExpired(
+                    ["docker", *args],
+                    runner.RUNTIME_DB_COPY_TIMEOUT_SECONDS,
+                    output="partial",
+                    stderr="daemon stalled",
+                )
+
+            harness.docker = timeout_docker
+            with self.assertRaises(subprocess.TimeoutExpired):
+                harness.runtime_db_snapshot("scheduler")
+
+            failure = json.loads(
+                (
+                    harness.evidence
+                    / "scheduler-runtime-state-copy-failure.json"
+                ).read_text()
+            )
+            self.assertEqual(failure["status"], "timeout")
+            self.assertEqual(
+                failure["timeout_seconds"],
+                runner.RUNTIME_DB_COPY_TIMEOUT_SECONDS,
+            )
+            self.assertEqual(failure["stdout"], "partial")
+            self.assertEqual(failure["stderr"], "daemon stalled")
+
     def test_cleanup_fails_when_resource_still_exists(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             harness = runner.CaseHarness(
