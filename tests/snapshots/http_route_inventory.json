@@ -622,6 +622,28 @@
   },
   {
     "method": "get",
+    "path": "/api/control/agents/{agent_id}/scheduler-repair",
+    "handler": "scheduler_repair_inspect",
+    "operation_id": "inspectSchedulerRepair",
+    "tag": "control",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
     "path": "/api/control/runtime/config",
     "handler": "runtime_config",
     "operation_id": "runtimeConfig",

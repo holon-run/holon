@@ -13,7 +13,7 @@
   },
   "tools": [
     {
-      "description": "Record an explicit wait condition and yield the current turn. Use wake=task_result with resource=<task_id> when waiting for a background task, wake=external with optional resource=<external object such as a URL or github:owner/repo#id> when waiting for outside state, or wake=operator_input when waiting for the operator. Optional recheck_after_ms records a fallback recheck deadline. If there is a current open work item, WaitFor attaches to it and marks it waiting; otherwise it records an agent-level wait.\n",
+      "description": "Record an explicit wait condition and yield the current turn. Use wake=task_result with resource=<task_id> when waiting for a background task, wake=external with optional resource=<external object such as a URL or github:owner/repo#id> when waiting for outside state, or wake=operator_input when waiting for the operator. Optional work_item_id explicitly selects an open WorkItem owned by this agent. Otherwise WaitFor uses the current execution-bound WorkItem, then the turn-bound WorkItem, then current focus; if none exists it records an agent-lifecycle wait. Optional recheck_after_ms records a fallback recheck deadline.\n",
       "family": "core_agent",
       "freeform_grammar": null,
       "input_schema": {
@@ -45,6 +45,13 @@
               "external"
             ],
             "type": "string"
+          },
+          "work_item_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [

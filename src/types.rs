@@ -2237,7 +2237,7 @@ pub enum WaitConditionStatus {
     Expired,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WaitConditionKind {
     Task,
@@ -2247,7 +2247,7 @@ pub enum WaitConditionKind {
     System,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WakeSource {
     TaskResult {
@@ -2264,7 +2264,7 @@ pub enum WakeSource {
     SystemTick,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ExternalWaitRecoverability {
     Recoverable,
@@ -2272,7 +2272,7 @@ pub enum ExternalWaitRecoverability {
     ExplicitNoFallback,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct WaitConditionRecord {
     pub id: String,
     pub agent_id: String,
@@ -3969,7 +3969,7 @@ pub struct OperatorMessageRecord {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct QueueEntryRecord {
     pub message_id: String,
     #[serde(alias = "session_id")]

@@ -1,15 +1,16 @@
 use super::*;
 use anyhow::bail;
+use schemars::JsonSchema;
 use serde::Deserialize;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct SchedulerRepairInspection {
     pub agent_id: String,
     pub active_waits: Vec<crate::types::WaitConditionRecord>,
     pub wake_only_queue_entries: Vec<QueueEntryRecord>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SchedulerRepairOperation {
     CancelWait {
@@ -24,7 +25,7 @@ pub enum SchedulerRepairOperation {
     },
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SchedulerRepairRequest {
     #[serde(default)]
@@ -33,7 +34,7 @@ pub struct SchedulerRepairRequest {
     pub operation: SchedulerRepairOperation,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct SchedulerRepairResult {
     pub agent_id: String,
     pub dry_run: bool,

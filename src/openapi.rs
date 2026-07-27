@@ -18,6 +18,7 @@ use crate::{
     http_dto::{AgentStateSnapshotDto, SlimTaskDto, SlimWorkItemDto},
     memory::MemoryGetResult,
     model_config_migration::ModelConfigMigrationReport,
+    runtime::{SchedulerRepairInspection, SchedulerRepairRequest, SchedulerRepairResult},
     types::{
         AddSkillRequest, BriefRecord, CheckSkillRequest, ReconcileSkillRequest,
         RefreshCatalogRequest, SyncTemplateRemoteSourcesRequest, TaskInputResult, TaskOutputResult,
@@ -157,6 +158,8 @@ const ROUTES: &[RouteSpec] = &[
     route("post", "/control/runtime/shutdown", "runtimeShutdown", "runtime", "Runtime shutdown", "Request graceful runtime shutdown.", None, AuthKind::Control),
     route("post", "/control/agents/{agent_id}/debug-prompt", "debugPrompt", "control", "Debug prompt", "Render a diagnostic prompt preview.", Some("DebugPromptRequest"), AuthKind::Control),
     route("post", "/control/agents/{agent_id}/wake", "controlWake", "control", "Wake agent", "Submit a trusted wake hint.", Some("ControlWakeRequest"), AuthKind::Control),
+    route_with_response("get", "/control/agents/{agent_id}/scheduler-repair", "inspectSchedulerRepair", "control", "Inspect scheduler repair state", "Return active waits and queued wake-only messages eligible for an explicit scheduler repair transition.", None, "SchedulerRepairInspection", AuthKind::Control),
+    route_with_response("post", "/control/agents/{agent_id}/scheduler-repair", "applySchedulerRepair", "control", "Apply scheduler repair", "Dry-run or apply one OCC-guarded scheduler repair operation and emit an audit event for committed changes.", Some("SchedulerRepairRequest"), "SchedulerRepairResult", AuthKind::Control),
     route("post", "/callbacks/enqueue/{callback_token}", "callbackEnqueue", "callbacks", "Callback enqueue ingress", "Capability-token callback ingress for enqueue delivery. The token is a secret path segment and examples intentionally use a placeholder.", Some("CallbackBody"), AuthKind::Capability),
     route("post", "/callbacks/wake/{callback_token}", "callbackWake", "callbacks", "Callback wake ingress", "Capability-token callback ingress for wake delivery. The token is a secret path segment and examples intentionally use a placeholder.", Some("CallbackBody"), AuthKind::Capability),
     route("post", "/control/agents/{agent_id}/skills/enable", "enableSkill", "skills", "Enable agent skill", "Enable a locally known skill for an agent.", Some("EnableSkillRequest"), AuthKind::Control),
@@ -660,6 +663,18 @@ fn component_schemas() -> Value {
     schemas.insert(
         "ModelConfigMigrationReport".into(),
         component_schema::<ModelConfigMigrationReport>(),
+    );
+    schemas.insert(
+        "SchedulerRepairInspection".into(),
+        component_schema::<SchedulerRepairInspection>(),
+    );
+    schemas.insert(
+        "SchedulerRepairRequest".into(),
+        component_schema::<SchedulerRepairRequest>(),
+    );
+    schemas.insert(
+        "SchedulerRepairResult".into(),
+        component_schema::<SchedulerRepairResult>(),
     );
     schemas.insert(
         "DeleteAgentRequest".into(),

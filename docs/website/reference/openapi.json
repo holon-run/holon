@@ -4920,6 +4920,383 @@
         "title": "RuntimeConfigUpdateResponse",
         "type": "object"
       },
+      "SchedulerRepairInspection": {
+        "properties": {
+          "active_waits": {
+            "items": {
+              "properties": {
+                "agent_id": {
+                  "type": "string"
+                },
+                "cancelled_at": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "continuation": true,
+                "created_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "expires_at": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "task",
+                    "external",
+                    "operator",
+                    "timer",
+                    "system"
+                  ],
+                  "type": "string"
+                },
+                "resolved_at": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "source": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "status": {
+                  "enum": [
+                    "active",
+                    "resolved",
+                    "cancelled",
+                    "expired"
+                  ],
+                  "type": "string"
+                },
+                "subject_ref": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "turn_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "updated_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "waiting_for": {
+                  "type": "string"
+                },
+                "wake_sources": {
+                  "items": {
+                    "oneOf": [
+                      {
+                        "properties": {
+                          "kind": {
+                            "const": "task_result",
+                            "type": "string"
+                          },
+                          "task_id": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "task_id"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "properties": {
+                          "external_trigger_id": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "kind": {
+                            "const": "external_ingress",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "properties": {
+                          "kind": {
+                            "const": "timer",
+                            "type": "string"
+                          },
+                          "wake_at": {
+                            "format": "date-time",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "wake_at"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "properties": {
+                          "kind": {
+                            "const": "operator_input",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "properties": {
+                          "kind": {
+                            "const": "system_tick",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "type": "array"
+                },
+                "work_item_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "agent_id",
+                "status",
+                "kind",
+                "waiting_for",
+                "created_at",
+                "updated_at"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "agent_id": {
+            "type": "string"
+          },
+          "wake_only_queue_entries": {
+            "items": {
+              "properties": {
+                "agent_id": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "message_id": {
+                  "type": "string"
+                },
+                "priority": {
+                  "enum": [
+                    "interject",
+                    "next",
+                    "normal",
+                    "background"
+                  ],
+                  "type": "string"
+                },
+                "status": {
+                  "oneOf": [
+                    {
+                      "enum": [
+                        "queued",
+                        "dequeued",
+                        "processed",
+                        "interjected",
+                        "aborted",
+                        "dropped"
+                      ],
+                      "type": "string"
+                    },
+                    {
+                      "const": "interrupted",
+                      "description": "Daemon shutdown interrupted processing; replay on recovery.",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "updated_at": {
+                  "format": "date-time",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "message_id",
+                "agent_id",
+                "priority",
+                "status",
+                "created_at",
+                "updated_at"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "agent_id",
+          "active_waits",
+          "wake_only_queue_entries"
+        ],
+        "title": "SchedulerRepairInspection",
+        "type": "object"
+      },
+      "SchedulerRepairRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "dry_run": {
+            "default": false,
+            "type": "boolean"
+          },
+          "operation": {
+            "oneOf": [
+              {
+                "properties": {
+                  "expected_status": {
+                    "enum": [
+                      "active",
+                      "resolved",
+                      "cancelled",
+                      "expired"
+                    ],
+                    "type": "string"
+                  },
+                  "expected_updated_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "kind": {
+                    "const": "cancel_wait",
+                    "type": "string"
+                  },
+                  "wait_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "wait_id",
+                  "expected_status",
+                  "expected_updated_at"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "expected_status": {
+                    "oneOf": [
+                      {
+                        "enum": [
+                          "queued",
+                          "dequeued",
+                          "processed",
+                          "interjected",
+                          "aborted",
+                          "dropped"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "const": "interrupted",
+                        "description": "Daemon shutdown interrupted processing; replay on recovery.",
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "expected_updated_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "kind": {
+                    "const": "drop_wake_only_queue_entry",
+                    "type": "string"
+                  },
+                  "message_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "message_id",
+                  "expected_status",
+                  "expected_updated_at"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason",
+          "operation"
+        ],
+        "title": "SchedulerRepairRequest",
+        "type": "object"
+      },
+      "SchedulerRepairResult": {
+        "properties": {
+          "after": true,
+          "agent_id": {
+            "type": "string"
+          },
+          "before": true,
+          "changed": {
+            "type": "boolean"
+          },
+          "dry_run": {
+            "type": "boolean"
+          },
+          "operation": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_id",
+          "dry_run",
+          "changed",
+          "operation",
+          "before",
+          "after"
+        ],
+        "title": "SchedulerRepairResult",
+        "type": "object"
+      },
       "SearchRequest": {
         "properties": {
           "agent_ids": {
@@ -10958,6 +11335,130 @@
           }
         ],
         "summary": "Reset external trigger callback",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/api/control/agents/{agent_id}/scheduler-repair": {
+      "get": {
+        "description": "Return active waits and queued wake-only messages eligible for an explicit scheduler repair transition.",
+        "operationId": "inspectSchedulerRepair",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchedulerRepairInspection"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Inspect scheduler repair state",
+        "tags": [
+          "control"
+        ]
+      },
+      "post": {
+        "description": "Dry-run or apply one OCC-guarded scheduler repair operation and emit an audit event for committed changes.",
+        "operationId": "applySchedulerRepair",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SchedulerRepairRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchedulerRepairResult"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Apply scheduler repair",
         "tags": [
           "control"
         ]
