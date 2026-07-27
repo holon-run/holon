@@ -5,7 +5,10 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     config::AppConfig,
-    domain::scheduler_protocol::{ActivationSlot, ActivationState, WaitState},
+    domain::scheduler_protocol::{
+        ActivationCause, ActivationSlot, ActivationState, ProtocolCommand, TriggerWaitCommand,
+        WaitState,
+    },
     runtime_db::{transitions::TransitionFaultPoint, RuntimeDb},
     types::{
         AdmissionContext, AgentStatus, AuthorityClass, MessageBody, MessageDeliverySurface,
@@ -112,6 +115,9 @@ pub struct SchedulerWaitTriggerRestartFixture {
     pub activation_id: String,
     pub wait_id: String,
     pub wait_generation: u64,
+    pub trigger_id: String,
+    pub trigger_generation: u64,
+    pub precommit_fault_rolled_back: bool,
     pub replay_applied: bool,
     pub replay_exactly_once: bool,
     pub queue_status: String,
@@ -738,7 +744,12 @@ async fn enqueue_scheduler_wait_trigger(
         "task_result_id": format!("result-{task_id}"),
         "work_item_id": work_item_id,
     }));
-    runtime.enqueue(message).await
+    let enqueued = runtime.enqueue(message).await?;
+    runtime
+        .inner
+        .storage
+        .read_message_by_id(&enqueued.id)?
+        .ok_or_else(|| anyhow!("scheduler wait trigger message is missing after enqueue"))
 }
 
 fn scheduler_wait_trigger_message(
@@ -800,38 +811,105 @@ async fn seed_scheduler_wait_trigger_restart_fixture(
         let trigger =
             enqueue_scheduler_wait_trigger(&runtime, agent_id, &seed.work_item_id, &seed.task_id)
                 .await?;
+        let trigger_generation = trigger
+            .message_seq
+            .ok_or_else(|| anyhow!("scheduler wait trigger message has no sequence"))?;
+        let trigger_id = scheduler_executor::canonical_wait_trigger_id(&trigger);
+        let trigger_command = ProtocolCommand::TriggerWait(TriggerWaitCommand {
+            wait_id: seed.wait_id.clone(),
+            wait_generation: seed.wait_generation,
+            trigger_id: trigger_id.clone(),
+            trigger_generation,
+        });
+        let trigger_commit = runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .commit_scheduler_protocol_command(agent_id, &trigger_command, None)?;
+        if !trigger_commit.applied || trigger_commit.replayed {
+            return Err(anyhow!(
+                "scheduler wait trigger prepare did not persist a fresh canonical trigger"
+            ));
+        }
         let entry = queue_entries_for_agent(&runtime, agent_id)?
             .into_iter()
             .find(|entry| entry.message_id == trigger.id)
             .ok_or_else(|| anyhow!("scheduler wait trigger queue entry is missing"))?;
-        let snapshot = runtime
+        let before_fault = runtime
             .inner
             .runtime_db
             .transitions()
             .load_scheduler_protocol_snapshot(agent_id)?;
-        let generation = &snapshot.waits[&seed.wait_id].generations[&seed.wait_generation];
+        let activation_id = scheduler_executor::canonical_activation_id(&trigger.id);
+        let generation = &before_fault.waits[&seed.wait_id].generations[&seed.wait_generation];
         if entry.status != QueueEntryStatus::Queued
-            || generation.state != WaitState::Active
+            || generation.state != WaitState::Triggered
+            || !generation.trigger.as_ref().is_some_and(|persisted| {
+                persisted.trigger_id == trigger_id
+                    && persisted.trigger_generation == trigger_generation
+            })
             || generation.consuming_activation_id.is_some()
+            || before_fault.activations.contains_key(&activation_id)
+            || before_fault
+                .activation_admissions
+                .contains_key(&activation_id)
+            || before_fault
+                .activation_authorities
+                .contains_key(&format!("authority:{activation_id}"))
         {
             return Err(anyhow!(
-                "scheduler wait trigger prepare did not leave a queued trigger and active wait"
+                "scheduler wait trigger prepare did not leave a queued durable trigger"
+            ));
+        }
+        runtime.inject_next_acceptance_transition_fault(TransitionFaultPoint::BeforeCommit)?;
+        let error = match scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+        {
+            Ok(_) => {
+                return Err(anyhow!(
+                    "scheduler wait trigger prepare expected a pre-commit fault"
+                ));
+            }
+            Err(error) => error,
+        };
+        if !error
+            .to_string()
+            .contains("injected runtime transition fault at BeforeCommit")
+        {
+            return Err(error).context("unexpected scheduler wait trigger fixture failure");
+        }
+        let after_fault = runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_scheduler_protocol_snapshot(agent_id)?;
+        let entry_after = queue_entries_for_agent(&runtime, agent_id)?
+            .into_iter()
+            .find(|entry| entry.message_id == trigger.id)
+            .ok_or_else(|| anyhow!("scheduler wait trigger queue entry disappeared after fault"))?;
+        if after_fault != before_fault || entry_after.status != QueueEntryStatus::Queued {
+            return Err(anyhow!(
+                "scheduler wait trigger fault left partial consume or admission state"
             ));
         }
         return Ok(SchedulerWaitTriggerRestartFixture {
             checkpoint: "wait_trigger_consume_admission".into(),
             stage: stage.into(),
-            cut_kind: "durable_recovery".into(),
+            cut_kind: "atomic_rollback".into(),
             agent_id: agent_id.into(),
             work_item_id: seed.work_item_id,
             message_id: trigger.id.clone(),
-            activation_id: scheduler_executor::canonical_activation_id(&trigger.id),
+            activation_id,
             wait_id: seed.wait_id,
             wait_generation: seed.wait_generation,
+            trigger_id,
+            trigger_generation,
+            precommit_fault_rolled_back: true,
             replay_applied: false,
             replay_exactly_once: false,
             queue_status: "queued".into(),
-            wait_state: "active".into(),
+            wait_state: "triggered".into(),
             consuming_activation_id: None,
             activation_state: None,
             slot_state: "idle".into(),
@@ -861,6 +939,18 @@ async fn seed_scheduler_wait_trigger_restart_fixture(
         .next()
         .map(|(wait_id, wait)| (wait_id.clone(), wait.current_generation))
         .ok_or_else(|| anyhow!("scheduler wait trigger canonical wait is missing"))?;
+    let trigger_generation = trigger
+        .message_seq
+        .ok_or_else(|| anyhow!("scheduler wait trigger message has no sequence after restart"))?;
+    let trigger_id = scheduler_executor::canonical_wait_trigger_id(&trigger);
+    let trigger_task_id = match &trigger.origin {
+        MessageOrigin::Task { task_id } => task_id.clone(),
+        _ => {
+            return Err(anyhow!(
+                "scheduler wait trigger message is not a task rejoin"
+            ));
+        }
+    };
     let entry_before = queue_entries_for_agent(&runtime, agent_id)?
         .into_iter()
         .find(|entry| entry.message_id == trigger.id)
@@ -908,6 +998,10 @@ async fn seed_scheduler_wait_trigger_restart_fixture(
         .activations
         .get(&activation_id)
         .ok_or_else(|| anyhow!("scheduler wait trigger activation is missing after replay"))?;
+    let admission = snapshot
+        .activation_admissions
+        .get(&activation_id)
+        .ok_or_else(|| anyhow!("scheduler wait trigger admission is missing after replay"))?;
     let queue_status = queue_entries_for_agent(&runtime, agent_id)?
         .into_iter()
         .find(|entry| entry.message_id == trigger.id)
@@ -915,8 +1009,24 @@ async fn seed_scheduler_wait_trigger_restart_fixture(
         .ok_or_else(|| anyhow!("scheduler wait trigger queue entry disappeared"))?;
     let replay_exactly_once = queue_status == QueueEntryStatus::Dequeued
         && generation.state == WaitState::Consumed
+        && generation.trigger.as_ref().is_some_and(|persisted| {
+            persisted.trigger_id == trigger_id && persisted.trigger_generation == trigger_generation
+        })
         && generation.consuming_activation_id.as_deref() == Some(activation_id.as_str())
         && activation.state == ActivationState::Running
+        && matches!(
+            &admission.activation.cause,
+            ActivationCause::TaskRejoin {
+                task_id: cause_task_id,
+                message_id: cause_message_id,
+                resume: Some(resume),
+            } if cause_task_id == &trigger_task_id
+                && cause_message_id == &trigger.id
+                && resume.wait_id == wait_id
+                && resume.wait_generation == wait_generation
+                && resume.trigger_id == trigger_id
+                && resume.trigger_generation == trigger_generation
+        )
         && matches!(
             snapshot.slot,
             ActivationSlot::Running {
@@ -932,13 +1042,16 @@ async fn seed_scheduler_wait_trigger_restart_fixture(
     Ok(SchedulerWaitTriggerRestartFixture {
         checkpoint: "wait_trigger_consume_admission".into(),
         stage: stage.into(),
-        cut_kind: "durable_recovery".into(),
+        cut_kind: "atomic_rollback".into(),
         agent_id: agent_id.into(),
         work_item_id,
         message_id: trigger.id,
         activation_id,
         wait_id,
         wait_generation,
+        trigger_id,
+        trigger_generation,
+        precommit_fault_rolled_back: true,
         replay_applied: stage == "replay" && (replay_applied || replay_exactly_once),
         replay_exactly_once,
         queue_status: "dequeued".into(),

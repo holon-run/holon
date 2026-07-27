@@ -88,7 +88,7 @@ RESTART_CHECKPOINTS = (
 RESTART_CHECKPOINT_CUT_KINDS = {
     "ingress_queue_admission": "atomic_rollback",
     "queue_claim_activation_admission": "atomic_rollback",
-    "wait_trigger_consume_admission": "durable_recovery",
+    "wait_trigger_consume_admission": "atomic_rollback",
     "turn_terminal_settlement": "durable_recovery",
     "settlement_delivery": "durable_recovery",
     "post_commit_notification": "post_commit_recovery",
