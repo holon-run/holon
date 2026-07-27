@@ -628,7 +628,10 @@ impl RuntimeHandle {
             }
         }
 
-        let message = MessageEnvelope {
+        let work_item_id = self
+            .wait_condition_work_item_id_for_timer(&timer.id)
+            .await?;
+        let mut message = MessageEnvelope {
             metadata: Some(serde_json::json!({ "timer_id": timer.id })),
             ..MessageEnvelope::new(
                 timer.agent_id.clone(),
@@ -650,6 +653,10 @@ impl RuntimeHandle {
                 AdmissionContext::RuntimeOwned,
             )
         };
+        message.work_item_id = work_item_id;
+        message
+            .source_refs
+            .insert("timer_id".into(), timer.id.clone());
         self.enqueue(message).await?;
 
         let fired_at = self.now();
@@ -741,6 +748,26 @@ impl RuntimeHandle {
                 })
             })
             .and_then(|condition| condition.work_item_id))
+    }
+
+    async fn wait_condition_work_item_id_for_timer(
+        &self,
+        timer_id: &str,
+    ) -> Result<Option<String>> {
+        let agent_id = self.agent_id().await?;
+        let matches = self
+            .inner
+            .storage
+            .active_wait_conditions_for_agent(&agent_id)?
+            .into_iter()
+            .filter(|condition| {
+                condition.kind == WaitConditionKind::Timer
+                    && condition.subject_ref.as_deref() == Some(timer_id)
+            })
+            .collect::<Vec<_>>();
+        Ok((matches.len() == 1)
+            .then(|| matches[0].work_item_id.clone())
+            .flatten())
     }
 
     pub(super) async fn active_wait_condition_summaries(
@@ -963,11 +990,15 @@ fn matching_wake_source(
                 })
                 .then(|| ("external_ingress".to_string(), external_trigger_id.cloned()))
         }
-        (MessageKind::TimerTick, MessageOrigin::Timer { timer_id }) => condition
-            .wake_sources
-            .iter()
-            .any(|source| matches!(source, WakeSource::Timer { .. }))
-            .then(|| ("timer".to_string(), Some(timer_id.clone()))),
+        (MessageKind::TimerTick, MessageOrigin::Timer { timer_id }) => (condition
+            .subject_ref
+            .as_deref()
+            .is_none_or(|subject_ref| subject_ref == timer_id)
+            && condition
+                .wake_sources
+                .iter()
+                .any(|source| matches!(source, WakeSource::Timer { .. })))
+        .then(|| ("timer".to_string(), Some(timer_id.clone()))),
         (MessageKind::OperatorPrompt, MessageOrigin::Operator { actor_id }) => condition
             .wake_sources
             .iter()

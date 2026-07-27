@@ -713,13 +713,22 @@ class CaseHarness:
         self.work_items(label)
         self.events(label)
 
-    def prompt(self, label: str, text: str) -> tuple[int, dict[str, Any]]:
+    def prompt(
+        self,
+        label: str,
+        text: str,
+        *,
+        work_item_id: str | None = None,
+    ) -> tuple[int, dict[str, Any]]:
         before = self.state(f"{label}-before")
         baseline = int(before["agent"]["agent"]["turn_index"])
+        body = {"text": text}
+        if work_item_id is not None:
+            body["work_item_id"] = work_item_id
         response = self.request(
             "POST",
             self.agent_path("prompt", control=True),
-            {"text": text},
+            body,
         )
         write_json(self.evidence / f"{label}-prompt-response.json", response)
         (self.evidence / f"{label}-prompt.txt").write_text(text + "\n")

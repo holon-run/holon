@@ -539,20 +539,33 @@ def seed_wait(
         if resource is not None
         else ""
     )
+    harness.prompt(
+        f"{label}-create",
+        DRILL_PREFIX
+        + "1. Call CreateWorkItem with objective "
+        f"{json.dumps(objective)}, plan_status needs_input, and one todo named resume pending.\n"
+        "2. STOP immediately after CreateWorkItem succeeds. Do not call any other tool.",
+    )
+    created = harness.wait_work_item(
+        objective_marker=objective,
+        expected_state="open",
+        label=f"{label}-created",
+    )
     baseline, _ = harness.prompt(
         f"{label}-seed",
         DRILL_PREFIX
-        + "1. Call CreateWorkItem with objective "
-        f"{json.dumps(objective)}, plan_status ready, and one todo named resume pending.\n"
-        "2. Call PickWorkItem for that WorkItem.\n"
-        f"3. Call WaitFor with wake={wake}{resource_argument} and a concrete reason. "
+        + f"This prompt is explicitly bound to WorkItem {created['id']}.\n"
+        "1. Call UpdateWorkItem for this exact WorkItem with plan_status ready and preserve "
+        "the existing pending todo.\n"
+        f"2. Call WaitFor with wake={wake}{resource_argument} and a concrete reason. "
         "The wait trigger has NOT fired yet. You MUST call WaitFor even if you believe "
         "the trigger has already fired. Do NOT skip WaitFor.\n"
-        "4. STOP. Do not complete the WorkItem in this turn.\n"
-        "Do NOT call UpdateWorkItem or CompleteWorkItem in this turn. "
+        "3. STOP. Do not complete the WorkItem in this turn.\n"
+        "Do NOT call PickWorkItem, CreateWorkItem, or CompleteWorkItem in this turn. "
         "The WorkItem MUST remain open and waiting after this turn.\n"
         "When this WorkItem resumes later: call GetWorkItem, update the todo to "
         f"completed, emit a report containing {completion}, and call CompleteWorkItem.",
+        work_item_id=created["id"],
     )
     # Detect premature completion from a spurious queued message.
     early_items = harness.work_items(f"{label}-early-check")
@@ -983,41 +996,12 @@ def exercise_wrong_fence(harness: CaseHarness, marker: str) -> dict[str, Any]:
 
 
 def exercise_wait_triggers(harness: CaseHarness, marker: str) -> None:
-    callback_objective = f"DRILL-WAIT-callback-{marker}"
-    callback_completion = f"DRILL-WAIT-COMPLETE-callback-{marker}"
-    # Pre-create the external trigger via the control API so the harness owns
-    # the trigger_url.  This avoids relying on the model to call
-    # CreateExternalTrigger reliably inside the same turn as WaitFor.
+    callback_seed = seed_wait(
+        harness,
+        label="callback",
+        marker=marker,
+    )
     callback = harness.reset_callback("callback-trigger")
-    harness.prompt(
-        "callback-seed",
-        DRILL_PREFIX
-        + "1. Call CreateWorkItem with objective "
-        f"{json.dumps(callback_objective)}, plan_status ready, and one todo named resume pending.\n"
-        "2. Call PickWorkItem for that WorkItem.\n"
-        "3. Call WaitFor with wake=external and a concrete reason "
-        f"(e.g. 'drill callback {marker}'). Do NOT pass a resource parameter.\n"
-        "4. STOP. Do not complete the WorkItem in this turn.\n"
-        "When resumed later: call GetWorkItem, update the todo to completed, emit a "
-        f"report containing {callback_completion}, and call CompleteWorkItem.",
-    )
-    # Detect premature completion caused by a spurious queued message
-    # waking the agent before the harness can observe waiting_external.
-    early_items = harness.work_items("callback-early-check")
-    early_matches = [
-        item for item in early_items if callback_objective in item.get("objective", "")
-    ]
-    if early_matches and early_matches[0].get("state") == "completed":
-        raise AssertionError(
-            f"WorkItem {callback_objective} completed before the harness could "
-            "observe waiting_external; a spurious queued message likely woke "
-            "the agent. Ensure wait_queue_drained() runs before this scenario."
-        )
-    harness.wait_work_item_scheduling_state(
-        objective_marker=callback_objective,
-        expected_scheduling_state="waiting_external",
-        label="callback-waiting",
-    )
     # Ensure the agent has fully transitioned to asleep before firing the
     # callback; firing during the awake_idle→asleep window loses the wake.
     harness.wait_agent_asleep()
@@ -1026,11 +1010,7 @@ def exercise_wait_triggers(harness: CaseHarness, marker: str) -> None:
         callback["trigger_url"],
         {"drill": marker, "trigger": "callback"},
     )
-    harness.wait_work_item(
-        objective_marker=callback_objective,
-        expected_state="completed",
-        label="callback-completed",
-    )
+    wait_seed_completion(harness, callback_seed, "callback")
 
     harness.wait_queue_drained()
     webhook_seed = seed_wait(

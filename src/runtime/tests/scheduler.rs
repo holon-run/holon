@@ -2051,6 +2051,49 @@ fn exact_wait_resume_shadow_covers_external_channel_and_timer_triggers() {
 }
 
 #[test]
+fn timer_tick_only_matches_the_wait_for_the_same_timer() {
+    let now = Utc::now();
+    let matching = WaitConditionRecord {
+        id: "wait-matching".into(),
+        agent_id: "default".into(),
+        work_item_id: Some("work-matching".into()),
+        status: WaitConditionStatus::Active,
+        kind: WaitConditionKind::Timer,
+        source: Some("test".into()),
+        subject_ref: Some("timer-1".into()),
+        waiting_for: "timer-1".into(),
+        wake_sources: vec![WakeSource::Timer { wake_at: now }],
+        continuation: None,
+        created_at: now,
+        updated_at: now,
+        expires_at: None,
+        resolved_at: None,
+        cancelled_at: None,
+        turn_id: None,
+    };
+    let mut other = matching.clone();
+    other.id = "wait-other".into();
+    other.subject_ref = Some("timer-2".into());
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::TimerTick,
+        MessageOrigin::Timer {
+            timer_id: "timer-1".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Next,
+        MessageBody::Text {
+            text: "timer fired".into(),
+        },
+    );
+
+    assert!(scheduler::message_matches_wait_condition(
+        &message, &matching
+    ));
+    assert!(!scheduler::message_matches_wait_condition(&message, &other));
+}
+
+#[test]
 fn message_decision_inherits_work_item_from_matching_wait() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();

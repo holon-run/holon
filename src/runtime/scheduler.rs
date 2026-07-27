@@ -1862,13 +1862,17 @@ pub(super) fn message_matches_wait_condition(
             })
         }
         (MessageKind::TimerTick, MessageOrigin::Timer { timer_id }) => {
-            condition.wake_sources.iter().any(|source| {
-                matches!(source, WakeSource::Timer { .. })
-                    && message
-                        .source_refs
-                        .get("timer_id")
-                        .is_none_or(|source_timer_id| source_timer_id == timer_id)
-            })
+            condition
+                .subject_ref
+                .as_deref()
+                .is_none_or(|subject_ref| subject_ref == timer_id)
+                && condition.wake_sources.iter().any(|source| {
+                    matches!(source, WakeSource::Timer { .. })
+                        && message
+                            .source_refs
+                            .get("timer_id")
+                            .is_none_or(|source_timer_id| source_timer_id == timer_id)
+                })
         }
         (MessageKind::SystemTick, MessageOrigin::System { subsystem }) => {
             if subsystem == "work_queue" {
