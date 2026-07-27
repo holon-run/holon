@@ -390,6 +390,96 @@ class SchedulerDrillTests(unittest.TestCase):
         self.assertFalse(authoritative["missing_required_injections"])
         self.assertEqual(authoritative["latest_phase_status"], "completed")
 
+    def test_aggregate_restart_coverage_requires_current_complete_matrix(self) -> None:
+        def restart_phase(
+            checkpoint: str,
+            *,
+            mode: str = "shadow",
+            mode_session: int = 1,
+            status: str = "completed",
+            cut_kind=None,
+            replay_exactly_once: bool = True,
+        ) -> dict[str, object]:
+            return {
+                "action": "restart_checkpoint",
+                "status": status,
+                "at": f"2026-07-27T00:00:0{mode_session}Z",
+                "detail": {
+                    "mode": mode,
+                    "mode_session": mode_session,
+                    "evidence": f"/tmp/{checkpoint}",
+                    "restart": {
+                        "checkpoint": checkpoint,
+                        "cut_kind": cut_kind
+                        or drill.RESTART_CHECKPOINT_CUT_KINDS[checkpoint],
+                        "first_restart_recovered": True,
+                        "second_restart_idempotent": True,
+                        "replay_exactly_once": replay_exactly_once,
+                        "subsequent_progress": True,
+                    },
+                },
+            }
+
+        phases = [
+            restart_phase(checkpoint)
+            for checkpoint in drill.RESTART_CHECKPOINTS
+        ]
+        phases.extend(
+            [
+                restart_phase(
+                    "turn_terminal_settlement",
+                    mode="authoritative",
+                    mode_session=2,
+                ),
+                restart_phase(
+                    "authority_rollback",
+                    status="failed",
+                    cut_kind="durable_recovery",
+                    replay_exactly_once=False,
+                ),
+            ]
+        )
+        coverage = drill.aggregate_restart_coverage(
+            {"phase_history": phases},
+            expected_mode="shadow",
+            expected_mode_session=1,
+        )
+
+        self.assertEqual(
+            coverage["completed_checkpoints"],
+            list(drill.RESTART_CHECKPOINTS[:-1]),
+        )
+        self.assertFalse(coverage["missing_checkpoints"])
+        self.assertEqual(
+            set(coverage["failed_checkpoints"]),
+            {"authority_rollback"},
+        )
+        self.assertEqual(
+            coverage["cut_kind_mismatches"]["authority_rollback"],
+            {
+                "expected": "atomic_rollback",
+                "actual": "durable_recovery",
+            },
+        )
+        self.assertEqual(
+            coverage["verification_failures"]["authority_rollback"],
+            ["replay_exactly_once"],
+        )
+
+        authoritative = drill.aggregate_restart_coverage(
+            {"phase_history": phases},
+            expected_mode="authoritative",
+            expected_mode_session=2,
+        )
+        self.assertEqual(
+            authoritative["completed_checkpoints"],
+            ["turn_terminal_settlement"],
+        )
+        self.assertEqual(
+            set(authoritative["missing_checkpoints"]),
+            set(drill.RESTART_CHECKPOINTS) - {"turn_terminal_settlement"},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

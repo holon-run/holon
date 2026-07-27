@@ -76,6 +76,24 @@ EXACT_WAIT_RESUME_TRIGGERS = (
     "system",
     "operator_wake",
 )
+RESTART_CHECKPOINTS = (
+    "ingress_queue_admission",
+    "queue_claim_activation_admission",
+    "wait_trigger_consume_admission",
+    "turn_terminal_settlement",
+    "settlement_delivery",
+    "post_commit_notification",
+    "authority_rollback",
+)
+RESTART_CHECKPOINT_CUT_KINDS = {
+    "ingress_queue_admission": "atomic_rollback",
+    "queue_claim_activation_admission": "atomic_rollback",
+    "wait_trigger_consume_admission": "durable_recovery",
+    "turn_terminal_settlement": "durable_recovery",
+    "settlement_delivery": "durable_recovery",
+    "post_commit_notification": "post_commit_recovery",
+    "authority_rollback": "atomic_rollback",
+}
 RUN_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{5,63}$")
 FAULT_SCENARIOS = {
     "exact_wait_resume": "stale",
@@ -1752,11 +1770,90 @@ def aggregate_stress_coverage(
     }
 
 
+def aggregate_restart_coverage(
+    record: dict[str, Any],
+    *,
+    expected_mode: str | None,
+    expected_mode_session: int,
+) -> dict[str, Any]:
+    latest_by_checkpoint: dict[str, dict[str, Any]] = {}
+    for phase in record.get("phase_history", []):
+        detail = phase.get("detail", {})
+        restart = detail.get("restart")
+        if phase.get("action") != "restart_checkpoint" or not isinstance(restart, dict):
+            continue
+        if (
+            detail.get("mode") != expected_mode
+            or int(detail.get("mode_session", 0)) != expected_mode_session
+        ):
+            continue
+        checkpoint = restart.get("checkpoint")
+        if checkpoint not in RESTART_CHECKPOINTS:
+            continue
+        latest_by_checkpoint[checkpoint] = {
+            "at": phase.get("at"),
+            "status": phase.get("status"),
+            "mode": detail.get("mode"),
+            "mode_session": int(detail.get("mode_session", 0)),
+            "evidence": detail.get("evidence"),
+            **restart,
+        }
+
+    missing = [
+        checkpoint
+        for checkpoint in RESTART_CHECKPOINTS
+        if checkpoint not in latest_by_checkpoint
+    ]
+    failed = {
+        checkpoint: phase
+        for checkpoint, phase in latest_by_checkpoint.items()
+        if phase.get("status") != "completed"
+    }
+    cut_kind_mismatches = {
+        checkpoint: {
+            "expected": RESTART_CHECKPOINT_CUT_KINDS[checkpoint],
+            "actual": phase.get("cut_kind"),
+        }
+        for checkpoint, phase in latest_by_checkpoint.items()
+        if phase.get("cut_kind") != RESTART_CHECKPOINT_CUT_KINDS[checkpoint]
+    }
+    verification_fields = (
+        "first_restart_recovered",
+        "second_restart_idempotent",
+        "replay_exactly_once",
+        "subsequent_progress",
+    )
+    verification_failures = {
+        checkpoint: [
+            field for field in verification_fields if phase.get(field) is not True
+        ]
+        for checkpoint, phase in latest_by_checkpoint.items()
+        if any(phase.get(field) is not True for field in verification_fields)
+    }
+    return {
+        "required_checkpoints": list(RESTART_CHECKPOINTS),
+        "completed_checkpoints": [
+            checkpoint
+            for checkpoint in RESTART_CHECKPOINTS
+            if checkpoint in latest_by_checkpoint
+            and checkpoint not in failed
+            and checkpoint not in cut_kind_mismatches
+            and checkpoint not in verification_failures
+        ],
+        "latest_by_checkpoint": latest_by_checkpoint,
+        "missing_checkpoints": missing,
+        "failed_checkpoints": failed,
+        "cut_kind_mismatches": cut_kind_mismatches,
+        "verification_failures": verification_failures,
+    }
+
+
 def evidence_summary(
     evidence: dict[str, Any],
     *,
     expected_mode: str | None = None,
     stress: dict[str, Any] | None = None,
+    restart: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     json_failures = parse_json_columns(evidence)
     counts = {scenario: 0 for scenario in PRODUCTION_SCENARIOS}
@@ -1858,6 +1955,23 @@ def evidence_summary(
                 ],
             }
         )
+    if restart is not None:
+        checks.update(
+            {
+                "all_restart_checkpoints_observed": not restart[
+                    "missing_checkpoints"
+                ],
+                "restart_checkpoints_completed": not restart[
+                    "failed_checkpoints"
+                ],
+                "restart_cut_kinds_match_contract": not restart[
+                    "cut_kind_mismatches"
+                ],
+                "restart_recovery_and_replay_verified": not restart[
+                    "verification_failures"
+                ],
+            }
+        )
     return {
         "status": "go" if all(checks.values()) else "no-go",
         "checks": checks,
@@ -1875,6 +1989,7 @@ def evidence_summary(
         "delivery_inconsistencies": delivery_inconsistencies,
         "queue_tail": queue_tail,
         "stress": stress,
+        "restart": restart,
     }
 
 
@@ -1924,6 +2039,32 @@ def render_report(
             f"| `{injection}` | {stress['injection_planned'][injection]} | "
             f"{stress['injection_completed'][injection]} |"
             for injection in stress["injection_planned"]
+        )
+    restart = summary.get("restart")
+    if restart is not None:
+        lines.extend(
+            [
+                "",
+                "## Restart checkpoints",
+                "",
+                f"- Completed: {len(restart['completed_checkpoints'])} / "
+                f"{len(restart['required_checkpoints'])}",
+                f"- Missing: {', '.join(restart['missing_checkpoints']) or 'none'}",
+                f"- Failed: {', '.join(restart['failed_checkpoints']) or 'none'}",
+                f"- Cut-kind mismatches: "
+                f"{', '.join(restart['cut_kind_mismatches']) or 'none'}",
+                f"- Verification failures: "
+                f"{', '.join(restart['verification_failures']) or 'none'}",
+                "",
+                "| Checkpoint | Cut kind | Status |",
+                "|---|---|---|",
+            ]
+        )
+        lines.extend(
+            f"| `{checkpoint}` | "
+            f"`{restart['latest_by_checkpoint'].get(checkpoint, {}).get('cut_kind', 'missing')}` | "
+            f"{restart['latest_by_checkpoint'].get(checkpoint, {}).get('status', 'missing')} |"
+            for checkpoint in restart["required_checkpoints"]
         )
     lines.extend(
         [
@@ -2130,6 +2271,11 @@ def collect(args: argparse.Namespace) -> int:
         evidence,
         expected_mode=record.get("last_mode"),
         stress=aggregate_stress_coverage(
+            record,
+            expected_mode=record.get("last_mode"),
+            expected_mode_session=int(record.get("mode_session", 0)),
+        ),
+        restart=aggregate_restart_coverage(
             record,
             expected_mode=record.get("last_mode"),
             expected_mode_session=int(record.get("mode_session", 0)),
