@@ -83,6 +83,9 @@ RESTART_CHECKPOINTS = (
     "turn_terminal_settlement",
     "settlement_delivery",
     "post_commit_notification",
+    "targeted_yield_return",
+    "legacy_adoption_atomicity",
+    "preclaim_hard_blocker_fallback",
     "authority_rollback",
 )
 RESTART_CHECKPOINT_CUT_KINDS = {
@@ -92,6 +95,9 @@ RESTART_CHECKPOINT_CUT_KINDS = {
     "turn_terminal_settlement": "durable_recovery",
     "settlement_delivery": "durable_recovery",
     "post_commit_notification": "post_commit_recovery",
+    "targeted_yield_return": "durable_recovery",
+    "legacy_adoption_atomicity": "atomic_rollback",
+    "preclaim_hard_blocker_fallback": "durable_recovery",
     "authority_rollback": "atomic_rollback",
 }
 RUN_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{5,63}$")

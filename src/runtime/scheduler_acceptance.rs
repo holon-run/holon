@@ -6,15 +6,15 @@ use sha2::{Digest, Sha256};
 use crate::{
     config::AppConfig,
     domain::scheduler_protocol::{
-        ActivationCause, ActivationSlot, ActivationState, ProtocolCommand, TriggerWaitCommand,
-        WaitState,
+        ActivationCause, ActivationSlot, ActivationState, ProtocolCommand, ScenarioMode,
+        SchedulerScenarioClass, TriggerWaitCommand, WaitState, WorkStatus,
     },
     runtime_db::{transitions::TransitionFaultPoint, RuntimeDb},
     types::{
         AdmissionContext, AgentStatus, AuthorityClass, MessageBody, MessageDeliverySurface,
-        MessageEnvelope, MessageKind, MessageOrigin, Priority, QueueEntryStatus, TurnRecord,
-        TurnTerminalKind, TurnTerminalRecord, TurnTerminalSummary, TurnTriggerSummary,
-        WorkItemPlanStatus,
+        MessageEnvelope, MessageKind, MessageOrigin, Priority, QueueEntryStatus, TaskKind,
+        TaskRecord, TaskStatus, TurnRecord, TurnTerminalKind, TurnTerminalRecord,
+        TurnTerminalSummary, TurnTriggerSummary, WorkItemPlanStatus, WorkItemRecord, WorkItemState,
     },
 };
 
@@ -164,6 +164,61 @@ pub struct SchedulerAuthorityRollbackRestartFixture {
     pub hard_blocker_count: usize,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct SchedulerTargetedYieldRestartFixture {
+    pub checkpoint: String,
+    pub stage: String,
+    pub cut_kind: String,
+    pub agent_id: String,
+    pub work_item_id: String,
+    pub target_work_item_id: String,
+    pub message_id: String,
+    pub activation_id: String,
+    pub target_activation_id: Option<String>,
+    pub continuation_id: String,
+    pub replay_applied: bool,
+    pub replay_exactly_once: bool,
+    pub source_status: String,
+    pub target_status: String,
+    pub focus_work_item_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SchedulerLegacyAdoptionRestartFixture {
+    pub checkpoint: String,
+    pub stage: String,
+    pub cut_kind: String,
+    pub agent_id: String,
+    pub work_item_id: String,
+    pub precommit_fault_rolled_back: bool,
+    pub replay_applied: bool,
+    pub replay_exactly_once: bool,
+    pub partition_initialized: bool,
+    pub work_status: Option<String>,
+    pub focus_work_item_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SchedulerPreclaimFallbackRestartFixture {
+    pub checkpoint: String,
+    pub stage: String,
+    pub cut_kind: String,
+    pub agent_id: String,
+    pub work_item_id: String,
+    pub message_id: String,
+    pub activation_id: String,
+    pub task_id: String,
+    pub scenario_class: String,
+    pub blocker_code: String,
+    pub hard_blocker_count: usize,
+    pub blocker_event_observed: bool,
+    pub fallback_claimed: bool,
+    pub replay_applied: bool,
+    pub replay_exactly_once: bool,
+    pub queue_status: String,
+    pub scenario_mode: String,
+}
+
 pub async fn seed_scheduler_restart_fixture(
     config: &AppConfig,
     agent_id: &str,
@@ -203,6 +258,21 @@ pub async fn seed_scheduler_restart_fixture(
             .await?,
         )
         .context("serializing scheduler post-commit notification restart fixture"),
+        "targeted_yield_return" => serde_json::to_value(
+            seed_scheduler_targeted_yield_restart_fixture(config, agent_id, stage, objective)
+                .await?,
+        )
+        .context("serializing scheduler targeted yield restart fixture"),
+        "legacy_adoption_atomicity" => serde_json::to_value(
+            seed_scheduler_legacy_adoption_restart_fixture(config, agent_id, stage, objective)
+                .await?,
+        )
+        .context("serializing scheduler legacy adoption restart fixture"),
+        "preclaim_hard_blocker_fallback" => serde_json::to_value(
+            seed_scheduler_preclaim_fallback_restart_fixture(config, agent_id, stage, objective)
+                .await?,
+        )
+        .context("serializing scheduler preclaim fallback restart fixture"),
         "authority_rollback" => serde_json::to_value(
             seed_scheduler_authority_rollback_restart_fixture(config, stage, objective).await?,
         )
@@ -778,6 +848,449 @@ fn wait_state_name(state: &WaitState) -> String {
         WaitState::Consumed => "consumed".into(),
         WaitState::Resolved => "resolved".into(),
     }
+}
+
+fn work_status_name(status: &WorkStatus) -> String {
+    match status {
+        WorkStatus::Runnable => "runnable",
+        WorkStatus::Waiting { .. } => "waiting",
+        WorkStatus::Yielded { .. } => "yielded",
+        WorkStatus::NeedsSettlement { .. } => "needs_settlement",
+        WorkStatus::Paused { .. } => "paused",
+        WorkStatus::Terminal => "terminal",
+    }
+    .into()
+}
+
+async fn finish_scheduler_acceptance_run(runtime: &RuntimeHandle) -> Result<()> {
+    let mut guard = runtime.inner.agent.lock().await;
+    scheduler::apply_idle_projection(&mut guard.state, &runtime.inner.storage)?;
+    guard.current_run_abort = None;
+    guard.persist_state(&runtime.inner.storage)
+}
+
+async fn scheduler_acceptance_terminal_transition(
+    runtime: &RuntimeHandle,
+    message: &MessageEnvelope,
+    work_item_id: &str,
+    last_assistant_message: &str,
+) -> Result<super::turn::TurnTerminalTransition> {
+    let turn_id = message
+        .turn_id
+        .clone()
+        .ok_or_else(|| anyhow!("scheduler acceptance message has no turn id"))?;
+    let turn_index = runtime.agent_state().await?.turn_index.saturating_add(1);
+    let terminal = TurnTerminalRecord {
+        turn_id: turn_id.clone(),
+        turn_index,
+        kind: TurnTerminalKind::Completed,
+        reason: None,
+        last_assistant_message: Some(last_assistant_message.into()),
+        checkpoint: None,
+        completed_at: Utc::now(),
+        duration_ms: 1,
+    };
+    let mut turn_record = TurnRecord::new(&message.agent_id, &turn_id, turn_index);
+    turn_record.current_work_item_id = Some(work_item_id.into());
+    turn_record.trigger = Some(TurnTriggerSummary::from_message(message));
+    turn_record.input_message_ids = vec![message.id.clone()];
+    turn_record.terminal = Some(TurnTerminalSummary::from_terminal(&terminal));
+    Ok(super::turn::TurnTerminalTransition {
+        terminal,
+        turn_record,
+    })
+}
+
+fn work_items_for_agent(runtime: &RuntimeHandle, agent_id: &str) -> Result<Vec<WorkItemRecord>> {
+    Ok(runtime
+        .inner
+        .runtime_db
+        .work_items()
+        .latest_all()?
+        .into_iter()
+        .filter(|record| record.agent_id == agent_id)
+        .collect())
+}
+
+fn queue_entry_for_work_item(
+    runtime: &RuntimeHandle,
+    agent_id: &str,
+    work_item_id: &str,
+) -> Result<Option<crate::types::QueueEntryRecord>> {
+    for entry in queue_entries_for_agent(runtime, agent_id)? {
+        let Some(message) = runtime
+            .inner
+            .storage
+            .read_message_by_id(&entry.message_id)?
+        else {
+            continue;
+        };
+        if message.work_item_id.as_deref() == Some(work_item_id) {
+            return Ok(Some(entry));
+        }
+    }
+    Ok(None)
+}
+
+async fn enqueue_scheduler_work_tick(
+    runtime: &RuntimeHandle,
+    agent_id: &str,
+    work_item_id: &str,
+    label: &str,
+) -> Result<MessageEnvelope> {
+    let mut message = MessageEnvelope::new(
+        agent_id,
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: format!("scheduler restart fixture {label}"),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+    message.work_item_id = Some(work_item_id.into());
+    message.turn_id = Some(format!("turn-scheduler-restart-{label}"));
+    let enqueued = runtime.enqueue(message).await?;
+    runtime
+        .inner
+        .storage
+        .read_message_by_id(&enqueued.id)?
+        .ok_or_else(|| anyhow!("scheduler work tick is missing after enqueue"))
+}
+
+async fn claim_scheduler_message(
+    runtime: &RuntimeHandle,
+    expected_message_id: &str,
+) -> Result<MessageEnvelope> {
+    let scheduled = match scheduler_executor::SchedulerDecisionExecutor::new(runtime)
+        .poll()
+        .await?
+    {
+        scheduler_executor::RunLoopPoll::Message(scheduled) => scheduled,
+        scheduler_executor::RunLoopPoll::Idle => {
+            return Err(anyhow!(
+                "scheduler restart fixture did not claim {expected_message_id}"
+            ));
+        }
+        scheduler_executor::RunLoopPoll::Stopped(_, _) => {
+            return Err(anyhow!("scheduler restart fixture found a stopped agent"));
+        }
+        scheduler_executor::RunLoopPoll::Shutdown => {
+            return Err(anyhow!("scheduler restart fixture runtime shut down"));
+        }
+    };
+    if scheduled.message.id != expected_message_id {
+        return Err(anyhow!(
+            "scheduler restart fixture claimed unexpected message {}",
+            scheduled.message.id
+        ));
+    }
+    Ok(scheduled.message)
+}
+
+async fn seed_scheduler_targeted_yield_restart_fixture(
+    config: &AppConfig,
+    agent_id: &str,
+    stage: &str,
+    objective: String,
+) -> Result<SchedulerTargetedYieldRestartFixture> {
+    super::require_scheduler_acceptance_fixtures_enabled()?;
+    let runtime_db =
+        RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
+    crate::scheduler_rollout::reconcile_from_env(&runtime_db)?;
+    let agent_home = config.agent_root_dir().join(agent_id);
+    std::fs::create_dir_all(&agent_home)
+        .with_context(|| format!("creating agent home {}", agent_home.display()))?;
+    let runtime = RuntimeHandle::new_offline_with_runtime_db(
+        agent_id,
+        agent_home,
+        InitialWorkspaceBinding::Detached,
+        runtime_db,
+    )?;
+
+    if stage == "prepare" {
+        if !work_items_for_agent(&runtime, agent_id)?.is_empty()
+            || !queue_entries_for_agent(&runtime, agent_id)?.is_empty()
+        {
+            return Err(anyhow!(
+                "scheduler targeted yield prepare requires fresh agent state"
+            ));
+        }
+        let source = runtime
+            .create_work_item(
+                format!("{objective} source"),
+                Some(WorkItemPlanStatus::Ready),
+                None,
+                Vec::new(),
+            )
+            .await?;
+        let target = runtime
+            .create_work_item(
+                format!("{objective} target"),
+                Some(WorkItemPlanStatus::Ready),
+                None,
+                Vec::new(),
+            )
+            .await?;
+        runtime.pick_work_item(source.id.clone()).await?;
+        let message =
+            enqueue_scheduler_work_tick(&runtime, agent_id, &source.id, "targeted-yield-source")
+                .await?;
+        claim_scheduler_message(&runtime, &message.id).await?;
+        runtime
+            .begin_interactive_turn(Some(&message), None, None)
+            .await?;
+        let picked = runtime
+            .pick_work_item_with_reason(target.id.clone(), Some("targeted yield fixture".into()))
+            .await?;
+        let continuation_id = picked
+            .continuation_created
+            .ok_or_else(|| anyhow!("targeted yield did not create a continuation"))?
+            .frame_id;
+        let terminal_transition = scheduler_acceptance_terminal_transition(
+            &runtime,
+            &message,
+            &source.id,
+            "scheduler targeted yield source yielded",
+        )
+        .await?;
+        finish_scheduler_acceptance_run(&runtime).await?;
+        if !runtime
+            .commit_queue_terminal_settlement(
+                crate::types::QueueEntryRecord {
+                    message_id: message.id.clone(),
+                    agent_id: message.agent_id.clone(),
+                    priority: message.priority,
+                    status: QueueEntryStatus::Processed,
+                    created_at: message.created_at,
+                    updated_at: Utc::now(),
+                },
+                Vec::new(),
+                true,
+                Some(&terminal_transition),
+            )
+            .await?
+        {
+            return Err(anyhow!(
+                "scheduler targeted yield source settlement did not commit"
+            ));
+        }
+        let report = super::scheduler_recovery_report(
+            &runtime.inner.storage,
+            &runtime.inner.runtime_db,
+            agent_id,
+        )?;
+        if super::apply_scheduler_recovery_plan(
+            &runtime.inner.storage,
+            &runtime.inner.runtime_db,
+            agent_id,
+            &report,
+        )? != 1
+        {
+            return Err(anyhow!(
+                "scheduler targeted yield recovery did not apply exactly once"
+            ));
+        }
+        let snapshot = runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_scheduler_protocol_snapshot(agent_id)?;
+        let source_status = snapshot
+            .work
+            .get(&source.id)
+            .ok_or_else(|| anyhow!("targeted yield source demand is missing"))?;
+        let target_status = snapshot
+            .work
+            .get(&target.id)
+            .ok_or_else(|| anyhow!("targeted yield target demand is missing"))?;
+        let replay_exactly_once = matches!(
+            &source_status.status,
+            WorkStatus::Yielded { continuation }
+                if continuation.continuation_id == continuation_id
+                    && continuation.target_work_item_id == target.id
+        ) && target_status.status == WorkStatus::Runnable
+            && snapshot.focus.as_deref() == Some(target.id.as_str());
+        if !replay_exactly_once {
+            return Err(anyhow!(
+                "scheduler targeted yield prepare did not persist canonical yield state"
+            ));
+        }
+        return Ok(SchedulerTargetedYieldRestartFixture {
+            checkpoint: "targeted_yield_return".into(),
+            stage: stage.into(),
+            cut_kind: "durable_recovery".into(),
+            agent_id: agent_id.into(),
+            work_item_id: source.id,
+            target_work_item_id: target.id,
+            message_id: message.id.clone(),
+            activation_id: scheduler_executor::canonical_activation_id(&message.id),
+            target_activation_id: None,
+            continuation_id,
+            replay_applied: false,
+            replay_exactly_once,
+            source_status: work_status_name(&source_status.status),
+            target_status: work_status_name(&target_status.status),
+            focus_work_item_id: snapshot.focus,
+        });
+    }
+    if stage != "replay" && stage != "verify" {
+        return Err(anyhow!(
+            "scheduler restart checkpoint targeted_yield_return does not support stage {stage}"
+        ));
+    }
+
+    let work_items = work_items_for_agent(&runtime, agent_id)?;
+    let source = work_items
+        .iter()
+        .find(|record| record.objective.ends_with(" source"))
+        .ok_or_else(|| anyhow!("targeted yield source WorkItem is missing"))?;
+    let target = work_items
+        .iter()
+        .find(|record| record.objective.ends_with(" target"))
+        .ok_or_else(|| anyhow!("targeted yield target WorkItem is missing"))?;
+    let source_entry = queue_entry_for_work_item(&runtime, agent_id, &source.id)?
+        .ok_or_else(|| anyhow!("targeted yield source queue entry is missing"))?;
+    let source_activation_id =
+        scheduler_executor::canonical_activation_id(&source_entry.message_id);
+    let continuation = runtime
+        .inner
+        .storage
+        .latest_work_item_continuations()?
+        .into_iter()
+        .find(|frame| {
+            frame.suspended_work_item_id == source.id && frame.active_work_item_id == target.id
+        })
+        .ok_or_else(|| anyhow!("targeted yield continuation is missing"))?;
+
+    let replay_applied = if stage == "replay" && target.state == WorkItemState::Open {
+        let target_message =
+            enqueue_scheduler_work_tick(&runtime, agent_id, &target.id, "targeted-yield-target")
+                .await?;
+        claim_scheduler_message(&runtime, &target_message.id).await?;
+        runtime
+            .begin_interactive_turn(Some(&target_message), None, None)
+            .await?;
+        let completed = runtime
+            .complete_work_item_with_continuation(target.id.clone(), Vec::new())
+            .await?;
+        if completed
+            .continuation_resumed
+            .as_ref()
+            .is_none_or(|resumed| resumed.frame_id != continuation.id)
+        {
+            return Err(anyhow!(
+                "target completion did not resume the targeted yield source"
+            ));
+        }
+        runtime
+            .promote_work_item_completion_report(
+                target.id.clone(),
+                "scheduler targeted yield target completed".into(),
+                Some(1),
+                Some(1),
+                Vec::new(),
+            )
+            .await?;
+        let terminal_transition = scheduler_acceptance_terminal_transition(
+            &runtime,
+            &target_message,
+            &target.id,
+            "scheduler targeted yield target completed",
+        )
+        .await?;
+        finish_scheduler_acceptance_run(&runtime).await?;
+        if !runtime
+            .commit_queue_terminal_settlement(
+                crate::types::QueueEntryRecord {
+                    message_id: target_message.id.clone(),
+                    agent_id: target_message.agent_id.clone(),
+                    priority: target_message.priority,
+                    status: QueueEntryStatus::Processed,
+                    created_at: target_message.created_at,
+                    updated_at: Utc::now(),
+                },
+                Vec::new(),
+                true,
+                Some(&terminal_transition),
+            )
+            .await?
+        {
+            return Err(anyhow!(
+                "scheduler targeted yield target settlement did not commit"
+            ));
+        }
+        true
+    } else {
+        false
+    };
+
+    let target_entry = queue_entry_for_work_item(&runtime, agent_id, &target.id)?
+        .ok_or_else(|| anyhow!("targeted yield target queue entry is missing"))?;
+    let target_activation_id =
+        scheduler_executor::canonical_activation_id(&target_entry.message_id);
+    let snapshot = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot(agent_id)?;
+    let source_demand = snapshot
+        .work
+        .get(&source.id)
+        .ok_or_else(|| anyhow!("targeted yield source demand disappeared"))?;
+    let target_demand = snapshot
+        .work
+        .get(&target.id)
+        .ok_or_else(|| anyhow!("targeted yield target demand disappeared"))?;
+    let resumed = runtime
+        .inner
+        .storage
+        .latest_work_item_continuations()?
+        .into_iter()
+        .find(|frame| frame.id == continuation.id)
+        .ok_or_else(|| anyhow!("targeted yield continuation disappeared"))?;
+    let replay_exactly_once = source_entry.status == QueueEntryStatus::Processed
+        && target_entry.status == QueueEntryStatus::Processed
+        && source_demand.status == WorkStatus::Runnable
+        && target_demand.status == WorkStatus::Terminal
+        && snapshot.focus.as_deref() == Some(source.id.as_str())
+        && snapshot
+            .activations
+            .get(&source_activation_id)
+            .is_some_and(|activation| activation.state == ActivationState::Settled)
+        && snapshot
+            .activations
+            .get(&target_activation_id)
+            .is_some_and(|activation| activation.state == ActivationState::Settled)
+        && resumed.state == crate::types::WorkItemContinuationState::Resumed;
+    if !replay_exactly_once {
+        return Err(anyhow!(
+            "scheduler targeted yield return did not converge exactly once"
+        ));
+    }
+    Ok(SchedulerTargetedYieldRestartFixture {
+        checkpoint: "targeted_yield_return".into(),
+        stage: stage.into(),
+        cut_kind: "durable_recovery".into(),
+        agent_id: agent_id.into(),
+        work_item_id: source.id.clone(),
+        target_work_item_id: target.id.clone(),
+        message_id: source_entry.message_id,
+        activation_id: source_activation_id,
+        target_activation_id: Some(target_activation_id),
+        continuation_id: continuation.id,
+        replay_applied: stage == "replay" && replay_applied,
+        replay_exactly_once,
+        source_status: work_status_name(&source_demand.status),
+        target_status: work_status_name(&target_demand.status),
+        focus_work_item_id: snapshot.focus,
+    })
 }
 
 async fn seed_scheduler_wait_trigger_restart_fixture(
@@ -1409,6 +1922,445 @@ fn scheduler_restart_fixture_message_id(agent_id: &str, body: &MessageBody) -> S
     hasher.update(b"\0ingress_queue_admission\0");
     hasher.update(serde_json::to_vec(body).expect("message body serialization cannot fail"));
     format!("msg_restart_{:x}", hasher.finalize())
+}
+
+async fn seed_scheduler_legacy_adoption_restart_fixture(
+    config: &AppConfig,
+    agent_id: &str,
+    stage: &str,
+    objective: String,
+) -> Result<SchedulerLegacyAdoptionRestartFixture> {
+    super::require_scheduler_acceptance_fixtures_enabled()?;
+    let runtime_db =
+        RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
+    crate::scheduler_rollout::reconcile_from_env(&runtime_db)?;
+    let agent_home = config.agent_root_dir().join(agent_id);
+    std::fs::create_dir_all(&agent_home)
+        .with_context(|| format!("creating agent home {}", agent_home.display()))?;
+    let runtime = RuntimeHandle::new_offline_with_runtime_db(
+        agent_id,
+        agent_home,
+        InitialWorkspaceBinding::Detached,
+        runtime_db,
+    )?;
+
+    if stage == "prepare" {
+        if !work_items_for_agent(&runtime, agent_id)?.is_empty() {
+            return Err(anyhow!(
+                "scheduler legacy adoption prepare requires fresh agent state"
+            ));
+        }
+        runtime
+            .create_work_item(
+                format!("{objective} first"),
+                Some(WorkItemPlanStatus::Ready),
+                None,
+                Vec::new(),
+            )
+            .await?;
+        runtime
+            .create_work_item(
+                format!("{objective} second"),
+                Some(WorkItemPlanStatus::Ready),
+                None,
+                Vec::new(),
+            )
+            .await?;
+        let report = super::scheduler_recovery_report(
+            &runtime.inner.storage,
+            &runtime.inner.runtime_db,
+            agent_id,
+        )?;
+        let eligible = report
+            .legacy_adoptions
+            .iter()
+            .filter(|candidate| candidate.eligible && candidate.proposed_command.is_some())
+            .collect::<Vec<_>>();
+        if eligible.len() != 2 {
+            return Err(anyhow!(
+                "scheduler legacy adoption expected two eligible candidates, found {}",
+                eligible.len()
+            ));
+        }
+        let stale_work_item_id = eligible[1].work_item_id.clone();
+        let stale = runtime
+            .inner
+            .runtime_db
+            .work_items()
+            .latest(&stale_work_item_id)?
+            .ok_or_else(|| anyhow!("legacy adoption stale WorkItem is missing"))?;
+        runtime
+            .update_work_item_fields(
+                stale_work_item_id.clone(),
+                Some(format!("{} stale", stale.objective)),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await?;
+        let error = super::apply_scheduler_recovery_plan(
+            &runtime.inner.storage,
+            &runtime.inner.runtime_db,
+            agent_id,
+            &report,
+        )
+        .expect_err("stale legacy adoption report must be rejected");
+        if !error.to_string().contains("legacy adoption source changed") {
+            return Err(error).context("unexpected legacy adoption rollback failure");
+        }
+        let partition_initialized = runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_scheduler_protocol_snapshot_if_initialized(agent_id)?
+            .is_some();
+        if partition_initialized {
+            return Err(anyhow!(
+                "stale legacy adoption report left partial canonical state"
+            ));
+        }
+        return Ok(SchedulerLegacyAdoptionRestartFixture {
+            checkpoint: "legacy_adoption_atomicity".into(),
+            stage: stage.into(),
+            cut_kind: "atomic_rollback".into(),
+            agent_id: agent_id.into(),
+            work_item_id: stale_work_item_id,
+            precommit_fault_rolled_back: true,
+            replay_applied: false,
+            replay_exactly_once: false,
+            partition_initialized,
+            work_status: None,
+            focus_work_item_id: None,
+        });
+    }
+    if stage != "replay" && stage != "verify" {
+        return Err(anyhow!(
+            "scheduler restart checkpoint legacy_adoption_atomicity does not support stage {stage}"
+        ));
+    }
+
+    let work_items = work_items_for_agent(&runtime, agent_id)?;
+    let stale = work_items
+        .iter()
+        .find(|record| record.objective.ends_with(" stale"))
+        .ok_or_else(|| anyhow!("legacy adoption stale WorkItem is missing after restart"))?;
+    let report = super::scheduler_recovery_report(
+        &runtime.inner.storage,
+        &runtime.inner.runtime_db,
+        agent_id,
+    )?;
+    let replay_applied = if stage == "replay" {
+        super::apply_scheduler_recovery_plan(
+            &runtime.inner.storage,
+            &runtime.inner.runtime_db,
+            agent_id,
+            &report,
+        )? == 1
+    } else {
+        false
+    };
+    let snapshot = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot(agent_id)?;
+    let stale_demand = snapshot
+        .work
+        .get(&stale.id)
+        .ok_or_else(|| anyhow!("legacy adoption stale demand is missing"))?;
+    let replay_exactly_once = snapshot.work.len() == work_items.len()
+        && work_items.iter().all(|record| {
+            snapshot.work.get(&record.id).is_some_and(|demand| {
+                demand.metadata_revision == record.revision
+                    && demand.scheduling_generation == record.revision.max(1)
+                    && demand.status == WorkStatus::Runnable
+            })
+        });
+    if !replay_exactly_once {
+        return Err(anyhow!(
+            "scheduler legacy adoption did not converge atomically"
+        ));
+    }
+    if stage == "verify"
+        && super::apply_scheduler_recovery_plan(
+            &runtime.inner.storage,
+            &runtime.inner.runtime_db,
+            agent_id,
+            &report,
+        )? != 0
+    {
+        return Err(anyhow!(
+            "scheduler legacy adoption verify applied duplicate state"
+        ));
+    }
+    Ok(SchedulerLegacyAdoptionRestartFixture {
+        checkpoint: "legacy_adoption_atomicity".into(),
+        stage: stage.into(),
+        cut_kind: "atomic_rollback".into(),
+        agent_id: agent_id.into(),
+        work_item_id: stale.id.clone(),
+        precommit_fault_rolled_back: stage == "verify",
+        replay_applied: stage == "replay" && replay_applied,
+        replay_exactly_once,
+        partition_initialized: true,
+        work_status: Some(work_status_name(&stale_demand.status)),
+        focus_work_item_id: snapshot.focus,
+    })
+}
+
+fn scheduler_hard_blocker_event(
+    runtime: &RuntimeHandle,
+    message_id: &str,
+) -> Result<Option<crate::types::AuditEvent>> {
+    Ok(runtime
+        .inner
+        .storage
+        .read_recent_events(256)?
+        .into_iter()
+        .find(|event| {
+            event.kind == "scheduler_authority_hard_blocker"
+                && event.data["message_id"].as_str() == Some(message_id)
+        }))
+}
+
+async fn seed_scheduler_preclaim_fallback_restart_fixture(
+    config: &AppConfig,
+    agent_id: &str,
+    stage: &str,
+    objective: String,
+) -> Result<SchedulerPreclaimFallbackRestartFixture> {
+    super::require_scheduler_acceptance_fixtures_enabled()?;
+    let runtime_db =
+        RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
+    if stage == "prepare" {
+        crate::scheduler_rollout::reconcile_from_env(&runtime_db)?;
+    }
+    let agent_home = config.agent_root_dir().join(agent_id);
+    std::fs::create_dir_all(&agent_home)
+        .with_context(|| format!("creating agent home {}", agent_home.display()))?;
+    let runtime = RuntimeHandle::new_offline_with_runtime_db(
+        agent_id,
+        agent_home,
+        InitialWorkspaceBinding::Detached,
+        runtime_db,
+    )?;
+    let scenario_class = SchedulerScenarioClass::ExactTaskRejoin;
+
+    if stage == "prepare" {
+        if !work_items_for_agent(&runtime, agent_id)?.is_empty()
+            || !queue_entries_for_agent(&runtime, agent_id)?.is_empty()
+        {
+            return Err(anyhow!(
+                "scheduler preclaim fallback prepare requires fresh agent state"
+            ));
+        }
+        if runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .scheduler_scenario_mode(scenario_class)?
+            != ScenarioMode::Authoritative
+        {
+            return Err(anyhow!(
+                "scheduler preclaim fallback requires authoritative exact task rejoin"
+            ));
+        }
+        let work_item = runtime
+            .create_work_item(objective, Some(WorkItemPlanStatus::Ready), None, Vec::new())
+            .await?;
+        runtime.pick_work_item(work_item.id.clone()).await?;
+        let task_id = format!("scheduler-preclaim-task-{agent_id}");
+        runtime
+            .register_wait_for(
+                agent_id,
+                Some(work_item.id.clone()),
+                WaitForWakeKind::TaskResult,
+                Some(task_id.clone()),
+                "scheduler preclaim fallback waiting for task result".into(),
+                None,
+            )
+            .await?;
+        runtime
+            .persist_task_transition(
+                &TaskRecord {
+                    id: task_id.clone(),
+                    agent_id: agent_id.into(),
+                    kind: TaskKind::CommandTask,
+                    status: TaskStatus::Completed,
+                    created_at: Utc::now(),
+                    updated_at: Utc::now(),
+                    parent_message_id: None,
+                    work_item_id: Some(work_item.id.clone()),
+                    summary: Some("scheduler preclaim fallback task".into()),
+                    detail: None,
+                    recovery: None,
+                },
+                "task_completed",
+            )
+            .await?;
+        let message =
+            enqueue_scheduler_wait_trigger(&runtime, agent_id, &work_item.id, &task_id).await?;
+        if !matches!(
+            scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+                .poll()
+                .await?,
+            scheduler_executor::RunLoopPoll::Idle
+        ) {
+            return Err(anyhow!(
+                "scheduler preclaim hard blocker did not retain the queued message"
+            ));
+        }
+        let entry = queue_entries_for_agent(&runtime, agent_id)?
+            .into_iter()
+            .find(|entry| entry.message_id == message.id)
+            .ok_or_else(|| anyhow!("scheduler preclaim queue entry is missing"))?;
+        let event = scheduler_hard_blocker_event(&runtime, &message.id)?
+            .ok_or_else(|| anyhow!("scheduler preclaim hard blocker event is missing"))?;
+        let blocker_code = event.data["blocker_code"]
+            .as_str()
+            .ok_or_else(|| anyhow!("scheduler preclaim blocker code is missing"))?
+            .to_string();
+        let rollout = runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_scheduler_rollout_state()?;
+        let matching_blockers = rollout
+            .hard_blockers
+            .iter()
+            .filter(|blocker| {
+                blocker.scenario_class == scenario_class.as_str()
+                    && blocker.blocker_code == blocker_code
+            })
+            .count();
+        let scenario_mode = runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .scheduler_scenario_mode(scenario_class)?;
+        if entry.status != QueueEntryStatus::Queued
+            || scenario_mode != ScenarioMode::Shadow
+            || matching_blockers != 1
+            || event.data["queue_disposition"].as_str() != Some("retained_queued")
+        {
+            return Err(anyhow!(
+                "scheduler preclaim blocker did not atomically retain queue and roll back authority"
+            ));
+        }
+        return Ok(SchedulerPreclaimFallbackRestartFixture {
+            checkpoint: "preclaim_hard_blocker_fallback".into(),
+            stage: stage.into(),
+            cut_kind: "durable_recovery".into(),
+            agent_id: agent_id.into(),
+            work_item_id: work_item.id,
+            message_id: message.id.clone(),
+            activation_id: scheduler_executor::canonical_activation_id(&message.id),
+            task_id,
+            scenario_class: scenario_class.as_str().into(),
+            blocker_code,
+            hard_blocker_count: matching_blockers,
+            blocker_event_observed: true,
+            fallback_claimed: false,
+            replay_applied: false,
+            replay_exactly_once: false,
+            queue_status: "queued".into(),
+            scenario_mode: "shadow".into(),
+        });
+    }
+    if stage != "replay" && stage != "verify" {
+        return Err(anyhow!(
+            "scheduler restart checkpoint preclaim_hard_blocker_fallback does not support stage {stage}"
+        ));
+    }
+
+    let work_item = work_items_for_agent(&runtime, agent_id)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow!("scheduler preclaim fallback WorkItem is missing"))?;
+    let entry_before = queue_entry_for_work_item(&runtime, agent_id, &work_item.id)?
+        .ok_or_else(|| anyhow!("scheduler preclaim fallback queue entry is missing"))?;
+    let message = runtime
+        .inner
+        .storage
+        .read_message_by_id(&entry_before.message_id)?
+        .ok_or_else(|| anyhow!("scheduler preclaim fallback message is missing"))?;
+    let task_id = match &message.origin {
+        MessageOrigin::Task { task_id } => task_id.clone(),
+        _ => {
+            return Err(anyhow!(
+                "scheduler preclaim fallback message is not a task result"
+            ))
+        }
+    };
+    let event = scheduler_hard_blocker_event(&runtime, &message.id)?
+        .ok_or_else(|| anyhow!("scheduler preclaim fallback blocker event is missing"))?;
+    let blocker_code = event.data["blocker_code"]
+        .as_str()
+        .ok_or_else(|| anyhow!("scheduler preclaim fallback blocker code is missing"))?
+        .to_string();
+    let fallback_claimed = if stage == "replay" && entry_before.status == QueueEntryStatus::Queued {
+        claim_scheduler_message(&runtime, &message.id).await?;
+        true
+    } else {
+        false
+    };
+    let entry = queue_entry_for_work_item(&runtime, agent_id, &work_item.id)?
+        .ok_or_else(|| anyhow!("scheduler preclaim fallback queue entry disappeared"))?;
+    let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+    let canonical_activation_absent = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot_if_initialized(agent_id)?
+        .is_none_or(|snapshot| !snapshot.activations.contains_key(&activation_id));
+    let rollout = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_rollout_state()?;
+    let matching_blockers = rollout
+        .hard_blockers
+        .iter()
+        .filter(|blocker| {
+            blocker.scenario_class == scenario_class.as_str()
+                && blocker.blocker_code == blocker_code
+        })
+        .count();
+    let scenario_mode = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .scheduler_scenario_mode(scenario_class)?;
+    let replay_exactly_once = entry.status == QueueEntryStatus::Dequeued
+        && canonical_activation_absent
+        && scenario_mode == ScenarioMode::Shadow
+        && matching_blockers == 1
+        && event.data["queue_disposition"].as_str() == Some("retained_queued");
+    if !replay_exactly_once {
+        return Err(anyhow!(
+            "scheduler preclaim fallback did not claim exactly once through legacy dispatch"
+        ));
+    }
+    Ok(SchedulerPreclaimFallbackRestartFixture {
+        checkpoint: "preclaim_hard_blocker_fallback".into(),
+        stage: stage.into(),
+        cut_kind: "durable_recovery".into(),
+        agent_id: agent_id.into(),
+        work_item_id: work_item.id,
+        message_id: message.id,
+        activation_id,
+        task_id,
+        scenario_class: scenario_class.as_str().into(),
+        blocker_code,
+        hard_blocker_count: matching_blockers,
+        blocker_event_observed: true,
+        fallback_claimed,
+        replay_applied: stage == "replay" && fallback_claimed,
+        replay_exactly_once,
+        queue_status: "dequeued".into(),
+        scenario_mode: "shadow".into(),
+    })
 }
 
 async fn seed_scheduler_authority_rollback_restart_fixture(
