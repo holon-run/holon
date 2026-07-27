@@ -77,15 +77,26 @@ Stop between mode changes. Inspect resumable state with `status`; remove the
 container, network, volume, and private control token with `cleanup` only after
 all reports have been retained.
 
-`exercise` currently runs one real model-driven pass for each selected scenario.
-The persisted iterations, concurrency, duplicate, and stale parameters describe
-the later stress matrix and are not silently expanded into repeated model turns.
-Keep them at their defaults until the stress executor is enabled.
+`exercise` expands the persisted parameters into a deterministic stress plan:
+
+- `iterations` runs every selected scenario that many times.
+- `concurrency` creates that many dedicated `drill-agent-*` workers on the same
+  candidate node; each worker runs its assigned operations in order.
+- `duplicate-ratio` schedules duplicate trigger/rearm races.
+- `stale-ratio` schedules stale trigger, out-of-order ingress, and wrong
+  WorkItem-fence cases when the selected scenarios support them.
+
+Every operation writes isolated evidence plus `stress-plan.json`,
+`stress-results.json`, and `stress-summary.json`. The phase is marked failed
+only after all workers finish, so one failure does not discard the remaining
+evidence.
 
 ## Evidence decision
 
 The collector reports No-Go when any production scenario lacks comparison
 evidence, a comparison diverges, a current-revision hard blocker exists, JSON
 evidence is malformed, or canonical activation/settlement/delivery tail state
-is inconsistent. Historical hard blockers remain visible but do not count as
-current unless their config/manifest/preflight fences match current authority.
+is inconsistent. It also requires the recorded stress operations and planned
+injections to have completed; declared parameters alone never satisfy coverage.
+Historical hard blockers remain visible but do not count as current unless
+their config/manifest/preflight fences match current authority.

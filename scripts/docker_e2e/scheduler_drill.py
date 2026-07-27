@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import copy
+import hashlib
 import json
 import os
 import re
@@ -12,10 +14,13 @@ import shutil
 import sqlite3
 import stat
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from math import ceil
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .runner import (
     CaseHarness,
@@ -72,6 +77,13 @@ EXACT_WAIT_RESUME_TRIGGERS = (
     "operator_wake",
 )
 RUN_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{5,63}$")
+FAULT_SCENARIOS = {
+    "exact_wait_resume": "stale",
+    "settlement": "stale",
+    "delivery": "stale",
+    "reducer_only_candidates": "out_of_order",
+    "explicitly_bound_operator_input": "wrong_fence",
+}
 
 
 @dataclass(frozen=True)
@@ -92,6 +104,171 @@ class DrillPaths:
             snapshots=resolved / "snapshots",
             workspace=resolved / "workspace",
         )
+
+
+@dataclass(frozen=True)
+class StressOperation:
+    sequence: int
+    iteration: int
+    worker: int
+    scenario: str
+    marker: str
+    duplicate: bool
+    fault: str | None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "sequence": self.sequence,
+            "iteration": self.iteration,
+            "worker": self.worker,
+            "scenario": self.scenario,
+            "marker": self.marker,
+            "duplicate": self.duplicate,
+            "fault": self.fault,
+        }
+
+
+def build_stress_plan(
+    *,
+    scenarios: list[str],
+    iterations: int,
+    concurrency: int,
+    duplicate_ratio: float,
+    stale_ratio: float,
+    seed: str,
+) -> list[StressOperation]:
+    require(iterations > 0, "stress iterations must be positive")
+    require(concurrency > 0, "stress concurrency must be positive")
+    require(bool(scenarios), "stress plan requires at least one scenario")
+    require(
+        0.0 <= duplicate_ratio <= 1.0,
+        "stress duplicate ratio must be between 0 and 1",
+    )
+    require(
+        0.0 <= stale_ratio <= 1.0,
+        "stress stale ratio must be between 0 and 1",
+    )
+    unknown = sorted(set(scenarios) - set(PRODUCTION_SCENARIOS))
+    require(not unknown, f"unknown stress scenarios: {', '.join(unknown)}")
+    operation_count = iterations * len(scenarios)
+    blueprints = [
+        (iteration, scenario)
+        for iteration in range(1, iterations + 1)
+        for scenario in scenarios
+    ]
+    duplicate_candidates = {
+        sequence
+        for sequence, (_, scenario) in enumerate(blueprints)
+        if scenario in {"exact_wait_resume", "settlement", "delivery"}
+    }
+    duplicate_target = min(
+        len(duplicate_candidates),
+        ceil(operation_count * duplicate_ratio),
+    )
+    duplicates = set(
+        sorted(
+            duplicate_candidates,
+            key=lambda sequence: hashlib.sha256(
+                f"{seed}:duplicate:{sequence}".encode()
+            ).digest(),
+        )[:duplicate_target]
+    )
+    fault_candidates: dict[str, list[int]] = {
+        fault: [] for fault in dict.fromkeys(FAULT_SCENARIOS.values())
+    }
+    for sequence, (_, scenario) in enumerate(blueprints):
+        if scenario in FAULT_SCENARIOS:
+            fault_candidates[FAULT_SCENARIOS[scenario]].append(sequence)
+    for fault, sequences in fault_candidates.items():
+        sequences.sort(
+            key=lambda sequence: hashlib.sha256(
+                f"{seed}:{fault}:{sequence}".encode()
+            ).digest()
+        )
+    available_fault_types = sum(bool(sequences) for sequences in fault_candidates.values())
+    fault_target = min(
+        sum(len(sequences) for sequences in fault_candidates.values()),
+        max(
+            available_fault_types if stale_ratio > 0 else 0,
+            ceil(operation_count * stale_ratio),
+        ),
+    )
+    selected_faults: dict[int, str] = {}
+    fault_order = list(fault_candidates)
+    while len(selected_faults) < fault_target:
+        advanced = False
+        for fault in fault_order:
+            if fault_candidates[fault]:
+                selected_faults[fault_candidates[fault].pop(0)] = fault
+                advanced = True
+                if len(selected_faults) == fault_target:
+                    break
+        if not advanced:
+            break
+    plan: list[StressOperation] = []
+    for sequence, (iteration, scenario) in enumerate(blueprints):
+        digest = hashlib.sha256(
+            f"{seed}:{scenario}:{iteration}".encode()
+        ).hexdigest()
+        plan.append(
+            StressOperation(
+                sequence=sequence,
+                iteration=iteration,
+                worker=sequence % concurrency,
+                scenario=scenario,
+                marker=digest[:10],
+                duplicate=sequence in duplicates,
+                fault=selected_faults.get(sequence),
+            )
+        )
+    return plan
+
+
+def execute_stress_plan(
+    plan: list[StressOperation],
+    *,
+    concurrency: int,
+    run_operation: Callable[[StressOperation], dict[str, Any] | None],
+) -> list[dict[str, Any]]:
+    require(concurrency > 0, "stress concurrency must be positive")
+    worker_plans: dict[int, list[StressOperation]] = {
+        worker: [] for worker in range(concurrency)
+    }
+    for operation in plan:
+        worker_plans[operation.worker].append(operation)
+
+    def run_worker(operations: list[StressOperation]) -> list[dict[str, Any]]:
+        results = []
+        for operation in operations:
+            started = time.monotonic()
+            try:
+                detail = run_operation(operation) or {}
+                result = {
+                    **operation.as_dict(),
+                    "status": "completed",
+                    "duration_seconds": round(time.monotonic() - started, 3),
+                    "detail": detail,
+                }
+            except Exception as error:
+                result = {
+                    **operation.as_dict(),
+                    "status": "failed",
+                    "duration_seconds": round(time.monotonic() - started, 3),
+                    "error": f"{type(error).__name__}: {error}",
+                }
+            results.append(result)
+        return results
+
+    results: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=concurrency) as executor:
+        futures = [
+            executor.submit(run_worker, operations)
+            for operations in worker_plans.values()
+            if operations
+        ]
+        for future in as_completed(futures):
+            results.extend(future.result())
+    return sorted(results, key=lambda result: result["sequence"])
 
 
 def default_run_id() -> str:
@@ -381,29 +558,289 @@ def wait_seed_completion(
     )
 
 
-def exercise_reducer_ingress(harness: CaseHarness, marker: str) -> None:
+def exercise_reducer_ingress(
+    harness: CaseHarness,
+    marker: str,
+    *,
+    duplicate: bool = False,
+    out_of_order: bool = False,
+) -> dict[str, Any]:
+    webhook_body = {"drill": marker, "surface": "webhook"}
     webhook = harness.request(
         "POST",
         f"/api/webhooks/generic/{harness.agent_id}",
-        {"drill": marker, "surface": "webhook"},
+        webhook_body,
     )
     write_json(harness.evidence / "reducer-webhook.json", webhook)
-    harness.wait_agent_idle()
+    if duplicate:
+        write_json(
+            harness.evidence / "reducer-webhook-duplicate.json",
+            harness.request(
+                "POST",
+                f"/api/webhooks/generic/{harness.agent_id}",
+                webhook_body,
+            ),
+        )
+    channel_body = {
+        "kind": "channel_event",
+        "json": {"drill": marker, "surface": "channel"},
+        "origin": {
+            "kind": "channel",
+            "channel_id": f"drill-{marker}",
+            "sender_id": "scheduler-drill",
+        },
+    }
     channel = harness.request(
         "POST",
         harness.agent_path("enqueue"),
-        {
-            "kind": "channel_event",
-            "json": {"drill": marker, "surface": "channel"},
-            "origin": {
-                "kind": "channel",
-                "channel_id": f"drill-{marker}",
-                "sender_id": "scheduler-drill",
-            },
-        },
+        channel_body,
     )
     write_json(harness.evidence / "reducer-channel.json", channel)
-    harness.wait_agent_idle()
+    if duplicate:
+        write_json(
+            harness.evidence / "reducer-channel-duplicate.json",
+            harness.request(
+                "POST",
+                harness.agent_path("enqueue"),
+                channel_body,
+            ),
+        )
+    if out_of_order:
+        ordered_responses = []
+        for sequence in (2, 1):
+            response = harness.request(
+                "POST",
+                harness.agent_path("enqueue"),
+                {
+                    "kind": "channel_event",
+                    "json": {
+                        "drill": marker,
+                        "surface": "out_of_order",
+                        "sequence": sequence,
+                    },
+                    "origin": {
+                        "kind": "channel",
+                        "channel_id": f"drill-order-{marker}",
+                        "sender_id": "scheduler-drill",
+                    },
+                },
+            )
+            ordered_responses.append(response)
+            write_json(
+                harness.evidence / f"reducer-out-of-order-{sequence}.json",
+                response,
+            )
+    harness.wait_queue_drained()
+    out_of_order_ids = []
+    if out_of_order:
+        out_of_order_ids = [response["message_id"] for response in ordered_responses]
+        snapshot = harness.runtime_db_snapshot("reducer-out-of-order")
+        queue_rows = [
+            row
+            for row in snapshot["queue_entries"]
+            if row["message_id"] in set(out_of_order_ids)
+        ]
+        require(
+            len(queue_rows) == 2
+            and all(row["status"] == "processed" for row in queue_rows),
+            f"out-of-order ingress was not fully processed: {queue_rows}",
+        )
+        queue_by_id = {row["message_id"]: row for row in queue_rows}
+        require(
+            queue_by_id[out_of_order_ids[0]]["created_at"]
+            <= queue_by_id[out_of_order_ids[1]]["created_at"],
+            "out-of-order ingress persistence order changed",
+        )
+    return {
+        "duplicate_requests": 4 if duplicate else 0,
+        "out_of_order_requests": 2 if out_of_order else 0,
+        "out_of_order_message_ids": out_of_order_ids,
+    }
+
+
+def wait_for_rearmed_work_item(
+    harness: CaseHarness,
+    *,
+    objective: str,
+    previous_revision: int,
+    label: str,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + harness.timeout_seconds
+    matches: list[dict[str, Any]] = []
+    while time.monotonic() < deadline:
+        items = harness.request("GET", harness.agent_path("work-items?limit=50"))
+        matches = [
+            item for item in items if objective in item.get("objective", "")
+        ]
+        if matches and matches[0].get("state") == "completed":
+            write_json(harness.evidence / f"{label}-premature.json", items)
+            raise AssertionError(
+                "duplicate trigger consumed the rearmed wait generation"
+            )
+        if (
+            len(matches) == 1
+            and matches[0].get("scheduling_state") == "waiting_external"
+            and int(matches[0].get("revision", 0)) > previous_revision
+        ):
+            write_json(harness.evidence / f"{label}.json", items)
+            harness.wait_agent_asleep()
+            return matches[0]
+        time.sleep(0.5)
+    write_json(harness.evidence / f"{label}-timeout.json", matches)
+    raise TimeoutError("timed out waiting for duplicate-trigger wait rearm")
+
+
+def exercise_wait_rearm_race(
+    harness: CaseHarness,
+    marker: str,
+) -> dict[str, Any]:
+    objective = f"DRILL-WAIT-REARM-{marker}"
+    completion = f"DRILL-WAIT-REARM-COMPLETE-{marker}"
+    callback = harness.reset_callback("wait-rearm-callback")
+    harness.prompt(
+        "wait-rearm-seed",
+        DRILL_PREFIX
+        + "1. Call CreateWorkItem with objective "
+        f"{json.dumps(objective)}, plan_status ready, and exactly two todos: "
+        "rearm pending and final-resume pending.\n"
+        "2. Call PickWorkItem for that WorkItem.\n"
+        "3. Call WaitFor with wake=external and a concrete reason. Do not pass a resource.\n"
+        "4. STOP without completing the WorkItem.\n"
+        "On the first later resume: call GetWorkItem, mark only rearm completed, "
+        "call WaitFor with wake=external again without a resource, and STOP.\n"
+        "On the second later resume: call GetWorkItem, mark both todos completed, "
+        f"emit a report containing {completion}, and call CompleteWorkItem.",
+    )
+    initial = harness.wait_work_item_scheduling_state(
+        objective_marker=objective,
+        expected_scheduling_state="waiting_external",
+        label="wait-rearm-initial",
+    )
+    harness.wait_agent_asleep()
+    before = harness.state("wait-rearm-before-first")
+    baseline = int(before["agent"]["agent"]["turn_index"])
+    first = harness.fire_callback(
+        "wait-rearm-first",
+        callback["trigger_url"],
+        {"drill": marker, "trigger": "duplicate-first"},
+    )
+    wait_for_running_turn(
+        harness,
+        baseline_turn=baseline,
+        label="wait-rearm-first-running",
+    )
+    duplicate = harness.fire_callback(
+        "wait-rearm-duplicate",
+        callback["trigger_url"],
+        {"drill": marker, "trigger": "duplicate-second"},
+    )
+    require(
+        first.get("disposition") == "triggered",
+        f"first callback was not a fresh trigger: {first}",
+    )
+    require(
+        duplicate.get("disposition") == "coalesced",
+        f"duplicate callback did not land in the running generation: {duplicate}",
+    )
+    rearmed = wait_for_rearmed_work_item(
+        harness,
+        objective=objective,
+        previous_revision=int(initial.get("revision", 0)),
+        label="wait-rearm-second-generation",
+    )
+    final = harness.fire_callback(
+        "wait-rearm-final",
+        callback["trigger_url"],
+        {"drill": marker, "trigger": "fresh-after-rearm"},
+    )
+    require(
+        final.get("disposition") == "triggered",
+        f"fresh callback did not trigger the rearmed wait: {final}",
+    )
+    harness.wait_work_item(
+        objective_marker=objective,
+        expected_state="completed",
+        label="wait-rearm-completed",
+    )
+    return {
+        "initial_revision": int(initial.get("revision", 0)),
+        "rearmed_revision": int(rearmed.get("revision", 0)),
+        "first_disposition": first.get("disposition"),
+        "duplicate_disposition": duplicate.get("disposition"),
+        "final_disposition": final.get("disposition"),
+    }
+
+
+def exercise_wrong_fence(harness: CaseHarness, marker: str) -> dict[str, Any]:
+    objective = f"DRILL-WRONG-FENCE-TARGET-{marker}"
+    completion = f"DRILL-WRONG-FENCE-COMPLETE-{marker}"
+    harness.prompt(
+        "wrong-fence-seed",
+        DRILL_PREFIX
+        + "1. Call CreateWorkItem with objective "
+        f"{json.dumps(objective)}, plan_status ready, and one todo named bound-input pending.\n"
+        "2. Call PickWorkItem for that WorkItem.\n"
+        "3. Call WaitFor with wake=operator_input and a concrete reason.\n"
+        "4. STOP without completing the WorkItem.\n"
+        "When correctly resumed later: call GetWorkItem, mark the todo completed, "
+        f"emit a report containing {completion}, and call CompleteWorkItem.",
+    )
+    target = harness.wait_work_item_scheduling_state(
+        objective_marker=objective,
+        expected_scheduling_state="waiting_operator",
+        label="wrong-fence-target-waiting",
+    )
+    bogus_work_item_id = f"work-drill-missing-{marker}"
+    before = harness.state("wrong-fence-before")
+    baseline = int(before["agent"]["agent"]["turn_index"])
+    response = harness.request(
+        "POST",
+        harness.agent_path("prompt", control=True),
+        {
+            "text": (
+                f"Scheduler drill wrong WorkItem fence {marker}. "
+                "Do not create or modify WorkItems; answer with the marker only."
+            ),
+            "work_item_id": bogus_work_item_id,
+        },
+    )
+    write_json(harness.evidence / "wrong-fence-response.json", response)
+    wait_for_turn_after(harness, baseline, "wrong-fence-finished")
+    items = harness.work_items("wrong-fence-check")
+    matches = [
+        item
+        for item in items
+        if item.get("id") == bogus_work_item_id
+    ]
+    require(not matches, "wrong WorkItem fence unexpectedly created a WorkItem")
+    target_matches = [
+        item for item in items if item.get("id") == target["id"]
+    ]
+    require(
+        len(target_matches) == 1
+        and target_matches[0].get("scheduling_state") == "waiting_operator",
+        "wrong WorkItem fence resumed the target WorkItem",
+    )
+    correct = harness.request(
+        "POST",
+        harness.agent_path("prompt", control=True),
+        {
+            "text": f"Resume the exact bound WorkItem and follow its objective. {marker}",
+            "work_item_id": target["id"],
+        },
+    )
+    write_json(harness.evidence / "right-fence-response.json", correct)
+    harness.wait_work_item(
+        objective_marker=objective,
+        expected_state="completed",
+        label="right-fence-completed",
+    )
+    return {
+        "wrong_work_item_id": bogus_work_item_id,
+        "target_work_item_id": target["id"],
+        "target_remained_waiting": True,
+        "correct_fence_completed": True,
+    }
 
 
 def exercise_wait_triggers(harness: CaseHarness, marker: str) -> None:
@@ -669,61 +1106,232 @@ def exercise_interjection(harness: CaseHarness, marker: str) -> None:
     wait_for_turn_after(harness, baseline, "interjection-finished")
 
 
+def stress_agent_id(run_id: str, worker: int) -> str:
+    digest = hashlib.sha256(run_id.encode()).hexdigest()[:12]
+    return f"drill-agent-{digest}-w{worker + 1}"
+
+
+def prepare_stress_harnesses(
+    harness: CaseHarness,
+    *,
+    run_id: str,
+    concurrency: int,
+) -> dict[int, CaseHarness]:
+    workers = {}
+    for worker in range(concurrency):
+        agent_id = stress_agent_id(run_id, worker)
+        harness.request(
+            "POST",
+            f"/api/control/agents/{agent_id}/create",
+            {},
+        )
+        worker_harness = copy.copy(harness)
+        worker_harness.agent_id = agent_id
+        worker_harness.evidence = harness.evidence / f"worker-{worker + 1}"
+        worker_harness.evidence.mkdir(parents=True, exist_ok=True)
+        worker_harness.wait_agent_idle()
+        workers[worker] = worker_harness
+    return workers
+
+
+def exercise_scenario_operation(
+    harness: CaseHarness,
+    operation: StressOperation,
+) -> dict[str, Any]:
+    harness.wait_queue_drained()
+    injection: dict[str, Any] = {}
+    if operation.duplicate:
+        injection["duplicate"] = exercise_wait_rearm_race(
+            harness,
+            f"{operation.marker}-duplicate",
+        )
+    if operation.fault == "stale":
+        injection["stale"] = exercise_wait_rearm_race(
+            harness,
+            f"{operation.marker}-stale",
+        )
+    if operation.fault == "wrong_fence":
+        injection["wrong_fence"] = exercise_wrong_fence(harness, operation.marker)
+
+    if operation.scenario == "reducer_only_candidates":
+        detail = exercise_reducer_ingress(
+            harness,
+            operation.marker,
+            duplicate=False,
+            out_of_order=operation.fault == "out_of_order",
+        )
+        if operation.fault == "out_of_order":
+            injection["out_of_order"] = {
+                "requests": detail["out_of_order_requests"],
+            }
+    elif operation.scenario == "exact_wait_resume":
+        exercise_wait_triggers(harness, operation.marker)
+    elif operation.scenario in {
+        "work_item_autonomous_continuation",
+        "exact_task_rejoin",
+    }:
+        exercise_continuations(harness, operation.marker)
+    elif operation.scenario == "explicitly_bound_operator_input":
+        exercise_bound_operator(harness, operation.marker)
+    elif operation.scenario == "operator_interjection":
+        exercise_interjection(harness, operation.marker)
+    elif operation.scenario in {"settlement", "delivery"}:
+        exercise_wait_triggers(harness, f"{operation.marker}-wait")
+        exercise_continuations(harness, f"{operation.marker}-continuation")
+    else:
+        raise AssertionError(f"unsupported scenario: {operation.scenario}")
+
+    harness.capture_context("operation-final")
+    return {"injections": injection}
+
+
+def stress_result_summary(
+    plan: list[StressOperation],
+    results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    scenario_planned = {scenario: 0 for scenario in PRODUCTION_SCENARIOS}
+    scenario_completed = {scenario: 0 for scenario in PRODUCTION_SCENARIOS}
+    injection_planned = {
+        "duplicate": 0,
+        "stale": 0,
+        "out_of_order": 0,
+        "wrong_fence": 0,
+    }
+    injection_completed = dict.fromkeys(injection_planned, 0)
+    for operation in plan:
+        scenario_planned[operation.scenario] += 1
+        if operation.duplicate:
+            injection_planned["duplicate"] += 1
+        if operation.fault is not None:
+            injection_planned[operation.fault] += 1
+    for result in results:
+        if result["status"] != "completed":
+            continue
+        scenario_completed[result["scenario"]] += 1
+        injections = result.get("detail", {}).get("injections", {})
+        for injection in injection_completed:
+            if injection in injections:
+                injection_completed[injection] += 1
+    failures = [result for result in results if result["status"] != "completed"]
+    return {
+        "operation_count": len(plan),
+        "completed_count": len(plan) - len(failures),
+        "failed_count": len(failures),
+        "max_workers": len({operation.worker for operation in plan}),
+        "scenario_planned": scenario_planned,
+        "scenario_completed": scenario_completed,
+        "injection_planned": injection_planned,
+        "injection_completed": injection_completed,
+        "failures": failures,
+    }
+
+
 def exercise_scenarios(args: argparse.Namespace) -> int:
     paths = DrillPaths.from_root(args.run_dir)
     record = load_record(paths)
     validate_record(paths, record)
     require(container_running(record["resources"]["container"]), "candidate is not running")
-    harness = make_harness(
-        paths,
-        record,
-        label=f"exercise-{len(record['phase_history']) + 1}",
-        mode=record.get("last_mode") or "shadow",
-        env_file=None,
-        require_credentials=False,
+    phase_label = f"exercise-{len(record['phase_history']) + 1}"
+    selected = list(
+        dict.fromkeys(args.scenario or record["parameters"]["scenarios"])
     )
-    attach_running(harness)
-    selected = set(args.scenario or record["parameters"]["scenarios"])
-    marker = secrets.token_hex(5)
-    if "reducer_only_candidates" in selected:
-        harness.wait_queue_drained()
-        exercise_reducer_ingress(harness, marker)
-    if selected.intersection(
-        {
-            "exact_wait_resume",
-            "settlement",
-            "delivery",
-        }
-    ):
-        harness.wait_queue_drained()
-        # Use a distinct marker so reducer ingress signals (which carry the
-        # shared marker) cannot accidentally match wait-trigger WaitFor
-        # resources and wake the agent prematurely.
-        wt_marker = secrets.token_hex(5)
-        exercise_wait_triggers(harness, wt_marker)
-    if selected.intersection(
-        {
-            "work_item_autonomous_continuation",
-            "exact_task_rejoin",
-            "settlement",
-            "delivery",
-        }
-    ):
-        harness.wait_queue_drained()
-        exercise_continuations(harness, marker)
-    if "explicitly_bound_operator_input" in selected:
-        harness.wait_queue_drained()
-        exercise_bound_operator(harness, marker)
-    if "operator_interjection" in selected:
-        harness.wait_queue_drained()
-        exercise_interjection(harness, marker)
-    harness.capture_context("exercise-final")
+    parameters = record["parameters"]
+    evidence_path = paths.phases / phase_label
+    plan: list[StressOperation] = []
+    try:
+        harness = make_harness(
+            paths,
+            record,
+            label=phase_label,
+            mode=record.get("last_mode") or "shadow",
+            env_file=None,
+            require_credentials=False,
+        )
+        attach_running(harness)
+        plan = build_stress_plan(
+            scenarios=selected,
+            iterations=int(parameters["iterations"]),
+            concurrency=int(parameters["concurrency"]),
+            duplicate_ratio=float(parameters["duplicate_ratio"]),
+            stale_ratio=float(parameters["stale_ratio"]),
+            seed=f"{record['drill_run_id']}:{phase_label}",
+        )
+        write_json(
+            harness.evidence / "stress-plan.json",
+            [item.as_dict() for item in plan],
+        )
+        workers = prepare_stress_harnesses(
+            harness,
+            run_id=record["drill_run_id"],
+            concurrency=int(parameters["concurrency"]),
+        )
+
+        def run_operation(operation: StressOperation) -> dict[str, Any]:
+            operation_harness = copy.copy(workers[operation.worker])
+            operation_harness.evidence = (
+                harness.evidence
+                / f"operation-{operation.sequence + 1:06d}-{operation.scenario}"
+            )
+            operation_harness.evidence.mkdir(parents=True, exist_ok=False)
+            return exercise_scenario_operation(operation_harness, operation)
+
+        results = execute_stress_plan(
+            plan,
+            concurrency=int(parameters["concurrency"]),
+            run_operation=run_operation,
+        )
+    except Exception as error:
+        setup_error = f"{type(error).__name__}: {error}"
+        evidence_path.mkdir(parents=True, exist_ok=True)
+        results = [
+            {
+                **operation.as_dict(),
+                "status": "failed",
+                "duration_seconds": 0.0,
+                "error": f"stress setup failed: {setup_error}",
+            }
+            for operation in plan
+        ]
+        write_json(evidence_path / "stress-results.json", results)
+        summary = stress_result_summary(plan, results)
+        summary["setup_error"] = setup_error
+        write_json(evidence_path / "stress-summary.json", summary)
+        append_phase(
+            paths,
+            record,
+            action="exercise",
+            status="failed",
+            detail={
+                "mode": record.get("last_mode"),
+                "mode_session": int(record.get("mode_session", 0)),
+                "scenarios": selected,
+                "stress": summary,
+                "evidence": str(evidence_path),
+            },
+        )
+        raise AssertionError(
+            f"stress setup failed; see {evidence_path}: {setup_error}"
+        ) from error
+    write_json(harness.evidence / "stress-results.json", results)
+    summary = stress_result_summary(plan, results)
+    write_json(harness.evidence / "stress-summary.json", summary)
+    status = "completed" if summary["failed_count"] == 0 else "failed"
     append_phase(
         paths,
         record,
         action="exercise",
-        status="completed",
-        detail={"scenarios": sorted(selected), "marker": marker},
+        status=status,
+        detail={
+            "mode": record.get("last_mode"),
+            "mode_session": int(record.get("mode_session", 0)),
+            "scenarios": selected,
+            "stress": summary,
+            "evidence": str(harness.evidence),
+        },
+    )
+    require(
+        summary["failed_count"] == 0,
+        f"{summary['failed_count']} stress operations failed; see {harness.evidence}",
     )
     return 0
 
@@ -1034,10 +1642,121 @@ def scenario_mode_mismatches(
     ]
 
 
+def aggregate_stress_coverage(
+    record: dict[str, Any],
+    *,
+    expected_mode: str | None,
+    expected_mode_session: int,
+) -> dict[str, Any]:
+    scenarios = list(record["parameters"]["scenarios"])
+    iterations = int(record["parameters"]["iterations"])
+    scenario_planned = {scenario: 0 for scenario in PRODUCTION_SCENARIOS}
+    scenario_completed = {scenario: 0 for scenario in PRODUCTION_SCENARIOS}
+    injection_planned = {
+        "duplicate": 0,
+        "stale": 0,
+        "out_of_order": 0,
+        "wrong_fence": 0,
+    }
+    injection_completed = dict.fromkeys(injection_planned, 0)
+    operation_count = 0
+    completed_count = 0
+    failed_count = 0
+    phases = []
+    failed_phases = []
+    latest_phase_status = None
+    for phase in record.get("phase_history", []):
+        stress = phase.get("detail", {}).get("stress")
+        if phase.get("action") != "exercise" or not isinstance(stress, dict):
+            continue
+        phase_mode = phase.get("detail", {}).get("mode")
+        phase_mode_session = int(
+            phase.get("detail", {}).get("mode_session", 0)
+        )
+        if (
+            phase_mode != expected_mode
+            or phase_mode_session != expected_mode_session
+        ):
+            continue
+        latest_phase_status = phase.get("status")
+        phases.append(
+            {
+                "at": phase.get("at"),
+                "status": phase.get("status"),
+                "mode": phase_mode,
+                "mode_session": phase_mode_session,
+                "evidence": phase.get("detail", {}).get("evidence"),
+            }
+        )
+        if phase.get("status") != "completed":
+            failed_phases.append(phases[-1])
+            continue
+        operation_count += int(stress.get("operation_count", 0))
+        completed_count += int(stress.get("completed_count", 0))
+        failed_count += int(stress.get("failed_count", 0))
+        for scenario in scenario_planned:
+            scenario_planned[scenario] += int(
+                stress.get("scenario_planned", {}).get(scenario, 0)
+            )
+            scenario_completed[scenario] += int(
+                stress.get("scenario_completed", {}).get(scenario, 0)
+            )
+        for injection in injection_planned:
+            injection_planned[injection] += int(
+                stress.get("injection_planned", {}).get(injection, 0)
+            )
+            injection_completed[injection] += int(
+                stress.get("injection_completed", {}).get(injection, 0)
+            )
+    scenario_shortfalls = {
+        scenario: {
+            "required": iterations,
+            "completed": scenario_completed[scenario],
+        }
+        for scenario in scenarios
+        if scenario_completed[scenario] < iterations
+    }
+    injection_shortfalls = {
+        injection: {
+            "planned": injection_planned[injection],
+            "completed": injection_completed[injection],
+        }
+        for injection in injection_planned
+        if injection_completed[injection] < injection_planned[injection]
+    }
+    required_injections = [
+        injection
+        for injection, planned in injection_planned.items()
+        if planned > 0
+    ]
+    missing_required_injections = [
+        injection
+        for injection in required_injections
+        if injection_completed[injection] == 0
+    ]
+    return {
+        "phases": phases,
+        "failed_phases": failed_phases,
+        "latest_phase_status": latest_phase_status,
+        "operation_count": operation_count,
+        "completed_count": completed_count,
+        "failed_count": failed_count,
+        "scenario_planned": scenario_planned,
+        "scenario_completed": scenario_completed,
+        "scenario_shortfalls": scenario_shortfalls,
+        "injection_planned": injection_planned,
+        "injection_completed": injection_completed,
+        "injection_shortfalls": injection_shortfalls,
+        "required_injections": required_injections,
+        "missing_required_injections": missing_required_injections,
+    }
+
+
 def evidence_summary(
     evidence: dict[str, Any],
     *,
     expected_mode: str | None = None,
+    stress: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     json_failures = parse_json_columns(evidence)
     counts = {scenario: 0 for scenario in PRODUCTION_SCENARIOS}
@@ -1126,6 +1845,19 @@ def evidence_summary(
         "no_incomplete_turn": not evidence["incomplete_turns"],
         "no_queue_tail": not queue_tail,
     }
+    if stress is not None:
+        checks.update(
+            {
+                "stress_scenarios_executed": not stress["scenario_shortfalls"],
+                "stress_operations_completed": stress["failed_count"] == 0,
+                "latest_stress_phase_completed": stress["latest_phase_status"]
+                == "completed",
+                "stress_injections_completed": not stress["injection_shortfalls"],
+                "required_stress_injections_observed": not stress[
+                    "missing_required_injections"
+                ],
+            }
+        )
     return {
         "status": "go" if all(checks.values()) else "no-go",
         "checks": checks,
@@ -1142,6 +1874,7 @@ def evidence_summary(
         "settlement_inconsistencies": settlement_inconsistencies,
         "delivery_inconsistencies": delivery_inconsistencies,
         "queue_tail": queue_tail,
+        "stress": stress,
     }
 
 
@@ -1169,6 +1902,29 @@ def render_report(
         f"| `{scenario}` | {summary['scenario_counts'][scenario]} |"
         for scenario in PRODUCTION_SCENARIOS
     )
+    stress = summary.get("stress")
+    if stress is not None:
+        lines.extend(
+            [
+                "",
+                "## Stress execution",
+                "",
+                f"- Operations: {stress['completed_count']} completed / "
+                f"{stress['operation_count']} planned; {stress['failed_count']} failed",
+                f"- Scenario shortfalls: {len(stress['scenario_shortfalls'])}",
+                f"- Injection shortfalls: {len(stress['injection_shortfalls'])}",
+                f"- Missing required injection types: "
+                f"{', '.join(stress['missing_required_injections']) or 'none'}",
+                "",
+                "| Injection | Planned | Completed |",
+                "|---|---:|---:|",
+            ]
+        )
+        lines.extend(
+            f"| `{injection}` | {stress['injection_planned'][injection]} | "
+            f"{stress['injection_completed'][injection]} |"
+            for injection in stress["injection_planned"]
+        )
     lines.extend(
         [
             "",
@@ -1272,6 +2028,7 @@ def prepare(args: argparse.Namespace) -> int:
         },
         "phase_history": [],
         "last_mode": None,
+        "mode_session": 0,
         "last_snapshot": None,
         "schema_revision": None,
     }
@@ -1307,13 +2064,19 @@ def start_candidate(args: argparse.Namespace) -> int:
         env_file=env_file,
     )
     harness.start()
+    if record.get("last_mode") != args.mode:
+        record["mode_session"] = int(record.get("mode_session", 0)) + 1
     record["last_mode"] = args.mode
     append_phase(
         paths,
         record,
         action="start",
         status="completed",
-        detail={"mode": args.mode, "agent_id": harness.agent_id},
+        detail={
+            "mode": args.mode,
+            "mode_session": record["mode_session"],
+            "agent_id": harness.agent_id,
+        },
     )
     print(harness.base_url)
     return 0
@@ -1363,7 +2126,15 @@ def collect(args: argparse.Namespace) -> int:
     database = copy_stopped_volume(record, destination)
     evidence = collect_database(database)
     shutil.rmtree(destination / "state")
-    summary = evidence_summary(evidence, expected_mode=record.get("last_mode"))
+    summary = evidence_summary(
+        evidence,
+        expected_mode=record.get("last_mode"),
+        stress=aggregate_stress_coverage(
+            record,
+            expected_mode=record.get("last_mode"),
+            expected_mode_session=int(record.get("mode_session", 0)),
+        ),
+    )
     payload = {
         "schema_version": EVIDENCE_SCHEMA_VERSION,
         "drill_run_id": record["drill_run_id"],
@@ -1403,6 +2174,7 @@ def status(args: argparse.Namespace) -> int:
         "drill_run_id": record["drill_run_id"],
         "run_dir": str(paths.root),
         "last_mode": record.get("last_mode"),
+        "mode_session": int(record.get("mode_session", 0)),
         "last_snapshot": record.get("last_snapshot"),
         "schema_revision": record.get("schema_revision"),
         "container_running": container_running(record["resources"]["container"]),
