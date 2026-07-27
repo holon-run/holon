@@ -13,6 +13,11 @@ from scripts.docker_e2e import scheduler_drill as drill
 
 
 class SchedulerDrillTests(unittest.TestCase):
+    def test_drill_prefix_is_a_scoped_operator_request(self) -> None:
+        self.assertIn("current operator turn", drill.DRILL_PREFIX)
+        self.assertNotIn("OVERRIDES", drill.DRILL_PREFIX)
+        self.assertNotIn("system prompt", drill.DRILL_PREFIX)
+
     def test_default_models_match_candidate_route(self) -> None:
         args = drill.parse_args(["preflight", "--skip-build"])
         if args.fallback_model is None:

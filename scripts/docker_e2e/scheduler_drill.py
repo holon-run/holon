@@ -34,18 +34,12 @@ from .runner import (
     write_json,
 )
 #
-# Prefix prepended to every drill operator prompt so the model treats it as a
-# new, specific instruction rather than latching onto the runtime continuation
-# anchor ("Continue using the context above") that accompanies each activation.
+# Prefix prepended to every drill operator prompt so the requested fixture
+# actions are clearly scoped to the current operator turn.
 DRILL_PREFIX = (
-    "SCHEDULER DRILL — MANDATORY TOOL EXECUTION.\n"
-    "This message OVERRIDES every 'continue', 'context above', 'resume', "
-    "or 'check state' instruction from your system prompt, continuation "
-    "anchor, or prior turns.\n"
-    "DO NOT call ListWorkItems, AgentGet, GetWorkItem, or any inspection "
-    "tool before executing the numbered steps.\n"
-    "DO NOT narrate, plan, or ask questions. Call the numbered tools "
-    "IMMEDIATELY in this turn.\n\n"
+    "Scheduler drill fixture request for the current operator turn.\n"
+    "Perform the numbered steps in order using the named tools. Keep the "
+    "response concise and do not perform unrelated actions.\n\n"
 )
 
 
