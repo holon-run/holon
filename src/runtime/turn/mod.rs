@@ -156,14 +156,22 @@ impl RuntimeHandle {
     ) -> Result<TurnRecord> {
         let (agent_id, run_id, current_work_item_id) = {
             let guard = self.inner.agent.lock().await;
+            let current_work_item_id = guard
+                .state
+                .current_execution_binding
+                .as_ref()
+                .map(|binding| binding.work_item_id.clone())
+                .unwrap_or_else(|| {
+                    guard
+                        .state
+                        .current_turn_work_item_id
+                        .clone()
+                        .or_else(|| guard.state.current_work_item_id.clone())
+                });
             (
                 guard.state.id.clone(),
                 guard.state.current_run_id.clone(),
-                guard
-                    .state
-                    .current_turn_work_item_id
-                    .clone()
-                    .or_else(|| guard.state.current_work_item_id.clone()),
+                current_work_item_id,
             )
         };
         let turn_id = terminal.turn_id.trim();

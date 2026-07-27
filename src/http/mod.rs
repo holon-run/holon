@@ -543,6 +543,10 @@ pub fn router(state: AppState) -> Router {
             post(control::control_wake),
         )
         .route(
+            "/control/agents/{agent_id}/scheduler-repair",
+            get(control::scheduler_repair_inspect).post(control::scheduler_repair_apply),
+        )
+        .route(
             "/callbacks/enqueue/{callback_token}",
             post(ingress::callback_ingress_enqueue)
                 .layer(DefaultBodyLimit::max(CALLBACK_BODY_LIMIT_BYTES)),

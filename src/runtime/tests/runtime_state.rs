@@ -4,8 +4,8 @@ use crate::domain::scheduler_protocol::{
     ActivationCause, ActivationSlot, AgentDispatchState, Decision,
     ObservationalDivergenceAllowance, ProtocolMode, RollbackAction, RollbackPolicy,
     RollbackTrigger, RolloutClassEvidence, RolloutCommand, RolloutManifest, ScenarioMode,
-    SchedulerScenarioClass, Snapshot, WaitGenerationRecord, WaitIdentity, WaitRecord, WaitState,
-    WorkDemand, WorkStatus,
+    SchedulerOwner, SchedulerScenarioClass, Snapshot, WaitGenerationRecord, WaitIdentity,
+    WaitRecord, WaitState, WorkDemand, WorkStatus,
 };
 use crate::types::{
     ActiveSkillRecord, AuthorityClass, BriefKind, BriefRecord, CompletionReportState,
@@ -395,7 +395,9 @@ fn canonical_waiting_snapshot(
                 generations: std::collections::BTreeMap::from([(
                     wait_generation,
                     WaitGenerationRecord {
-                        owner_work_item_id: work_item.id.clone(),
+                        owner: SchedulerOwner::WorkItem {
+                            work_item_id: work_item.id.clone(),
+                        },
                         state: WaitState::Active,
                         trigger: None,
                         consuming_activation_id: None,
@@ -2364,7 +2366,9 @@ async fn production_protocol_claim_and_settlement_release_the_canonical_slot() {
         claimed.slot,
         ActivationSlot::Running {
             activation_id: activation_id.clone(),
-            work_item_id: work_item.id.clone(),
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: work_item.id.clone(),
+            },
             admitted_generation: work_item.revision,
             recovery_for: None,
         }
@@ -2568,7 +2572,7 @@ async fn production_protocol_wait_settlement_creates_rejoinable_wait_generation(
     assert!(matches!(
         rejoined.slot,
         ActivationSlot::Running {
-            ref work_item_id,
+            owner: SchedulerOwner::WorkItem { ref work_item_id },
             admitted_generation,
             ..
         } if work_item_id == &work_item.id && admitted_generation == wait_generation
@@ -2813,7 +2817,9 @@ async fn exact_task_rejoin_claim_is_atomic_and_restart_safe() {
         claimed.slot,
         ActivationSlot::Running {
             activation_id: activation_id.clone(),
-            work_item_id: work_item.id.clone(),
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: work_item.id.clone(),
+            },
             admitted_generation: work_item.revision,
             recovery_for: None,
         }
@@ -3354,7 +3360,9 @@ async fn authoritative_explicit_operator_binding_ignores_unrelated_waits() {
             generations: std::collections::BTreeMap::from([(
                 unrelated.revision,
                 WaitGenerationRecord {
-                    owner_work_item_id: unrelated.id,
+                    owner: SchedulerOwner::WorkItem {
+                        work_item_id: unrelated.id,
+                    },
                     state: WaitState::Active,
                     trigger: None,
                     consuming_activation_id: None,
@@ -9044,6 +9052,182 @@ async fn agent_scoped_wait_replacement_preserves_work_item_scoped_waits() {
         .unwrap();
     assert!(active.iter().any(|wait| wait.id == scoped.condition.id));
     assert!(active.iter().any(|wait| wait.id == agent_wait.condition.id));
+}
+
+#[tokio::test]
+async fn scheduler_repair_dry_run_and_apply_cancel_agent_wait() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let wait = runtime
+        .register_wait_for(
+            "default",
+            None,
+            WaitForWakeKind::External,
+            Some("github:test/repo#1".into()),
+            "repair stale wait".into(),
+            None,
+        )
+        .await
+        .unwrap()
+        .condition;
+    let inspected_wait = runtime
+        .inspect_scheduler_repair()
+        .await
+        .unwrap()
+        .active_waits
+        .into_iter()
+        .find(|candidate| candidate.id == wait.id)
+        .unwrap();
+    let request = crate::runtime::SchedulerRepairRequest {
+        dry_run: true,
+        reason: "operator repair".into(),
+        operation: crate::runtime::SchedulerRepairOperation::CancelWait {
+            wait_id: wait.id.clone(),
+            expected_status: inspected_wait.status.clone(),
+            expected_updated_at: inspected_wait.updated_at,
+        },
+    };
+    let dry_run = runtime.apply_scheduler_repair(request).await.unwrap();
+    assert!(dry_run.dry_run);
+    assert_eq!(
+        runtime
+            .storage()
+            .raw_active_wait_conditions_for_agent("default")
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let applied = runtime
+        .apply_scheduler_repair(crate::runtime::SchedulerRepairRequest {
+            dry_run: false,
+            reason: "operator repair".into(),
+            operation: crate::runtime::SchedulerRepairOperation::CancelWait {
+                wait_id: wait.id.clone(),
+                expected_status: inspected_wait.status,
+                expected_updated_at: inspected_wait.updated_at,
+            },
+        })
+        .await
+        .unwrap();
+    assert!(applied.changed);
+    assert!(runtime
+        .storage()
+        .raw_active_wait_conditions_for_agent("default")
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn scheduler_repair_only_drops_wake_only_queue_entries_with_occ() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let mut wake_message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "wake_hint".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Next,
+        MessageBody::Text {
+            text: "wake hint".into(),
+        },
+    );
+    wake_message.normalize_admission_fields();
+    let queued_at = Utc::now();
+    let entry = QueueEntryRecord {
+        message_id: wake_message.id.clone(),
+        agent_id: "default".into(),
+        priority: Priority::Next,
+        status: QueueEntryStatus::Queued,
+        created_at: queued_at,
+        updated_at: queued_at,
+    };
+    runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .commit_queue(&crate::runtime_db::transitions::QueueTransitionCommand {
+            agent_id: "default".into(),
+            operation: crate::runtime_db::transitions::QueueOperation::Admit,
+            mutation: crate::runtime_db::transitions::QueueMutation::Upsert(entry.clone()),
+            scheduler_claim_work_item: None,
+            scheduler_protocol_bootstrap: None,
+            scheduler_protocol_commands: Vec::new(),
+            scheduler_authority_scenarios: Vec::new(),
+            scheduler_rollout_expectations: Vec::new(),
+            agent_state: None,
+            message_evidence: vec![wake_message],
+            transcript_entries: Vec::new(),
+            turn_record: None,
+            audit_events: Vec::new(),
+            scheduler_shadow_comparison: None,
+            scheduler_wait_resume_shadow_comparison: None,
+            scheduler_delivery_shadow_comparison: None,
+            scheduler_semantic_shadow: None,
+            notify_scheduler: false,
+            fault: None,
+            brief_evidence: Vec::new(),
+        })
+        .unwrap();
+
+    let result = runtime
+        .apply_scheduler_repair(crate::runtime::SchedulerRepairRequest {
+            dry_run: false,
+            reason: "drop stale wake".into(),
+            operation: crate::runtime::SchedulerRepairOperation::DropWakeOnlyQueueEntry {
+                message_id: entry.message_id.clone(),
+                expected_status: entry.status.clone(),
+                expected_updated_at: entry.updated_at,
+            },
+        })
+        .await
+        .unwrap();
+    assert_eq!(result.operation, "drop_wake_only_queue_entry");
+    assert_eq!(
+        runtime
+            .storage()
+            .latest_queue_entries()
+            .unwrap()
+            .into_iter()
+            .find(|candidate| candidate.message_id == entry.message_id)
+            .unwrap()
+            .status,
+        QueueEntryStatus::Dropped
+    );
+    assert!(runtime
+        .apply_scheduler_repair(crate::runtime::SchedulerRepairRequest {
+            dry_run: false,
+            reason: "stale retry".into(),
+            operation: crate::runtime::SchedulerRepairOperation::DropWakeOnlyQueueEntry {
+                message_id: entry.message_id,
+                expected_status: QueueEntryStatus::Queued,
+                expected_updated_at: entry.updated_at,
+            },
+        })
+        .await
+        .is_err());
 }
 
 #[tokio::test]

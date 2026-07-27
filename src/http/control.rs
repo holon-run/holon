@@ -56,6 +56,45 @@ pub async fn runtime_performance(
     Ok(Json(diagnostics::performance_snapshot()))
 }
 
+pub async fn scheduler_repair_inspect(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let runtime = state
+        .host
+        .get_public_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    Ok(Json(
+        runtime
+            .inspect_scheduler_repair()
+            .await
+            .map_err(error_response)?,
+    ))
+}
+
+pub async fn scheduler_repair_apply(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<crate::runtime::SchedulerRepairRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let runtime = state
+        .host
+        .get_public_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    Ok(Json(
+        runtime
+            .apply_scheduler_repair(request)
+            .await
+            .map_err(error_response)?,
+    ))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct RuntimeConfigReadResponse {
     pub ok: bool,

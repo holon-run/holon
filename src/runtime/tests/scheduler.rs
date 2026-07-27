@@ -1,8 +1,8 @@
 use super::super::*;
 use super::support::*;
 use crate::domain::scheduler_protocol::{
-    ActivationSlot, AgentDispatchState, Snapshot, WaitGenerationRecord, WaitIdentity, WaitRecord,
-    WaitState, WorkDemand, WorkStatus,
+    ActivationSlot, AgentDispatchState, SchedulerOwner, Snapshot, WaitGenerationRecord,
+    WaitIdentity, WaitRecord, WaitState, WorkDemand, WorkStatus,
 };
 use crate::types::{
     AgentPostureProjection, AgentSchedulingPosture, ToolExecutionStatus, WaitConditionKind,
@@ -128,6 +128,34 @@ fn append_active_external_wait_condition(
             wake_sources: vec![WakeSource::ExternalIngress {
                 external_trigger_id: Some(format!("trigger-{id}")),
             }],
+            continuation: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: None,
+        })
+        .unwrap();
+}
+
+fn append_operator_wait_condition(
+    storage: &AppStorage,
+    id: &str,
+    agent_id: &str,
+    work_item_id: Option<&str>,
+) {
+    storage
+        .append_wait_condition(&WaitConditionRecord {
+            id: id.into(),
+            agent_id: agent_id.into(),
+            work_item_id: work_item_id.map(ToString::to_string),
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::Operator,
+            source: Some("test".into()),
+            subject_ref: None,
+            waiting_for: format!("{id} wait"),
+            wake_sources: vec![WakeSource::OperatorInput],
             continuation: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -1489,7 +1517,9 @@ fn stale_resolved_task_wait_is_not_reused_after_work_item_moves_to_external_wait
                 generations: BTreeMap::from([(
                     2,
                     WaitGenerationRecord {
-                        owner_work_item_id: work_item.id,
+                        owner: SchedulerOwner::WorkItem {
+                            work_item_id: work_item.id,
+                        },
                         state: WaitState::Active,
                         trigger: None,
                         consuming_activation_id: None,
@@ -1542,6 +1572,193 @@ fn stale_resolved_task_wait_is_not_reused_after_work_item_moves_to_external_wait
     );
     assert!(
         scheduler::shadow_comparison_for_wait_resume(&projection, &message, &decision).is_none()
+    );
+}
+
+#[test]
+fn generic_external_wake_is_lifecycle_nudge_even_when_a_wait_matches() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    append_active_external_wait_condition(&storage, "wait-agent", "default", None);
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "wake_hint".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Next,
+        MessageBody::Text {
+            text: "generic wake".into(),
+        },
+    );
+    message
+        .source_refs
+        .insert("external_trigger_id".into(), "trigger-wait-agent".into());
+    let continuation = ContinuationResolution {
+        trigger_kind: ContinuationTriggerKind::SystemTick,
+        class: ContinuationClass::LocalContinuation,
+        model_reentry: true,
+        prior_closure_outcome: ClosureOutcome::Waiting,
+        prior_waiting_reason: Some(WaitingReason::AwaitingExternalChange),
+        matched_waiting_reason: true,
+        evidence: Vec::new(),
+    };
+    let candidate = scheduler::canonical_activation_candidate(&message, Some(&continuation), None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        scheduler::resolve_canonical_activation_scenario(&projection, &message, candidate).unwrap(),
+        Some(
+            scheduler::CanonicalActivationScenario::LifecycleExternalNudge {
+                agent_id: "default".into(),
+            }
+        )
+    );
+}
+
+#[test]
+fn correlated_wait_resume_requires_the_exact_expected_owner() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    append_active_external_wait_condition(&storage, "wait-work", "default", Some("work-a"));
+    append_active_external_wait_condition(&storage, "wait-lifecycle", "default", None);
+    let mut projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    projection.set_canonical_wait_generation_for_test("wait-work", 7);
+    projection.set_canonical_wait_generation_for_test("wait-lifecycle", 8);
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::CallbackEvent,
+        MessageOrigin::Callback {
+            descriptor_id: "callback".into(),
+            source: Some("test".into()),
+        },
+        AuthorityClass::IntegrationSignal,
+        Priority::Next,
+        MessageBody::Text {
+            text: "correlated wake".into(),
+        },
+    );
+
+    for candidate in [
+        scheduler::CanonicalActivationCandidate::ExactWaitResume {
+            expected_work_item_id: Some("work-b".into()),
+            correlated_wait: Some(("wait-work".into(), 7)),
+        },
+        scheduler::CanonicalActivationCandidate::ExactWaitResume {
+            expected_work_item_id: None,
+            correlated_wait: Some(("wait-work".into(), 7)),
+        },
+        scheduler::CanonicalActivationCandidate::ExactWaitResume {
+            expected_work_item_id: Some("work-a".into()),
+            correlated_wait: Some(("wait-lifecycle".into(), 8)),
+        },
+    ] {
+        assert_eq!(
+            scheduler::resolve_canonical_activation_scenario(&projection, &message, candidate)
+                .unwrap(),
+            None
+        );
+    }
+
+    assert_eq!(
+        scheduler::resolve_canonical_activation_scenario(
+            &projection,
+            &message,
+            scheduler::CanonicalActivationCandidate::ExactWaitResume {
+                expected_work_item_id: Some("work-a".into()),
+                correlated_wait: Some(("wait-work".into(), 7)),
+            },
+        )
+        .unwrap(),
+        Some(scheduler::CanonicalActivationScenario::ExactWaitResume {
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "work-a".into(),
+            },
+            wait_id: "wait-work".into(),
+        })
+    );
+    assert_eq!(
+        scheduler::resolve_canonical_activation_scenario(
+            &projection,
+            &message,
+            scheduler::CanonicalActivationCandidate::ExactWaitResume {
+                expected_work_item_id: None,
+                correlated_wait: Some(("wait-lifecycle".into(), 8)),
+            },
+        )
+        .unwrap(),
+        Some(scheduler::CanonicalActivationScenario::ExactWaitResume {
+            owner: SchedulerOwner::AgentLifecycle {
+                agent_id: "default".into(),
+            },
+            wait_id: "wait-lifecycle".into(),
+        })
+    );
+}
+
+#[test]
+fn unbound_operator_input_exactly_resumes_agent_wait_or_becomes_nudge() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    let continuation = ContinuationResolution {
+        trigger_kind: ContinuationTriggerKind::OperatorInput,
+        class: ContinuationClass::ResumeExpectedWait,
+        model_reentry: true,
+        prior_closure_outcome: ClosureOutcome::Waiting,
+        prior_waiting_reason: Some(WaitingReason::AwaitingOperatorInput),
+        matched_waiting_reason: true,
+        evidence: Vec::new(),
+    };
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("operator".into()),
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "continue".into(),
+        },
+    );
+
+    append_operator_wait_condition(&storage, "wait-operator", "default", None);
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let candidate = scheduler::canonical_activation_candidate(&message, Some(&continuation), None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        scheduler::resolve_canonical_activation_scenario(&projection, &message, candidate).unwrap(),
+        Some(scheduler::CanonicalActivationScenario::ExactWaitResume {
+            owner: SchedulerOwner::AgentLifecycle {
+                agent_id: "default".into(),
+            },
+            wait_id: "wait-operator".into(),
+        })
+    );
+
+    let empty_dir = tempdir().unwrap();
+    let empty_storage = AppStorage::new_for_test(empty_dir.path()).unwrap();
+    empty_storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&empty_storage, &agent).unwrap();
+    let candidate = scheduler::canonical_activation_candidate(&message, Some(&continuation), None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        scheduler::resolve_canonical_activation_scenario(&projection, &message, candidate).unwrap(),
+        Some(
+            scheduler::CanonicalActivationScenario::LifecycleExternalNudge {
+                agent_id: "default".into(),
+            }
+        )
     );
 }
 

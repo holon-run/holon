@@ -13,6 +13,442 @@ pub struct Migration {
     pub(crate) sql: &'static str,
 }
 
+fn migrate_scheduler_lifecycle_owners(
+    connection: &mut Connection,
+    migration: &Migration,
+) -> Result<()> {
+    connection.execute_batch("PRAGMA foreign_keys = OFF;")?;
+    let result = (|| -> Result<()> {
+        let transaction = connection.transaction()?;
+        transaction.execute_batch(
+            r#"
+DROP INDEX IF EXISTS idx_scheduler_activations_ordinary_admission_fence;
+DROP INDEX IF EXISTS idx_scheduler_activations_recovery_admission_fence;
+
+CREATE TABLE scheduler_activation_authorities_v37 (
+  agent_id TEXT NOT NULL,
+  authority_id TEXT NOT NULL,
+  activation_id TEXT NOT NULL,
+  owner_kind TEXT NOT NULL CHECK (owner_kind IN ('work_item', 'agent_lifecycle')),
+  owner_id TEXT NOT NULL,
+  work_item_id TEXT,
+  expected_scheduling_generation INTEGER NOT NULL CHECK (expected_scheduling_generation >= 0),
+  expected_dispatch_revision INTEGER NOT NULL CHECK (expected_dispatch_revision >= 0),
+  consumed_by_activation_id TEXT,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, authority_id),
+  UNIQUE (agent_id, activation_id),
+  UNIQUE (
+    agent_id, authority_id, activation_id, owner_kind, owner_id,
+    expected_scheduling_generation
+  ),
+  UNIQUE (
+    agent_id, authority_id, activation_id, work_item_id,
+    expected_scheduling_generation
+  ),
+  CHECK (
+    (owner_kind = 'work_item' AND work_item_id = owner_id)
+    OR (owner_kind = 'agent_lifecycle' AND work_item_id IS NULL AND owner_id = agent_id)
+  ),
+  CHECK (
+    consumed_by_activation_id IS NULL
+    OR consumed_by_activation_id = activation_id
+  )
+);
+
+CREATE TABLE scheduler_waits_v37 (
+  agent_id TEXT NOT NULL,
+  wait_id TEXT NOT NULL,
+  owner_kind TEXT NOT NULL CHECK (owner_kind IN ('work_item', 'agent_lifecycle')),
+  owner_id TEXT NOT NULL,
+  owner_work_item_id TEXT,
+  current_generation INTEGER NOT NULL CHECK (current_generation >= 0),
+  payload_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, wait_id),
+  CHECK (
+    (owner_kind = 'work_item' AND owner_work_item_id = owner_id)
+    OR (owner_kind = 'agent_lifecycle' AND owner_work_item_id IS NULL AND owner_id = agent_id)
+  )
+);
+
+CREATE TABLE scheduler_wait_generations_v37 (
+  agent_id TEXT NOT NULL,
+  wait_id TEXT NOT NULL,
+  generation INTEGER NOT NULL CHECK (generation >= 0),
+  owner_kind TEXT NOT NULL CHECK (owner_kind IN ('work_item', 'agent_lifecycle')),
+  owner_id TEXT NOT NULL,
+  owner_work_item_id TEXT,
+  lifecycle_state TEXT NOT NULL CHECK (
+    lifecycle_state IN ('active', 'triggered', 'consumed', 'resolved')
+  ),
+  trigger_id TEXT,
+  trigger_generation INTEGER CHECK (trigger_generation IS NULL OR trigger_generation >= 0),
+  consuming_activation_id TEXT,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, wait_id, generation),
+  CHECK (
+    (owner_kind = 'work_item' AND owner_work_item_id = owner_id)
+    OR (owner_kind = 'agent_lifecycle' AND owner_work_item_id IS NULL AND owner_id = agent_id)
+  ),
+  CHECK (
+    (trigger_id IS NULL AND trigger_generation IS NULL)
+    OR (trigger_id IS NOT NULL AND trigger_generation IS NOT NULL)
+  ),
+  CHECK (
+    (lifecycle_state IN ('active', 'triggered', 'resolved')
+      AND consuming_activation_id IS NULL)
+    OR (lifecycle_state = 'consumed' AND consuming_activation_id IS NOT NULL)
+  )
+);
+
+CREATE TABLE scheduler_activations_v37 (
+  agent_id TEXT NOT NULL,
+  activation_id TEXT NOT NULL,
+  authority_id TEXT NOT NULL,
+  owner_kind TEXT NOT NULL CHECK (owner_kind IN ('work_item', 'agent_lifecycle')),
+  owner_id TEXT NOT NULL,
+  work_item_id TEXT,
+  admitted_generation INTEGER NOT NULL CHECK (admitted_generation >= 0),
+  admission_kind TEXT NOT NULL CHECK (
+    admission_kind IN (
+      'scheduling', 'wait_resume', 'lifecycle_external_nudge',
+      'settlement_recovery'
+    )
+  ),
+  recovery_for_activation_id TEXT,
+  wait_id TEXT,
+  wait_generation INTEGER CHECK (wait_generation IS NULL OR wait_generation >= 0),
+  lifecycle_state TEXT NOT NULL CHECK (
+    lifecycle_state IN (
+      'admitted', 'running', 'settled', 'interrupted',
+      'cancelled', 'settlement_missing'
+    )
+  ),
+  idempotency_key TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, activation_id),
+  UNIQUE (agent_id, authority_id),
+  UNIQUE (agent_id, idempotency_key),
+  UNIQUE (agent_id, activation_id, owner_kind, owner_id, admitted_generation),
+  UNIQUE (agent_id, activation_id, work_item_id, admitted_generation),
+  CHECK (
+    (owner_kind = 'work_item' AND work_item_id = owner_id)
+    OR (owner_kind = 'agent_lifecycle' AND work_item_id IS NULL AND owner_id = agent_id)
+  ),
+  CHECK (
+    (admission_kind = 'scheduling'
+      AND recovery_for_activation_id IS NULL
+      AND wait_id IS NULL
+      AND wait_generation IS NULL)
+    OR (admission_kind = 'wait_resume'
+      AND recovery_for_activation_id IS NULL
+      AND wait_id IS NOT NULL
+      AND wait_generation IS NOT NULL)
+    OR (admission_kind = 'lifecycle_external_nudge'
+      AND recovery_for_activation_id IS NULL
+      AND wait_id IS NULL
+      AND wait_generation IS NULL
+      AND owner_kind = 'agent_lifecycle')
+    OR (admission_kind = 'settlement_recovery'
+      AND recovery_for_activation_id IS NOT NULL
+      AND wait_id IS NULL
+      AND wait_generation IS NULL
+      AND owner_kind = 'work_item')
+  )
+);
+
+CREATE TABLE scheduler_agent_slots_v37 (
+  agent_id TEXT PRIMARY KEY,
+  slot_kind TEXT NOT NULL CHECK (slot_kind IN ('idle', 'running')),
+  activation_id TEXT,
+  owner_kind TEXT CHECK (owner_kind IN ('work_item', 'agent_lifecycle')),
+  owner_id TEXT,
+  work_item_id TEXT,
+  admitted_generation INTEGER CHECK (admitted_generation IS NULL OR admitted_generation >= 0),
+  recovery_for_activation_id TEXT,
+  updated_at TEXT NOT NULL,
+  CHECK (
+    (slot_kind = 'idle'
+      AND activation_id IS NULL
+      AND owner_kind IS NULL
+      AND owner_id IS NULL
+      AND work_item_id IS NULL
+      AND admitted_generation IS NULL
+      AND recovery_for_activation_id IS NULL)
+    OR (slot_kind = 'running'
+      AND activation_id IS NOT NULL
+      AND owner_kind IS NOT NULL
+      AND owner_id IS NOT NULL
+      AND admitted_generation IS NOT NULL
+      AND (
+        (owner_kind = 'work_item' AND work_item_id = owner_id)
+        OR (owner_kind = 'agent_lifecycle' AND work_item_id IS NULL AND owner_id = agent_id)
+      ))
+  )
+);
+
+CREATE TABLE scheduler_agent_dispatch_v37 (
+  agent_id TEXT PRIMARY KEY,
+  dispatch_kind TEXT NOT NULL CHECK (dispatch_kind IN ('open', 'awaiting')),
+  wait_id TEXT,
+  wait_generation INTEGER CHECK (wait_generation IS NULL OR wait_generation >= 0),
+  dispatch_revision INTEGER NOT NULL CHECK (dispatch_revision >= 0),
+  updated_at TEXT NOT NULL,
+  CHECK (
+    (dispatch_kind = 'open' AND wait_id IS NULL AND wait_generation IS NULL)
+    OR (dispatch_kind = 'awaiting' AND wait_id IS NOT NULL AND wait_generation IS NOT NULL)
+  )
+);
+
+CREATE TABLE scheduler_agent_focus_v37 (
+  agent_id TEXT PRIMARY KEY,
+  focused_work_item_id TEXT,
+  focus_revision INTEGER NOT NULL CHECK (focus_revision >= 0),
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE scheduler_activation_settlements_v37 (
+  agent_id TEXT NOT NULL,
+  settlement_id TEXT NOT NULL,
+  activation_id TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, settlement_id),
+  UNIQUE (agent_id, activation_id)
+);
+
+CREATE TABLE scheduler_missing_settlements_v37 (
+  agent_id TEXT NOT NULL,
+  missing_settlement_id TEXT NOT NULL,
+  activation_id TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, missing_settlement_id),
+  UNIQUE (agent_id, activation_id)
+);
+
+CREATE TABLE scheduler_continuation_admissions_v37 (
+  agent_id TEXT NOT NULL,
+  admission_id TEXT NOT NULL,
+  settlement_id TEXT NOT NULL,
+  completed_work_item_id TEXT NOT NULL,
+  caller_work_item_id TEXT NOT NULL,
+  expected_caller_generation INTEGER NOT NULL CHECK (expected_caller_generation >= 0),
+  admitted_caller_generation INTEGER NOT NULL CHECK (admitted_caller_generation >= 0),
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, admission_id),
+  UNIQUE (agent_id, settlement_id)
+);
+
+CREATE TABLE scheduler_activation_sources_v37 (
+  agent_id TEXT NOT NULL,
+  activation_id TEXT NOT NULL,
+  source_kind TEXT NOT NULL CHECK (
+    source_kind IN ('task_rejoin', 'operator_input')
+  ),
+  source_identity TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, activation_id),
+  UNIQUE (agent_id, source_kind, source_identity)
+);
+
+CREATE TABLE scheduler_activation_inputs_v37 (
+  agent_id TEXT NOT NULL,
+  attachment_id TEXT NOT NULL,
+  activation_id TEXT NOT NULL,
+  work_item_id TEXT NOT NULL,
+  expected_scheduling_generation INTEGER NOT NULL CHECK (
+    expected_scheduling_generation > 0
+  ),
+  expected_dispatch_revision INTEGER NOT NULL CHECK (
+    expected_dispatch_revision >= 0
+  ),
+  message_id TEXT NOT NULL,
+  turn_id TEXT NOT NULL,
+  boundary TEXT NOT NULL,
+  round INTEGER NOT NULL CHECK (round >= 0),
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, attachment_id),
+  UNIQUE (agent_id, message_id)
+);
+
+CREATE TABLE scheduler_yield_continuations_v37 (
+  agent_id TEXT NOT NULL,
+  continuation_id TEXT NOT NULL,
+  source_work_item_id TEXT NOT NULL,
+  source_generation INTEGER NOT NULL CHECK (source_generation >= 0),
+  target_work_item_id TEXT NOT NULL,
+  target_generation INTEGER NOT NULL CHECK (target_generation >= 0),
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, continuation_id),
+  UNIQUE (agent_id, source_work_item_id),
+  CHECK (source_work_item_id != target_work_item_id)
+);
+
+INSERT INTO scheduler_activation_authorities_v37
+SELECT
+  agent_id, authority_id, activation_id, 'work_item', work_item_id, work_item_id,
+  expected_scheduling_generation, expected_dispatch_revision,
+  consumed_by_activation_id, payload_json, created_at
+FROM scheduler_activation_authorities;
+
+INSERT INTO scheduler_waits_v37
+SELECT
+  agent_id, wait_id, 'work_item', owner_work_item_id, owner_work_item_id,
+  current_generation, payload_json, updated_at
+FROM scheduler_waits;
+
+INSERT INTO scheduler_wait_generations_v37
+SELECT
+  agent_id, wait_id, generation, 'work_item', owner_work_item_id,
+  owner_work_item_id, lifecycle_state, trigger_id, trigger_generation,
+  consuming_activation_id, payload_json, created_at, updated_at
+FROM scheduler_wait_generations;
+
+INSERT INTO scheduler_activations_v37
+SELECT
+  agent_id, activation_id, authority_id, 'work_item', work_item_id, work_item_id,
+  admitted_generation, admission_kind, recovery_for_activation_id, wait_id,
+  wait_generation, lifecycle_state, idempotency_key, payload_json,
+  created_at, updated_at
+FROM scheduler_activations;
+
+INSERT INTO scheduler_agent_slots_v37
+SELECT
+  agent_id, slot_kind, activation_id,
+  CASE WHEN slot_kind = 'running' THEN 'work_item' END,
+  CASE WHEN slot_kind = 'running' THEN work_item_id END,
+  work_item_id, admitted_generation, recovery_for_activation_id, updated_at
+FROM scheduler_agent_slots;
+
+INSERT INTO scheduler_agent_dispatch_v37
+SELECT
+  agent_id, dispatch_kind, wait_id, wait_generation, dispatch_revision, updated_at
+FROM scheduler_agent_dispatch;
+
+INSERT INTO scheduler_agent_focus_v37
+SELECT agent_id, focused_work_item_id, focus_revision, updated_at
+FROM scheduler_agent_focus;
+
+INSERT INTO scheduler_activation_settlements_v37
+SELECT agent_id, settlement_id, activation_id, payload_json, created_at
+FROM scheduler_activation_settlements;
+
+INSERT INTO scheduler_missing_settlements_v37
+SELECT agent_id, missing_settlement_id, activation_id, payload_json, created_at
+FROM scheduler_missing_settlements;
+
+INSERT INTO scheduler_continuation_admissions_v37
+SELECT
+  agent_id, admission_id, settlement_id, completed_work_item_id,
+  caller_work_item_id, expected_caller_generation, admitted_caller_generation,
+  payload_json, created_at
+FROM scheduler_continuation_admissions;
+
+INSERT INTO scheduler_activation_sources_v37
+SELECT
+  agent_id, activation_id, source_kind, source_identity, payload_json, created_at
+FROM scheduler_activation_sources;
+
+INSERT INTO scheduler_activation_inputs_v37
+SELECT
+  agent_id, attachment_id, activation_id, work_item_id,
+  expected_scheduling_generation, expected_dispatch_revision, message_id,
+  turn_id, boundary, round, payload_json, created_at
+FROM scheduler_activation_inputs;
+
+INSERT INTO scheduler_yield_continuations_v37
+SELECT
+  agent_id, continuation_id, source_work_item_id, source_generation,
+  target_work_item_id, target_generation, payload_json, created_at
+FROM scheduler_yield_continuations;
+
+DROP TRIGGER IF EXISTS trg_scheduler_agent_focus_insert;
+DROP TRIGGER IF EXISTS trg_scheduler_agent_focus_update;
+DROP TRIGGER IF EXISTS trg_scheduler_work_demands_preserve_focus;
+DROP TRIGGER IF EXISTS trg_scheduler_work_demands_preserve_focus_delete;
+
+DROP TABLE scheduler_activation_inputs;
+DROP TABLE scheduler_activation_sources;
+DROP TABLE scheduler_yield_continuations;
+DROP TABLE scheduler_continuation_admissions;
+DROP TABLE scheduler_missing_settlements;
+DROP TABLE scheduler_activation_settlements;
+DROP TABLE scheduler_agent_dispatch;
+DROP TABLE scheduler_agent_focus;
+DROP TABLE scheduler_agent_slots;
+DROP TABLE scheduler_wait_generations;
+DROP TABLE scheduler_waits;
+DROP TABLE scheduler_activations;
+DROP TABLE scheduler_activation_authorities;
+
+ALTER TABLE scheduler_activation_authorities_v37
+  RENAME TO scheduler_activation_authorities;
+ALTER TABLE scheduler_waits_v37 RENAME TO scheduler_waits;
+ALTER TABLE scheduler_wait_generations_v37 RENAME TO scheduler_wait_generations;
+ALTER TABLE scheduler_activations_v37 RENAME TO scheduler_activations;
+ALTER TABLE scheduler_agent_slots_v37 RENAME TO scheduler_agent_slots;
+ALTER TABLE scheduler_agent_dispatch_v37 RENAME TO scheduler_agent_dispatch;
+ALTER TABLE scheduler_agent_focus_v37 RENAME TO scheduler_agent_focus;
+ALTER TABLE scheduler_activation_settlements_v37
+  RENAME TO scheduler_activation_settlements;
+ALTER TABLE scheduler_missing_settlements_v37
+  RENAME TO scheduler_missing_settlements;
+ALTER TABLE scheduler_continuation_admissions_v37
+  RENAME TO scheduler_continuation_admissions;
+ALTER TABLE scheduler_activation_sources_v37
+  RENAME TO scheduler_activation_sources;
+ALTER TABLE scheduler_activation_inputs_v37
+  RENAME TO scheduler_activation_inputs;
+ALTER TABLE scheduler_yield_continuations_v37
+  RENAME TO scheduler_yield_continuations;
+
+CREATE UNIQUE INDEX idx_scheduler_activations_ordinary_admission_fence
+  ON scheduler_activations(
+    agent_id, owner_kind, owner_id, admitted_generation
+  )
+  WHERE admission_kind IN ('scheduling', 'wait_resume', 'lifecycle_external_nudge');
+
+CREATE UNIQUE INDEX idx_scheduler_activations_recovery_admission_fence
+  ON scheduler_activations(
+    agent_id, owner_kind, owner_id, admitted_generation,
+    recovery_for_activation_id
+  )
+  WHERE admission_kind = 'settlement_recovery';
+
+CREATE INDEX IF NOT EXISTS idx_scheduler_wait_generations_state
+  ON scheduler_wait_generations(agent_id, lifecycle_state);
+CREATE INDEX IF NOT EXISTS idx_scheduler_activations_state
+  ON scheduler_activations(agent_id, lifecycle_state);
+CREATE INDEX IF NOT EXISTS idx_scheduler_activation_inputs_activation
+  ON scheduler_activation_inputs(agent_id, activation_id, round);
+"#,
+        )?;
+        transaction.execute(
+            "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
+            (
+                migration.version,
+                migration.name,
+                Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            ),
+        )?;
+        transaction.commit()?;
+        Ok(())
+    })();
+    connection.execute_batch("PRAGMA foreign_keys = ON;")?;
+    result
+}
+
 fn preflight_work_item_focus(connection: &Connection) -> Result<()> {
     let invalid_agent_focus = connection
         .query_row(
@@ -1807,6 +2243,11 @@ CREATE TABLE IF NOT EXISTS scheduler_yield_continuations (
 );
 "#,
     },
+    Migration {
+        version: 37,
+        name: "scheduler_lifecycle_owners",
+        sql: "",
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -1840,6 +2281,9 @@ pub(crate) fn apply_migration(connection: &mut Connection, migration: &Migration
             );
         }
         return Ok(());
+    }
+    if migration.name == "scheduler_lifecycle_owners" {
+        return migrate_scheduler_lifecycle_owners(connection, migration);
     }
 
     let transaction = connection.transaction()?;

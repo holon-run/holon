@@ -250,6 +250,7 @@ Completed WorkItems do not participate in scheduling.
 WaitFor {
   reason: String
   wake: operator_input | task_result | external
+  work_item_id: Option<String>
   resource: Option<String>
   recheck_after_ms: Option<u64>
 }
@@ -269,9 +270,10 @@ Rules:
 - `recheck_after_ms` is optional. When present, it records a fallback recheck
   deadline at `now + recheck_after_ms`; when omitted, the wait has no fallback
   recheck deadline.
-- if a current open WorkItem exists, the wait is WorkItem-scoped;
-- if no current open WorkItem exists, the wait is agent-scoped;
-- to wait on another WorkItem, the agent must pick it first.
+- explicit `work_item_id` selects an open WorkItem owned by the same agent;
+- otherwise the current activation's authoritative WorkItem binding wins,
+  followed by current turn binding and durable focus;
+- if none exists, the wait is owned by `AgentLifecycle(agent_id)`.
 
 WorkItem-scoped `WaitFor` replaces active waits on that WorkItem, writes
 `blocked_by=reason` for display, writes `recheck_at` only when
@@ -287,6 +289,9 @@ Agent-scoped `WaitFor` has no WorkItem record to mutate. When
 relative delay and absolute `recheck_at` so scheduler diagnostics can classify
 the external wait as recoverable.
 
+The tool result returns the resolved tagged owner. A lifecycle activation must
+not inherit an unrelated durable focus when selecting the wait owner.
+
 Mapping:
 
 | `wake` | `WaitCondition.kind` | `subject_ref` | `wake_sources` |
@@ -295,12 +300,18 @@ Mapping:
 | `external` | `External` | `resource` when present | `ExternalIngress { external_trigger_id: None }` |
 | `operator_input` | `Operator` | `resource` when present | `OperatorInput` |
 
-Terminal task results resolve matching task wait conditions and clear the
-matching `WaitFor` blocker text. Operator and external wakeups record
-reconciliation signals but do not automatically resolve the wait or mutate the
-WorkItem, because the agent must inspect the new evidence.
+Terminal task results and operator input may exactly resume a matching wait
+when the runtime can prove its identity. Generic external wakeups use a
+lifecycle nudge and do not automatically resolve the wait or mutate a
+WorkItem, because the agent must inspect the new evidence. `resource` is
+intent/context, not proof that a wake matches that object.
 
 `CompleteWorkItem` cancels active WorkItem-scoped waits.
+
+Authenticated operator repair is a separate control path. It supports
+inspection, dry-run, expected-state cancellation of active waits, and
+expected-state dropping of queued/interrupted wake-only entries. Repairs use
+the normal transition repository and audit ledger rather than direct SQL.
 
 ## Superseded Phase 0: blocked WorkItem recheck fallback
 

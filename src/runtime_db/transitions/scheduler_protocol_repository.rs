@@ -22,8 +22,9 @@ use crate::domain::scheduler_protocol::{
     LegacyWaitAdoption, MissingSettlementRecord, ProtocolCommand, ProtocolConflict,
     ProtocolConflictKind, ProtocolMode, RollbackAction, RollbackTrigger, RolloutCommand,
     RolloutManifest, RolloutPreflightRecord, RolloutPreflightState, RolloutState,
-    ScenarioAuthority, ScenarioHardBlockerRecord, ScenarioMode, SchedulerScenarioClass, Snapshot,
-    WaitGenerationRecord, WaitIdentity, WaitRecord, WaitState, WorkDemand, WorkStatus,
+    ScenarioAuthority, ScenarioHardBlockerRecord, ScenarioMode, SchedulerOwner,
+    SchedulerScenarioClass, Snapshot, WaitGenerationRecord, WaitIdentity, WaitRecord, WaitState,
+    WaitTrigger, WorkDemand, WorkStatus,
 };
 use crate::domain::scheduler_semantic::{
     resolve_semantic_proposal, validate_semantic_decision_input, validate_semantic_provider_config,
@@ -361,7 +362,9 @@ fn activation_authority_scenario(
         }
         ActivationCause::MessageIngress { .. } => SchedulerScenarioClass::ReducerOnlyCandidates,
         ActivationCause::TaskRejoin { .. } => SchedulerScenarioClass::ExactTaskRejoin,
-        ActivationCause::WaitResume { .. } => SchedulerScenarioClass::ExactWaitResume,
+        ActivationCause::WaitResume { .. } | ActivationCause::LifecycleExternalNudge { .. } => {
+            SchedulerScenarioClass::ExactWaitResume
+        }
         ActivationCause::WorkItemRunnable { .. }
         | ActivationCause::WorkItemRecheck { .. }
         | ActivationCause::InternalFollowup { .. } => {
@@ -2194,22 +2197,26 @@ fn persist_agent_snapshot_tx(
     }
 
     for (wait_id, wait) in &snapshot.waits {
-        let owner_work_item_id = wait
+        let owner = &wait
             .generations
             .get(&wait.current_generation)
             .ok_or_else(|| anyhow!("wait {wait_id} has no current generation"))?
-            .owner_work_item_id
-            .as_str();
+            .owner;
+        let (owner_kind, owner_id, owner_work_item_id) = scheduler_owner_columns(owner);
         tx.execute(
             "INSERT INTO scheduler_waits (
                agent_id,
                wait_id,
+               owner_kind,
+               owner_id,
                owner_work_item_id,
                current_generation,
                payload_json,
                updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(agent_id, wait_id) DO UPDATE SET
+               owner_kind = excluded.owner_kind,
+               owner_id = excluded.owner_id,
                owner_work_item_id = excluded.owner_work_item_id,
                current_generation = excluded.current_generation,
                payload_json = excluded.payload_json,
@@ -2217,6 +2224,8 @@ fn persist_agent_snapshot_tx(
             params![
                 agent_id,
                 wait_id,
+                owner_kind,
+                owner_id,
                 owner_work_item_id,
                 to_i64(wait.current_generation, "wait generation")?,
                 serde_json::to_string(wait)?,
@@ -2239,11 +2248,14 @@ fn persist_agent_snapshot_tx(
             } else {
                 enum_token(&record.state)?
             };
+            let (owner_kind, owner_id, owner_work_item_id) = scheduler_owner_columns(&record.owner);
             tx.execute(
                 "INSERT INTO scheduler_wait_generations (
                    agent_id,
                    wait_id,
                    generation,
+                   owner_kind,
+                   owner_id,
                    owner_work_item_id,
                    lifecycle_state,
                    trigger_id,
@@ -2252,8 +2264,10 @@ fn persist_agent_snapshot_tx(
                    payload_json,
                    created_at,
                    updated_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?9, ?9)
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?11, ?11)
                  ON CONFLICT(agent_id, wait_id, generation) DO UPDATE SET
+                   owner_kind = excluded.owner_kind,
+                   owner_id = excluded.owner_id,
                    owner_work_item_id = excluded.owner_work_item_id,
                    lifecycle_state = excluded.lifecycle_state,
                    trigger_id = excluded.trigger_id,
@@ -2265,7 +2279,9 @@ fn persist_agent_snapshot_tx(
                     agent_id,
                     wait_id,
                     to_i64(*generation, "wait generation")?,
-                    &record.owner_work_item_id,
+                    owner_kind,
+                    owner_id,
+                    owner_work_item_id,
                     staged_state,
                     trigger_id,
                     trigger_generation,
@@ -2277,21 +2293,26 @@ fn persist_agent_snapshot_tx(
     }
 
     for (authority_id, authority) in &snapshot.activation_authorities {
-        let work_item_id = activation_work_item_id(&authority.activation)?;
+        let owner = activation_owner(&authority.activation)?;
+        let (owner_kind, owner_id, work_item_id) = scheduler_owner_columns(&owner);
         tx.execute(
             "INSERT INTO scheduler_activation_authorities (
                agent_id,
                authority_id,
                activation_id,
+               owner_kind,
+               owner_id,
                work_item_id,
                expected_scheduling_generation,
                expected_dispatch_revision,
                consumed_by_activation_id,
                payload_json,
                created_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8)
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?9, ?10)
              ON CONFLICT(agent_id, authority_id) DO UPDATE SET
                activation_id = excluded.activation_id,
+               owner_kind = excluded.owner_kind,
+               owner_id = excluded.owner_id,
                work_item_id = excluded.work_item_id,
                expected_scheduling_generation = excluded.expected_scheduling_generation,
                expected_dispatch_revision = excluded.expected_dispatch_revision,
@@ -2301,6 +2322,8 @@ fn persist_agent_snapshot_tx(
                 agent_id,
                 authority_id,
                 &authority.activation.id,
+                owner_kind,
+                owner_id,
                 work_item_id,
                 to_i64(
                     authority.expected_scheduling_generation,
@@ -2333,11 +2356,14 @@ fn persist_agent_snapshot_tx(
             .ok_or_else(|| anyhow!("activation {activation_id} has no canonical admission"))?;
         let (admission_kind, recovery_for, wait_id, wait_generation) =
             activation_admission_columns(admission)?;
+        let (owner_kind, owner_id, work_item_id) = scheduler_owner_columns(&activation.owner);
         tx.execute(
             "INSERT INTO scheduler_activations (
                agent_id,
                activation_id,
                authority_id,
+               owner_kind,
+               owner_id,
                work_item_id,
                admitted_generation,
                admission_kind,
@@ -2349,9 +2375,11 @@ fn persist_agent_snapshot_tx(
                payload_json,
                created_at,
                updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15)
              ON CONFLICT(agent_id, activation_id) DO UPDATE SET
                authority_id = excluded.authority_id,
+               owner_kind = excluded.owner_kind,
+               owner_id = excluded.owner_id,
                work_item_id = excluded.work_item_id,
                admitted_generation = excluded.admitted_generation,
                admission_kind = excluded.admission_kind,
@@ -2366,7 +2394,9 @@ fn persist_agent_snapshot_tx(
                 agent_id,
                 activation_id,
                 &admission.authority_id,
-                &activation.work_item_id,
+                owner_kind,
+                owner_id,
+                work_item_id,
                 to_i64(activation.admitted_generation, "admitted generation")?,
                 admission_kind,
                 recovery_for,
@@ -3117,16 +3147,52 @@ fn work_status_columns(status: &WorkStatus) -> (&'static str, Option<&str>) {
     }
 }
 
-fn activation_work_item_id(activation: &scheduler_protocol::AgentActivation) -> Result<&str> {
+fn activation_owner(activation: &scheduler_protocol::AgentActivation) -> Result<SchedulerOwner> {
     match &activation.binding {
-        scheduler_protocol::ActivationBinding::WorkItem { work_item_id } => Ok(work_item_id),
+        scheduler_protocol::ActivationBinding::WorkItem { work_item_id } => {
+            Ok(SchedulerOwner::WorkItem {
+                work_item_id: work_item_id.clone(),
+            })
+        }
         scheduler_protocol::ActivationBinding::WaitOwner {
             owner_work_item_id, ..
-        } => Ok(owner_work_item_id),
+        } => Ok(SchedulerOwner::WorkItem {
+            work_item_id: owner_work_item_id.clone(),
+        }),
+        scheduler_protocol::ActivationBinding::Lifecycle { agent_id } => {
+            Ok(SchedulerOwner::AgentLifecycle {
+                agent_id: agent_id.clone(),
+            })
+        }
         _ => bail!(
-            "activation {} has no scheduler WorkItem binding",
+            "activation {} has no scheduler owner binding",
             activation.id
         ),
+    }
+}
+
+fn scheduler_owner_columns(owner: &SchedulerOwner) -> (&'static str, &str, Option<&str>) {
+    match owner {
+        SchedulerOwner::WorkItem { work_item_id } => {
+            ("work_item", work_item_id, Some(work_item_id))
+        }
+        SchedulerOwner::AgentLifecycle { agent_id } => ("agent_lifecycle", agent_id, None),
+    }
+}
+
+fn scheduler_owner_from_columns(
+    owner_kind: &str,
+    owner_id: String,
+    agent_id: &str,
+) -> Result<SchedulerOwner> {
+    match owner_kind {
+        "work_item" if !owner_id.is_empty() => Ok(SchedulerOwner::WorkItem {
+            work_item_id: owner_id,
+        }),
+        "agent_lifecycle" if owner_id == agent_id => {
+            Ok(SchedulerOwner::AgentLifecycle { agent_id: owner_id })
+        }
+        _ => bail!("invalid scheduler owner {owner_kind}:{owner_id} for agent {agent_id}"),
     }
 }
 
@@ -3161,6 +3227,9 @@ fn activation_admission_columns(
         ActivationCause::SettlementRecovery { activation_id } => {
             Ok(("settlement_recovery", Some(activation_id), None, None))
         }
+        ActivationCause::LifecycleExternalNudge { .. } => {
+            Ok(("lifecycle_external_nudge", None, None, None))
+        }
         _ => bail!(
             "activation {} has unsupported persisted admission cause",
             admission.activation.id
@@ -3191,13 +3260,31 @@ fn persisted_admission_fence(admission: &AdmitActivationCommand) -> Result<Strin
                 wait_id: bound_wait_id,
                 owner_work_item_id,
             },
-        ) if wait_id == bound_wait_id => owner_work_item_id,
+        ) if wait_id == bound_wait_id => {
+            return Ok(format!(
+                "work:{owner_work_item_id}:{}",
+                admission.expected_scheduling_generation
+            ));
+        }
+        (
+            ActivationCause::WaitResume { wait_id: _, .. },
+            scheduler_protocol::ActivationBinding::Lifecycle { agent_id },
+        ) => {
+            return Ok(format!(
+                "lifecycle:{agent_id}:{}",
+                admission.expected_scheduling_generation
+            ));
+        }
+        (
+            ActivationCause::LifecycleExternalNudge { message_id },
+            scheduler_protocol::ActivationBinding::Lifecycle { .. },
+        ) => return Ok(format!("lifecycle_message:{message_id}")),
         (
             ActivationCause::SettlementRecovery { activation_id },
             scheduler_protocol::ActivationBinding::WorkItem { work_item_id },
         ) => {
             return Ok(format!(
-                "{work_item_id}:{}:recovery:{activation_id}",
+                "work:{work_item_id}:{}:recovery:{activation_id}",
                 admission.expected_scheduling_generation
             ));
         }
@@ -3207,7 +3294,7 @@ fn persisted_admission_fence(admission: &AdmitActivationCommand) -> Result<Strin
         ),
     };
     Ok(format!(
-        "{work_item_id}:{}",
+        "work:{work_item_id}:{}",
         admission.expected_scheduling_generation
     ))
 }
@@ -3234,34 +3321,51 @@ fn persist_slot_tx(
     slot: &ActivationSlot,
     now: &str,
 ) -> Result<()> {
-    let (slot_kind, activation_id, work_item_id, admitted_generation, recovery_for) = match slot {
-        ActivationSlot::Idle => ("idle", None, None, None, None),
+    let (
+        slot_kind,
+        activation_id,
+        owner_kind,
+        owner_id,
+        work_item_id,
+        admitted_generation,
+        recovery_for,
+    ) = match slot {
+        ActivationSlot::Idle => ("idle", None, None, None, None, None, None),
         ActivationSlot::Running {
             activation_id,
-            work_item_id,
+            owner,
             admitted_generation,
             recovery_for,
-        } => (
-            "running",
-            Some(activation_id.as_str()),
-            Some(work_item_id.as_str()),
-            Some(to_i64(*admitted_generation, "slot admitted generation")?),
-            recovery_for.as_deref(),
-        ),
+        } => {
+            let (owner_kind, owner_id, work_item_id) = scheduler_owner_columns(owner);
+            (
+                "running",
+                Some(activation_id.as_str()),
+                Some(owner_kind),
+                Some(owner_id),
+                work_item_id,
+                Some(to_i64(*admitted_generation, "slot admitted generation")?),
+                recovery_for.as_deref(),
+            )
+        }
     };
     tx.execute(
         "INSERT INTO scheduler_agent_slots (
            agent_id,
            slot_kind,
            activation_id,
+           owner_kind,
+           owner_id,
            work_item_id,
            admitted_generation,
            recovery_for_activation_id,
            updated_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          ON CONFLICT(agent_id) DO UPDATE SET
            slot_kind = excluded.slot_kind,
            activation_id = excluded.activation_id,
+           owner_kind = excluded.owner_kind,
+           owner_id = excluded.owner_id,
            work_item_id = excluded.work_item_id,
            admitted_generation = excluded.admitted_generation,
            recovery_for_activation_id = excluded.recovery_for_activation_id,
@@ -3270,6 +3374,8 @@ fn persist_slot_tx(
             agent_id,
             slot_kind,
             activation_id,
+            owner_kind,
+            owner_id,
             work_item_id,
             admitted_generation,
             recovery_for,
@@ -3347,46 +3453,53 @@ fn next_focus_revision_tx(
 }
 
 fn load_slot(connection: &Connection, agent_id: &str) -> Result<ActivationSlot> {
-    let (slot_kind, activation_id, work_item_id, admitted_generation, recovery_for) = connection
-        .query_row(
-            "SELECT
+    let (slot_kind, activation_id, owner_kind, owner_id, admitted_generation, recovery_for) =
+        connection
+            .query_row(
+                "SELECT
                slot_kind,
                activation_id,
-               work_item_id,
+               owner_kind,
+               owner_id,
                admitted_generation,
                recovery_for_activation_id
              FROM scheduler_agent_slots
              WHERE agent_id = ?1",
-            [agent_id],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, Option<i64>>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                ))
-            },
-        )
-        .optional()?
-        .ok_or_else(|| anyhow!("scheduler protocol partition {agent_id} is missing slot row"))?;
+                [agent_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<i64>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                    ))
+                },
+            )
+            .optional()?
+            .ok_or_else(|| {
+                anyhow!("scheduler protocol partition {agent_id} is missing slot row")
+            })?;
     match (
         slot_kind.as_str(),
         activation_id,
-        work_item_id,
+        owner_kind,
+        owner_id,
         admitted_generation,
         recovery_for,
     ) {
-        ("idle", None, None, None, None) => Ok(ActivationSlot::Idle),
+        ("idle", None, None, None, None, None) => Ok(ActivationSlot::Idle),
         (
             "running",
             Some(activation_id),
-            Some(work_item_id),
+            Some(owner_kind),
+            Some(owner_id),
             Some(admitted_generation),
             recovery_for,
         ) => Ok(ActivationSlot::Running {
             activation_id,
-            work_item_id,
+            owner: scheduler_owner_from_columns(&owner_kind, owner_id, agent_id)?,
             admitted_generation: to_u64(admitted_generation, "slot admitted generation")?,
             recovery_for,
         }),
@@ -3473,7 +3586,15 @@ fn load_waits(connection: &Connection, agent_id: &str) -> Result<BTreeMap<String
         );
     }
     let mut statement = connection.prepare(
-        "SELECT wait_id, generation, payload_json
+        "SELECT
+           wait_id,
+           generation,
+           owner_kind,
+           owner_id,
+           lifecycle_state,
+           trigger_id,
+           trigger_generation,
+           consuming_activation_id
          FROM scheduler_wait_generations
          WHERE agent_id = ?1
          ORDER BY wait_id, generation",
@@ -3483,12 +3604,46 @@ fn load_waits(connection: &Connection, agent_id: &str) -> Result<BTreeMap<String
             row.get::<_, String>(0)?,
             row.get::<_, i64>(1)?,
             row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, Option<String>>(5)?,
+            row.get::<_, Option<i64>>(6)?,
+            row.get::<_, Option<String>>(7)?,
         ))
     })?;
     for row in rows {
-        let (wait_id, generation, payload_json) = row?;
+        let (
+            wait_id,
+            generation,
+            owner_kind,
+            owner_id,
+            lifecycle_state,
+            trigger_id,
+            trigger_generation,
+            consuming_activation_id,
+        ) = row?;
         let generation = to_u64(generation, "wait generation")?;
-        let record: WaitGenerationRecord = serde_json::from_str(&payload_json)?;
+        let state = match lifecycle_state.as_str() {
+            "active" => WaitState::Active,
+            "triggered" => WaitState::Triggered,
+            "consumed" => WaitState::Consumed,
+            "resolved" => WaitState::Resolved,
+            _ => bail!("wait {wait_id} generation {generation} has invalid lifecycle state"),
+        };
+        let trigger = match (trigger_id, trigger_generation) {
+            (None, None) => None,
+            (Some(trigger_id), Some(trigger_generation)) => Some(WaitTrigger {
+                trigger_id,
+                trigger_generation: to_u64(trigger_generation, "wait trigger generation")?,
+            }),
+            _ => bail!("wait {wait_id} generation {generation} has partial trigger identity"),
+        };
+        let record = WaitGenerationRecord {
+            owner: scheduler_owner_from_columns(&owner_kind, owner_id, agent_id)?,
+            state,
+            trigger,
+            consuming_activation_id,
+        };
         waits
             .get_mut(&wait_id)
             .ok_or_else(|| anyhow!("wait generation references missing wait {wait_id}"))?
@@ -3505,7 +3660,8 @@ fn load_activations(
     let mut statement = connection.prepare(
         "SELECT
            activation_id,
-           work_item_id,
+           owner_kind,
+           owner_id,
            admitted_generation,
            lifecycle_state,
            recovery_for_activation_id
@@ -3517,15 +3673,22 @@ fn load_activations(
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
-            row.get::<_, i64>(2)?,
-            row.get::<_, String>(3)?,
-            row.get::<_, Option<String>>(4)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, Option<String>>(5)?,
         ))
     })?;
     let mut activations = BTreeMap::new();
     for row in rows {
-        let (activation_id, work_item_id, admitted_generation, lifecycle_state, recovery_for) =
-            row?;
+        let (
+            activation_id,
+            owner_kind,
+            owner_id,
+            admitted_generation,
+            lifecycle_state,
+            recovery_for,
+        ) = row?;
         let state = match lifecycle_state.as_str() {
             "admitted" | "running" => ActivationState::Running,
             "settled" | "interrupted" | "cancelled" => ActivationState::Settled,
@@ -3535,7 +3698,7 @@ fn load_activations(
         activations.insert(
             activation_id,
             ActivationRecord {
-                work_item_id,
+                owner: scheduler_owner_from_columns(&owner_kind, owner_id, agent_id)?,
                 admitted_generation: to_u64(admitted_generation, "admitted generation")?,
                 state,
                 recovery_for,

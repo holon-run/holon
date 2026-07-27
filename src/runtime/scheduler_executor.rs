@@ -678,6 +678,15 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             .runtime_db
             .transitions()
             .load_scheduler_protocol_snapshot_if_initialized(&message.agent_id)?;
+        if scenario.work_item_id().is_none() {
+            return self.plan_canonical_lifecycle_activation_claim(
+                message,
+                scenario,
+                existing,
+                rollout_expectations,
+                scenario_class,
+            );
+        }
         if let scheduler::CanonicalActivationScenario::ExactTaskRejoin {
             work_item_id,
             wait_id,
@@ -714,7 +723,9 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             }
         }
 
-        let work_item_id = scenario.work_item_id();
+        let work_item_id = scenario
+            .work_item_id()
+            .expect("WorkItem scenario has a WorkItem owner");
         let work_item = self
             .runtime
             .inner
@@ -784,13 +795,13 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     &snapshot.slot,
                     ActivationSlot::Running {
                         activation_id: running_activation_id,
-                        work_item_id: running_work_item_id,
+                        owner,
                         ..
                     } if running_activation_id == &activation_id
-                        && running_work_item_id == work_item_id
+                        && owner.work_item_id() == Some(work_item_id)
                 );
                 if activation.state == crate::domain::scheduler_protocol::ActivationState::Running
-                    && activation.work_item_id == work_item_id
+                    && activation.owner.work_item_id() == Some(work_item_id)
                     && slot_matches
                     && snapshot
                         .activation_admissions
@@ -838,6 +849,9 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 Some(wait_id.as_str())
             }
             scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation { .. } => None,
+            scheduler::CanonicalActivationScenario::LifecycleExternalNudge { .. } => {
+                unreachable!("lifecycle scenario is planned before WorkItem lookup")
+            }
         };
         let (bootstrap, expected_dispatch_revision, scheduling_generation, register) =
             if let Some(snapshot) = existing.as_ref() {
@@ -936,7 +950,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     "canonical_wait_generation_missing",
                 )?);
             };
-            if generation.owner_work_item_id != work_item_id {
+            if generation.owner.work_item_id() != Some(work_item_id) {
                 return Ok(canonical_claim_hard_blocker(
                     &rollout_expectations,
                     scenario_class,
@@ -1018,6 +1032,9 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 ActivationTrust::OperatorInstruction,
                 format!("operator-message:{}", message.id),
             ),
+            scheduler::CanonicalActivationScenario::LifecycleExternalNudge { .. } => {
+                unreachable!("lifecycle scenario is planned before WorkItem lookup")
+            }
         };
         let activation = AgentActivation {
             id: activation_id.clone(),
@@ -1102,6 +1119,238 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation { .. }
             )
             .then_some(work_item),
+            bootstrap,
+            commands,
+            rollout_expectations,
+        }))
+    }
+
+    fn plan_canonical_lifecycle_activation_claim(
+        &self,
+        message: &MessageEnvelope,
+        scenario: scheduler::CanonicalActivationScenario,
+        existing: Option<crate::domain::scheduler_protocol::Snapshot>,
+        rollout_expectations: Vec<
+            crate::runtime_db::transitions::scheduler_protocol_repository::SchedulerRolloutExpectation,
+        >,
+        scenario_class: crate::domain::scheduler_protocol::SchedulerScenarioClass,
+    ) -> Result<CanonicalClaimOutcome> {
+        use crate::domain::scheduler_protocol::{
+            ActivationBinding, ActivationCause, ActivationLifecycleState, ActivationPriority,
+            ActivationProvenance, ActivationSlot, AdmitActivationCommand, AgentActivation,
+            AgentDispatchState, IssueActivationAuthorityCommand, PreemptionPolicy, ProtocolCommand,
+            RolloutState, SchedulerOwner, Snapshot, TriggerWaitCommand, WaitResumeClaim,
+        };
+
+        let owner = SchedulerOwner::AgentLifecycle {
+            agent_id: message.agent_id.clone(),
+        };
+        let activation_id = canonical_activation_id(&message.id);
+        if let Some(snapshot) = existing.as_ref() {
+            if let Some(activation) = snapshot.activations.get(&activation_id) {
+                let slot_matches = matches!(
+                    &snapshot.slot,
+                    ActivationSlot::Running {
+                        activation_id: running_activation_id,
+                        owner: running_owner,
+                        ..
+                    } if running_activation_id == &activation_id && running_owner == &owner
+                );
+                if activation.state == crate::domain::scheduler_protocol::ActivationState::Running
+                    && activation.owner == owner
+                    && slot_matches
+                    && snapshot
+                        .activation_admissions
+                        .get(&activation_id)
+                        .is_some_and(|admission| {
+                            canonical_admission_matches_scenario(admission, message, &scenario)
+                        })
+                {
+                    return Ok(CanonicalClaimOutcome::Plan(CanonicalClaimPlan {
+                        scheduler_claim_work_item: None,
+                        bootstrap: None,
+                        commands: Vec::new(),
+                        rollout_expectations,
+                    }));
+                }
+                return Ok(canonical_claim_hard_blocker(
+                    &rollout_expectations,
+                    scenario_class,
+                    "canonical_activation_replay_conflict",
+                )?);
+            }
+        }
+
+        let bootstrap = existing.is_none().then(|| Snapshot {
+            slot: ActivationSlot::Idle,
+            dispatch: AgentDispatchState::Open,
+            dispatch_revision: 0,
+            focus: None,
+            work: Default::default(),
+            waits: Default::default(),
+            activations: Default::default(),
+            activation_authorities: Default::default(),
+            activation_admissions: Default::default(),
+            settlements: Default::default(),
+            missing_settlements: Default::default(),
+            rollout: RolloutState::default(),
+            admitted_generations: Default::default(),
+            continuation_admissions: Default::default(),
+            activation_inputs: Default::default(),
+        });
+        let expected_dispatch_revision = existing
+            .as_ref()
+            .map_or(0, |snapshot| snapshot.dispatch_revision);
+        let (expected_generation, resume, cause, idempotency_key) = match &scenario {
+            scheduler::CanonicalActivationScenario::ExactWaitResume {
+                owner: expected_owner,
+                wait_id,
+            } if expected_owner == &owner => {
+                let Some(snapshot) = existing.as_ref() else {
+                    return Ok(canonical_claim_hard_blocker(
+                        &rollout_expectations,
+                        scenario_class,
+                        "canonical_wait_resume_partition_uninitialized",
+                    )?);
+                };
+                let Some(wait) = snapshot.waits.get(wait_id) else {
+                    return Ok(canonical_claim_hard_blocker(
+                        &rollout_expectations,
+                        scenario_class,
+                        "canonical_wait_missing",
+                    )?);
+                };
+                let Some(generation) = wait.generations.get(&wait.current_generation) else {
+                    return Ok(canonical_claim_hard_blocker(
+                        &rollout_expectations,
+                        scenario_class,
+                        "canonical_wait_generation_missing",
+                    )?);
+                };
+                if generation.owner != owner {
+                    return Ok(canonical_claim_hard_blocker(
+                        &rollout_expectations,
+                        scenario_class,
+                        "canonical_wait_owner_mismatch",
+                    )?);
+                }
+                let Some(trigger_generation) = message.message_seq else {
+                    return Ok(canonical_claim_hard_blocker(
+                        &rollout_expectations,
+                        scenario_class,
+                        "canonical_trigger_sequence_missing",
+                    )?);
+                };
+                let resume = WaitResumeClaim {
+                    wait_id: wait_id.clone(),
+                    wait_generation: wait.current_generation,
+                    trigger_id: canonical_wait_trigger_id(message),
+                    trigger_generation,
+                };
+                (
+                    wait.current_generation,
+                    Some(resume.clone()),
+                    ActivationCause::WaitResume {
+                        wait_id: wait_id.clone(),
+                        wait_generation: resume.wait_generation,
+                        trigger_id: resume.trigger_id.clone(),
+                        trigger_generation: resume.trigger_generation,
+                    },
+                    format!("wait-resume:{}:{}", wait_id, resume.wait_generation),
+                )
+            }
+            scheduler::CanonicalActivationScenario::LifecycleExternalNudge { agent_id }
+                if agent_id == &message.agent_id =>
+            {
+                let generation = existing.as_ref().map_or(1, |snapshot| {
+                    let activation_generation = snapshot
+                        .activations
+                        .values()
+                        .filter(|activation| activation.owner == owner)
+                        .map(|activation| activation.admitted_generation)
+                        .max()
+                        .unwrap_or(0);
+                    let wait_generation = snapshot
+                        .waits
+                        .values()
+                        .filter(|wait| {
+                            wait.generations
+                                .get(&wait.current_generation)
+                                .is_some_and(|generation| generation.owner == owner)
+                        })
+                        .map(|wait| wait.current_generation)
+                        .max()
+                        .unwrap_or(0);
+                    activation_generation.max(wait_generation).saturating_add(1)
+                });
+                (
+                    generation,
+                    None,
+                    ActivationCause::LifecycleExternalNudge {
+                        message_id: message.id.clone(),
+                    },
+                    format!("lifecycle-message:{}", message.id),
+                )
+            }
+            _ => {
+                return Ok(canonical_claim_hard_blocker(
+                    &rollout_expectations,
+                    scenario_class,
+                    "canonical_lifecycle_binding_mismatch",
+                )?)
+            }
+        };
+        let activation = AgentActivation {
+            id: activation_id.clone(),
+            agent_id: message.agent_id.clone(),
+            state: ActivationLifecycleState::Admitted,
+            cause,
+            binding: ActivationBinding::Lifecycle {
+                agent_id: message.agent_id.clone(),
+            },
+            priority: match message.priority {
+                Priority::Interject => ActivationPriority::Interject,
+                Priority::Next => ActivationPriority::Next,
+                Priority::Normal => ActivationPriority::Normal,
+                Priority::Background => ActivationPriority::Background,
+            },
+            preemption: PreemptionPolicy::AllowOperatorInterjection,
+            source_revision: None,
+            idempotency_key,
+            provenance: ActivationProvenance {
+                origin: canonical_activation_origin(message),
+                trust: canonical_activation_trust(message),
+                source_id: message.id.clone(),
+                correlation_id: message.correlation_id.clone(),
+                causation_id: message.causation_id.clone(),
+            },
+        };
+        let authority_id = format!("authority:{activation_id}");
+        let mut commands = Vec::with_capacity(3);
+        if let Some(resume) = resume {
+            commands.push(ProtocolCommand::TriggerWait(TriggerWaitCommand {
+                wait_id: resume.wait_id,
+                wait_generation: resume.wait_generation,
+                trigger_id: resume.trigger_id,
+                trigger_generation: resume.trigger_generation,
+            }));
+        }
+        commands.push(ProtocolCommand::IssueActivationAuthority(
+            IssueActivationAuthorityCommand {
+                authority_id: authority_id.clone(),
+                activation: activation.clone(),
+                expected_scheduling_generation: expected_generation,
+                expected_dispatch_revision,
+            },
+        ));
+        commands.push(ProtocolCommand::AdmitActivation(AdmitActivationCommand {
+            authority_id,
+            activation,
+            expected_scheduling_generation: expected_generation,
+            expected_dispatch_revision,
+        }));
+        Ok(CanonicalClaimOutcome::Plan(CanonicalClaimPlan {
+            scheduler_claim_work_item: None,
             bootstrap,
             commands,
             rollout_expectations,
@@ -1305,13 +1554,39 @@ fn canonical_admission_matches_scenario(
                 owner_work_item_id,
             },
             scheduler::CanonicalActivationScenario::ExactWaitResume {
-                work_item_id,
+                owner: crate::domain::scheduler_protocol::SchedulerOwner::WorkItem { work_item_id },
                 wait_id: expected_wait,
             },
         ) => {
             wait_id == expected_wait
                 && bound_wait_id == expected_wait
                 && owner_work_item_id == work_item_id
+        }
+        (
+            ActivationCause::WaitResume { wait_id, .. },
+            ActivationBinding::Lifecycle { agent_id },
+            scheduler::CanonicalActivationScenario::ExactWaitResume {
+                owner:
+                    crate::domain::scheduler_protocol::SchedulerOwner::AgentLifecycle {
+                        agent_id: expected_agent_id,
+                    },
+                wait_id: expected_wait,
+            },
+        ) => {
+            wait_id == expected_wait
+                && agent_id == expected_agent_id
+                && agent_id == &message.agent_id
+        }
+        (
+            ActivationCause::LifecycleExternalNudge { message_id },
+            ActivationBinding::Lifecycle { agent_id },
+            scheduler::CanonicalActivationScenario::LifecycleExternalNudge {
+                agent_id: expected_agent_id,
+            },
+        ) => {
+            message_id == &message.id
+                && agent_id == expected_agent_id
+                && agent_id == &message.agent_id
         }
         (
             ActivationCause::OperatorInput { message_id, resume },

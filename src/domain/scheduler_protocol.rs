@@ -117,11 +117,34 @@ pub enum ActivationSlot {
     Idle,
     Running {
         activation_id: String,
-        work_item_id: String,
+        owner: SchedulerOwner,
         admitted_generation: u64,
         #[serde(default)]
         recovery_for: Option<String>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SchedulerOwner {
+    WorkItem { work_item_id: String },
+    AgentLifecycle { agent_id: String },
+}
+
+impl SchedulerOwner {
+    pub fn work_item_id(&self) -> Option<&str> {
+        match self {
+            Self::WorkItem { work_item_id } => Some(work_item_id),
+            Self::AgentLifecycle { .. } => None,
+        }
+    }
+
+    pub fn lifecycle_agent_id(&self) -> Option<&str> {
+        match self {
+            Self::AgentLifecycle { agent_id } => Some(agent_id),
+            Self::WorkItem { .. } => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -240,7 +263,7 @@ pub struct YieldContinuationRecord {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActivationRecord {
-    pub work_item_id: String,
+    pub owner: SchedulerOwner,
     pub admitted_generation: u64,
     pub state: ActivationState,
     #[serde(default)]
@@ -263,7 +286,7 @@ pub struct WaitRecord {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WaitGenerationRecord {
-    pub owner_work_item_id: String,
+    pub owner: SchedulerOwner,
     pub state: WaitState,
     #[serde(default)]
     pub trigger: Option<WaitTrigger>,
@@ -605,6 +628,9 @@ pub enum ActivationCause {
         wait_generation: u64,
         trigger_id: String,
         trigger_generation: u64,
+    },
+    LifecycleExternalNudge {
+        message_id: String,
     },
     WorkItemRunnable {
         work_item_id: String,
@@ -961,7 +987,7 @@ pub struct ProtocolCommandOutcome {
 pub enum Event {
     Admit {
         activation_id: String,
-        work_item_id: String,
+        owner: SchedulerOwner,
         expected_generation: u64,
         expected_dispatch_revision: u64,
         cause: AdmissionCause,
@@ -1045,6 +1071,9 @@ pub enum AdmissionCause {
         wait_generation: u64,
         trigger_id: String,
         trigger_generation: u64,
+    },
+    LifecycleExternalNudge {
+        message_id: String,
     },
     SettlementRecovery {
         missing_activation_id: String,
@@ -1339,11 +1368,17 @@ pub fn migrate_legacy_event(
     let (command, authority_command) = match event {
         Event::Admit {
             activation_id,
-            work_item_id,
+            owner,
             expected_generation,
             expected_dispatch_revision,
             cause,
         } => {
+            let SchedulerOwner::WorkItem { work_item_id } = owner else {
+                return Err(command_conflict(
+                    ProtocolConflictKind::UnsupportedCommand,
+                    "legacy_lifecycle_admission_migration_unsupported",
+                ));
+            };
             let provenance = context.admission_provenance.clone().ok_or_else(|| {
                 command_conflict(
                     ProtocolConflictKind::InvalidCommand,
@@ -1406,6 +1441,12 @@ pub fn migrate_legacy_event(
                         owner_work_item_id: work_item_id.clone(),
                     },
                 ),
+                AdmissionCause::LifecycleExternalNudge { .. } => {
+                    return Err(command_conflict(
+                        ProtocolConflictKind::UnsupportedCommand,
+                        "legacy_lifecycle_admission_migration_unsupported",
+                    ));
+                }
                 AdmissionCause::SettlementRecovery {
                     missing_activation_id,
                 } => (
@@ -1586,14 +1627,14 @@ fn reduce_event(snapshot: &Snapshot, event: &Event) -> Outcome {
     match event {
         Event::Admit {
             activation_id,
-            work_item_id,
+            owner,
             expected_generation,
             expected_dispatch_revision,
             cause,
         } => admit(
             snapshot,
             activation_id,
-            work_item_id,
+            owner,
             *expected_generation,
             *expected_dispatch_revision,
             cause,
@@ -1741,12 +1782,16 @@ pub fn reduce_command(snapshot: &Snapshot, command: &ProtocolCommand) -> Protoco
                     .activations
                     .get(&command.settlement.activation_id)
                     .expect("validated settlement activation exists");
+                let completed_work_item_id = activation
+                    .owner
+                    .work_item_id()
+                    .expect("completion continuation requires a WorkItem owner");
                 outcome.snapshot.continuation_admissions.insert(
                     continuation.admission_id.clone(),
                     ContinuationAdmissionRecord {
                         admission_id: continuation.admission_id.clone(),
                         settlement_id: command.settlement.id.clone(),
-                        completed_work_item_id: activation.work_item_id.clone(),
+                        completed_work_item_id: completed_work_item_id.to_string(),
                         caller_work_item_id: continuation.caller_work_item_id.clone(),
                         expected_caller_generation: continuation.expected_caller_generation,
                         expected_caller_status: WorkStatus::Runnable,
@@ -1814,7 +1859,9 @@ fn replay_or_conflict(
                         existing.current_generation == wait.generation
                             && existing.generations.get(&wait.generation)
                                 == Some(&WaitGenerationRecord {
-                                    owner_work_item_id: wait.owner_work_item_id.clone(),
+                                    owner: SchedulerOwner::WorkItem {
+                                        work_item_id: wait.owner_work_item_id.clone(),
+                                    },
                                     state: WaitState::Active,
                                     trigger: None,
                                     consuming_activation_id: None,
@@ -2035,7 +2082,13 @@ fn lower_command(
                     .activations
                     .get(&command.settlement.activation_id)
                     .expect("validated settlement activation exists");
-                validate_continuation_target(snapshot, &activation.work_item_id, continuation)
+                let work_item_id = activation.owner.work_item_id().ok_or_else(|| {
+                    command_conflict(
+                        ProtocolConflictKind::BindingConflict,
+                        "continuation_requires_work_item_owner",
+                    )
+                })?;
+                validate_continuation_target(snapshot, work_item_id, continuation)
                     .map_err(reducer_conflict)?;
             }
             Ok(event)
@@ -2263,7 +2316,9 @@ fn adopt_legacy_work_state(
                 generations: BTreeMap::from([(
                     wait.generation,
                     WaitGenerationRecord {
-                        owner_work_item_id: wait.owner_work_item_id.clone(),
+                        owner: SchedulerOwner::WorkItem {
+                            work_item_id: wait.owner_work_item_id.clone(),
+                        },
                         state: WaitState::Active,
                         trigger: None,
                         consuming_activation_id: None,
@@ -2430,7 +2485,7 @@ fn lower_admit_activation(
         ));
     }
 
-    let (work_item_id, cause) = match (&activation.cause, &activation.binding) {
+    let (owner, cause) = match (&activation.cause, &activation.binding) {
         (
             ActivationCause::WorkItemRunnable {
                 work_item_id,
@@ -2442,7 +2497,12 @@ fn lower_admit_activation(
         ) if work_item_id == bound_work_item_id
             && *scheduling_generation == command.expected_scheduling_generation =>
         {
-            (work_item_id.clone(), AdmissionCause::Scheduling)
+            (
+                SchedulerOwner::WorkItem {
+                    work_item_id: work_item_id.clone(),
+                },
+                AdmissionCause::Scheduling,
+            )
         }
         (
             ActivationCause::TaskRejoin {
@@ -2452,7 +2512,9 @@ fn lower_admit_activation(
             },
             ActivationBinding::WorkItem { work_item_id },
         ) => (
-            work_item_id.clone(),
+            SchedulerOwner::WorkItem {
+                work_item_id: work_item_id.clone(),
+            },
             AdmissionCause::TaskRejoin {
                 task_id: task_id.clone(),
                 message_id: message_id.clone(),
@@ -2463,7 +2525,9 @@ fn lower_admit_activation(
             ActivationCause::OperatorInput { message_id, resume },
             ActivationBinding::WorkItem { work_item_id },
         ) => (
-            work_item_id.clone(),
+            SchedulerOwner::WorkItem {
+                work_item_id: work_item_id.clone(),
+            },
             AdmissionCause::OperatorInput {
                 message_id: message_id.clone(),
                 resume: resume.clone(),
@@ -2481,7 +2545,9 @@ fn lower_admit_activation(
                 owner_work_item_id,
             },
         ) if wait_id == bound_wait_id => (
-            owner_work_item_id.clone(),
+            SchedulerOwner::WorkItem {
+                work_item_id: owner_work_item_id.clone(),
+            },
             AdmissionCause::WaitResume {
                 wait_id: wait_id.clone(),
                 wait_generation: *wait_generation,
@@ -2490,10 +2556,42 @@ fn lower_admit_activation(
             },
         ),
         (
+            ActivationCause::WaitResume {
+                wait_id,
+                wait_generation,
+                trigger_id,
+                trigger_generation,
+            },
+            ActivationBinding::Lifecycle { agent_id },
+        ) if agent_id == &activation.agent_id => (
+            SchedulerOwner::AgentLifecycle {
+                agent_id: agent_id.clone(),
+            },
+            AdmissionCause::WaitResume {
+                wait_id: wait_id.clone(),
+                wait_generation: *wait_generation,
+                trigger_id: trigger_id.clone(),
+                trigger_generation: *trigger_generation,
+            },
+        ),
+        (
+            ActivationCause::LifecycleExternalNudge { message_id },
+            ActivationBinding::Lifecycle { agent_id },
+        ) if agent_id == &activation.agent_id => (
+            SchedulerOwner::AgentLifecycle {
+                agent_id: agent_id.clone(),
+            },
+            AdmissionCause::LifecycleExternalNudge {
+                message_id: message_id.clone(),
+            },
+        ),
+        (
             ActivationCause::SettlementRecovery { activation_id },
             ActivationBinding::WorkItem { work_item_id },
         ) => (
-            work_item_id.clone(),
+            SchedulerOwner::WorkItem {
+                work_item_id: work_item_id.clone(),
+            },
             AdmissionCause::SettlementRecovery {
                 missing_activation_id: activation_id.clone(),
             },
@@ -2503,6 +2601,7 @@ fn lower_admit_activation(
             | ActivationCause::TaskRejoin { .. }
             | ActivationCause::OperatorInput { .. }
             | ActivationCause::WaitResume { .. }
+            | ActivationCause::LifecycleExternalNudge { .. }
             | ActivationCause::SettlementRecovery { .. },
             _,
         ) => {
@@ -2521,7 +2620,7 @@ fn lower_admit_activation(
 
     Ok(Event::Admit {
         activation_id: activation.id.clone(),
-        work_item_id,
+        owner,
         expected_generation: command.expected_scheduling_generation,
         expected_dispatch_revision: command.expected_dispatch_revision,
         cause,
@@ -2531,7 +2630,7 @@ fn lower_admit_activation(
 fn attach_activation_input(snapshot: &Snapshot, attachment: &ActivationInputAttachment) -> Outcome {
     let ActivationSlot::Running {
         activation_id,
-        work_item_id,
+        owner,
         admitted_generation,
         ..
     } = &snapshot.slot
@@ -2541,7 +2640,7 @@ fn attach_activation_input(snapshot: &Snapshot, attachment: &ActivationInputAtta
     if activation_id != &attachment.activation_id {
         return rejected(snapshot, "activation_input_owner_mismatch");
     }
-    if work_item_id != &attachment.work_item_id
+    if owner.work_item_id() != Some(attachment.work_item_id.as_str())
         || admitted_generation != &attachment.expected_scheduling_generation
     {
         return rejected(snapshot, "activation_input_work_item_binding_mismatch");
@@ -2623,7 +2722,7 @@ fn lower_activation_settlement(
                     "settlement_activation_missing",
                 )
             })?;
-        if continuation.caller_work_item_id == activation.work_item_id {
+        if activation.owner.work_item_id() == Some(continuation.caller_work_item_id.as_str()) {
             return Err(command_conflict(
                 ProtocolConflictKind::BindingConflict,
                 "continuation_caller_is_completed_work_item",
@@ -2714,8 +2813,10 @@ fn lower_activation_settlement(
             continuation: YieldContinuationRecord {
                 continuation_id: continuation_id.clone(),
                 source_work_item_id: snapshot.activations[&settlement.activation_id]
-                    .work_item_id
-                    .clone(),
+                    .owner
+                    .work_item_id()
+                    .expect("targeted yield requires a WorkItem owner")
+                    .to_string(),
                 source_generation: snapshot.activations[&settlement.activation_id]
                     .admitted_generation,
                 target_work_item_id: target_work_item_id.clone(),
@@ -2844,6 +2945,7 @@ fn activation_cause_has_identity(cause: &ActivationCause) -> bool {
             trigger_id,
             ..
         } => !wait_id.is_empty() && !trigger_id.is_empty(),
+        ActivationCause::LifecycleExternalNudge { message_id } => !message_id.is_empty(),
         ActivationCause::WorkItemRunnable { work_item_id, .. }
         | ActivationCause::WorkItemRecheck { work_item_id, .. } => !work_item_id.is_empty(),
         ActivationCause::RuntimeRecovery { recovery_id } => !recovery_id.is_empty(),
@@ -2896,6 +2998,16 @@ fn activation_provenance_matches_cause(
                     | ActivationOrigin::System
             ) && activation_provenance_has_valid_authority(provenance)
         }
+        ActivationCause::LifecycleExternalNudge { .. } => {
+            matches!(
+                provenance.origin,
+                ActivationOrigin::Channel
+                    | ActivationOrigin::Webhook
+                    | ActivationOrigin::Callback
+                    | ActivationOrigin::Timer
+                    | ActivationOrigin::System
+            ) && activation_provenance_has_valid_authority(provenance)
+        }
         ActivationCause::WorkItemRunnable { .. }
         | ActivationCause::WorkItemRecheck { .. }
         | ActivationCause::InternalFollowup { .. } => {
@@ -2918,17 +3030,28 @@ fn command_conflict(kind: ProtocolConflictKind, code: &str) -> ProtocolConflict 
     }
 }
 
-fn admission_fence(work_item_id: &str, expected_generation: u64, cause: &AdmissionCause) -> String {
+fn admission_fence(
+    owner: &SchedulerOwner,
+    expected_generation: u64,
+    cause: &AdmissionCause,
+) -> String {
+    let owner_identity = match owner {
+        SchedulerOwner::WorkItem { work_item_id } => format!("work:{work_item_id}"),
+        SchedulerOwner::AgentLifecycle { agent_id } => format!("lifecycle:{agent_id}"),
+    };
     match cause {
         AdmissionCause::SettlementRecovery {
             missing_activation_id,
-        } => format!("{work_item_id}:{expected_generation}:recovery:{missing_activation_id}"),
+        } => format!("{owner_identity}:{expected_generation}:recovery:{missing_activation_id}"),
         AdmissionCause::TaskRejoin { task_id, .. } => format!("task:{task_id}"),
         AdmissionCause::OperatorInput { message_id, .. } => {
             format!("operator_message:{message_id}")
         }
+        AdmissionCause::LifecycleExternalNudge { message_id } => {
+            format!("lifecycle_message:{message_id}")
+        }
         AdmissionCause::Scheduling | AdmissionCause::WaitResume { .. } => {
-            format!("{work_item_id}:{expected_generation}")
+            format!("{owner_identity}:{expected_generation}")
         }
     }
 }
@@ -2937,7 +3060,7 @@ fn consume_wait_resume_claim(
     snapshot: &Snapshot,
     next: &mut Snapshot,
     activation_id: &str,
-    work_item_id: &str,
+    owner: &SchedulerOwner,
     claim: &WaitResumeClaim,
     transitions: &mut Vec<String>,
 ) -> Result<(), &'static str> {
@@ -2951,7 +3074,7 @@ fn consume_wait_resume_claim(
         .generations
         .get(&claim.wait_generation)
         .expect("current wait generation exists");
-    if generation.owner_work_item_id != work_item_id {
+    if &generation.owner != owner {
         return Err("wait_owner_mismatch");
     }
     if generation.state != WaitState::Triggered {
@@ -2965,15 +3088,17 @@ fn consume_wait_resume_claim(
     {
         return Err("wait_trigger_identity_mismatch");
     }
-    if snapshot.work[work_item_id]
-        != (WorkDemand {
-            status: WorkStatus::Waiting {
+    if let SchedulerOwner::WorkItem { work_item_id } = owner {
+        let Some(work) = snapshot.work.get(work_item_id) else {
+            return Err("unknown_work_item");
+        };
+        if work.status
+            != (WorkStatus::Waiting {
                 wait_id: claim.wait_id.clone(),
-            },
-            ..snapshot.work[work_item_id].clone()
-        })
-    {
-        return Err("work_item_not_waiting_for_wait");
+            })
+        {
+            return Err("work_item_not_waiting_for_wait");
+        }
     }
     if let AgentDispatchState::Awaiting {
         wait: reserved_wait,
@@ -3010,7 +3135,7 @@ fn consume_wait_resume_claim(
 fn admit(
     snapshot: &Snapshot,
     activation_id: &str,
-    work_item_id: &str,
+    owner: &SchedulerOwner,
     expected_generation: u64,
     expected_dispatch_revision: u64,
     cause: &AdmissionCause,
@@ -3027,12 +3152,21 @@ fn admit(
         return rejected(snapshot, "activation_slot_not_idle");
     }
 
-    let Some(work) = snapshot.work.get(work_item_id) else {
-        return rejected(snapshot, "unknown_work_item");
+    let work = match owner {
+        SchedulerOwner::WorkItem { work_item_id } => {
+            let Some(work) = snapshot.work.get(work_item_id) else {
+                return rejected(snapshot, "unknown_work_item");
+            };
+            if work.scheduling_generation != expected_generation {
+                return rejected(snapshot, "stale_scheduling_generation");
+            }
+            Some(work)
+        }
+        SchedulerOwner::AgentLifecycle { agent_id } if agent_id.is_empty() => {
+            return rejected(snapshot, "lifecycle_owner_identity_required");
+        }
+        SchedulerOwner::AgentLifecycle { .. } => None,
     };
-    if work.scheduling_generation != expected_generation {
-        return rejected(snapshot, "stale_scheduling_generation");
-    }
     if snapshot.dispatch_revision != expected_dispatch_revision {
         return rejected(snapshot, "stale_dispatch_revision");
     }
@@ -3050,6 +3184,9 @@ fn admit(
     let mut recovery_for = None;
     match cause {
         AdmissionCause::Scheduling => {
+            let Some(work) = work else {
+                return rejected(snapshot, "scheduling_requires_work_item_owner");
+            };
             if !matches!(work.status, WorkStatus::Runnable) {
                 return rejected(snapshot, "work_item_not_runnable");
             }
@@ -3062,6 +3199,9 @@ fn admit(
             message_id,
             resume,
         } => {
+            let Some(work) = work else {
+                return rejected(snapshot, "task_rejoin_requires_work_item_owner");
+            };
             if task_id.is_empty() || message_id.is_empty() {
                 return rejected(snapshot, "task_rejoin_identity_required");
             }
@@ -3070,7 +3210,7 @@ fn admit(
                     snapshot,
                     &mut next,
                     activation_id,
-                    work_item_id,
+                    owner,
                     claim,
                     &mut transitions,
                 ) {
@@ -3086,6 +3226,9 @@ fn admit(
             }
         }
         AdmissionCause::OperatorInput { message_id, resume } => {
+            let Some(work) = work else {
+                return rejected(snapshot, "operator_input_requires_work_item_owner");
+            };
             if message_id.is_empty() {
                 return rejected(snapshot, "operator_input_identity_required");
             }
@@ -3094,7 +3237,7 @@ fn admit(
                     snapshot,
                     &mut next,
                     activation_id,
-                    work_item_id,
+                    owner,
                     claim,
                     &mut transitions,
                 ) {
@@ -3125,23 +3268,54 @@ fn admit(
                 snapshot,
                 &mut next,
                 activation_id,
-                work_item_id,
+                owner,
                 &claim,
                 &mut transitions,
             ) {
                 return rejected(snapshot, code);
             }
         }
+        AdmissionCause::LifecycleExternalNudge { message_id } => {
+            if message_id.is_empty() {
+                return rejected(snapshot, "lifecycle_external_nudge_identity_required");
+            }
+            if !matches!(owner, SchedulerOwner::AgentLifecycle { .. }) {
+                return rejected(
+                    snapshot,
+                    "lifecycle_external_nudge_requires_lifecycle_owner",
+                );
+            }
+            if let AgentDispatchState::Awaiting { wait } = &snapshot.dispatch {
+                let Some(generation) = snapshot
+                    .waits
+                    .get(&wait.id)
+                    .and_then(|record| record.generations.get(&wait.generation))
+                else {
+                    return rejected(snapshot, "agent_lane_reservation_missing");
+                };
+                if generation.owner != *owner
+                    || !matches!(generation.state, WaitState::Active | WaitState::Triggered)
+                {
+                    return rejected(snapshot, "agent_lane_reserved_by_other_owner");
+                }
+            }
+        }
         AdmissionCause::SettlementRecovery {
             missing_activation_id,
         } => {
+            let Some(work) = work else {
+                return rejected(snapshot, "settlement_recovery_requires_work_item_owner");
+            };
+            let work_item_id = owner
+                .work_item_id()
+                .expect("settlement recovery owner is a WorkItem");
             if !matches!(snapshot.dispatch, AgentDispatchState::Open) {
                 return rejected(snapshot, "settlement_recovery_lane_reserved");
             }
             let Some(missing) = snapshot.activations.get(missing_activation_id) else {
                 return rejected(snapshot, "unknown_missing_settlement");
             };
-            if missing.work_item_id != work_item_id {
+            if missing.owner != *owner {
                 return rejected(snapshot, "missing_settlement_owner_mismatch");
             }
             if missing.admitted_generation != expected_generation {
@@ -3185,7 +3359,7 @@ fn admit(
         }
     }
 
-    let admission_fence = admission_fence(work_item_id, expected_generation, cause);
+    let admission_fence = admission_fence(owner, expected_generation, cause);
     if snapshot.admitted_generations.contains(&admission_fence) {
         return rejected(snapshot, "scheduling_generation_already_admitted");
     }
@@ -3193,7 +3367,7 @@ fn admit(
     next.activations.insert(
         activation_id.to_string(),
         ActivationRecord {
-            work_item_id: work_item_id.to_string(),
+            owner: owner.clone(),
             admitted_generation: expected_generation,
             state: ActivationState::Running,
             recovery_for: recovery_for.clone(),
@@ -3201,7 +3375,7 @@ fn admit(
     );
     next.slot = ActivationSlot::Running {
         activation_id: activation_id.to_string(),
-        work_item_id: work_item_id.to_string(),
+        owner: owner.clone(),
         admitted_generation: expected_generation,
         recovery_for,
     };
@@ -3277,7 +3451,7 @@ fn trigger_wait(
 fn settle(snapshot: &Snapshot, activation_id: &str, settlement: &Settlement) -> Outcome {
     let ActivationSlot::Running {
         activation_id: running_activation_id,
-        work_item_id,
+        owner,
         admitted_generation,
         recovery_for,
     } = &snapshot.slot
@@ -3287,22 +3461,49 @@ fn settle(snapshot: &Snapshot, activation_id: &str, settlement: &Settlement) -> 
     if running_activation_id != activation_id {
         return rejected(snapshot, "activation_id_mismatch");
     }
-
-    let Some(current_work) = snapshot.work.get(work_item_id) else {
-        return rejected(snapshot, "running_work_item_missing");
-    };
-    if current_work.scheduling_generation != *admitted_generation {
-        return rejected(snapshot, "stale_activation_generation");
-    }
     let Some(running_activation) = snapshot.activations.get(activation_id) else {
         return rejected(snapshot, "running_activation_record_missing");
     };
-    if running_activation.work_item_id != *work_item_id
+    if running_activation.owner != *owner
         || running_activation.admitted_generation != *admitted_generation
         || running_activation.state != ActivationState::Running
         || running_activation.recovery_for != *recovery_for
     {
         return rejected(snapshot, "running_activation_record_mismatch");
+    }
+    match owner {
+        SchedulerOwner::WorkItem { work_item_id } => settle_work_item(
+            snapshot,
+            activation_id,
+            work_item_id,
+            *admitted_generation,
+            recovery_for.as_deref(),
+            settlement,
+        ),
+        SchedulerOwner::AgentLifecycle { agent_id } => settle_lifecycle(
+            snapshot,
+            activation_id,
+            agent_id,
+            *admitted_generation,
+            settlement,
+        ),
+    }
+}
+
+fn settle_work_item(
+    snapshot: &Snapshot,
+    activation_id: &str,
+    work_item_id: &str,
+    admitted_generation: u64,
+    recovery_for: Option<&str>,
+    settlement: &Settlement,
+) -> Outcome {
+    let running_activation_id = activation_id;
+    let Some(current_work) = snapshot.work.get(work_item_id) else {
+        return rejected(snapshot, "running_work_item_missing");
+    };
+    if current_work.scheduling_generation != admitted_generation {
+        return rejected(snapshot, "stale_activation_generation");
     }
     if let Settlement::Complete {
         continuation: Some(continuation),
@@ -3317,12 +3518,12 @@ fn settle(snapshot: &Snapshot, activation_id: &str, settlement: &Settlement) -> 
     }
     if let Settlement::TargetedYield { continuation } = settlement {
         if continuation.continuation_id.is_empty()
-            || continuation.source_work_item_id != *work_item_id
-            || continuation.source_generation != *admitted_generation
+            || continuation.source_work_item_id != work_item_id
+            || continuation.source_generation != admitted_generation
         {
             return rejected(snapshot, "yield_continuation_identity_mismatch");
         }
-        if continuation.target_work_item_id == *work_item_id {
+        if continuation.target_work_item_id == work_item_id {
             return rejected(snapshot, "yield_target_is_source_work_item");
         }
         let Some(target) = snapshot.work.get(&continuation.target_work_item_id) else {
@@ -3372,8 +3573,8 @@ fn settle(snapshot: &Snapshot, activation_id: &str, settlement: &Settlement) -> 
                 matches!(
                     &demand.status,
                     WorkStatus::Yielded { continuation }
-                        if continuation.target_work_item_id == *work_item_id
-                            && continuation.target_generation == *admitted_generation
+                        if continuation.target_work_item_id == work_item_id
+                            && continuation.target_generation == admitted_generation
                 )
             })
             .count();
@@ -3381,14 +3582,15 @@ fn settle(snapshot: &Snapshot, activation_id: &str, settlement: &Settlement) -> 
             return rejected(snapshot, "ambiguous_yield_continuation");
         }
     }
-    let settlement_owner_activation = recovery_for
-        .as_deref()
-        .unwrap_or(running_activation_id.as_str());
+    let settlement_owner_activation = recovery_for.unwrap_or(running_activation_id);
+    let owner = SchedulerOwner::WorkItem {
+        work_item_id: work_item_id.to_string(),
+    };
     let consumed_wait_id = snapshot.waits.iter().find_map(|(wait_id, wait)| {
         wait.generations
             .get(&wait.current_generation)
             .is_some_and(|generation| {
-                generation.owner_work_item_id == *work_item_id
+                generation.owner == owner
                     && generation.state == WaitState::Consumed
                     && generation.consuming_activation_id.as_deref()
                         == Some(settlement_owner_activation)
@@ -3508,7 +3710,7 @@ fn settle(snapshot: &Snapshot, activation_id: &str, settlement: &Settlement) -> 
                 ) {
                     return rejected(snapshot, "wait_id_still_active");
                 }
-                if current_generation.owner_work_item_id != *work_item_id {
+                if current_generation.owner != owner {
                     return rejected(snapshot, "wait_id_owner_mismatch");
                 }
                 if existing_wait.current_generation >= next_generation {
@@ -3562,7 +3764,7 @@ fn settle(snapshot: &Snapshot, activation_id: &str, settlement: &Settlement) -> 
                 record.generations.insert(
                     next_generation,
                     WaitGenerationRecord {
-                        owner_work_item_id: work_item_id.clone(),
+                        owner: owner.clone(),
                         state: WaitState::Active,
                         trigger: None,
                         consuming_activation_id: None,
@@ -3576,7 +3778,7 @@ fn settle(snapshot: &Snapshot, activation_id: &str, settlement: &Settlement) -> 
                         generations: BTreeMap::from([(
                             next_generation,
                             WaitGenerationRecord {
-                                owner_work_item_id: work_item_id.clone(),
+                                owner: owner.clone(),
                                 state: WaitState::Active,
                                 trigger: None,
                                 consuming_activation_id: None,
@@ -3640,8 +3842,8 @@ fn settle(snapshot: &Snapshot, activation_id: &str, settlement: &Settlement) -> 
                     .iter()
                     .find_map(|(source_id, demand)| match &demand.status {
                         WorkStatus::Yielded { continuation }
-                            if continuation.target_work_item_id == *work_item_id
-                                && continuation.target_generation == *admitted_generation =>
+                            if continuation.target_work_item_id == work_item_id
+                                && continuation.target_generation == admitted_generation =>
                         {
                             Some((source_id.clone(), continuation.continuation_id.clone()))
                         }
@@ -3675,6 +3877,210 @@ fn settle(snapshot: &Snapshot, activation_id: &str, settlement: &Settlement) -> 
             "settlement:{missing_activation_id}:recovered:{activation_id}"
         ));
     }
+    Outcome {
+        decision: Decision::Settled,
+        transitions,
+        diagnostics: Vec::new(),
+        snapshot: next,
+    }
+}
+
+fn settle_lifecycle(
+    snapshot: &Snapshot,
+    activation_id: &str,
+    agent_id: &str,
+    admitted_generation: u64,
+    settlement: &Settlement,
+) -> Outcome {
+    if matches!(
+        settlement,
+        Settlement::TargetedYield { .. }
+            | Settlement::Complete {
+                continuation: Some(_)
+            }
+    ) {
+        return rejected(snapshot, "lifecycle_settlement_cannot_transfer_work");
+    }
+    let owner = SchedulerOwner::AgentLifecycle {
+        agent_id: agent_id.to_string(),
+    };
+    let lifecycle_nudge = snapshot
+        .activation_admissions
+        .get(activation_id)
+        .is_some_and(|admission| {
+            matches!(
+                admission.activation.cause,
+                ActivationCause::LifecycleExternalNudge { .. }
+            )
+        });
+    let consumed_wait_id = snapshot.waits.iter().find_map(|(wait_id, wait)| {
+        wait.generations
+            .get(&wait.current_generation)
+            .is_some_and(|generation| {
+                generation.owner == owner
+                    && generation.state == WaitState::Consumed
+                    && generation.consuming_activation_id.as_deref() == Some(activation_id)
+            })
+            .then(|| wait_id.clone())
+    });
+    if matches!(settlement, Settlement::Missing) {
+        let mut next = snapshot.clone();
+        next.slot = ActivationSlot::Idle;
+        next.activations
+            .get_mut(activation_id)
+            .expect("running activation exists")
+            .state = ActivationState::SettlementMissing;
+        return Outcome {
+            decision: Decision::SettlementMissing,
+            transitions: vec![
+                format!("activation:{activation_id}:running->settlement_missing"),
+                format!("slot:running:{activation_id}->idle"),
+            ],
+            diagnostics: vec![format!("settlement_missing:{activation_id}")],
+            snapshot: next,
+        };
+    }
+
+    let mut next = snapshot.clone();
+    let mut transitions = vec![format!("activation:{activation_id}:settled")];
+    match settlement {
+        Settlement::Continue | Settlement::Yield | Settlement::Complete { continuation: None } => {
+            if !lifecycle_nudge {
+                resolve_consumed_wait(&mut next, consumed_wait_id.as_deref(), &mut transitions);
+                set_dispatch_state(&mut next, AgentDispatchState::Open);
+            }
+        }
+        Settlement::Wait {
+            wait,
+            mode,
+            legacy_wait_id,
+        } => {
+            let next_generation = admitted_generation
+                .checked_add(1)
+                .expect("lifecycle wait generation overflow");
+            let wait_generation = if *legacy_wait_id {
+                next_generation
+            } else {
+                wait.generation
+            };
+            if wait_generation != next_generation {
+                return rejected(snapshot, "wait_settlement_generation_mismatch");
+            }
+            let wait = WaitIdentity {
+                id: wait.id.clone(),
+                generation: wait_generation,
+            };
+            if let Some(existing_wait) = next.waits.get(&wait.id) {
+                let current = existing_wait
+                    .generations
+                    .get(&existing_wait.current_generation)
+                    .expect("current wait generation exists");
+                if matches!(current.state, WaitState::Active | WaitState::Triggered) {
+                    return rejected(snapshot, "wait_id_still_active");
+                }
+                if current.owner != owner {
+                    return rejected(snapshot, "wait_id_owner_mismatch");
+                }
+                if existing_wait.current_generation >= next_generation {
+                    return rejected(snapshot, "wait_generation_not_advanced");
+                }
+            }
+            if consumed_wait_id.as_deref().is_some_and(|id| id != wait.id) {
+                resolve_consumed_wait(&mut next, consumed_wait_id.as_deref(), &mut transitions);
+            }
+            if lifecycle_nudge {
+                for (existing_wait_id, record) in &mut next.waits {
+                    if existing_wait_id == &wait.id {
+                        continue;
+                    }
+                    let generation = record
+                        .generations
+                        .get_mut(&record.current_generation)
+                        .expect("current wait generation exists");
+                    if generation.owner == owner
+                        && matches!(generation.state, WaitState::Active | WaitState::Triggered)
+                    {
+                        generation.state = WaitState::Resolved;
+                        generation.trigger = None;
+                        generation.consuming_activation_id = None;
+                        transitions.push(format!(
+                            "wait:{existing_wait_id}:generation:{}:resolved_by_lifecycle_rearm",
+                            record.current_generation
+                        ));
+                    }
+                }
+            }
+            let previous_generation = next
+                .waits
+                .get(&wait.id)
+                .map(|record| record.current_generation);
+            if let Some(record) = next.waits.get_mut(&wait.id) {
+                let previous = record
+                    .generations
+                    .get_mut(&record.current_generation)
+                    .expect("current wait generation exists");
+                if previous.state == WaitState::Consumed {
+                    previous.state = WaitState::Resolved;
+                    previous.consuming_activation_id = None;
+                }
+                record.current_generation = next_generation;
+                record.generations.insert(
+                    next_generation,
+                    WaitGenerationRecord {
+                        owner: owner.clone(),
+                        state: WaitState::Active,
+                        trigger: None,
+                        consuming_activation_id: None,
+                    },
+                );
+            } else {
+                next.waits.insert(
+                    wait.id.clone(),
+                    WaitRecord {
+                        current_generation: next_generation,
+                        generations: BTreeMap::from([(
+                            next_generation,
+                            WaitGenerationRecord {
+                                owner: owner.clone(),
+                                state: WaitState::Active,
+                                trigger: None,
+                                consuming_activation_id: None,
+                            },
+                        )]),
+                    },
+                );
+            }
+            set_dispatch_state(
+                &mut next,
+                match mode {
+                    WaitMode::AwaitThis => AgentDispatchState::Awaiting { wait: wait.clone() },
+                    WaitMode::AcceptScheduling => AgentDispatchState::Open,
+                },
+            );
+            transitions.push(match previous_generation {
+                Some(generation) => {
+                    format!(
+                        "wait:{}:generation:{generation}->{next_generation}:active",
+                        wait.id
+                    )
+                }
+                None => format!(
+                    "wait:{}:generation:{next_generation}:created:active",
+                    wait.id
+                ),
+            });
+        }
+        Settlement::TargetedYield { .. }
+        | Settlement::Complete {
+            continuation: Some(_),
+        }
+        | Settlement::Missing => unreachable!("lifecycle settlement shape handled above"),
+    }
+    next.slot = ActivationSlot::Idle;
+    next.activations
+        .get_mut(activation_id)
+        .expect("running activation exists")
+        .state = ActivationState::Settled;
     Outcome {
         decision: Decision::Settled,
         transitions,
@@ -4411,7 +4817,7 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
             .map_err(|_| "canonical activation admission record is invalid".to_string())?;
         let Event::Admit {
             activation_id: event_activation_id,
-            work_item_id,
+            owner,
             expected_generation,
             expected_dispatch_revision,
             cause,
@@ -4433,18 +4839,16 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
             AdmissionCause::Scheduling
             | AdmissionCause::TaskRejoin { .. }
             | AdmissionCause::OperatorInput { .. }
-            | AdmissionCause::WaitResume { .. } => None,
+            | AdmissionCause::WaitResume { .. }
+            | AdmissionCause::LifecycleExternalNudge { .. } => None,
         };
-        if !canonical_admission_fences.insert(admission_fence(
-            &work_item_id,
-            expected_generation,
-            &cause,
-        )) {
+        if !canonical_admission_fences.insert(admission_fence(&owner, expected_generation, &cause))
+        {
             return Err("canonical activation admissions reuse an admission fence".into());
         }
         if activation_id != &command.activation.id
             || event_activation_id != *activation_id
-            || activation.work_item_id != work_item_id
+            || activation.owner != owner
             || activation.admitted_generation != expected_generation
             || activation.recovery_for != recovery_for
             || expected_dispatch_revision > snapshot.dispatch_revision
@@ -4461,7 +4865,10 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
         }
     }
     if snapshot.admitted_generations != canonical_admission_fences {
-        return Err("canonical admission fences disagree with activation admissions".into());
+        return Err(format!(
+            "canonical admission fences disagree with activation admissions: persisted={:?}, canonical={canonical_admission_fences:?}",
+            snapshot.admitted_generations
+        ));
     }
     let mut authority_activation_ids = BTreeSet::new();
     let mut authority_idempotency_keys = BTreeSet::new();
@@ -4494,7 +4901,7 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
             return Err("activation input references unknown activation".into());
         };
         if attachment_id != &attachment.id
-            || activation.work_item_id != attachment.work_item_id
+            || activation.owner.work_item_id() != Some(attachment.work_item_id.as_str())
             || activation.admitted_generation != attachment.expected_scheduling_generation
             || attachment.expected_dispatch_revision > snapshot.dispatch_revision
             || !activation_input_message_ids.insert(attachment.message_id.as_str())
@@ -4538,16 +4945,12 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
         else {
             unreachable!("activation settlement lowers to settlement event");
         };
-        let Some(work) = snapshot.work.get(&activation.work_item_id) else {
-            return Err("canonical settlement references unknown work item".into());
-        };
         if settlement_id != &settlement.id
             || activation.state != ActivationState::Settled
             || !snapshot
                 .activation_admissions
                 .contains_key(&settlement.activation_id)
             || !settled_activations.insert(settlement.activation_id.as_str())
-            || work.scheduling_generation <= activation.admitted_generation
         {
             return Err("canonical activation settlement record is invalid".into());
         }
@@ -4555,12 +4958,62 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
             .entry(settlement.activation_id.clone())
             .or_default() += 1;
         let settlement_generation = activation.admitted_generation + 1;
+        let Some(work_item_id) = activation.owner.work_item_id() else {
+            match lowered {
+                Settlement::Continue
+                | Settlement::Yield
+                | Settlement::Complete { continuation: None } => {}
+                Settlement::Wait {
+                    wait,
+                    mode,
+                    legacy_wait_id,
+                } => {
+                    if legacy_wait_id || wait.generation != settlement_generation {
+                        return Err(
+                            "canonical lifecycle wait settlement has an invalid generation".into(),
+                        );
+                    }
+                    let Some(generation) = snapshot
+                        .waits
+                        .get(&wait.id)
+                        .and_then(|wait| wait.generations.get(&settlement_generation))
+                    else {
+                        return Err(
+                            "canonical lifecycle wait settlement has no authoritative wait fact"
+                                .into(),
+                        );
+                    };
+                    if generation.owner != activation.owner {
+                        return Err("canonical lifecycle wait settlement owner mismatch".into());
+                    }
+                    if mode == WaitMode::AwaitThis
+                        && matches!(generation.state, WaitState::Active | WaitState::Triggered)
+                    {
+                        current_awaiting_settlements.insert((wait.id, wait.generation));
+                    }
+                }
+                Settlement::TargetedYield { .. }
+                | Settlement::Complete {
+                    continuation: Some(_),
+                }
+                | Settlement::Missing => {
+                    return Err("canonical lifecycle settlement has an invalid disposition".into());
+                }
+            }
+            continue;
+        };
+        let Some(work) = snapshot.work.get(work_item_id) else {
+            return Err("canonical settlement references unknown work item".into());
+        };
+        if work.scheduling_generation <= activation.admitted_generation {
+            return Err("canonical activation settlement has a stale work generation".into());
+        }
         let has_successor_activation =
             snapshot
                 .activations
                 .iter()
                 .any(|(candidate_id, candidate)| {
-                    candidate.work_item_id == activation.work_item_id
+                    candidate.owner == activation.owner
                         && candidate.admitted_generation == settlement_generation
                         && snapshot.activation_admissions.contains_key(candidate_id)
                 });
@@ -4578,7 +5031,8 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
             Settlement::TargetedYield { continuation } => {
                 let restored = work.status == WorkStatus::Runnable
                     && snapshot.activations.values().any(|candidate| {
-                        candidate.work_item_id == continuation.target_work_item_id
+                        candidate.owner.work_item_id()
+                            == Some(continuation.target_work_item_id.as_str())
                             && candidate.admitted_generation == continuation.target_generation
                             && candidate.state == ActivationState::Settled
                     });
@@ -4614,7 +5068,7 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
                         "canonical wait settlement has no matching authoritative wait fact".into(),
                     );
                 };
-                if generation.owner_work_item_id != activation.work_item_id {
+                if generation.owner != activation.owner {
                     return Err(
                         "canonical wait settlement has no matching authoritative wait fact".into(),
                     );
@@ -4652,7 +5106,7 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
                         ContinuationAdmissionRecord {
                             admission_id: continuation.admission_id.clone(),
                             settlement_id: settlement_id.clone(),
-                            completed_work_item_id: activation.work_item_id.clone(),
+                            completed_work_item_id: work_item_id.to_string(),
                             caller_work_item_id: continuation.caller_work_item_id.clone(),
                             expected_caller_generation: continuation.expected_caller_generation,
                             expected_caller_status: WorkStatus::Runnable,
@@ -4742,14 +5196,29 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
         *terminal_records
             .entry(record.activation_id.clone())
             .or_default() += 1;
-        let work = snapshot.work.get(&activation.work_item_id).ok_or_else(|| {
-            "canonical missing-settlement record references unknown work item".to_string()
-        })?;
+        let work = activation
+            .owner
+            .work_item_id()
+            .map(|work_item_id| {
+                snapshot.work.get(work_item_id).ok_or_else(|| {
+                    "canonical missing-settlement record references unknown work item".to_string()
+                })
+            })
+            .transpose()?;
         match activation.state {
             ActivationState::Running => {
                 return Err("running activation has a canonical missing-settlement record".into());
             }
             ActivationState::SettlementMissing => {
+                if work.is_none() {
+                    if activation.recovery_for.is_some() {
+                        return Err(
+                            "lifecycle missing settlement cannot use WorkItem recovery".into()
+                        );
+                    }
+                    continue;
+                }
+                let work = work.expect("checked lifecycle settlement above");
                 if let Some(missing_activation_id) = &activation.recovery_for {
                     if work.status
                         != (WorkStatus::Paused {
@@ -4832,7 +5301,22 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
             );
         }
     } else if !snapshot.settlements.is_empty() && snapshot.dispatch != AgentDispatchState::Open {
-        return Err("canonical settlement dispatch disagrees with authoritative lane state".into());
+        let lifecycle_wait_is_preserved = match &snapshot.dispatch {
+            AgentDispatchState::Awaiting { wait } => snapshot
+                .waits
+                .get(&wait.id)
+                .and_then(|record| record.generations.get(&wait.generation))
+                .is_some_and(|generation| {
+                    matches!(generation.owner, SchedulerOwner::AgentLifecycle { .. })
+                        && matches!(generation.state, WaitState::Active | WaitState::Triggered)
+                }),
+            AgentDispatchState::Open => false,
+        };
+        if !lifecycle_wait_is_preserved {
+            return Err(
+                "canonical settlement dispatch disagrees with authoritative lane state".into(),
+            );
+        }
     }
     if snapshot.rollout.protocol_mode != ProtocolMode::Legacy && snapshot.rollout.manifest.is_none()
     {
@@ -4929,7 +5413,7 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
         ActivationSlot::Idle => {}
         ActivationSlot::Running {
             activation_id,
-            work_item_id,
+            owner,
             admitted_generation,
             recovery_for,
         } => {
@@ -4937,51 +5421,61 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
                 .activations
                 .get(activation_id)
                 .ok_or_else(|| "running slot has no canonical activation".to_string())?;
-            if activation.work_item_id != *work_item_id
+            if activation.owner != *owner
                 || activation.admitted_generation != *admitted_generation
                 || activation.state != ActivationState::Running
                 || activation.recovery_for != *recovery_for
             {
                 return Err("running slot disagrees with canonical activation".into());
             }
-            let work = snapshot
-                .work
-                .get(work_item_id)
-                .ok_or_else(|| "running activation references unknown work item".to_string())?;
-            if work.scheduling_generation != *admitted_generation {
-                return Err("running activation generation fence does not match work item".into());
-            }
-            match recovery_for {
-                Some(missing_activation_id) => {
-                    let missing =
-                        snapshot
-                            .activations
-                            .get(missing_activation_id)
-                            .ok_or_else(|| {
-                                "recovery activation references unknown missing settlement"
-                                    .to_string()
-                            })?;
-                    if missing.work_item_id != *work_item_id
-                        || missing.admitted_generation != *admitted_generation
-                        || missing.state != ActivationState::SettlementMissing
-                        || missing.recovery_for.is_some()
-                        || work.status
-                            != (WorkStatus::NeedsSettlement {
-                                activation_id: missing_activation_id.clone(),
-                            })
-                    {
+            match owner {
+                SchedulerOwner::WorkItem { work_item_id } => {
+                    let work = snapshot.work.get(work_item_id).ok_or_else(|| {
+                        "running activation references unknown work item".to_string()
+                    })?;
+                    if work.scheduling_generation != *admitted_generation {
                         return Err(
-                            "recovery activation is not paired with canonical settlement facts"
-                                .into(),
+                            "running activation generation fence does not match work item".into(),
                         );
                     }
+                    match recovery_for {
+                        Some(missing_activation_id) => {
+                            let missing = snapshot
+                                .activations
+                                .get(missing_activation_id)
+                                .ok_or_else(|| {
+                                    "recovery activation references unknown missing settlement"
+                                        .to_string()
+                                })?;
+                            if missing.owner != *owner
+                                || missing.admitted_generation != *admitted_generation
+                                || missing.state != ActivationState::SettlementMissing
+                                || missing.recovery_for.is_some()
+                                || work.status
+                                    != (WorkStatus::NeedsSettlement {
+                                        activation_id: missing_activation_id.clone(),
+                                    })
+                            {
+                                return Err(
+                                    "recovery activation is not paired with canonical settlement facts"
+                                        .into(),
+                                );
+                            }
+                        }
+                        None if matches!(work.status, WorkStatus::NeedsSettlement { .. }) => {
+                            return Err(
+                                "ordinary running activation has settlement-missing work state"
+                                    .into(),
+                            );
+                        }
+                        None => {}
+                    }
                 }
-                None if matches!(work.status, WorkStatus::NeedsSettlement { .. }) => {
-                    return Err(
-                        "ordinary running activation has settlement-missing work state".into(),
-                    );
+                SchedulerOwner::AgentLifecycle { agent_id } => {
+                    if agent_id.is_empty() || recovery_for.is_some() {
+                        return Err("running lifecycle activation has invalid owner state".into());
+                    }
                 }
-                None => {}
             }
         }
     }
@@ -4992,7 +5486,10 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
                 .activations
                 .get(activation_id)
                 .ok_or_else(|| "needs-settlement work item has no canonical fact".to_string())?;
-            if missing.work_item_id != *work_item_id
+            if missing.owner
+                != (SchedulerOwner::WorkItem {
+                    work_item_id: work_item_id.clone(),
+                })
                 || missing.admitted_generation != work.scheduling_generation
                 || missing.state != ActivationState::SettlementMissing
                 || missing.recovery_for.is_some()
@@ -5003,16 +5500,22 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
     }
 
     for (activation_id, activation) in &snapshot.activations {
-        let work = snapshot
-            .work
-            .get(&activation.work_item_id)
-            .ok_or_else(|| "activation references unknown work item".to_string())?;
+        let work = activation
+            .owner
+            .work_item_id()
+            .map(|work_item_id| {
+                snapshot
+                    .work
+                    .get(work_item_id)
+                    .ok_or_else(|| "activation references unknown work item".to_string())
+            })
+            .transpose()?;
         match activation.state {
             ActivationState::Running => {
                 if snapshot.slot
                     != (ActivationSlot::Running {
                         activation_id: activation_id.clone(),
-                        work_item_id: activation.work_item_id.clone(),
+                        owner: activation.owner.clone(),
                         admitted_generation: activation.admitted_generation,
                         recovery_for: activation.recovery_for.clone(),
                     })
@@ -5032,6 +5535,15 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
                 }
             }
             ActivationState::SettlementMissing => {
+                if work.is_none() {
+                    if activation.recovery_for.is_some() {
+                        return Err(
+                            "lifecycle settlement recovery requires a WorkItem owner".into()
+                        );
+                    }
+                    continue;
+                }
+                let work = work.expect("checked lifecycle activation above");
                 if let Some(missing_activation_id) = &activation.recovery_for {
                     let hold_id = format!("settlement-recovery:{missing_activation_id}");
                     if work.status != (WorkStatus::Paused { hold_id }) {
@@ -5081,16 +5593,18 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
         if !matches!(generation.state, WaitState::Active | WaitState::Triggered) {
             return Err("lane reservation references inactive wait".into());
         }
-        let work = snapshot
-            .work
-            .get(&generation.owner_work_item_id)
-            .ok_or_else(|| "reserved wait references unknown owner".to_string())?;
-        if work.status
-            != (WorkStatus::Waiting {
-                wait_id: reservation.id.clone(),
-            })
-        {
-            return Err("reserved wait owner is not waiting for that wait".into());
+        if let SchedulerOwner::WorkItem { work_item_id } = &generation.owner {
+            let work = snapshot
+                .work
+                .get(work_item_id)
+                .ok_or_else(|| "reserved wait references unknown owner".to_string())?;
+            if work.status
+                != (WorkStatus::Waiting {
+                    wait_id: reservation.id.clone(),
+                })
+            {
+                return Err("reserved wait owner is not waiting for that wait".into());
+            }
         }
     }
 
@@ -5113,21 +5627,23 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
             }
         }
         if matches!(current.state, WaitState::Active | WaitState::Triggered) {
-            let owner = snapshot
-                .work
-                .get(&current.owner_work_item_id)
-                .ok_or_else(|| format!("wait {wait_id} references unknown owner"))?;
-            if wait.current_generation != owner.scheduling_generation {
-                return Err(format!(
-                    "current wait {wait_id} generation does not match owner scheduling generation"
-                ));
-            }
-            if owner.status
-                != (WorkStatus::Waiting {
-                    wait_id: wait_id.clone(),
-                })
-            {
-                return Err(format!("active wait {wait_id} has non-waiting owner"));
+            if let SchedulerOwner::WorkItem { work_item_id } = &current.owner {
+                let owner = snapshot
+                    .work
+                    .get(work_item_id)
+                    .ok_or_else(|| format!("wait {wait_id} references unknown owner"))?;
+                if wait.current_generation != owner.scheduling_generation {
+                    return Err(format!(
+                        "current wait {wait_id} generation does not match owner scheduling generation"
+                    ));
+                }
+                if owner.status
+                    != (WorkStatus::Waiting {
+                        wait_id: wait_id.clone(),
+                    })
+                {
+                    return Err(format!("active wait {wait_id} has non-waiting owner"));
+                }
             }
         }
         match current.state {
@@ -5156,51 +5672,64 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
                     .ok_or_else(|| {
                         format!("consumed wait {wait_id} references unknown activation")
                     })?;
-                let owner = snapshot
-                    .work
-                    .get(&current.owner_work_item_id)
-                    .ok_or_else(|| format!("wait {wait_id} references unknown owner"))?;
                 let running_consumer = consuming_activation.state == ActivationState::Running
-                    && owner.status
-                        == (WorkStatus::Waiting {
-                            wait_id: wait_id.clone(),
-                        })
                     && snapshot.slot
                         == (ActivationSlot::Running {
                             activation_id: consuming_activation_id.clone(),
-                            work_item_id: current.owner_work_item_id.clone(),
+                            owner: current.owner.clone(),
                             admitted_generation: wait.current_generation,
                             recovery_for: None,
-                        });
+                        })
+                    && match &current.owner {
+                        SchedulerOwner::WorkItem { work_item_id } => {
+                            snapshot.work.get(work_item_id).is_some_and(|owner| {
+                                owner.status
+                                    == (WorkStatus::Waiting {
+                                        wait_id: wait_id.clone(),
+                                    })
+                            })
+                        }
+                        SchedulerOwner::AgentLifecycle { .. } => true,
+                    };
                 let missing_consumer = consuming_activation.state
                     == ActivationState::SettlementMissing
-                    && match &owner.status {
-                        WorkStatus::NeedsSettlement { activation_id }
-                            if activation_id == consuming_activation_id =>
-                        {
-                            matches!(snapshot.slot, ActivationSlot::Idle)
-                                || matches!(
-                                    &snapshot.slot,
-                                    ActivationSlot::Running {
-                                        work_item_id,
-                                        admitted_generation,
-                                        recovery_for: Some(recovery_for),
-                                        ..
-                                    } if work_item_id == &current.owner_work_item_id
-                                        && *admitted_generation == wait.current_generation
-                                        && recovery_for == consuming_activation_id
-                                )
-                        }
-                        WorkStatus::Paused { hold_id }
-                            if hold_id
-                                == &format!("settlement-recovery:{consuming_activation_id}") =>
-                        {
+                    && match &current.owner {
+                        SchedulerOwner::AgentLifecycle { .. } => {
                             matches!(snapshot.slot, ActivationSlot::Idle)
                         }
-                        _ => false,
+                        SchedulerOwner::WorkItem { work_item_id } => snapshot
+                            .work
+                            .get(work_item_id)
+                            .is_some_and(|owner| match &owner.status {
+                                WorkStatus::NeedsSettlement { activation_id }
+                                    if activation_id == consuming_activation_id =>
+                                {
+                                    matches!(snapshot.slot, ActivationSlot::Idle)
+                                        || matches!(
+                                            &snapshot.slot,
+                                            ActivationSlot::Running {
+                                                owner,
+                                                admitted_generation,
+                                                recovery_for: Some(recovery_for),
+                                                ..
+                                            } if owner == &current.owner
+                                                && *admitted_generation == wait.current_generation
+                                                && recovery_for == consuming_activation_id
+                                        )
+                                }
+                                WorkStatus::Paused { hold_id }
+                                    if hold_id
+                                        == &format!(
+                                            "settlement-recovery:{consuming_activation_id}"
+                                        ) =>
+                                {
+                                    matches!(snapshot.slot, ActivationSlot::Idle)
+                                }
+                                _ => false,
+                            }),
                     };
                 if current.trigger.is_none()
-                    || consuming_activation.work_item_id != current.owner_work_item_id
+                    || consuming_activation.owner != current.owner
                     || consuming_activation.admitted_generation != wait.current_generation
                     || consuming_activation.recovery_for.is_some()
                     || (!running_consumer && !missing_consumer)
@@ -5211,14 +5740,15 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
                 }
             }
             WaitState::Resolved => {
-                let owner = snapshot
-                    .work
-                    .get(&current.owner_work_item_id)
-                    .ok_or_else(|| format!("resolved wait {wait_id} references unknown owner"))?;
-                if wait.current_generation >= owner.scheduling_generation {
-                    return Err(format!(
-                        "resolved wait {wait_id} is not historical for its owner"
-                    ));
+                if let SchedulerOwner::WorkItem { work_item_id } = &current.owner {
+                    let owner = snapshot.work.get(work_item_id).ok_or_else(|| {
+                        format!("resolved wait {wait_id} references unknown owner")
+                    })?;
+                    if wait.current_generation >= owner.scheduling_generation {
+                        return Err(format!(
+                            "resolved wait {wait_id} is not historical for its owner"
+                        ));
+                    }
                 }
             }
             WaitState::Active | WaitState::Triggered => {}

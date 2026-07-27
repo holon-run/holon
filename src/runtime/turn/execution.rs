@@ -571,7 +571,7 @@ impl RuntimeHandle {
         let activation = snapshot.activations.get(activation_id).ok_or_else(|| {
             anyhow::anyhow!("operator interjection references an unknown canonical activation")
         })?;
-        if activation.work_item_id != work_item_id {
+        if activation.owner.work_item_id() != Some(work_item_id) {
             return Err(anyhow::anyhow!(
                 "operator interjection WorkItem binding disagrees with activation"
             ));

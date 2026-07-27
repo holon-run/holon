@@ -35,14 +35,24 @@ pub(crate) struct WaitForArgs {
     pub(crate) reason: String,
     pub(crate) wake: WaitForWakeArg,
     #[serde(default)]
+    pub(crate) work_item_id: Option<String>,
+    #[serde(default)]
     pub(crate) resource: Option<String>,
     #[serde(default)]
     pub(crate) recheck_after_ms: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum WaitForOwner {
+    WorkItem { work_item_id: String },
+    AgentLifecycle { agent_id: String },
+}
+
+#[derive(Debug, Serialize)]
 pub(crate) struct WaitForResult {
     pub(crate) scope: WaitForScope,
+    pub(crate) owner: WaitForOwner,
     pub(crate) reason: String,
     pub(crate) wake: WaitForWakeArg,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -79,7 +89,20 @@ pub(crate) async fn execute(
     validate_resource_for_wake(args.wake, resource.as_deref())?;
 
     let context = query_context(runtime).await?;
-    let work_item_id = context.current_work_item_id.clone();
+    let state = runtime.agent_state().await?;
+    let explicit_work_item_id = optional_resource(args.work_item_id);
+    let work_item_id = explicit_work_item_id.or_else(|| {
+        state
+            .current_execution_binding
+            .as_ref()
+            .map(|binding| binding.work_item_id.clone())
+            .unwrap_or_else(|| {
+                state
+                    .current_turn_work_item_id
+                    .clone()
+                    .or_else(|| context.current_work_item_id.clone())
+            })
+    });
     let registration = runtime
         .register_wait_for(
             agent_id,
@@ -97,8 +120,15 @@ pub(crate) async fn execute(
         }
         None => None,
     };
+    let owner = work_item_id
+        .clone()
+        .map(|work_item_id| WaitForOwner::WorkItem { work_item_id })
+        .unwrap_or_else(|| WaitForOwner::AgentLifecycle {
+            agent_id: agent_id.to_string(),
+        });
     let result = WaitForResult {
         scope: registration.scope,
+        owner,
         reason: reason.clone(),
         wake: args.wake,
         resource,

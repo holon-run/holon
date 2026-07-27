@@ -124,6 +124,12 @@ unbounded command enum:
 - `QueueTransitionCommand`;
 - `TaskTransitionCommand`.
 
+Operator scheduler repair reuses these focused command families. Wait
+cancellation carries an expected identity, agent, status, and `updated_at`
+fence. Wake-only queue cleanup uses compare-and-set from `Queued` or
+`Interrupted` to `Dropped`. Both commit repair audit events atomically; dry-run
+is evaluated above the commit layer.
+
 The activation protocol adds focused command families rather than widening one
 generic enum:
 

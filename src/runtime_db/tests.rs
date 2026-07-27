@@ -85,9 +85,10 @@ mod tests {
             IssueActivationAuthorityCommand, ObservationalDivergenceAllowance, PreemptionPolicy,
             ProtocolCommand, ProtocolMode, RegisterWorkDemandCommand, RollbackAction,
             RollbackPolicy, RollbackTrigger, RolloutClassEvidence, RolloutCommand, RolloutManifest,
-            RolloutPreflightState, ScenarioMode, SchedulerScenarioClass, SettleActivationCommand,
-            Snapshot, TriggerWaitCommand, WaitGenerationRecord, WaitIdentity, WaitRecord,
-            WaitResumeClaim, WaitState, WaitTrigger, WorkDemand, WorkStatus,
+            RolloutPreflightState, ScenarioMode, SchedulerOwner, SchedulerScenarioClass,
+            SettleActivationCommand, Snapshot, TriggerWaitCommand, WaitGenerationRecord,
+            WaitIdentity, WaitRecord, WaitResumeClaim, WaitState, WaitTrigger, WorkDemand,
+            WorkStatus,
         },
         runtime_db::repositories::{enum_string, slim_task_record_for_payload},
         runtime_db::transitions::{
@@ -1134,7 +1135,7 @@ mod tests {
     }
 
     #[test]
-    fn scheduler_protocol_schema_partitions_agent_references() -> Result<()> {
+    fn scheduler_protocol_schema_leaves_cross_table_consistency_to_runtime() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
         let connection = db.connection()?;
@@ -1158,43 +1159,47 @@ mod tests {
             )?;
         }
 
-        let error = connection
-            .execute(
-                "INSERT INTO scheduler_agent_focus (
-                   agent_id,
-                   focused_work_item_id,
-                   focus_revision,
-                   updated_at
-                 ) VALUES ('agent-a', 'work-b', 1, ?1)",
-                [Utc::now().to_rfc3339()],
-            )
-            .unwrap_err();
-        assert_eq!(
-            error.sqlite_error_code(),
-            Some(ErrorCode::ConstraintViolation)
-        );
-
         connection.execute(
             "INSERT INTO scheduler_agent_focus (
                agent_id,
                focused_work_item_id,
                focus_revision,
                updated_at
-             ) VALUES ('agent-a', 'work-a', 1, ?1)",
+             ) VALUES ('agent-a', 'work-b', 1, ?1)",
             [Utc::now().to_rfc3339()],
         )?;
-        let error = connection
-            .execute(
-                "UPDATE scheduler_work_demands
-                 SET status = 'terminal'
-                 WHERE agent_id = 'agent-a' AND work_item_id = 'work-a'",
-                [],
-            )
-            .unwrap_err();
-        assert_eq!(
-            error.sqlite_error_code(),
-            Some(ErrorCode::ConstraintViolation)
-        );
+        connection.execute(
+            "UPDATE scheduler_work_demands
+             SET status = 'terminal'
+             WHERE agent_id = 'agent-a' AND work_item_id = 'work-a'",
+            [],
+        )?;
+
+        for table in [
+            "scheduler_activation_authorities",
+            "scheduler_activations",
+            "scheduler_waits",
+            "scheduler_wait_generations",
+            "scheduler_agent_slots",
+            "scheduler_agent_dispatch",
+            "scheduler_agent_focus",
+            "scheduler_activation_settlements",
+            "scheduler_missing_settlements",
+            "scheduler_continuation_admissions",
+            "scheduler_activation_sources",
+            "scheduler_activation_inputs",
+            "scheduler_yield_continuations",
+        ] {
+            let foreign_key_count: i64 = connection.query_row(
+                "SELECT COUNT(*) FROM pragma_foreign_key_list(?1)",
+                [table],
+                |row| row.get(0),
+            )?;
+            assert_eq!(
+                foreign_key_count, 0,
+                "{table} must not encode canonical cross-table consistency as a foreign key"
+            );
+        }
         Ok(())
     }
 
@@ -1225,11 +1230,13 @@ mod tests {
             "INSERT INTO scheduler_waits (
                agent_id,
                wait_id,
+               owner_kind,
+               owner_id,
                owner_work_item_id,
                current_generation,
                payload_json,
                updated_at
-             ) VALUES ('agent-a', 'wait-a', 'work-a', 1, '{}', ?1)",
+             ) VALUES ('agent-a', 'wait-a', 'work_item', 'work-a', 'work-a', 1, '{}', ?1)",
             [&now],
         )?;
         connection.execute(
@@ -1237,6 +1244,8 @@ mod tests {
                agent_id,
                wait_id,
                generation,
+               owner_kind,
+               owner_id,
                owner_work_item_id,
                lifecycle_state,
                trigger_id,
@@ -1249,6 +1258,8 @@ mod tests {
                'agent-a',
                'wait-a',
                1,
+               'work_item',
+               'work-a',
                'work-a',
                'triggered',
                'trigger-a',
@@ -1269,13 +1280,15 @@ mod tests {
                    agent_id,
                    authority_id,
                    activation_id,
+                   owner_kind,
+                   owner_id,
                    work_item_id,
                    expected_scheduling_generation,
                    expected_dispatch_revision,
                    consumed_by_activation_id,
                    payload_json,
                    created_at
-                 ) VALUES ('agent-a', ?1, ?2, 'work-a', 7, 0, NULL, '{}', ?3)",
+                 ) VALUES ('agent-a', ?1, ?2, 'work_item', 'work-a', 'work-a', 7, 0, NULL, '{}', ?3)",
                 (authority_id, activation_id, &now),
             )?;
         }
@@ -1284,6 +1297,8 @@ mod tests {
                agent_id,
                activation_id,
                authority_id,
+               owner_kind,
+               owner_id,
                work_item_id,
                admitted_generation,
                admission_kind,
@@ -1299,6 +1314,8 @@ mod tests {
                'agent-a',
                'activation-scheduling',
                'authority-scheduling',
+               'work_item',
+               'work-a',
                'work-a',
                7,
                'scheduling',
@@ -1320,6 +1337,8 @@ mod tests {
                    agent_id,
                    activation_id,
                    authority_id,
+                   owner_kind,
+                   owner_id,
                    work_item_id,
                    admitted_generation,
                    admission_kind,
@@ -1335,6 +1354,8 @@ mod tests {
                    'agent-a',
                    'activation-wait-resume',
                    'authority-wait-resume',
+                   'work_item',
+                   'work-a',
                    'work-a',
                    7,
                    'wait_resume',
@@ -1357,14 +1378,14 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("scheduler_activations.agent_id, scheduler_activations.work_item_id, scheduler_activations.admitted_generation"),
+                .contains("scheduler_activations.agent_id, scheduler_activations.owner_kind, scheduler_activations.owner_id, scheduler_activations.admitted_generation"),
             "expected shared ordinary admission fence, got {error}"
         );
         Ok(())
     }
 
     #[test]
-    fn scheduler_protocol_schema_binds_authority_to_one_activation_identity() -> Result<()> {
+    fn scheduler_protocol_schema_enforces_row_local_authority_identity() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
         let connection = db.connection()?;
@@ -1395,57 +1416,18 @@ mod tests {
                    agent_id,
                    authority_id,
                    activation_id,
+                   owner_kind,
+                   owner_id,
                    work_item_id,
                    expected_scheduling_generation,
                    expected_dispatch_revision,
                    consumed_by_activation_id,
                    payload_json,
                    created_at
-                 ) VALUES ('agent-a', ?1, ?2, 'work-a', ?3, 0, NULL, '{}', ?4)",
+                 ) VALUES ('agent-a', ?1, ?2, 'work_item', 'work-a', 'work-a', ?3, 0, NULL, '{}', ?4)",
                 (authority_id, activation_id, generation, &now),
             )?;
         }
-
-        let error = connection
-            .execute(
-                "INSERT INTO scheduler_activations (
-                   agent_id,
-                   activation_id,
-                   authority_id,
-                   work_item_id,
-                   admitted_generation,
-                   admission_kind,
-                   recovery_for_activation_id,
-                   wait_id,
-                   wait_generation,
-                   lifecycle_state,
-                   idempotency_key,
-                   payload_json,
-                   created_at,
-                   updated_at
-                 ) VALUES (
-                   'agent-a',
-                   'activation-b',
-                   'authority-a',
-                   'work-a',
-                   1,
-                   'scheduling',
-                   NULL,
-                   NULL,
-                   NULL,
-                   'running',
-                   'mismatched-authority',
-                   '{}',
-                   ?1,
-                   ?1
-                 )",
-                [&now],
-            )
-            .unwrap_err();
-        assert_eq!(
-            error.sqlite_error_code(),
-            Some(ErrorCode::ConstraintViolation)
-        );
 
         for (authority_id, activation_id, generation) in [
             ("authority-a", "activation-a", 1),
@@ -1456,6 +1438,8 @@ mod tests {
                    agent_id,
                    activation_id,
                    authority_id,
+                   owner_kind,
+                   owner_id,
                    work_item_id,
                    admitted_generation,
                    admission_kind,
@@ -1471,6 +1455,8 @@ mod tests {
                    'agent-a',
                    ?1,
                    ?2,
+                   'work_item',
+                   'work-a',
                    'work-a',
                    ?3,
                    'scheduling',
@@ -1802,7 +1788,9 @@ mod tests {
                 generations: BTreeMap::from([(
                     wait_generation,
                     WaitGenerationRecord {
-                        owner_work_item_id: "work-a".into(),
+                        owner: SchedulerOwner::WorkItem {
+                            work_item_id: "work-a".into(),
+                        },
                         state: WaitState::Triggered,
                         trigger: Some(WaitTrigger {
                             trigger_id: trigger_id.into(),
@@ -1959,7 +1947,9 @@ mod tests {
                 generations: BTreeMap::from([(
                     wait_generation,
                     WaitGenerationRecord {
-                        owner_work_item_id: "work-a".into(),
+                        owner: SchedulerOwner::WorkItem {
+                            work_item_id: "work-a".into(),
+                        },
                         state: WaitState::Active,
                         trigger: None,
                         consuming_activation_id: None,

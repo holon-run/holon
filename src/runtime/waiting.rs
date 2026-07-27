@@ -253,6 +253,7 @@ impl RuntimeHandle {
             &crate::runtime_db::transitions::WaitTransitionCommand {
                 agent_id: agent_id.to_string(),
                 work_items,
+                expected_wait_conditions: Vec::new(),
                 wait_conditions,
                 agent_state: committed_agent_state.map(|record| {
                     crate::runtime_db::transitions::AgentStateMutation {

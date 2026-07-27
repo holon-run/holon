@@ -96,6 +96,7 @@ pub(crate) enum QueueOperation {
     Interject,
     Release,
     Settle,
+    RepairDrop,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -144,12 +145,21 @@ pub(crate) struct WorkItemTransitionCommand {
 pub(crate) struct WaitTransitionCommand {
     pub agent_id: String,
     pub work_items: Vec<WorkItemMutation>,
+    pub expected_wait_conditions: Vec<WaitConditionExpectation>,
     pub wait_conditions: Vec<WaitConditionRecord>,
     pub agent_state: Option<AgentStateMutation>,
     pub audit_events: Vec<AuditEvent>,
     pub index_changes: Vec<RuntimeIndexChange>,
     pub notify_scheduler: bool,
     pub fault: Option<TransitionFaultPoint>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct WaitConditionExpectation {
+    pub id: String,
+    pub agent_id: String,
+    pub status: crate::types::WaitConditionStatus,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
 #[derive(Debug, Clone)]
@@ -383,6 +393,41 @@ impl RuntimeTransitionRepository<'_> {
             for condition in &command.wait_conditions {
                 validate_wait_condition_tx(tx, condition)?;
             }
+            for expected in &command.expected_wait_conditions {
+                let actual = tx
+                    .query_row(
+                        "SELECT agent_id, status, updated_at
+                         FROM wait_conditions
+                         WHERE wait_condition_id = ?1",
+                        [&expected.id],
+                        |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, String>(2)?,
+                            ))
+                        },
+                    )
+                    .optional()?;
+                let expected_status =
+                    crate::runtime_db::repositories::enum_string(&expected.status)?;
+                let expected_updated_at =
+                    crate::runtime_db::repositories::timestamp(expected.updated_at);
+                if actual
+                    .as_ref()
+                    .is_none_or(|(agent_id, status, updated_at)| {
+                        agent_id != &expected.agent_id
+                            || status != &expected_status
+                            || updated_at != &expected_updated_at
+                    })
+                {
+                    return Err(RuntimeStateTransitionConflict::concurrent_mutation(
+                        "wait_condition_repair",
+                        &expected.id,
+                    )
+                    .into());
+                }
+            }
             validate_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
             inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
 
@@ -433,7 +478,10 @@ impl RuntimeTransitionRepository<'_> {
                 let include_interrupted = match command.operation {
                     QueueOperation::Claim => true,
                     QueueOperation::Interject => false,
-                    QueueOperation::Admit | QueueOperation::Release | QueueOperation::Settle => {
+                    QueueOperation::Admit
+                    | QueueOperation::Release
+                    | QueueOperation::Settle
+                    | QueueOperation::RepairDrop => {
                         unreachable!("queue operation validation rejects this combination")
                     }
                 };
@@ -490,7 +538,10 @@ impl RuntimeTransitionRepository<'_> {
                 QueueMutation::Consume(record) => match command.operation {
                     QueueOperation::Claim => try_claim_queued_message_tx(tx, record)?,
                     QueueOperation::Interject => try_interject_queued_message_tx(tx, record)?,
-                    QueueOperation::Admit | QueueOperation::Release | QueueOperation::Settle => {
+                    QueueOperation::Admit
+                    | QueueOperation::Release
+                    | QueueOperation::Settle
+                    | QueueOperation::RepairDrop => {
                         unreachable!("queue operation validation rejects this combination")
                     }
                 },
@@ -1084,6 +1135,18 @@ fn validate_queue_operation(command: &QueueTransitionCommand) -> Result<()> {
                     ..
                 },
             }
+        ) | (
+            QueueOperation::RepairDrop,
+            QueueMutation::CompareAndSet {
+                expected: QueueEntryRecord {
+                    status: QueueEntryStatus::Queued | QueueEntryStatus::Interrupted,
+                    ..
+                },
+                record: QueueEntryRecord {
+                    status: QueueEntryStatus::Dropped,
+                    ..
+                },
+            }
         )
     );
     if !valid {
@@ -1566,6 +1629,7 @@ mod tests {
                     record: blocked,
                     expected_revision: 1,
                 }],
+                expected_wait_conditions: Vec::new(),
                 wait_conditions: vec![wait],
                 agent_state: None,
                 audit_events: vec![AuditEvent::legacy("wait_registered", serde_json::json!({}))],

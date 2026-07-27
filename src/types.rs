@@ -1468,9 +1468,13 @@ impl MessageEnvelope {
             collect_source_ref(metadata, &mut self.source_refs, "external_trigger_id");
             collect_source_ref(metadata, &mut self.source_refs, "callback_delivery_id");
             collect_source_ref(metadata, &mut self.source_refs, "timer_id");
+            collect_source_ref(metadata, &mut self.source_refs, "wait_id");
+            collect_source_ref(metadata, &mut self.source_refs, "wait_generation");
             if let Some(wake_hint) = metadata.get("wake_hint") {
                 collect_source_ref(wake_hint, &mut self.source_refs, "external_trigger_id");
                 collect_source_ref(wake_hint, &mut self.source_refs, "resource");
+                collect_source_ref(wake_hint, &mut self.source_refs, "wait_id");
+                collect_source_ref(wake_hint, &mut self.source_refs, "wait_generation");
             }
         }
 

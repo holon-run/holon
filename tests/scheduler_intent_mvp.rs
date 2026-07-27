@@ -8,7 +8,7 @@ use std::{
 
 use holon::domain::scheduler_protocol::{
     ActivationOrigin, ActivationSlot, ActivationTrust, AdoptLegacyWorkStateCommand,
-    AgentDispatchState, Decision, LegacyWaitAdoption, ProtocolCommand, Snapshot,
+    AgentDispatchState, Decision, LegacyWaitAdoption, ProtocolCommand, SchedulerOwner, Snapshot,
     WaitGenerationRecord, WaitRecord, WaitState, WorkDemand, WorkStatus,
 };
 use holon::domain::scheduler_semantic::{
@@ -662,7 +662,9 @@ fn semantic_authority_snapshot() -> Snapshot {
                 generations: BTreeMap::from([(
                     3,
                     WaitGenerationRecord {
-                        owner_work_item_id: "work-design".into(),
+                        owner: SchedulerOwner::WorkItem {
+                            work_item_id: "work-design".into(),
+                        },
                         state: WaitState::Active,
                         trigger: None,
                         consuming_activation_id: None,

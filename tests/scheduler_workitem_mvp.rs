@@ -14,8 +14,9 @@ use model::{
     PreemptionPolicy, ProtocolCommand, ProtocolConflictKind, ProtocolMode,
     RegisterWorkDemandCommand, RollbackAction, RollbackPolicy, RollbackTrigger,
     RolloutClassEvidence, RolloutManifest, RolloutPreflightState, RolloutState, ScenarioMode,
-    SettleActivationCommand, Settlement, Snapshot, WaitGenerationRecord, WaitIdentity, WaitRecord,
-    WaitState, WaitTrigger, WorkDemand, WorkStatus, YieldContinuationRecord,
+    SchedulerOwner, SettleActivationCommand, Settlement, Snapshot, WaitGenerationRecord,
+    WaitIdentity, WaitRecord, WaitState, WaitTrigger, WorkDemand, WorkStatus,
+    YieldContinuationRecord,
 };
 use proptest::prelude::*;
 use serde::Deserialize;
@@ -117,11 +118,15 @@ fn apply_event(snapshot: &Snapshot, event: &Event) -> model::Outcome {
     match event {
         Event::Admit {
             activation_id,
-            work_item_id,
+            owner,
             expected_generation,
             expected_dispatch_revision,
             cause,
         } => {
+            let work_item_id = owner
+                .work_item_id()
+                .expect("legacy event test adapter requires a WorkItem owner")
+                .to_owned();
             let (typed_cause, binding, origin, trust) = match cause {
                 AdmissionCause::Scheduling => (
                     ActivationCause::WorkItemRunnable {
@@ -180,6 +185,9 @@ fn apply_event(snapshot: &Snapshot, event: &Event) -> model::Outcome {
                     ActivationOrigin::System,
                     ActivationTrust::RuntimeInstruction,
                 ),
+                AdmissionCause::LifecycleExternalNudge { .. } => {
+                    unreachable!("legacy WorkItem fixture cannot admit lifecycle nudges")
+                }
                 AdmissionCause::SettlementRecovery {
                     missing_activation_id,
                 } => (
@@ -633,7 +641,9 @@ fn legacy_admit_and_settle_replay_through_the_public_migration_boundary() {
     let snapshot = minimal_snapshot(1);
     let admit_event = Event::Admit {
         activation_id: "a1".into(),
-        work_item_id: "w1".into(),
+        owner: SchedulerOwner::WorkItem {
+            work_item_id: "w1".into(),
+        },
         expected_generation: 1,
         expected_dispatch_revision: 0,
         cause: AdmissionCause::Scheduling,
@@ -701,7 +711,9 @@ fn legacy_wait_resume_migration_preserves_original_callback_provenance() {
         &minimal_snapshot(1),
         &Event::Admit {
             activation_id: "a1".into(),
-            work_item_id: "w1".into(),
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "w1".into(),
+            },
             expected_generation: 1,
             expected_dispatch_revision: 0,
             cause: AdmissionCause::Scheduling,
@@ -732,7 +744,9 @@ fn legacy_wait_resume_migration_preserves_original_callback_provenance() {
     );
     let resume = Event::Admit {
         activation_id: "a2".into(),
-        work_item_id: "w1".into(),
+        owner: SchedulerOwner::WorkItem {
+            work_item_id: "w1".into(),
+        },
         expected_generation: 2,
         expected_dispatch_revision: 1,
         cause: AdmissionCause::WaitResume {
@@ -861,7 +875,7 @@ proptest! {
         }
         let event = Event::Admit {
             activation_id: "a1".into(),
-            work_item_id: "w1".into(),
+            owner: SchedulerOwner::WorkItem { work_item_id: "w1".into() },
             expected_generation,
             expected_dispatch_revision: snapshot.dispatch_revision,
             cause: model::AdmissionCause::Scheduling,
@@ -877,7 +891,7 @@ proptest! {
         let snapshot = minimal_snapshot(scheduling_generation);
         let event = Event::Admit {
             activation_id: "a1".into(),
-            work_item_id: "w1".into(),
+            owner: SchedulerOwner::WorkItem { work_item_id: "w1".into() },
             expected_generation: scheduling_generation.saturating_add(delta),
             expected_dispatch_revision: 0,
             cause: model::AdmissionCause::Scheduling,
@@ -918,7 +932,9 @@ fn small_state_space_preserves_lane_wait_and_settlement_invariants() {
         },
         Event::Admit {
             activation_id: "a1".into(),
-            work_item_id: "w1".into(),
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "w1".into(),
+            },
             expected_generation: 1,
             expected_dispatch_revision: 0,
             cause: model::AdmissionCause::WaitResume {
@@ -971,7 +987,9 @@ fn stale_wait_generation_cannot_trigger_or_resume_reused_wait_id() {
         &minimal_snapshot(1),
         &Event::Admit {
             activation_id: "a1".into(),
-            work_item_id: "w1".into(),
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "w1".into(),
+            },
             expected_generation: 1,
             expected_dispatch_revision: 0,
             cause: AdmissionCause::Scheduling,
@@ -1009,7 +1027,9 @@ fn stale_wait_generation_cannot_trigger_or_resume_reused_wait_id() {
         &first_trigger.snapshot,
         &Event::Admit {
             activation_id: "a2".into(),
-            work_item_id: "w1".into(),
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "w1".into(),
+            },
             expected_generation: 2,
             expected_dispatch_revision: 1,
             cause: AdmissionCause::WaitResume {
@@ -1074,7 +1094,9 @@ fn stale_wait_generation_cannot_trigger_or_resume_reused_wait_id() {
         &triggered.snapshot,
         &Event::Admit {
             activation_id: "a-stale".into(),
-            work_item_id: "w1".into(),
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "w1".into(),
+            },
             expected_generation: 3,
             expected_dispatch_revision: 3,
             cause: AdmissionCause::WaitResume {
@@ -1092,7 +1114,9 @@ fn stale_wait_generation_cannot_trigger_or_resume_reused_wait_id() {
         &triggered.snapshot,
         &Event::Admit {
             activation_id: "a3".into(),
-            work_item_id: "w1".into(),
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "w1".into(),
+            },
             expected_generation: 3,
             expected_dispatch_revision: 3,
             cause: AdmissionCause::WaitResume {
@@ -1138,7 +1162,9 @@ fn metadata_revision_changes_do_not_invalidate_activation_generation() {
         &minimal_snapshot(4),
         &Event::Admit {
             activation_id: "a1".into(),
-            work_item_id: "w1".into(),
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "w1".into(),
+            },
             expected_generation: 4,
             expected_dispatch_revision: 0,
             cause: AdmissionCause::Scheduling,
@@ -1169,7 +1195,9 @@ fn settlement_recovery_success_closes_both_activations() {
         &minimal_snapshot(7),
         &Event::Admit {
             activation_id: "a-missing".into(),
-            work_item_id: "w1".into(),
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "w1".into(),
+            },
             expected_generation: 7,
             expected_dispatch_revision: 0,
             cause: AdmissionCause::Scheduling,
@@ -1189,7 +1217,9 @@ fn settlement_recovery_success_closes_both_activations() {
         &missing.snapshot,
         &Event::Admit {
             activation_id: "a-recovery".into(),
-            work_item_id: "w1".into(),
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "w1".into(),
+            },
             expected_generation: 7,
             expected_dispatch_revision: 0,
             cause: AdmissionCause::SettlementRecovery {
@@ -1231,7 +1261,9 @@ fn wait_resume_missing_settlement_preserves_consumed_wait_for_recovery() {
         &minimal_snapshot(1),
         &Event::Admit {
             activation_id: "a1".into(),
-            work_item_id: "w1".into(),
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "w1".into(),
+            },
             expected_generation: 1,
             expected_dispatch_revision: 0,
             cause: AdmissionCause::Scheduling,
@@ -1264,7 +1296,9 @@ fn wait_resume_missing_settlement_preserves_consumed_wait_for_recovery() {
         &triggered.snapshot,
         &Event::Admit {
             activation_id: "a2".into(),
-            work_item_id: "w1".into(),
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "w1".into(),
+            },
             expected_generation: 2,
             expected_dispatch_revision: 1,
             cause: AdmissionCause::WaitResume {
@@ -1302,7 +1336,9 @@ fn wait_resume_missing_settlement_preserves_consumed_wait_for_recovery() {
         &missing.snapshot,
         &Event::Admit {
             activation_id: "a3".into(),
-            work_item_id: "w1".into(),
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "w1".into(),
+            },
             expected_generation: 2,
             expected_dispatch_revision: 2,
             cause: AdmissionCause::SettlementRecovery {
@@ -1338,7 +1374,9 @@ fn failed_settlement_recovery_enters_typed_hold_and_cannot_retry() {
         &minimal_snapshot(11),
         &Event::Admit {
             activation_id: "a-missing".into(),
-            work_item_id: "w1".into(),
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "w1".into(),
+            },
             expected_generation: 11,
             expected_dispatch_revision: 0,
             cause: AdmissionCause::Scheduling,
@@ -1355,7 +1393,9 @@ fn failed_settlement_recovery_enters_typed_hold_and_cannot_retry() {
         &missing.snapshot,
         &Event::Admit {
             activation_id: "a-recovery".into(),
-            work_item_id: "w1".into(),
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "w1".into(),
+            },
             expected_generation: 11,
             expected_dispatch_revision: 0,
             cause: AdmissionCause::SettlementRecovery {
@@ -1387,7 +1427,9 @@ fn failed_settlement_recovery_enters_typed_hold_and_cannot_retry() {
     assert_eq!(
         held.snapshot.activations["a-recovery"],
         ActivationRecord {
-            work_item_id: "w1".into(),
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "w1".into()
+            },
             admitted_generation: 11,
             state: ActivationState::SettlementMissing,
             recovery_for: Some("a-missing".into()),
@@ -1399,7 +1441,9 @@ fn failed_settlement_recovery_enters_typed_hold_and_cannot_retry() {
         &held.snapshot,
         &Event::Admit {
             activation_id: "a-retry".into(),
-            work_item_id: "w1".into(),
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "w1".into(),
+            },
             expected_generation: 11,
             expected_dispatch_revision: 0,
             cause: AdmissionCause::SettlementRecovery {
@@ -1421,7 +1465,9 @@ fn stale_dispatch_revision_cannot_claim_the_lane() {
         &snapshot,
         &Event::Admit {
             activation_id: "a-stale-dispatch".into(),
-            work_item_id: "w1".into(),
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "w1".into(),
+            },
             expected_generation: 3,
             expected_dispatch_revision: 1,
             cause: AdmissionCause::Scheduling,
@@ -1452,7 +1498,9 @@ fn settlement_recovery_rejects_a_current_revision_with_an_awaiting_reservation()
         &base,
         &Event::Admit {
             activation_id: "a-missing".into(),
-            work_item_id: "w1".into(),
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "w1".into(),
+            },
             expected_generation: 1,
             expected_dispatch_revision: 0,
             cause: AdmissionCause::Scheduling,
@@ -1470,7 +1518,9 @@ fn settlement_recovery_rejects_a_current_revision_with_an_awaiting_reservation()
         &base,
         &Event::Admit {
             activation_id: "a-wait".into(),
-            work_item_id: "w2".into(),
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "w2".into(),
+            },
             expected_generation: 1,
             expected_dispatch_revision: 0,
             cause: AdmissionCause::Scheduling,
@@ -1541,7 +1591,9 @@ fn pending_settlement_recovery_blocks_ordinary_work_admission() {
         &minimal_snapshot(5),
         &Event::Admit {
             activation_id: "a-missing".into(),
-            work_item_id: "w1".into(),
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "w1".into(),
+            },
             expected_generation: 5,
             expected_dispatch_revision: 0,
             cause: AdmissionCause::Scheduling,
@@ -1572,7 +1624,9 @@ fn pending_settlement_recovery_blocks_ordinary_work_admission() {
         &snapshot,
         &Event::Admit {
             activation_id: "a-w2".into(),
-            work_item_id: "w2".into(),
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "w2".into(),
+            },
             expected_generation: 1,
             expected_dispatch_revision: 0,
             cause: AdmissionCause::Scheduling,
@@ -1602,7 +1656,9 @@ fn targeted_yield_is_fenced_and_target_completion_restores_source_once() {
         &snapshot,
         &Event::Admit {
             activation_id: "a1".into(),
-            work_item_id: "w1".into(),
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "w1".into(),
+            },
             expected_generation: 1,
             expected_dispatch_revision: 0,
             cause: AdmissionCause::Scheduling,
@@ -1636,7 +1692,9 @@ fn targeted_yield_is_fenced_and_target_completion_restores_source_once() {
         &yielded.snapshot,
         &Event::Admit {
             activation_id: "a2".into(),
-            work_item_id: "w2".into(),
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "w2".into(),
+            },
             expected_generation: 1,
             expected_dispatch_revision: yielded.snapshot.dispatch_revision,
             cause: AdmissionCause::Scheduling,
@@ -2611,7 +2669,9 @@ fn wait_history_rejects_future_generations_and_rearm_never_overwrites_them() {
                 (
                     2,
                     WaitGenerationRecord {
-                        owner_work_item_id: "w1".into(),
+                        owner: SchedulerOwner::WorkItem {
+                            work_item_id: "w1".into(),
+                        },
                         state: WaitState::Resolved,
                         trigger: None,
                         consuming_activation_id: None,
@@ -2620,7 +2680,9 @@ fn wait_history_rejects_future_generations_and_rearm_never_overwrites_them() {
                 (
                     4,
                     WaitGenerationRecord {
-                        owner_work_item_id: "w1".into(),
+                        owner: SchedulerOwner::WorkItem {
+                            work_item_id: "w1".into(),
+                        },
                         state: WaitState::Resolved,
                         trigger: None,
                         consuming_activation_id: None,
@@ -2663,7 +2725,9 @@ fn wait_history_rejects_future_generations_and_rearm_never_overwrites_them() {
     wait.generations.insert(
         5,
         WaitGenerationRecord {
-            owner_work_item_id: "w1".into(),
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "w1".into(),
+            },
             state: WaitState::Resolved,
             trigger: None,
             consuming_activation_id: None,
@@ -2732,7 +2796,9 @@ fn canonical_admissions_rebuild_exact_unique_reservation_fences() {
     duplicate.activations.insert(
         "a2".into(),
         ActivationRecord {
-            work_item_id: "w1".into(),
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "w1".into(),
+            },
             admitted_generation: 1,
             state: ActivationState::Settled,
             recovery_for: None,
@@ -3118,7 +3184,9 @@ fn reducer_rejections_have_explicit_stable_conflict_kinds() {
         &minimal_snapshot(1),
         &Event::Admit {
             activation_id: "a1".into(),
-            work_item_id: "w1".into(),
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "w1".into(),
+            },
             expected_generation: 1,
             expected_dispatch_revision: 0,
             cause: AdmissionCause::Scheduling,
@@ -3222,7 +3290,9 @@ fn wait_record(
         generations: BTreeMap::from([(
             generation,
             WaitGenerationRecord {
-                owner_work_item_id: owner_work_item_id.into(),
+                owner: SchedulerOwner::WorkItem {
+                    work_item_id: owner_work_item_id.into(),
+                },
                 state,
                 trigger: trigger.map(|(trigger_id, trigger_generation)| WaitTrigger {
                     trigger_id: trigger_id.into(),

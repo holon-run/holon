@@ -463,7 +463,8 @@ implemented structural classes are:
 
 - WorkItem autonomous continuation;
 - exact task rejoin;
-- exact wait resume; and
+- exact wait resume;
+- lifecycle external nudge; and
 - explicitly bound operator input.
 
 Each plan preserves the source-specific cause and binding, message provenance
@@ -475,6 +476,39 @@ projection either commit together or all roll back. Duplicate command identity
 returns the first canonical result; stale generations, wrong-agent bindings,
 ambiguous waits, and out-of-order source identities reject before execution
 ownership changes.
+
+### Activation owner and lifecycle nudge
+
+Canonical activation, wait generation, and slot ownership use a tagged owner:
+
+```text
+SchedulerOwner =
+    WorkItem(work_item_id)
+  | AgentLifecycle(agent_id)
+```
+
+`AgentLifecycle` is not a missing WorkItem and must not be implemented with a
+placeholder WorkItem. It admits agent-scoped waits and unbound lifecycle
+inspection turns without registering WorkItem demand.
+
+An exact lifecycle wait resume still requires a trusted wait identity and
+generation fence. Generic callback, webhook, channel, or wake-hint ingress
+does not prove which wait changed and instead admits
+`LifecycleExternalNudge(message_id)`. A nudge may inspect active waits but does
+not consume, resolve, or rebind any wait. If the turn records a replacement
+agent-lifecycle wait, settlement resolves the superseded lifecycle wait and
+arms the new generation atomically.
+
+`WaitFor.resource` is waiting intent and diagnostic context, not routing
+authority. Exact external resume requires a runtime-owned or
+capability-authenticated correlation carrying `wait_id + generation`.
+
+Canonical scheduler tables persist `owner_kind + owner_id` and retain
+row-local primary-key, unique, `NOT NULL`, `CHECK`, generation, and idempotency
+constraints. Cross-table lifecycle consistency is enforced by typed commands,
+single-transaction validation, replay fences, and invariant scans rather than
+SQLite foreign keys. Missing related facts therefore become typed diagnostics
+or repair candidates instead of database-level runtime-loop failures.
 
 Operator interjection follows a different path because a running activation
 already owns execution. A safe point attaches one typed

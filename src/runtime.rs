@@ -13,6 +13,7 @@ mod message_dispatch;
 mod operator;
 mod operator_dispatch;
 mod provider_turn;
+mod repair;
 mod scheduler;
 mod scheduler_acceptance;
 mod scheduler_executor;
@@ -30,6 +31,10 @@ mod worktree;
 
 pub use first_run_intro::maybe_enqueue_first_run_intro;
 pub(crate) use lifecycle::LightweightAgentStateProjection;
+pub use repair::{
+    SchedulerRepairInspection, SchedulerRepairOperation, SchedulerRepairRequest,
+    SchedulerRepairResult,
+};
 pub use scheduler_acceptance::{
     seed_scheduler_terminal_recovery_fixture, SchedulerTerminalRecoveryFixture,
 };
@@ -444,7 +449,57 @@ fn canonical_queue_settlement_commands_from_facts(
     let Some(activation) = snapshot.activations.get(&activation_id) else {
         return Ok(Vec::new());
     };
-    let work_item_id = activation.work_item_id.clone();
+    let Some(work_item_id) = activation.owner.work_item_id().map(ToString::to_string) else {
+        let missing_settlement = || {
+            ProtocolCommand::RecordMissingSettlement(MissingSettlementRecord {
+                id: canonical_missing_settlement_id(&record.message_id),
+                activation_id: activation_id.clone(),
+                created_at: record.updated_at.to_rfc3339(),
+            })
+        };
+        if record.status != QueueEntryStatus::Processed {
+            return Ok(vec![missing_settlement()]);
+        }
+        let active_waits = storage
+            .active_wait_conditions_for_agent(&record.agent_id)?
+            .into_iter()
+            .filter(|wait| wait.work_item_id.is_none())
+            .filter(|wait| wait.turn_id == message.turn_id)
+            .collect::<Vec<_>>();
+        let disposition = match active_waits.as_slice() {
+            [] => ActivationDisposition::WorkContinues,
+            [wait] => ActivationDisposition::WorkWaits {
+                wait: WaitIdentity {
+                    id: wait.id.clone(),
+                    generation: activation.admitted_generation + 1,
+                },
+            },
+            _ => return Ok(vec![missing_settlement()]),
+        };
+        let agent_dispatch = match &disposition {
+            ActivationDisposition::WorkWaits { wait } => {
+                AgentDispatchDisposition::Awaiting { wait: wait.clone() }
+            }
+            _ => AgentDispatchDisposition::Open,
+        };
+        return Ok(vec![ProtocolCommand::SettleActivation(
+            SettleActivationCommand {
+                settlement: ActivationSettlement {
+                    id: canonical_settlement_id(&record.message_id),
+                    activation_id,
+                    turn_terminal: message.turn_id.clone(),
+                    disposition,
+                    agent_dispatch,
+                    operator_delivery: None,
+                    evidence: vec![
+                        format!("message:{}", record.message_id),
+                        format!("lifecycle_agent:{}", record.agent_id),
+                    ],
+                    created_at: record.updated_at.to_rfc3339(),
+                },
+            },
+        )]);
+    };
     let work_queue = storage.work_queue_prompt_projection()?;
     let scheduling_state = work_queue
         .items
@@ -918,7 +973,12 @@ pub fn scheduler_recovery_report(
             candidates.push(candidate);
             continue;
         };
-        candidate.work_item_id = Some(activation.work_item_id.clone());
+        let Some(work_item_id) = activation.owner.work_item_id() else {
+            candidate.reason = "lifecycle_activation_not_legacy_work_queue_claim".into();
+            candidates.push(candidate);
+            continue;
+        };
+        candidate.work_item_id = Some(work_item_id.to_string());
         candidate
             .evidence
             .push(format!("activation_state={:?}", activation.state));
@@ -940,7 +1000,7 @@ pub fn scheduler_recovery_report(
             candidates.push(candidate);
             continue;
         }
-        if message.work_item_id.as_deref() != Some(activation.work_item_id.as_str()) {
+        if message.work_item_id.as_deref() != Some(work_item_id) {
             candidate.reason = "work_item_binding_mismatch".into();
             candidates.push(candidate);
             continue;
@@ -954,7 +1014,7 @@ pub fn scheduler_recovery_report(
                     .and_then(|trigger| trigger.message_id.as_deref())
                     == Some(entry.message_id.as_str())
                 && message.turn_id.as_deref() == Some(turn.turn_id.as_str())
-                && turn.current_work_item_id.as_deref() == Some(activation.work_item_id.as_str())
+                && turn.current_work_item_id.as_deref() == Some(work_item_id)
         });
         candidate.terminal_turn_id = terminal_turn.map(|turn| turn.turn_id.clone());
         let terminal_is_completed = terminal_turn.is_some_and(|turn| {
@@ -2142,6 +2202,21 @@ impl RuntimeHandle {
         operator_binding_id: Option<&str>,
         operator_reply_route_id: Option<&str>,
     ) -> Result<()> {
+        let canonical_execution_binding = message
+            .map(|message| {
+                let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+                let activation = self
+                    .inner
+                    .runtime_db
+                    .transitions()
+                    .load_scheduler_protocol_snapshot_if_initialized(&message.agent_id)?
+                    .and_then(|snapshot| snapshot.activations.get(&activation_id).cloned());
+                Ok::<_, anyhow::Error>(
+                    activation.map(|activation| (activation_id, activation.owner)),
+                )
+            })
+            .transpose()?
+            .flatten();
         if let Some(message) = message {
             let work_item_id = message.work_item_id.clone().or_else(|| {
                 self.inner.agent.try_lock().ok().and_then(|guard| {
@@ -2201,14 +2276,24 @@ impl RuntimeHandle {
                 .unwrap_or_else(crate::ids::turn_id);
             guard.state.current_turn_id = Some(turn_id.clone());
             guard.state.last_turn_terminal = None;
-            if guard.state.current_turn_work_item_id.is_none() {
+            if canonical_execution_binding
+                .as_ref()
+                .is_some_and(|(_, owner)| owner.lifecycle_agent_id().is_some())
+            {
+                guard.state.current_turn_work_item_id = None;
+            } else if guard.state.current_turn_work_item_id.is_none() {
                 guard.state.current_turn_work_item_id = guard.state.current_work_item_id.clone();
             }
             guard.state.current_execution_binding = message.map(|message| {
-                let work_item_id = message
-                    .work_item_id
-                    .clone()
-                    .or_else(|| guard.state.current_turn_work_item_id.clone());
+                let work_item_id = canonical_execution_binding
+                    .as_ref()
+                    .map(|(_, owner)| owner.work_item_id().map(ToString::to_string))
+                    .unwrap_or_else(|| {
+                        message
+                            .work_item_id
+                            .clone()
+                            .or_else(|| guard.state.current_turn_work_item_id.clone())
+                    });
                 let claimed_work_revision = work_item_id
                     .as_deref()
                     .and_then(|work_item_id| {
@@ -2220,18 +2305,9 @@ impl RuntimeHandle {
                             .flatten()
                     })
                     .map(|work_item| work_item.revision);
-                let activation_id = Some(scheduler_executor::canonical_activation_id(&message.id))
-                    .filter(|activation_id| {
-                        self.inner
-                            .runtime_db
-                            .transitions()
-                            .load_scheduler_protocol_snapshot_if_initialized(&message.agent_id)
-                            .ok()
-                            .flatten()
-                            .is_some_and(|snapshot| {
-                                snapshot.activations.contains_key(activation_id)
-                            })
-                    });
+                let activation_id = canonical_execution_binding
+                    .as_ref()
+                    .map(|(activation_id, _)| activation_id.clone());
                 WorkItemExecutionBinding {
                     activation_id,
                     source_message_id: message.id.clone(),
@@ -3269,6 +3345,9 @@ impl RuntimeHandle {
             let Some(activation) = snapshot.activations.get(&activation_id) else {
                 continue;
             };
+            let Some(work_item_id) = activation.owner.work_item_id() else {
+                continue;
+            };
             let Some(message) = self.inner.storage.read_message_by_id(&entry.message_id)? else {
                 continue;
             };
@@ -3276,7 +3355,7 @@ impl RuntimeHandle {
                 (&message.kind, &message.origin),
                 (MessageKind::SystemTick, MessageOrigin::System { subsystem })
                     if subsystem == "work_queue"
-            ) || message.work_item_id.as_deref() != Some(activation.work_item_id.as_str())
+            ) || message.work_item_id.as_deref() != Some(work_item_id)
             {
                 continue;
             }
@@ -3289,8 +3368,7 @@ impl RuntimeHandle {
                         .and_then(|trigger| trigger.message_id.as_deref())
                         == Some(entry.message_id.as_str())
                     && message.turn_id.as_deref() == Some(turn.turn_id.as_str())
-                    && turn.current_work_item_id.as_deref()
-                        == Some(activation.work_item_id.as_str())
+                    && turn.current_work_item_id.as_deref() == Some(work_item_id)
             });
             let terminal_is_completed = terminal_turn.is_some_and(|turn| {
                 turn.terminal.as_ref().is_some_and(|terminal| {
@@ -3332,7 +3410,7 @@ impl RuntimeHandle {
                                 "agent_id": agent_id,
                                 "message_id": message_id,
                                 "activation_id": activation_id,
-                                "work_item_id": activation.work_item_id,
+                                "work_item_id": work_item_id,
                                 "queue_status": queue_status,
                                 "recovery_outcome": "legacy_queue_reconciled_from_canonical_settlement",
                                 "terminal_turn_id": terminal_turn.map(|turn| turn.turn_id.clone()),
@@ -3384,7 +3462,7 @@ impl RuntimeHandle {
                                 "agent_id": agent_id,
                                 "message_id": message_id,
                                 "activation_id": activation_id,
-                                "work_item_id": activation.work_item_id,
+                                "work_item_id": work_item_id,
                                 "queue_status": QueueEntryStatus::Aborted,
                                 "recovery_outcome": "legacy_queue_reconciled_from_canonical_missing_settlement",
                                 "terminal_turn_id": terminal_turn.map(|turn| turn.turn_id.clone()),
@@ -3449,7 +3527,7 @@ impl RuntimeHandle {
                     &scheduler::scheduler_invariant_diagnostic_event(
                         &agent_id,
                         "bootstrap_recovery_command_rejected",
-                        Some(activation.work_item_id.clone()),
+                        Some(work_item_id.to_string()),
                         Some(entry.message_id.clone()),
                         diagnostics,
                     )?,
@@ -3457,7 +3535,7 @@ impl RuntimeHandle {
                 continue;
             }
             let message_id = entry.message_id.clone();
-            let work_item_id = activation.work_item_id.clone();
+            let work_item_id = work_item_id.to_string();
             let queue_status = entry.status.clone();
             let terminal_turn_id = terminal_turn.map(|turn| turn.turn_id.clone());
             let recovery_outcome = if settles_from_terminal {
@@ -3547,6 +3625,7 @@ impl RuntimeHandle {
         for (activation_id, activation) in snapshot.activations.iter().filter(|(_, activation)| {
             activation.state == crate::domain::scheduler_protocol::ActivationState::Running
         }) {
+            let work_item_id = activation.owner.work_item_id().map(ToString::to_string);
             let message_id = activation_id
                 .strip_prefix("activation:message:")
                 .map(ToString::to_string);
@@ -3567,26 +3646,28 @@ impl RuntimeHandle {
             });
             let mut base_evidence = vec![
                 format!("activation_id={activation_id}"),
-                format!("work_item_id={}", activation.work_item_id),
+                format!("owner={:?}", activation.owner),
                 format!("admitted_generation={}", activation.admitted_generation),
             ];
             if active_run_id.is_none() {
                 events.push(scheduler::scheduler_invariant_diagnostic_event(
                     &agent_id,
                     "running_activation_without_active_run",
-                    Some(activation.work_item_id.clone()),
+                    work_item_id.clone(),
                     message_id.clone(),
                     base_evidence.clone(),
                 )?);
             }
-            if work_items.iter().any(|work_item| {
-                work_item.id == activation.work_item_id
-                    && work_item.state == crate::types::WorkItemState::Completed
+            if work_item_id.as_deref().is_some_and(|work_item_id| {
+                work_items.iter().any(|work_item| {
+                    work_item.id == work_item_id
+                        && work_item.state == crate::types::WorkItemState::Completed
+                })
             }) {
                 events.push(scheduler::scheduler_invariant_diagnostic_event(
                     &agent_id,
                     "completed_work_item_has_running_activation",
-                    Some(activation.work_item_id.clone()),
+                    work_item_id.clone(),
                     message_id.clone(),
                     base_evidence.clone(),
                 )?);
@@ -3599,7 +3680,7 @@ impl RuntimeHandle {
                     events.push(scheduler::scheduler_invariant_diagnostic_event(
                         &agent_id,
                         "terminal_turn_has_dequeued_queue",
-                        Some(activation.work_item_id.clone()),
+                        work_item_id.clone(),
                         message_id.clone(),
                         evidence,
                     )?);
@@ -3612,7 +3693,7 @@ impl RuntimeHandle {
                     events.push(scheduler::scheduler_invariant_diagnostic_event(
                         &agent_id,
                         "running_activation_age_exceeded",
-                        Some(activation.work_item_id.clone()),
+                        work_item_id,
                         message_id,
                         base_evidence,
                     )?);
