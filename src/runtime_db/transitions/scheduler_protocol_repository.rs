@@ -1316,7 +1316,14 @@ fn legacy_scheduler_adoption_candidates_tx(
     let mut statement = tx.prepare(
         "SELECT payload_json
          FROM work_items
-         WHERE state = 'open' AND (?1 IS NULL OR agent_id = ?1)
+         WHERE state = 'open'
+           AND (?1 IS NULL OR agent_id = ?1)
+           AND NOT EXISTS (
+               SELECT 1
+               FROM agent_identities
+               WHERE agent_identities.agent_id = work_items.agent_id
+                 AND agent_identities.status = 'deleted'
+           )
          ORDER BY agent_id, work_item_id",
     )?;
     let work_items = statement

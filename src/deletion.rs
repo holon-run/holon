@@ -309,19 +309,56 @@ impl RuntimeHost {
         Ok(())
     }
 
-    /// Scheduler: ensure no scheduler state references this agent.
-    ///
-    /// Since the identity fence prevents new dispatches and the runtime is
-    /// unloaded, this phase verifies there are no lingering activations.
-    /// The per-agent scheduler state lives in the agent data directory and
-    /// will be removed in the Home phase.
+    /// Scheduler: terminalize durable work that could participate in future
+    /// scheduler promotion or dispatch.
     async fn deletion_phase_scheduler(&self, agent_id: &str) -> Result<()> {
-        // The scheduler protocol snapshot is per-agent and stored in the
-        // agent's own data directory. Since the runtime is unloaded and the
-        // identity fence prevents new activations, no shared scheduler state
-        // needs cleanup here. This phase exists as an explicit checkpoint for
-        // future shared scheduler extensions.
-        debug!(agent_id, "scheduler phase: no shared state to terminalize");
+        let storage = self.agent_storage(agent_id)?;
+        let open_work_items = self
+            .runtime_db()
+            .work_items()
+            .latest_for_agent(agent_id, usize::MAX)?
+            .into_iter()
+            .filter(|work_item| work_item.state == WorkItemState::Open)
+            .collect::<Vec<_>>();
+        let now = Utc::now();
+        for existing in &open_work_items {
+            let mut completed = existing.clone();
+            completed.revision = existing.revision.saturating_add(1);
+            completed.state = WorkItemState::Completed;
+            completed.blocked_by = None;
+            completed.recheck_at = None;
+            completed.recheck_consumed_at = None;
+            completed.result_summary = Some("Agent deleted before work completed".into());
+            completed.updated_at = now;
+            self.runtime_db().transitions().commit_work_item(
+                &crate::runtime_db::transitions::WorkItemTransitionCommand {
+                    agent_id: agent_id.to_string(),
+                    mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
+                        record: completed.clone(),
+                        expected_revision: existing.revision,
+                    },
+                    agent_state: None,
+                    brief_evidence: Vec::new(),
+                    audit_events: vec![AuditEvent::legacy(
+                        "work_item_completed_for_agent_deletion",
+                        serde_json::json!({
+                            "agent_id": agent_id,
+                            "work_item_id": completed.id,
+                            "revision": completed.revision,
+                            "reason": "agent_deleted",
+                        }),
+                    )],
+                    index_changes: storage.index_changes_for_work_item(&completed)?,
+                    notify_scheduler: true,
+                    fault: None,
+                },
+            )?;
+        }
+        debug!(
+            agent_id,
+            work_items_completed = open_work_items.len(),
+            "scheduler phase terminalized open work items"
+        );
         Ok(())
     }
 

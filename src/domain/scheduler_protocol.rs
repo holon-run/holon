@@ -284,7 +284,7 @@ pub struct WaitRecord {
     pub generations: BTreeMap<u64, WaitGenerationRecord>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WaitGenerationRecord {
     pub owner: SchedulerOwner,
     pub state: WaitState,
@@ -292,6 +292,36 @@ pub struct WaitGenerationRecord {
     pub trigger: Option<WaitTrigger>,
     #[serde(default)]
     pub consuming_activation_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct WaitGenerationRecordWire {
+    #[serde(default)]
+    owner: Option<SchedulerOwner>,
+    #[serde(default)]
+    owner_work_item_id: Option<String>,
+    state: WaitState,
+    #[serde(default)]
+    trigger: Option<WaitTrigger>,
+    #[serde(default)]
+    consuming_activation_id: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for WaitGenerationRecord {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = WaitGenerationRecordWire::deserialize(deserializer)?;
+        let owner = scheduler_owner_from_wire_fields(wire.owner, wire.owner_work_item_id)
+            .map_err(D::Error::custom)?;
+        Ok(Self {
+            owner,
+            state: wire.state,
+            trigger: wire.trigger,
+            consuming_activation_id: wire.consuming_activation_id,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -659,7 +689,7 @@ pub struct WaitResumeClaim {
     pub trigger_generation: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ActivationBinding {
     Unbound,
@@ -676,6 +706,70 @@ pub enum ActivationBinding {
     Lifecycle {
         agent_id: String,
     },
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum ActivationBindingWire {
+    Unbound,
+    WorkItem {
+        work_item_id: String,
+    },
+    WaitOwner {
+        wait_id: String,
+        #[serde(default)]
+        owner: Option<SchedulerOwner>,
+        #[serde(default)]
+        owner_work_item_id: Option<String>,
+    },
+    Interaction {
+        interaction_id: String,
+    },
+    Lifecycle {
+        agent_id: String,
+    },
+}
+
+impl<'de> Deserialize<'de> for ActivationBinding {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match ActivationBindingWire::deserialize(deserializer)? {
+            ActivationBindingWire::Unbound => Ok(Self::Unbound),
+            ActivationBindingWire::WorkItem { work_item_id } => Ok(Self::WorkItem { work_item_id }),
+            ActivationBindingWire::WaitOwner {
+                wait_id,
+                owner,
+                owner_work_item_id,
+            } => Ok(Self::WaitOwner {
+                wait_id,
+                owner: scheduler_owner_from_wire_fields(owner, owner_work_item_id)
+                    .map_err(D::Error::custom)?,
+            }),
+            ActivationBindingWire::Interaction { interaction_id } => {
+                Ok(Self::Interaction { interaction_id })
+            }
+            ActivationBindingWire::Lifecycle { agent_id } => Ok(Self::Lifecycle { agent_id }),
+        }
+    }
+}
+
+fn scheduler_owner_from_wire_fields(
+    owner: Option<SchedulerOwner>,
+    owner_work_item_id: Option<String>,
+) -> Result<SchedulerOwner, String> {
+    match (owner, owner_work_item_id) {
+        (Some(owner), None) => Ok(owner),
+        (None, Some(work_item_id)) => Ok(SchedulerOwner::WorkItem { work_item_id }),
+        (Some(SchedulerOwner::WorkItem { work_item_id }), Some(legacy_work_item_id))
+            if work_item_id == legacy_work_item_id =>
+        {
+            Ok(SchedulerOwner::WorkItem { work_item_id })
+        }
+        (Some(_), Some(_)) => Err("scheduler owner fields conflict".into()),
+        (None, None) => Err("scheduler owner is missing".into()),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -5764,4 +5858,68 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod wire_compatibility_tests {
+    use super::{ActivationBinding, SchedulerOwner, WaitGenerationRecord, WaitState};
+
+    #[test]
+    fn legacy_wait_owner_fields_deserialize_as_work_item_owner() {
+        let binding: ActivationBinding = serde_json::from_value(serde_json::json!({
+            "kind": "wait_owner",
+            "wait_id": "wait-a",
+            "owner_work_item_id": "work-a"
+        }))
+        .unwrap();
+        assert_eq!(
+            binding,
+            ActivationBinding::WaitOwner {
+                wait_id: "wait-a".into(),
+                owner: SchedulerOwner::WorkItem {
+                    work_item_id: "work-a".into(),
+                },
+            }
+        );
+
+        let generation: WaitGenerationRecord = serde_json::from_value(serde_json::json!({
+            "owner_work_item_id": "work-a",
+            "state": "active"
+        }))
+        .unwrap();
+        assert_eq!(
+            generation,
+            WaitGenerationRecord {
+                owner: SchedulerOwner::WorkItem {
+                    work_item_id: "work-a".into(),
+                },
+                state: WaitState::Active,
+                trigger: None,
+                consuming_activation_id: None,
+            }
+        );
+    }
+
+    #[test]
+    fn wait_owner_wire_fields_reject_missing_or_conflicting_owner() {
+        let missing = serde_json::from_value::<ActivationBinding>(serde_json::json!({
+            "kind": "wait_owner",
+            "wait_id": "wait-a"
+        }))
+        .unwrap_err();
+        assert!(missing.to_string().contains("scheduler owner is missing"));
+
+        let conflicting = serde_json::from_value::<WaitGenerationRecord>(serde_json::json!({
+            "owner": {
+                "kind": "agent_lifecycle",
+                "agent_id": "agent-a"
+            },
+            "owner_work_item_id": "work-a",
+            "state": "active"
+        }))
+        .unwrap_err();
+        assert!(conflicting
+            .to_string()
+            .contains("scheduler owner fields conflict"));
+    }
 }

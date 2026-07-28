@@ -468,6 +468,84 @@ mod tests {
     }
 
     #[test]
+    fn scheduler_authoritative_promotion_ignores_deleted_agent_work_items() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let db = RuntimeDb::open_and_migrate(
+            dir.path().join("runtime.sqlite"),
+            dir.path().join("runtime.lock"),
+        )?;
+        let mut identity = agent_identity("deleted-agent", 1);
+        identity.status = AgentRegistryStatus::Deleted;
+        identity.deleted_at = Some(identity.updated_at);
+        db.agent_identities().upsert(&identity)?;
+        let mut work = WorkItemRecord::new("deleted-agent", "legacy blocked", WorkItemState::Open);
+        work.blocked_by = Some("operator resolution".into());
+        db.work_items().insert_new(&work)?;
+        let manifest = scheduler_rollout_manifest(1, 1);
+        let commands = vec![
+            (
+                "deleted-open".into(),
+                RolloutCommand::OpenPreflight {
+                    expected_config_revision: 0,
+                    manifest_revision: 1,
+                },
+            ),
+            (
+                "deleted-complete".into(),
+                RolloutCommand::CompletePreflight {
+                    expected_config_revision: 0,
+                    expected_preflight_revision: 1,
+                    manifest: manifest.clone(),
+                },
+            ),
+            (
+                "deleted-install".into(),
+                RolloutCommand::InstallManifest {
+                    expected_config_revision: 0,
+                    manifest,
+                },
+            ),
+            (
+                "deleted-protocol".into(),
+                RolloutCommand::ConfigureProtocol {
+                    expected_config_revision: 1,
+                    mode: ProtocolMode::Authoritative,
+                },
+            ),
+            (
+                "deleted-shadow".into(),
+                RolloutCommand::ChangeScenarioAuthority {
+                    scenario_class: "exact_wait_resume".into(),
+                    expected_config_revision: 2,
+                    expected_manifest_revision: 1,
+                    expected_preflight_revision: 1,
+                    mode: ScenarioMode::Shadow,
+                },
+            ),
+            (
+                "deleted-authority".into(),
+                RolloutCommand::ChangeScenarioAuthorityFromExplicitMode {
+                    scenario_class: "exact_wait_resume".into(),
+                    expected_config_revision: 3,
+                    expected_manifest_revision: 1,
+                    expected_preflight_revision: 1,
+                },
+            ),
+        ];
+
+        db.apply_scheduler_rollout_commands(&commands)?;
+        assert!(db
+            .transitions()
+            .legacy_scheduler_adoption_candidates("deleted-agent")?
+            .is_empty());
+        assert_eq!(
+            db.work_items().latest(&work.id)?.unwrap().state,
+            WorkItemState::Open
+        );
+        Ok(())
+    }
+
+    #[test]
     fn scheduler_recovery_plan_rolls_back_adoption_when_later_command_rejects() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let db = RuntimeDb::open_and_migrate(

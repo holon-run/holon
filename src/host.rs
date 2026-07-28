@@ -2622,6 +2622,7 @@ mod tests {
             AgentRegistryStatus, AgentStatus, AgentVisibility, AuthorityClass, ControlAction,
             MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority, QueueEntryRecord,
             QueueEntryStatus, TaskRecord, TaskRecoverySpec, TaskStatus, TurnTerminalKind,
+            WorkItemRecord, WorkItemState,
         },
     };
 
@@ -5268,6 +5269,54 @@ mod tests {
 
         // Agent home should be removed.
         assert!(!host.agent_data_dir("delete-me").exists());
+    }
+
+    #[tokio::test]
+    async fn deletion_coordinator_terminalizes_open_work_items() {
+        let (_home, host) = test_host();
+        let agent = AgentIdentityRecord::new(
+            "delete-work",
+            AgentKind::Default,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        host.append_agent_identity(&agent).unwrap();
+        host.runtime_db().agent_identities().upsert(&agent).unwrap();
+        let mut work_item =
+            WorkItemRecord::new("delete-work", "unfinished work", WorkItemState::Open);
+        work_item.blocked_by = Some("operator input".into());
+        host.runtime_db()
+            .work_items()
+            .insert_new(&work_item)
+            .unwrap();
+
+        let (_, job, _) = host
+            .begin_public_agent_deletion("delete-work", false, "operator")
+            .await
+            .unwrap();
+        host.execute_deletion_job(job).await.unwrap();
+
+        let completed = host
+            .runtime_db()
+            .work_items()
+            .latest(&work_item.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(completed.state, WorkItemState::Completed);
+        assert_eq!(completed.blocked_by, None);
+        assert_eq!(
+            completed.result_summary.as_deref(),
+            Some("Agent deleted before work completed")
+        );
+        assert!(host
+            .runtime_db()
+            .transitions()
+            .legacy_scheduler_adoption_candidates("delete-work")
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
