@@ -600,7 +600,6 @@ impl RuntimeHandle {
                     ..
                 }),
             ) if activation_id == provenance_activation_id => activation_id,
-            (Some(activation_id), None) => activation_id,
             (
                 None,
                 Some(ExecutionAdmissionProvenance::LegacyCompat {
@@ -618,7 +617,7 @@ impl RuntimeHandle {
                     "canonical operator interjection admission is missing its activation"
                 ));
             }
-            (None, None) => {
+            (_, None) => {
                 return Err(anyhow::anyhow!(
                     "operator interjection requires typed execution admission provenance"
                 ));

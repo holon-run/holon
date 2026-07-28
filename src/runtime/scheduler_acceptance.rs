@@ -11,10 +11,11 @@ use crate::{
     },
     runtime_db::{transitions::TransitionFaultPoint, RuntimeDb},
     types::{
-        AdmissionContext, AgentStatus, AuthorityClass, MessageBody, MessageDeliverySurface,
-        MessageEnvelope, MessageKind, MessageOrigin, Priority, QueueEntryStatus, TaskKind,
-        TaskRecord, TaskStatus, TurnRecord, TurnTerminalKind, TurnTerminalRecord,
-        TurnTerminalSummary, TurnTriggerSummary, WorkItemPlanStatus, WorkItemRecord, WorkItemState,
+        AdmissionContext, AgentStatus, AuthorityClass, ExecutionAdmissionProvenance, MessageBody,
+        MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, Priority,
+        QueueEntryStatus, TaskKind, TaskRecord, TaskStatus, TurnRecord, TurnTerminalKind,
+        TurnTerminalRecord, TurnTerminalSummary, TurnTriggerSummary, WorkItemPlanStatus,
+        WorkItemRecord, WorkItemState,
     },
 };
 
@@ -1044,7 +1045,15 @@ async fn seed_scheduler_targeted_yield_restart_fixture(
                 .await?;
         claim_scheduler_message(&runtime, &message.id).await?;
         runtime
-            .begin_interactive_turn(Some(&message), None, None)
+            .begin_interactive_turn_with_provenance(
+                Some(&message),
+                None,
+                None,
+                ExecutionAdmissionProvenance::Canonical {
+                    scenario_class: scheduler::WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO,
+                    activation_id: scheduler_executor::canonical_activation_id(&message.id),
+                },
+            )
             .await?;
         let picked = runtime
             .pick_work_item_with_reason(target.id.clone(), Some("targeted yield fixture".into()))
@@ -1175,7 +1184,15 @@ async fn seed_scheduler_targeted_yield_restart_fixture(
                 .await?;
         claim_scheduler_message(&runtime, &target_message.id).await?;
         runtime
-            .begin_interactive_turn(Some(&target_message), None, None)
+            .begin_interactive_turn_with_provenance(
+                Some(&target_message),
+                None,
+                None,
+                ExecutionAdmissionProvenance::Canonical {
+                    scenario_class: scheduler::WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO,
+                    activation_id: scheduler_executor::canonical_activation_id(&target_message.id),
+                },
+            )
             .await?;
         let completed = runtime
             .complete_work_item_with_continuation(target.id.clone(), Vec::new())

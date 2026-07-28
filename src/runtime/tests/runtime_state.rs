@@ -7748,6 +7748,79 @@ async fn operator_interjection_attaches_to_lifecycle_activation() {
 }
 
 #[tokio::test]
+async fn operator_interjection_rejects_canonical_activation_without_provenance() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime.set_scheduler_protocol_production_commands_enabled(true);
+    enable_production_protocol_authority_for(
+        &runtime,
+        &[SchedulerScenarioClass::OperatorInterjection],
+    );
+
+    let message = runtime
+        .enqueue(trusted_operator_prompt(None, "start lifecycle turn"))
+        .await
+        .unwrap();
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("lifecycle operator prompt should be claimed");
+    };
+    assert_eq!(scheduled.message.id, message.id);
+    runtime
+        .begin_interactive_turn(Some(&scheduled.message), None, None)
+        .await
+        .unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard
+            .state
+            .current_execution_binding
+            .as_mut()
+            .expect("current execution binding")
+            .admission_provenance = None;
+        guard.persist_state(&runtime.inner.storage).unwrap();
+    }
+
+    let mut interjection = trusted_operator_prompt(None, "must fail closed");
+    interjection.priority = Priority::Interject;
+    let interjection = runtime.enqueue(interjection).await.unwrap();
+    let error = runtime
+        .drain_operator_interjections(
+            "default",
+            1,
+            crate::runtime::scheduler::InterjectionBoundary::BeforeToolExecution,
+        )
+        .await
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("requires typed execution admission provenance"));
+    assert_eq!(
+        runtime
+            .storage()
+            .latest_queue_entries()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == interjection.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Queued)
+    );
+}
+
+#[tokio::test]
 async fn operator_interjection_defers_for_claim_time_legacy_turn() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
