@@ -40,7 +40,7 @@ http_async_tests!(
     control_prompt_requires_bearer_token_when_required,
     control_prompt_rejects_oversized_body,
     remote_tcp_surfaces_require_bearer_token_when_required,
-    control_wake_records_liveness_only_system_tick_on_loopback_auto,
+    control_wake_records_contentful_system_tick_on_loopback_auto,
     control_prompt_requires_bearer_token_for_non_loopback_auto,
     control_prompt_records_message_admission_fields,
     control_prompt_rejects_stopped_agent_without_queueing,
