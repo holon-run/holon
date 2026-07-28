@@ -909,6 +909,51 @@
     "aliases": []
   },
   {
+    "path": "debug.scheduler-restart-fixture",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "checkpoint",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": true
+      },
+      {
+        "long": "json",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
+        "long": "objective",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": true
+      },
+      {
+        "long": "stage",
+        "short": null,
+        "default_value": "prepare",
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
     "path": "debug.scheduler-rollout-apply",
     "positionals": [],
     "flags": [
