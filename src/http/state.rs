@@ -145,6 +145,7 @@ pub(crate) async fn enqueue_internal(
         body,
         delivery_surface,
         admission_context,
+        work_item_id: None,
         metadata: request.metadata,
         correlation_id: request.correlation_id,
         causation_id: request.causation_id,

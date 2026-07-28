@@ -817,35 +817,36 @@ pub async fn control_prompt(
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
         .host
-        .get_public_agent(&agent_id)
+        .get_public_agent_for_external_ingress(&agent_id)
         .await
         .map_err(agent_access_error)?;
+    let work_item_id = request.work_item_id.clone().and_then(non_empty_opt);
     let text = control_prompt_text_with_attachments(&agent_id, &runtime.agent_home(), request)
         .map_err(|err| bad_request(err.to_string()))?;
     let admission_context = control_admission_context(&state);
-    enqueue_internal(
-        state,
+    let message = InboundRequest {
+        agent_id: agent_id.clone(),
+        kind: MessageKind::OperatorPrompt,
+        priority: Priority::Interject,
+        origin: MessageOrigin::Operator {
+            actor_id: Some("control".into()),
+        },
+        authority_class: AuthorityClass::OperatorInstruction,
+        body: MessageBody::Text { text },
+        delivery_surface: MessageDeliverySurface::HttpControlPrompt,
+        admission_context,
+        work_item_id,
+        metadata: Some(json!({ "control": true })),
+        correlation_id: None,
+        causation_id: None,
+    }
+    .into_message();
+    let queued = runtime.enqueue(message).await.map_err(error_response)?;
+    Ok(Json(EnqueueResponse {
+        ok: true,
         agent_id,
-        EnqueueRequest {
-            kind: Some(MessageKind::OperatorPrompt),
-            priority: Some(Priority::Interject),
-            authority_class: Some(AuthorityClass::OperatorInstruction),
-            body: Some(MessageBody::Text { text }),
-            text: None,
-            json: None,
-            metadata: Some(json!({ "control": true })),
-            correlation_id: None,
-            causation_id: None,
-            origin: Some(IncomingOrigin::Operator {
-                actor_id: Some("control".into()),
-            }),
-        },
-        EnqueueIngress::Trusted {
-            delivery_surface: MessageDeliverySurface::HttpControlPrompt,
-            admission_context,
-        },
-    )
-    .await
+        message_id: queued.id,
+    }))
 }
 
 fn control_prompt_text_with_attachments(
@@ -1093,6 +1094,7 @@ mod tests {
             home.path(),
             ControlPromptRequest {
                 text: "look".into(),
+                work_item_id: None,
                 attachments: vec![ControlPromptAttachment::Image {
                     name: Some("diagram.png".into()),
                     media_type: "image/png".into(),
@@ -1119,6 +1121,7 @@ mod tests {
             home.path(),
             ControlPromptRequest {
                 text: "read this".into(),
+                work_item_id: None,
                 attachments: vec![ControlPromptAttachment::File {
                     name: Some("report.pdf".into()),
                     media_type: "application/pdf".into(),
@@ -1164,6 +1167,7 @@ mod tests {
             home.path(),
             ControlPromptRequest {
                 text: String::new(),
+                work_item_id: None,
                 attachments: vec![ControlPromptAttachment::File {
                     name: Some("empty.txt".into()),
                     media_type: "text/plain".into(),
@@ -1184,6 +1188,7 @@ mod tests {
             home.path(),
             ControlPromptRequest {
                 text: String::new(),
+                work_item_id: None,
                 attachments: vec![ControlPromptAttachment::File {
                     name: Some("../../secret[name].md".into()),
                     media_type: "text/markdown".into(),
@@ -1322,6 +1327,7 @@ pub async fn operator_ingress(
         body: MessageBody::Text { text },
         delivery_surface: MessageDeliverySurface::RemoteOperatorTransport,
         admission_context: AdmissionContext::OperatorTransportAuthenticated,
+        work_item_id: None,
         metadata: Some(metadata),
         correlation_id: request.correlation_id,
         causation_id: request.causation_id,

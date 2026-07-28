@@ -303,7 +303,8 @@ impl RuntimeHandle {
                     &self.inner.default_agent_id,
                     &decision,
                 )?;
-                self.emit_system_tick_from_wake_hint(&pending).await?;
+                self.emit_system_tick_from_wake_hint(&pending, decision.work_item_id.as_deref())
+                    .await?;
 
                 #[cfg(test)]
                 if crate::runtime::test_util::checkpoint_matches_agent(&self.agent_id().await?) {
@@ -541,7 +542,8 @@ impl RuntimeHandle {
         ) {
             return Ok(false);
         }
-        self.emit_system_tick_from_wake_hint(pending).await?;
+        self.emit_system_tick_from_wake_hint(pending, decision.work_item_id.as_deref())
+            .await?;
         Ok(true)
     }
 
@@ -630,12 +632,17 @@ impl RuntimeHandle {
     pub(super) async fn emit_system_tick_from_wake_hint(
         &self,
         pending: &PendingWakeHint,
+        work_item_id_override: Option<&str>,
     ) -> Result<()> {
         let correlation_id = pending.correlation_id.clone();
         let causation_id = pending.causation_id.clone();
-        let work_item_id = self
-            .wake_hint_work_item_id(pending.external_trigger_id.as_deref())
-            .await?;
+        let work_item_id = match work_item_id_override {
+            Some(id) => Some(id.to_string()),
+            None => {
+                self.wake_hint_work_item_id(pending.external_trigger_id.as_deref())
+                    .await?
+            }
+        };
         let idempotency_key = scheduler::wake_hint_idempotency_key(pending);
         let mut message = MessageEnvelope::new(
             self.agent_id().await?,
@@ -1904,6 +1911,64 @@ mod tests {
     }
 
     #[test]
+    fn queued_system_tick_retries_after_runtime_error() {
+        let test_runtime = test_runtime();
+        set_agent_idle(&test_runtime);
+
+        let queued = add_queued_work_item(&test_runtime, "wi-queued", "queued-target");
+        let idempotency_key =
+            scheduler::work_queue_tick_idempotency_key(&queued, "queued_available");
+        let mut existing_tick = MessageEnvelope::new(
+            "default",
+            MessageKind::SystemTick,
+            MessageOrigin::System {
+                subsystem: "work_queue".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Next,
+            MessageBody::Text {
+                text: "queued work item is available".into(),
+            },
+        );
+        existing_tick.id = "failed-work-queue-tick".into();
+        existing_tick.created_at = chrono::Utc::now() - chrono::Duration::seconds(5);
+        existing_tick.work_item_id = Some(queued.id.clone());
+        existing_tick.metadata = Some(serde_json::json!({
+            "work_queue": {
+                "idempotency_key": idempotency_key,
+                "reason": "queued_available",
+                "work_item_id": queued.id,
+                "work_item_revision": queued.revision
+            }
+        }));
+        test_runtime
+            .runtime
+            .inner
+            .storage
+            .append_message(&existing_tick)
+            .unwrap();
+        test_runtime
+            .runtime
+            .inner
+            .storage
+            .append_event(&AuditEvent::legacy(
+                "runtime_error",
+                serde_json::json!({"message_id": existing_tick.id}),
+            ))
+            .unwrap();
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        assert!(
+            rt.block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
+                .unwrap(),
+            "provider failure must allow a queued WorkItem retry tick"
+        );
+        let ticks = get_emitted_system_ticks(&test_runtime);
+        assert_eq!(ticks.len(), 1);
+        assert_eq!(ticks[0].1["reason"].as_str(), Some("queued_available"));
+    }
+
+    #[test]
     fn queued_system_tick_emits_no_pick_or_activation_events() {
         let test_runtime = test_runtime();
         set_agent_idle(&test_runtime);
@@ -2270,6 +2335,65 @@ mod tests {
         let ticks = get_emitted_system_ticks(&test_runtime);
         assert_eq!(ticks.len(), 1);
         assert_eq!(ticks[0].0, "work_queue");
+        assert_eq!(ticks[0].1["reason"].as_str(), Some("continue_active"));
+    }
+
+    #[test]
+    fn continue_active_retries_after_runtime_error() {
+        let test_runtime = test_runtime();
+        set_agent_idle(&test_runtime);
+
+        let active = add_current_work_item(&test_runtime, "wi-active", "active-target");
+        let idempotency_key =
+            scheduler::work_queue_tick_idempotency_key(&active, "continue_active");
+        let mut existing_tick = MessageEnvelope::new(
+            "default",
+            MessageKind::SystemTick,
+            MessageOrigin::System {
+                subsystem: "work_queue".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Next,
+            MessageBody::Text {
+                text: "continue current work item".into(),
+            },
+        );
+        existing_tick.id = "failed-continue-active-tick".into();
+        existing_tick.created_at = chrono::Utc::now() - chrono::Duration::seconds(5);
+        existing_tick.work_item_id = Some(active.id.clone());
+        existing_tick.metadata = Some(serde_json::json!({
+            "work_queue": {
+                "idempotency_key": idempotency_key,
+                "reason": "continue_active",
+                "work_item_id": active.id.clone(),
+                "work_item_revision": active.revision
+            }
+        }));
+        test_runtime
+            .runtime
+            .inner
+            .storage
+            .append_message(&existing_tick)
+            .unwrap();
+        append_result_brief_for_work_item(&test_runtime, &active.id, "Failed progress.");
+        test_runtime
+            .runtime
+            .inner
+            .storage
+            .append_event(&AuditEvent::legacy(
+                "runtime_error",
+                serde_json::json!({"work_item_id": active.id}),
+            ))
+            .unwrap();
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        assert!(
+            rt.block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
+                .unwrap(),
+            "provider failure must allow an active WorkItem retry tick"
+        );
+        let ticks = get_emitted_system_ticks(&test_runtime);
+        assert_eq!(ticks.len(), 1);
         assert_eq!(ticks[0].1["reason"].as_str(), Some("continue_active"));
     }
 

@@ -38,7 +38,6 @@ macro_rules! operator_ingress_async_tests {
 
 runtime_async_tests!(
     timer_tick_wakes_sleeping_session,
-    wake_hint_coalesces_while_running_and_reenters_once,
     stopped_agent_ignores_wake_hint,
     notify_operator_records_default_public_and_private_child_targets,
     notify_operator_is_not_in_model_facing_registry,
@@ -48,6 +47,14 @@ runtime_async_tests!(
     default_external_ingress_register_and_revoke_state,
     timer_wait_surfaces_waiting_reason,
 );
+
+// This test spawns a background runtime task via tokio::spawn; use a
+// multi-threaded runtime so the background task is not starved by the
+// test's own polling loop on a single-threaded runtime.
+#[tokio::test(flavor = "multi_thread")]
+async fn wake_hint_coalesces_while_running_and_reenters_once() -> anyhow::Result<()> {
+    runtime_waiting::wake_hint_coalesces_while_running_and_reenters_once().await
+}
 
 http_async_tests!(
     callback_enqueue_message_repeats_until_cancelled,

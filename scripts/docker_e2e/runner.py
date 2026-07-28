@@ -14,6 +14,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -31,6 +32,16 @@ OFFLINE_MODEL_CREDENTIAL_ENV = "DEEPSEEK_API_KEY"
 OFFLINE_MODEL_CREDENTIAL = "docker-e2e-offline-provider-unused"
 EVIDENCE_SCHEMA_VERSION = 1
 TERMINAL_STATUSES = {"awake_idle", "asleep", "awaiting_task"}
+RUNTIME_DB_COPY_TIMEOUT_SECONDS = 120
+DOCKER_CONTROL_TIMEOUT_SECONDS = 30
+DOCKER_CIRCUIT_BREAKER_THRESHOLD = 2
+CONTEXT_EVENT_LIMIT = 300
+CONTEXT_BRIEF_LIMIT = 10
+CONTEXT_TRANSCRIPT_LIMIT = 20
+
+
+class DockerCircuitBreakerOpen(RuntimeError):
+    pass
 
 
 def run(
@@ -39,6 +50,7 @@ def run(
     check: bool = True,
     capture: bool = True,
     env: dict[str, str] | None = None,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         args,
@@ -46,6 +58,7 @@ def run(
         text=True,
         capture_output=capture,
         env=env,
+        timeout=timeout,
     )
 
 
@@ -120,6 +133,28 @@ def normalize_model_route(model: str) -> str:
     return f"{provider}/{name}"
 
 
+def provider_base_url_env(model: str) -> str:
+    route = model.split("/", 1)[0]
+    provider, separator, endpoint = route.partition("@")
+    if provider == "anthropic":
+        return "ANTHROPIC_BASE_URL"
+    endpoint_overrides = {
+        ("volcengine", "plan"): "HOLON_VOLCENGINE_AGENT_BASE_URL",
+    }
+    if separator and endpoint != "default":
+        override = endpoint_overrides.get((provider, endpoint))
+        require(
+            override is not None,
+            f"provider failure retry does not know the base URL environment for {route}",
+        )
+        return override
+    fragment = "".join(
+        character.upper() if character.isalnum() else "_"
+        for character in provider
+    )
+    return f"HOLON_{fragment}_BASE_URL"
+
+
 class CaseHarness:
     def __init__(
         self,
@@ -127,6 +162,8 @@ class CaseHarness:
         case_id: str,
         image: str,
         model: str,
+        model_fallbacks: list[str] | None = None,
+        disable_provider_fallback: bool = True,
         requires_model: bool = True,
         credential_envs: list[str],
         env_file: Path | None,
@@ -134,11 +171,17 @@ class CaseHarness:
         evidence_root: Path,
         timeout_seconds: int,
         keep: bool,
+        resource_names: dict[str, str] | None = None,
+        control_token: str | None = None,
     ) -> None:
         suffix = secrets.token_hex(4)
         self.case_id = case_id
         self.image = image
         self.model = model if requires_model else DEFAULT_MODEL
+        self.model_fallbacks = list(model_fallbacks or []) if requires_model else []
+        self.disable_provider_fallback = (
+            disable_provider_fallback if requires_model else True
+        )
         self.credential_envs = credential_envs if requires_model else []
         self.env_file = env_file if requires_model else None
         self.runtime_env = dict(runtime_env)
@@ -150,18 +193,165 @@ class CaseHarness:
         self.evidence = evidence_root / case_id
         self.timeout_seconds = timeout_seconds
         self.keep = keep
-        self.volume = f"holon-live-{case_id}-{suffix}"
-        self.network = f"holon-live-{case_id}-{suffix}"
-        self.container = f"holon-live-{case_id}-{suffix}"
-        self.token = secrets.token_urlsafe(24)
+        names = resource_names or {}
+        self.volume = names.get("volume", f"holon-live-{case_id}-{suffix}")
+        self.network = names.get("network", f"holon-live-{case_id}-{suffix}")
+        self.container = names.get("container", f"holon-live-{case_id}-{suffix}")
+        self.token = control_token or secrets.token_urlsafe(24)
         self.base_url = ""
         self.agent_id = ""
-        self.workspace_parent = self.evidence / "workspace"
+        workspace_parent = names.get("workspace_parent")
+        self.workspace_parent = (
+            Path(workspace_parent) if workspace_parent else self.evidence / "workspace"
+        )
         self.log_index = 0
+        self._docker_health = {
+            "lock": threading.Lock(),
+            "consecutive_failures": 0,
+            "open": False,
+            "last_error": None,
+        }
+        self._checkpoint_state = {
+            "lock": threading.Lock(),
+            "claimed": set(),
+        }
         self.evidence.mkdir(parents=True, exist_ok=True)
 
     def docker(self, *args: str, **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        return run(["docker", *args], **kwargs)
+        with self._docker_health["lock"]:
+            if self._docker_health["open"]:
+                raise DockerCircuitBreakerOpen(
+                    "Docker circuit breaker is open after consecutive control-plane failures"
+                )
+        if "timeout" not in kwargs and args:
+            bounded = args[0] in {
+                "cp",
+                "inspect",
+                "kill",
+                "logs",
+                "network",
+                "port",
+                "ps",
+                "rm",
+                "stats",
+                "version",
+                "volume",
+            } or (args[0] == "run" and "--detach" in args)
+            if bounded:
+                kwargs["timeout"] = DOCKER_CONTROL_TIMEOUT_SECONDS
+        try:
+            result = run(["docker", *args], **kwargs)
+        except (
+            subprocess.CalledProcessError,
+            subprocess.TimeoutExpired,
+            OSError,
+        ) as error:
+            with self._docker_health["lock"]:
+                self._docker_health["consecutive_failures"] += 1
+                self._docker_health["last_error"] = f"{type(error).__name__}: {error}"
+                if (
+                    self._docker_health["consecutive_failures"]
+                    >= DOCKER_CIRCUIT_BREAKER_THRESHOLD
+                ):
+                    self._docker_health["open"] = True
+            raise
+        with self._docker_health["lock"]:
+            self._docker_health["consecutive_failures"] = 0
+            self._docker_health["last_error"] = None
+        return result
+
+    def check_docker_health(self, label: str) -> dict[str, Any]:
+        try:
+            result = self.docker(
+                "version",
+                "--format",
+                "{{json .Server}}",
+                timeout=10,
+            )
+            server = json.loads(result.stdout)
+            health = {
+                "status": "healthy",
+                "checked_at": utc_now(),
+                "server_version": server.get("Version"),
+                "os": server.get("Os"),
+                "arch": server.get("Arch"),
+            }
+        except Exception as error:
+            health = {
+                "status": "failed",
+                "checked_at": utc_now(),
+                "error": f"{type(error).__name__}: {error}",
+            }
+            write_json(self.evidence / f"{label}-docker-health.json", health)
+            raise
+        write_json(self.evidence / f"{label}-docker-health.json", health)
+        return health
+
+    def claim_checkpoint(self, name: str) -> bool:
+        with self._checkpoint_state["lock"]:
+            if name in self._checkpoint_state["claimed"]:
+                return False
+            self._checkpoint_state["claimed"].add(name)
+            return True
+
+    def resource_telemetry(self, label: str) -> dict[str, Any]:
+        disk = os.statvfs(self.evidence)
+        host_rss_kb = 0
+        for line in Path("/proc/self/status").read_text().splitlines():
+            if line.startswith("VmRSS:"):
+                host_rss_kb = int(line.split()[1])
+                break
+        telemetry: dict[str, Any] = {
+            "captured_at": utc_now(),
+            "host": {
+                "runner_rss_kb": host_rss_kb,
+                "runner_fd_count": len(list(Path("/proc/self/fd").iterdir())),
+                "evidence_bytes": sum(
+                    path.stat().st_size
+                    for path in self.evidence.rglob("*")
+                    if path.is_file()
+                ),
+                "filesystem_free_bytes": disk.f_bavail * disk.f_frsize,
+            },
+        }
+        stats = self.docker(
+            "stats",
+            "--no-stream",
+            "--format",
+            "{{json .}}",
+            self.container,
+            check=False,
+        )
+        if stats.returncode == 0 and stats.stdout.strip():
+            telemetry["docker_stats"] = json.loads(stats.stdout)
+        process = self.docker(
+            "exec",
+            self.container,
+            "bash",
+            "-lc",
+            "set -euo pipefail; "
+            "rss_kb=$(awk '/^VmRSS:/{print $2}' /proc/1/status); "
+            "fd_count=$(find /proc/1/fd -maxdepth 1 -type l | wc -l); "
+            "printf '{\"rss_kb\":%s,\"fd_count\":%s,\"state_files\":[' "
+            "\"${rss_kb:-0}\" \"$fd_count\"; "
+            "first=1; for path in /var/lib/holon/state/runtime.sqlite*; do "
+            "[ -e \"$path\" ] || continue; "
+            "size=$(stat -c %s \"$path\"); "
+            "name=$(basename \"$path\"); "
+            "[ $first -eq 1 ] || printf ','; first=0; "
+            "printf '{\"name\":\"%s\",\"bytes\":%s}' \"$name\" \"$size\"; "
+            "done; printf ']}'",
+            check=False,
+            timeout=15,
+        )
+        if process.returncode == 0 and process.stdout.strip():
+            telemetry["container_process"] = json.loads(process.stdout)
+        else:
+            telemetry["container_process_error"] = (
+                process.stdout + process.stderr
+            ).strip()
+        write_json(self.evidence / f"{label}-telemetry.json", telemetry)
+        return telemetry
 
     def offline_debug(
         self, label: str, *args: str, expect_success: bool = True
@@ -233,6 +423,28 @@ class CaseHarness:
             objective,
         )
 
+    def seed_scheduler_restart_fixture(
+        self,
+        label: str,
+        *,
+        agent: str,
+        checkpoint: str,
+        stage: str = "prepare",
+        objective: str,
+    ) -> dict[str, Any]:
+        return self.offline_debug(
+            label,
+            "scheduler-restart-fixture",
+            "--agent",
+            agent,
+            "--checkpoint",
+            checkpoint,
+            "--stage",
+            stage,
+            "--objective",
+            objective,
+        )
+
     def initialize_workspace(self) -> None:
         self.workspace_parent.mkdir(parents=True, exist_ok=True)
         self.workspace_parent.chmod(0o777)
@@ -270,7 +482,8 @@ class CaseHarness:
             "--env",
             f"HOLON_MODEL={self.model}",
             "--env",
-            "HOLON_DISABLE_PROVIDER_FALLBACK=true",
+            "HOLON_DISABLE_PROVIDER_FALLBACK="
+            + str(self.disable_provider_fallback).lower(),
             "--publish",
             "127.0.0.1::7878",
             "--volume",
@@ -278,6 +491,14 @@ class CaseHarness:
             "--volume",
             f"{self.workspace_parent}:/acceptance",
         ]
+        if self.model_fallbacks:
+            args.extend(
+                [
+                    "--env",
+                    "HOLON_MODEL_FALLBACKS="
+                    + json.dumps(self.model_fallbacks, separators=(",", ":")),
+                ]
+            )
         for name in self.credential_envs:
             args.extend(["--env", name])
         for name, value in sorted(self.runtime_env.items()):
@@ -436,19 +657,43 @@ class CaseHarness:
         if body is not None:
             data = json.dumps(body).encode()
             headers["Content-Type"] = "application/json"
-        request = urllib.request.Request(
-            f"{self.base_url}{path}",
-            data=data,
-            headers=headers,
-            method=method,
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                status = response.status
-                payload = response.read()
-        except urllib.error.HTTPError as error:
-            status = error.code
-            payload = error.read()
+        retry_deadline = time.monotonic() + min(self.timeout_seconds, 30)
+        while True:
+            request = urllib.request.Request(
+                f"{self.base_url}{path}",
+                data=data,
+                headers=headers,
+                method=method,
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    status = response.status
+                    payload = response.read()
+                    response_headers = response.headers
+            except urllib.error.HTTPError as error:
+                status = error.code
+                payload = error.read()
+                response_headers = error.headers
+            except urllib.error.URLError:
+                self.check_docker_health("request-failure")
+                raise
+            if status != 429 or time.monotonic() >= retry_deadline:
+                break
+            try:
+                error_body = json.loads(payload)
+            except json.JSONDecodeError:
+                break
+            if (
+                error_body.get("code") != "projection_busy"
+                or error_body.get("retryable") is not True
+            ):
+                break
+            retry_after = response_headers.get("Retry-After", "1")
+            try:
+                retry_delay = max(0.05, float(retry_after))
+            except ValueError:
+                retry_delay = 1.0
+            time.sleep(min(retry_delay, max(0.0, retry_deadline - time.monotonic())))
         if status != expected_status:
             raise AssertionError(
                 f"{method} {path} returned {status}, expected {expected_status}: "
@@ -511,6 +756,44 @@ class CaseHarness:
         self.capture_logs()
         raise TimeoutError("default agent did not become idle after readiness")
 
+    def wait_agent_asleep(self, *, timeout: float = 30) -> None:
+        """Wait until the agent reaches the *asleep* status specifically.
+
+        ``wait_agent_idle`` returns for any terminal status (including
+        ``awake_idle``), but external wake hints fired while the agent is
+        still transitioning from ``awake_idle`` to ``asleep`` can be lost.
+        Call this before ``fire_callback`` to close that race window.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            state = self.request("GET", self.agent_path("state"))
+            agent = state["agent"]["agent"]
+            if agent["status"] == "asleep":
+                return
+            time.sleep(0.5)
+        raise TimeoutError(f"agent did not reach asleep within {timeout} s")
+
+    def wait_queue_drained(self, *, stable_checks: int = 3) -> None:
+        """Wait until the agent is idle *and* the queue stays empty for
+        ``stable_checks`` consecutive polls.  This closes the race window
+        where ``wait_agent_idle`` returns between a message being enqueued
+        and the scheduler claiming it."""
+        deadline = time.monotonic() + 90
+        consecutive = 0
+        while time.monotonic() < deadline:
+            state = self.request("GET", self.agent_path("state"))
+            agent = state["agent"]["agent"]
+            idle = (
+                agent["status"] in TERMINAL_STATUSES
+                and agent.get("current_run_id") is None
+                and int(state["session"]["pending_count"]) == 0
+            )
+            consecutive = consecutive + 1 if idle else 0
+            if consecutive >= stable_checks:
+                return
+            time.sleep(1)
+        raise TimeoutError("queue did not drain within 90 s")
+
     def state(self, label: str) -> dict[str, Any]:
         value = self.request("GET", self.agent_path("state"))
         write_json(self.evidence / f"{label}-state.json", value)
@@ -560,6 +843,13 @@ class CaseHarness:
             matches = [
                 item for item in items if objective_marker in item.get("objective", "")
             ]
+            if matches and matches[0].get("state") == "completed":
+                write_json(self.evidence / f"{label}-premature-work-items.json", items)
+                self.capture_context(f"{label}-premature")
+                raise AssertionError(
+                    f"WorkItem {objective_marker} completed before reaching "
+                    f"{expected_scheduling_state}; the agent likely skipped WaitFor"
+                )
             if (
                 len(matches) == 1
                 and matches[0].get("scheduling_state")
@@ -582,31 +872,67 @@ class CaseHarness:
         write_json(self.evidence / f"{label}-brief.json", value)
         return value
 
-    def events(self, label: str) -> list[dict[str, Any]]:
-        page = self.request("GET", self.agent_path("events?limit=500&order=asc"))
+    def events(
+        self,
+        label: str,
+        *,
+        after_seq: int | None = None,
+        limit: int = CONTEXT_EVENT_LIMIT,
+    ) -> list[dict[str, Any]]:
+        query = f"events?limit={limit}&order=asc"
+        if after_seq is not None:
+            query += f"&after_seq={after_seq}"
+        page = self.request("GET", self.agent_path(query))
         write_json(self.evidence / f"{label}-events.json", page)
         return page["events"]
 
-    def capture_context(self, label: str) -> None:
-        write_json(
-            self.evidence / f"{label}-briefs.json",
-            self.request("GET", self.agent_path("briefs?limit=50")),
-        )
-        write_json(
-            self.evidence / f"{label}-transcript.json",
-            self.request("GET", self.agent_path("transcript?limit=200")),
-        )
+    def event_cursor(self) -> int:
+        page = self.request("GET", self.agent_path("events?limit=1&order=desc"))
+        return int(page.get("cursor_seq") or 0)
+
+    def capture_context(
+        self,
+        label: str,
+        *,
+        after_seq: int | None = None,
+        include_conversation: bool = True,
+    ) -> None:
+        if include_conversation:
+            write_json(
+                self.evidence / f"{label}-briefs.json",
+                self.request(
+                    "GET",
+                    self.agent_path(f"briefs?limit={CONTEXT_BRIEF_LIMIT}"),
+                ),
+            )
+            write_json(
+                self.evidence / f"{label}-transcript.json",
+                self.request(
+                    "GET",
+                    self.agent_path(f"transcript?limit={CONTEXT_TRANSCRIPT_LIMIT}"),
+                ),
+            )
         self.state(label)
         self.work_items(label)
-        self.events(label)
+        self.events(label, after_seq=after_seq)
 
-    def prompt(self, label: str, text: str) -> tuple[int, dict[str, Any]]:
+    def prompt(
+        self,
+        label: str,
+        text: str,
+        *,
+        work_item_id: str | None = None,
+    ) -> tuple[int, dict[str, Any]]:
+        baseline_event_seq = self.event_cursor()
         before = self.state(f"{label}-before")
         baseline = int(before["agent"]["agent"]["turn_index"])
+        body = {"text": text}
+        if work_item_id is not None:
+            body["work_item_id"] = work_item_id
         response = self.request(
             "POST",
             self.agent_path("prompt", control=True),
-            {"text": text},
+            body,
         )
         write_json(self.evidence / f"{label}-prompt-response.json", response)
         (self.evidence / f"{label}-prompt.txt").write_text(text + "\n")
@@ -623,7 +949,11 @@ class CaseHarness:
                 and int(last_state["session"]["pending_count"]) == 0
             ):
                 write_json(self.evidence / f"{label}-after-state.json", last_state)
-                self.capture_context(label)
+                self.capture_context(
+                    label,
+                    after_seq=baseline_event_seq,
+                    include_conversation=False,
+                )
                 return baseline, last_state
             time.sleep(1)
         write_json(self.evidence / f"{label}-timeout-state.json", last_state)
@@ -717,11 +1047,33 @@ class CaseHarness:
         if snapshot_dir.exists():
             shutil.rmtree(snapshot_dir)
         snapshot_dir.mkdir(parents=True)
-        self.docker(
-            "cp",
-            f"{self.container}:/var/lib/holon/state/.",
-            str(snapshot_dir),
-        )
+        try:
+            for name in ("runtime.sqlite", "runtime.sqlite-wal", "runtime.sqlite-shm"):
+                result = self.docker(
+                    "cp",
+                    f"{self.container}:/var/lib/holon/state/{name}",
+                    str(snapshot_dir / name),
+                    check=False,
+                    timeout=RUNTIME_DB_COPY_TIMEOUT_SECONDS,
+                )
+                if name == "runtime.sqlite":
+                    require(
+                        result.returncode == 0,
+                        "runtime database snapshot is missing: "
+                        + (result.stderr or result.stdout).strip(),
+                    )
+        except subprocess.TimeoutExpired as error:
+            write_json(
+                self.evidence / f"{label}-runtime-state-copy-failure.json",
+                {
+                    "status": "timeout",
+                    "timeout_seconds": RUNTIME_DB_COPY_TIMEOUT_SECONDS,
+                    "command": error.cmd,
+                    "stdout": error.stdout or "",
+                    "stderr": error.stderr or "",
+                },
+            )
+            raise
         database = snapshot_dir / "runtime.sqlite"
         require(database.is_file(), "runtime database snapshot is missing")
         connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
@@ -2199,6 +2551,179 @@ def run_scheduler_terminal_recovery_case(
     )
 
 
+def work_queue_message_evidence(
+    snapshot: dict[str, Any],
+    *,
+    work_item_id: str,
+    reason: str,
+) -> list[dict[str, Any]]:
+    queue_status = {
+        row["message_id"]: row["status"] for row in snapshot["queue_entries"]
+    }
+    evidence = []
+    for row in snapshot["messages"]:
+        if row.get("work_item_id") != work_item_id:
+            continue
+        try:
+            payload = json.loads(row["payload_json"])
+        except (TypeError, json.JSONDecodeError):
+            continue
+        work_queue = (payload.get("metadata") or {}).get("work_queue") or {}
+        if work_queue.get("reason") != reason:
+            continue
+        evidence.append(
+            {
+                "message_id": row["message_id"],
+                "idempotency_key": work_queue.get("idempotency_key"),
+                "status": queue_status.get(row["message_id"]),
+            }
+        )
+    return evidence
+
+
+def run_scheduler_provider_failure_retry_case(
+    harness: CaseHarness, case: dict[str, Any]
+) -> None:
+    harness.initialize_workspace()
+    base_url_env = provider_base_url_env(harness.model)
+    original_base_url = harness.runtime_env.get(base_url_env)
+    harness.runtime_env[base_url_env] = "http://127.0.0.1:9"
+    harness.start()
+
+    harness.request(
+        "POST",
+        harness.agent_path("control", control=True),
+        {"action": "stop"},
+    )
+    marker = secrets.token_hex(4)
+    objective_marker = f"SCHEDULER-PROVIDER-RETRY-{marker}"
+    completion_marker = f"SCHEDULER-PROVIDER-RETRY-COMPLETE-{marker}"
+    objective = (
+        f"{objective_marker}. This WorkItem is being resumed by an autonomous "
+        "work_queue retry after a provider transport failure. Call ListWorkItems "
+        "with filter current, then emit a concise completion report containing "
+        f"{completion_marker} immediately followed by CompleteWorkItem for the "
+        "exact current WorkItem. Do not create another WorkItem or wait for input."
+    )
+    created = harness.request(
+        "POST",
+        harness.agent_path("work-items", control=True),
+        {"objective": objective},
+    )
+    write_json(harness.evidence / "provider-retry-created.json", created)
+    work_item_id = created["id"]
+    picked = harness.request(
+        "POST",
+        harness.agent_path(f"work-items/{work_item_id}/pick", control=True),
+        {"reason": "prepare deterministic provider failure retry"},
+    )
+    write_json(harness.evidence / "provider-retry-picked.json", picked)
+    harness.request(
+        "POST",
+        harness.agent_path("control", control=True),
+        {"action": "start"},
+    )
+
+    deadline = time.monotonic() + harness.timeout_seconds
+    runtime_errors: list[dict[str, Any]] = []
+    while time.monotonic() < deadline:
+        runtime_errors = [
+            event
+            for event in harness.events("provider-retry-failure-poll")
+            if event["type"] == "runtime_error"
+        ]
+        if runtime_errors:
+            break
+        time.sleep(0.5)
+    require(runtime_errors, "invalid provider endpoint did not produce runtime_error")
+    harness.request(
+        "POST",
+        harness.agent_path("control", control=True),
+        {"action": "stop"},
+    )
+    failed = harness.runtime_db_snapshot("provider-retry-failed")
+    failed_item = next(
+        row for row in failed["work_items"] if row["work_item_id"] == work_item_id
+    )
+    require(
+        failed_item["state"] == "open",
+        f"provider failure closed the retry WorkItem: {failed_item}",
+    )
+    failed_ticks = work_queue_message_evidence(
+        failed,
+        work_item_id=work_item_id,
+        reason="continue_active",
+    )
+    require(
+        failed_ticks
+        and any(tick["status"] == "aborted" for tick in failed_ticks)
+        and not any(tick["status"] == "processed" for tick in failed_ticks),
+        f"provider failure did not abort continue-active ticks: {failed_ticks}",
+    )
+    failed_keys = {tick["idempotency_key"] for tick in failed_ticks}
+    require(
+        len(failed_keys) == 1 and None not in failed_keys,
+        f"failed continue-active ticks lost stable idempotency: {failed_ticks}",
+    )
+
+    harness.stop()
+    if original_base_url is None:
+        harness.runtime_env.pop(base_url_env, None)
+    else:
+        harness.runtime_env[base_url_env] = original_base_url
+    harness.start(wait_idle=False)
+    harness.request(
+        "POST",
+        harness.agent_path("control", control=True),
+        {"action": "start"},
+    )
+    completed = harness.wait_work_item(
+        objective_marker=objective_marker,
+        expected_state="completed",
+        label="provider-retry-completed",
+    )
+    result_brief_id = completed.get("result_brief_id")
+    require(
+        isinstance(result_brief_id, str) and result_brief_id,
+        f"provider retry completion omitted result brief: {completed}",
+    )
+    result_brief = harness.brief(result_brief_id, "provider-retry-result")
+    require(
+        completion_marker in (result_brief.get("text") or ""),
+        f"provider retry completion marker is missing: {result_brief}",
+    )
+    recovered = harness.runtime_db_snapshot("provider-retry-recovered")
+    recovered_ticks = work_queue_message_evidence(
+        recovered,
+        work_item_id=work_item_id,
+        reason="continue_active",
+    )
+    require(
+        len(recovered_ticks) > len(failed_ticks)
+        and any(tick["status"] == "processed" for tick in recovered_ticks),
+        f"provider recovery did not process a retry tick: {recovered_ticks}",
+    )
+    require(
+        {tick["idempotency_key"] for tick in recovered_ticks} == failed_keys,
+        f"provider recovery changed continue-active idempotency: {recovered_ticks}",
+    )
+    tool_names = [
+        event["payload"].get("tool_name")
+        for event in harness.events("provider-retry-tools")
+        if event["type"] == "tool_executed"
+        and event["payload"].get("status") == "success"
+    ]
+    required, forbidden = phase_tools(case["phases"][0])
+    require(
+        all(name in tool_names for name in required),
+        f"provider retry omitted required tools {required}: {tool_names}",
+    )
+    require(
+        not set(tool_names).intersection(forbidden),
+        f"provider retry used forbidden tools {forbidden}: {tool_names}",
+    )
+
+
 CASE_RUNNERS = {
     "runtime-auth-model-delivery": run_runtime_case,
     "memory-agent-home-persistence": run_memory_case,
@@ -2211,6 +2736,9 @@ CASE_RUNNERS = {
     ),
     "scheduler-terminal-before-settlement-restart": (
         run_scheduler_terminal_recovery_case
+    ),
+    "scheduler-provider-failure-work-queue-retry": (
+        run_scheduler_provider_failure_retry_case
     ),
 }
 

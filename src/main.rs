@@ -283,6 +283,7 @@ fn runtime_command_uses_config_inspection(command: &Commands) -> bool {
         Commands::Debug {
             command: DebugCommands::SchedulerRolloutApply { .. }
                 | DebugCommands::SchedulerRecoveryFixture { .. }
+                | DebugCommands::SchedulerRestartFixture { .. }
         }
     )
 }
@@ -1545,6 +1546,40 @@ mod tests {
     }
 
     #[test]
+    fn hidden_scheduler_restart_fixture_parses_checkpoint() {
+        let cli = Cli::parse_from([
+            "holon",
+            "debug",
+            "scheduler-restart-fixture",
+            "--agent",
+            "runner",
+            "--checkpoint",
+            "ingress_queue_admission",
+            "--objective",
+            "atomic ingress admission",
+            "--json",
+        ]);
+        let Commands::Debug {
+            command:
+                DebugCommands::SchedulerRestartFixture {
+                    agent,
+                    checkpoint,
+                    stage,
+                    objective,
+                    json,
+                },
+        } = cli.command
+        else {
+            panic!("expected hidden scheduler-restart-fixture command");
+        };
+        assert_eq!(agent.as_deref(), Some("runner"));
+        assert_eq!(checkpoint, "ingress_queue_admission");
+        assert_eq!(stage, "prepare");
+        assert_eq!(objective, "atomic ingress admission");
+        assert!(json);
+    }
+
+    #[test]
     fn hidden_offline_scheduler_commands_skip_runtime_model_resolution() {
         for args in [
             vec![
@@ -1560,6 +1595,15 @@ mod tests {
                 "scheduler-recovery-fixture",
                 "--objective",
                 "terminal before settlement",
+            ],
+            vec![
+                "holon",
+                "debug",
+                "scheduler-restart-fixture",
+                "--checkpoint",
+                "ingress_queue_admission",
+                "--objective",
+                "atomic ingress admission",
             ],
         ] {
             let cli = Cli::parse_from(args);
@@ -2318,6 +2362,15 @@ async fn handle_debug_command(config: AppConfig, command: DebugCommands) -> Resu
             objective,
             json,
         } => seed_scheduler_recovery_fixture(&config, agent, objective, json).await,
+        DebugCommands::SchedulerRestartFixture {
+            agent,
+            checkpoint,
+            stage,
+            objective,
+            json,
+        } => {
+            seed_scheduler_restart_fixture(&config, agent, checkpoint, stage, objective, json).await
+        }
     }
 }
 
@@ -2371,6 +2424,34 @@ async fn seed_scheduler_recovery_fixture(
     let fixture = seed_scheduler_terminal_recovery_fixture(config, &agent_id, objective).await?;
     if json {
         print_json(&serde_json::to_value(fixture)?)
+    } else {
+        println!("{}", serde_json::to_string_pretty(&fixture)?);
+        Ok(())
+    }
+}
+
+async fn seed_scheduler_restart_fixture(
+    config: &AppConfig,
+    agent: Option<String>,
+    checkpoint: String,
+    stage: String,
+    objective: String,
+    json: bool,
+) -> Result<()> {
+    holon::runtime::require_scheduler_acceptance_fixtures_enabled()?;
+    let _maintenance_lock = RuntimeDbLock::try_lock(config.runtime_db_maintenance_lock_path())
+        .context("scheduler restart fixture requires holon serve to be stopped")?;
+    let agent_id = agent.unwrap_or_else(|| config.default_agent_id.clone());
+    let fixture = holon::runtime::seed_scheduler_restart_fixture(
+        config,
+        &agent_id,
+        &checkpoint,
+        &stage,
+        objective,
+    )
+    .await?;
+    if json {
+        print_json(&fixture)
     } else {
         println!("{}", serde_json::to_string_pretty(&fixture)?);
         Ok(())

@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 
 import importlib.util
+import io
 import json
+import copy
 import subprocess
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,6 +49,73 @@ class DockerE2ERunnerTests(unittest.TestCase):
         self.assertEqual(
             [case["id"] for case in selected],
             ["workitem-wait-restart-complete"],
+        )
+
+    def test_provider_base_url_env_matches_builtin_provider_contract(self) -> None:
+        self.assertEqual(
+            runner.provider_base_url_env("deepseek/deepseek-v4-flash"),
+            "HOLON_DEEPSEEK_BASE_URL",
+        )
+        self.assertEqual(
+            runner.provider_base_url_env("volcengine@plan/glm-5.2"),
+            "HOLON_VOLCENGINE_AGENT_BASE_URL",
+        )
+        self.assertEqual(
+            runner.provider_base_url_env("anthropic/claude-sonnet-4-6"),
+            "ANTHROPIC_BASE_URL",
+        )
+
+    def test_work_queue_message_evidence_extracts_retry_identity(self) -> None:
+        snapshot = {
+            "messages": [
+                {
+                    "message_id": "message-1",
+                    "work_item_id": "work-1",
+                    "payload_json": json.dumps(
+                        {
+                            "metadata": {
+                                "work_queue": {
+                                    "reason": "continue_active",
+                                    "idempotency_key": "work_queue:continue_active:work-1:1",
+                                }
+                            }
+                        }
+                    ),
+                },
+                {
+                    "message_id": "message-other",
+                    "work_item_id": "work-1",
+                    "payload_json": json.dumps(
+                        {
+                            "metadata": {
+                                "work_queue": {
+                                    "reason": "queued_available",
+                                    "idempotency_key": "other",
+                                }
+                            }
+                        }
+                    ),
+                },
+            ],
+            "queue_entries": [
+                {"message_id": "message-1", "status": "aborted"},
+                {"message_id": "message-other", "status": "processed"},
+            ],
+        }
+
+        self.assertEqual(
+            runner.work_queue_message_evidence(
+                snapshot,
+                work_item_id="work-1",
+                reason="continue_active",
+            ),
+            [
+                {
+                    "message_id": "message-1",
+                    "idempotency_key": "work_queue:continue_active:work-1:1",
+                    "status": "aborted",
+                }
+            ],
         )
 
     def test_manifest_rejects_unregistered_case(self) -> None:
@@ -157,6 +228,194 @@ class DockerE2ERunnerTests(unittest.TestCase):
             self.assertNotIn("cb_secret-capability", captured)
             self.assertIn("/api/callbacks/wake/<redacted>", captured)
 
+    def test_request_retries_retryable_projection_busy(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            harness = runner.CaseHarness(
+                case_id="projection-retry-test",
+                image="holon:test",
+                model="deepseek/deepseek-v4-flash",
+                credential_envs=[],
+                env_file=None,
+                runtime_env={},
+                evidence_root=Path(directory),
+                timeout_seconds=1,
+                keep=False,
+            )
+            harness.base_url = "http://127.0.0.1:7878"
+            busy = urllib.error.HTTPError(
+                harness.base_url + "/api/agents/default/state",
+                429,
+                "Too Many Requests",
+                {"Retry-After": "0"},
+                io.BytesIO(
+                    json.dumps(
+                        {
+                            "code": "projection_busy",
+                            "retryable": True,
+                        }
+                    ).encode()
+                ),
+            )
+
+            class Response:
+                status = 200
+                headers: dict[str, str] = {}
+
+                def __enter__(self) -> "Response":
+                    return self
+
+                def __exit__(self, *_: object) -> None:
+                    return None
+
+                def read(self) -> bytes:
+                    return b'{"ok":true}'
+
+            with (
+                patch.object(
+                    runner.urllib.request,
+                    "urlopen",
+                    side_effect=[busy, Response()],
+                ) as urlopen,
+                patch.object(runner.time, "sleep"),
+            ):
+                result = harness.request("GET", "/api/agents/default/state")
+
+            self.assertEqual(result, {"ok": True})
+            self.assertEqual(urlopen.call_count, 2)
+
+    def test_runtime_db_snapshot_records_docker_copy_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            harness = runner.CaseHarness(
+                case_id="snapshot-timeout-test",
+                image="holon:test",
+                model="deepseek/deepseek-v4-flash",
+                credential_envs=[],
+                env_file=None,
+                runtime_env={},
+                evidence_root=Path(directory),
+                timeout_seconds=1,
+                keep=False,
+            )
+
+            def timeout_docker(
+                *args: str, **kwargs: object
+            ) -> subprocess.CompletedProcess[str]:
+                self.assertEqual(
+                    kwargs["timeout"],
+                    runner.RUNTIME_DB_COPY_TIMEOUT_SECONDS,
+                )
+                raise subprocess.TimeoutExpired(
+                    ["docker", *args],
+                    runner.RUNTIME_DB_COPY_TIMEOUT_SECONDS,
+                    output="partial",
+                    stderr="daemon stalled",
+                )
+
+            harness.docker = timeout_docker
+            with self.assertRaises(subprocess.TimeoutExpired):
+                harness.runtime_db_snapshot("scheduler")
+
+            failure = json.loads(
+                (
+                    harness.evidence
+                    / "scheduler-runtime-state-copy-failure.json"
+                ).read_text()
+            )
+            self.assertEqual(failure["status"], "timeout")
+            self.assertEqual(
+                failure["timeout_seconds"],
+                runner.RUNTIME_DB_COPY_TIMEOUT_SECONDS,
+            )
+            self.assertEqual(failure["stdout"], "partial")
+            self.assertEqual(failure["stderr"], "daemon stalled")
+
+    def test_docker_circuit_breaker_opens_after_consecutive_timeouts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            harness = runner.CaseHarness(
+                case_id="docker-breaker-test",
+                image="holon:test",
+                model="deepseek/deepseek-v4-flash",
+                credential_envs=[],
+                env_file=None,
+                runtime_env={},
+                evidence_root=Path(directory),
+                timeout_seconds=1,
+                keep=False,
+            )
+            with patch.object(
+                runner,
+                "run",
+                side_effect=subprocess.TimeoutExpired(["docker", "version"], 1),
+            ) as command:
+                for _ in range(runner.DOCKER_CIRCUIT_BREAKER_THRESHOLD):
+                    with self.assertRaises(subprocess.TimeoutExpired):
+                        harness.docker("version")
+                with self.assertRaises(runner.DockerCircuitBreakerOpen):
+                    harness.docker("version")
+            self.assertEqual(
+                command.call_count,
+                runner.DOCKER_CIRCUIT_BREAKER_THRESHOLD,
+            )
+
+    def test_checkpoint_claims_are_shared_by_worker_copies(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            harness = runner.CaseHarness(
+                case_id="checkpoint-test",
+                image="holon:test",
+                model="deepseek/deepseek-v4-flash",
+                credential_envs=[],
+                env_file=None,
+                runtime_env={},
+                evidence_root=Path(directory),
+                timeout_seconds=1,
+                keep=False,
+            )
+            worker = copy.copy(harness)
+            self.assertTrue(harness.claim_checkpoint("wait-rearm-db"))
+            self.assertFalse(worker.claim_checkpoint("wait-rearm-db"))
+
+    def test_capture_context_uses_incremental_event_cursor(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            harness = runner.CaseHarness(
+                case_id="incremental-context-test",
+                image="holon:test",
+                model="deepseek/deepseek-v4-flash",
+                credential_envs=[],
+                env_file=None,
+                runtime_env={},
+                evidence_root=Path(directory),
+                timeout_seconds=1,
+                keep=False,
+            )
+            harness.agent_id = "default"
+            paths: list[str] = []
+
+            def request(method: str, path: str, *_: object, **__: object) -> object:
+                self.assertEqual(method, "GET")
+                paths.append(path)
+                if "/events?" in path:
+                    return {"events": [], "cursor_seq": 17}
+                if path.endswith("/state"):
+                    return {}
+                if "/work-items?" in path:
+                    return []
+                raise AssertionError(f"unexpected path: {path}")
+
+            harness.request = request
+            harness.capture_context(
+                "operation-final",
+                after_seq=12,
+                include_conversation=False,
+            )
+            self.assertTrue(
+                any(
+                    "events?limit=300&order=asc&after_seq=12" in path
+                    for path in paths
+                )
+            )
+            self.assertFalse(any("/briefs?" in path for path in paths))
+            self.assertFalse(any("/transcript?" in path for path in paths))
+
     def test_cleanup_fails_when_resource_still_exists(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             harness = runner.CaseHarness(
@@ -240,6 +499,60 @@ class DockerE2ERunnerTests(unittest.TestCase):
             )
             self.assertEqual(harness.runtime_env["HOLON_TEST_MARKER"], "true")
 
+    def test_harness_accepts_stable_resources_and_model_fallbacks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / "workspace"
+            harness = runner.CaseHarness(
+                case_id="scheduler-drill",
+                image="holon:test",
+                model="volcengine@plan/glm-5.2",
+                model_fallbacks=["dashscope@token-plan/qwen3.8-max-preview"],
+                disable_provider_fallback=False,
+                credential_envs=[],
+                env_file=None,
+                runtime_env={},
+                evidence_root=Path(directory),
+                timeout_seconds=1,
+                keep=True,
+                resource_names={
+                    "volume": "drill-volume",
+                    "network": "drill-network",
+                    "container": "drill-container",
+                    "workspace_parent": str(workspace),
+                },
+                control_token="stable-control-token",
+            )
+            commands: list[tuple[str, ...]] = []
+
+            def fake_docker(
+                *args: str, **_: object
+            ) -> subprocess.CompletedProcess[str]:
+                commands.append(args)
+                if args[:2] == ("network", "inspect"):
+                    return subprocess.CompletedProcess(["docker", *args], 1, "", "")
+                if args[:2] == ("port", "drill-container"):
+                    return subprocess.CompletedProcess(
+                        ["docker", *args], 0, "127.0.0.1:49152\n", ""
+                    )
+                return subprocess.CompletedProcess(["docker", *args], 0, "", "")
+
+            harness.docker = fake_docker
+            harness.wait_readiness = lambda: None
+            harness.wait_agent_idle = lambda: None
+            harness.start()
+
+            docker_run = next(command for command in commands if command[0] == "run")
+            self.assertEqual(harness.volume, "drill-volume")
+            self.assertEqual(harness.network, "drill-network")
+            self.assertEqual(harness.container, "drill-container")
+            self.assertEqual(harness.workspace_parent, workspace)
+            self.assertEqual(harness.token, "stable-control-token")
+            self.assertIn("HOLON_DISABLE_PROVIDER_FALLBACK=false", docker_run)
+            self.assertIn(
+                'HOLON_MODEL_FALLBACKS=["dashscope@token-plan/qwen3.8-max-preview"]',
+                docker_run,
+            )
+
     def test_scheduler_extended_cases_declare_rollout_modes(self) -> None:
         selected = runner.select_cases(
             self.manifest, requested=None, suite="extended", tags=["scheduler"]
@@ -250,29 +563,32 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 "scheduler-autonomous-legacy",
                 "scheduler-rollout-authoritative-autonomous",
                 "scheduler-terminal-before-settlement-restart",
+                "scheduler-provider-failure-work-queue-retry",
             ],
         )
+        rollout_cases = selected[:3]
         self.assertEqual(
             [
                 case["runtime_env"][
                     "HOLON_SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS"
                 ]
-                for case in selected
+                for case in rollout_cases
             ],
             ["false", "true", "true"],
         )
         self.assertNotIn(
-            "HOLON_SCHEDULER_ACCEPTANCE_FIXTURES", selected[0]["runtime_env"]
+            "HOLON_SCHEDULER_ACCEPTANCE_FIXTURES",
+            rollout_cases[0]["runtime_env"],
         )
         self.assertEqual(
             [
                 case["runtime_env"]["HOLON_SCHEDULER_ACCEPTANCE_FIXTURES"]
-                for case in selected[1:]
+                for case in rollout_cases[1:]
             ],
             ["true", "true"],
         )
-        authoritative = selected[1]
-        recovery = selected[2]
+        authoritative = rollout_cases[1]
+        recovery = rollout_cases[2]
         self.assertEqual(len(authoritative["phases"]), 2)
         self.assertIn(
             "WaitFor", authoritative["phases"][0]["required_tools"]

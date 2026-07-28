@@ -123,6 +123,8 @@ pub(crate) struct CallbackResponse {
 pub struct ControlPromptRequest {
     pub text: String,
     #[serde(default)]
+    pub work_item_id: Option<String>,
+    #[serde(default)]
     pub attachments: Vec<ControlPromptAttachment>,
 }
 

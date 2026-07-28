@@ -578,6 +578,10 @@ impl WakeHintProvider {
             calls: Mutex::new(0),
         }
     }
+
+    pub async fn calls(&self) -> usize {
+        *self.calls.lock().await
+    }
 }
 
 #[async_trait]
@@ -588,9 +592,20 @@ impl AgentProvider for WakeHintProvider {
         if *calls == 1 {
             sleep(Duration::from_millis(250)).await;
             Ok(ProviderTurnResponse {
-                blocks: vec![ModelBlock::Text {
-                    text: "first turn complete".into(),
-                }],
+                blocks: vec![
+                    ModelBlock::Text {
+                        text: "waiting for wake hint".into(),
+                    },
+                    ModelBlock::ToolUse {
+                        id: "wait-for-wake-hint".into(),
+                        name: "WaitFor".into(),
+                        input: json!({
+                            "reason": "waiting for external wake hint",
+                            "wake": "external"
+                        }),
+                        kind: holon::provider::ModelToolCallKind::Function,
+                    },
+                ],
                 stop_reason: None,
                 input_tokens: 100,
                 output_tokens: 50,

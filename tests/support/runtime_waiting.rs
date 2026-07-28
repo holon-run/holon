@@ -612,7 +612,8 @@ pub async fn timer_tick_wakes_sleeping_session() -> Result<()> {
 }
 
 pub async fn wake_hint_coalesces_while_running_and_reenters_once() -> Result<()> {
-    let host = RuntimeHost::new_with_provider(test_config(), Arc::new(WakeHintProvider::new()))?;
+    let provider = Arc::new(WakeHintProvider::new());
+    let host = RuntimeHost::new_with_provider(test_config(), provider.clone())?;
     let runtime = host.default_runtime().await?;
 
     runtime
@@ -662,27 +663,28 @@ pub async fn wake_hint_coalesces_while_running_and_reenters_once() -> Result<()>
     assert_eq!(first, WakeDisposition::Coalesced);
     assert_eq!(second, WakeDisposition::Coalesced);
 
-    wait_until(|| {
-        let messages = runtime.storage().read_recent_messages(20)?;
-        let state = runtime
-            .storage()
-            .read_agent()?
-            .expect("agent state should exist");
-        Ok(messages
+    wait_until_async(|| async { Ok(provider.calls().await == 2) }).await?;
+
+    let messages = runtime.storage().read_recent_messages(20)?;
+    let state = runtime
+        .storage()
+        .read_agent()?
+        .expect("agent state should exist");
+    assert_eq!(
+        messages
             .iter()
             .filter(|message| message.kind == MessageKind::SystemTick)
-            .count()
-            == 1
-            && state.pending_wake_hint.is_none()
-            && state
-                .last_continuation
-                .as_ref()
-                .is_some_and(|continuation| {
-                    continuation.class == holon::types::ContinuationClass::LivenessOnly
-                        && !continuation.model_reentry
-                }))
-    })
-    .await?;
+            .count(),
+        1
+    );
+    assert!(state.pending_wake_hint.is_none());
+    assert!(state
+        .last_continuation
+        .as_ref()
+        .is_some_and(|continuation| {
+            continuation.class == holon::types::ContinuationClass::ResumeExpectedWait
+                && continuation.model_reentry
+        }));
 
     Ok(())
 }

@@ -282,14 +282,24 @@ fn body_is_contentful(body: &MessageBody) -> bool {
 }
 
 fn wake_hint_body_is_contentful(message: &MessageEnvelope) -> bool {
-    message
+    let wake_hint = message
         .metadata
         .as_ref()
-        .and_then(|value| value.get("wake_hint"))
+        .and_then(|value| value.get("wake_hint"));
+    let explicit_body = wake_hint
         .and_then(|value| value.get("body"))
         .cloned()
         .and_then(|value| serde_json::from_value::<MessageBody>(value).ok())
-        .is_some_and(|body| body_is_contentful(&body))
+        .is_some_and(|body| body_is_contentful(&body));
+    if explicit_body {
+        return true;
+    }
+    // A wake hint carrying a non-empty reason is deliberate operator/external
+    // signal content and warrants model reentry even without an explicit body.
+    wake_hint
+        .and_then(|value| value.get("reason"))
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|reason| !reason.trim().is_empty())
 }
 
 fn system_tick_is_contentful(message: &MessageEnvelope) -> bool {
@@ -307,6 +317,8 @@ fn system_tick_is_contentful(message: &MessageEnvelope) -> bool {
 #[cfg(test)]
 mod tests {
     use crate::types::{ClosureDecision, RuntimePosture};
+
+    use crate::types::{AuthorityClass, MessageOrigin, Priority};
 
     use super::*;
 
@@ -557,5 +569,39 @@ mod tests {
             .evidence
             .iter()
             .any(|entry| entry == "does_not_satisfy_waiting_reason"));
+    }
+
+    fn wake_hint_system_tick(reason: &str, body: Option<serde_json::Value>) -> MessageEnvelope {
+        let mut message = MessageEnvelope::new(
+            "default",
+            MessageKind::SystemTick,
+            MessageOrigin::System {
+                subsystem: "wake_hint".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Next,
+            MessageBody::Text {
+                text: format!("wake hint: {reason}"),
+            },
+        );
+        message.metadata = Some(serde_json::json!({
+            "wake_hint": {
+                "reason": reason,
+                "body": body,
+            }
+        }));
+        message
+    }
+
+    #[test]
+    fn wake_hint_with_reason_only_is_contentful() {
+        let message = wake_hint_system_tick("scheduler drill system wake", None);
+        assert!(system_tick_is_contentful(&message));
+    }
+
+    #[test]
+    fn wake_hint_with_empty_reason_and_no_body_is_not_contentful() {
+        let message = wake_hint_system_tick("", None);
+        assert!(!system_tick_is_contentful(&message));
     }
 }

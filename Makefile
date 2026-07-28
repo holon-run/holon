@@ -155,7 +155,7 @@ docker-e2e: docker-build ## Run the release core Docker E2E suite with a real LL
 
 docker-e2e-validate: ## Validate the Docker E2E manifest and runner unit tests
 	python3 scripts/docker-e2e.py --validate-manifest
-	python3 -m unittest tests.test_docker_e2e_runner
+	python3 -m unittest tests.test_docker_e2e_runner tests.test_scheduler_drill
 
 docker-live-acceptance: docker-e2e ## Compatibility alias for docker-e2e
 

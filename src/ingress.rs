@@ -15,6 +15,7 @@ pub struct InboundRequest {
     pub body: MessageBody,
     pub delivery_surface: MessageDeliverySurface,
     pub admission_context: AdmissionContext,
+    pub work_item_id: Option<String>,
     pub metadata: Option<serde_json::Value>,
     pub correlation_id: Option<String>,
     pub causation_id: Option<String>,
@@ -31,6 +32,7 @@ impl InboundRequest {
             self.body,
         )
         .with_admission(self.delivery_surface, self.admission_context);
+        message.work_item_id = self.work_item_id;
         message.metadata = self.metadata;
         message.correlation_id = self.correlation_id;
         message.causation_id = self.causation_id;

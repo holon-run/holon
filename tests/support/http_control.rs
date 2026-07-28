@@ -1865,7 +1865,7 @@ pub async fn remote_tcp_surfaces_require_bearer_token_when_required() -> Result<
     Ok(())
 }
 
-pub async fn control_wake_records_liveness_only_system_tick_on_loopback_auto() -> Result<()> {
+pub async fn control_wake_records_contentful_system_tick_on_loopback_auto() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let runtime = host.default_runtime().await?;
     let client = reqwest::Client::new();
@@ -1902,8 +1902,8 @@ pub async fn control_wake_records_liveness_only_system_tick_on_loopback_auto() -
                 .last_continuation
                 .as_ref()
                 .is_some_and(|continuation| {
-                    continuation.class == ContinuationClass::LivenessOnly
-                        && !continuation.model_reentry
+                    continuation.class == ContinuationClass::LocalContinuation
+                        && continuation.model_reentry
                 }))
     })
     .await?;
@@ -1947,7 +1947,10 @@ pub async fn control_prompt_records_message_admission_fields() -> Result<()> {
 
     let response = client
         .post(format!("{base}/api/control/agents/default/prompt"))
-        .json(&serde_json::json!({ "text": "hello" }))
+        .json(&serde_json::json!({
+            "text": "hello",
+            "work_item_id": "work-control-bound",
+        }))
         .send()
         .await?;
     assert!(response.status().is_success());
@@ -1971,6 +1974,7 @@ pub async fn control_prompt_records_message_admission_fields() -> Result<()> {
                 && message.admission_context == Some(AdmissionContext::LocalProcess)
                 && message.authority_class == AuthorityClass::OperatorInstruction
                 && message.priority == Priority::Interject
+                && message.work_item_id.as_deref() == Some("work-control-bound")
         }) && events.iter().any(|event| {
             event.kind == "message_admitted"
                 && event.data["delivery_surface"] == "http_control_prompt"

@@ -36,7 +36,8 @@ pub use repair::{
     SchedulerRepairResult,
 };
 pub use scheduler_acceptance::{
-    seed_scheduler_terminal_recovery_fixture, SchedulerTerminalRecoveryFixture,
+    seed_scheduler_restart_fixture, seed_scheduler_terminal_recovery_fixture,
+    SchedulerIngressAdmissionRestartFixture, SchedulerTerminalRecoveryFixture,
 };
 pub use tasks::{
     PickedWorkItem, WorkItemContinuationSummary, WorkItemFocusTransition,
@@ -282,7 +283,6 @@ struct RuntimeInner {
     suppress_next_continue_active_tick: Mutex<bool>,
     shutdown_requested: AtomicBool,
     scheduler_protocol_production_commands_enabled: AtomicBool,
-    #[cfg(test)]
     transition_faults: StdMutex<std::collections::VecDeque<TransitionFaultPoint>>,
     #[cfg(test)]
     task_transition_conflicts_remaining: AtomicUsize,
@@ -290,7 +290,6 @@ struct RuntimeInner {
     omit_next_scheduler_claim_shadow_comparison: AtomicBool,
     #[cfg(test)]
     fail_after_next_runtime_claim: AtomicBool,
-    #[cfg(test)]
     transition_warnings: StdMutex<Vec<PostCommitWarning>>,
 }
 
@@ -1510,33 +1509,40 @@ impl RuntimeHandle {
     }
 
     fn take_transition_fault(&self) -> Option<TransitionFaultPoint> {
-        #[cfg(test)]
-        {
-            return self
-                .inner
-                .transition_faults
-                .lock()
-                .expect("transition fault plan lock poisoned")
-                .pop_front();
-        }
-        #[cfg(not(test))]
-        {
-            None
-        }
+        self.inner
+            .transition_faults
+            .lock()
+            .expect("transition fault plan lock poisoned")
+            .pop_front()
+    }
+
+    pub(super) fn inject_next_acceptance_transition_fault(
+        &self,
+        fault: TransitionFaultPoint,
+    ) -> Result<()> {
+        require_scheduler_acceptance_fixtures_enabled()?;
+        self.inject_next_transition_fault_unchecked(fault)
     }
 
     #[cfg(test)]
     pub(crate) fn inject_next_transition_fault(&self, fault: TransitionFaultPoint) {
+        self.inject_next_transition_fault_unchecked(fault)
+            .expect("a transition fault is already armed for this runtime fixture");
+    }
+
+    fn inject_next_transition_fault_unchecked(&self, fault: TransitionFaultPoint) -> Result<()> {
         let mut faults = self
             .inner
             .transition_faults
             .lock()
             .expect("transition fault plan lock poisoned");
-        assert!(
-            faults.is_empty(),
-            "a transition fault is already armed for this runtime fixture"
-        );
+        if !faults.is_empty() {
+            return Err(anyhow!(
+                "a transition fault is already armed for this runtime fixture"
+            ));
+        }
         faults.push_back(fault);
+        Ok(())
     }
 
     #[cfg(test)]
@@ -1558,8 +1564,7 @@ impl RuntimeHandle {
         self.inner.notify.notify_one();
     }
 
-    #[cfg(test)]
-    pub(crate) fn take_transition_warnings(&self) -> Vec<PostCommitWarning> {
+    pub(super) fn take_transition_warnings(&self) -> Vec<PostCommitWarning> {
         std::mem::take(
             &mut *self
                 .inner
@@ -1639,7 +1644,6 @@ impl RuntimeHandle {
                 "runtime transition committed with post-commit warning"
             );
         }
-        #[cfg(test)]
         self.inner
             .transition_warnings
             .lock()

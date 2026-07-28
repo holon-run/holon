@@ -127,3 +127,54 @@ async fn schedule_timer_rejects_unrepresentable_duration() {
     let result = runtime.schedule_timer(u64::MAX, None, None).await;
     assert!(result.is_err());
 }
+
+#[tokio::test(start_paused = true)]
+async fn timer_message_binds_the_unique_matching_wait_work_item() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let clock = controlled_clock();
+    let runtime = RuntimeHandle::new_with_clock(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("timer done")),
+        "default".into(),
+        context_config(),
+        clock.clone(),
+    )
+    .unwrap();
+    let work = runtime
+        .create_work_item("wait for timer".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let timer = runtime
+        .schedule_timer(100, None, Some("bound timer".into()))
+        .await
+        .unwrap();
+    runtime
+        .register_wait_for(
+            "default",
+            Some(work.id.clone()),
+            WaitForWakeKind::Timer,
+            Some(timer.id.clone()),
+            "waiting for bound timer".into(),
+            None,
+        )
+        .await
+        .unwrap();
+
+    clock.advance(std::time::Duration::from_millis(100));
+    tokio::time::advance(std::time::Duration::from_millis(100)).await;
+    tokio::task::yield_now().await;
+
+    let message = runtime
+        .storage()
+        .read_recent_messages(10)
+        .unwrap()
+        .into_iter()
+        .find(|message| message.kind == MessageKind::TimerTick)
+        .expect("timer tick should be queued");
+    assert_eq!(message.work_item_id.as_deref(), Some(work.id.as_str()));
+    assert_eq!(message.source_refs.get("timer_id"), Some(&timer.id));
+}

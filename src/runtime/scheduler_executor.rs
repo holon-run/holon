@@ -1509,7 +1509,7 @@ fn canonical_claim_hard_blocker(
     ))
 }
 
-fn canonical_wait_trigger_id(message: &MessageEnvelope) -> String {
+pub(super) fn canonical_wait_trigger_id(message: &MessageEnvelope) -> String {
     for key in [
         "task_result_id",
         "callback_delivery_id",

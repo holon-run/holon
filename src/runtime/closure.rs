@@ -199,7 +199,7 @@ pub(super) fn derive_closure_decision(facts: &ClosureFacts) -> ClosureDecision {
         Some(WorkItemSchedulingState::WaitingSystem) => {
             return ClosureDecision {
                 outcome: ClosureOutcome::Waiting,
-                waiting_reason: None,
+                waiting_reason: Some(WaitingReason::AwaitingExternalChange),
                 work_signal: None,
                 runtime_posture,
                 evidence,

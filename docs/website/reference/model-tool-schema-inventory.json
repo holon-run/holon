@@ -42,7 +42,9 @@
             "enum": [
               "operator_input",
               "task_result",
-              "external"
+              "external",
+              "timer",
+              "system"
             ],
             "type": "string"
           },

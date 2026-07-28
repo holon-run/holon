@@ -27,6 +27,8 @@ pub(crate) enum WaitForWakeArg {
     OperatorInput,
     TaskResult,
     External,
+    Timer,
+    System,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -163,19 +165,21 @@ fn optional_resource(resource: Option<String>) -> Option<String> {
 
 fn validate_resource_for_wake(wake: WaitForWakeArg, resource: Option<&str>) -> Result<()> {
     match wake {
-        WaitForWakeArg::TaskResult if resource.is_none() => Err(invalid_tool_input(
-            NAME,
-            format!(
-                "WaitFor wake `{}` requires non-empty `resource`",
-                wake.as_str()
-            ),
-            json!({
-                "field": "resource",
-                "wake": wake,
-                "validation_error": "required",
-            }),
-            "provide `resource` for task_result waits; use the task id as the resource",
-        )),
+        WaitForWakeArg::TaskResult | WaitForWakeArg::Timer if resource.is_none() => {
+            Err(invalid_tool_input(
+                NAME,
+                format!(
+                    "WaitFor wake `{}` requires non-empty `resource`",
+                    wake.as_str()
+                ),
+                json!({
+                    "field": "resource",
+                    "wake": wake,
+                    "validation_error": "required",
+                }),
+                "provide `resource`; use the task id for task_result or timer id for timer",
+            ))
+        }
         _ => Ok(()),
     }
 }
@@ -186,6 +190,8 @@ impl WaitForWakeArg {
             Self::OperatorInput => "operator_input",
             Self::TaskResult => "task_result",
             Self::External => "external",
+            Self::Timer => "timer",
+            Self::System => "system",
         }
     }
 }
@@ -196,6 +202,8 @@ impl From<WaitForWakeArg> for WaitForWakeKind {
             WaitForWakeArg::OperatorInput => WaitForWakeKind::OperatorInput,
             WaitForWakeArg::TaskResult => WaitForWakeKind::TaskResult,
             WaitForWakeArg::External => WaitForWakeKind::External,
+            WaitForWakeArg::Timer => WaitForWakeKind::Timer,
+            WaitForWakeArg::System => WaitForWakeKind::System,
         }
     }
 }
@@ -226,24 +234,27 @@ mod tests {
     }
 
     #[test]
-    fn wait_for_requires_resource_for_task_and_external_waits() {
-        let error = validate_resource_for_wake(WaitForWakeArg::TaskResult, None).unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
-        assert_eq!(tool_error.kind, "invalid_tool_input");
-        assert_eq!(
-            tool_error
-                .details
-                .as_ref()
-                .and_then(|value| value.get("field"))
-                .and_then(|value| value.as_str()),
-            Some("resource")
-        );
+    fn wait_for_requires_resource_for_task_and_timer_waits() {
+        for wake in [WaitForWakeArg::TaskResult, WaitForWakeArg::Timer] {
+            let error = validate_resource_for_wake(wake, None).unwrap_err();
+            let tool_error = ToolError::from_anyhow(&error);
+            assert_eq!(tool_error.kind, "invalid_tool_input");
+            assert_eq!(
+                tool_error
+                    .details
+                    .as_ref()
+                    .and_then(|value| value.get("field"))
+                    .and_then(|value| value.as_str()),
+                Some("resource")
+            );
+        }
     }
 
     #[test]
     fn wait_for_allows_operator_and_external_without_resource() {
         validate_resource_for_wake(WaitForWakeArg::OperatorInput, None).unwrap();
         validate_resource_for_wake(WaitForWakeArg::External, None).unwrap();
+        validate_resource_for_wake(WaitForWakeArg::System, None).unwrap();
     }
 
     #[test]
