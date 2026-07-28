@@ -1902,8 +1902,8 @@ pub async fn control_wake_records_liveness_only_system_tick_on_loopback_auto() -
                 .last_continuation
                 .as_ref()
                 .is_some_and(|continuation| {
-                    continuation.class == ContinuationClass::LivenessOnly
-                        && !continuation.model_reentry
+                    continuation.class == ContinuationClass::ResumeExpectedWait
+                        && continuation.model_reentry
                 }))
     })
     .await?;
