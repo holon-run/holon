@@ -20,11 +20,11 @@ use crate::domain::scheduler_protocol::{
     ActivationRecord, ActivationSlot, ActivationState, AdmitActivationCommand,
     AdoptLegacyWorkStateCommand, AgentDispatchState, ContinuationAdmissionRecord, Decision,
     LegacyWaitAdoption, MissingSettlementRecord, ProtocolCommand, ProtocolConflict,
-    ProtocolConflictKind, ProtocolMode, RollbackAction, RollbackTrigger, RolloutCommand,
-    RolloutManifest, RolloutPreflightRecord, RolloutPreflightState, RolloutState,
-    ScenarioAuthority, ScenarioHardBlockerRecord, ScenarioMode, SchedulerOwner,
-    SchedulerScenarioClass, Snapshot, WaitGenerationRecord, WaitIdentity, WaitRecord, WaitState,
-    WaitTrigger, WorkDemand, WorkStatus,
+    ProtocolConflictKind, ProtocolMode, ReplaceCompletedFocusProof, RollbackAction,
+    RollbackTrigger, RolloutCommand, RolloutManifest, RolloutPreflightRecord,
+    RolloutPreflightState, RolloutState, ScenarioAuthority, ScenarioHardBlockerRecord,
+    ScenarioMode, SchedulerOwner, SchedulerScenarioClass, Snapshot, WaitGenerationRecord,
+    WaitIdentity, WaitRecord, WaitState, WaitTrigger, WorkDemand, WorkStatus,
 };
 use crate::domain::scheduler_semantic::{
     resolve_semantic_proposal, validate_semantic_decision_input, validate_semantic_provider_config,
@@ -1493,7 +1493,7 @@ fn legacy_scheduler_adoption_candidate_tx(
                 crate::types::AgentStatus::AwaitingTask | crate::types::AgentStatus::Asleep
             )
         });
-    let command = ProtocolCommand::AdoptLegacyWorkState(AdoptLegacyWorkStateCommand {
+    let mut command = ProtocolCommand::AdoptLegacyWorkState(AdoptLegacyWorkStateCommand {
         work_item_id: work_item.id.clone(),
         source_work_item_revision: work_item.revision,
         demand: WorkDemand {
@@ -1508,7 +1508,26 @@ fn legacy_scheduler_adoption_candidate_tx(
         wait,
         focus: is_current,
         reserve_dispatch,
+        replace_completed_focus: None,
     });
+    // Check for a stale canonical focus that can be provably replaced.
+    if is_current && scheduler_protocol_partition_exists_tx(tx, &work_item.agent_id)? {
+        let snapshot = load_snapshot_tx(tx, &work_item.agent_id)?;
+        if let Some(stale_focus_id) = snapshot.focus.as_deref() {
+            if stale_focus_id != work_item.id {
+                if let Some(proof) = build_replace_completed_focus_proof_tx(
+                    tx,
+                    &work_item.agent_id,
+                    stale_focus_id,
+                    &snapshot,
+                )? {
+                    if let ProtocolCommand::AdoptLegacyWorkState(ref mut cmd) = command {
+                        cmd.replace_completed_focus = Some(proof);
+                    }
+                }
+            }
+        }
+    }
     Ok(LegacySchedulerAdoptionCandidate {
         agent_id: work_item.agent_id.clone(),
         work_item_id: work_item.id.clone(),
@@ -1516,6 +1535,54 @@ fn legacy_scheduler_adoption_candidate_tx(
         reason: "eligible".into(),
         command: Some(command),
     })
+}
+
+/// Builds a proof that the stale canonical focus can be safely replaced because
+/// its legacy WorkItem is provably completed and its canonical demand is in a
+/// safe state. Returns `None` if any condition is not met (fail-closed).
+fn build_replace_completed_focus_proof_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    stale_focus_id: &str,
+    snapshot: &Snapshot,
+) -> Result<Option<ReplaceCompletedFocusProof>> {
+    // The old focus must be a completed legacy WorkItem of the same agent.
+    let stale_payload = tx
+        .query_row(
+            "SELECT payload_json FROM work_items
+             WHERE work_item_id = ?1 AND agent_id = ?2 AND state = 'completed'",
+            [stale_focus_id, agent_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let stale_work_item = match stale_payload {
+        Some(payload) => crate::runtime_db::repositories::decode_work_item_payload(&payload)?,
+        None => return Ok(None),
+    };
+    // The old focus demand must exist in the canonical snapshot.
+    let old_demand = match snapshot.work.get(stale_focus_id) {
+        Some(demand) => demand,
+        None => return Ok(None),
+    };
+    // Safe states only: Runnable or Paused.
+    if !matches!(
+        old_demand.status,
+        WorkStatus::Runnable | WorkStatus::Paused { .. }
+    ) {
+        return Ok(None);
+    }
+    // Activation slot must not be occupied by the old focus.
+    if let ActivationSlot::Running { owner, .. } = &snapshot.slot {
+        if owner.work_item_id() == Some(stale_focus_id) {
+            return Ok(None);
+        }
+    }
+    Ok(Some(ReplaceCompletedFocusProof {
+        work_item_id: stale_focus_id.to_string(),
+        source_work_item_revision: stale_work_item.revision,
+        expected_metadata_revision: old_demand.metadata_revision,
+        expected_scheduling_generation: old_demand.scheduling_generation,
+    }))
 }
 
 fn ineligible_legacy_adoption(
@@ -1727,6 +1794,9 @@ fn command_fact_references(command: &ProtocolCommand) -> Vec<String> {
                     "wait:{}:generation:{}",
                     wait.wait_id, wait.generation
                 ));
+            }
+            if let Some(proof) = &command.replace_completed_focus {
+                references.push(format!("work:{}:legacy_focus_replaced", proof.work_item_id));
             }
             references
         }

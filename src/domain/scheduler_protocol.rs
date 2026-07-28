@@ -929,6 +929,21 @@ pub struct LegacyWaitAdoption {
     pub source_updated_at: String,
 }
 
+/// Proof that allows an `AdoptLegacyWorkState` command to atomically replace
+/// a stale canonical focus whose legacy WorkItem is provably completed.
+///
+/// This is NOT a general-purpose focus replacement. It only permits
+/// terminalizing one old focus demand and switching to the new adoption
+/// target in the same reducer transition, within the narrow legacy→canonical
+/// migration window described in issue #2460.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReplaceCompletedFocusProof {
+    pub work_item_id: String,
+    pub source_work_item_revision: u64,
+    pub expected_metadata_revision: u64,
+    pub expected_scheduling_generation: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdoptLegacyWorkStateCommand {
     pub work_item_id: String,
@@ -940,6 +955,8 @@ pub struct AdoptLegacyWorkStateCommand {
     pub focus: bool,
     #[serde(default)]
     pub reserve_dispatch: bool,
+    #[serde(default)]
+    pub replace_completed_focus: Option<ReplaceCompletedFocusProof>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2038,7 +2055,13 @@ fn replay_or_conflict(
                     None => true,
                 };
                 let focus_matches = !command.focus
-                    || snapshot.focus.as_deref() == Some(command.work_item_id.as_str());
+                    || snapshot.focus.as_deref() == Some(command.work_item_id.as_str())
+                    || command
+                        .replace_completed_focus
+                        .as_ref()
+                        .is_some_and(|proof| {
+                            snapshot.focus.as_deref() == Some(proof.work_item_id.as_str())
+                        });
                 let dispatch_matches = !command.reserve_dispatch
                     || command.wait.as_ref().is_some_and(|wait| {
                         snapshot.dispatch
@@ -2425,13 +2448,69 @@ fn adopt_legacy_work_state(
             .as_deref()
             .is_some_and(|focus| focus != command.work_item_id)
     {
-        return rejected_command(
-            snapshot,
-            command_conflict(
-                ProtocolConflictKind::StateConflict,
-                "legacy_focus_adoption_conflict",
-            ),
-        );
+        // Without a replacement proof, any focus mismatch is a hard conflict.
+        let Some(proof) = &command.replace_completed_focus else {
+            return rejected_command(
+                snapshot,
+                command_conflict(
+                    ProtocolConflictKind::StateConflict,
+                    "legacy_focus_adoption_conflict",
+                ),
+            );
+        };
+        // Current focus must match the proof's work item.
+        if snapshot.focus.as_deref() != Some(proof.work_item_id.as_str()) {
+            return rejected_command(
+                snapshot,
+                command_conflict(
+                    ProtocolConflictKind::StateConflict,
+                    "legacy_focus_replacement_focus_mismatch",
+                ),
+            );
+        }
+        // Old focus demand must exist and match the proof fence.
+        let old_demand = match snapshot.work.get(&proof.work_item_id) {
+            Some(demand)
+                if demand.metadata_revision == proof.expected_metadata_revision
+                    && demand.scheduling_generation == proof.expected_scheduling_generation =>
+            {
+                demand
+            }
+            _ => {
+                return rejected_command(
+                    snapshot,
+                    command_conflict(
+                        ProtocolConflictKind::StaleRevision,
+                        "legacy_focus_replacement_demand_fence_mismatch",
+                    ),
+                );
+            }
+        };
+        // Old focus must be in a safe state: Runnable or Paused only.
+        if !matches!(
+            old_demand.status,
+            WorkStatus::Runnable | WorkStatus::Paused { .. }
+        ) {
+            return rejected_command(
+                snapshot,
+                command_conflict(
+                    ProtocolConflictKind::StateConflict,
+                    "legacy_focus_replacement_unsafe_status",
+                ),
+            );
+        }
+        // Activation slot must not be occupied by the old focus.
+        if let ActivationSlot::Running { owner, .. } = &snapshot.slot {
+            if owner.work_item_id() == Some(proof.work_item_id.as_str()) {
+                return rejected_command(
+                    snapshot,
+                    command_conflict(
+                        ProtocolConflictKind::StateConflict,
+                        "legacy_focus_replacement_slot_occupied",
+                    ),
+                );
+            }
+        }
     }
     if command.reserve_dispatch && snapshot.dispatch != AgentDispatchState::Open {
         return rejected_command(
@@ -2507,16 +2586,24 @@ fn adopt_legacy_work_state(
             next.dispatch_revision += 1;
         }
     }
+    // Terminalize the replaced old focus demand if a proof was provided and validated.
+    let mut transitions = vec![format!(
+        "work:{}:legacy_state_adopted:generation:{}",
+        command.work_item_id, command.demand.scheduling_generation
+    )];
+    if let Some(proof) = &command.replace_completed_focus {
+        if let Some(old_demand) = next.work.get_mut(&proof.work_item_id) {
+            old_demand.status = WorkStatus::Terminal;
+            transitions.push(format!("work:{}:legacy_focus_replaced", proof.work_item_id));
+        }
+    }
     if command.focus {
         next.focus = Some(command.work_item_id.clone());
     }
     ProtocolCommandOutcome {
         outcome: Outcome {
             decision: Decision::LegacyWorkStateAdopted,
-            transitions: vec![format!(
-                "work:{}:legacy_state_adopted:generation:{}",
-                command.work_item_id, command.demand.scheduling_generation
-            )],
+            transitions,
             diagnostics: Vec::new(),
             snapshot: next,
         },

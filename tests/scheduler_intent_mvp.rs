@@ -8,8 +8,8 @@ use std::{
 
 use holon::domain::scheduler_protocol::{
     ActivationOrigin, ActivationSlot, ActivationTrust, AdoptLegacyWorkStateCommand,
-    AgentDispatchState, Decision, LegacyWaitAdoption, ProtocolCommand, SchedulerOwner, Snapshot,
-    WaitGenerationRecord, WaitRecord, WaitState, WorkDemand, WorkStatus,
+    AgentDispatchState, Decision, LegacyWaitAdoption, ProtocolCommand, ReplaceCompletedFocusProof,
+    SchedulerOwner, Snapshot, WaitGenerationRecord, WaitRecord, WaitState, WorkDemand, WorkStatus,
 };
 use holon::domain::scheduler_semantic::{
     resolve_semantic_proposal, validate_semantic_decision_input, validate_semantic_decision_inputs,
@@ -66,6 +66,7 @@ fn legacy_work_state_adoption_is_typed_and_idempotent() {
         }),
         focus: true,
         reserve_dispatch: true,
+        replace_completed_focus: None,
     });
 
     let adopted = holon::domain::scheduler_protocol::reduce_command(&snapshot, &command);
@@ -112,6 +113,7 @@ fn legacy_work_state_adoption_rejects_same_revision_conflicts() {
         wait: None,
         focus: false,
         reserve_dispatch: false,
+        replace_completed_focus: None,
     });
 
     let rejected = holon::domain::scheduler_protocol::reduce_command(&snapshot, &conflicting);
@@ -119,6 +121,236 @@ fn legacy_work_state_adoption_rejects_same_revision_conflicts() {
     assert_eq!(
         rejected.conflict.unwrap().code,
         "legacy_work_state_adoption_conflict"
+    );
+}
+
+/// Builds a snapshot whose canonical focus points to a stale work item
+/// (simulating the legacy→canonical migration gap from issue #2460).
+fn stale_focus_snapshot(
+    stale_focus_id: &str,
+    stale_status: WorkStatus,
+    stale_metadata_revision: u64,
+    stale_scheduling_generation: u64,
+    slot: ActivationSlot,
+) -> Snapshot {
+    let mut snapshot = semantic_authority_snapshot();
+    snapshot.dispatch = AgentDispatchState::Open;
+    snapshot.focus = Some(stale_focus_id.into());
+    snapshot.work.clear();
+    snapshot.waits.clear();
+    snapshot.work.insert(
+        stale_focus_id.into(),
+        WorkDemand {
+            metadata_revision: stale_metadata_revision,
+            scheduling_generation: stale_scheduling_generation,
+            status: stale_status,
+            capabilities: Default::default(),
+            locks: Default::default(),
+            locality: "runtime".into(),
+            cost_class: "default".into(),
+        },
+    );
+    snapshot.slot = slot;
+    snapshot
+}
+
+fn replace_focus_proof(
+    stale_focus_id: &str,
+    expected_metadata_revision: u64,
+    expected_scheduling_generation: u64,
+) -> ReplaceCompletedFocusProof {
+    ReplaceCompletedFocusProof {
+        work_item_id: stale_focus_id.into(),
+        source_work_item_revision: 3,
+        expected_metadata_revision,
+        expected_scheduling_generation,
+    }
+}
+
+/// Builds an AdoptLegacyWorkState command targeting `work-new` with focus
+/// and an optional replacement proof for the stale focus.
+fn adopt_new_with_proof(proof: Option<ReplaceCompletedFocusProof>) -> ProtocolCommand {
+    ProtocolCommand::AdoptLegacyWorkState(AdoptLegacyWorkStateCommand {
+        work_item_id: "work-new".into(),
+        source_work_item_revision: 5,
+        demand: WorkDemand {
+            metadata_revision: 5,
+            scheduling_generation: 5,
+            status: WorkStatus::Paused {
+                hold_id: "legacy-plan-needs-input:work-new".into(),
+            },
+            capabilities: Default::default(),
+            locks: Default::default(),
+            locality: "runtime".into(),
+            cost_class: "default".into(),
+        },
+        wait: None,
+        focus: true,
+        reserve_dispatch: false,
+        replace_completed_focus: proof,
+    })
+}
+
+#[test]
+fn replace_completed_focus_succeeds_for_stale_runnable_focus() {
+    let snapshot = stale_focus_snapshot(
+        "work-old",
+        WorkStatus::Runnable,
+        10,
+        10,
+        ActivationSlot::Idle,
+    );
+    let command = adopt_new_with_proof(Some(replace_focus_proof("work-old", 10, 10)));
+
+    let adopted = holon::domain::scheduler_protocol::reduce_command(&snapshot, &command);
+    assert_eq!(adopted.outcome.decision, Decision::LegacyWorkStateAdopted);
+    holon::domain::scheduler_protocol::assert_invariants(&adopted.outcome.snapshot).unwrap();
+    assert_eq!(adopted.outcome.snapshot.focus, Some("work-new".into()));
+    assert_eq!(
+        adopted
+            .outcome
+            .snapshot
+            .work
+            .get("work-old")
+            .unwrap()
+            .status,
+        WorkStatus::Terminal
+    );
+    assert!(adopted.outcome.snapshot.work.contains_key("work-new"));
+
+    // Replay should be idempotent.
+    let replay =
+        holon::domain::scheduler_protocol::reduce_command(&adopted.outcome.snapshot, &command);
+    assert_eq!(replay.outcome.decision, Decision::DuplicateIgnored);
+}
+
+#[test]
+fn replace_completed_focus_succeeds_for_paused_focus() {
+    let snapshot = stale_focus_snapshot(
+        "work-old",
+        WorkStatus::Paused {
+            hold_id: "hold:work-old".into(),
+        },
+        10,
+        10,
+        ActivationSlot::Idle,
+    );
+    let command = adopt_new_with_proof(Some(replace_focus_proof("work-old", 10, 10)));
+
+    let adopted = holon::domain::scheduler_protocol::reduce_command(&snapshot, &command);
+    assert_eq!(adopted.outcome.decision, Decision::LegacyWorkStateAdopted);
+    assert_eq!(adopted.outcome.snapshot.focus, Some("work-new".into()));
+    assert_eq!(
+        adopted
+            .outcome
+            .snapshot
+            .work
+            .get("work-old")
+            .unwrap()
+            .status,
+        WorkStatus::Terminal
+    );
+}
+
+#[test]
+fn replace_completed_focus_rejected_without_proof() {
+    let snapshot = stale_focus_snapshot(
+        "work-old",
+        WorkStatus::Runnable,
+        10,
+        10,
+        ActivationSlot::Idle,
+    );
+    let command = adopt_new_with_proof(None);
+
+    let rejected = holon::domain::scheduler_protocol::reduce_command(&snapshot, &command);
+    assert_eq!(rejected.outcome.decision, Decision::Rejected);
+    assert_eq!(
+        rejected.conflict.unwrap().code,
+        "legacy_focus_adoption_conflict"
+    );
+}
+
+#[test]
+fn replace_completed_focus_rejected_on_focus_mismatch() {
+    let snapshot = stale_focus_snapshot(
+        "work-old",
+        WorkStatus::Runnable,
+        10,
+        10,
+        ActivationSlot::Idle,
+    );
+    let command = adopt_new_with_proof(Some(replace_focus_proof("work-other", 10, 10)));
+
+    let rejected = holon::domain::scheduler_protocol::reduce_command(&snapshot, &command);
+    assert_eq!(rejected.outcome.decision, Decision::Rejected);
+    assert_eq!(
+        rejected.conflict.unwrap().code,
+        "legacy_focus_replacement_focus_mismatch"
+    );
+}
+
+#[test]
+fn replace_completed_focus_rejected_on_demand_fence_mismatch() {
+    let snapshot = stale_focus_snapshot(
+        "work-old",
+        WorkStatus::Runnable,
+        10,
+        10,
+        ActivationSlot::Idle,
+    );
+    let command = adopt_new_with_proof(Some(replace_focus_proof("work-old", 99, 10)));
+
+    let rejected = holon::domain::scheduler_protocol::reduce_command(&snapshot, &command);
+    assert_eq!(rejected.outcome.decision, Decision::Rejected);
+    assert_eq!(
+        rejected.conflict.unwrap().code,
+        "legacy_focus_replacement_demand_fence_mismatch"
+    );
+}
+
+#[test]
+fn replace_completed_focus_rejected_on_unsafe_status() {
+    let snapshot = stale_focus_snapshot(
+        "work-old",
+        WorkStatus::Terminal,
+        10,
+        10,
+        ActivationSlot::Idle,
+    );
+    let command = adopt_new_with_proof(Some(replace_focus_proof("work-old", 10, 10)));
+
+    let rejected = holon::domain::scheduler_protocol::reduce_command(&snapshot, &command);
+    assert_eq!(rejected.outcome.decision, Decision::Rejected);
+    assert_eq!(
+        rejected.conflict.unwrap().code,
+        "legacy_focus_replacement_unsafe_status"
+    );
+}
+
+#[test]
+fn replace_completed_focus_rejected_when_slot_occupied() {
+    let snapshot = stale_focus_snapshot(
+        "work-old",
+        WorkStatus::Runnable,
+        10,
+        10,
+        ActivationSlot::Running {
+            activation_id: "act-1".into(),
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "work-old".into(),
+            },
+            admitted_generation: 10,
+            recovery_for: None,
+        },
+    );
+    let command = adopt_new_with_proof(Some(replace_focus_proof("work-old", 10, 10)));
+
+    let rejected = holon::domain::scheduler_protocol::reduce_command(&snapshot, &command);
+    assert_eq!(rejected.outcome.decision, Decision::Rejected);
+    assert_eq!(
+        rejected.conflict.unwrap().code,
+        "legacy_focus_replacement_slot_occupied"
     );
 }
 
