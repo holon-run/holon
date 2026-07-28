@@ -4469,39 +4469,91 @@ async function catchUpAgentEvents(
     // instead so the catch-up fills the missing events.
     const catchUpGaps = catchUpSession?.gaps ?? [];
     const initialAfterSeq = catchUpGaps.length > 0 ? catchUpGaps[0].afterSeq : catchUpSession?.newestSeq;
-    let afterSeq = initialAfterSeq;
     let eventCount = 0;
     let pageCount = 0;
     let refreshWorkItems = false;
     let refreshAgentState = false;
-    while (true) {
-      const page = await runtimeClient.getAgentEvents(agentId, {
-        afterSeq,
-        limit: 100,
-        order: "asc",
-      });
-      if (!isCurrentClientGeneration(generation)) {
-        span.end("cancelled");
-        return;
+
+    // Phase 1 — Fetch the newest tail first (descending) so the user
+    // immediately sees the current state instead of watching old events
+    // replay page-by-page in ascending order.
+    const tailPage = await runtimeClient.getAgentEvents(agentId, {
+      limit: 100,
+      order: "desc",
+    });
+    if (!isCurrentClientGeneration(generation)) {
+      span.end("cancelled");
+      return;
+    }
+    const tailEvents = tailPage.events ?? [];
+    const tailConsumedSeq = Math.max(...tailEvents.map((event) => event.event_seq ?? 0)) || undefined;
+    const tailOldestSeq = tailPage.oldest_seq ?? undefined;
+    const tailHasOlder = tailPage.has_older ?? false;
+
+    set((state) =>
+      mergeEventPageIntoSession(state, agentId, tailEvents, tailOldestSeq, tailHasOlder, "debug", {
+        newestSeq: tailConsumedSeq,
+        append: true,
+        eventLogEpoch: tailPage.event_log_epoch,
+      }),
+    );
+
+    eventCount += tailEvents.length;
+    pageCount += 1;
+    refreshWorkItems ||= tailEvents.some(isWorkItemCacheInvalidationEvent);
+    refreshAgentState ||= tailEvents.some(isAgentStateCacheInvalidationEvent);
+
+    // Hydrate the tail immediately so the user sees latest content while
+    // the gap backfill runs in the background.
+    if (get().selectedAgentId === agentId) {
+      scheduleMessageHydration(get, set, agentId, "debug");
+      scheduleTranscriptHydration(get, set, agentId, "debug");
+      scheduleBriefHydration(get, set, agentId, "debug");
+    }
+
+    // Phase 2 — Backfill the gap between cached state and tail in ascending
+    // order.  This fills any missing events without blocking the tail
+    // display.  The stop condition checks whether the ascending cursor has
+    // reached the tail's oldest seq (meaning the ranges now overlap).
+    const hasGap =
+      tailHasOlder &&
+      tailOldestSeq != null &&
+      (initialAfterSeq == null || tailOldestSeq > initialAfterSeq + 1);
+
+    if (hasGap) {
+      let afterSeq = initialAfterSeq;
+      while (true) {
+        const page = await runtimeClient.getAgentEvents(agentId, {
+          afterSeq,
+          limit: 100,
+          order: "asc",
+        });
+        if (!isCurrentClientGeneration(generation)) {
+          span.end("cancelled");
+          return;
+        }
+        const pageEvents = page.events ?? [];
+        const consumedSeq = Math.max(...pageEvents.map((event) => event.event_seq ?? 0)) || undefined;
+        set((state) =>
+          mergeEventPageIntoSession(state, agentId, pageEvents, page.oldest_seq ?? undefined, page.has_older, "debug", {
+            newestSeq: consumedSeq,
+            append: true,
+            eventLogEpoch: page.event_log_epoch,
+          }),
+        );
+        eventCount += pageEvents.length;
+        pageCount += 1;
+        refreshWorkItems ||= pageEvents.some(isWorkItemCacheInvalidationEvent);
+        refreshAgentState ||= pageEvents.some(isAgentStateCacheInvalidationEvent);
+        // Stop when no more newer pages or when the ascending range has
+        // caught up to the tail (events overlap is safe via seq dedup).
+        if (!page.has_newer) break;
+        if (consumedSeq != null && tailOldestSeq != null && consumedSeq >= tailOldestSeq) break;
+        if (consumedSeq == null || (afterSeq != null && consumedSeq <= afterSeq)) {
+          throw new Error("Agent event catch-up page did not advance its consumed cursor.");
+        }
+        afterSeq = consumedSeq;
       }
-      const pageEvents = page.events ?? [];
-      const consumedSeq = Math.max(...pageEvents.map((event) => event.event_seq ?? 0)) || undefined;
-      set((state) =>
-        mergeEventPageIntoSession(state, agentId, pageEvents, page.oldest_seq ?? undefined, page.has_older, "debug", {
-          newestSeq: consumedSeq,
-          append: true,
-          eventLogEpoch: page.event_log_epoch,
-        }),
-      );
-      eventCount += pageEvents.length;
-      pageCount += 1;
-      refreshWorkItems ||= pageEvents.some(isWorkItemCacheInvalidationEvent);
-      refreshAgentState ||= pageEvents.some(isAgentStateCacheInvalidationEvent);
-      if (!page.has_newer) break;
-      if (consumedSeq == null || (afterSeq != null && consumedSeq <= afterSeq)) {
-        throw new Error("Agent event catch-up page did not advance its consumed cursor.");
-      }
-      afterSeq = consumedSeq;
     }
     if (refreshWorkItems) {
       void useRuntimeStore.getState().refreshAgentWorkItems(agentId);
@@ -5115,7 +5167,12 @@ function mergeEventPageIntoSession(
       [agentId]: {
         ...projected,
         newestSeq: Math.max(options.newestSeq ?? 0, projected.newestSeq ?? 0) || undefined,
-        oldestSeq: pageOldestSeq ?? projected.oldestSeq,
+        // Take the true oldest across all events (cached + new page) so
+        // descending-order pages don't clobber the cached oldest seq.
+        oldestSeq:
+          pageOldestSeq != null && projected.oldestSeq != null
+            ? Math.min(pageOldestSeq, projected.oldestSeq)
+            : (pageOldestSeq ?? projected.oldestSeq),
         hasOlder: pageHasOlder,
         loadingOlder: false,
         historyError: undefined,

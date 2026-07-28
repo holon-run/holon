@@ -1031,6 +1031,22 @@ describe("agent event catch-up", () => {
       if (url.pathname.endsWith("/agents/list")) return Promise.resolve(jsonResponse([]));
       if (url.pathname.endsWith("/agents/agent-a/events")) {
         const afterSeq = Number(url.searchParams.get("after_seq"));
+        const order = url.searchParams.get("order");
+        // Phase 1: tail-first descending fetch returns newest 100 events (51-150)
+        if (order === "desc") {
+          return Promise.resolve(jsonResponse({
+            events: Array.from({ length: 100 }, (_, index) => event(150 - index)),
+            event_log_epoch: "epoch-1",
+            cursor_seq: 1428,
+            newest_seq: 150,
+            oldest_seq: 51,
+            has_older: true,
+            has_newer: false,
+            order: "desc",
+            limit: 100,
+          }));
+        }
+        // Phase 2: ascending backfill from cached cursor
         if (afterSeq === 1) {
           return Promise.resolve(jsonResponse({
             events: Array.from({ length: 100 }, (_, index) => event(index + 2)),
@@ -1093,7 +1109,9 @@ describe("agent event catch-up", () => {
     const eventRequests = fetchMock.mock.calls
       .map(([input]) => new URL(String(input), "http://localhost"))
       .filter((url) => url.pathname.endsWith("/agents/agent-a/events"));
-    expect(eventRequests.map((url) => url.searchParams.get("after_seq"))).toEqual(["1", "101"]);
+    // Phase 1: descending tail fetch, Phase 2: ascending backfill from cached cursor
+    expect(eventRequests.map((url) => url.searchParams.get("order"))).toEqual(["desc", "asc"]);
+    expect(eventRequests.map((url) => url.searchParams.get("after_seq"))).toEqual([null, "1"]);
     expect(useRuntimeStore.getState().sessionsByAgentId["agent-a"]).toMatchObject({
       eventSeqs: Array.from({ length: 150 }, (_, index) => index + 1),
       newestSeq: 150,
@@ -1129,6 +1147,26 @@ describe("agent event catch-up", () => {
       if (url.pathname.endsWith("/handshake")) return Promise.resolve(jsonResponse({}));
       if (url.pathname.endsWith("/agents/list")) return Promise.resolve(jsonResponse([]));
       if (url.pathname.endsWith("/agents/agent-a/events")) {
+        const order = url.searchParams.get("order");
+        // Phase 1: descending tail returns events 10-20, creating a gap
+        if (order === "desc") {
+          return Promise.resolve(jsonResponse({
+            events: Array.from({ length: 11 }, (_, index) => ({
+              ...event,
+              id: `event-${20 - index}`,
+              event_seq: 20 - index,
+            })),
+            event_log_epoch: "epoch-1",
+            cursor_seq: 1428,
+            newest_seq: 20,
+            oldest_seq: 10,
+            has_older: true,
+            has_newer: false,
+            order: "desc",
+            limit: 100,
+          }));
+        }
+        // Phase 2: ascending backfill returns empty page with has_newer: true
         return Promise.resolve(jsonResponse({
           events: [],
           event_log_epoch: "epoch-1",
@@ -1174,8 +1212,9 @@ describe("agent event catch-up", () => {
     await useRuntimeStore.getState().ensureAgentSession("agent-a", "info");
 
     expect(useRuntimeStore.getState().sessionsByAgentId["agent-a"]).toMatchObject({
-      eventSeqs: [1],
-      newestSeq: 1,
+      // Tail events 10-20 merged before backfill error
+      eventSeqs: [1, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
+      newestSeq: 20,
       syncStatus: "error",
       error: "Agent event catch-up page did not advance its consumed cursor.",
     });
@@ -1209,8 +1248,23 @@ describe("agent event catch-up", () => {
       if (url.pathname.endsWith("/handshake")) return Promise.resolve(jsonResponse({}));
       if (url.pathname.endsWith("/agents/list")) return Promise.resolve(jsonResponse([]));
       if (url.pathname.endsWith("/agents/agent-a/events")) {
+        const order = url.searchParams.get("order");
+        // Phase 1: descending tail returns the newest event (5)
+        if (order === "desc") {
+          return Promise.resolve(jsonResponse({
+            events: [event(5)],
+            event_log_epoch: "epoch-1",
+            cursor_seq: 5,
+            newest_seq: 5,
+            oldest_seq: 5,
+            has_older: true,
+            has_newer: false,
+            order: "desc",
+            limit: 100,
+          }));
+        }
+        // Phase 2: ascending backfill should query from gaps[0].afterSeq (1), not newestSeq (5).
         const afterSeq = Number(url.searchParams.get("after_seq"));
-        // The catch-up should query from gaps[0].afterSeq (1), not newestSeq (5).
         expect(afterSeq).toBe(1);
         return Promise.resolve(jsonResponse({
           events: [event(2), event(3), event(4), event(5)],
