@@ -2515,7 +2515,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
               ...state.sessionsByAgentId,
               [agentId]: {
                 ...state.sessionsByAgentId[agentId],
-                loading: false,
+                loading: true,
                 syncStatus: "refreshing",
               },
             },
@@ -2532,6 +2532,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
                   syncStatus: get().globalStreamStatus === "streaming" ? "streaming" : "idle",
                   contentStatus: "available",
                   eventsValidatedAt: Date.now(),
+                  detailValidatedAt: Date.now(),
                 },
               },
             }));
