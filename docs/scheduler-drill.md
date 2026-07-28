@@ -23,6 +23,20 @@ The path and values are not written to `run.json`. The control token is stored
 separately under `target/scheduler-drill-secrets/` with mode `0600`. Set
 `HOLON_DRILL_SECRET_ROOT` to keep it outside the checkout.
 
+## Docker Engine
+
+The drill intentionally uses the native Docker Engine socket:
+
+```bash
+export DOCKER_HOST=unix:///var/run/docker.sock
+```
+
+`prepare` records the server version, storage driver, operating system, and
+Docker root directory. Later commands refuse to continue if that identity
+changes. The default requires `/var/lib/docker`; set `HOLON_DRILL_DOCKER_HOST`
+only when selecting another native Engine socket with the same data-root
+contract. Docker Desktop is not supported for this stress drill.
+
 ## Workflow
 
 Validate both model routes with disposable containers:
@@ -87,9 +101,20 @@ all reports have been retained.
   WorkItem-fence cases when the selected scenarios support them.
 
 Every operation writes isolated evidence plus `stress-plan.json`,
-`stress-results.json`, and `stress-summary.json`. The phase is marked failed
-only after all workers finish, so one failure does not discard the remaining
-evidence.
+`stress-results.json`, and `stress-summary.json`. Operation evidence uses
+event-sequence cursors and bounded state tails rather than repeatedly archiving
+the full transcript and event history. Runtime SQLite/WAL copies are limited to
+explicit semantic checkpoints and the stopped final collector.
+
+The runner records Docker health plus host/container RSS, FD counts,
+`runtime.sqlite`/WAL sizes, Docker stats, evidence size, and free disk at the
+start, periodically, and at the end of a stress phase. Two consecutive Docker
+control-plane failures open a shared circuit breaker; remaining operations are
+marked aborted instead of continuing to pressure an unhealthy daemon.
+
+Before a full matrix, create separate fresh runs at concurrency
+`1 → 2 → 4 → 8`. Do not advance when Docker health fails or RSS, FD, DB/WAL,
+evidence, or disk telemetry grows without a workload-explained bound.
 
 ## Evidence decision
 

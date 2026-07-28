@@ -3,6 +3,7 @@
 import importlib.util
 import io
 import json
+import copy
 import subprocess
 import tempfile
 import unittest
@@ -327,6 +328,93 @@ class DockerE2ERunnerTests(unittest.TestCase):
             )
             self.assertEqual(failure["stdout"], "partial")
             self.assertEqual(failure["stderr"], "daemon stalled")
+
+    def test_docker_circuit_breaker_opens_after_consecutive_timeouts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            harness = runner.CaseHarness(
+                case_id="docker-breaker-test",
+                image="holon:test",
+                model="deepseek/deepseek-v4-flash",
+                credential_envs=[],
+                env_file=None,
+                runtime_env={},
+                evidence_root=Path(directory),
+                timeout_seconds=1,
+                keep=False,
+            )
+            with patch.object(
+                runner,
+                "run",
+                side_effect=subprocess.TimeoutExpired(["docker", "version"], 1),
+            ) as command:
+                for _ in range(runner.DOCKER_CIRCUIT_BREAKER_THRESHOLD):
+                    with self.assertRaises(subprocess.TimeoutExpired):
+                        harness.docker("version")
+                with self.assertRaises(runner.DockerCircuitBreakerOpen):
+                    harness.docker("version")
+            self.assertEqual(
+                command.call_count,
+                runner.DOCKER_CIRCUIT_BREAKER_THRESHOLD,
+            )
+
+    def test_checkpoint_claims_are_shared_by_worker_copies(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            harness = runner.CaseHarness(
+                case_id="checkpoint-test",
+                image="holon:test",
+                model="deepseek/deepseek-v4-flash",
+                credential_envs=[],
+                env_file=None,
+                runtime_env={},
+                evidence_root=Path(directory),
+                timeout_seconds=1,
+                keep=False,
+            )
+            worker = copy.copy(harness)
+            self.assertTrue(harness.claim_checkpoint("wait-rearm-db"))
+            self.assertFalse(worker.claim_checkpoint("wait-rearm-db"))
+
+    def test_capture_context_uses_incremental_event_cursor(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            harness = runner.CaseHarness(
+                case_id="incremental-context-test",
+                image="holon:test",
+                model="deepseek/deepseek-v4-flash",
+                credential_envs=[],
+                env_file=None,
+                runtime_env={},
+                evidence_root=Path(directory),
+                timeout_seconds=1,
+                keep=False,
+            )
+            harness.agent_id = "default"
+            paths: list[str] = []
+
+            def request(method: str, path: str, *_: object, **__: object) -> object:
+                self.assertEqual(method, "GET")
+                paths.append(path)
+                if "/events?" in path:
+                    return {"events": [], "cursor_seq": 17}
+                if path.endswith("/state"):
+                    return {}
+                if "/work-items?" in path:
+                    return []
+                raise AssertionError(f"unexpected path: {path}")
+
+            harness.request = request
+            harness.capture_context(
+                "operation-final",
+                after_seq=12,
+                include_conversation=False,
+            )
+            self.assertTrue(
+                any(
+                    "events?limit=300&order=asc&after_seq=12" in path
+                    for path in paths
+                )
+            )
+            self.assertFalse(any("/briefs?" in path for path in paths))
+            self.assertFalse(any("/transcript?" in path for path in paths))
 
     def test_cleanup_fails_when_resource_still_exists(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -2,6 +2,7 @@
 
 import json
 import stat
+import subprocess
 import tempfile
 import threading
 import time
@@ -252,6 +253,72 @@ class SchedulerDrillTests(unittest.TestCase):
         self.assertIn("injected failure", results[4]["error"])
         for sequences in seen_by_worker.values():
             self.assertEqual(sequences, sorted(sequences))
+
+    def test_stress_executor_aborts_remaining_work_after_docker_breaker(self) -> None:
+        plan = drill.build_stress_plan(
+            scenarios=["reducer_only_candidates"],
+            iterations=6,
+            concurrency=1,
+            duplicate_ratio=0.0,
+            stale_ratio=0.0,
+            seed="breaker-test",
+        )
+
+        def run_operation(operation: drill.StressOperation) -> None:
+            if operation.sequence == 1:
+                raise drill.DockerCircuitBreakerOpen("daemon unavailable")
+
+        results = drill.execute_stress_plan(
+            plan,
+            concurrency=1,
+            run_operation=run_operation,
+        )
+
+        self.assertEqual(results[0]["status"], "completed")
+        self.assertEqual(results[1]["status"], "failed")
+        self.assertTrue(
+            all(result["status"] == "aborted" for result in results[2:])
+        )
+
+    def test_docker_engine_identity_requires_native_engine(self) -> None:
+        native = {
+            "server_version": "29.0.2",
+            "driver": "overlay2",
+            "docker_root_dir": "/var/lib/docker",
+            "operating_system": "Ubuntu",
+        }
+        with (
+            patch.dict(
+                drill.os.environ,
+                {"DOCKER_HOST": drill.DEFAULT_NATIVE_DOCKER_HOST},
+                clear=False,
+            ),
+            patch.object(
+                drill,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    ["docker", "info"],
+                    0,
+                    json.dumps(native),
+                    "",
+                ),
+            ),
+        ):
+            self.assertEqual(
+                drill.docker_engine_identity(),
+                {
+                    **native,
+                    "docker_host": drill.DEFAULT_NATIVE_DOCKER_HOST,
+                },
+            )
+
+        with patch.dict(
+            drill.os.environ,
+            {"DOCKER_HOST": "unix:///tmp/docker-desktop.sock"},
+            clear=False,
+        ):
+            with self.assertRaisesRegex(AssertionError, "requires native"):
+                drill.docker_engine_identity()
 
     def test_stress_summary_counts_only_executed_injections(self) -> None:
         plan = [

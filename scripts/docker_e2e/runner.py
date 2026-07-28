@@ -14,6 +14,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -32,6 +33,15 @@ OFFLINE_MODEL_CREDENTIAL = "docker-e2e-offline-provider-unused"
 EVIDENCE_SCHEMA_VERSION = 1
 TERMINAL_STATUSES = {"awake_idle", "asleep", "awaiting_task"}
 RUNTIME_DB_COPY_TIMEOUT_SECONDS = 120
+DOCKER_CONTROL_TIMEOUT_SECONDS = 30
+DOCKER_CIRCUIT_BREAKER_THRESHOLD = 2
+CONTEXT_EVENT_LIMIT = 300
+CONTEXT_BRIEF_LIMIT = 10
+CONTEXT_TRANSCRIPT_LIMIT = 20
+
+
+class DockerCircuitBreakerOpen(RuntimeError):
+    pass
 
 
 def run(
@@ -195,10 +205,153 @@ class CaseHarness:
             Path(workspace_parent) if workspace_parent else self.evidence / "workspace"
         )
         self.log_index = 0
+        self._docker_health = {
+            "lock": threading.Lock(),
+            "consecutive_failures": 0,
+            "open": False,
+            "last_error": None,
+        }
+        self._checkpoint_state = {
+            "lock": threading.Lock(),
+            "claimed": set(),
+        }
         self.evidence.mkdir(parents=True, exist_ok=True)
 
     def docker(self, *args: str, **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        return run(["docker", *args], **kwargs)
+        with self._docker_health["lock"]:
+            if self._docker_health["open"]:
+                raise DockerCircuitBreakerOpen(
+                    "Docker circuit breaker is open after consecutive control-plane failures"
+                )
+        if "timeout" not in kwargs and args:
+            bounded = args[0] in {
+                "cp",
+                "inspect",
+                "kill",
+                "logs",
+                "network",
+                "port",
+                "ps",
+                "rm",
+                "stats",
+                "version",
+                "volume",
+            } or (args[0] == "run" and "--detach" in args)
+            if bounded:
+                kwargs["timeout"] = DOCKER_CONTROL_TIMEOUT_SECONDS
+        try:
+            result = run(["docker", *args], **kwargs)
+        except (
+            subprocess.CalledProcessError,
+            subprocess.TimeoutExpired,
+            OSError,
+        ) as error:
+            with self._docker_health["lock"]:
+                self._docker_health["consecutive_failures"] += 1
+                self._docker_health["last_error"] = f"{type(error).__name__}: {error}"
+                if (
+                    self._docker_health["consecutive_failures"]
+                    >= DOCKER_CIRCUIT_BREAKER_THRESHOLD
+                ):
+                    self._docker_health["open"] = True
+            raise
+        with self._docker_health["lock"]:
+            self._docker_health["consecutive_failures"] = 0
+            self._docker_health["last_error"] = None
+        return result
+
+    def check_docker_health(self, label: str) -> dict[str, Any]:
+        try:
+            result = self.docker(
+                "version",
+                "--format",
+                "{{json .Server}}",
+                timeout=10,
+            )
+            server = json.loads(result.stdout)
+            health = {
+                "status": "healthy",
+                "checked_at": utc_now(),
+                "server_version": server.get("Version"),
+                "os": server.get("Os"),
+                "arch": server.get("Arch"),
+            }
+        except Exception as error:
+            health = {
+                "status": "failed",
+                "checked_at": utc_now(),
+                "error": f"{type(error).__name__}: {error}",
+            }
+            write_json(self.evidence / f"{label}-docker-health.json", health)
+            raise
+        write_json(self.evidence / f"{label}-docker-health.json", health)
+        return health
+
+    def claim_checkpoint(self, name: str) -> bool:
+        with self._checkpoint_state["lock"]:
+            if name in self._checkpoint_state["claimed"]:
+                return False
+            self._checkpoint_state["claimed"].add(name)
+            return True
+
+    def resource_telemetry(self, label: str) -> dict[str, Any]:
+        disk = os.statvfs(self.evidence)
+        host_rss_kb = 0
+        for line in Path("/proc/self/status").read_text().splitlines():
+            if line.startswith("VmRSS:"):
+                host_rss_kb = int(line.split()[1])
+                break
+        telemetry: dict[str, Any] = {
+            "captured_at": utc_now(),
+            "host": {
+                "runner_rss_kb": host_rss_kb,
+                "runner_fd_count": len(list(Path("/proc/self/fd").iterdir())),
+                "evidence_bytes": sum(
+                    path.stat().st_size
+                    for path in self.evidence.rglob("*")
+                    if path.is_file()
+                ),
+                "filesystem_free_bytes": disk.f_bavail * disk.f_frsize,
+            },
+        }
+        stats = self.docker(
+            "stats",
+            "--no-stream",
+            "--format",
+            "{{json .}}",
+            self.container,
+            check=False,
+        )
+        if stats.returncode == 0 and stats.stdout.strip():
+            telemetry["docker_stats"] = json.loads(stats.stdout)
+        process = self.docker(
+            "exec",
+            self.container,
+            "bash",
+            "-lc",
+            "set -euo pipefail; "
+            "rss_kb=$(awk '/^VmRSS:/{print $2}' /proc/1/status); "
+            "fd_count=$(find /proc/1/fd -maxdepth 1 -type l | wc -l); "
+            "printf '{\"rss_kb\":%s,\"fd_count\":%s,\"state_files\":[' "
+            "\"${rss_kb:-0}\" \"$fd_count\"; "
+            "first=1; for path in /var/lib/holon/state/runtime.sqlite*; do "
+            "[ -e \"$path\" ] || continue; "
+            "size=$(stat -c %s \"$path\"); "
+            "name=$(basename \"$path\"); "
+            "[ $first -eq 1 ] || printf ','; first=0; "
+            "printf '{\"name\":\"%s\",\"bytes\":%s}' \"$name\" \"$size\"; "
+            "done; printf ']}'",
+            check=False,
+            timeout=15,
+        )
+        if process.returncode == 0 and process.stdout.strip():
+            telemetry["container_process"] = json.loads(process.stdout)
+        else:
+            telemetry["container_process_error"] = (
+                process.stdout + process.stderr
+            ).strip()
+        write_json(self.evidence / f"{label}-telemetry.json", telemetry)
+        return telemetry
 
     def offline_debug(
         self, label: str, *args: str, expect_success: bool = True
@@ -521,6 +674,9 @@ class CaseHarness:
                 status = error.code
                 payload = error.read()
                 response_headers = error.headers
+            except urllib.error.URLError:
+                self.check_docker_health("request-failure")
+                raise
             if status != 429 or time.monotonic() >= retry_deadline:
                 break
             try:
@@ -716,23 +872,49 @@ class CaseHarness:
         write_json(self.evidence / f"{label}-brief.json", value)
         return value
 
-    def events(self, label: str) -> list[dict[str, Any]]:
-        page = self.request("GET", self.agent_path("events?limit=500&order=asc"))
+    def events(
+        self,
+        label: str,
+        *,
+        after_seq: int | None = None,
+        limit: int = CONTEXT_EVENT_LIMIT,
+    ) -> list[dict[str, Any]]:
+        query = f"events?limit={limit}&order=asc"
+        if after_seq is not None:
+            query += f"&after_seq={after_seq}"
+        page = self.request("GET", self.agent_path(query))
         write_json(self.evidence / f"{label}-events.json", page)
         return page["events"]
 
-    def capture_context(self, label: str) -> None:
-        write_json(
-            self.evidence / f"{label}-briefs.json",
-            self.request("GET", self.agent_path("briefs?limit=50")),
-        )
-        write_json(
-            self.evidence / f"{label}-transcript.json",
-            self.request("GET", self.agent_path("transcript?limit=200")),
-        )
+    def event_cursor(self) -> int:
+        page = self.request("GET", self.agent_path("events?limit=1&order=desc"))
+        return int(page.get("cursor_seq") or 0)
+
+    def capture_context(
+        self,
+        label: str,
+        *,
+        after_seq: int | None = None,
+        include_conversation: bool = True,
+    ) -> None:
+        if include_conversation:
+            write_json(
+                self.evidence / f"{label}-briefs.json",
+                self.request(
+                    "GET",
+                    self.agent_path(f"briefs?limit={CONTEXT_BRIEF_LIMIT}"),
+                ),
+            )
+            write_json(
+                self.evidence / f"{label}-transcript.json",
+                self.request(
+                    "GET",
+                    self.agent_path(f"transcript?limit={CONTEXT_TRANSCRIPT_LIMIT}"),
+                ),
+            )
         self.state(label)
         self.work_items(label)
-        self.events(label)
+        self.events(label, after_seq=after_seq)
 
     def prompt(
         self,
@@ -741,6 +923,7 @@ class CaseHarness:
         *,
         work_item_id: str | None = None,
     ) -> tuple[int, dict[str, Any]]:
+        baseline_event_seq = self.event_cursor()
         before = self.state(f"{label}-before")
         baseline = int(before["agent"]["agent"]["turn_index"])
         body = {"text": text}
@@ -766,7 +949,11 @@ class CaseHarness:
                 and int(last_state["session"]["pending_count"]) == 0
             ):
                 write_json(self.evidence / f"{label}-after-state.json", last_state)
-                self.capture_context(label)
+                self.capture_context(
+                    label,
+                    after_seq=baseline_event_seq,
+                    include_conversation=False,
+                )
                 return baseline, last_state
             time.sleep(1)
         write_json(self.evidence / f"{label}-timeout-state.json", last_state)
@@ -861,12 +1048,20 @@ class CaseHarness:
             shutil.rmtree(snapshot_dir)
         snapshot_dir.mkdir(parents=True)
         try:
-            self.docker(
-                "cp",
-                f"{self.container}:/var/lib/holon/state/.",
-                str(snapshot_dir),
-                timeout=RUNTIME_DB_COPY_TIMEOUT_SECONDS,
-            )
+            for name in ("runtime.sqlite", "runtime.sqlite-wal", "runtime.sqlite-shm"):
+                result = self.docker(
+                    "cp",
+                    f"{self.container}:/var/lib/holon/state/{name}",
+                    str(snapshot_dir / name),
+                    check=False,
+                    timeout=RUNTIME_DB_COPY_TIMEOUT_SECONDS,
+                )
+                if name == "runtime.sqlite":
+                    require(
+                        result.returncode == 0,
+                        "runtime database snapshot is missing: "
+                        + (result.stderr or result.stdout).strip(),
+                    )
         except subprocess.TimeoutExpired as error:
             write_json(
                 self.evidence / f"{label}-runtime-state-copy-failure.json",

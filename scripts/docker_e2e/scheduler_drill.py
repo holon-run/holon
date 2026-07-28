@@ -14,6 +14,7 @@ import shutil
 import sqlite3
 import stat
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -24,6 +25,7 @@ from typing import Any, Callable
 
 from .runner import (
     CaseHarness,
+    DockerCircuitBreakerOpen,
     image_identity,
     normalize_model_route,
     parse_env_file,
@@ -48,6 +50,7 @@ RUN_SCHEMA_VERSION = 1
 EVIDENCE_SCHEMA_VERSION = 1
 DEFAULT_PRIMARY_MODEL = "volcengine@plan/glm-5.2"
 DEFAULT_FALLBACK_MODELS = ["dashscope@token-plan/qwen3.8-max-preview"]
+DEFAULT_NATIVE_DOCKER_HOST = "unix:///var/run/docker.sock"
 REQUIRED_CREDENTIAL_ENVS = [
     "VOLCENGINE_AGENT_API_KEY",
     "DASHSCOPE_TOKEN_PLAN_API_KEY",
@@ -267,9 +270,21 @@ def execute_stress_plan(
     for operation in plan:
         worker_plans[operation.worker].append(operation)
 
+    infrastructure_abort = threading.Event()
+
     def run_worker(operations: list[StressOperation]) -> list[dict[str, Any]]:
         results = []
         for operation in operations:
+            if infrastructure_abort.is_set():
+                results.append(
+                    {
+                        **operation.as_dict(),
+                        "status": "aborted",
+                        "duration_seconds": 0.0,
+                        "error": "infrastructure circuit breaker opened",
+                    }
+                )
+                continue
             started = time.monotonic()
             try:
                 detail = run_operation(operation) or {}
@@ -280,6 +295,8 @@ def execute_stress_plan(
                     "detail": detail,
                 }
             except Exception as error:
+                if isinstance(error, DockerCircuitBreakerOpen):
+                    infrastructure_abort.set()
                 result = {
                     **operation.as_dict(),
                     "status": "failed",
@@ -407,6 +424,35 @@ def credential_env_names(env_file: Path | None) -> list[str]:
     return list(REQUIRED_CREDENTIAL_ENVS)
 
 
+def docker_engine_identity() -> dict[str, Any]:
+    docker_host = os.environ.get("DOCKER_HOST", "").strip()
+    require(
+        docker_host == DEFAULT_NATIVE_DOCKER_HOST,
+        "scheduler drill requires native Docker Engine at "
+        f"{DEFAULT_NATIVE_DOCKER_HOST}; got {docker_host or 'default context'}",
+    )
+    result = run(
+        [
+            "docker",
+            "info",
+            "--format",
+            '{"server_version":{{json .ServerVersion}},'
+            '"driver":{{json .Driver}},'
+            '"docker_root_dir":{{json .DockerRootDir}},'
+            '"operating_system":{{json .OperatingSystem}}}',
+        ],
+        timeout=15,
+    )
+    identity = json.loads(result.stdout)
+    identity["docker_host"] = docker_host
+    require(
+        identity.get("docker_root_dir") == "/var/lib/docker",
+        "scheduler drill refused a non-native Docker data root: "
+        f"{identity.get('docker_root_dir')}",
+    )
+    return identity
+
+
 def validate_record(paths: DrillPaths, record: dict[str, Any]) -> None:
     require(
         Path(record["run_dir"]).resolve() == paths.root,
@@ -417,6 +463,10 @@ def validate_record(paths: DrillPaths, record: dict[str, Any]) -> None:
     require(
         identity["repo_digests"] == record["image"]["repo_digests"],
         "Docker image digest set changed",
+    )
+    require(
+        docker_engine_identity() == record["docker_engine"],
+        "Docker Engine identity changed since prepare",
     )
     git_sha = run(["git", "rev-parse", "HEAD"]).stdout.strip()
     require(git_sha == record["git_sha"], "Git SHA changed since prepare")
@@ -678,23 +728,24 @@ def exercise_reducer_ingress(
     out_of_order_ids = []
     if out_of_order:
         out_of_order_ids = [response["message_id"] for response in ordered_responses]
-        snapshot = harness.runtime_db_snapshot("reducer-out-of-order")
-        queue_rows = [
-            row
-            for row in snapshot["queue_entries"]
-            if row["message_id"] in set(out_of_order_ids)
-        ]
-        require(
-            len(queue_rows) == 2
-            and all(row["status"] == "processed" for row in queue_rows),
-            f"out-of-order ingress was not fully processed: {queue_rows}",
-        )
-        queue_by_id = {row["message_id"]: row for row in queue_rows}
-        require(
-            queue_by_id[out_of_order_ids[0]]["created_at"]
-            <= queue_by_id[out_of_order_ids[1]]["created_at"],
-            "out-of-order ingress persistence order changed",
-        )
+        if harness.claim_checkpoint("reducer-out-of-order-db"):
+            snapshot = harness.runtime_db_snapshot("reducer-out-of-order")
+            queue_rows = [
+                row
+                for row in snapshot["queue_entries"]
+                if row["message_id"] in set(out_of_order_ids)
+            ]
+            require(
+                len(queue_rows) == 2
+                and all(row["status"] == "processed" for row in queue_rows),
+                f"out-of-order ingress was not fully processed: {queue_rows}",
+            )
+            queue_by_id = {row["message_id"]: row for row in queue_rows}
+            require(
+                queue_by_id[out_of_order_ids[0]]["created_at"]
+                <= queue_by_id[out_of_order_ids[1]]["created_at"],
+                "out-of-order ingress persistence order changed",
+            )
     return {
         "duplicate_requests": 4 if duplicate else 0,
         "out_of_order_requests": 2 if out_of_order else 0,
@@ -776,29 +827,35 @@ def exercise_wait_rearm_race(
         expected_scheduling_state="waiting_external",
         label="wait-rearm-initial",
     )
-    initial_snapshot = harness.runtime_db_snapshot("wait-rearm-initial-generation")
-    initial_waits = [
-        row
-        for row in initial_snapshot["wait_conditions"]
-        if row["work_item_id"] == initial["id"] and row["status"] == "active"
-    ]
-    require(
-        len(initial_waits) == 1,
-        f"expected one initial active external wait: {initial_waits}",
-    )
-    initial_wait_id = initial_waits[0]["wait_condition_id"]
-    initial_generations = [
-        row
-        for row in initial_snapshot["scheduler_wait_generations"]
-        if row["owner_work_item_id"] == initial["id"]
-        and row["wait_id"] == initial_wait_id
-    ]
-    require(
-        len(initial_generations) == 1
-        and initial_generations[0]["lifecycle_state"] == "active",
-        f"initial canonical wait generation is not active: {initial_generations}",
-    )
-    initial_generation = initial_generations[0]["generation"]
+    deep_checkpoint = harness.claim_checkpoint("wait-rearm-db")
+    initial_wait_id = None
+    initial_generation = None
+    if deep_checkpoint:
+        initial_snapshot = harness.runtime_db_snapshot(
+            "wait-rearm-initial-generation"
+        )
+        initial_waits = [
+            row
+            for row in initial_snapshot["wait_conditions"]
+            if row["work_item_id"] == initial["id"] and row["status"] == "active"
+        ]
+        require(
+            len(initial_waits) == 1,
+            f"expected one initial active external wait: {initial_waits}",
+        )
+        initial_wait_id = initial_waits[0]["wait_condition_id"]
+        initial_generations = [
+            row
+            for row in initial_snapshot["scheduler_wait_generations"]
+            if row["owner_work_item_id"] == initial["id"]
+            and row["wait_id"] == initial_wait_id
+        ]
+        require(
+            len(initial_generations) == 1
+            and initial_generations[0]["lifecycle_state"] == "active",
+            f"initial canonical wait generation is not active: {initial_generations}",
+        )
+        initial_generation = initial_generations[0]["generation"]
     harness.wait_agent_asleep()
     before = harness.state("wait-rearm-before-first")
     baseline = int(before["agent"]["agent"]["turn_index"])
@@ -835,52 +892,55 @@ def exercise_wait_rearm_race(
         "wait-rearm WorkItem identity changed at the task barrier",
     )
     harness.wait_queue_drained()
-    duplicate_snapshot = harness.runtime_db_snapshot(
-        "wait-rearm-duplicate-processed"
-    )
-    duplicate_messages = [
-        row
-        for row in duplicate_snapshot["messages"]
-        if row["kind"] == "system_tick"
-        and marker in row.get("payload_json", "")
-        and "duplicate-second" in row.get("payload_json", "")
-    ]
-    require(
-        len(duplicate_messages) == 1,
-        f"coalesced duplicate did not produce one durable wake message: {duplicate_messages}",
-    )
-    duplicate_message_id = duplicate_messages[0]["message_id"]
-    duplicate_queue = [
-        row
-        for row in duplicate_snapshot["queue_entries"]
-        if row["message_id"] == duplicate_message_id
-    ]
-    require(
-        len(duplicate_queue) == 1
-        and duplicate_queue[0]["status"] == "processed",
-        f"coalesced duplicate was not processed before rearm: {duplicate_queue}",
-    )
-    old_generation = [
-        row
-        for row in duplicate_snapshot["scheduler_wait_generations"]
-        if row["wait_id"] == initial_wait_id
-        and row["generation"] == initial_generation
-    ]
-    require(
-        len(old_generation) == 1
-        and old_generation[0]["lifecycle_state"] in {"consumed", "resolved"}
-        and old_generation[0]["trigger_generation"] is not None,
-        f"initial wait generation lacks consumed trigger evidence: {old_generation}",
-    )
-    active_waits = [
-        row
-        for row in duplicate_snapshot["wait_conditions"]
-        if row["work_item_id"] == initial["id"] and row["status"] == "active"
-    ]
-    require(
-        len(active_waits) == 1 and active_waits[0]["kind"] == "task",
-        f"duplicate was not drained while only the task barrier was active: {active_waits}",
-    )
+    if deep_checkpoint:
+        duplicate_snapshot = harness.runtime_db_snapshot(
+            "wait-rearm-duplicate-processed"
+        )
+        duplicate_messages = [
+            row
+            for row in duplicate_snapshot["messages"]
+            if row["kind"] == "system_tick"
+            and marker in row.get("payload_json", "")
+            and "duplicate-second" in row.get("payload_json", "")
+        ]
+        require(
+            len(duplicate_messages) == 1,
+            "coalesced duplicate did not produce one durable wake message: "
+            f"{duplicate_messages}",
+        )
+        duplicate_message_id = duplicate_messages[0]["message_id"]
+        duplicate_queue = [
+            row
+            for row in duplicate_snapshot["queue_entries"]
+            if row["message_id"] == duplicate_message_id
+        ]
+        require(
+            len(duplicate_queue) == 1
+            and duplicate_queue[0]["status"] == "processed",
+            f"coalesced duplicate was not processed before rearm: {duplicate_queue}",
+        )
+        old_generation = [
+            row
+            for row in duplicate_snapshot["scheduler_wait_generations"]
+            if row["wait_id"] == initial_wait_id
+            and row["generation"] == initial_generation
+        ]
+        require(
+            len(old_generation) == 1
+            and old_generation[0]["lifecycle_state"] in {"consumed", "resolved"}
+            and old_generation[0]["trigger_generation"] is not None,
+            f"initial wait generation lacks consumed trigger evidence: {old_generation}",
+        )
+        active_waits = [
+            row
+            for row in duplicate_snapshot["wait_conditions"]
+            if row["work_item_id"] == initial["id"] and row["status"] == "active"
+        ]
+        require(
+            len(active_waits) == 1 and active_waits[0]["kind"] == "task",
+            "duplicate was not drained while only the task barrier was active: "
+            f"{active_waits}",
+        )
     task_input = harness.request(
         "POST",
         harness.agent_path(f"tasks/{barrier_task_id}/input", control=True),
@@ -1300,7 +1360,7 @@ def exercise_scenario_operation(
     else:
         raise AssertionError(f"unsupported scenario: {operation.scenario}")
 
-    harness.capture_context("operation-final")
+    harness.capture_context("operation-final", include_conversation=False)
     return {"injections": injection}
 
 
@@ -1384,21 +1444,39 @@ def exercise_scenarios(args: argparse.Namespace) -> int:
             run_id=record["drill_run_id"],
             concurrency=int(parameters["concurrency"]),
         )
+        harness.check_docker_health("stress-start")
+        harness.resource_telemetry("stress-start")
+        telemetry_lock = threading.Lock()
+        completed_operations = 0
 
         def run_operation(operation: StressOperation) -> dict[str, Any]:
+            nonlocal completed_operations
             operation_harness = copy.copy(workers[operation.worker])
             operation_harness.evidence = (
                 harness.evidence
                 / f"operation-{operation.sequence + 1:06d}-{operation.scenario}"
             )
             operation_harness.evidence.mkdir(parents=True, exist_ok=False)
-            return exercise_scenario_operation(operation_harness, operation)
+            detail = exercise_scenario_operation(operation_harness, operation)
+            with telemetry_lock:
+                completed_operations += 1
+                should_checkpoint = completed_operations % max(
+                    1,
+                    int(parameters["concurrency"]) * 8,
+                ) == 0
+                checkpoint = completed_operations
+            if should_checkpoint:
+                harness.check_docker_health(f"stress-{checkpoint:06d}")
+                harness.resource_telemetry(f"stress-{checkpoint:06d}")
+            return detail
 
         results = execute_stress_plan(
             plan,
             concurrency=int(parameters["concurrency"]),
             run_operation=run_operation,
         )
+        harness.check_docker_health("stress-final")
+        harness.resource_telemetry("stress-final")
     except Exception as error:
         setup_error = f"{type(error).__name__}: {error}"
         evidence_path.mkdir(parents=True, exist_ok=True)
@@ -2362,6 +2440,7 @@ def render_report(
 
 def prepare(args: argparse.Namespace) -> int:
     require(shutil.which("docker") is not None, "docker is required")
+    engine_identity = docker_engine_identity()
     run_id = args.run_id or default_run_id()
     require(RUN_ID_PATTERN.match(run_id) is not None, "invalid drill run id")
     require(args.iterations > 0, "--iterations must be positive")
@@ -2403,6 +2482,7 @@ def prepare(args: argparse.Namespace) -> int:
         "updated_at": utc_now(),
         "git_sha": run(["git", "rev-parse", "HEAD"]).stdout.strip(),
         "image": identity,
+        "docker_engine": engine_identity,
         "models": {
             "primary": args.primary_model,
             "fallbacks": list(args.fallback_model),
@@ -2762,6 +2842,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    os.environ["DOCKER_HOST"] = os.environ.get(
+        "HOLON_DRILL_DOCKER_HOST",
+        DEFAULT_NATIVE_DOCKER_HOST,
+    )
+    os.environ.pop("DOCKER_CONTEXT", None)
     if hasattr(args, "fallback_model") and args.fallback_model is None:
         args.fallback_model = list(DEFAULT_FALLBACK_MODELS)
     return int(args.handler(args))
