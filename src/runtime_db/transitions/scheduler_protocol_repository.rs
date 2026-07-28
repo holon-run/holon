@@ -1322,7 +1322,7 @@ fn legacy_scheduler_adoption_candidates_tx(
                SELECT 1
                FROM agent_identities
                WHERE agent_identities.agent_id = work_items.agent_id
-                 AND agent_identities.status = 'deleted'
+                 AND agent_identities.status IN ('deleting', 'deleted', 'archived')
            )
          ORDER BY agent_id, work_item_id",
     )?;

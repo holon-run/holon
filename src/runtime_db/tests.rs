@@ -468,19 +468,41 @@ mod tests {
     }
 
     #[test]
-    fn scheduler_authoritative_promotion_ignores_deleted_agent_work_items() -> Result<()> {
+    fn scheduler_authoritative_promotion_ignores_inactive_agent_work_items() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let db = RuntimeDb::open_and_migrate(
             dir.path().join("runtime.sqlite"),
             dir.path().join("runtime.lock"),
         )?;
-        let mut identity = agent_identity("deleted-agent", 1);
-        identity.status = AgentRegistryStatus::Deleted;
-        identity.deleted_at = Some(identity.updated_at);
-        db.agent_identities().upsert(&identity)?;
-        let mut work = WorkItemRecord::new("deleted-agent", "legacy blocked", WorkItemState::Open);
-        work.blocked_by = Some("operator resolution".into());
-        db.work_items().insert_new(&work)?;
+        let mut deleted_identity = agent_identity("deleted-agent", 1);
+        deleted_identity.status = AgentRegistryStatus::Deleted;
+        deleted_identity.deleted_at = Some(deleted_identity.updated_at);
+        db.agent_identities().upsert(&deleted_identity)?;
+        let mut deleted_work =
+            WorkItemRecord::new("deleted-agent", "legacy blocked", WorkItemState::Open);
+        deleted_work.blocked_by = Some("operator resolution".into());
+        db.work_items().insert_new(&deleted_work)?;
+
+        let mut archived_identity = agent_identity("archived-agent", 1);
+        archived_identity.status = AgentRegistryStatus::Deleted;
+        archived_identity.deleted_at = Some(archived_identity.updated_at);
+        db.agent_identities().upsert(&archived_identity)?;
+        db.connection()?.execute(
+            "UPDATE agent_identities SET status = 'archived' WHERE agent_id = ?1",
+            ["archived-agent"],
+        )?;
+        let mut archived_work =
+            WorkItemRecord::new("archived-agent", "legacy blocked", WorkItemState::Open);
+        archived_work.blocked_by = Some("operator resolution".into());
+        db.work_items().insert_new(&archived_work)?;
+
+        let mut deleting_identity = agent_identity("deleting-agent", 1);
+        deleting_identity.status = AgentRegistryStatus::Deleting;
+        db.agent_identities().upsert(&deleting_identity)?;
+        let mut deleting_work =
+            WorkItemRecord::new("deleting-agent", "legacy blocked", WorkItemState::Open);
+        deleting_work.blocked_by = Some("operator resolution".into());
+        db.work_items().insert_new(&deleting_work)?;
         let manifest = scheduler_rollout_manifest(1, 1);
         let commands = vec![
             (
@@ -538,10 +560,20 @@ mod tests {
             .transitions()
             .legacy_scheduler_adoption_candidates("deleted-agent")?
             .is_empty());
-        assert_eq!(
-            db.work_items().latest(&work.id)?.unwrap().state,
-            WorkItemState::Open
-        );
+        assert!(db
+            .transitions()
+            .legacy_scheduler_adoption_candidates("archived-agent")?
+            .is_empty());
+        assert!(db
+            .transitions()
+            .legacy_scheduler_adoption_candidates("deleting-agent")?
+            .is_empty());
+        for work in [&deleted_work, &archived_work, &deleting_work] {
+            assert_eq!(
+                db.work_items().latest(&work.id)?.unwrap().state,
+                WorkItemState::Open
+            );
+        }
         Ok(())
     }
 
