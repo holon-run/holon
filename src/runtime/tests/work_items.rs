@@ -4646,6 +4646,7 @@ async fn wait_for_uses_lifecycle_owner_for_lifecycle_execution_even_with_focus()
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.current_execution_binding = Some(WorkItemExecutionBinding {
             activation_id: Some("activation-lifecycle".into()),
+            admission_provenance: None,
             source_message_id: "message-lifecycle".into(),
             turn_id: "turn-lifecycle".into(),
             work_item_id: None,

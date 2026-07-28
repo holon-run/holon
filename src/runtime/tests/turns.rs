@@ -35,6 +35,7 @@ async fn terminal_pick_ends_turn_before_later_tools_or_provider_rounds() {
         guard.state.current_turn_work_item_id = Some(caller.id.clone());
         guard.state.current_execution_binding = Some(crate::types::WorkItemExecutionBinding {
             activation_id: Some("activation-terminal-pick".into()),
+            admission_provenance: None,
             source_message_id: "message-terminal-pick".into(),
             turn_id: "turn-terminal-pick".into(),
             work_item_id: Some(caller.id.clone()),

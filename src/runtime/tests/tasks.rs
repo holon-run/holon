@@ -462,6 +462,7 @@ async fn execution_bound_pick_yields_without_rebinding_current_turn() {
         guard.state.current_turn_work_item_id = Some(first.id.clone());
         guard.state.current_execution_binding = Some(crate::types::WorkItemExecutionBinding {
             activation_id: Some("activation-yield".into()),
+            admission_provenance: None,
             source_message_id: "message-yield".into(),
             turn_id: "turn-yield".into(),
             work_item_id: Some(first.id.clone()),

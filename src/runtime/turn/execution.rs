@@ -59,6 +59,14 @@ use crate::runtime::{
     scheduler_executor, CurrentRunAborted, RuntimeHandle,
 };
 
+enum OperatorInterjectionPlan {
+    Attach(Vec<crate::domain::scheduler_protocol::ProtocolCommand>),
+    LegacyTurnDeferred {
+        scenario_class: Option<crate::domain::scheduler_protocol::SchedulerScenarioClass>,
+        effective_mode: crate::domain::scheduler_protocol::ScenarioMode,
+    },
+}
+
 impl RuntimeHandle {
     pub(super) async fn maybe_handle_context_length_exceeded(
         &self,
@@ -370,14 +378,32 @@ impl RuntimeHandle {
                     let expected_state = guard.state.clone();
                     let production_commands_enabled =
                         self.scheduler_protocol_production_commands_enabled();
-                    let protocol_commands = self.operator_interjection_protocol_commands(
+                    let protocol_commands = match self.operator_interjection_protocol_commands(
                         agent_id,
                         &expected_state,
                         &message,
                         round,
                         boundary_str,
                         production_commands_enabled,
-                    )?;
+                    )? {
+                        OperatorInterjectionPlan::Attach(commands) => commands,
+                        OperatorInterjectionPlan::LegacyTurnDeferred {
+                            scenario_class,
+                            effective_mode,
+                        } => {
+                            drop(guard);
+                            self.record_deferred_operator_interjection(
+                                agent_id,
+                                &expected_state,
+                                &message,
+                                round,
+                                boundary_str,
+                                scenario_class,
+                                effective_mode,
+                            )?;
+                            break 'outer;
+                        }
+                    };
                     let mut committed_state = expected_state.clone();
                     committed_state.pending = guard.queue.len().saturating_sub(1);
                     let text = render_operator_interjection_text(&message);
@@ -531,11 +557,12 @@ impl RuntimeHandle {
         round: usize,
         boundary: &str,
         production_commands_enabled: bool,
-    ) -> Result<Vec<crate::domain::scheduler_protocol::ProtocolCommand>> {
+    ) -> Result<OperatorInterjectionPlan> {
         use crate::domain::scheduler_protocol::{
             ActivationInputAttachment, ActivationOrigin, ActivationProvenance, ActivationTrust,
             AttachActivationInputCommand, ProtocolCommand, ScenarioMode,
         };
+        use crate::types::ExecutionAdmissionProvenance;
 
         if !production_commands_enabled
             || self
@@ -545,7 +572,7 @@ impl RuntimeHandle {
                 .scheduler_scenario_mode(scheduler::INTERJECTION_SCENARIO)?
                 != ScenarioMode::Authoritative
         {
-            return Ok(Vec::new());
+            return Ok(OperatorInterjectionPlan::Attach(Vec::new()));
         }
 
         let execution_binding = expected_state
@@ -554,12 +581,61 @@ impl RuntimeHandle {
             .ok_or_else(|| {
                 anyhow::anyhow!("operator interjection requires a current execution binding")
             })?;
-        let activation_id = execution_binding.activation_id.as_deref().ok_or_else(|| {
-            anyhow::anyhow!("operator interjection requires a canonical running activation")
-        })?;
-        let work_item_id = execution_binding.work_item_id.as_deref().ok_or_else(|| {
-            anyhow::anyhow!("operator interjection requires a WorkItem execution binding")
-        })?;
+        if execution_binding.source_message_id.is_empty()
+            || execution_binding.turn_id.is_empty()
+            || expected_state.current_turn_id.as_deref() != Some(execution_binding.turn_id.as_str())
+        {
+            return Err(anyhow::anyhow!(
+                "operator interjection execution binding disagrees with the current turn"
+            ));
+        }
+        let activation_id = match (
+            execution_binding.activation_id.as_deref(),
+            execution_binding.admission_provenance.as_ref(),
+        ) {
+            (
+                Some(activation_id),
+                Some(ExecutionAdmissionProvenance::Canonical {
+                    activation_id: provenance_activation_id,
+                    ..
+                }),
+            ) if activation_id == provenance_activation_id => activation_id,
+            (Some(activation_id), None) => activation_id,
+            (
+                None,
+                Some(ExecutionAdmissionProvenance::LegacyCompat {
+                    scenario_class,
+                    effective_mode,
+                }),
+            ) if matches!(effective_mode, ScenarioMode::Off | ScenarioMode::Shadow) => {
+                return Ok(OperatorInterjectionPlan::LegacyTurnDeferred {
+                    scenario_class: *scenario_class,
+                    effective_mode: *effective_mode,
+                });
+            }
+            (None, Some(ExecutionAdmissionProvenance::Canonical { .. })) => {
+                return Err(anyhow::anyhow!(
+                    "canonical operator interjection admission is missing its activation"
+                ));
+            }
+            (None, None) => {
+                return Err(anyhow::anyhow!(
+                    "operator interjection requires typed execution admission provenance"
+                ));
+            }
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "operator interjection execution admission provenance disagrees with activation"
+                ));
+            }
+        };
+        if activation_id
+            != scheduler_executor::canonical_activation_id(&execution_binding.source_message_id)
+        {
+            return Err(anyhow::anyhow!(
+                "operator interjection activation disagrees with the source message"
+            ));
+        }
         let snapshot = self
             .inner
             .runtime_db
@@ -571,19 +647,26 @@ impl RuntimeHandle {
         let activation = snapshot.activations.get(activation_id).ok_or_else(|| {
             anyhow::anyhow!("operator interjection references an unknown canonical activation")
         })?;
-        if activation.owner.work_item_id() != Some(work_item_id) {
-            return Err(anyhow::anyhow!(
-                "operator interjection WorkItem binding disagrees with activation"
-            ));
+        match &activation.owner {
+            crate::domain::scheduler_protocol::SchedulerOwner::WorkItem { work_item_id }
+                if execution_binding.work_item_id.as_deref() == Some(work_item_id.as_str()) => {}
+            crate::domain::scheduler_protocol::SchedulerOwner::AgentLifecycle {
+                agent_id: owner_agent_id,
+            } if owner_agent_id == agent_id && execution_binding.work_item_id.is_none() => {}
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "operator interjection execution binding disagrees with activation owner"
+                ));
+            }
         }
 
-        Ok(vec![ProtocolCommand::AttachActivationInput(
-            AttachActivationInputCommand {
+        Ok(OperatorInterjectionPlan::Attach(vec![
+            ProtocolCommand::AttachActivationInput(AttachActivationInputCommand {
                 attachment: ActivationInputAttachment {
                     id: format!("activation-input:{}", message.id),
                     activation_id: activation_id.to_string(),
-                    work_item_id: work_item_id.to_string(),
-                    expected_scheduling_generation: activation.admitted_generation,
+                    owner: activation.owner.clone(),
+                    expected_admitted_generation: activation.admitted_generation,
                     expected_dispatch_revision: snapshot.dispatch_revision,
                     message_id: message.id.clone(),
                     turn_id: execution_binding.turn_id.clone(),
@@ -599,8 +682,43 @@ impl RuntimeHandle {
                     },
                     created_at: message.created_at.to_rfc3339(),
                 },
-            },
-        )])
+            }),
+        ]))
+    }
+
+    fn record_deferred_operator_interjection(
+        &self,
+        agent_id: &str,
+        expected_state: &crate::types::AgentState,
+        message: &MessageEnvelope,
+        round: usize,
+        boundary: &str,
+        scenario_class: Option<crate::domain::scheduler_protocol::SchedulerScenarioClass>,
+        effective_mode: crate::domain::scheduler_protocol::ScenarioMode,
+    ) -> Result<()> {
+        let turn_id = expected_state
+            .current_turn_id
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("deferred interjection requires a current turn"))?;
+        let mut event = AuditEvent::legacy(
+            "operator_interjection_deferred_no_canonical_activation",
+            serde_json::json!({
+                "agent_id": agent_id,
+                "turn_id": turn_id,
+                "message_id": message.id,
+                "round": round,
+                "boundary": boundary,
+                "scenario_class": scenario_class.map(|scenario| scenario.as_str()),
+                "effective_mode": effective_mode,
+            }),
+        );
+        event.id = format!(
+            "operator_interjection_deferred:{}:{}:{}",
+            turn_id, message.id, boundary
+        );
+        event.created_at = message.created_at;
+        self.inner.storage.append_event(&event)?;
+        Ok(())
     }
 
     pub(super) async fn append_operator_interjections_to_last_round(

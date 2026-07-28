@@ -1,5 +1,5 @@
 use super::*;
-use crate::types::WorkItemState;
+use crate::types::{ExecutionAdmissionProvenance, WorkItemState};
 
 pub(super) struct MessageDispatchPlan {
     pub(super) prior_closure: ClosureDecision,
@@ -7,6 +7,7 @@ pub(super) struct MessageDispatchPlan {
     pub(super) continuation_trigger: Option<ContinuationTrigger>,
     pub(super) continuation_resolution: Option<ContinuationResolution>,
     pub(super) model_turn_allowed: bool,
+    pub(super) execution_admission_provenance: ExecutionAdmissionProvenance,
 }
 
 impl RuntimeHandle {
@@ -46,12 +47,18 @@ impl RuntimeHandle {
             resolve_continuation(&prior_closure, trigger, continuation_work_item_id)
         });
         let model_turn_allowed = !matches!(scheduler_state.status, AgentStatus::Stopped);
+        let execution_admission_provenance = self.legacy_execution_admission_provenance(
+            message,
+            continuation_resolution.as_ref(),
+            task.as_ref().ok().and_then(Option::as_ref),
+        )?;
         Ok(MessageDispatchPlan {
             prior_closure,
             task,
             continuation_trigger,
             continuation_resolution,
             model_turn_allowed,
+            execution_admission_provenance,
         })
     }
 
@@ -122,6 +129,7 @@ impl RuntimeHandle {
             task,
             continuation_trigger,
             continuation_resolution,
+            execution_admission_provenance,
             ..
         } = plan;
         let model_reentry = scheduler_decision.model_reentry;
@@ -150,6 +158,7 @@ impl RuntimeHandle {
                         self.process_interactive_message_deferred(
                             &message,
                             continuation_resolution.as_ref(),
+                            execution_admission_provenance.clone(),
                             LoopControlOptions {
                                 max_tool_rounds: None,
                             },
@@ -170,6 +179,7 @@ impl RuntimeHandle {
                         task,
                         model_reentry,
                         continuation_resolution.as_ref(),
+                        execution_admission_provenance,
                     )
                     .await?;
             }

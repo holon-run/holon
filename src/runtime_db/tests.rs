@@ -7,7 +7,7 @@ use crate::runtime_db::evidence::content_hash;
 use crate::runtime_db::evidence::insert_audit_event_tx;
 #[cfg(test)]
 use crate::runtime_db::migrations::{
-    backfill_wait_condition_payload_columns, backfill_work_item_recheck_columns,
+    apply_migration, backfill_wait_condition_payload_columns, backfill_work_item_recheck_columns,
     current_schema_version, ensure_migration_table, max_known_migration_version, table_exists,
     MIGRATIONS,
 };
@@ -1215,7 +1215,107 @@ mod tests {
             |row| row.get(0),
         )?;
         assert_eq!(readiness_index_count, 0);
+        let activation_input_columns = connection
+            .prepare("PRAGMA table_info(scheduler_activation_inputs)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<std::result::Result<BTreeSet<_>, _>>()?;
+        assert!(activation_input_columns.contains("owner_kind"));
+        assert!(activation_input_columns.contains("owner_id"));
+        assert!(activation_input_columns.contains("expected_admitted_generation"));
+        assert!(!activation_input_columns.contains("work_item_id"));
+        assert!(!activation_input_columns.contains("expected_scheduling_generation"));
 
+        Ok(())
+    }
+
+    #[test]
+    fn migration_38_upgrades_legacy_activation_input_owner() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        {
+            let mut connection = open_connection(&db_path)?;
+            ensure_migration_table(&connection)?;
+            for migration in MIGRATIONS
+                .iter()
+                .filter(|migration| migration.version <= 37)
+            {
+                apply_migration(&mut connection, migration)?;
+            }
+            connection.execute(
+                "INSERT INTO scheduler_activation_inputs (
+                   agent_id,
+                   attachment_id,
+                   activation_id,
+                   work_item_id,
+                   expected_scheduling_generation,
+                   expected_dispatch_revision,
+                   message_id,
+                   turn_id,
+                   boundary,
+                   round,
+                   payload_json,
+                   created_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                (
+                    "agent-a",
+                    "attachment-a",
+                    "activation-a",
+                    "work-a",
+                    3_u64,
+                    4_u64,
+                    "message-a",
+                    "turn-a",
+                    "after_provider_round",
+                    2_u64,
+                    serde_json::json!({
+                        "id": "attachment-a",
+                        "activation_id": "activation-a",
+                        "work_item_id": "work-a",
+                        "expected_scheduling_generation": 3,
+                        "expected_dispatch_revision": 4,
+                        "message_id": "message-a",
+                        "turn_id": "turn-a",
+                        "boundary": "after_provider_round",
+                        "round": 2,
+                        "provenance": {
+                            "origin": "operator",
+                            "trust": "operator_instruction",
+                            "source_id": "message-a",
+                            "correlation_id": "activation-a",
+                            "causation_id": null
+                        },
+                        "created_at": "2026-07-28T00:00:00Z"
+                    })
+                    .to_string(),
+                    "2026-07-28T00:00:00Z",
+                ),
+            )?;
+        }
+
+        RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let connection = open_connection(&db_path)?;
+        let (owner_kind, owner_id, generation, payload_json): (String, String, u64, String) =
+            connection.query_row(
+                "SELECT owner_kind, owner_id, expected_admitted_generation, payload_json
+                 FROM scheduler_activation_inputs
+                 WHERE agent_id = 'agent-a' AND attachment_id = 'attachment-a'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+        assert_eq!(
+            (owner_kind, owner_id, generation),
+            ("work_item".into(), "work-a".into(), 3)
+        );
+        let attachment: ActivationInputAttachment = serde_json::from_str(&payload_json)?;
+        assert_eq!(
+            attachment.owner,
+            SchedulerOwner::WorkItem {
+                work_item_id: "work-a".into(),
+            }
+        );
+        assert_eq!(attachment.expected_admitted_generation, 3);
+        let payload: serde_json::Value = serde_json::from_str(&payload_json)?;
+        assert!(payload.get("work_item_id").is_none());
+        assert!(payload.get("expected_scheduling_generation").is_none());
         Ok(())
     }
 
@@ -1241,6 +1341,98 @@ mod tests {
             error.sqlite_error_code(),
             Some(ErrorCode::ConstraintViolation)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn migration_38_normalizes_unsafe_operator_interjection_authority() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        {
+            let mut connection = open_connection(&db_path)?;
+            ensure_migration_table(&connection)?;
+            for migration in MIGRATIONS
+                .iter()
+                .filter(|migration| migration.version <= 37)
+            {
+                apply_migration(&mut connection, migration)?;
+            }
+            connection.execute_batch(
+                r#"
+INSERT INTO scheduler_rollout_preflights (
+  preflight_revision, manifest_revision, state, manifest_json, created_at, updated_at
+) VALUES (1, 1, 'consumed', '{}', '2026-07-28T00:00:00Z', '2026-07-28T00:00:00Z');
+INSERT INTO scheduler_rollout_manifests (
+  manifest_revision, preflight_revision, payload_json, installed_at
+) VALUES (1, 1, '{}', '2026-07-28T00:00:00Z');
+INSERT INTO scheduler_scenario_authorities (
+  scenario_class, mode, rollback_target, manifest_revision, preflight_revision, updated_at
+) VALUES
+  ('operator_interjection', 'authoritative', 'shadow', 1, 1, '2026-07-28T00:00:00Z'),
+  ('work_item_autonomous_continuation', 'authoritative', 'shadow', 1, 1, '2026-07-28T00:00:00Z'),
+  ('exact_task_rejoin', 'authoritative', 'shadow', 1, 1, '2026-07-28T00:00:00Z'),
+  ('exact_wait_resume', 'authoritative', 'shadow', 1, 1, '2026-07-28T00:00:00Z'),
+  ('explicitly_bound_operator_input', 'shadow', 'off', NULL, NULL, '2026-07-28T00:00:00Z'),
+  ('settlement', 'authoritative', 'shadow', 1, 1, '2026-07-28T00:00:00Z');
+"#,
+            )?;
+        }
+
+        RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let connection = open_connection(&db_path)?;
+        let normalized: (String, Option<i64>, Option<i64>, String) = connection.query_row(
+            "SELECT mode, manifest_revision, preflight_revision, rollback_target
+             FROM scheduler_scenario_authorities
+             WHERE scenario_class = 'operator_interjection'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        assert_eq!(normalized, ("shadow".into(), None, None, "shadow".into()));
+        Ok(())
+    }
+
+    #[test]
+    fn migration_38_preserves_safe_operator_interjection_authority() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        {
+            let mut connection = open_connection(&db_path)?;
+            ensure_migration_table(&connection)?;
+            for migration in MIGRATIONS
+                .iter()
+                .filter(|migration| migration.version <= 37)
+            {
+                apply_migration(&mut connection, migration)?;
+            }
+            connection.execute_batch(
+                r#"
+INSERT INTO scheduler_rollout_preflights (
+  preflight_revision, manifest_revision, state, manifest_json, created_at, updated_at
+) VALUES (1, 1, 'consumed', '{}', '2026-07-28T00:00:00Z', '2026-07-28T00:00:00Z');
+INSERT INTO scheduler_rollout_manifests (
+  manifest_revision, preflight_revision, payload_json, installed_at
+) VALUES (1, 1, '{}', '2026-07-28T00:00:00Z');
+INSERT INTO scheduler_scenario_authorities (
+  scenario_class, mode, rollback_target, manifest_revision, preflight_revision, updated_at
+) VALUES
+  ('operator_interjection', 'authoritative', 'shadow', 1, 1, '2026-07-28T00:00:00Z'),
+  ('work_item_autonomous_continuation', 'authoritative', 'shadow', 1, 1, '2026-07-28T00:00:00Z'),
+  ('exact_task_rejoin', 'authoritative', 'shadow', 1, 1, '2026-07-28T00:00:00Z'),
+  ('exact_wait_resume', 'authoritative', 'shadow', 1, 1, '2026-07-28T00:00:00Z'),
+  ('explicitly_bound_operator_input', 'authoritative', 'shadow', 1, 1, '2026-07-28T00:00:00Z'),
+  ('settlement', 'authoritative', 'shadow', 1, 1, '2026-07-28T00:00:00Z');
+"#,
+            )?;
+        }
+
+        RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let connection = open_connection(&db_path)?;
+        let preserved: (String, Option<i64>, Option<i64>) = connection.query_row(
+            "SELECT mode, manifest_revision, preflight_revision
+             FROM scheduler_scenario_authorities
+             WHERE scenario_class = 'operator_interjection'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!(preserved, ("authoritative".into(), Some(1), Some(1)));
         Ok(())
     }
 
@@ -2203,8 +2395,10 @@ mod tests {
         let attachment = ActivationInputAttachment {
             id: "attachment-a".into(),
             activation_id: "activation-a".into(),
-            work_item_id: "work-a".into(),
-            expected_scheduling_generation: 1,
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "work-a".into(),
+            },
+            expected_admitted_generation: 1,
             expected_dispatch_revision: 0,
             message_id: "interjection-message".into(),
             turn_id: "turn-a".into(),

@@ -1,6 +1,7 @@
 use super::{scheduler, *};
 use crate::types::{
-    WaitConditionKind, WaitConditionStatus, WakeSource, WorkItemRecord, WorkItemState,
+    ExecutionAdmissionProvenance, WaitConditionKind, WaitConditionStatus, WakeSource,
+    WorkItemRecord, WorkItemState,
 };
 use sha2::{Digest, Sha256};
 
@@ -353,12 +354,18 @@ impl RuntimeHandle {
         model_reentry: bool,
         continuation_resolution: Option<&ContinuationResolution>,
     ) -> Result<()> {
+        let execution_admission_provenance = self.legacy_execution_admission_provenance(
+            message,
+            continuation_resolution,
+            Some(&task),
+        )?;
         if let Some(transition) = self
             .reduce_task_result_message_deferred(
                 message,
                 task,
                 model_reentry,
                 continuation_resolution,
+                execution_admission_provenance,
             )
             .await?
         {
@@ -373,6 +380,7 @@ impl RuntimeHandle {
         task: TaskRecord,
         model_reentry: bool,
         continuation_resolution: Option<&ContinuationResolution>,
+        execution_admission_provenance: ExecutionAdmissionProvenance,
     ) -> Result<Option<turn::TurnTerminalTransition>> {
         if should_ignore_task_update(self.inner.runtime_db.tasks().latest(&task.id)?, &task) {
             return Ok(None);
@@ -419,6 +427,7 @@ impl RuntimeHandle {
                 .process_interactive_message_deferred(
                     message,
                     continuation_resolution,
+                    execution_admission_provenance,
                     LoopControlOptions {
                         max_tool_rounds: None,
                     },

@@ -127,13 +127,16 @@ fn enable_production_protocol_authority_for(
         ),
         scenario => panic!("unsupported runtime production authority scenario {scenario:?}"),
     };
-    let scenarios = [
+    let mut scenarios = [
         SchedulerScenarioClass::WorkItemAutonomousContinuation,
         SchedulerScenarioClass::Settlement,
     ]
     .into_iter()
     .chain(additional_scenarios.iter().copied())
     .collect::<std::collections::BTreeSet<_>>();
+    for scenario in additional_scenarios {
+        scenarios.extend(scenario.authoritative_dependencies().iter().copied());
+    }
     let classes = scenarios
         .iter()
         .copied()
@@ -241,6 +244,10 @@ fn enable_production_protocol_authority_for(
         assert_eq!(committed.result.decision, expected);
     }
     let mut config_revision = 2;
+    let mut scenarios = scenarios.into_iter().collect::<Vec<_>>();
+    scenarios.sort_by_key(|scenario| {
+        usize::from(*scenario == SchedulerScenarioClass::OperatorInterjection)
+    });
     for scenario in scenarios {
         for mode in [ScenarioMode::Shadow, ScenarioMode::Authoritative] {
             let identity = format!("{}-{mode:?}", scenario.as_str());
@@ -7621,7 +7628,12 @@ async fn operator_interjection_attachment_rolls_back_with_legacy_facts() {
         attachment.activation_id,
         scheduler_executor::canonical_activation_id(&message.id)
     );
-    assert_eq!(attachment.work_item_id, work_item.id);
+    assert_eq!(
+        attachment.owner,
+        SchedulerOwner::WorkItem {
+            work_item_id: work_item.id.clone(),
+        }
+    );
     assert_eq!(attachment.boundary, "before_tool_execution");
     assert_eq!(
         runtime
@@ -7651,6 +7663,150 @@ async fn operator_interjection_attachment_rolls_back_with_legacy_facts() {
             event.kind == "operator_interjection_admitted"
                 && event.data["message_id"] == interjection.id
         }));
+}
+
+#[tokio::test]
+async fn operator_interjection_attaches_to_lifecycle_activation() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime.set_scheduler_protocol_production_commands_enabled(true);
+    enable_production_protocol_authority_for(
+        &runtime,
+        &[SchedulerScenarioClass::OperatorInterjection],
+    );
+
+    let message = runtime
+        .enqueue(trusted_operator_prompt(None, "start lifecycle turn"))
+        .await
+        .unwrap();
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("lifecycle operator prompt should be claimed");
+    };
+    runtime
+        .begin_interactive_turn(Some(&scheduled.message), None, None)
+        .await
+        .unwrap();
+
+    let mut interjection = trusted_operator_prompt(None, "use the smaller lifecycle fix");
+    interjection.priority = Priority::Interject;
+    let interjection = runtime.enqueue(interjection).await.unwrap();
+    let follow_ups = runtime
+        .drain_operator_interjections(
+            "default",
+            1,
+            crate::runtime::scheduler::InterjectionBoundary::BeforeToolExecution,
+        )
+        .await
+        .unwrap();
+    assert_eq!(follow_ups.len(), 1);
+
+    let snapshot = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    let attachment = snapshot
+        .activation_inputs
+        .values()
+        .find(|attachment| attachment.message_id == interjection.id)
+        .expect("lifecycle activation input attachment");
+    assert_eq!(
+        attachment.activation_id,
+        scheduler_executor::canonical_activation_id(&message.id)
+    );
+    assert_eq!(
+        attachment.owner,
+        SchedulerOwner::AgentLifecycle {
+            agent_id: "default".into(),
+        }
+    );
+    assert_eq!(
+        runtime
+            .storage()
+            .latest_queue_entries()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == interjection.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Interjected)
+    );
+}
+
+#[tokio::test]
+async fn operator_interjection_defers_for_claim_time_legacy_turn() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime.set_scheduler_protocol_production_commands_enabled(true);
+    let message = trusted_operator_prompt(None, "legacy turn already running");
+    runtime
+        .begin_interactive_turn(Some(&message), None, None)
+        .await
+        .unwrap();
+    enable_production_protocol_authority_for(
+        &runtime,
+        &[SchedulerScenarioClass::OperatorInterjection],
+    );
+
+    let mut interjection = trusted_operator_prompt(None, "handle after the legacy turn");
+    interjection.priority = Priority::Interject;
+    let interjection = runtime.enqueue(interjection).await.unwrap();
+    for _ in 0..2 {
+        assert!(runtime
+            .drain_operator_interjections(
+                "default",
+                1,
+                crate::runtime::scheduler::InterjectionBoundary::BeforeToolExecution,
+            )
+            .await
+            .unwrap()
+            .is_empty());
+    }
+    assert_eq!(
+        runtime
+            .storage()
+            .latest_queue_entries()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == interjection.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Queued)
+    );
+    let deferred = runtime
+        .storage()
+        .read_recent_events(usize::MAX)
+        .unwrap()
+        .into_iter()
+        .filter(|event| {
+            event.kind == "operator_interjection_deferred_no_canonical_activation"
+                && event.data["message_id"] == interjection.id
+        })
+        .count();
+    assert_eq!(deferred, 1);
 }
 
 #[tokio::test]

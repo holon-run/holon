@@ -72,6 +72,15 @@ run abort, tool cancellation, or transcript rewrite.
 A turn-loop boundary where queued operator interjections may be drained and
 made model-visible without corrupting provider protocol state.
 
+### Execution Admission Provenance
+
+A claim-time typed fact attached to the running turn:
+
+- `Canonical(scenario_class, activation_id)`, or
+- `LegacyCompat(scenario_class?, effective_mode)`.
+
+Safe points must not infer this provenance from current rollout configuration.
+
 ### Pending Tool Calls
 
 Tool calls returned by the provider in the current assistant round that have
@@ -85,6 +94,38 @@ provider contract and must not include audit-only state that has no valid
 provider representation.
 
 ## 5. Safe-Point Contract
+
+### Canonical Activation Attachment
+
+When canonical interjection authority is active, admission attaches a typed
+`ActivationInputAttachment` to the running activation. The attachment is
+fenced by activation id, `SchedulerOwner`, admitted generation, dispatch
+revision, Turn, boundary, and round. `SchedulerOwner` may be either a WorkItem
+or the agent lifecycle; lifecycle ownership is not represented by a missing or
+placeholder WorkItem.
+
+Queue consumption, attachment persistence, incoming transcript evidence, and
+`operator_interjection_admitted` remain one atomic transition.
+
+### Legacy-Compatible Running Turn
+
+If the running turn has explicit claim-time `LegacyCompat` provenance and no
+canonical activation, the safe point must:
+
+1. leave the interjection queue entry `Queued`;
+2. emit no `operator_interjection_admitted` evidence;
+3. append no provider-visible follow-up;
+4. record at most one deferred diagnostic per
+   `(turn_id, message_id, boundary)`;
+5. let the current turn settle normally.
+
+The scheduler subsequently claims that same high-priority message as ordinary
+input. This path must remain exactly-once and restart-safe. It is a compatibility
+defer, not a successful interjection.
+
+Missing execution binding, missing typed provenance, canonical provenance
+without its activation, unknown activation, or owner/generation/Turn mismatch
+must fail closed rather than defer.
 
 ### Before Provider Request
 
@@ -179,6 +220,15 @@ The current code has three relevant anchors:
 - The turn loop currently drains interjections at `after_provider_round`,
   `before_tool_execution`, and `after_tool_results`.
 
+Canonical rollout has an additional dependency invariant:
+`operator_interjection` may be authoritative only while all model-running
+admission classes and `settlement` are authoritative. The current dependency
+set is `work_item_autonomous_continuation`, `exact_task_rejoin`,
+`exact_wait_resume`, `explicitly_bound_operator_input`, and `settlement`.
+`LifecycleExternalNudge`, including ordinary unbound trusted operator prompts,
+currently maps to `exact_wait_resume`. Dependency downgrade or hard-blocker
+rollback lowers interjection authority in the same reducer transition.
+
 The `before_tool_execution` branch should change. Today it constructs a
 synthetic round from `text_blocks` only and clears pending tool calls. When the
 assistant returned only tool calls, this creates an empty assistant block list
@@ -216,3 +266,14 @@ contract rejects empty message content.
 Scheduler tests should continue to assert classification and queue status, but
 the transcript-shape invariant belongs to turn/runtime provider-projection
 tests.
+
+Also cover:
+
+- WorkItem-owned and AgentLifecycle-owned activation attachments;
+- owner/admitted-generation/dispatch-revision mismatch rejection;
+- legacy-compatible defer without queue consumption;
+- repeated safe points deduplicate the deferred diagnostic;
+- restart between defer and the next claim preserves exactly-once handling;
+- rollout upgrade rejection when dependencies are not authoritative;
+- dependency downgrade and hard-blocker rollback cascade interjection to
+  shadow.

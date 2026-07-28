@@ -1,6 +1,7 @@
 use super::*;
 use crate::runtime::turn::TurnTerminalTransition;
 use crate::tool::{ApplyPatchSurface, ToolSpec};
+use crate::types::ExecutionAdmissionProvenance;
 
 impl RuntimeHandle {
     #[cfg(test)]
@@ -11,7 +12,12 @@ impl RuntimeHandle {
         loop_control: LoopControlOptions,
     ) -> Result<()> {
         let terminal_transition = self
-            .process_interactive_message_deferred(message, continuation_resolution, loop_control)
+            .process_interactive_message_deferred(
+                message,
+                continuation_resolution,
+                self.legacy_execution_admission_provenance(message, continuation_resolution, None)?,
+                loop_control,
+            )
             .await?;
         self.persist_terminal_transition(&terminal_transition)
             .await?;
@@ -22,14 +28,16 @@ impl RuntimeHandle {
         &self,
         message: &MessageEnvelope,
         continuation_resolution: Option<&ContinuationResolution>,
+        execution_admission_provenance: ExecutionAdmissionProvenance,
         loop_control: LoopControlOptions,
     ) -> Result<TurnTerminalTransition> {
         let (operator_binding_id, operator_reply_route_id) =
             Self::operator_transport_from_message(message);
-        self.begin_interactive_turn(
+        self.begin_interactive_turn_with_provenance(
             Some(message),
             operator_binding_id.as_deref(),
             operator_reply_route_id.as_deref(),
+            execution_admission_provenance,
         )
         .await?;
         self.record_incoming_transcript_entry(message)?;

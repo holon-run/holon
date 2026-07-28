@@ -377,6 +377,21 @@ impl ReconciliationPlanner {
         });
         self.config_revision += 1;
         self.scenario_modes.insert(scenario.to_string(), mode);
+        if mode != ScenarioMode::Authoritative
+            && SchedulerScenarioClass::OperatorInterjection
+                .authoritative_dependencies()
+                .iter()
+                .any(|dependency| dependency.as_str() == scenario)
+            && self.scenario_mode(SchedulerScenarioClass::OperatorInterjection.as_str())
+                == ScenarioMode::Authoritative
+        {
+            self.scenario_modes.insert(
+                SchedulerScenarioClass::OperatorInterjection
+                    .as_str()
+                    .to_string(),
+                ScenarioMode::Shadow,
+            );
+        }
         Ok(())
     }
 
@@ -647,12 +662,15 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             modes,
-            [ScenarioMode::Shadow, ScenarioMode::Off]
-                .into_iter()
-                .flat_map(|mode| {
-                    std::iter::repeat_n(mode, SchedulerScenarioClass::PRODUCTION_AUTHORITY.len())
-                })
-                .collect::<Vec<_>>()
+            std::iter::repeat_n(
+                ScenarioMode::Shadow,
+                SchedulerScenarioClass::PRODUCTION_AUTHORITY.len() - 1,
+            )
+            .chain(std::iter::repeat_n(
+                ScenarioMode::Off,
+                SchedulerScenarioClass::PRODUCTION_AUTHORITY.len(),
+            ))
+            .collect::<Vec<_>>()
         );
 
         rollout.protocol_mode = ProtocolMode::Legacy;

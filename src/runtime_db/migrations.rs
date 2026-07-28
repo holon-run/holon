@@ -2248,6 +2248,88 @@ CREATE TABLE IF NOT EXISTS scheduler_yield_continuations (
         name: "scheduler_lifecycle_owners",
         sql: "",
     },
+    Migration {
+        version: 38,
+        name: "scheduler_activation_input_owners",
+        sql: r#"
+ALTER TABLE scheduler_activation_inputs
+  RENAME TO scheduler_activation_inputs_v37;
+
+CREATE TABLE scheduler_activation_inputs (
+  agent_id TEXT NOT NULL,
+  attachment_id TEXT NOT NULL,
+  activation_id TEXT NOT NULL,
+  owner_kind TEXT NOT NULL CHECK (owner_kind IN ('work_item', 'agent_lifecycle')),
+  owner_id TEXT NOT NULL,
+  expected_admitted_generation INTEGER NOT NULL CHECK (
+    expected_admitted_generation > 0
+  ),
+  expected_dispatch_revision INTEGER NOT NULL CHECK (
+    expected_dispatch_revision >= 0
+  ),
+  message_id TEXT NOT NULL,
+  turn_id TEXT NOT NULL,
+  boundary TEXT NOT NULL,
+  round INTEGER NOT NULL CHECK (round >= 0),
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, attachment_id),
+  UNIQUE (agent_id, message_id)
+);
+
+INSERT INTO scheduler_activation_inputs
+SELECT
+  agent_id,
+  attachment_id,
+  activation_id,
+  'work_item',
+  work_item_id,
+  expected_scheduling_generation,
+  expected_dispatch_revision,
+  message_id,
+  turn_id,
+  boundary,
+  round,
+  json_set(
+    json_remove(
+      payload_json,
+      '$.work_item_id',
+      '$.expected_scheduling_generation'
+    ),
+    '$.owner',
+    json_object('kind', 'work_item', 'work_item_id', work_item_id),
+    '$.expected_admitted_generation',
+    expected_scheduling_generation
+  ),
+  created_at
+FROM scheduler_activation_inputs_v37;
+
+DROP TABLE scheduler_activation_inputs_v37;
+
+CREATE INDEX idx_scheduler_activation_inputs_activation
+  ON scheduler_activation_inputs(agent_id, activation_id, round);
+
+UPDATE scheduler_scenario_authorities
+SET
+  mode = 'shadow',
+  manifest_revision = NULL,
+  preflight_revision = NULL
+WHERE scenario_class = 'operator_interjection'
+  AND mode = 'authoritative'
+  AND (
+    SELECT COUNT(*)
+    FROM scheduler_scenario_authorities
+    WHERE scenario_class IN (
+      'work_item_autonomous_continuation',
+      'exact_task_rejoin',
+      'exact_wait_resume',
+      'explicitly_bound_operator_input',
+      'settlement'
+    )
+      AND mode = 'authoritative'
+  ) < 5;
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

@@ -423,8 +423,8 @@ impl SchedulerScenarioClass {
         Self::ExactTaskRejoin,
         Self::ExactWaitResume,
         Self::ExplicitlyBoundOperatorInput,
-        Self::OperatorInterjection,
         Self::Settlement,
+        Self::OperatorInterjection,
         Self::Delivery,
     ];
 
@@ -439,6 +439,19 @@ impl SchedulerScenarioClass {
             Self::OperatorInterjection => "operator_interjection",
             Self::Settlement => "settlement",
             Self::Delivery => "delivery",
+        }
+    }
+
+    pub const fn authoritative_dependencies(self) -> &'static [Self] {
+        match self {
+            Self::OperatorInterjection => &[
+                Self::WorkItemAutonomousContinuation,
+                Self::ExactTaskRejoin,
+                Self::ExactWaitResume,
+                Self::ExplicitlyBoundOperatorInput,
+                Self::Settlement,
+            ],
+            _ => &[],
         }
     }
 }
@@ -971,12 +984,12 @@ pub struct TriggerWaitCommand {
     pub trigger_generation: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ActivationInputAttachment {
     pub id: String,
     pub activation_id: String,
-    pub work_item_id: String,
-    pub expected_scheduling_generation: u64,
+    pub owner: SchedulerOwner,
+    pub expected_admitted_generation: u64,
     pub expected_dispatch_revision: u64,
     pub message_id: String,
     pub turn_id: String,
@@ -984,6 +997,65 @@ pub struct ActivationInputAttachment {
     pub round: u64,
     pub provenance: ActivationProvenance,
     pub created_at: String,
+}
+
+#[derive(Deserialize)]
+struct ActivationInputAttachmentWire {
+    id: String,
+    activation_id: String,
+    #[serde(default)]
+    owner: Option<SchedulerOwner>,
+    #[serde(default)]
+    expected_admitted_generation: Option<u64>,
+    #[serde(default)]
+    work_item_id: Option<String>,
+    #[serde(default)]
+    expected_scheduling_generation: Option<u64>,
+    expected_dispatch_revision: u64,
+    message_id: String,
+    turn_id: String,
+    boundary: String,
+    round: u64,
+    provenance: ActivationProvenance,
+    created_at: String,
+}
+
+impl<'de> Deserialize<'de> for ActivationInputAttachment {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = ActivationInputAttachmentWire::deserialize(deserializer)?;
+        let (owner, expected_admitted_generation) = match (
+            wire.owner,
+            wire.expected_admitted_generation,
+            wire.work_item_id,
+            wire.expected_scheduling_generation,
+        ) {
+            (Some(owner), Some(generation), None, None) => (owner, generation),
+            (None, None, Some(work_item_id), Some(generation)) => {
+                (SchedulerOwner::WorkItem { work_item_id }, generation)
+            }
+            _ => {
+                return Err(D::Error::custom(
+                    "activation input requires exactly one complete owner/generation format",
+                ));
+            }
+        };
+        Ok(Self {
+            id: wire.id,
+            activation_id: wire.activation_id,
+            owner,
+            expected_admitted_generation,
+            expected_dispatch_revision: wire.expected_dispatch_revision,
+            message_id: wire.message_id,
+            turn_id: wire.turn_id,
+            boundary: wire.boundary,
+            round: wire.round,
+            provenance: wire.provenance,
+            created_at: wire.created_at,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2231,8 +2303,11 @@ fn lower_command(
             let attachment = &command.attachment;
             if attachment.id.is_empty()
                 || attachment.activation_id.is_empty()
-                || attachment.work_item_id.is_empty()
-                || attachment.expected_scheduling_generation == 0
+                || match &attachment.owner {
+                    SchedulerOwner::WorkItem { work_item_id } => work_item_id.is_empty(),
+                    SchedulerOwner::AgentLifecycle { agent_id } => agent_id.is_empty(),
+                }
+                || attachment.expected_admitted_generation == 0
                 || attachment.message_id.is_empty()
                 || attachment.turn_id.is_empty()
                 || attachment.boundary.is_empty()
@@ -2734,10 +2809,9 @@ fn attach_activation_input(snapshot: &Snapshot, attachment: &ActivationInputAtta
     if activation_id != &attachment.activation_id {
         return rejected(snapshot, "activation_input_owner_mismatch");
     }
-    if owner.work_item_id() != Some(attachment.work_item_id.as_str())
-        || admitted_generation != &attachment.expected_scheduling_generation
+    if owner != &attachment.owner || admitted_generation != &attachment.expected_admitted_generation
     {
-        return rejected(snapshot, "activation_input_work_item_binding_mismatch");
+        return rejected(snapshot, "activation_input_owner_binding_mismatch");
     }
     if snapshot.dispatch_revision != attachment.expected_dispatch_revision {
         return rejected(snapshot, "stale_dispatch_revision");
@@ -3098,6 +3172,7 @@ fn activation_provenance_matches_cause(
                     | ActivationOrigin::Callback
                     | ActivationOrigin::Timer
                     | ActivationOrigin::System
+                    | ActivationOrigin::Operator
             ) && activation_provenance_has_valid_authority(provenance)
         }
         ActivationCause::LifecycleExternalNudge { .. } => {
@@ -3108,6 +3183,7 @@ fn activation_provenance_matches_cause(
                     | ActivationOrigin::Callback
                     | ActivationOrigin::Timer
                     | ActivationOrigin::System
+                    | ActivationOrigin::Operator
             ) && activation_provenance_has_valid_authority(provenance)
         }
         ActivationCause::WorkItemRunnable { .. }
@@ -4527,6 +4603,22 @@ fn change_scenario_authority(
         }) {
             return rejected(snapshot, "scenario_has_unresolved_hard_blocker");
         }
+        let Some(parsed_scenario) = scenario_class.parse::<SchedulerScenarioClass>().ok() else {
+            return rejected(snapshot, "unknown_scenario_class");
+        };
+        if parsed_scenario
+            .authoritative_dependencies()
+            .iter()
+            .any(|dependency| {
+                snapshot
+                    .rollout
+                    .scenarios
+                    .get(dependency.as_str())
+                    .is_none_or(|authority| authority.mode != ScenarioMode::Authoritative)
+            })
+        {
+            return rejected(snapshot, "scenario_authority_dependency_not_satisfied");
+        }
     }
     let rollback_target = manifest
         .classes
@@ -4547,10 +4639,19 @@ fn change_scenario_authority(
                 .then_some(manifest.preflight_revision),
         },
     );
+    let mut transitions = vec![format!("rollout:scenario:{scenario_class}:{mode:?}")];
+    if mode != ScenarioMode::Authoritative {
+        cascade_rollout_dependents(
+            &mut next,
+            scenario_class,
+            &mut transitions,
+            "dependency_authority_lowered",
+        );
+    }
     next.rollout.config_revision += 1;
     Outcome {
         decision: Decision::ScenarioAuthorityChanged,
-        transitions: vec![format!("rollout:scenario:{scenario_class}:{mode:?}")],
+        transitions,
         diagnostics: Vec::new(),
         snapshot: next,
     }
@@ -4597,6 +4698,12 @@ fn report_scenario_hard_blocker(
     let rollback_action = class.rollback_policy.action;
     let rollback_target = rollback_target(&class.rollback_policy);
     let mut next = snapshot.clone();
+    let mut transitions = vec![
+        format!("rollout:hard_blocker:{scenario_class}:{blocker_code}"),
+        format!(
+            "rollout:scenario:{scenario_class}:authoritative->{rollback_target:?}:stop_admissions_and_revert"
+        ),
+    ];
     next.rollout
         .hard_blockers
         .insert(ScenarioHardBlockerRecord {
@@ -4616,18 +4723,49 @@ fn report_scenario_hard_blocker(
     rolled_back.mode = rollback_target;
     rolled_back.manifest_revision = None;
     rolled_back.preflight_revision = None;
+    cascade_rollout_dependents(
+        &mut next,
+        scenario_class,
+        &mut transitions,
+        "dependency_hard_blocker",
+    );
     next.rollout.config_revision += 1;
     Outcome {
         decision: Decision::RollbackTripped,
-        transitions: vec![
-            format!("rollout:hard_blocker:{scenario_class}:{blocker_code}"),
-            format!(
-                "rollout:scenario:{scenario_class}:authoritative->{rollback_target:?}:stop_admissions_and_revert"
-            ),
-        ],
+        transitions,
         diagnostics: Vec::new(),
         snapshot: next,
     }
+}
+
+fn cascade_rollout_dependents(
+    snapshot: &mut Snapshot,
+    changed_scenario: &str,
+    transitions: &mut Vec<String>,
+    reason: &str,
+) {
+    let dependent = SchedulerScenarioClass::OperatorInterjection;
+    if !dependent
+        .authoritative_dependencies()
+        .iter()
+        .any(|dependency| dependency.as_str() == changed_scenario)
+    {
+        return;
+    }
+    let Some(authority) = snapshot.rollout.scenarios.get_mut(dependent.as_str()) else {
+        return;
+    };
+    if authority.mode != ScenarioMode::Authoritative {
+        return;
+    }
+    let target = authority.rollback_target;
+    authority.mode = target;
+    authority.manifest_revision = None;
+    authority.preflight_revision = None;
+    transitions.push(format!(
+        "rollout:scenario:{}:authoritative->{target:?}:{reason}",
+        dependent.as_str()
+    ));
 }
 
 fn rollback_target(policy: &RollbackPolicy) -> ScenarioMode {
@@ -4899,6 +5037,29 @@ fn rejected(snapshot: &Snapshot, diagnostic: &str) -> Outcome {
 }
 
 pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
+    for (scenario_class, authority) in &snapshot.rollout.scenarios {
+        if authority.mode != ScenarioMode::Authoritative {
+            continue;
+        }
+        let scenario = scenario_class
+            .parse::<SchedulerScenarioClass>()
+            .map_err(|_| "rollout contains an unknown scenario class".to_string())?;
+        if scenario
+            .authoritative_dependencies()
+            .iter()
+            .any(|dependency| {
+                snapshot
+                    .rollout
+                    .scenarios
+                    .get(dependency.as_str())
+                    .is_none_or(|authority| authority.mode != ScenarioMode::Authoritative)
+            })
+        {
+            return Err(format!(
+                "authoritative rollout scenario {scenario_class} has non-authoritative dependencies"
+            ));
+        }
+    }
     if let Some(focus) = &snapshot.focus {
         let work = snapshot
             .work
@@ -5003,8 +5164,8 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
             return Err("activation input references unknown activation".into());
         };
         if attachment_id != &attachment.id
-            || activation.owner.work_item_id() != Some(attachment.work_item_id.as_str())
-            || activation.admitted_generation != attachment.expected_scheduling_generation
+            || activation.owner != attachment.owner
+            || activation.admitted_generation != attachment.expected_admitted_generation
             || attachment.expected_dispatch_revision > snapshot.dispatch_revision
             || !activation_input_message_ids.insert(attachment.message_id.as_str())
             || attachment.provenance.source_id != attachment.message_id
@@ -5862,7 +6023,14 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
 
 #[cfg(test)]
 mod wire_compatibility_tests {
-    use super::{ActivationBinding, SchedulerOwner, WaitGenerationRecord, WaitState};
+    use std::collections::BTreeMap;
+
+    use super::{
+        managed_shadow_rollout_manifest, reduce_rollout_command, ActivationBinding,
+        ActivationInputAttachment, ActivationSlot, AgentDispatchState, Decision, ProtocolMode,
+        RolloutCommand, RolloutState, ScenarioAuthority, ScenarioMode, SchedulerOwner,
+        SchedulerScenarioClass, Snapshot, WaitGenerationRecord, WaitState,
+    };
 
     #[test]
     fn legacy_wait_owner_fields_deserialize_as_work_item_owner() {
@@ -5921,5 +6089,201 @@ mod wire_compatibility_tests {
         assert!(conflicting
             .to_string()
             .contains("scheduler owner fields conflict"));
+    }
+
+    #[test]
+    fn activation_input_wire_accepts_legacy_and_lifecycle_owners() {
+        let legacy: ActivationInputAttachment =
+            serde_json::from_value(activation_input_json(serde_json::json!({
+                "work_item_id": "work-a",
+                "expected_scheduling_generation": 3
+            })))
+            .unwrap();
+        assert_eq!(
+            legacy.owner,
+            SchedulerOwner::WorkItem {
+                work_item_id: "work-a".into(),
+            }
+        );
+
+        let lifecycle: ActivationInputAttachment =
+            serde_json::from_value(activation_input_json(serde_json::json!({
+                "owner": {
+                    "kind": "agent_lifecycle",
+                    "agent_id": "agent-a"
+                },
+                "expected_admitted_generation": 4
+            })))
+            .unwrap();
+        assert_eq!(
+            lifecycle.owner,
+            SchedulerOwner::AgentLifecycle {
+                agent_id: "agent-a".into(),
+            }
+        );
+        assert!(serde_json::to_value(lifecycle)
+            .unwrap()
+            .get("work_item_id")
+            .is_none());
+    }
+
+    #[test]
+    fn activation_input_wire_rejects_conflicting_owner_formats() {
+        let error = serde_json::from_value::<ActivationInputAttachment>(activation_input_json(
+            serde_json::json!({
+                "owner": {
+                    "kind": "agent_lifecycle",
+                    "agent_id": "agent-a"
+                },
+                "expected_admitted_generation": 4,
+                "work_item_id": "work-a",
+                "expected_scheduling_generation": 3
+            }),
+        ))
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("exactly one complete owner/generation format"));
+    }
+
+    #[test]
+    fn operator_interjection_authority_requires_all_dependencies() {
+        let mut snapshot = rollout_snapshot();
+        for dependency in SchedulerScenarioClass::OperatorInterjection.authoritative_dependencies()
+        {
+            snapshot
+                .rollout
+                .scenarios
+                .insert(dependency.as_str().into(), authoritative_scenario());
+        }
+        snapshot
+            .rollout
+            .scenarios
+            .get_mut(SchedulerScenarioClass::ExactWaitResume.as_str())
+            .expect("dependency")
+            .mode = ScenarioMode::Shadow;
+        snapshot.rollout.scenarios.insert(
+            SchedulerScenarioClass::OperatorInterjection.as_str().into(),
+            ScenarioAuthority {
+                mode: ScenarioMode::Shadow,
+                rollback_target: ScenarioMode::Shadow,
+                manifest_revision: None,
+                preflight_revision: None,
+            },
+        );
+
+        let outcome = reduce_rollout_command(
+            &snapshot,
+            &RolloutCommand::ChangeScenarioAuthority {
+                scenario_class: SchedulerScenarioClass::OperatorInterjection.as_str().into(),
+                expected_config_revision: 7,
+                expected_manifest_revision: 1,
+                expected_preflight_revision: 1,
+                mode: ScenarioMode::Authoritative,
+            },
+        );
+        assert_eq!(outcome.outcome.decision, Decision::Rejected);
+        assert_eq!(
+            outcome.outcome.diagnostics,
+            ["scenario_authority_dependency_not_satisfied"]
+        );
+    }
+
+    #[test]
+    fn lowering_dependency_cascades_operator_interjection() {
+        let mut snapshot = rollout_snapshot();
+        for dependency in SchedulerScenarioClass::OperatorInterjection.authoritative_dependencies()
+        {
+            snapshot
+                .rollout
+                .scenarios
+                .insert(dependency.as_str().into(), authoritative_scenario());
+        }
+        snapshot.rollout.scenarios.insert(
+            SchedulerScenarioClass::OperatorInterjection.as_str().into(),
+            authoritative_scenario(),
+        );
+
+        let outcome = reduce_rollout_command(
+            &snapshot,
+            &RolloutCommand::ChangeScenarioAuthority {
+                scenario_class: SchedulerScenarioClass::ExactWaitResume.as_str().into(),
+                expected_config_revision: 7,
+                expected_manifest_revision: 1,
+                expected_preflight_revision: 1,
+                mode: ScenarioMode::Shadow,
+            },
+        );
+        assert_eq!(outcome.outcome.decision, Decision::ScenarioAuthorityChanged);
+        assert_eq!(
+            outcome.outcome.snapshot.rollout.scenarios
+                [SchedulerScenarioClass::OperatorInterjection.as_str()]
+            .mode,
+            ScenarioMode::Shadow
+        );
+    }
+
+    fn rollout_snapshot() -> Snapshot {
+        let mut manifest = managed_shadow_rollout_manifest(1, 1, "test".into(), "test".into(), 38);
+        for class in manifest.classes.values_mut() {
+            class.configured_mode = ScenarioMode::Authoritative;
+            class.observed_shadow_samples = class.minimum_shadow_samples;
+            class.observed_shadow_duration_secs = class.minimum_shadow_duration_secs;
+            class.verified_evidence = class.required_evidence.clone();
+        }
+        Snapshot {
+            slot: ActivationSlot::Idle,
+            dispatch: AgentDispatchState::Open,
+            dispatch_revision: 0,
+            focus: None,
+            work: BTreeMap::new(),
+            waits: BTreeMap::new(),
+            activations: BTreeMap::new(),
+            activation_authorities: BTreeMap::new(),
+            activation_admissions: BTreeMap::new(),
+            settlements: BTreeMap::new(),
+            missing_settlements: BTreeMap::new(),
+            rollout: RolloutState {
+                protocol_mode: ProtocolMode::Authoritative,
+                config_revision: 7,
+                manifest: Some(manifest),
+                ..RolloutState::default()
+            },
+            admitted_generations: Default::default(),
+            continuation_admissions: BTreeMap::new(),
+            activation_inputs: BTreeMap::new(),
+        }
+    }
+
+    fn authoritative_scenario() -> ScenarioAuthority {
+        ScenarioAuthority {
+            mode: ScenarioMode::Authoritative,
+            rollback_target: ScenarioMode::Shadow,
+            manifest_revision: Some(1),
+            preflight_revision: Some(1),
+        }
+    }
+
+    fn activation_input_json(owner_fields: serde_json::Value) -> serde_json::Value {
+        let mut value = serde_json::json!({
+            "id": "attachment-a",
+            "activation_id": "activation-a",
+            "expected_dispatch_revision": 0,
+            "message_id": "message-a",
+            "turn_id": "turn-a",
+            "boundary": "before_tool_execution",
+            "round": 1,
+            "provenance": {
+                "origin": "operator",
+                "trust": "operator_instruction",
+                "source_id": "message-a"
+            },
+            "created_at": "2026-07-28T00:00:00Z"
+        });
+        value
+            .as_object_mut()
+            .expect("attachment payload")
+            .extend(owner_fields.as_object().expect("owner fields").clone());
+        value
     }
 }

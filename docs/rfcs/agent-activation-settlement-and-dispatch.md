@@ -515,9 +515,32 @@ already owns execution. A safe point attaches one typed
 `ActivationInputAttachment` to that activation and atomically commits the
 legacy `Interjected` queue state, incoming transcript evidence, and audit
 evidence. The attachment is unique per message and fenced by activation,
-WorkItem scheduling generation, dispatch revision, Turn, boundary, and round.
-It neither creates another activation nor changes slot, dispatch, or WorkItem
-generation.
+activation owner, admitted generation, dispatch revision, Turn, boundary, and
+round. Both `WorkItem` and `AgentLifecycle` owners are first-class attachment
+targets. It neither creates another activation nor changes slot, dispatch, or
+owner generation.
+
+The running turn records its claim-time admission provenance. A canonical turn
+records the scenario class and activation id. A legacy-compatible turn records
+the applicable scenario class and its effective `off` or `shadow` mode. The
+safe point must use this durable fact rather than re-reading rollout
+configuration, because authority may change while the turn is running.
+
+If `operator_interjection` is authoritative but the running turn has explicit
+legacy-compatible provenance and therefore no canonical activation, the safe
+point leaves the interjection queued, records a deduplicated deferred
+diagnostic, and lets the current turn settle normally. The scheduler then
+claims the same message as the next ordinary input. Missing provenance,
+canonical provenance without an activation, an unknown activation, or any
+owner/generation/turn mismatch remains a hard invariant failure.
+
+`operator_interjection` may become authoritative only after
+`work_item_autonomous_continuation`, `exact_task_rejoin`, `exact_wait_resume`,
+`explicitly_bound_operator_input`, and `settlement` are authoritative.
+Lowering or hard-blocking any dependency atomically lowers authoritative
+interjection. `LifecycleExternalNudge`, including an unbound trusted operator
+prompt without a matching lifecycle wait, currently belongs to the
+`exact_wait_resume` rollout class.
 
 ## Activation Settlement
 

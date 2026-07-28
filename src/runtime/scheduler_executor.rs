@@ -1,5 +1,6 @@
 use super::message_dispatch::MessageDispatchPlan;
 use super::*;
+use crate::types::ExecutionAdmissionProvenance;
 
 pub(super) enum RunLoopPoll {
     Shutdown,
@@ -75,6 +76,7 @@ pub(super) struct ScheduledMessage {
 }
 
 struct CanonicalClaimPlan {
+    scenario_class: crate::domain::scheduler_protocol::SchedulerScenarioClass,
     scheduler_claim_work_item: Option<crate::types::WorkItemRecord>,
     bootstrap: Option<crate::domain::scheduler_protocol::Snapshot>,
     commands: Vec<crate::domain::scheduler_protocol::ProtocolCommand>,
@@ -105,6 +107,45 @@ struct QueueCandidate {
     message: MessageEnvelope,
     prior_state: AgentState,
     queue_len: usize,
+}
+
+impl RuntimeHandle {
+    pub(super) fn legacy_execution_admission_provenance(
+        &self,
+        message: &MessageEnvelope,
+        continuation_resolution: Option<&ContinuationResolution>,
+        task: Option<&TaskRecord>,
+    ) -> Result<ExecutionAdmissionProvenance> {
+        let scenario_class =
+            scheduler::canonical_activation_candidate(message, continuation_resolution, task)?
+                .map(|candidate| candidate.scenario_class());
+        let configured_mode = if self.scheduler_protocol_production_commands_enabled() {
+            scenario_class
+                .map(|scenario| {
+                    self.inner
+                        .runtime_db
+                        .transitions()
+                        .scheduler_scenario_mode(scenario)
+                })
+                .transpose()?
+                .unwrap_or(crate::domain::scheduler_protocol::ScenarioMode::Off)
+        } else {
+            crate::domain::scheduler_protocol::ScenarioMode::Off
+        };
+        let effective_mode = match configured_mode {
+            crate::domain::scheduler_protocol::ScenarioMode::Off => {
+                crate::domain::scheduler_protocol::ScenarioMode::Off
+            }
+            crate::domain::scheduler_protocol::ScenarioMode::Shadow
+            | crate::domain::scheduler_protocol::ScenarioMode::Authoritative => {
+                crate::domain::scheduler_protocol::ScenarioMode::Shadow
+            }
+        };
+        Ok(ExecutionAdmissionProvenance::LegacyCompat {
+            scenario_class,
+            effective_mode,
+        })
+    }
 }
 
 impl<'a> SchedulerDecisionExecutor<'a> {
@@ -345,7 +386,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             .runtime
             .closure_decision_for_state(&candidate.prior_state, None)
             .await?;
-        let dispatch_plan = self.runtime.build_message_dispatch_plan(
+        let mut dispatch_plan = self.runtime.build_message_dispatch_plan(
             &candidate.message,
             prior_closure,
             &candidate.prior_state,
@@ -467,6 +508,11 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             }
         };
         if let Some(plan) = canonical_claim.as_ref() {
+            dispatch_plan.execution_admission_provenance =
+                ExecutionAdmissionProvenance::Canonical {
+                    scenario_class: plan.scenario_class,
+                    activation_id: canonical_activation_id(&persisted_message.id),
+                };
             for expectation in &plan.rollout_expectations {
                 if !scheduler_rollout_expectations
                     .iter()
@@ -811,6 +857,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                         })
                 {
                     return Ok(CanonicalClaimOutcome::Plan(CanonicalClaimPlan {
+                        scenario_class,
                         scheduler_claim_work_item: matches!(
                             scenario,
                             scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation {
@@ -1116,6 +1163,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         commands.push(ProtocolCommand::AdmitActivation(admission));
 
         Ok(CanonicalClaimOutcome::Plan(CanonicalClaimPlan {
+            scenario_class,
             scheduler_claim_work_item: matches!(
                 scenario,
                 scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation { .. }
@@ -1169,6 +1217,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                         })
                 {
                     return Ok(CanonicalClaimOutcome::Plan(CanonicalClaimPlan {
+                        scenario_class,
                         scheduler_claim_work_item: None,
                         bootstrap: None,
                         commands: Vec::new(),
@@ -1352,6 +1401,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             expected_dispatch_revision,
         }));
         Ok(CanonicalClaimOutcome::Plan(CanonicalClaimPlan {
+            scenario_class,
             scheduler_claim_work_item: None,
             bootstrap,
             commands,

@@ -115,16 +115,16 @@ use crate::{
         BriefCreatedAuditEvent, BriefRecord, CallbackDeliveryMode, CallbackDeliveryPayload,
         CallbackDeliveryResult, CallbackIngressDisposition, ClosureDecision,
         ContinuationResolution, ControlAction, ExecCommandBatchItemStatus, ExecCommandBatchResult,
-        ExternalTriggerCapability, ExternalTriggerRecord, ExternalTriggerScope,
-        ExternalTriggerStatus, ExternalTriggerSummary, LoadedAgentsMd, MessageBody,
-        MessageDeliverySurface, MessageEnvelope, MessageKind, MessageLifecycleAuditEvent,
-        MessageOrigin, PendingWakeHint, Priority, QueueEntryRecord, QueueEntryStatus,
-        RuntimeFailurePhase, RuntimeFailureSummary, RuntimePosture, SkillActivationSource,
-        SkillActivationState, SkillCatalogEntry, SkillLoadReason, SkillsRuntimeView, TaskKind,
-        TaskLifecycleAuditEvent, TaskRecord, TaskRecoverySpec, TaskStatus, TimerRecord,
-        TimerStatus, ToolExecutionRecord, TranscriptEntry, TranscriptEntryKind,
-        ViewImageObservation, WaitingReason, WorkItemExecutionBinding, WorkItemLifecycleAuditEvent,
-        WorkspaceEntry, AGENT_HOME_WORKSPACE_ID,
+        ExecutionAdmissionProvenance, ExternalTriggerCapability, ExternalTriggerRecord,
+        ExternalTriggerScope, ExternalTriggerStatus, ExternalTriggerSummary, LoadedAgentsMd,
+        MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind,
+        MessageLifecycleAuditEvent, MessageOrigin, PendingWakeHint, Priority, QueueEntryRecord,
+        QueueEntryStatus, RuntimeFailurePhase, RuntimeFailureSummary, RuntimePosture,
+        SkillActivationSource, SkillActivationState, SkillCatalogEntry, SkillLoadReason,
+        SkillsRuntimeView, TaskKind, TaskLifecycleAuditEvent, TaskRecord, TaskRecoverySpec,
+        TaskStatus, TimerRecord, TimerStatus, ToolExecutionRecord, TranscriptEntry,
+        TranscriptEntryKind, ViewImageObservation, WaitingReason, WorkItemExecutionBinding,
+        WorkItemLifecycleAuditEvent, WorkspaceEntry, AGENT_HOME_WORKSPACE_ID,
     },
     web::{WebConfig, WebProviderKind},
 };
@@ -2196,27 +2196,31 @@ impl RuntimeHandle {
         Ok(())
     }
 
-    async fn begin_interactive_turn(
+    async fn begin_interactive_turn_with_provenance(
         &self,
         message: Option<&MessageEnvelope>,
         operator_binding_id: Option<&str>,
         operator_reply_route_id: Option<&str>,
+        execution_admission_provenance: ExecutionAdmissionProvenance,
     ) -> Result<()> {
-        let canonical_execution_binding = message
-            .map(|message| {
-                let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+        let canonical_execution_binding = match &execution_admission_provenance {
+            ExecutionAdmissionProvenance::Canonical { activation_id, .. } => {
+                let message = message.ok_or_else(|| {
+                    anyhow!("canonical execution admission requires a source message")
+                })?;
                 let activation = self
                     .inner
                     .runtime_db
                     .transitions()
                     .load_scheduler_protocol_snapshot_if_initialized(&message.agent_id)?
-                    .and_then(|snapshot| snapshot.activations.get(&activation_id).cloned());
-                Ok::<_, anyhow::Error>(
-                    activation.map(|activation| (activation_id, activation.owner)),
-                )
-            })
-            .transpose()?
-            .flatten();
+                    .and_then(|snapshot| snapshot.activations.get(activation_id).cloned())
+                    .ok_or_else(|| {
+                        anyhow!("canonical execution admission references an unknown activation")
+                    })?;
+                Some((activation_id.clone(), activation.owner))
+            }
+            ExecutionAdmissionProvenance::LegacyCompat { .. } => None,
+        };
         if let Some(message) = message {
             let work_item_id = message.work_item_id.clone().or_else(|| {
                 self.inner.agent.try_lock().ok().and_then(|guard| {
@@ -2310,6 +2314,7 @@ impl RuntimeHandle {
                     .map(|(activation_id, _)| activation_id.clone());
                 WorkItemExecutionBinding {
                     activation_id,
+                    admission_provenance: Some(execution_admission_provenance.clone()),
                     source_message_id: message.id.clone(),
                     turn_id,
                     work_item_id,
@@ -2358,13 +2363,65 @@ impl RuntimeHandle {
     }
 
     #[cfg(test)]
+    async fn begin_interactive_turn(
+        &self,
+        message: Option<&MessageEnvelope>,
+        operator_binding_id: Option<&str>,
+        operator_reply_route_id: Option<&str>,
+    ) -> Result<()> {
+        let provenance = if let Some(message) = message {
+            let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+            let snapshot = self
+                .inner
+                .runtime_db
+                .transitions()
+                .load_scheduler_protocol_snapshot_if_initialized(&message.agent_id)?;
+            if snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.activations.contains_key(&activation_id))
+            {
+                let scenario_class =
+                    scheduler::canonical_activation_candidate(message, None, None)?
+                        .map(|candidate| candidate.scenario_class())
+                        .unwrap_or(scheduler::EXACT_WAIT_RESUME_SCENARIO);
+                ExecutionAdmissionProvenance::Canonical {
+                    scenario_class,
+                    activation_id,
+                }
+            } else {
+                self.legacy_execution_admission_provenance(message, None, None)?
+            }
+        } else {
+            ExecutionAdmissionProvenance::LegacyCompat {
+                scenario_class: None,
+                effective_mode: crate::domain::scheduler_protocol::ScenarioMode::Off,
+            }
+        };
+        self.begin_interactive_turn_with_provenance(
+            message,
+            operator_binding_id,
+            operator_reply_route_id,
+            provenance,
+        )
+        .await
+    }
+
+    #[cfg(test)]
     async fn begin_interactive_turn_for_test(
         &self,
         operator_binding_id: Option<&str>,
         operator_reply_route_id: Option<&str>,
     ) -> Result<()> {
-        self.begin_interactive_turn(None, operator_binding_id, operator_reply_route_id)
-            .await
+        self.begin_interactive_turn_with_provenance(
+            None,
+            operator_binding_id,
+            operator_reply_route_id,
+            ExecutionAdmissionProvenance::LegacyCompat {
+                scenario_class: None,
+                effective_mode: crate::domain::scheduler_protocol::ScenarioMode::Off,
+            },
+        )
+        .await
     }
 
     fn operator_transport_from_message(

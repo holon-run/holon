@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::config::ModelRouteRef;
+use crate::domain::scheduler_protocol::{ScenarioMode, SchedulerScenarioClass};
 pub use crate::domain::{agent_home_workspace_id, work_item::*, AGENT_HOME_WORKSPACE_ID};
 use crate::ids;
 use crate::model_catalog::ResolvedRuntimeModelPolicy;
@@ -1959,9 +1960,25 @@ pub struct WorkingMemoryState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ExecutionAdmissionProvenance {
+    Canonical {
+        scenario_class: SchedulerScenarioClass,
+        activation_id: String,
+    },
+    LegacyCompat {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scenario_class: Option<SchedulerScenarioClass>,
+        effective_mode: ScenarioMode,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WorkItemExecutionBinding {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admission_provenance: Option<ExecutionAdmissionProvenance>,
     pub source_message_id: String,
     pub turn_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

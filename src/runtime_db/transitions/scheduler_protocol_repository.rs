@@ -2587,13 +2587,15 @@ fn persist_agent_snapshot_tx(
         )?;
     }
     for (attachment_id, attachment) in &snapshot.activation_inputs {
+        let (owner_kind, owner_id, _) = scheduler_owner_columns(&attachment.owner);
         tx.execute(
             "INSERT INTO scheduler_activation_inputs (
                agent_id,
                attachment_id,
                activation_id,
-               work_item_id,
-               expected_scheduling_generation,
+               owner_kind,
+               owner_id,
+               expected_admitted_generation,
                expected_dispatch_revision,
                message_id,
                turn_id,
@@ -2601,11 +2603,12 @@ fn persist_agent_snapshot_tx(
                round,
                payload_json,
                created_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(agent_id, attachment_id) DO UPDATE SET
                activation_id = excluded.activation_id,
-               work_item_id = excluded.work_item_id,
-               expected_scheduling_generation = excluded.expected_scheduling_generation,
+               owner_kind = excluded.owner_kind,
+               owner_id = excluded.owner_id,
+               expected_admitted_generation = excluded.expected_admitted_generation,
                expected_dispatch_revision = excluded.expected_dispatch_revision,
                message_id = excluded.message_id,
                turn_id = excluded.turn_id,
@@ -2616,10 +2619,11 @@ fn persist_agent_snapshot_tx(
                 agent_id,
                 attachment_id,
                 &attachment.activation_id,
-                &attachment.work_item_id,
+                owner_kind,
+                owner_id,
                 to_i64(
-                    attachment.expected_scheduling_generation,
-                    "activation input scheduling generation",
+                    attachment.expected_admitted_generation,
+                    "activation input admitted generation",
                 )?,
                 to_i64(
                     attachment.expected_dispatch_revision,
