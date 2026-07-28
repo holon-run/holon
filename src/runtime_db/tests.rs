@@ -841,6 +841,42 @@ mod tests {
         revision: u64,
         preflight_revision: u64,
     ) -> RolloutManifest {
+        let dependency_classes = scenario_class
+            .parse::<SchedulerScenarioClass>()
+            .map(|scenario| scenario.authoritative_dependencies())
+            .unwrap_or_default();
+        let classes = std::iter::once(scenario_class)
+            .chain(
+                dependency_classes
+                    .iter()
+                    .map(|dependency| dependency.as_str()),
+            )
+            .map(|scenario_class| {
+                (
+                    scenario_class.to_string(),
+                    scheduler_phase3_rollout_class_evidence(scenario_class),
+                )
+            })
+            .collect();
+        RolloutManifest {
+            revision,
+            preflight_revision,
+            preflight_for_manifest_revision: revision,
+            preflight_succeeded: true,
+            protocol_build: format!("holon-0.30.0-phase3-{revision}"),
+            schema_build: format!("scheduler-protocol-schema-v{revision}"),
+            schema_revision: revision,
+            fixture_corpus_revision: format!("scheduler-workitem-phase3-v{revision}"),
+            classes,
+            safety_divergence_bps: 0,
+            canonical_state_divergence_bps: 0,
+            allowed_observational_divergence: BTreeMap::new(),
+            approver: "phase3-reviewer".into(),
+            approved_at: "2026-07-21T00:00:00Z".into(),
+        }
+    }
+
+    fn scheduler_phase3_rollout_class_evidence(scenario_class: &str) -> RolloutClassEvidence {
         let (minimum_shadow_samples, minimum_shadow_duration_secs, scenario_evidence) =
             match scenario_class {
                 "reducer_only_candidates" => (
@@ -911,42 +947,24 @@ mod tests {
             .chain(scenario_evidence)
             .map(Into::into)
             .collect();
-        RolloutManifest {
-            revision,
-            preflight_revision,
-            preflight_for_manifest_revision: revision,
-            preflight_succeeded: true,
-            protocol_build: format!("holon-0.30.0-phase3-{revision}"),
-            schema_build: format!("scheduler-protocol-schema-v{revision}"),
-            schema_revision: revision,
-            fixture_corpus_revision: format!("scheduler-workitem-phase3-v{revision}"),
-            classes: BTreeMap::from([(
-                scenario_class.into(),
-                RolloutClassEvidence {
-                    configured_mode: ScenarioMode::Authoritative,
-                    minimum_shadow_samples,
-                    minimum_shadow_duration_secs,
-                    observed_shadow_samples: minimum_shadow_samples,
-                    observed_shadow_duration_secs: minimum_shadow_duration_secs,
-                    maximum_p99_latency_regression_bps: 500,
-                    observed_p99_latency_regression_bps: 100,
-                    hard_blocker_count: 0,
-                    unresolved_divergence_count: 0,
-                    required_evidence: evidence.clone(),
-                    verified_evidence: evidence,
-                    rollback_policy: RollbackPolicy {
-                        trigger: RollbackTrigger::AnyHardBlocker,
-                        action: RollbackAction::StopAdmissionsAndRevert {
-                            target: ScenarioMode::Shadow,
-                        },
-                    },
+        RolloutClassEvidence {
+            configured_mode: ScenarioMode::Authoritative,
+            minimum_shadow_samples,
+            minimum_shadow_duration_secs,
+            observed_shadow_samples: minimum_shadow_samples,
+            observed_shadow_duration_secs: minimum_shadow_duration_secs,
+            maximum_p99_latency_regression_bps: 500,
+            observed_p99_latency_regression_bps: 100,
+            hard_blocker_count: 0,
+            unresolved_divergence_count: 0,
+            required_evidence: evidence.clone(),
+            verified_evidence: evidence,
+            rollback_policy: RollbackPolicy {
+                trigger: RollbackTrigger::AnyHardBlocker,
+                action: RollbackAction::StopAdmissionsAndRevert {
+                    target: ScenarioMode::Shadow,
                 },
-            )]),
-            safety_divergence_bps: 0,
-            canonical_state_divergence_bps: 0,
-            allowed_observational_divergence: BTreeMap::new(),
-            approver: "phase3-reviewer".into(),
-            approved_at: "2026-07-21T00:00:00Z".into(),
+            },
         }
     }
 
@@ -3160,34 +3178,43 @@ INSERT INTO scheduler_scenario_authorities (
                     },
                     Decision::ProtocolConfigured,
                 ),
-                (
-                    format!("{scenario_class}-shadow"),
-                    RolloutCommand::ChangeScenarioAuthority {
-                        scenario_class: scenario_class.into(),
-                        expected_config_revision: 2,
-                        expected_manifest_revision: 1,
-                        expected_preflight_revision: 1,
-                        mode: ScenarioMode::Shadow,
-                    },
-                    Decision::ScenarioAuthorityChanged,
-                ),
-                (
-                    format!("{scenario_class}-authoritative"),
-                    RolloutCommand::ChangeScenarioAuthority {
-                        scenario_class: scenario_class.into(),
-                        expected_config_revision: 3,
-                        expected_manifest_revision: 1,
-                        expected_preflight_revision: 1,
-                        mode: ScenarioMode::Authoritative,
-                    },
-                    Decision::ScenarioAuthorityChanged,
-                ),
             ] {
                 let committed = db
                     .transitions()
                     .commit_scheduler_rollout_command(&identity, &command, None)?;
                 assert_eq!(committed.result.decision, expected_decision);
             }
+            let mut config_revision = 2;
+            for authority_scenario in scenario
+                .authoritative_dependencies()
+                .iter()
+                .copied()
+                .chain(std::iter::once(scenario))
+            {
+                for mode in [ScenarioMode::Shadow, ScenarioMode::Authoritative] {
+                    let committed = db.transitions().commit_scheduler_rollout_command(
+                        &format!(
+                            "{}-{}-{mode:?}",
+                            scenario_class,
+                            authority_scenario.as_str()
+                        ),
+                        &RolloutCommand::ChangeScenarioAuthority {
+                            scenario_class: authority_scenario.as_str().into(),
+                            expected_config_revision: config_revision,
+                            expected_manifest_revision: 1,
+                            expected_preflight_revision: 1,
+                            mode,
+                        },
+                        None,
+                    )?;
+                    assert_eq!(
+                        committed.result.decision,
+                        Decision::ScenarioAuthorityChanged
+                    );
+                    config_revision += 1;
+                }
+            }
+            let authoritative_config_revision = config_revision;
             let authoritative_expectations = db
                 .transitions()
                 .scheduler_rollout_expectations(&[scenario], true)?;
@@ -3268,17 +3295,18 @@ INSERT INTO scheduler_scenario_authorities (
             assert!(after_missing.rollout.hard_blockers.iter().any(|blocker| {
                 blocker.scenario_class == scenario_class
                     && blocker.blocker_code == "canonical_evidence_missing"
-                    && blocker.config_revision == 4
+                    && blocker.config_revision == authoritative_config_revision
                     && blocker.manifest_revision == 1
                     && blocker.preflight_revision == 1
             }));
 
             let replacement_manifest = scheduler_phase3_rollout_manifest(scenario_class, 2, 2);
+            let after_missing_config_revision = authoritative_config_revision + 1;
             for (identity, command, expected_decision) in [
                 (
                     format!("{scenario_class}-replacement-open"),
                     RolloutCommand::OpenPreflight {
-                        expected_config_revision: 5,
+                        expected_config_revision: after_missing_config_revision,
                         manifest_revision: 2,
                     },
                     Decision::RolloutPreflightOpened,
@@ -3286,7 +3314,7 @@ INSERT INTO scheduler_scenario_authorities (
                 (
                     format!("{scenario_class}-replacement-complete"),
                     RolloutCommand::CompletePreflight {
-                        expected_config_revision: 5,
+                        expected_config_revision: after_missing_config_revision,
                         expected_preflight_revision: 2,
                         manifest: replacement_manifest.clone(),
                     },
@@ -3295,27 +3323,50 @@ INSERT INTO scheduler_scenario_authorities (
                 (
                     format!("{scenario_class}-replacement-install"),
                     RolloutCommand::InstallManifest {
-                        expected_config_revision: 5,
+                        expected_config_revision: after_missing_config_revision,
                         manifest: replacement_manifest.clone(),
                     },
                     Decision::ManifestInstalled,
-                ),
-                (
-                    format!("{scenario_class}-reauthorize-after-missing"),
-                    RolloutCommand::ChangeScenarioAuthority {
-                        scenario_class: scenario_class.into(),
-                        expected_config_revision: 6,
-                        expected_manifest_revision: 2,
-                        expected_preflight_revision: 2,
-                        mode: ScenarioMode::Authoritative,
-                    },
-                    Decision::ScenarioAuthorityChanged,
                 ),
             ] {
                 let committed = db
                     .transitions()
                     .commit_scheduler_rollout_command(&identity, &command, None)?;
-                assert_eq!(committed.result.decision, expected_decision);
+                assert_eq!(
+                    committed.result.decision, expected_decision,
+                    "{identity}: {:?}",
+                    committed.result.diagnostics
+                );
+            }
+            let mut reauthorized_config_revision = after_missing_config_revision + 1;
+            for authority_scenario in scenario
+                .authoritative_dependencies()
+                .iter()
+                .copied()
+                .chain(std::iter::once(scenario))
+            {
+                let identity = format!(
+                    "{scenario_class}-reauthorize-{}-after-missing",
+                    authority_scenario.as_str()
+                );
+                let committed = db.transitions().commit_scheduler_rollout_command(
+                    &identity,
+                    &RolloutCommand::ChangeScenarioAuthority {
+                        scenario_class: authority_scenario.as_str().into(),
+                        expected_config_revision: reauthorized_config_revision,
+                        expected_manifest_revision: 2,
+                        expected_preflight_revision: 2,
+                        mode: ScenarioMode::Authoritative,
+                    },
+                    None,
+                )?;
+                assert_eq!(
+                    committed.result.decision,
+                    Decision::ScenarioAuthorityChanged,
+                    "{identity}: {:?}",
+                    committed.result.diagnostics
+                );
+                reauthorized_config_revision += 1;
             }
             let authoritative_expectations = db
                 .transitions()
@@ -3368,7 +3419,7 @@ INSERT INTO scheduler_scenario_authorities (
                 .any(|blocker| {
                     blocker.scenario_class == scenario_class
                         && blocker.blocker_code == "phase5h_cutover_mismatch"
-                        && blocker.config_revision == 7
+                        && blocker.config_revision == reauthorized_config_revision
                         && blocker.manifest_revision == 2
                         && blocker.preflight_revision == 2
                 }));

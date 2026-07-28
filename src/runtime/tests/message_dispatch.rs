@@ -45,12 +45,19 @@ fn task_status_message() -> MessageEnvelope {
 }
 
 fn task_result_message() -> MessageEnvelope {
-    let mut msg = message_of_kind(
+    let mut msg = MessageEnvelope::new(
+        "default",
         MessageKind::TaskResult,
+        MessageOrigin::Task {
+            task_id: "task-dispatch-1".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
         MessageBody::Text {
             text: "result payload".into(),
         },
     );
+    msg.task_id = Some("task-dispatch-1".into());
     msg.metadata = Some(task_metadata());
     msg
 }

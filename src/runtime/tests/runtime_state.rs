@@ -8111,6 +8111,7 @@ async fn task_result_routes_through_reduction_and_follow_up_behavior() {
         },
     );
     let mut message = message;
+    message.task_id = Some("task-1".into());
     message.metadata = Some(serde_json::json!({
         "task_id": "task-1",
         "task_kind": "child_agent_task",
@@ -8418,6 +8419,7 @@ async fn task_result_persists_reduced_state_when_agent_status_is_not_mutable() {
             text: "task completed".into(),
         },
     );
+    message.task_id = Some("task-1".into());
     message.metadata = Some(serde_json::json!({
         "task_id": "task-1",
         "task_kind": "child_agent_task",
