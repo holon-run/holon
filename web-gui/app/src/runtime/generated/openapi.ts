@@ -881,6 +881,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/control/agents/{agent_id}/scheduler-repair": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Inspect scheduler repair state
+         * @description Return active waits and queued wake-only messages eligible for an explicit scheduler repair transition.
+         */
+        get: operations["inspectSchedulerRepair"];
+        put?: never;
+        /**
+         * Apply scheduler repair
+         * @description Dry-run or apply one OCC-guarded scheduler repair operation and emit an audit event for committed changes.
+         */
+        post: operations["applySchedulerRepair"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/control/agents/{agent_id}/skills/disable": {
         parameters: {
             query?: never;
@@ -3106,6 +3130,7 @@ export interface components {
                 previous_work_item_id?: string | null;
                 reason?: string | null;
                 switch_kind: string;
+                terminal_transition: boolean;
                 warnings?: {
                     code: string;
                     message: string;
@@ -3325,6 +3350,96 @@ export interface components {
                     kind: string;
                 }[];
             };
+        };
+        /** SchedulerRepairInspection */
+        SchedulerRepairInspection: {
+            active_waits: {
+                agent_id: string;
+                /** Format: date-time */
+                cancelled_at?: string | null;
+                continuation?: unknown;
+                /** Format: date-time */
+                created_at: string;
+                /** Format: date-time */
+                expires_at?: string | null;
+                id: string;
+                /** @enum {string} */
+                kind: "task" | "external" | "operator" | "timer" | "system";
+                /** Format: date-time */
+                resolved_at?: string | null;
+                source?: string | null;
+                /** @enum {string} */
+                status: "active" | "resolved" | "cancelled" | "expired";
+                subject_ref?: string | null;
+                turn_id?: string | null;
+                /** Format: date-time */
+                updated_at: string;
+                waiting_for: string;
+                wake_sources?: ({
+                    /** @constant */
+                    kind: "task_result";
+                    task_id: string;
+                } | {
+                    external_trigger_id?: string | null;
+                    /** @constant */
+                    kind: "external_ingress";
+                } | {
+                    /** @constant */
+                    kind: "timer";
+                    /** Format: date-time */
+                    wake_at: string;
+                } | {
+                    /** @constant */
+                    kind: "operator_input";
+                } | {
+                    /** @constant */
+                    kind: "system_tick";
+                })[];
+                work_item_id?: string | null;
+            }[];
+            agent_id: string;
+            wake_only_queue_entries: {
+                agent_id: string;
+                /** Format: date-time */
+                created_at: string;
+                message_id: string;
+                /** @enum {string} */
+                priority: "interject" | "next" | "normal" | "background";
+                status: ("queued" | "dequeued" | "processed" | "interjected" | "aborted" | "dropped") | "interrupted";
+                /** Format: date-time */
+                updated_at: string;
+            }[];
+        };
+        /** SchedulerRepairRequest */
+        SchedulerRepairRequest: {
+            /** @default false */
+            dry_run: boolean;
+            operation: {
+                /** @enum {string} */
+                expected_status: "active" | "resolved" | "cancelled" | "expired";
+                /** Format: date-time */
+                expected_updated_at: string;
+                /** @constant */
+                kind: "cancel_wait";
+                wait_id: string;
+            } | {
+                expected_status: ("queued" | "dequeued" | "processed" | "interjected" | "aborted" | "dropped") | "interrupted";
+                /** Format: date-time */
+                expected_updated_at: string;
+                /** @constant */
+                kind: "drop_wake_only_queue_entry";
+                message_id: string;
+            };
+            reason: string;
+        };
+        /** SchedulerRepairResult */
+        SchedulerRepairResult: {
+            after: unknown;
+            agent_id: string;
+            before: unknown;
+            changed: boolean;
+            dry_run: boolean;
+            operation: string;
         };
         /** SearchRequest */
         SearchRequest: {
@@ -5978,6 +6093,92 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["JsonValue"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    inspectSchedulerRepair: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Agent id. */
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SchedulerRepairInspection"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    applySchedulerRepair: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Agent id. */
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SchedulerRepairRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SchedulerRepairResult"];
                 };
             };
             /** @description Client error JSON response. */
