@@ -8781,6 +8781,116 @@ async fn timer_operator_and_system_ticks_record_wait_reconciliation_signals() {
 }
 
 #[tokio::test]
+async fn same_turn_message_does_not_reconcile_wait_condition() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "reconciled",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let now = Utc::now();
+    let mut work_item = WorkItemRecord::new("default", "operator wait work", WorkItemState::Open);
+    work_item.id = "work-op-wait".into();
+    runtime.storage().append_work_item(&work_item).unwrap();
+    // Register an operator-input wait condition that was created during turn "turn-seed".
+    runtime
+        .storage()
+        .append_wait_condition(&WaitConditionRecord {
+            id: "wait-op-same-turn".into(),
+            agent_id: "default".into(),
+            work_item_id: Some("work-op-wait".into()),
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::Operator,
+            source: None,
+            subject_ref: None,
+            waiting_for: "operator resume".into(),
+            wake_sources: vec![WakeSource::OperatorInput],
+            continuation: None,
+            created_at: now,
+            updated_at: now,
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: Some("turn-seed".into()),
+        })
+        .unwrap();
+
+    // Process an operator message that belongs to the SAME turn that created the
+    // wait condition.  It must NOT reconcile the wait.
+    let mut seed_message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("operator-1".into()),
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Interject,
+        MessageBody::Text {
+            text: "seed prompt".into(),
+        },
+    );
+    seed_message.turn_id = Some("turn-seed".into());
+    runtime
+        .process_message(
+            seed_message,
+            closure_decision(ClosureOutcome::Completed, None),
+        )
+        .await
+        .unwrap();
+
+    let active = runtime
+        .storage()
+        .active_wait_conditions_for_agent("default")
+        .unwrap();
+    assert_eq!(
+        active.len(),
+        1,
+        "same-turn message must not reconcile the wait"
+    );
+
+    // A later operator message with a DIFFERENT turn_id must reconcile the wait.
+    let mut resume_message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("operator-1".into()),
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Interject,
+        MessageBody::Text {
+            text: "resume prompt".into(),
+        },
+    );
+    resume_message.turn_id = Some("turn-resume".into());
+    runtime
+        .process_message(
+            resume_message,
+            closure_decision(ClosureOutcome::Completed, None),
+        )
+        .await
+        .unwrap();
+
+    let active = runtime
+        .storage()
+        .active_wait_conditions_for_agent("default")
+        .unwrap();
+    assert_eq!(
+        active.len(),
+        0,
+        "different-turn message must reconcile the wait"
+    );
+}
+
+#[tokio::test]
 async fn task_result_persists_reduced_state_when_agent_status_is_not_mutable() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();

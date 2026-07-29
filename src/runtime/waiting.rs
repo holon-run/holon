@@ -975,8 +975,18 @@ fn reconciliation_signals_for_message(
     message: &MessageEnvelope,
     active_conditions: &[WaitConditionRecord],
 ) -> Vec<serde_json::Value> {
+    let message_turn = message.turn_id.as_deref();
     active_conditions
         .iter()
+        .filter(|condition| {
+            // A wait condition created during the same turn that the current
+            // message triggered must not be reconciled by that message.  The
+            // wait is meant to be resumed by a *future* event; the triggering
+            // message is by definition "before" the wait was registered.
+            message_turn
+                .zip(condition.turn_id.as_deref())
+                .is_none_or(|(mt, ct)| mt != ct)
+        })
         .filter_map(|condition| reconciliation_signal_for_condition(message, condition))
         .collect()
 }
