@@ -150,6 +150,35 @@ async fn plan_task_result_uses_kind_default_when_status_absent() {
 }
 
 #[tokio::test]
+async fn terminal_task_result_uses_explicit_message_binding_after_wait_resolution() {
+    let (_dir, _ws, runtime) = fresh_runtime().await;
+    let mut msg = task_result_message();
+    msg.work_item_id = Some("work-dispatch-1".into());
+    let mut meta = msg.metadata.take().unwrap();
+    let object = meta.as_object_mut().unwrap();
+    object.remove("task_status");
+    object.insert(
+        "work_item_id".into(),
+        serde_json::Value::String("work-dispatch-1".into()),
+    );
+    msg.metadata = Some(meta);
+
+    let plan = runtime
+        .build_message_dispatch_plan(
+            &msg,
+            closure_decision(),
+            &runtime.agent_state().await.unwrap(),
+        )
+        .unwrap();
+    let resolution = plan
+        .continuation_resolution
+        .expect("terminal task result should resolve as a continuation");
+
+    assert_eq!(resolution.class, ContinuationClass::LocalContinuation);
+    assert!(resolution.model_reentry);
+}
+
+#[tokio::test]
 async fn plan_task_errors_when_task_status_lacks_task_id() {
     let (_dir, _ws, runtime) = fresh_runtime().await;
     let mut msg = task_status_message();

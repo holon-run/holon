@@ -1419,17 +1419,17 @@ pub(crate) fn canonical_activation_candidate(
             bail!("canonical task rejoin has inconsistent task identity");
         }
         let task = task.ok_or_else(|| anyhow!("canonical task rejoin is missing task record"))?;
-        if task.id != *task_id
-            || task.agent_id != message.agent_id
-            || !matches!(
-                task.status,
-                TaskStatus::Completed
-                    | TaskStatus::Failed
-                    | TaskStatus::Cancelled
-                    | TaskStatus::Interrupted
-            )
-        {
-            bail!("canonical task rejoin requires a terminal same-agent task");
+        if task.id != *task_id || task.agent_id != message.agent_id {
+            bail!("canonical task rejoin requires a same-agent task identity");
+        }
+        if !matches!(
+            task.status,
+            TaskStatus::Completed
+                | TaskStatus::Failed
+                | TaskStatus::Cancelled
+                | TaskStatus::Interrupted
+        ) {
+            return Ok(None);
         }
         if let Some(work_item_id) = task.effective_work_item_id() {
             if message.work_item_id.as_deref() != Some(work_item_id) {

@@ -818,6 +818,13 @@ class CaseHarness:
             matches = [
                 item for item in items if objective_marker in item.get("objective", "")
             ]
+            if len(matches) > 1:
+                write_json(self.evidence / f"{label}-duplicate-work-items.json", matches)
+                self.capture_context(f"{label}-duplicate")
+                raise AssertionError(
+                    f"multiple WorkItems matched {objective_marker}: "
+                    + ", ".join(item.get("id", "<missing-id>") for item in matches)
+                )
             if len(matches) == 1 and matches[0].get("state") == expected_state:
                 write_json(self.evidence / f"{label}-work-items.json", items)
                 self.wait_agent_idle()
@@ -851,6 +858,13 @@ class CaseHarness:
             matches = [
                 item for item in items if objective_marker in item.get("objective", "")
             ]
+            if len(matches) > 1:
+                write_json(self.evidence / f"{label}-duplicate-work-items.json", matches)
+                self.capture_context(f"{label}-duplicate")
+                raise AssertionError(
+                    f"multiple WorkItems matched {objective_marker}: "
+                    + ", ".join(item.get("id", "<missing-id>") for item in matches)
+                )
             if matches and matches[0].get("state") == "completed":
                 write_json(self.evidence / f"{label}-premature-work-items.json", items)
                 self.capture_context(f"{label}-premature")

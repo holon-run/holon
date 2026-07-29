@@ -742,6 +742,35 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 {"scheduler-tick"},
             )
 
+    def test_wait_work_item_fails_fast_on_duplicate_objective_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            harness = runner.CaseHarness(
+                case_id="duplicate-work-items",
+                image="unused",
+                model="unused",
+                credential_envs=[],
+                env_file=None,
+                runtime_env={},
+                evidence_root=Path(directory),
+                timeout_seconds=1,
+                keep=True,
+            )
+            harness.agent_id = "default"
+            duplicates = [
+                {"id": "work-1", "objective": "DRILL-DUPLICATE", "state": "open"},
+                {"id": "work-2", "objective": "DRILL-DUPLICATE", "state": "open"},
+            ]
+            with (
+                patch.object(harness, "request", return_value=duplicates),
+                patch.object(harness, "capture_context"),
+                self.assertRaisesRegex(AssertionError, "multiple WorkItems matched"),
+            ):
+                harness.wait_work_item(
+                    objective_marker="DRILL-DUPLICATE",
+                    expected_state="completed",
+                    label="duplicate",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

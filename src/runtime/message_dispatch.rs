@@ -41,6 +41,7 @@ impl RuntimeHandle {
         };
         let continuation_work_item_id = matching_wait_work_item_id
             .as_deref()
+            .or(message.work_item_id.as_deref())
             .or(scheduler_state.current_turn_work_item_id.as_deref())
             .or(scheduler_state.current_work_item_id.as_deref());
         let continuation_resolution = continuation_trigger.as_ref().map(|trigger| {
