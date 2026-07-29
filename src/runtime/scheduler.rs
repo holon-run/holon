@@ -1385,7 +1385,7 @@ pub(crate) fn authority_scenarios_for_message_claim(
 
 pub(crate) fn canonical_activation_candidate(
     message: &MessageEnvelope,
-    continuation_resolution: Option<&ContinuationResolution>,
+    _continuation_resolution: Option<&ContinuationResolution>,
     task: Option<&TaskRecord>,
 ) -> Result<Option<CanonicalActivationCandidate>> {
     if matches!(
@@ -1397,10 +1397,6 @@ pub(crate) fn canonical_activation_candidate(
             CanonicalActivationCandidate::WorkItemAutonomousContinuation { work_item_id }
         }));
     }
-    if !continuation_resolution.is_some_and(|resolution| resolution.model_reentry) {
-        return Ok(None);
-    }
-
     if message.kind == MessageKind::TaskResult {
         let MessageOrigin::Task { task_id } = &message.origin else {
             bail!("canonical task rejoin requires task message origin");

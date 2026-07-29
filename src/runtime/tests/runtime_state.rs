@@ -1434,21 +1434,54 @@ async fn settlement_recovery_repairs_processed_cross_work_item_pick_as_targeted_
         .frame_id;
     finish_claimed_test_run(&runtime).await;
 
-    assert!(runtime
-        .commit_queue_settlement(
-            QueueEntryRecord {
-                message_id: message.id.clone(),
-                agent_id: message.agent_id.clone(),
-                priority: message.priority.clone(),
-                status: QueueEntryStatus::Processed,
-                created_at: message.created_at,
-                updated_at: Utc::now(),
-            },
-            Vec::new(),
-            true,
-        )
+    let terminal = terminal_transition(&message, Some(&caller.id));
+    runtime
+        .storage()
+        .append_turn(&terminal.turn_record)
+        .unwrap();
+    let processed = QueueEntryRecord {
+        message_id: message.id.clone(),
+        agent_id: message.agent_id.clone(),
+        priority: message.priority.clone(),
+        status: QueueEntryStatus::Processed,
+        created_at: message.created_at,
+        updated_at: Utc::now(),
+    };
+    let scheduler_protocol_commands = runtime
+        .canonical_queue_settlement_commands(&processed, Some(&terminal.turn_record))
         .await
-        .unwrap());
+        .unwrap();
+    assert!(matches!(
+        scheduler_protocol_commands.as_slice(),
+        [crate::domain::scheduler_protocol::ProtocolCommand::RecordMissingSettlement(_)]
+    ));
+    runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .commit_queue(&crate::runtime_db::transitions::QueueTransitionCommand {
+            agent_id: message.agent_id.clone(),
+            operation: crate::runtime_db::transitions::QueueOperation::Settle,
+            mutation: crate::runtime_db::transitions::QueueMutation::Upsert(processed),
+            scheduler_claim_work_item: None,
+            scheduler_protocol_bootstrap: None,
+            scheduler_protocol_commands,
+            scheduler_authority_scenarios: Vec::new(),
+            scheduler_rollout_expectations: Vec::new(),
+            agent_state: None,
+            message_evidence: Vec::new(),
+            transcript_entries: Vec::new(),
+            turn_record: None,
+            audit_events: Vec::new(),
+            scheduler_shadow_comparison: None,
+            scheduler_wait_resume_shadow_comparison: None,
+            scheduler_delivery_shadow_comparison: None,
+            scheduler_semantic_shadow: None,
+            notify_scheduler: false,
+            fault: None,
+            brief_evidence: Vec::new(),
+        })
+        .unwrap();
 
     let activation_id = scheduler_executor::canonical_activation_id(&message.id);
     let missing = runtime
@@ -2354,6 +2387,7 @@ async fn production_protocol_claim_and_settlement_release_the_canonical_slot() {
         AdmissionContext::RuntimeOwned,
     );
     message.work_item_id = Some(work_item.id.clone());
+    message.turn_id = Some("turn-canonical-production-loop".into());
     let message = runtime.enqueue(message).await.unwrap();
 
     let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
@@ -2383,8 +2417,9 @@ async fn production_protocol_claim_and_settlement_release_the_canonical_slot() {
     assert!(claimed.activations.contains_key(&activation_id));
 
     finish_claimed_test_run(&runtime).await;
+    let terminal = terminal_transition(&message, Some(&work_item.id));
     runtime
-        .commit_queue_settlement(
+        .commit_queue_terminal_settlement(
             QueueEntryRecord {
                 message_id: message.id.clone(),
                 agent_id: message.agent_id.clone(),
@@ -2401,6 +2436,7 @@ async fn production_protocol_claim_and_settlement_release_the_canonical_slot() {
                 }),
             )],
             true,
+            Some(&terminal),
         )
         .await
         .unwrap();
@@ -2486,6 +2522,7 @@ async fn production_protocol_wait_settlement_creates_rejoinable_wait_generation(
         AdmissionContext::RuntimeOwned,
     );
     message.work_item_id = Some(work_item.id.clone());
+    message.turn_id = Some("turn-canonical-wait-settlement".into());
     let message = runtime.enqueue(message).await.unwrap();
     assert!(matches!(
         scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
@@ -2507,8 +2544,9 @@ async fn production_protocol_wait_settlement_creates_rejoinable_wait_generation(
         .await
         .unwrap();
     finish_claimed_test_run(&runtime).await;
+    let terminal = terminal_transition(&message, Some(&work_item.id));
     runtime
-        .commit_queue_settlement(
+        .commit_queue_terminal_settlement(
             QueueEntryRecord {
                 message_id: message.id.clone(),
                 agent_id: message.agent_id.clone(),
@@ -2519,6 +2557,7 @@ async fn production_protocol_wait_settlement_creates_rejoinable_wait_generation(
             },
             Vec::new(),
             true,
+            Some(&terminal),
         )
         .await
         .unwrap();
@@ -2562,6 +2601,7 @@ async fn production_protocol_wait_settlement_creates_rejoinable_wait_generation(
         "task_result_id": "result-rejoin",
         "work_item_id": work_item.id,
     }));
+    rejoin.turn_id = Some("turn-canonical-task-rejoin".into());
     let rejoin = runtime.enqueue(rejoin).await.unwrap();
     assert!(matches!(
         scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
@@ -2606,8 +2646,9 @@ async fn production_protocol_wait_settlement_creates_rejoinable_wait_generation(
         .await
         .unwrap();
     finish_claimed_test_run(&runtime).await;
+    let rejoin_terminal = terminal_transition(&rejoin, Some(&work_item.id));
     runtime
-        .commit_queue_settlement(
+        .commit_queue_terminal_settlement(
             QueueEntryRecord {
                 message_id: rejoin.id.clone(),
                 agent_id: rejoin.agent_id.clone(),
@@ -2618,6 +2659,7 @@ async fn production_protocol_wait_settlement_creates_rejoinable_wait_generation(
             },
             Vec::new(),
             true,
+            Some(&rejoin_terminal),
         )
         .await
         .unwrap();
@@ -3305,6 +3347,7 @@ async fn authoritative_explicit_operator_binding_ignores_unrelated_waits() {
         .create_work_item("unrelated operator wait".into(), None, None, Vec::new())
         .await
         .unwrap();
+    runtime.pick_work_item(unrelated.id.clone()).await.unwrap();
     let target_wait = runtime
         .register_wait_for(
             "default",
@@ -3399,6 +3442,31 @@ async fn authoritative_explicit_operator_binding_ignores_unrelated_waits() {
         panic!("authoritative explicit operator input should be claimed");
     };
     assert_eq!(scheduled.message.id, message.id);
+    assert!(scheduled.scheduler_decision.model_reentry);
+    runtime
+        .begin_interactive_turn_with_provenance(
+            Some(&scheduled.message),
+            None,
+            None,
+            scheduled
+                .dispatch_plan
+                .execution_admission_provenance
+                .clone(),
+        )
+        .await
+        .unwrap();
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(
+        state.current_turn_work_item_id.as_deref(),
+        Some(target.id.as_str())
+    );
+    assert_eq!(
+        state
+            .current_execution_binding
+            .as_ref()
+            .and_then(|binding| binding.work_item_id.as_deref()),
+        Some(target.id.as_str())
+    );
     let activation_id = scheduler_executor::canonical_activation_id(&message.id);
     let snapshot = runtime
         .inner
@@ -3433,6 +3501,97 @@ async fn authoritative_explicit_operator_binding_ignores_unrelated_waits() {
             .find(|wait| wait.id == agent_wait.condition.id)
             .map(|wait| wait.status),
         Some(WaitConditionStatus::Active)
+    );
+}
+
+#[tokio::test]
+async fn canonical_processed_settlement_without_terminal_turn_fails_closed() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime.set_scheduler_protocol_production_commands_enabled(true);
+    enable_production_protocol_authority(&runtime);
+    let work_item = runtime
+        .create_work_item("missing terminal turn".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "must create a turn".into(),
+        },
+    );
+    message.work_item_id = Some(work_item.id.clone());
+    message.turn_id = Some("turn-missing-terminal".into());
+    let message = runtime.enqueue(message).await.unwrap();
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Message(_)
+    ));
+
+    let error = runtime
+        .commit_queue_terminal_settlement(
+            QueueEntryRecord {
+                message_id: message.id.clone(),
+                agent_id: message.agent_id.clone(),
+                priority: message.priority,
+                status: QueueEntryStatus::Processed,
+                created_at: message.created_at,
+                updated_at: Utc::now(),
+            },
+            Vec::new(),
+            true,
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("without a matching terminal Turn"));
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest_all()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == message.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Dequeued)
+    );
+    let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_scheduler_protocol_snapshot("default")
+            .unwrap()
+            .activations[&activation_id]
+            .state,
+        crate::domain::scheduler_protocol::ActivationState::Running
     );
 }
 
@@ -4387,8 +4546,9 @@ async fn completed_production_settlement_uses_exact_bound_result_brief() {
     runtime.storage().append_brief(&decoy).unwrap();
 
     finish_claimed_test_run(&runtime).await;
+    let terminal = terminal_transition(&message, Some(&work_item.id));
     runtime
-        .commit_queue_settlement(
+        .commit_queue_terminal_settlement(
             QueueEntryRecord {
                 message_id: message.id.clone(),
                 agent_id: message.agent_id.clone(),
@@ -4405,6 +4565,7 @@ async fn completed_production_settlement_uses_exact_bound_result_brief() {
                 }),
             )],
             true,
+            Some(&terminal),
         )
         .await
         .unwrap();
@@ -4530,8 +4691,9 @@ async fn completed_production_settlement_records_missing_for_mismatched_completi
     runtime.apply_transition_commit(commit).await;
 
     finish_claimed_test_run(&runtime).await;
+    let terminal = terminal_transition(&message, Some(&work_item.id));
     assert!(runtime
-        .commit_queue_settlement(
+        .commit_queue_terminal_settlement(
             QueueEntryRecord {
                 message_id: message.id.clone(),
                 agent_id: message.agent_id.clone(),
@@ -4548,6 +4710,7 @@ async fn completed_production_settlement_records_missing_for_mismatched_completi
                 }),
             )],
             true,
+            Some(&terminal),
         )
         .await
         .unwrap());
@@ -4646,9 +4809,10 @@ async fn completed_production_settlement_records_missing_without_result_report()
         .await
         .unwrap();
     finish_claimed_test_run(&runtime).await;
+    let terminal = terminal_transition(&message, Some(&work_item.id));
 
     assert!(runtime
-        .commit_queue_settlement(
+        .commit_queue_terminal_settlement(
             QueueEntryRecord {
                 message_id: message.id.clone(),
                 agent_id: message.agent_id.clone(),
@@ -4659,6 +4823,7 @@ async fn completed_production_settlement_records_missing_without_result_report()
             },
             Vec::new(),
             true,
+            Some(&terminal),
         )
         .await
         .unwrap());
@@ -4731,7 +4896,8 @@ async fn production_protocol_settlement_fault_rolls_back_queue_and_canonical_fac
                 text: "run canonical work".into(),
             },
         );
-        message.work_item_id = Some(work_item.id);
+        message.work_item_id = Some(work_item.id.clone());
+        message.turn_id = Some(format!("turn-canonical-settlement-fault-{fault:?}"));
         let message = runtime.enqueue(message).await.unwrap();
         let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
             .poll()
@@ -4745,10 +4911,11 @@ async fn production_protocol_settlement_fault_rolls_back_queue_and_canonical_fac
             .load_scheduler_protocol_snapshot("default")
             .unwrap();
         finish_claimed_test_run(&runtime).await;
+        let terminal = terminal_transition(&message, Some(&work_item.id));
         runtime.inject_next_transition_fault(fault);
 
         let error = runtime
-            .commit_queue_settlement(
+            .commit_queue_terminal_settlement(
                 QueueEntryRecord {
                     message_id: message.id.clone(),
                     agent_id: message.agent_id.clone(),
@@ -4759,6 +4926,7 @@ async fn production_protocol_settlement_fault_rolls_back_queue_and_canonical_fac
                 },
                 Vec::new(),
                 true,
+                Some(&terminal),
             )
             .await
             .unwrap_err();
@@ -5078,7 +5246,7 @@ async fn authoritative_mode_allows_claims_outside_authoritative_scenario() {
 
 #[tokio::test]
 async fn authoritative_claim_scope_rejects_missing_executor_evidence_without_partial_writes() {
-    for (scenario_class, message, waiting_work_item) in [
+    for (scenario_class, mut message, waiting_work_item) in [
         (
             SchedulerScenarioClass::ReducerOnlyCandidates,
             MessageEnvelope::new(
@@ -5118,6 +5286,14 @@ async fn authoritative_claim_scope_rejects_missing_executor_evidence_without_par
         )
         .unwrap();
         if let Some(work_item_id) = waiting_work_item {
+            message.work_item_id = Some(work_item_id.into());
+            message.task_id = Some("task-authoritative-claim".into());
+            message.metadata = Some(serde_json::json!({
+                "task_id": "task-authoritative-claim",
+                "task_kind": "command_task",
+                "task_status": "completed",
+                "work_item_id": work_item_id,
+            }));
             let mut work_item =
                 WorkItemRecord::new("default", "waiting claim", WorkItemState::Open);
             work_item.id = work_item_id.into();
@@ -6094,8 +6270,11 @@ async fn task_result_resolves_wait_for_task_condition_and_clears_matching_blocke
         detail: None,
         recovery: None,
     };
+    let mut message = task_result_message("task-1");
+    message.task_id = Some("task-1".into());
+    message.work_item_id = Some(work.id.clone());
     runtime
-        .reduce_task_result_message(&task_result_message("task-1"), task, false, None)
+        .reduce_task_result_message(&message, task, false, None)
         .await
         .unwrap();
 
@@ -8207,7 +8386,10 @@ async fn task_result_records_wait_reconciliation_and_resolves_task_wait_conditio
         "task_id": "task-1",
         "task_kind": "child_agent_task",
         "task_status": "completed",
+        "work_item_id": "wi-1",
     }));
+    message.task_id = Some("task-1".into());
+    message.work_item_id = Some("wi-1".into());
 
     runtime
         .process_message(

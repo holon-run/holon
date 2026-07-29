@@ -77,6 +77,7 @@ pub(super) struct ScheduledMessage {
 
 struct CanonicalClaimPlan {
     scenario_class: crate::domain::scheduler_protocol::SchedulerScenarioClass,
+    execution_owner: crate::domain::scheduler_protocol::SchedulerOwner,
     scheduler_claim_work_item: Option<crate::types::WorkItemRecord>,
     bootstrap: Option<crate::domain::scheduler_protocol::Snapshot>,
     commands: Vec<crate::domain::scheduler_protocol::ProtocolCommand>,
@@ -397,7 +398,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             candidate.queue_len,
             self.runtime.now(),
         )?;
-        let decision = scheduler::decide_next_action(
+        let legacy_decision = scheduler::decide_next_action(
             &projection,
             scheduler::SchedulerBoundary::RunLoop,
             scheduler::SchedulerInput::Message {
@@ -426,20 +427,20 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         let admission_shadow_comparison = scheduler::shadow_comparison_for_message_admission(
             &projection,
             &candidate.message,
-            &decision,
+            &legacy_decision,
             dispatch_plan.continuation_resolution.as_ref(),
         );
         let wait_resume_shadow_comparison = scheduler::shadow_comparison_for_wait_resume(
             &projection,
             &candidate.message,
-            &decision,
+            &legacy_decision,
         );
         let diagnostic_shadow_comparison = wait_resume_shadow_comparison
             .as_ref()
             .or(admission_shadow_comparison.as_ref());
         let scheduler_decision_events = scheduler::scheduler_decision_events(
             &candidate.message.agent_id,
-            &decision,
+            &legacy_decision,
             diagnostic_shadow_comparison,
         )?;
         let shadow_comparison = admission_shadow_comparison
@@ -522,6 +523,25 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 }
             }
         }
+        let effective_decision = canonical_claim
+            .as_ref()
+            .map(|plan| {
+                let mut decision = scheduler::SchedulerDecision::new(
+                    scheduler::SchedulerDecisionKind::StartModelTurn,
+                    "canonical_activation_admitted",
+                )
+                .message(&persisted_message)
+                .model_reentry(true)
+                .evidence(format!(
+                    "canonical_activation={}",
+                    canonical_activation_id(&persisted_message.id)
+                ));
+                if let Some(work_item_id) = plan.execution_owner.work_item_id() {
+                    decision = decision.work_item_id(work_item_id);
+                }
+                decision
+            })
+            .unwrap_or(legacy_decision);
         scheduler::append_scheduling_advisories(
             &self.runtime.inner.storage,
             &candidate.prior_state,
@@ -668,7 +688,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             message,
             running_state,
             dispatch_plan,
-            scheduler_decision: decision,
+            scheduler_decision: effective_decision,
         }))
     }
 
@@ -858,6 +878,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 {
                     return Ok(CanonicalClaimOutcome::Plan(CanonicalClaimPlan {
                         scenario_class,
+                        execution_owner: activation.owner.clone(),
                         scheduler_claim_work_item: matches!(
                             scenario,
                             scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation {
@@ -1164,6 +1185,9 @@ impl<'a> SchedulerDecisionExecutor<'a> {
 
         Ok(CanonicalClaimOutcome::Plan(CanonicalClaimPlan {
             scenario_class,
+            execution_owner: crate::domain::scheduler_protocol::SchedulerOwner::WorkItem {
+                work_item_id: work_item_id.to_string(),
+            },
             scheduler_claim_work_item: matches!(
                 scenario,
                 scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation { .. }
@@ -1218,6 +1242,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 {
                     return Ok(CanonicalClaimOutcome::Plan(CanonicalClaimPlan {
                         scenario_class,
+                        execution_owner: activation.owner.clone(),
                         scheduler_claim_work_item: None,
                         bootstrap: None,
                         commands: Vec::new(),
@@ -1402,6 +1427,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         }));
         Ok(CanonicalClaimOutcome::Plan(CanonicalClaimPlan {
             scenario_class,
+            execution_owner: owner,
             scheduler_claim_work_item: None,
             bootstrap,
             commands,

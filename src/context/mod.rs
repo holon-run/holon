@@ -231,7 +231,18 @@ pub fn build_context_with_default_external_ingress(
         .collect::<Vec<_>>();
     let episodes = storage.read_recent_context_episodes(config.recent_episode_candidates)?;
     let work_queue_projection = storage.work_queue_prompt_projection()?;
-    let current_work_item = work_queue_projection.current.as_ref();
+    let execution_work_item = agent
+        .current_execution_binding
+        .as_ref()
+        .and_then(|binding| binding.work_item_id.as_deref())
+        .map(|work_item_id| storage.latest_work_item(work_item_id))
+        .transpose()?
+        .flatten();
+    let current_work_item = if agent.current_execution_binding.is_some() {
+        execution_work_item.as_ref()
+    } else {
+        work_queue_projection.current.as_ref()
+    };
 
     let mut candidates = Vec::new();
     candidates.push(context_candidate(
@@ -5517,6 +5528,76 @@ mod tests {
         assert!(!trace_section
             .content
             .contains("Other agent transcript must not leak"));
+    }
+
+    #[test]
+    fn build_context_prefers_execution_binding_over_global_work_item_focus() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
+        let focused = crate::types::WorkItemRecord::new(
+            "default",
+            "unrelated globally focused work",
+            WorkItemState::Open,
+        );
+        let execution_owner = crate::types::WorkItemRecord::new(
+            "default",
+            "canonical activation owner",
+            WorkItemState::Open,
+        );
+        storage.append_work_item(&focused).unwrap();
+        storage.append_work_item(&execution_owner).unwrap();
+
+        let mut agent = AgentState::new("default");
+        agent.current_work_item_id = Some(focused.id.clone());
+        agent.current_execution_binding = Some(crate::types::WorkItemExecutionBinding {
+            activation_id: Some("activation-bound".into()),
+            admission_provenance: Some(crate::types::ExecutionAdmissionProvenance::Canonical {
+                scenario_class:
+                    crate::domain::scheduler_protocol::SchedulerScenarioClass::ExactWaitResume,
+                activation_id: "activation-bound".into(),
+            }),
+            source_message_id: "message-bound".into(),
+            turn_id: "turn-bound".into(),
+            work_item_id: Some(execution_owner.id.clone()),
+            claimed_work_revision: Some(execution_owner.revision),
+        });
+        storage.write_agent(&agent).unwrap();
+
+        let current_message = MessageEnvelope::new(
+            "default",
+            MessageKind::TimerTick,
+            MessageOrigin::Timer {
+                timer_id: "timer-bound".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "resume canonical owner".into(),
+            },
+        );
+        let built = build_context(
+            &storage,
+            &agent,
+            &execution_snapshot_for(&agent),
+            &crate::types::SkillsRuntimeView::default(),
+            &current_message,
+            None,
+            &ContextConfig::default(),
+            dir.path(),
+        )
+        .unwrap();
+
+        let current_work_item = built
+            .sections
+            .iter()
+            .find(|section| section.name == "current_work_item")
+            .expect("current_work_item section should be present");
+        assert!(current_work_item
+            .content
+            .contains("canonical activation owner"));
+        assert!(!current_work_item
+            .content
+            .contains("unrelated globally focused work"));
     }
 
     #[test]

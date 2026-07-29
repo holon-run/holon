@@ -1621,6 +1621,36 @@ fn generic_external_wake_is_lifecycle_nudge_even_when_a_wait_matches() {
 }
 
 #[test]
+fn canonical_wait_candidate_does_not_depend_on_legacy_model_reentry() {
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::TimerTick,
+        MessageOrigin::Timer {
+            timer_id: "timer-canonical".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "resume exact wait".into(),
+        },
+    );
+    let continuation = ContinuationResolution {
+        trigger_kind: ContinuationTriggerKind::TimerFire,
+        class: ContinuationClass::LivenessOnly,
+        model_reentry: false,
+        prior_closure_outcome: ClosureOutcome::Completed,
+        prior_waiting_reason: None,
+        matched_waiting_reason: false,
+        evidence: Vec::new(),
+    };
+
+    assert!(matches!(
+        scheduler::canonical_activation_candidate(&message, Some(&continuation), None).unwrap(),
+        Some(scheduler::CanonicalActivationCandidate::ExactWaitResume { .. })
+    ));
+}
+
+#[test]
 fn correlated_wait_resume_requires_the_exact_expected_owner() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
