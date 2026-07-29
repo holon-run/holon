@@ -580,14 +580,14 @@ def seed_wait(
     marker: str,
     wake: str = "external",
     resource: str | None = None,
+    prepare_resource: Callable[[], str] | None = None,
     expected_scheduling_state: str = "waiting_external",
 ) -> dict[str, Any]:
     objective = f"DRILL-WAIT-{label}-{marker}"
     completion = f"DRILL-WAIT-COMPLETE-{label}-{marker}"
-    resource_argument = (
-        f", resource={json.dumps(resource)}"
-        if resource is not None
-        else ""
+    require(
+        resource is None or prepare_resource is None,
+        "seed_wait accepts either resource or prepare_resource, not both",
     )
     harness.prompt(
         f"{label}-create",
@@ -600,6 +600,13 @@ def seed_wait(
         objective_marker=objective,
         expected_state="open",
         label=f"{label}-created",
+    )
+    if prepare_resource is not None:
+        resource = prepare_resource()
+    resource_argument = (
+        f", resource={json.dumps(resource)}"
+        if resource is not None
+        else ""
     )
     baseline, _ = harness.prompt(
         f"{label}-seed",
@@ -1125,21 +1132,24 @@ def exercise_wait_triggers(harness: CaseHarness, marker: str) -> None:
     wait_seed_completion(harness, channel_seed, "channel")
 
     harness.wait_queue_drained()
-    timer = harness.request(
-        "POST",
-        harness.agent_path("timers", control=True),
-        {
-            "duration_ms": 120_000,
-            "summary": f"scheduler drill timer {marker}",
-        },
-    )
-    write_json(harness.evidence / "wait-timer.json", timer)
+    def create_timer() -> str:
+        timer = harness.request(
+            "POST",
+            harness.agent_path("timers", control=True),
+            {
+                "duration_ms": 120_000,
+                "summary": f"scheduler drill timer {marker}",
+            },
+        )
+        write_json(harness.evidence / "wait-timer.json", timer)
+        return timer["id"]
+
     timer_seed = seed_wait(
         harness,
         label="timer",
         marker=marker,
         wake="timer",
-        resource=timer["id"],
+        prepare_resource=create_timer,
         expected_scheduling_state="waiting_timer",
     )
     wait_seed_completion(harness, timer_seed, "timer")

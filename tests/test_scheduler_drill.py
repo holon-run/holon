@@ -8,12 +8,56 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from scripts.docker_e2e import scheduler_drill as drill
 
 
 class SchedulerDrillTests(unittest.TestCase):
+    def test_seed_wait_prepares_dynamic_resource_after_work_item_creation(self) -> None:
+        events: list[str] = []
+        harness = Mock()
+        harness.prompt.side_effect = lambda label, *_args, **_kwargs: (
+            events.append(f"prompt:{label}") or (17, {})
+        )
+        harness.wait_work_item.side_effect = lambda **_kwargs: (
+            events.append("work-item-created")
+            or {"id": "work_timer", "state": "open"}
+        )
+        harness.work_items.return_value = [
+            {
+                "id": "work_timer",
+                "objective": "DRILL-WAIT-timer-marker",
+                "state": "open",
+            }
+        ]
+        harness.wait_work_item_scheduling_state.return_value = {
+            "id": "work_timer",
+            "scheduling_state": "waiting_timer",
+        }
+
+        seed = drill.seed_wait(
+            harness,
+            label="timer",
+            marker="marker",
+            wake="timer",
+            prepare_resource=lambda: events.append("timer-created") or "timer_1",
+            expected_scheduling_state="waiting_timer",
+        )
+
+        self.assertEqual(
+            events,
+            [
+                "prompt:timer-create",
+                "work-item-created",
+                "timer-created",
+                "prompt:timer-seed",
+            ],
+        )
+        self.assertEqual(seed["work_item_id"], "work_timer")
+        seed_prompt = harness.prompt.call_args_list[1].args[1]
+        self.assertIn('resource="timer_1"', seed_prompt)
+
     def test_drill_prefix_is_a_scoped_operator_request(self) -> None:
         self.assertIn("current operator turn", drill.DRILL_PREFIX)
         self.assertNotIn("OVERRIDES", drill.DRILL_PREFIX)
