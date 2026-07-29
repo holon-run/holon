@@ -202,6 +202,16 @@ fn apply_event(snapshot: &Snapshot, event: &Event) -> model::Outcome {
                     ActivationOrigin::RuntimeRecovery,
                     ActivationTrust::RuntimeInstruction,
                 ),
+                AdmissionCause::InternalFollowup { message_id } => (
+                    ActivationCause::InternalFollowup {
+                        message_id: message_id.clone(),
+                    },
+                    ActivationBinding::WorkItem {
+                        work_item_id: work_item_id.clone(),
+                    },
+                    ActivationOrigin::System,
+                    ActivationTrust::RuntimeInstruction,
+                ),
             };
             let command = AdmitActivationCommand {
                 authority_id: format!("authority-{activation_id}"),

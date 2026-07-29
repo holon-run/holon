@@ -1731,6 +1731,8 @@ def copy_stopped_volume(
             "docker",
             "run",
             "--rm",
+            "--user",
+            f"{os.getuid()}:{os.getgid()}",
             "--volume",
             f"{record['resources']['volume']}:/var/lib/holon:ro",
             "--volume",

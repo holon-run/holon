@@ -1261,6 +1261,9 @@ pub enum AdmissionCause {
     SettlementRecovery {
         missing_activation_id: String,
     },
+    InternalFollowup {
+        message_id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1637,6 +1640,14 @@ pub fn migrate_legacy_event(
                 } => (
                     ActivationCause::SettlementRecovery {
                         activation_id: missing_activation_id.clone(),
+                    },
+                    ActivationBinding::WorkItem {
+                        work_item_id: work_item_id.clone(),
+                    },
+                ),
+                AdmissionCause::InternalFollowup { message_id } => (
+                    ActivationCause::InternalFollowup {
+                        message_id: message_id.clone(),
                     },
                     ActivationBinding::WorkItem {
                         work_item_id: work_item_id.clone(),
@@ -2853,23 +2864,33 @@ fn lower_admit_activation(
             },
         ),
         (
+            ActivationCause::InternalFollowup { message_id },
+            ActivationBinding::WorkItem { work_item_id },
+        ) => (
+            SchedulerOwner::WorkItem {
+                work_item_id: work_item_id.clone(),
+            },
+            AdmissionCause::InternalFollowup {
+                message_id: message_id.clone(),
+            },
+        ),
+        (
             ActivationCause::WorkItemRunnable { .. }
             | ActivationCause::TaskRejoin { .. }
             | ActivationCause::OperatorInput { .. }
             | ActivationCause::WaitResume { .. }
             | ActivationCause::LifecycleExternalNudge { .. }
-            | ActivationCause::SettlementRecovery { .. },
+            | ActivationCause::SettlementRecovery { .. }
+            | ActivationCause::InternalFollowup { .. }
+            | ActivationCause::OperatorInterjection { .. }
+            | ActivationCause::MessageIngress { .. }
+            | ActivationCause::WorkItemRecheck { .. }
+            | ActivationCause::RuntimeRecovery { .. },
             _,
         ) => {
             return Err(command_conflict(
                 ProtocolConflictKind::BindingConflict,
                 "activation_cause_binding_mismatch",
-            ));
-        }
-        _ => {
-            return Err(command_conflict(
-                ProtocolConflictKind::UnsupportedCommand,
-                "activation_cause_not_supported_by_kernel",
             ));
         }
     };
@@ -3315,6 +3336,9 @@ fn admission_fence(
         AdmissionCause::LifecycleExternalNudge { message_id } => {
             format!("lifecycle_message:{message_id}")
         }
+        AdmissionCause::InternalFollowup { message_id } => {
+            format!("internal_followup:{message_id}")
+        }
         AdmissionCause::Scheduling | AdmissionCause::WaitResume { .. } => {
             format!("{owner_identity}:{expected_generation}")
         }
@@ -3621,6 +3645,20 @@ fn admit(
             transitions.push(format!(
                 "settlement:{missing_activation_id}:awaiting_recovery->running:{activation_id}"
             ));
+        }
+        AdmissionCause::InternalFollowup { message_id } => {
+            let Some(work) = work else {
+                return rejected(snapshot, "internal_followup_requires_work_item_owner");
+            };
+            if message_id.is_empty() {
+                return rejected(snapshot, "internal_followup_identity_required");
+            }
+            if !matches!(work.status, WorkStatus::Runnable) {
+                return rejected(snapshot, "work_item_not_runnable");
+            }
+            if !matches!(snapshot.dispatch, AgentDispatchState::Open) {
+                return rejected(snapshot, "agent_lane_reserved");
+            }
         }
     }
 
@@ -5190,7 +5228,8 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
             | AdmissionCause::TaskRejoin { .. }
             | AdmissionCause::OperatorInput { .. }
             | AdmissionCause::WaitResume { .. }
-            | AdmissionCause::LifecycleExternalNudge { .. } => None,
+            | AdmissionCause::LifecycleExternalNudge { .. }
+            | AdmissionCause::InternalFollowup { .. } => None,
         };
         if !canonical_admission_fences.insert(admission_fence(&owner, expected_generation, &cause))
         {
