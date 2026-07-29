@@ -3637,6 +3637,145 @@ async fn agent_scoped_wake_hint_preserves_external_trigger_provenance() {
 }
 
 #[tokio::test]
+async fn agent_scoped_wake_hint_binds_unique_wildcard_external_wait() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.status = AgentStatus::Asleep;
+        guard.persist_state(&runtime.inner.storage).unwrap();
+    }
+    let work = runtime
+        .create_work_item("wait for callback".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime
+        .storage()
+        .append_wait_condition(&WaitConditionRecord {
+            id: "wait-any-external".into(),
+            agent_id: "default".into(),
+            work_item_id: Some(work.id.clone()),
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::External,
+            source: Some("WaitFor".into()),
+            subject_ref: Some("callback-resource".into()),
+            waiting_for: "callback".into(),
+            wake_sources: vec![WakeSource::ExternalIngress {
+                external_trigger_id: None,
+            }],
+            continuation: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: None,
+        })
+        .unwrap();
+    let capability = runtime
+        .create_external_trigger(
+            "resume callback wait".into(),
+            "test".into(),
+            ExternalTriggerScope::Agent,
+            CallbackDeliveryMode::WakeHint,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    runtime
+        .deliver_callback(
+            &capability.external_trigger_id,
+            CallbackDeliveryPayload {
+                body: None,
+                content_type: None,
+                correlation_id: None,
+                causation_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let tick = runtime
+        .storage()
+        .read_recent_messages(10)
+        .unwrap()
+        .into_iter()
+        .find(|message| message.kind == MessageKind::SystemTick)
+        .expect("wake hint should emit a system tick");
+    assert_eq!(tick.work_item_id.as_deref(), Some(work.id.as_str()));
+}
+
+#[tokio::test]
+async fn agent_scoped_wake_hint_does_not_bind_ambiguous_wildcard_external_waits() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    for sequence in 1..=2 {
+        let work = runtime
+            .create_work_item(
+                format!("wait for callback {sequence}"),
+                None,
+                None,
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        runtime
+            .storage()
+            .append_wait_condition(&WaitConditionRecord {
+                id: format!("wait-any-external-{sequence}"),
+                agent_id: "default".into(),
+                work_item_id: Some(work.id),
+                status: WaitConditionStatus::Active,
+                kind: WaitConditionKind::External,
+                source: Some("WaitFor".into()),
+                subject_ref: Some(format!("callback-resource-{sequence}")),
+                waiting_for: "callback".into(),
+                wake_sources: vec![WakeSource::ExternalIngress {
+                    external_trigger_id: None,
+                }],
+                continuation: None,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                expires_at: None,
+                resolved_at: None,
+                cancelled_at: None,
+                turn_id: None,
+            })
+            .unwrap();
+    }
+
+    assert_eq!(
+        runtime
+            .wake_hint_work_item_id(Some("trigger-external"))
+            .await
+            .unwrap(),
+        None
+    );
+}
+
+#[tokio::test]
 async fn default_external_ingress_wakes_without_owning_work_item_wait_state() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
@@ -3748,7 +3887,7 @@ async fn default_external_ingress_wakes_without_owning_work_item_wait_state() {
 }
 
 #[tokio::test]
-async fn external_wake_records_wait_reconciliation_without_resolving_wait() {
+async fn external_wake_records_wait_reconciliation_and_resolves_wait() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -3867,8 +4006,24 @@ async fn external_wake_records_wait_reconciliation_without_resolving_wait() {
         .storage()
         .active_wait_conditions_for_work_item("default", &work.id)
         .unwrap();
-    assert_eq!(active.len(), 1);
-    assert_eq!(active[0].id, wait_condition_id);
+    assert_eq!(
+        active.len(),
+        0,
+        "wait should be resolved after reconciliation"
+    );
+
+    // The WorkItem blocker should be cleared.
+    let updated_work = runtime
+        .inner
+        .runtime_db
+        .work_items()
+        .latest(&work.id)
+        .unwrap()
+        .expect("work item should exist");
+    assert_eq!(
+        updated_work.blocked_by, None,
+        "blocked_by should be cleared after wait reconciliation"
+    );
 }
 
 #[tokio::test]

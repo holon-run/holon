@@ -732,22 +732,27 @@ impl RuntimeHandle {
             return Ok(None);
         };
         let agent_id = self.agent_id().await?;
-        Ok(self
+        let mut work_item_ids = self
             .inner
             .storage
             .active_wait_conditions_for_agent(&agent_id)?
             .into_iter()
-            .find(|condition| {
-                condition.wake_sources.iter().any(|source| {
-                    matches!(
-                        source,
-                        WakeSource::ExternalIngress {
-                            external_trigger_id: Some(id)
-                        } if id == external_trigger_id
-                    )
+            .filter(|condition| {
+                condition.wake_sources.iter().any(|source| match source {
+                    WakeSource::ExternalIngress {
+                        external_trigger_id: Some(id),
+                    } => id == external_trigger_id,
+                    WakeSource::ExternalIngress {
+                        external_trigger_id: None,
+                    } => true,
+                    _ => false,
                 })
             })
-            .and_then(|condition| condition.work_item_id))
+            .filter_map(|condition| condition.work_item_id)
+            .collect::<Vec<_>>();
+        work_item_ids.sort();
+        work_item_ids.dedup();
+        Ok((work_item_ids.len() == 1).then(|| work_item_ids.remove(0)))
     }
 
     async fn wait_condition_work_item_id_for_timer(
@@ -818,7 +823,8 @@ impl RuntimeHandle {
             return Ok(());
         }
 
-        for signal in reconciliation_signals_for_message(message, &active_conditions) {
+        let signals = reconciliation_signals_for_message(message, &active_conditions);
+        for signal in &signals {
             let duplicate = self
                 .inner
                 .storage
@@ -831,10 +837,136 @@ impl RuntimeHandle {
             if duplicate {
                 continue;
             }
-            self.inner
-                .storage
-                .append_event(&AuditEvent::legacy("wait_reconciliation_requested", signal))?;
+            self.inner.storage.append_event(&AuditEvent::legacy(
+                "wait_reconciliation_requested",
+                signal.clone(),
+            ))?;
         }
+
+        // Resolve matching wait conditions and clear WorkItem blockers so the
+        // scheduler can advance the WorkItem without requiring the model to
+        // explicitly call PickWorkItem(clear_blocker) or CompleteWorkItem.
+        self.resolve_reconciled_wait_conditions(&agent_id, message, &active_conditions, &signals)
+            .await?;
+
+        Ok(())
+    }
+
+    async fn resolve_reconciled_wait_conditions(
+        &self,
+        agent_id: &str,
+        message: &MessageEnvelope,
+        active_conditions: &[WaitConditionRecord],
+        signals: &[serde_json::Value],
+    ) -> Result<()> {
+        if signals.is_empty() {
+            return Ok(());
+        }
+
+        let now = Utc::now();
+        let mut resolved_conditions = Vec::new();
+        let mut work_items = Vec::new();
+        let mut audit_events = Vec::new();
+        let mut index_changes = Vec::new();
+        let mut updated_work_item_ids = std::collections::BTreeSet::new();
+
+        for signal in signals {
+            let condition_id = signal["wait_condition_id"].as_str().unwrap_or_default();
+            let Some(condition) = active_conditions.iter().find(|c| c.id == condition_id) else {
+                continue;
+            };
+            if condition.status != WaitConditionStatus::Active {
+                continue;
+            }
+
+            let mut resolved = condition.clone();
+            resolved.status = WaitConditionStatus::Resolved;
+            resolved.updated_at = now;
+            resolved.resolved_at = Some(now);
+            resolved_conditions.push(resolved.clone());
+
+            if let Some(work_item_id) = resolved.work_item_id.as_deref() {
+                if updated_work_item_ids.insert(work_item_id.to_string()) {
+                    if let Some(existing) =
+                        self.inner.runtime_db.work_items().latest(work_item_id)?
+                    {
+                        if existing.state == WorkItemState::Open
+                            && existing.blocked_by.as_deref() == Some(resolved.waiting_for.as_str())
+                        {
+                            let mut record = WorkItemRecord {
+                                revision: existing.revision + 1,
+                                blocked_by: None,
+                                recheck_at: None,
+                                recheck_consumed_at: None,
+                                updated_at: now,
+                                ..existing.clone()
+                            };
+                            let plan_artifact_changed =
+                                crate::work_item_plan::refresh_plan_artifact_metadata(
+                                    self.agent_home().as_path(),
+                                    &mut record,
+                                )?;
+                            if plan_artifact_changed {
+                                if let Some(event) =
+                                    self.work_item_plan_artifact_refreshed_event(&record)
+                                {
+                                    audit_events.push(event);
+                                }
+                            }
+                            audit_events.push(self.work_item_written_event(
+                                "wait_reconciliation_resolved",
+                                &record,
+                                serde_json::json!({
+                                    "wait_condition_id": resolved.id,
+                                    "message_id": message.id,
+                                }),
+                            ));
+                            index_changes
+                                .extend(self.inner.storage.index_changes_for_work_item(&record)?);
+                            work_items.push(
+                                crate::runtime_db::transitions::WorkItemMutation::Update {
+                                    record,
+                                    expected_revision: existing.revision,
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        if resolved_conditions.is_empty() {
+            return Ok(());
+        }
+
+        audit_events.push(AuditEvent::legacy(
+            "wait_conditions_resolved",
+            serde_json::json!({
+                "agent_id": agent_id,
+                "message_id": message.id,
+                "reason": "wait_reconciliation",
+                "wait_condition_ids": resolved_conditions
+                    .iter()
+                    .map(|c| c.id.clone())
+                    .collect::<Vec<_>>(),
+            }),
+        ));
+
+        let commit = self.inner.runtime_db.transitions().commit_wait(
+            &crate::runtime_db::transitions::WaitTransitionCommand {
+                agent_id: agent_id.to_string(),
+                work_items,
+                expected_wait_conditions: Vec::new(),
+                wait_conditions: resolved_conditions,
+                agent_state: None,
+                audit_events,
+                index_changes,
+                notify_scheduler: true,
+                fault: self.take_transition_fault(),
+            },
+        )?;
+        self.apply_transition_commit(commit).await;
+
         Ok(())
     }
 }

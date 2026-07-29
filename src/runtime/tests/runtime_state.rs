@@ -8773,7 +8773,11 @@ async fn timer_operator_and_system_ticks_record_wait_reconciliation_signals() {
         .storage()
         .active_wait_conditions_for_agent("default")
         .unwrap();
-    assert_eq!(active_conditions.len(), 3);
+    assert_eq!(
+        active_conditions.len(),
+        0,
+        "all three waits should be resolved after reconciliation"
+    );
 }
 
 #[tokio::test]
