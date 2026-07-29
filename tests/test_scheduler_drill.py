@@ -369,6 +369,18 @@ class SchedulerDrillTests(unittest.TestCase):
         self.assertEqual(summary["injection_completed"]["duplicate"], 1)
         self.assertEqual(summary["injection_completed"]["out_of_order"], 1)
 
+    def test_wait_rearm_only_requires_canonical_evidence_when_authoritative(
+        self,
+    ) -> None:
+        class Harness:
+            def __init__(self, mode: str) -> None:
+                self.runtime_env = {"HOLON_SCHEDULER": mode}
+
+        self.assertFalse(drill.canonical_wait_evidence_required(Harness("shadow")))
+        self.assertTrue(
+            drill.canonical_wait_evidence_required(Harness("authoritative"))
+        )
+
     def test_exercise_records_failed_phase_when_harness_setup_fails(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             paths = drill.DrillPaths.from_root(Path(directory))

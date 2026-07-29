@@ -785,6 +785,10 @@ def wait_for_rearmed_work_item(
     raise TimeoutError("timed out waiting for duplicate-trigger wait rearm")
 
 
+def canonical_wait_evidence_required(harness: CaseHarness) -> bool:
+    return harness.runtime_env.get("HOLON_SCHEDULER") == "authoritative"
+
+
 def exercise_wait_rearm_race(
     harness: CaseHarness,
     marker: str,
@@ -830,6 +834,8 @@ def exercise_wait_rearm_race(
     deep_checkpoint = harness.claim_checkpoint("wait-rearm-db")
     initial_wait_id = None
     initial_generation = None
+    duplicate_message_id = None
+    require_canonical_wait_evidence = canonical_wait_evidence_required(harness)
     if deep_checkpoint:
         initial_snapshot = harness.runtime_db_snapshot(
             "wait-rearm-initial-generation"
@@ -850,12 +856,20 @@ def exercise_wait_rearm_race(
             if row["owner_work_item_id"] == initial["id"]
             and row["wait_id"] == initial_wait_id
         ]
-        require(
-            len(initial_generations) == 1
-            and initial_generations[0]["lifecycle_state"] == "active",
-            f"initial canonical wait generation is not active: {initial_generations}",
-        )
-        initial_generation = initial_generations[0]["generation"]
+        if require_canonical_wait_evidence:
+            require(
+                len(initial_generations) == 1
+                and initial_generations[0]["lifecycle_state"] == "active",
+                "initial canonical wait generation is not active: "
+                f"{initial_generations}",
+            )
+            initial_generation = initial_generations[0]["generation"]
+        else:
+            require(
+                not initial_generations,
+                "shadow wait unexpectedly created a canonical generation: "
+                f"{initial_generations}",
+            )
     harness.wait_agent_asleep()
     before = harness.state("wait-rearm-before-first")
     baseline = int(before["agent"]["agent"]["turn_index"])
@@ -919,18 +933,20 @@ def exercise_wait_rearm_race(
             and duplicate_queue[0]["status"] == "processed",
             f"coalesced duplicate was not processed before rearm: {duplicate_queue}",
         )
-        old_generation = [
-            row
-            for row in duplicate_snapshot["scheduler_wait_generations"]
-            if row["wait_id"] == initial_wait_id
-            and row["generation"] == initial_generation
-        ]
-        require(
-            len(old_generation) == 1
-            and old_generation[0]["lifecycle_state"] in {"consumed", "resolved"}
-            and old_generation[0]["trigger_generation"] is not None,
-            f"initial wait generation lacks consumed trigger evidence: {old_generation}",
-        )
+        if require_canonical_wait_evidence:
+            old_generation = [
+                row
+                for row in duplicate_snapshot["scheduler_wait_generations"]
+                if row["wait_id"] == initial_wait_id
+                and row["generation"] == initial_generation
+            ]
+            require(
+                len(old_generation) == 1
+                and old_generation[0]["lifecycle_state"] in {"consumed", "resolved"}
+                and old_generation[0]["trigger_generation"] is not None,
+                "initial wait generation lacks consumed trigger evidence: "
+                f"{old_generation}",
+            )
         active_waits = [
             row
             for row in duplicate_snapshot["wait_conditions"]
