@@ -4619,7 +4619,7 @@ async fn wait_for_tool_result_keeps_blocked_focus_current() {
 }
 
 #[tokio::test]
-async fn wait_for_uses_lifecycle_owner_for_lifecycle_execution_even_with_focus() {
+async fn wait_for_falls_back_to_current_focus_for_lifecycle_execution() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -4675,6 +4675,72 @@ async fn wait_for_uses_lifecycle_owner_for_lifecycle_execution_even_with_focus()
         .unwrap();
 
     let payload = result.envelope.result.unwrap();
+    assert_eq!(payload["scope"].as_str(), Some("work_item"));
+    assert_eq!(payload["owner"]["kind"].as_str(), Some("work_item"));
+    assert_eq!(
+        payload["owner"]["work_item_id"].as_str(),
+        Some(work.id.as_str())
+    );
+    assert_eq!(payload["work_item_id"].as_str(), Some(work.id.as_str()));
+    let active = runtime
+        .storage()
+        .raw_active_wait_conditions_for_agent("default")
+        .unwrap();
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0].work_item_id.as_deref(), Some(work.id.as_str()));
+    assert_eq!(
+        runtime.agent_state().await.unwrap().current_work_item_id,
+        Some(work.id)
+    );
+}
+
+#[tokio::test]
+async fn wait_for_uses_lifecycle_owner_without_any_work_item_binding_or_focus() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.current_execution_binding = Some(WorkItemExecutionBinding {
+            activation_id: Some("activation-lifecycle".into()),
+            admission_provenance: None,
+            source_message_id: "message-lifecycle".into(),
+            turn_id: "turn-lifecycle".into(),
+            work_item_id: None,
+            claimed_work_revision: None,
+        });
+        guard.persist_state(&runtime.inner.storage).unwrap();
+    }
+
+    let registry = crate::tool::ToolRegistry::new(runtime.workspace_root());
+    let (result, _) = registry
+        .execute(
+            &runtime,
+            "default",
+            &AuthorityClass::OperatorInstruction,
+            &crate::tool::ToolCall {
+                id: "lifecycle-wait".into(),
+                name: "WaitFor".into(),
+                input: serde_json::json!({
+                    "wake": "external",
+                    "resource": "github:holon-run/holon#2449",
+                    "reason": "lifecycle-owned wait"
+                }),
+            },
+        )
+        .await
+        .unwrap();
+
+    let payload = result.envelope.result.unwrap();
     assert_eq!(payload["scope"].as_str(), Some("agent"));
     assert_eq!(payload["owner"]["kind"].as_str(), Some("agent_lifecycle"));
     assert_eq!(payload["owner"]["agent_id"].as_str(), Some("default"));
@@ -4685,10 +4751,6 @@ async fn wait_for_uses_lifecycle_owner_for_lifecycle_execution_even_with_focus()
         .unwrap();
     assert_eq!(active.len(), 1);
     assert!(active[0].work_item_id.is_none());
-    assert_eq!(
-        runtime.agent_state().await.unwrap().current_work_item_id,
-        Some(work.id)
-    );
 }
 
 #[tokio::test]

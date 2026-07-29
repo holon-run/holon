@@ -97,8 +97,8 @@ pub(crate) async fn execute(
         state
             .current_execution_binding
             .as_ref()
-            .map(|binding| binding.work_item_id.clone())
-            .unwrap_or_else(|| {
+            .and_then(|binding| binding.work_item_id.clone())
+            .or_else(|| {
                 state
                     .current_turn_work_item_id
                     .clone()
