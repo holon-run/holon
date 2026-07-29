@@ -89,6 +89,10 @@ struct CanonicalClaimPlan {
 enum CanonicalClaimOutcome {
     NotApplicable,
     Plan(CanonicalClaimPlan),
+    RetainQueued {
+        scenario_class: crate::domain::scheduler_protocol::SchedulerScenarioClass,
+        reason: &'static str,
+    },
     HardBlocker(CanonicalClaimHardBlocker),
 }
 
@@ -486,6 +490,26 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         ) {
             Ok(CanonicalClaimOutcome::NotApplicable) => None,
             Ok(CanonicalClaimOutcome::Plan(plan)) => Some(plan),
+            Ok(CanonicalClaimOutcome::RetainQueued {
+                scenario_class,
+                reason,
+            }) => {
+                self.runtime
+                    .inner
+                    .storage
+                    .append_event(&AuditEvent::legacy(
+                        "scheduler_authority_input_rejected",
+                        serde_json::json!({
+                            "message_id": persisted_message.id,
+                            "agent_id": persisted_message.agent_id,
+                            "scenario_class": scenario_class.as_str(),
+                            "reason": reason,
+                            "queue_disposition": "retained_queued",
+                        }),
+                    ))?;
+                self.runtime.inner.notify.notify_one();
+                return Ok(RunLoopPoll::Idle);
+            }
             Ok(CanonicalClaimOutcome::HardBlocker(blocker)) => {
                 self.report_canonical_claim_hard_blocker(&persisted_message, blocker)?;
                 return Ok(RunLoopPoll::Idle);
@@ -801,6 +825,15 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         let work_item = match work_item {
             Ok(work_item) => work_item,
             Err(_) => {
+                if matches!(
+                    scenario,
+                    scheduler::CanonicalActivationScenario::ExplicitlyBoundOperatorInput { .. }
+                ) {
+                    return Ok(CanonicalClaimOutcome::RetainQueued {
+                        scenario_class,
+                        reason: "explicit_binding_work_item_missing",
+                    });
+                }
                 return Ok(canonical_claim_hard_blocker(
                     &rollout_expectations,
                     scenario_class,
@@ -916,7 +949,8 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             scheduler::CanonicalActivationScenario::ExactWaitResume { wait_id, .. } => {
                 Some(wait_id.as_str())
             }
-            scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation { .. } => None,
+            scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation { .. }
+            | scheduler::CanonicalActivationScenario::InternalFollowup { .. } => None,
             scheduler::CanonicalActivationScenario::LifecycleExternalNudge { .. } => {
                 unreachable!("lifecycle scenario is planned before WorkItem lookup")
             }
@@ -1055,6 +1089,17 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 ActivationTrust::RuntimeInstruction,
                 format!("work-queue-message:{}", message.id),
             ),
+            scheduler::CanonicalActivationScenario::InternalFollowup { .. } => (
+                ActivationCause::InternalFollowup {
+                    message_id: message.id.clone(),
+                },
+                ActivationBinding::WorkItem {
+                    work_item_id: work_item.id.clone(),
+                },
+                ActivationOrigin::System,
+                ActivationTrust::RuntimeInstruction,
+                format!("internal-followup:{}", message.id),
+            ),
             scheduler::CanonicalActivationScenario::ExactTaskRejoin { task_id, .. } => (
                 ActivationCause::TaskRejoin {
                     task_id: task_id.clone(),
@@ -1191,6 +1236,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             scheduler_claim_work_item: matches!(
                 scenario,
                 scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation { .. }
+                    | scheduler::CanonicalActivationScenario::InternalFollowup { .. }
             )
             .then_some(work_item),
             bootstrap,
@@ -1607,6 +1653,13 @@ fn canonical_admission_matches_scenario(
                 work_item_id: expected,
             },
         ) => work_item_id == expected && bound_work_item_id == expected,
+        (
+            ActivationCause::InternalFollowup { message_id },
+            ActivationBinding::WorkItem { work_item_id },
+            scheduler::CanonicalActivationScenario::InternalFollowup {
+                work_item_id: expected,
+            },
+        ) => message_id == &message.id && work_item_id == expected,
         (
             ActivationCause::TaskRejoin {
                 task_id,

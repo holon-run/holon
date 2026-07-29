@@ -821,6 +821,14 @@ class CaseHarness:
             if len(matches) == 1 and matches[0].get("state") == expected_state:
                 write_json(self.evidence / f"{label}-work-items.json", items)
                 self.wait_agent_idle()
+                # Re-fetch after idle so result_brief_id and completion_intent
+                # reflect the final post-promotion state.
+                final_items = self.request("GET", self.agent_path("work-items?limit=50"))
+                final_matches = [
+                    item for item in final_items if objective_marker in item.get("objective", "")
+                ]
+                if len(final_matches) == 1:
+                    return final_matches[0]
                 return matches[0]
             time.sleep(1)
         write_json(self.evidence / f"{label}-timeout-work-items.json", matches)

@@ -42,6 +42,9 @@ pub(crate) enum CanonicalActivationScenario {
     WorkItemAutonomousContinuation {
         work_item_id: String,
     },
+    InternalFollowup {
+        work_item_id: String,
+    },
     ExactTaskRejoin {
         task_id: String,
         work_item_id: String,
@@ -63,6 +66,9 @@ pub(crate) enum CanonicalActivationScenario {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CanonicalActivationCandidate {
     WorkItemAutonomousContinuation {
+        work_item_id: String,
+    },
+    InternalFollowup {
         work_item_id: String,
     },
     ExactTaskRejoin {
@@ -103,6 +109,7 @@ impl CanonicalActivationScenario {
     pub(crate) fn work_item_id(&self) -> Option<&str> {
         match self {
             Self::WorkItemAutonomousContinuation { work_item_id }
+            | Self::InternalFollowup { work_item_id }
             | Self::ExactTaskRejoin { work_item_id, .. }
             | Self::ExplicitlyBoundOperatorInput { work_item_id, .. } => Some(work_item_id),
             Self::ExactWaitResume { owner, .. } => owner.work_item_id(),
@@ -114,7 +121,7 @@ impl CanonicalActivationScenario {
 impl CanonicalActivationCandidate {
     pub(crate) fn scenario_class(&self) -> SchedulerScenarioClass {
         match self {
-            Self::WorkItemAutonomousContinuation { .. } => {
+            Self::WorkItemAutonomousContinuation { .. } | Self::InternalFollowup { .. } => {
                 WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO
             }
             Self::ExactTaskRejoin { .. } => EXACT_TASK_REJOIN_SCENARIO,
@@ -128,6 +135,7 @@ impl CanonicalActivationCandidate {
     fn expected_work_item_id(&self) -> Option<&str> {
         match self {
             Self::WorkItemAutonomousContinuation { work_item_id }
+            | Self::InternalFollowup { work_item_id }
             | Self::ExactTaskRejoin { work_item_id, .. }
             | Self::ExplicitlyBoundOperatorInput { work_item_id } => Some(work_item_id),
             Self::ExactWaitResume {
@@ -1397,6 +1405,12 @@ pub(crate) fn canonical_activation_candidate(
             CanonicalActivationCandidate::WorkItemAutonomousContinuation { work_item_id }
         }));
     }
+    if message.kind == MessageKind::InternalFollowup {
+        return Ok(message
+            .work_item_id
+            .clone()
+            .map(|work_item_id| CanonicalActivationCandidate::InternalFollowup { work_item_id }));
+    }
     if message.kind == MessageKind::TaskResult {
         let MessageOrigin::Task { task_id } = &message.origin else {
             bail!("canonical task rejoin requires task message origin");
@@ -1494,6 +1508,11 @@ pub(crate) fn resolve_canonical_activation_scenario(
         return Ok(Some(
             CanonicalActivationScenario::WorkItemAutonomousContinuation { work_item_id },
         ));
+    }
+    if let CanonicalActivationCandidate::InternalFollowup { work_item_id } = candidate {
+        return Ok(Some(CanonicalActivationScenario::InternalFollowup {
+            work_item_id,
+        }));
     }
     if let CanonicalActivationCandidate::LifecycleExternalNudge { agent_id } = candidate {
         return Ok(Some(CanonicalActivationScenario::LifecycleExternalNudge {

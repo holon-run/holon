@@ -23,6 +23,48 @@ struct GatedFailingProvider {
     release: Arc<tokio::sync::Notify>,
 }
 
+struct CanonicalCompletionProvider {
+    work_item_id: String,
+    calls: Mutex<usize>,
+}
+
+#[async_trait]
+impl AgentProvider for CanonicalCompletionProvider {
+    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let mut calls = self.calls.lock().await;
+        *calls += 1;
+        let blocks = if *calls == 1 {
+            vec![
+                ModelBlock::Text {
+                    text: "Canonical completion report.".into(),
+                },
+                ModelBlock::ToolUse {
+                    id: "complete-canonical-work".into(),
+                    name: "CompleteWorkItem".into(),
+                    input: serde_json::json!({
+                        "work_item_id": self.work_item_id
+                    }),
+                    kind: crate::provider::ModelToolCallKind::Function,
+                },
+            ]
+        } else {
+            vec![ModelBlock::Text {
+                text: "Completion settled.".into(),
+            }]
+        };
+        Ok(ProviderTurnResponse {
+            blocks,
+            stop_reason: None,
+            input_tokens: 10,
+            output_tokens: 10,
+            cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
+            request_diagnostics: None,
+        })
+    }
+}
+
 async fn finish_claimed_test_run(runtime: &RuntimeHandle) {
     let mut guard = runtime.inner.agent.lock().await;
     scheduler::apply_idle_projection(&mut guard.state, &runtime.inner.storage).unwrap();
@@ -3689,6 +3731,191 @@ async fn authoritative_explicit_operator_wait_ambiguity_remains_queued() {
                 })
             })
         }));
+}
+
+#[tokio::test]
+async fn authoritative_explicit_operator_missing_target_remains_queued_without_rollback() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime.set_scheduler_protocol_production_commands_enabled(true);
+    enable_production_protocol_authority_for(
+        &runtime,
+        &[SchedulerScenarioClass::ExplicitlyBoundOperatorInput],
+    );
+    let message = runtime
+        .enqueue(trusted_operator_prompt(
+            Some("work-missing"),
+            "wrong-fence explicit operator input",
+        ))
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Idle
+    ));
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest_all()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == message.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Queued)
+    );
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .scheduler_scenario_mode(SchedulerScenarioClass::ExplicitlyBoundOperatorInput)
+            .unwrap(),
+        ScenarioMode::Authoritative
+    );
+    assert!(runtime
+        .storage()
+        .read_recent_events(usize::MAX)
+        .unwrap()
+        .iter()
+        .any(|event| {
+            event.kind == "scheduler_authority_input_rejected"
+                && event.data["message_id"] == message.id
+                && event.data["reason"] == "explicit_binding_work_item_missing"
+        }));
+}
+
+#[tokio::test]
+async fn authoritative_completion_terminalizes_canonical_work_and_binds_report() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let seed_runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = seed_runtime
+        .create_work_item(
+            "authoritative canonical completion".into(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CanonicalCompletionProvider {
+            work_item_id: work_item.id.clone(),
+            calls: Mutex::new(0),
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime.set_scheduler_protocol_production_commands_enabled(true);
+    enable_production_protocol_authority(&runtime);
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "complete canonical work".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+    message.work_item_id = Some(work_item.id.clone());
+    let message = runtime.enqueue(message).await.unwrap();
+    let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+
+    let runner = tokio::spawn(runtime.clone().run());
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let snapshot = runtime
+                .inner
+                .runtime_db
+                .transitions()
+                .load_scheduler_protocol_snapshot("default")
+                .unwrap();
+            if snapshot
+                .settlements
+                .contains_key(&canonical_settlement_id(&message.id))
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("canonical completion should settle");
+    runner.abort();
+
+    let completed = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .expect("completed work item");
+    assert_eq!(completed.state, WorkItemState::Completed);
+    let result_brief_id = completed
+        .result_brief_id
+        .as_deref()
+        .expect("completion report should bind");
+    let snapshot = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    assert_eq!(
+        snapshot.activations[&activation_id].state,
+        crate::domain::scheduler_protocol::ActivationState::Settled
+    );
+    assert_eq!(snapshot.work[&work_item.id].status, WorkStatus::Terminal);
+    assert_eq!(
+        snapshot.settlements[&canonical_settlement_id(&message.id)]
+            .operator_delivery
+            .as_deref(),
+        Some(result_brief_id)
+    );
+    assert!(!snapshot
+        .missing_settlements
+        .contains_key(&canonical_missing_settlement_id(&message.id)));
 }
 
 #[tokio::test]

@@ -258,6 +258,16 @@ impl RuntimeHandle {
             MessageDeliverySurface::RuntimeSystem,
             AdmissionContext::RuntimeOwned,
         );
+        message.work_item_id = {
+            let guard = self.inner.agent.lock().await;
+            guard
+                .state
+                .current_execution_binding
+                .as_ref()
+                .and_then(|binding| binding.work_item_id.clone())
+                .or_else(|| guard.state.current_turn_work_item_id.clone())
+                .or_else(|| guard.state.current_work_item_id.clone())
+        };
         message.metadata = Some(serde_json::json!({
             "fallback_model_ref": fallback_ref,
             "source_terminal_kind": terminal_kind,
