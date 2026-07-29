@@ -1,7 +1,7 @@
 # Scheduler drill
 
 `scripts/scheduler-drill.py` is a host-side, resumable Docker runner for
-collecting scheduler shadow/cutover evidence from one fresh candidate node.
+collecting authoritative scheduler evidence from one fresh candidate node.
 It never imports a report into the runtime and never writes scheduler protocol
 tables directly.
 
@@ -55,20 +55,15 @@ RUN_DIR=$(
 )
 ```
 
-Start or restart the same volume in a requested scheduler mode:
+Start or restart the same authoritative candidate:
 
 ```bash
-python3 scripts/scheduler-drill.py start --run-dir "$RUN_DIR" --mode shadow
+python3 scripts/scheduler-drill.py start --run-dir "$RUN_DIR"
 python3 scripts/scheduler-drill.py exercise --run-dir "$RUN_DIR"
 python3 scripts/scheduler-drill.py stop --run-dir "$RUN_DIR"
 python3 scripts/scheduler-drill.py collect \
   --run-dir "$RUN_DIR" \
-  --label shadow-final
-
-# After operator review:
-python3 scripts/scheduler-drill.py start \
-  --run-dir "$RUN_DIR" \
-  --mode authoritative
+  --label authoritative-final
 ```
 
 Use `kill` instead of `stop` at a crash checkpoint. `collect` requires the
@@ -77,17 +72,7 @@ It opens `runtime.sqlite` in SQLite read-only mode, removes the copied database
 after collection, and leaves only `evidence.json`, `report.md`, and the secret
 scan result.
 
-Use the same `start` command for the rollback chain:
-
-```bash
-python3 scripts/scheduler-drill.py start --run-dir "$RUN_DIR" --mode shadow
-python3 scripts/scheduler-drill.py start --run-dir "$RUN_DIR" --mode legacy
-python3 scripts/scheduler-drill.py start \
-  --run-dir "$RUN_DIR" \
-  --mode authoritative
-```
-
-Stop between mode changes. Inspect resumable state with `status`; remove the
+Inspect resumable state with `status`; remove the
 container, network, volume, and private control token with `cleanup` only after
 all reports have been retained.
 
@@ -118,10 +103,10 @@ evidence, or disk telemetry grows without a workload-explained bound.
 
 ## Evidence decision
 
-The collector reports No-Go when any production scenario lacks comparison
-evidence, a comparison diverges, a current-revision hard blocker exists, JSON
+The collector reports No-Go when any requested production scenario lacks a
+completed stress operation, a current-revision hard blocker exists, JSON
 evidence is malformed, or canonical activation/settlement/delivery tail state
-is inconsistent. It also requires the recorded stress operations and planned
-injections to have completed; declared parameters alone never satisfy coverage.
-Historical hard blockers remain visible but do not count as current unless
-their config/manifest/preflight fences match current authority.
+is inconsistent. It also requires planned injections to have completed;
+declared parameters alone never satisfy coverage. Historical hard blockers
+remain visible but do not count as current unless their
+config/manifest/preflight fences match current authority.

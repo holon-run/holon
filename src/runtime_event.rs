@@ -158,7 +158,7 @@ const REGISTRY: &[RuntimeEventDescriptor] = &[
         payload_schema: SchedulerDiagnosticAuditEvent::SCHEMA_ID,
         payload_schema_version: SchedulerDiagnosticAuditEvent::SCHEMA_VERSION,
         display_family: RuntimeEventDisplayFamily::Scheduler,
-        fixture_json: r#"{"agent_id":"default","decision":"StartModelTurn","reason":"message_admitted","boundary":"run_loop","scenario_class":"message_admission","shadow_matched":true,"divergence_code":null,"work_item_id":null,"message_id":"msg_fixture","task_id":null,"evidence":["queue_len=1"]}"#,
+        fixture_json: r#"{"agent_id":"default","decision":"StartModelTurn","reason":"message_admitted","boundary":"run_loop","scenario_class":"message_admission","work_item_id":null,"message_id":"msg_fixture","task_id":null,"evidence":["queue_len=1"]}"#,
     },
 ];
 

@@ -42,7 +42,6 @@ pub mod runtime;
 pub mod runtime_db;
 pub mod runtime_error;
 pub mod runtime_event;
-mod scheduler_rollout;
 pub mod skills;
 pub mod solve;
 pub mod storage;

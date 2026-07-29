@@ -5093,65 +5093,6 @@ fn rollout_manifest_is_installable(manifest: &RolloutManifest) -> bool {
         && !manifest.approved_at.is_empty()
 }
 
-pub(crate) fn managed_shadow_rollout_manifest(
-    revision: u64,
-    preflight_revision: u64,
-    protocol_build: String,
-    schema_build: String,
-    schema_revision: u64,
-) -> RolloutManifest {
-    let classes = SchedulerScenarioClass::PRODUCTION_AUTHORITY
-        .into_iter()
-        .map(|scenario_class| {
-            let gate = rollout_class_gate(scenario_class.as_str())
-                .expect("production scheduler scenario has a rollout gate");
-            let required_evidence = UNIVERSAL_ROLLOUT_EVIDENCE
-                .iter()
-                .chain(gate.required_evidence.iter())
-                .map(|evidence| (*evidence).to_string())
-                .collect();
-            (
-                scenario_class.as_str().to_string(),
-                RolloutClassEvidence {
-                    configured_mode: ScenarioMode::Shadow,
-                    minimum_shadow_samples: gate.minimum_shadow_samples,
-                    minimum_shadow_duration_secs: gate.minimum_shadow_duration_secs,
-                    observed_shadow_samples: 0,
-                    observed_shadow_duration_secs: 0,
-                    maximum_p99_latency_regression_bps: MAXIMUM_P99_LATENCY_REGRESSION_BPS,
-                    observed_p99_latency_regression_bps: 0,
-                    hard_blocker_count: 0,
-                    unresolved_divergence_count: 0,
-                    required_evidence,
-                    verified_evidence: BTreeSet::new(),
-                    rollback_policy: RollbackPolicy {
-                        trigger: RollbackTrigger::AnyHardBlocker,
-                        action: RollbackAction::StopAdmissionsAndRevert {
-                            target: ScenarioMode::Shadow,
-                        },
-                    },
-                },
-            )
-        })
-        .collect();
-    RolloutManifest {
-        revision,
-        preflight_revision,
-        preflight_for_manifest_revision: revision,
-        preflight_succeeded: true,
-        protocol_build,
-        schema_build,
-        schema_revision,
-        fixture_corpus_revision: "runtime-managed-shadow-v1".into(),
-        classes,
-        safety_divergence_bps: 0,
-        canonical_state_divergence_bps: 0,
-        allowed_observational_divergence: BTreeMap::new(),
-        approver: "operator:HOLON_SCHEDULER".into(),
-        approved_at: "runtime-managed-shadow".into(),
-    }
-}
-
 fn rejected(snapshot: &Snapshot, diagnostic: &str) -> Outcome {
     Outcome {
         decision: Decision::Rejected,
@@ -5707,10 +5648,6 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
             );
         }
     }
-    if snapshot.rollout.protocol_mode != ProtocolMode::Legacy && snapshot.rollout.manifest.is_none()
-    {
-        return Err("non-legacy protocol has no rollout manifest".into());
-    }
     if let Some(manifest) = &snapshot.rollout.manifest {
         if !rollout_manifest_is_installable(manifest) {
             return Err("rollout manifest is incomplete".into());
@@ -6152,10 +6089,12 @@ mod wire_compatibility_tests {
     use std::collections::BTreeMap;
 
     use super::{
-        managed_shadow_rollout_manifest, reduce_rollout_command, ActivationBinding,
-        ActivationInputAttachment, ActivationSlot, AgentDispatchState, Decision, ProtocolMode,
-        RolloutCommand, RolloutState, ScenarioAuthority, ScenarioMode, SchedulerOwner,
-        SchedulerScenarioClass, Snapshot, WaitGenerationRecord, WaitState,
+        reduce_rollout_command, rollout_class_gate, ActivationBinding, ActivationInputAttachment,
+        ActivationSlot, AgentDispatchState, Decision, ProtocolMode, RollbackAction, RollbackPolicy,
+        RollbackTrigger, RolloutClassEvidence, RolloutCommand, RolloutManifest, RolloutState,
+        ScenarioAuthority, ScenarioMode, SchedulerOwner, SchedulerScenarioClass, Snapshot,
+        WaitGenerationRecord, WaitState, MAXIMUM_P99_LATENCY_REGRESSION_BPS,
+        UNIVERSAL_ROLLOUT_EVIDENCE,
     };
 
     #[test]
@@ -6350,13 +6289,57 @@ mod wire_compatibility_tests {
     }
 
     fn rollout_snapshot() -> Snapshot {
-        let mut manifest = managed_shadow_rollout_manifest(1, 1, "test".into(), "test".into(), 38);
-        for class in manifest.classes.values_mut() {
-            class.configured_mode = ScenarioMode::Authoritative;
-            class.observed_shadow_samples = class.minimum_shadow_samples;
-            class.observed_shadow_duration_secs = class.minimum_shadow_duration_secs;
-            class.verified_evidence = class.required_evidence.clone();
-        }
+        let classes = SchedulerScenarioClass::PRODUCTION_AUTHORITY
+            .into_iter()
+            .map(|scenario_class| {
+                let gate = rollout_class_gate(scenario_class.as_str())
+                    .expect("production scheduler scenario has a rollout gate");
+                let required_evidence: std::collections::BTreeSet<String> =
+                    UNIVERSAL_ROLLOUT_EVIDENCE
+                        .iter()
+                        .chain(gate.required_evidence.iter())
+                        .map(|evidence| (*evidence).to_string())
+                        .collect();
+                (
+                    scenario_class.as_str().to_string(),
+                    RolloutClassEvidence {
+                        configured_mode: ScenarioMode::Authoritative,
+                        minimum_shadow_samples: gate.minimum_shadow_samples,
+                        minimum_shadow_duration_secs: gate.minimum_shadow_duration_secs,
+                        observed_shadow_samples: gate.minimum_shadow_samples,
+                        observed_shadow_duration_secs: gate.minimum_shadow_duration_secs,
+                        maximum_p99_latency_regression_bps: MAXIMUM_P99_LATENCY_REGRESSION_BPS,
+                        observed_p99_latency_regression_bps: 0,
+                        hard_blocker_count: 0,
+                        unresolved_divergence_count: 0,
+                        verified_evidence: required_evidence.clone(),
+                        required_evidence,
+                        rollback_policy: RollbackPolicy {
+                            trigger: RollbackTrigger::AnyHardBlocker,
+                            action: RollbackAction::StopAdmissionsAndRevert {
+                                target: ScenarioMode::Shadow,
+                            },
+                        },
+                    },
+                )
+            })
+            .collect();
+        let manifest = RolloutManifest {
+            revision: 1,
+            preflight_revision: 1,
+            preflight_for_manifest_revision: 1,
+            preflight_succeeded: true,
+            protocol_build: "test".into(),
+            schema_build: "test".into(),
+            schema_revision: 38,
+            fixture_corpus_revision: "test".into(),
+            classes,
+            safety_divergence_bps: 0,
+            canonical_state_divergence_bps: 0,
+            allowed_observational_divergence: BTreeMap::new(),
+            approver: "test".into(),
+            approved_at: "test".into(),
+        };
         Snapshot {
             slot: ActivationSlot::Idle,
             dispatch: AgentDispatchState::Open,

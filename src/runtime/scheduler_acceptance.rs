@@ -291,7 +291,6 @@ async fn seed_scheduler_claim_admission_restart_fixture(
     super::require_scheduler_acceptance_fixtures_enabled()?;
     let runtime_db =
         RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
-    crate::scheduler_rollout::reconcile_from_env(&runtime_db)?;
     let agent_home = config.agent_root_dir().join(agent_id);
     std::fs::create_dir_all(&agent_home)
         .with_context(|| format!("creating agent home {}", agent_home.display()))?;
@@ -301,13 +300,6 @@ async fn seed_scheduler_claim_admission_restart_fixture(
         InitialWorkspaceBinding::Detached,
         runtime_db,
     )?;
-    if !runtime.scheduler_protocol_production_commands_enabled() {
-        return Err(anyhow!(
-            "scheduler claim restart fixture requires HOLON_SCHEDULER=authoritative or \
-             HOLON_SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS=true"
-        ));
-    }
-
     match stage {
         "prepare" => {
             let queued_before = queue_entries_for_agent(&runtime, agent_id)?;
@@ -344,18 +336,10 @@ async fn seed_scheduler_claim_admission_restart_fixture(
                     decision.reason
                 ));
             }
-            let shadow_comparison = scheduler::shadow_comparison_for_work_queue_tick(
-                &projection,
-                &work_item,
-                "queued_available",
-                &decision,
-                scheduler::SchedulerBoundary::IdleTick,
-            );
             runtime
                 .emit_system_tick_from_work_queue(
                     &work_item,
                     "queued_available",
-                    shadow_comparison,
                     Some(&decision),
                 )
                 .await?;
@@ -648,20 +632,8 @@ async fn seed_scheduler_waiting_work(
             decision.reason
         ));
     }
-    let shadow_comparison = scheduler::shadow_comparison_for_work_queue_tick(
-        &projection,
-        &work_item,
-        "queued_available",
-        &decision,
-        scheduler::SchedulerBoundary::IdleTick,
-    );
     runtime
-        .emit_system_tick_from_work_queue(
-            &work_item,
-            "queued_available",
-            shadow_comparison,
-            Some(&decision),
-        )
+        .emit_system_tick_from_work_queue(&work_item, "queued_available", Some(&decision))
         .await?;
     let scheduled = match scheduler_executor::SchedulerDecisionExecutor::new(runtime)
         .poll()
@@ -1004,7 +976,6 @@ async fn seed_scheduler_targeted_yield_restart_fixture(
     super::require_scheduler_acceptance_fixtures_enabled()?;
     let runtime_db =
         RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
-    crate::scheduler_rollout::reconcile_from_env(&runtime_db)?;
     let agent_home = config.agent_root_dir().join(agent_id);
     std::fs::create_dir_all(&agent_home)
         .with_context(|| format!("creating agent home {}", agent_home.display()))?;
@@ -1319,7 +1290,6 @@ async fn seed_scheduler_wait_trigger_restart_fixture(
     super::require_scheduler_acceptance_fixtures_enabled()?;
     let runtime_db =
         RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
-    crate::scheduler_rollout::reconcile_from_env(&runtime_db)?;
     let agent_home = config.agent_root_dir().join(agent_id);
     std::fs::create_dir_all(&agent_home)
         .with_context(|| format!("creating agent home {}", agent_home.display()))?;
@@ -1329,13 +1299,6 @@ async fn seed_scheduler_wait_trigger_restart_fixture(
         InitialWorkspaceBinding::Detached,
         runtime_db,
     )?;
-    if !runtime.scheduler_protocol_production_commands_enabled() {
-        return Err(anyhow!(
-            "scheduler wait trigger restart fixture requires HOLON_SCHEDULER=authoritative or \
-             HOLON_SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS=true"
-        ));
-    }
-
     if stage == "prepare" {
         let seed = seed_scheduler_waiting_work(&runtime, agent_id, objective, None).await?;
         let trigger =
@@ -1601,7 +1564,6 @@ async fn seed_scheduler_post_commit_notification_restart_fixture(
     super::require_scheduler_acceptance_fixtures_enabled()?;
     let runtime_db =
         RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
-    crate::scheduler_rollout::reconcile_from_env(&runtime_db)?;
     let agent_home = config.agent_root_dir().join(agent_id);
     std::fs::create_dir_all(&agent_home)
         .with_context(|| format!("creating agent home {}", agent_home.display()))?;
@@ -1611,13 +1573,6 @@ async fn seed_scheduler_post_commit_notification_restart_fixture(
         InitialWorkspaceBinding::Detached,
         runtime_db,
     )?;
-    if !runtime.scheduler_protocol_production_commands_enabled() {
-        return Err(anyhow!(
-            "scheduler post-commit restart fixture requires HOLON_SCHEDULER=authoritative or \
-             HOLON_SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS=true"
-        ));
-    }
-
     if stage == "prepare" {
         let seed = seed_scheduler_waiting_work(
             &runtime,
@@ -1810,7 +1765,6 @@ async fn seed_scheduler_ingress_admission_restart_fixture(
     super::require_scheduler_acceptance_fixtures_enabled()?;
     let runtime_db =
         RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
-    crate::scheduler_rollout::reconcile_from_env(&runtime_db)?;
     let agent_home = config.agent_root_dir().join(agent_id);
     std::fs::create_dir_all(&agent_home)
         .with_context(|| format!("creating agent home {}", agent_home.display()))?;
@@ -1950,7 +1904,6 @@ async fn seed_scheduler_legacy_adoption_restart_fixture(
     super::require_scheduler_acceptance_fixtures_enabled()?;
     let runtime_db =
         RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
-    crate::scheduler_rollout::reconcile_from_env(&runtime_db)?;
     let agent_home = config.agent_root_dir().join(agent_id);
     std::fs::create_dir_all(&agent_home)
         .with_context(|| format!("creating agent home {}", agent_home.display()))?;
@@ -2150,9 +2103,6 @@ async fn seed_scheduler_preclaim_fallback_restart_fixture(
     super::require_scheduler_acceptance_fixtures_enabled()?;
     let runtime_db =
         RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
-    if stage == "prepare" {
-        crate::scheduler_rollout::reconcile_from_env(&runtime_db)?;
-    }
     let agent_home = config.agent_root_dir().join(agent_id);
     std::fs::create_dir_all(&agent_home)
         .with_context(|| format!("creating agent home {}", agent_home.display()))?;
@@ -2388,9 +2338,6 @@ async fn seed_scheduler_authority_rollback_restart_fixture(
     super::require_scheduler_acceptance_fixtures_enabled()?;
     let runtime_db =
         RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
-    if stage != "verify" {
-        crate::scheduler_rollout::reconcile_from_env(&runtime_db)?;
-    }
     let scenario_class = "exact_wait_resume";
     let digest = format!("{:x}", Sha256::digest(objective.as_bytes()));
     let command_identity = format!("scheduler-restart-authority-rollback:{digest}");
@@ -2579,7 +2526,6 @@ async fn seed_scheduler_terminal_settlement_restart_fixture(
     super::require_scheduler_acceptance_fixtures_enabled()?;
     let runtime_db =
         RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
-    crate::scheduler_rollout::reconcile_from_env(&runtime_db)?;
     let agent_home = config.agent_root_dir().join(agent_id);
     std::fs::create_dir_all(&agent_home)
         .with_context(|| format!("creating agent home {}", agent_home.display()))?;
@@ -2789,7 +2735,6 @@ async fn seed_scheduler_settlement_delivery_restart_fixture(
     super::require_scheduler_acceptance_fixtures_enabled()?;
     let runtime_db =
         RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
-    crate::scheduler_rollout::reconcile_from_env(&runtime_db)?;
     let agent_home = config.agent_root_dir().join(agent_id);
     std::fs::create_dir_all(&agent_home)
         .with_context(|| format!("creating agent home {}", agent_home.display()))?;
@@ -2899,7 +2844,6 @@ pub async fn seed_scheduler_terminal_recovery_fixture(
     super::require_scheduler_acceptance_fixtures_enabled()?;
     let runtime_db =
         RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
-    crate::scheduler_rollout::reconcile_from_env(&runtime_db)?;
     let agent_home = config.agent_root_dir().join(agent_id);
     std::fs::create_dir_all(&agent_home)
         .with_context(|| format!("creating agent home {}", agent_home.display()))?;
@@ -2909,13 +2853,6 @@ pub async fn seed_scheduler_terminal_recovery_fixture(
         InitialWorkspaceBinding::Detached,
         runtime_db,
     )?;
-    if !runtime.scheduler_protocol_production_commands_enabled() {
-        return Err(anyhow!(
-            "scheduler recovery fixture requires HOLON_SCHEDULER=authoritative or \
-             HOLON_SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS=true"
-        ));
-    }
-
     let work_item = runtime
         .create_work_item(objective, Some(WorkItemPlanStatus::Ready), None, Vec::new())
         .await?;
@@ -2942,20 +2879,8 @@ pub async fn seed_scheduler_terminal_recovery_fixture(
             decision.reason
         ));
     }
-    let shadow_comparison = scheduler::shadow_comparison_for_work_queue_tick(
-        &projection,
-        &work_item,
-        "queued_available",
-        &decision,
-        scheduler::SchedulerBoundary::IdleTick,
-    );
     runtime
-        .emit_system_tick_from_work_queue(
-            &work_item,
-            "queued_available",
-            shadow_comparison,
-            Some(&decision),
-        )
+        .emit_system_tick_from_work_queue(&work_item, "queued_available", Some(&decision))
         .await?;
     let scheduled = match scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
         .poll()

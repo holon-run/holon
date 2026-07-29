@@ -283,24 +283,15 @@ struct RuntimeInner {
     recovered_timers: Mutex<Option<Vec<TimerRecord>>>,
     suppress_next_continue_active_tick: Mutex<bool>,
     shutdown_requested: AtomicBool,
-    scheduler_protocol_production_commands_enabled: AtomicBool,
     transition_faults: StdMutex<std::collections::VecDeque<TransitionFaultPoint>>,
     #[cfg(test)]
     task_transition_conflicts_remaining: AtomicUsize,
-    #[cfg(test)]
-    omit_next_scheduler_claim_shadow_comparison: AtomicBool,
     #[cfg(test)]
     fail_after_next_runtime_claim: AtomicBool,
     transition_warnings: StdMutex<Vec<PostCommitWarning>>,
 }
 
-const SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS_ENV: &str =
-    "HOLON_SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS";
 const SCHEDULER_ACCEPTANCE_FIXTURES_ENV: &str = "HOLON_SCHEDULER_ACCEPTANCE_FIXTURES";
-
-fn scheduler_protocol_production_commands_enabled_from_env() -> Result<bool> {
-    crate::scheduler_rollout::production_commands_enabled_from_env()
-}
 
 fn boolean_env(name: &str) -> Result<Option<bool>> {
     let Some(value) = std::env::var_os(name) else {
@@ -315,12 +306,6 @@ fn boolean_env(name: &str) -> Result<Option<bool>> {
 }
 
 pub fn require_scheduler_acceptance_fixtures_enabled() -> Result<()> {
-    if !scheduler_protocol_production_commands_enabled_from_env()? {
-        return Err(anyhow!(
-            "scheduler acceptance fixtures require HOLON_SCHEDULER=authoritative or \
-             {SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS_ENV}=true"
-        ));
-    }
     if boolean_env(SCHEDULER_ACCEPTANCE_FIXTURES_ENV)? != Some(true) {
         return Err(anyhow!(
             "scheduler acceptance fixtures require {SCHEDULER_ACCEPTANCE_FIXTURES_ENV}=true"
@@ -331,8 +316,6 @@ pub fn require_scheduler_acceptance_fixtures_enabled() -> Result<()> {
 
 #[cfg(test)]
 fn scheduler_acceptance_fixtures_enabled_from_values(
-    desired: Option<&str>,
-    production_commands: Option<&str>,
     acceptance_fixtures: Option<&str>,
 ) -> Result<bool> {
     fn parse(name: &str, value: Option<&str>) -> Result<Option<bool>> {
@@ -345,12 +328,7 @@ fn scheduler_acceptance_fixtures_enabled_from_values(
             _ => Err(anyhow!("{name} expects a boolean")),
         }
     }
-    Ok(
-        crate::scheduler_rollout::production_commands_enabled_from_values(
-            desired.map(std::ffi::OsStr::new),
-            production_commands.map(std::ffi::OsStr::new),
-        )? && parse(SCHEDULER_ACCEPTANCE_FIXTURES_ENV, acceptance_fixtures)? == Some(true),
-    )
+    Ok(parse(SCHEDULER_ACCEPTANCE_FIXTURES_ENV, acceptance_fixtures)? == Some(true))
 }
 
 #[cfg(test)]
@@ -358,63 +336,19 @@ mod scheduler_acceptance_gate_tests {
     use super::*;
 
     #[test]
-    fn scheduler_acceptance_gate_uses_scheduler_mode_precedence() {
-        assert!(scheduler_acceptance_fixtures_enabled_from_values(
-            Some("authoritative"),
-            None,
-            Some("true")
-        )
-        .unwrap());
-        assert!(scheduler_acceptance_fixtures_enabled_from_values(
-            Some("authoritative"),
-            Some("false"),
-            Some("true")
-        )
-        .unwrap());
-        assert!(!scheduler_acceptance_fixtures_enabled_from_values(
-            Some("shadow"),
-            Some("true"),
-            Some("true")
-        )
-        .unwrap());
-        assert!(!scheduler_acceptance_fixtures_enabled_from_values(
-            Some("legacy"),
-            Some("true"),
-            Some("true")
-        )
-        .unwrap());
-        assert!(scheduler_acceptance_fixtures_enabled_from_values(
-            None,
-            Some("true"),
-            Some("true")
-        )
-        .unwrap());
-        assert!(!scheduler_acceptance_fixtures_enabled_from_values(
-            Some("authoritative"),
-            None,
-            None
-        )
-        .unwrap());
+    fn scheduler_acceptance_gate_requires_explicit_fixture_opt_in() {
+        assert!(scheduler_acceptance_fixtures_enabled_from_values(Some("true")).unwrap());
+        assert!(!scheduler_acceptance_fixtures_enabled_from_values(None).unwrap());
     }
 
     #[test]
-    fn scheduler_acceptance_gate_rejects_invalid_scheduler_configuration() {
-        assert!(scheduler_acceptance_fixtures_enabled_from_values(
-            Some("enabled"),
-            Some("true"),
-            Some("true")
-        )
-        .unwrap_err()
-        .to_string()
-        .contains(crate::scheduler_rollout::SCHEDULER_ENV));
-        assert!(scheduler_acceptance_fixtures_enabled_from_values(
-            None,
-            Some("sometimes"),
-            Some("true")
-        )
-        .unwrap_err()
-        .to_string()
-        .contains(SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS_ENV));
+    fn scheduler_acceptance_gate_rejects_invalid_fixture_configuration() {
+        assert!(
+            scheduler_acceptance_fixtures_enabled_from_values(Some("sometimes"))
+                .unwrap_err()
+                .to_string()
+                .contains(SCHEDULER_ACCEPTANCE_FIXTURES_ENV)
+        );
     }
 }
 
@@ -1543,19 +1477,6 @@ impl RuntimeHandle {
         self.inner.clock.now()
     }
 
-    fn scheduler_protocol_production_commands_enabled(&self) -> bool {
-        self.inner
-            .scheduler_protocol_production_commands_enabled
-            .load(Ordering::SeqCst)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_scheduler_protocol_production_commands_enabled(&self, enabled: bool) {
-        self.inner
-            .scheduler_protocol_production_commands_enabled
-            .store(enabled, Ordering::SeqCst);
-    }
-
     fn take_transition_fault(&self) -> Option<TransitionFaultPoint> {
         self.inner
             .transition_faults
@@ -1591,17 +1512,6 @@ impl RuntimeHandle {
         }
         faults.push_back(fault);
         Ok(())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn omit_next_scheduler_claim_shadow_comparison(&self) {
-        assert!(
-            !self
-                .inner
-                .omit_next_scheduler_claim_shadow_comparison
-                .swap(true, Ordering::SeqCst),
-            "scheduler claim shadow comparison omission is already armed"
-        );
     }
 
     #[cfg(test)]
@@ -2295,16 +2205,7 @@ impl RuntimeHandle {
             };
             let authoritative_without_activation = work_item_id.is_some()
                 && message.authority_class == AuthorityClass::RuntimeInstruction
-                && self.scheduler_protocol_production_commands_enabled()
-                && scenario
-                    .map(|scenario| {
-                        self.inner
-                            .runtime_db
-                            .transitions()
-                            .scheduler_scenario_mode(scenario)
-                    })
-                    .transpose()?
-                    == Some(crate::domain::scheduler_protocol::ScenarioMode::Authoritative)
+                && scenario.is_some()
                 && self
                     .inner
                     .runtime_db
@@ -2753,7 +2654,6 @@ impl RuntimeHandle {
                     scheduler_claim_work_item: None,
                     scheduler_protocol_bootstrap: None,
                     scheduler_protocol_commands: Vec::new(),
-                    scheduler_authority_scenarios: Vec::new(),
                     scheduler_rollout_expectations: Vec::new(),
                     agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
                         expected: Some(Box::new(expected_persisted_state)),
@@ -2763,10 +2663,6 @@ impl RuntimeHandle {
                     transcript_entries: Vec::new(),
                     turn_record: None,
                     audit_events,
-                    scheduler_shadow_comparison: None,
-                    scheduler_wait_resume_shadow_comparison: None,
-                    scheduler_delivery_shadow_comparison: None,
-                    scheduler_semantic_shadow: None,
                     notify_scheduler: true,
                     fault: self.take_transition_fault(),
                     brief_evidence: Vec::new(),
@@ -2889,10 +2785,10 @@ impl RuntimeHandle {
             .inner
             .runtime_db
             .transitions()
-            .scheduler_rollout_expectations(
-                &[scheduler::SETTLEMENT_SCENARIO, scheduler::DELIVERY_SCENARIO],
-                self.scheduler_protocol_production_commands_enabled(),
-            )?;
+            .scheduler_rollout_expectations(&[
+                scheduler::SETTLEMENT_SCENARIO,
+                scheduler::DELIVERY_SCENARIO,
+            ])?;
         let original_audit_len = audit_events.len();
         let mut command = crate::runtime_db::transitions::QueueTransitionCommand {
             agent_id: record.agent_id.clone(),
@@ -2901,27 +2797,19 @@ impl RuntimeHandle {
             scheduler_claim_work_item: None,
             scheduler_protocol_bootstrap: None,
             scheduler_protocol_commands: scheduler_protocol_commands.clone(),
-            scheduler_authority_scenarios: vec![
-                scheduler::SETTLEMENT_SCENARIO,
-                scheduler::DELIVERY_SCENARIO,
-            ],
             scheduler_rollout_expectations: scheduler_rollout_expectations.clone(),
             agent_state: None,
             message_evidence: Vec::new(),
             transcript_entries: transcript_entries.clone(),
             turn_record: terminal_transition.map(|transition| transition.turn_record.clone()),
             audit_events: audit_events.clone(),
-            scheduler_shadow_comparison: None,
-            scheduler_wait_resume_shadow_comparison: None,
-            scheduler_delivery_shadow_comparison: None,
-            scheduler_semantic_shadow: None,
             notify_scheduler,
             fault: None,
             brief_evidence: brief_evidence.clone(),
         };
         for attempt in 0..ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
             // Rebuild guard-dependent fields from the current baseline.
-            let (agent_state, shadow_comparison, delivery_shadow_comparison) = {
+            let agent_state = {
                 let guard = self.inner.agent.lock().await;
                 let mut state = committed_agent_state
                     .clone()
@@ -2936,26 +2824,9 @@ impl RuntimeHandle {
                 } else {
                     None
                 };
-                let queue_len = guard.queue.len();
-                let projection = scheduler::SchedulerProjection::from_state_with_queue_len_at(
-                    &self.inner.storage,
-                    &state,
-                    queue_len,
-                    self.now(),
-                )?;
-                let shadow_comparison =
-                    scheduler::shadow_comparison_for_settlement(&projection, &record)
-                        .map(scheduler_executor::scheduler_shadow_comparison_command)
-                        .transpose()?;
-                let delivery_shadow_comparison =
-                    scheduler::shadow_comparison_for_delivery(&projection, &record)
-                        .map(scheduler_executor::scheduler_shadow_comparison_command)
-                        .transpose()?;
-                (agent_state, shadow_comparison, delivery_shadow_comparison)
+                agent_state
             };
             command.agent_state = agent_state;
-            command.scheduler_shadow_comparison = shadow_comparison;
-            command.scheduler_delivery_shadow_comparison = delivery_shadow_comparison;
             command.audit_events = audit_events.clone();
             command.audit_events.truncate(original_audit_len);
             if let Some(transition) = terminal_transition {
@@ -3415,7 +3286,6 @@ impl RuntimeHandle {
                     scheduler_claim_work_item: None,
                     scheduler_protocol_bootstrap: None,
                     scheduler_protocol_commands: Vec::new(),
-                    scheduler_authority_scenarios: Vec::new(),
                     scheduler_rollout_expectations: Vec::new(),
                     agent_state: None,
                     message_evidence: Vec::new(),
@@ -3429,10 +3299,6 @@ impl RuntimeHandle {
                             "status": QueueEntryStatus::Interrupted,
                         }),
                     )],
-                    scheduler_shadow_comparison: None,
-                    scheduler_wait_resume_shadow_comparison: None,
-                    scheduler_delivery_shadow_comparison: None,
-                    scheduler_semantic_shadow: None,
                     notify_scheduler: true,
                     fault: None,
                     brief_evidence: Vec::new(),
@@ -3451,10 +3317,7 @@ impl RuntimeHandle {
             .inner
             .runtime_db
             .transitions()
-            .scheduler_rollout_expectations(
-                &[scheduler::SETTLEMENT_SCENARIO],
-                self.scheduler_protocol_production_commands_enabled(),
-            )?;
+            .scheduler_rollout_expectations(&[scheduler::SETTLEMENT_SCENARIO])?;
         if scheduler_rollout_expectations.iter().any(|expectation| {
             expectation.mode != crate::domain::scheduler_protocol::ScenarioMode::Authoritative
         }) {
@@ -3544,7 +3407,6 @@ impl RuntimeHandle {
                         scheduler_claim_work_item: None,
                         scheduler_protocol_bootstrap: None,
                         scheduler_protocol_commands: Vec::new(),
-                        scheduler_authority_scenarios: Vec::new(),
                         scheduler_rollout_expectations: Vec::new(),
                         agent_state: None,
                         message_evidence: Vec::new(),
@@ -3563,10 +3425,6 @@ impl RuntimeHandle {
                                 "provenance": "bootstrap_reconciliation",
                             }),
                         )],
-                        scheduler_shadow_comparison: None,
-                        scheduler_wait_resume_shadow_comparison: None,
-                    scheduler_delivery_shadow_comparison: None,
-                        scheduler_semantic_shadow: None,
                         notify_scheduler: true,
                         fault: self.take_transition_fault(),
                         brief_evidence: Vec::new(),
@@ -3596,7 +3454,6 @@ impl RuntimeHandle {
                         scheduler_claim_work_item: None,
                         scheduler_protocol_bootstrap: None,
                         scheduler_protocol_commands: Vec::new(),
-                        scheduler_authority_scenarios: Vec::new(),
                         scheduler_rollout_expectations: Vec::new(),
                         agent_state: None,
                         message_evidence: Vec::new(),
@@ -3615,10 +3472,6 @@ impl RuntimeHandle {
                                 "provenance": "bootstrap_reconciliation",
                             }),
                         )],
-                        scheduler_shadow_comparison: None,
-                        scheduler_wait_resume_shadow_comparison: None,
-                    scheduler_delivery_shadow_comparison: None,
-                        scheduler_semantic_shadow: None,
                         notify_scheduler: true,
                         fault: self.take_transition_fault(),
                         brief_evidence: Vec::new(),
@@ -3702,7 +3555,6 @@ impl RuntimeHandle {
                     scheduler_claim_work_item: None,
                     scheduler_protocol_bootstrap: None,
                     scheduler_protocol_commands,
-                    scheduler_authority_scenarios: Vec::new(),
                     scheduler_rollout_expectations: scheduler_rollout_expectations.clone(),
                     agent_state: None,
                     message_evidence: Vec::new(),
@@ -3721,10 +3573,6 @@ impl RuntimeHandle {
                             "provenance": "bootstrap_reconciliation",
                         }),
                     )],
-                    scheduler_shadow_comparison: None,
-                    scheduler_wait_resume_shadow_comparison: None,
-                    scheduler_delivery_shadow_comparison: None,
-                    scheduler_semantic_shadow: None,
                     notify_scheduler: true,
                     fault: self.take_transition_fault(),
                     brief_evidence: Vec::new(),

@@ -147,58 +147,42 @@ WorkItems flow through scheduling states that the scheduler consumes:
 
 ## Protocol transition layer
 
-The scheduler decision flow above describes the **legacy** production path.
-An additive protocol layer wraps every scheduler boundary in an atomic
+The scheduler decision flow above is implemented by the canonical protocol.
+Every scheduler boundary is committed through an atomic
 `QueueTransitionCommand` transaction that can simultaneously:
 
 1. commit the queue operation (admit, claim, or enqueue);
 2. update the agent state projection;
 3. persist message evidence, transcript entries, and audit events;
-4. record a `SchedulerShadowComparison` between the legacy decision and the
-   canonical protocol outcome; and
-5. record a `SchedulerSemanticShadowDecision` from the semantic decision
-   plane (trusted ingress, provider, response, and policy).
+4. bind a canonical activation owner and execution disposition; and
+5. persist settlement, recovery, and delivery evidence.
 
-All five effects commit in the same SQLite transaction. If the transaction
-fails or the CAS does not match, no partial shadow sample or semantic record
-is left behind.
+All effects commit in the same SQLite transaction. If the transaction fails or
+the CAS does not match, no partial queue, activation, settlement, or delivery
+state is left behind.
 
-### Rollout modes
-
-The `scheduler_protocol_config` table controls a per-agent rollout state:
-
-| Mode | Behavior |
-|------|----------|
-| `Legacy` | No protocol persistence; legacy scheduler is sole authority |
-| `Shadow` | Legacy scheduler remains authoritative; protocol records comparison and semantic shadow for observability |
-| `Authoritative` | Protocol owns admission authority; legacy path is compatibility-only |
-
-Rollout transitions are `Legacy → Shadow → Authoritative` for upgrade and
-`Authoritative → Shadow → Legacy` for rollback. Authority is scoped by
-scenario class. In `Authoritative`, a queue transition commits only when its
-canonical comparison evidence is present and matched. Missing or divergent
-evidence fails closed and the transaction leaves no queue, projection, audit,
-or comparison partial writes. A reported hard blocker atomically records the
+The canonical protocol is the only production scheduler path. Historical
+rollout tables and enum values remain readable for migration and recovery
+diagnostics, but startup configuration cannot select legacy or shadow
+execution. Missing activation, terminal-turn, or settlement evidence fails
+closed and the transaction leaves no partial queue, projection, audit,
+activation, or settlement writes. A reported hard blocker atomically records the
 blocker and returns the affected class to its configured `Shadow` or `Off`
 rollback target.
 
 ### Integration points
 
 `QueueTransitionCommand` is committed at every scheduler boundary. Each
-boundary records its own shadow comparison between the legacy decision and
-the canonical protocol outcome:
+boundary records the canonical facts required by the next boundary:
 
-| Boundary | Operation | Shadow comparison | Semantic shadow |
-|----------|-----------|-------------------|-----------------|
-| Message admission (`scheduler_executor::prepare_message`) | `Claim` | Yes | Yes |
-| Wait resume (same path, `.or_else`) | `Claim` | Yes | — |
-| Settlement recovery (`runtime::commit_queue_settlement`) | `Settle` | Yes | — |
-| Delivery disposition (`runtime::commit_queue_settlement`) | `Settle` | Yes (delivery) | — |
-| Operator interjection — `AfterProviderRound` | `Admit` | Yes | — |
-| Operator interjection — `BeforeToolExecution` | `Admit` | Yes | — |
-| Operator interjection — `AfterToolResults` | `Admit` | Yes | — |
-| Operator interjection — `BeforeProviderContinuation` | `Admit` | Yes | — |
-| Work-queue idle tick (`memory_refresh::emit_system_tick_from_work_queue`) | `Admit` | Yes | — |
+| Boundary | Operation | Required canonical evidence |
+|----------|-----------|-----------------------------|
+| Message admission (`scheduler_executor::prepare_message`) | `Claim` | input identity, activation owner, disposition, authority fence |
+| Wait resume | `Claim` | exact wait id and generation, consuming activation |
+| Settlement (`runtime::commit_queue_settlement`) | `Settle` | matching activation, terminal Turn, WorkItem disposition |
+| Delivery disposition | `Settle` | settlement-bound brief or delivery evidence |
+| Operator interjection | `Admit` | running activation and safe-point identity |
+| Work-queue idle tick (`memory_refresh::emit_system_tick_from_work_queue`) | `Admit` | runnable demand and dispatch revision |
 
 The semantic decision plane provides trusted-ingress construction, provider
 validation, and response policy. It returns `Ok(None)` when trusted ingress

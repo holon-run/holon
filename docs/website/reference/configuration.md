@@ -101,44 +101,13 @@ holon config set api.cors.max_age_seconds 600
 Do not combine `api.cors.allow_credentials=true` with
 `api.cors.allowed_origins=["*"]`; Holon rejects that unsafe combination.
 
-### Scheduler Rollout
+### Scheduler
 
-Use one environment variable to select the desired scheduler mode:
-
-```bash
-HOLON_SCHEDULER=legacy        # explicitly request legacy scheduler ownership
-HOLON_SCHEDULER=shadow        # new scheduler compares decisions without ownership
-HOLON_SCHEDULER=authoritative # explicitly grant production ownership at startup
-```
-
-Holon reconciles this desired state before starting agent runtimes. `shadow`
-installs a runtime-managed shadow manifest when no rollout manifest exists and
-enables the production scenario classes for comparison. `authoritative`
-directly promotes the eight `PRODUCTION_AUTHORITY` classes after installing or
-resuming that manifest. This startup path does not read drill reports, sample
-counts, observation duration, or `verified_evidence`, and it does not fabricate
-those fields. It still rejects unresolved hard blockers and preserves the
-rollout reducer's revision, manifest/preflight identity, transition-order, and
-rollback fences. `OrdinarySemanticOperatorBinding` is not included; ordinary
-operator prompts without an explicit WorkItem binding continue through legacy
-dispatch.
-
-Changing the value to `legacy` and restarting lowers authoritative scenarios
-through `shadow` to `off` before lowering the protocol ceiling. Invalid values
-fail startup. The older
-`HOLON_SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS` switch remains temporarily
-supported for existing rollout tooling when `HOLON_SCHEDULER` is unset; new
-deployments should use only `HOLON_SCHEDULER`. When neither variable is set,
-Holon preserves the persisted rollout state; a fresh database is already
-legacy by default. When both variables are set, `HOLON_SCHEDULER` also takes
-precedence for production-command and acceptance-fixture capability checks, so
-`legacy` or `shadow` cannot be overridden by the older boolean switch.
-
-If startup finds an open rollout preflight without an installed manifest, it
-fails closed and reports that preflight revision instead of fabricating a
-completion for a potentially operator-managed maintenance window. A completed
-preflight with its manifest intact is resumed by installing that exact
-manifest.
+The canonical scheduler is always authoritative in production. There is no
+`HOLON_SCHEDULER` or production-command feature switch. Existing rollout rows
+remain readable for database migration, recovery evidence, and historical
+diagnostics, but they do not select a legacy or shadow execution path at
+startup.
 
 ## Credential Management
 

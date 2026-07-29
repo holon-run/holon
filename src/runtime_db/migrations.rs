@@ -2330,6 +2330,25 @@ WHERE scenario_class = 'operator_interjection'
   ) < 5;
 "#,
     },
+    Migration {
+        version: 39,
+        name: "normalize_scheduler_authority",
+        sql: r#"
+UPDATE scheduler_protocol_config
+SET
+  protocol_mode = 'authoritative',
+  config_revision = config_revision + 1,
+  updated_at = CURRENT_TIMESTAMP
+WHERE config_id = 1
+  AND protocol_mode != 'authoritative';
+
+UPDATE scheduler_scenario_authorities
+SET
+  mode = 'authoritative',
+  updated_at = CURRENT_TIMESTAMP
+WHERE mode != 'authoritative';
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

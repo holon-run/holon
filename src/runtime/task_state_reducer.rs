@@ -552,7 +552,7 @@ mod tests {
     }
 
     fn task_result_message(task_id: &str) -> MessageEnvelope {
-        MessageEnvelope::new(
+        let mut message = MessageEnvelope::new(
             "default",
             MessageKind::TaskResult,
             MessageOrigin::Task {
@@ -563,7 +563,9 @@ mod tests {
             MessageBody::Text {
                 text: "task finished".into(),
             },
-        )
+        );
+        message.task_id = Some(task_id.into());
+        message
     }
 
     #[test]

@@ -12,9 +12,7 @@ use std::collections::BTreeSet;
 use super::scheduler_protocol::{
     activation_provenance_has_valid_authority, ActivationProvenance, SchedulerScenarioClass,
 };
-use crate::types::{
-    AdmissionContext, AuthorityClass, MessageDeliverySurface, MessageEnvelope, MessageOrigin,
-};
+use crate::types::{AdmissionContext, AuthorityClass, MessageDeliverySurface};
 
 pub const MAX_CONFIDENCE_BPS: u16 = 10_000;
 pub const SEMANTIC_CONTRACT_REVISION: u64 = 2;
@@ -240,68 +238,6 @@ pub enum SemanticProposalValidationError {
     TerminalWorkItem,
     StaleWorkItemRevision,
     AmbiguousBinding,
-}
-
-#[derive(Debug)]
-pub(crate) struct TrustedSemanticIngress<'a> {
-    message: &'a MessageEnvelope,
-}
-
-impl<'a> TrustedSemanticIngress<'a> {
-    pub(crate) fn from_persisted_message(
-        message: &'a MessageEnvelope,
-    ) -> Result<Self, SemanticProposalValidationError> {
-        let Some(message_seq) = message.message_seq else {
-            return Err(SemanticProposalValidationError::InvalidIngressRoute);
-        };
-        if message_seq == 0
-            || !is_canonical_identity(&message.id)
-            || !is_canonical_identity(&message.agent_id)
-            || !trusted_ingress_authority(message)
-        {
-            return Err(SemanticProposalValidationError::InvalidIngressRoute);
-        }
-        Ok(Self { message })
-    }
-
-    pub(crate) fn decision_input(
-        &self,
-        waits: Vec<SemanticWaitCandidate>,
-        work_items: Vec<SemanticWorkItemCandidate>,
-    ) -> SemanticDecisionInput {
-        let message = self.message;
-        SemanticDecisionInput {
-            contract_revision: SEMANTIC_CONTRACT_REVISION,
-            id: message.id.clone(),
-            target_agent_id: message.agent_id.clone(),
-            ingress_route: SemanticIngressRoute {
-                agent_id: message.agent_id.clone(),
-                message_seq: message
-                    .message_seq
-                    .expect("trusted persisted semantic ingress has a message sequence"),
-                delivery_surface: message
-                    .delivery_surface
-                    .expect("trusted semantic ingress has a delivery surface"),
-                admission_context: message
-                    .admission_context
-                    .expect("trusted semantic ingress has an admission context"),
-                authority_class: message.authority_class,
-            },
-            provenance: ActivationProvenance {
-                origin: semantic_activation_origin(&message.origin),
-                trust: semantic_activation_trust(message.authority_class),
-                source_id: message.id.clone(),
-                correlation_id: message.correlation_id.clone(),
-                causation_id: message.causation_id.clone(),
-            },
-            snapshot_revision: message
-                .message_seq
-                .expect("trusted persisted semantic ingress has a message sequence"),
-            operator_input: semantic_message_text(message),
-            waits,
-            work_items,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -654,41 +590,6 @@ fn is_canonical_identity(value: &str) -> bool {
     !value.is_empty() && value == value.trim()
 }
 
-fn semantic_message_text(message: &MessageEnvelope) -> String {
-    match &message.body {
-        crate::types::MessageBody::Text { text } => text.clone(),
-        crate::types::MessageBody::Brief { text, .. } => text.clone(),
-        crate::types::MessageBody::Json { value } => value.to_string(),
-    }
-}
-
-fn semantic_activation_origin(
-    origin: &MessageOrigin,
-) -> super::scheduler_protocol::ActivationOrigin {
-    use super::scheduler_protocol::ActivationOrigin;
-    match origin {
-        MessageOrigin::Operator { .. } => ActivationOrigin::Operator,
-        MessageOrigin::Channel { .. } => ActivationOrigin::Channel,
-        MessageOrigin::Webhook { .. } => ActivationOrigin::Webhook,
-        MessageOrigin::Callback { .. } => ActivationOrigin::Callback,
-        MessageOrigin::Timer { .. } => ActivationOrigin::Timer,
-        MessageOrigin::System { .. } => ActivationOrigin::System,
-        MessageOrigin::Task { .. } => ActivationOrigin::Task,
-    }
-}
-
-fn semantic_activation_trust(
-    authority: AuthorityClass,
-) -> super::scheduler_protocol::ActivationTrust {
-    use super::scheduler_protocol::ActivationTrust;
-    match authority {
-        AuthorityClass::OperatorInstruction => ActivationTrust::OperatorInstruction,
-        AuthorityClass::RuntimeInstruction => ActivationTrust::RuntimeInstruction,
-        AuthorityClass::IntegrationSignal => ActivationTrust::IntegrationSignal,
-        AuthorityClass::ExternalEvidence => ActivationTrust::ExternalEvidence,
-    }
-}
-
 fn semantic_authority_class(trust: super::scheduler_protocol::ActivationTrust) -> AuthorityClass {
     use super::scheduler_protocol::ActivationTrust;
     match trust {
@@ -697,25 +598,6 @@ fn semantic_authority_class(trust: super::scheduler_protocol::ActivationTrust) -
         ActivationTrust::IntegrationSignal => AuthorityClass::IntegrationSignal,
         ActivationTrust::ExternalEvidence => AuthorityClass::ExternalEvidence,
     }
-}
-
-fn trusted_ingress_authority(message: &MessageEnvelope) -> bool {
-    let (Some(delivery_surface), Some(admission_context)) =
-        (message.delivery_surface, message.admission_context)
-    else {
-        return false;
-    };
-    trusted_semantic_route(
-        &SemanticIngressRoute {
-            agent_id: message.agent_id.clone(),
-            message_seq: message.message_seq.unwrap_or_default(),
-            delivery_surface,
-            admission_context,
-            authority_class: message.authority_class,
-        },
-        semantic_activation_origin(&message.origin),
-    ) && message.authority_class
-        == semantic_authority_class(semantic_activation_trust(message.authority_class))
 }
 
 fn trusted_semantic_route(

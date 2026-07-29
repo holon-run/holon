@@ -94,39 +94,11 @@ class SchedulerDrillTests(unittest.TestCase):
         evidence = {
             "protocol_config": [
                 {
-                    "protocol_mode": "shadow",
+                    "protocol_mode": "authoritative",
                     "config_revision": 1,
                 }
             ],
             "scenario_authorities": [],
-            "shadow_comparisons": [
-                {
-                    "scenario_class": scenario,
-                    "comparison_outcome": "matched",
-                    "legacy_observation_json": "{}",
-                }
-                for scenario in drill.PRODUCTION_SCENARIOS
-            ]
-            + [
-                {
-                    "scenario_class": "exact_wait_resume",
-                    "comparison_outcome": "matched",
-                    "legacy_observation_json": json.dumps(
-                        {
-                            "input_kind": input_kind,
-                            "wake_source": wake_source,
-                        }
-                    ),
-                }
-                for input_kind, wake_source in (
-                    ("callback_event", "external_callback"),
-                    ("webhook_event", "external_callback"),
-                    ("channel_event", "channel_signal"),
-                    ("timer_tick", "wait_deadline"),
-                    ("system_tick", "system_tick"),
-                    ("system_tick", "operator_wake_hint"),
-                )
-            ],
             "hard_blockers": [],
             "work_demands": [],
             "activations": [
@@ -150,14 +122,24 @@ class SchedulerDrillTests(unittest.TestCase):
             "incomplete_turns": [],
             "queue_status": [{"status": "processed", "count": 8}],
         }
-        summary = drill.evidence_summary(evidence)
+        stress = {
+            "scenario_completed": {
+                scenario: 1 for scenario in drill.PRODUCTION_SCENARIOS
+            },
+            "scenario_shortfalls": {},
+            "failed_count": 0,
+            "latest_phase_status": "completed",
+            "injection_shortfalls": {},
+            "missing_required_injections": [],
+        }
+        summary = drill.evidence_summary(evidence, stress=stress)
         self.assertEqual(summary["status"], "go")
         self.assertTrue(all(summary["checks"].values()))
 
-        evidence["shadow_comparisons"][0]["comparison_outcome"] = "diverged"
-        summary = drill.evidence_summary(evidence)
+        evidence["activations"][0]["lifecycle_state"] = "running"
+        summary = drill.evidence_summary(evidence, stress=stress)
         self.assertEqual(summary["status"], "no-go")
-        self.assertFalse(summary["checks"]["no_divergence"])
+        self.assertFalse(summary["checks"]["no_active_activation"])
 
     def test_report_is_external_evidence_only(self) -> None:
         evidence = {
@@ -173,7 +155,6 @@ class SchedulerDrillTests(unittest.TestCase):
                 scenario: 1 for scenario in drill.PRODUCTION_SCENARIOS
             },
             "checks": {"all_scenarios_observed": True},
-            "divergences": [],
             "current_hard_blockers": [],
             "active_activations": [],
             "occupied_slots": [],
@@ -413,17 +394,8 @@ class SchedulerDrillTests(unittest.TestCase):
         self.assertEqual(summary["injection_completed"]["duplicate"], 1)
         self.assertEqual(summary["injection_completed"]["out_of_order"], 1)
 
-    def test_wait_rearm_only_requires_canonical_evidence_when_authoritative(
-        self,
-    ) -> None:
-        class Harness:
-            def __init__(self, mode: str) -> None:
-                self.runtime_env = {"HOLON_SCHEDULER": mode}
-
-        self.assertFalse(drill.canonical_wait_evidence_required(Harness("shadow")))
-        self.assertTrue(
-            drill.canonical_wait_evidence_required(Harness("authoritative"))
-        )
+    def test_wait_rearm_always_requires_canonical_evidence(self) -> None:
+        self.assertTrue(drill.canonical_wait_evidence_required(Mock()))
 
     def test_exercise_records_failed_phase_when_harness_setup_fails(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -99,9 +99,6 @@ enum CanonicalClaimOutcome {
 struct CanonicalClaimHardBlocker {
     scenario_class: crate::domain::scheduler_protocol::SchedulerScenarioClass,
     blocker_code: &'static str,
-    expected_config_revision: u64,
-    expected_manifest_revision: u64,
-    expected_preflight_revision: u64,
 }
 
 pub(super) struct SchedulerDecisionExecutor<'a> {
@@ -124,31 +121,9 @@ impl RuntimeHandle {
         let scenario_class =
             scheduler::canonical_activation_candidate(message, continuation_resolution, task)?
                 .map(|candidate| candidate.scenario_class());
-        let configured_mode = if self.scheduler_protocol_production_commands_enabled() {
-            scenario_class
-                .map(|scenario| {
-                    self.inner
-                        .runtime_db
-                        .transitions()
-                        .scheduler_scenario_mode(scenario)
-                })
-                .transpose()?
-                .unwrap_or(crate::domain::scheduler_protocol::ScenarioMode::Off)
-        } else {
-            crate::domain::scheduler_protocol::ScenarioMode::Off
-        };
-        let effective_mode = match configured_mode {
-            crate::domain::scheduler_protocol::ScenarioMode::Off => {
-                crate::domain::scheduler_protocol::ScenarioMode::Off
-            }
-            crate::domain::scheduler_protocol::ScenarioMode::Shadow
-            | crate::domain::scheduler_protocol::ScenarioMode::Authoritative => {
-                crate::domain::scheduler_protocol::ScenarioMode::Shadow
-            }
-        };
         Ok(ExecutionAdmissionProvenance::LegacyCompat {
             scenario_class,
-            effective_mode,
+            effective_mode: crate::domain::scheduler_protocol::ScenarioMode::Off,
         })
     }
 }
@@ -416,122 +391,67 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             &candidate.message,
             dispatch_plan.continuation_resolution.as_ref(),
         );
-        let production_commands_enabled = self
-            .runtime
-            .scheduler_protocol_production_commands_enabled();
         let mut scheduler_rollout_expectations = self
             .runtime
             .inner
             .runtime_db
             .transitions()
-            .scheduler_rollout_expectations(
-                &scheduler_authority_scenarios,
-                production_commands_enabled,
-            )?;
-        let admission_shadow_comparison = scheduler::shadow_comparison_for_message_admission(
-            &projection,
-            &candidate.message,
-            &legacy_decision,
-            dispatch_plan.continuation_resolution.as_ref(),
-        );
-        let wait_resume_shadow_comparison = scheduler::shadow_comparison_for_wait_resume(
-            &projection,
-            &candidate.message,
-            &legacy_decision,
-        );
-        let diagnostic_shadow_comparison = wait_resume_shadow_comparison
-            .as_ref()
-            .or(admission_shadow_comparison.as_ref());
-        let scheduler_decision_events = scheduler::scheduler_decision_events(
-            &candidate.message.agent_id,
-            &legacy_decision,
-            diagnostic_shadow_comparison,
-        )?;
-        let shadow_comparison = admission_shadow_comparison
-            .map(scheduler_shadow_comparison_command)
-            .transpose()?;
-        let wait_resume_shadow_comparison = wait_resume_shadow_comparison
-            .map(scheduler_shadow_comparison_command)
-            .transpose()?;
-        #[cfg(test)]
-        let omit_shadow_comparisons = self
-            .runtime
-            .inner
-            .omit_next_scheduler_claim_shadow_comparison
-            .swap(false, Ordering::SeqCst);
-        #[cfg(test)]
-        let shadow_comparison = if omit_shadow_comparisons {
-            None
-        } else {
-            shadow_comparison
-        };
-        #[cfg(test)]
-        let wait_resume_shadow_comparison = if omit_shadow_comparisons {
-            None
-        } else {
-            wait_resume_shadow_comparison
-        };
+            .scheduler_rollout_expectations(&scheduler_authority_scenarios)?;
+        let scheduler_decision_events =
+            scheduler::scheduler_decision_events(&candidate.message.agent_id, &legacy_decision)?;
         let persisted_message = self
             .runtime
             .inner
             .storage
             .read_message_by_id(&candidate.message.id)?
             .ok_or_else(|| anyhow!("claimed message is missing persisted ingress evidence"))?;
-        let semantic_shadow = scheduler::semantic_shadow_decision_for_message_admission(
-            &projection,
-            &persisted_message,
-        )?
-        .map(scheduler_semantic_shadow_command);
-        let canonical_claim = match self.canonical_activation_plan(
-            &projection,
-            &persisted_message,
-            &dispatch_plan,
-            production_commands_enabled,
-        ) {
-            Ok(CanonicalClaimOutcome::NotApplicable) => None,
-            Ok(CanonicalClaimOutcome::Plan(plan)) => Some(plan),
-            Ok(CanonicalClaimOutcome::RetainQueued {
-                scenario_class,
-                reason,
-            }) => {
-                self.runtime
-                    .inner
-                    .storage
-                    .append_event(&AuditEvent::legacy(
-                        "scheduler_authority_input_rejected",
-                        serde_json::json!({
-                            "message_id": persisted_message.id,
-                            "agent_id": persisted_message.agent_id,
-                            "scenario_class": scenario_class.as_str(),
-                            "reason": reason,
-                            "queue_disposition": "retained_queued",
-                        }),
-                    ))?;
-                self.runtime.inner.notify.notify_one();
-                return Ok(RunLoopPoll::Idle);
-            }
-            Ok(CanonicalClaimOutcome::HardBlocker(blocker)) => {
-                self.report_canonical_claim_hard_blocker(&persisted_message, blocker)?;
-                return Ok(RunLoopPoll::Idle);
-            }
-            Err(error) => {
-                if let Some(ambiguous) = error.downcast_ref::<scheduler::AmbiguousCanonicalWaits>()
-                {
-                    scheduler::append_ambiguous_wait_advisory(
-                        &self.runtime.inner.storage,
-                        &persisted_message,
-                        &ambiguous.wait_condition_ids,
-                    )?;
-                    scheduler::append_scheduling_advisories(
-                        &self.runtime.inner.storage,
-                        &candidate.prior_state,
-                        candidate.queue_len,
-                    )?;
+        let canonical_claim =
+            match self.canonical_activation_plan(&projection, &persisted_message, &dispatch_plan) {
+                Ok(CanonicalClaimOutcome::NotApplicable) => None,
+                Ok(CanonicalClaimOutcome::Plan(plan)) => Some(plan),
+                Ok(CanonicalClaimOutcome::RetainQueued {
+                    scenario_class,
+                    reason,
+                }) => {
+                    self.runtime
+                        .inner
+                        .storage
+                        .append_event(&AuditEvent::legacy(
+                            "scheduler_authority_input_rejected",
+                            serde_json::json!({
+                                "message_id": persisted_message.id,
+                                "agent_id": persisted_message.agent_id,
+                                "scenario_class": scenario_class.as_str(),
+                                "reason": reason,
+                                "queue_disposition": "retained_queued",
+                            }),
+                        ))?;
+                    self.runtime.inner.notify.notify_one();
                     return Ok(RunLoopPoll::Idle);
                 }
-                return Err(error);
-            }
-        };
+                Ok(CanonicalClaimOutcome::HardBlocker(blocker)) => {
+                    self.report_canonical_claim_hard_blocker(&persisted_message, blocker)?;
+                    return Ok(RunLoopPoll::Idle);
+                }
+                Err(error) => {
+                    if let Some(ambiguous) =
+                        error.downcast_ref::<scheduler::AmbiguousCanonicalWaits>()
+                    {
+                        scheduler::append_ambiguous_wait_advisory(
+                            &self.runtime.inner.storage,
+                            &persisted_message,
+                            &ambiguous.wait_condition_ids,
+                        )?;
+                        scheduler::append_scheduling_advisories(
+                            &self.runtime.inner.storage,
+                            &candidate.prior_state,
+                            candidate.queue_len,
+                        )?;
+                        return Ok(RunLoopPoll::Idle);
+                    }
+                    return Err(error);
+                }
+            };
         if let Some(plan) = canonical_claim.as_ref() {
             dispatch_plan.execution_admission_provenance =
                 ExecutionAdmissionProvenance::Canonical {
@@ -637,7 +557,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                             .as_ref()
                             .map(|plan| plan.commands.clone())
                             .unwrap_or_default(),
-                        scheduler_authority_scenarios: scheduler_authority_scenarios.clone(),
                         scheduler_rollout_expectations: scheduler_rollout_expectations.clone(),
                         agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
                             expected: Some(Box::new(guard.state.clone())),
@@ -647,11 +566,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                         transcript_entries: Vec::new(),
                         turn_record: None,
                         audit_events: claim_audit_events.clone(),
-                        scheduler_shadow_comparison: shadow_comparison.clone(),
-                        scheduler_wait_resume_shadow_comparison: wait_resume_shadow_comparison
-                            .clone(),
-                        scheduler_delivery_shadow_comparison: None,
-                        scheduler_semantic_shadow: semantic_shadow.clone(),
                         notify_scheduler: false,
                         fault: self.runtime.take_transition_fault(),
                         brief_evidence: Vec::new(),
@@ -721,11 +635,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         projection: &scheduler::SchedulerProjection,
         message: &MessageEnvelope,
         dispatch_plan: &MessageDispatchPlan,
-        production_commands_enabled: bool,
     ) -> Result<CanonicalClaimOutcome> {
-        if !production_commands_enabled {
-            return Ok(CanonicalClaimOutcome::NotApplicable);
-        }
         let task = dispatch_plan.task.as_ref().ok().and_then(Option::as_ref);
         let Some(candidate) = scheduler::canonical_activation_candidate(
             message,
@@ -741,15 +651,10 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             .inner
             .runtime_db
             .transitions()
-            .scheduler_rollout_expectations(
-                &[candidate.scenario_class(), scheduler::SETTLEMENT_SCENARIO],
-                production_commands_enabled,
-            )?;
-        if rollout_expectations.iter().any(|expectation| {
-            expectation.mode != crate::domain::scheduler_protocol::ScenarioMode::Authoritative
-        }) {
-            return Ok(CanonicalClaimOutcome::NotApplicable);
-        }
+            .scheduler_rollout_expectations(&[
+                candidate.scenario_class(),
+                scheduler::SETTLEMENT_SCENARIO,
+            ])?;
         let Some(mut scenario) =
             scheduler::resolve_canonical_activation_scenario(projection, message, candidate)?
         else {
@@ -1194,10 +1099,9 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 .inner
                 .runtime_db
                 .transitions()
-                .scheduler_rollout_expectations(
-                    &[scheduler::WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO],
-                    production_commands_enabled,
-                )?;
+                .scheduler_rollout_expectations(&[
+                    scheduler::WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO,
+                ])?;
             for expectation in autonomous_expectations {
                 if !rollout_expectations
                     .iter()
@@ -1206,15 +1110,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     rollout_expectations.push(expectation);
                 }
             }
-        }
-        if rollout_expectations.iter().any(|expectation| {
-            expectation.mode != crate::domain::scheduler_protocol::ScenarioMode::Authoritative
-        }) {
-            return Ok(canonical_claim_hard_blocker(
-                &rollout_expectations,
-                scenario_class,
-                "canonical_work_demand_authority_unavailable",
-            )?);
         }
         commands.extend(register);
         if let Some(resume) = resume {
@@ -1486,24 +1381,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         message: &MessageEnvelope,
         blocker: CanonicalClaimHardBlocker,
     ) -> Result<()> {
-        use crate::domain::scheduler_protocol::RolloutCommand;
         let scenario_class = blocker.scenario_class.as_str();
-        let command = RolloutCommand::ReportScenarioHardBlocker {
-            scenario_class: scenario_class.to_string(),
-            blocker_code: blocker.blocker_code.to_string(),
-            expected_config_revision: blocker.expected_config_revision,
-            expected_manifest_revision: blocker.expected_manifest_revision,
-            expected_preflight_revision: blocker.expected_preflight_revision,
-        };
-        let identity = format!(
-            "runtime-hard-blocker:{}:{}:{}",
-            scenario_class, blocker.expected_config_revision, message.id
-        );
-        self.runtime
-            .inner
-            .runtime_db
-            .transitions()
-            .commit_scheduler_rollout_command(&identity, &command, None)?;
         self.runtime
             .inner
             .storage
@@ -1547,36 +1425,14 @@ pub(super) fn canonical_activation_id(message_id: &str) -> String {
 }
 
 fn canonical_claim_hard_blocker(
-    expectations: &[crate::runtime_db::transitions::scheduler_protocol_repository::SchedulerRolloutExpectation],
+    _expectations: &[crate::runtime_db::transitions::scheduler_protocol_repository::SchedulerRolloutExpectation],
     scenario_class: crate::domain::scheduler_protocol::SchedulerScenarioClass,
     blocker_code: &'static str,
 ) -> Result<CanonicalClaimOutcome> {
-    let expectation = expectations
-        .iter()
-        .find(|expectation| expectation.scenario_class == scenario_class)
-        .ok_or_else(|| {
-            anyhow!(
-                "canonical hard blocker is missing rollout expectation for {}",
-                scenario_class.as_str()
-            )
-        })?;
     Ok(CanonicalClaimOutcome::HardBlocker(
         CanonicalClaimHardBlocker {
             scenario_class,
             blocker_code,
-            expected_config_revision: expectation.config_revision,
-            expected_manifest_revision: expectation.manifest_revision.ok_or_else(|| {
-                anyhow!(
-                    "authoritative scenario {} has no manifest revision",
-                    scenario_class.as_str()
-                )
-            })?,
-            expected_preflight_revision: expectation.preflight_revision.ok_or_else(|| {
-                anyhow!(
-                    "authoritative scenario {} has no preflight revision",
-                    scenario_class.as_str()
-                )
-            })?,
         },
     ))
 }
@@ -1736,36 +1592,6 @@ fn canonical_admission_matches_scenario(
         }
         _ => false,
     }
-}
-
-fn scheduler_semantic_shadow_command(
-    decision: scheduler::SchedulerSemanticShadowDecision,
-) -> crate::runtime_db::transitions::scheduler_protocol_repository::SchedulerSemanticShadowCommand {
-    crate::runtime_db::transitions::scheduler_protocol_repository::SchedulerSemanticShadowCommand {
-        input: decision.input,
-        provider: decision.provider,
-        response: decision.response,
-        policy: decision.policy,
-    }
-}
-
-pub(super) fn scheduler_shadow_comparison_command(
-    comparison: scheduler::SchedulerShadowComparison,
-) -> Result<
-    crate::runtime_db::transitions::scheduler_protocol_repository::SchedulerShadowComparisonCommand,
-> {
-    Ok(
-        crate::runtime_db::transitions::scheduler_protocol_repository::SchedulerShadowComparisonCommand {
-            scenario_class: comparison.scenario_class.as_str().into(),
-            comparison_identity: comparison.comparison_identity,
-            boundary: comparison.boundary.into(),
-            input_identity: comparison.input_identity,
-            legacy_observation: serde_json::to_value(comparison.legacy_observation)?,
-            shadow_candidate: serde_json::to_value(comparison.shadow_candidate)?,
-            matched: comparison.matched,
-            divergence_code: comparison.divergence_code.map(Into::into),
-        },
-    )
 }
 
 pub(super) fn apply_bootstrap_recovered_projection(

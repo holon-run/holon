@@ -192,20 +192,8 @@ impl RuntimeHandle {
                     self.consume_work_item_rechecks(&due_rechecks).await?;
                     return Ok(false);
                 }
-                let shadow_comparison = scheduler::shadow_comparison_for_work_queue_tick(
-                    &scheduler_projection,
-                    &active,
-                    "continue_active",
-                    &decision,
-                    scheduler::SchedulerBoundary::IdleTick,
-                );
-                self.emit_system_tick_from_work_queue(
-                    &active,
-                    "continue_active",
-                    shadow_comparison,
-                    Some(&decision),
-                )
-                .await?;
+                self.emit_system_tick_from_work_queue(&active, "continue_active", Some(&decision))
+                    .await?;
                 self.consume_work_item_rechecks(&due_rechecks).await?;
                 Ok(true)
             }
@@ -249,20 +237,8 @@ impl RuntimeHandle {
                     self.consume_work_item_rechecks(&due_rechecks).await?;
                     return Ok(false);
                 }
-                let shadow_comparison = scheduler::shadow_comparison_for_work_queue_tick(
-                    &scheduler_projection,
-                    &queued,
-                    "queued_available",
-                    &decision,
-                    scheduler::SchedulerBoundary::IdleTick,
-                );
-                self.emit_system_tick_from_work_queue(
-                    &queued,
-                    "queued_available",
-                    shadow_comparison,
-                    Some(&decision),
-                )
-                .await?;
+                self.emit_system_tick_from_work_queue(&queued, "queued_available", Some(&decision))
+                    .await?;
                 self.consume_work_item_rechecks(&due_rechecks).await?;
                 Ok(true)
             }
@@ -699,7 +675,6 @@ impl RuntimeHandle {
         &self,
         work_item: &crate::types::WorkItemRecord,
         reason: &str,
-        shadow_comparison: Option<scheduler::SchedulerShadowComparison>,
         decision: Option<&scheduler::SchedulerDecision>,
     ) -> Result<()> {
         let idempotency_key = scheduler::work_queue_tick_idempotency_key(work_item, reason);
@@ -740,9 +715,6 @@ impl RuntimeHandle {
         if message.turn_id.is_none() {
             message.turn_id = Some(crate::ids::turn_id());
         }
-        let scheduler_shadow_comparison = shadow_comparison
-            .map(super::scheduler_executor::scheduler_shadow_comparison_command)
-            .transpose()?;
         let work_queue_metadata = message
             .metadata
             .as_ref()
@@ -832,10 +804,9 @@ impl RuntimeHandle {
                     .inner
                     .runtime_db
                     .transitions()
-                    .scheduler_rollout_expectations(
-                        &[scheduler::WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO],
-                        self.scheduler_protocol_production_commands_enabled(),
-                    )?;
+                    .scheduler_rollout_expectations(&[
+                        scheduler::WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO,
+                    ])?;
                 let commit_result = self.inner.runtime_db.transitions().commit_queue(
                     &crate::runtime_db::transitions::QueueTransitionCommand {
                         agent_id: message.agent_id.clone(),
@@ -846,9 +817,6 @@ impl RuntimeHandle {
                         scheduler_claim_work_item: None,
                         scheduler_protocol_bootstrap: None,
                         scheduler_protocol_commands: Vec::new(),
-                        scheduler_authority_scenarios: vec![
-                            scheduler::WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO,
-                        ],
                         scheduler_rollout_expectations,
                         agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
                             expected: Some(Box::new(expected_persisted_state)),
@@ -858,10 +826,6 @@ impl RuntimeHandle {
                         transcript_entries: Vec::new(),
                         turn_record: None,
                         audit_events,
-                        scheduler_shadow_comparison: scheduler_shadow_comparison.clone(),
-                        scheduler_wait_resume_shadow_comparison: None,
-                        scheduler_delivery_shadow_comparison: None,
-                        scheduler_semantic_shadow: None,
                         notify_scheduler: true,
                         fault: self.take_transition_fault(),
                         brief_evidence: Vec::new(),

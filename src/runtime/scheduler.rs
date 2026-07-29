@@ -1,25 +1,16 @@
 use super::*;
 use crate::domain::scheduler_protocol::{SchedulerOwner, SchedulerScenarioClass, WorkStatus};
-use crate::domain::scheduler_semantic::{
-    structural_semantic_proposal, SemanticProposalProviderConfig, SemanticProposalProviderIdentity,
-    SemanticProposalResponse, SemanticValidationPolicy, SemanticWaitCandidate,
-    SemanticWaitCandidateState, SemanticWorkItemCandidate, SemanticWorkItemCandidateState,
-    TrustedSemanticIngress, SEMANTIC_CONTRACT_REVISION,
-};
 use crate::runtime::closure::runtime_error_active;
 use crate::storage::{AppStorage, WorkQueueReadModel};
 use crate::types::{
     AdmissionContext, AgentPostureProjection, AgentSchedulingPosture, AgentStatus, AuthorityClass,
     ExternalWaitRecoverability, MessageDeliverySurface, MessageEnvelope, MessageKind,
-    MessageOrigin, PendingWakeHint, Priority, QueueEntryRecord, QueueEntryStatus, TaskRecord,
-    TaskStatus, TimerStatus, TurnTerminalKind, WaitConditionKind, WaitConditionRecord,
-    WaitConditionStatus, WakeSource, WorkItemRecord, WorkItemSchedulingState, WorkItemState,
-    WorkReactivationMode, WorkReactivationSignal,
+    MessageOrigin, PendingWakeHint, Priority, TaskRecord, TaskStatus, TimerStatus,
+    TurnTerminalKind, WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WakeSource,
+    WorkItemRecord, WorkItemSchedulingState, WorkReactivationMode, WorkReactivationSignal,
 };
-use crate::work_item_scheduling::WorkItemSchedulingProjection;
 use anyhow::bail;
 use chrono::{DateTime, Utc};
-use serde::Serialize;
 use std::{collections::HashMap, fmt};
 
 pub(crate) const REDUCER_ONLY_CANDIDATES_SCENARIO: SchedulerScenarioClass =
@@ -170,11 +161,9 @@ pub(crate) struct SchedulerProjection {
     pub last_turn_terminal: Option<TurnTerminalKind>,
     pub turn_in_progress: bool,
     pub runtime_error: bool,
-    semantic_waits: Vec<WaitConditionRecord>,
     activation_waits: Vec<WaitConditionRecord>,
     canonical_work_statuses: Option<HashMap<String, WorkStatus>>,
     canonical_wait_generations: HashMap<String, u64>,
-    semantic_work_items: Vec<WorkItemSchedulingProjection>,
 }
 
 pub(crate) struct SchedulerAgentSnapshot {
@@ -381,11 +370,9 @@ impl SchedulerProjection {
                 &storage.read_recent_events(64)?,
                 &storage.read_recent_briefs(64)?,
             ),
-            semantic_waits: active_wait_conditions,
             activation_waits,
             canonical_work_statuses,
             canonical_wait_generations,
-            semantic_work_items: work_queue.items,
         })
     }
 
@@ -716,184 +703,6 @@ pub(crate) struct SchedulerDecision {
     pub evidence: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct LegacyMessageAdmissionObservation {
-    schema_version: u32,
-    boundary: &'static str,
-    input_identity: String,
-    input_kind: MessageKind,
-    legacy_decision: &'static str,
-    model_reentry: bool,
-    continuation_class: Option<crate::types::ContinuationClass>,
-    work_item_id: Option<String>,
-    queue_len: usize,
-    active_waiting_intents: usize,
-    turn_in_progress: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct RestrictedMessageAdmissionCandidate {
-    schema_version: u32,
-    action: &'static str,
-    binding_work_item_id: Option<String>,
-    queue_disposition: &'static str,
-    resulting_posture: &'static str,
-    model_reentry: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct LegacyWorkQueueTickObservation {
-    schema_version: u32,
-    boundary: &'static str,
-    input_identity: String,
-    reason: String,
-    legacy_decision: &'static str,
-    model_reentry: bool,
-    work_item_id: String,
-    work_item_revision: u64,
-    queue_len: usize,
-    active_waiting_intents: usize,
-    turn_in_progress: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct RestrictedWorkQueueTickCandidate {
-    schema_version: u32,
-    action: &'static str,
-    binding_work_item_id: String,
-    binding_work_item_revision: u64,
-    queue_disposition: &'static str,
-    resulting_posture: &'static str,
-    model_reentry: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct LegacyWaitResumeObservation {
-    schema_version: u32,
-    boundary: &'static str,
-    input_identity: String,
-    input_kind: MessageKind,
-    wake_source: String,
-    resolved_wait_condition_ids: Vec<String>,
-    wait_signatures: Vec<String>,
-    legacy_decision: &'static str,
-    model_reentry: bool,
-    work_item_id: Option<String>,
-    queue_len: usize,
-    active_waiting_intents: usize,
-    turn_in_progress: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct RestrictedWaitResumeCandidate {
-    schema_version: u32,
-    action: &'static str,
-    consumed_wait_condition_ids: Vec<String>,
-    wait_signatures: Vec<String>,
-    binding_work_item_id: Option<String>,
-    queue_disposition: &'static str,
-    resulting_posture: &'static str,
-    model_reentry: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct LegacySettlementObservation {
-    schema_version: u32,
-    boundary: &'static str,
-    input_identity: String,
-    settlement_status: &'static str,
-    queue_len: usize,
-    turn_in_progress: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct RestrictedSettlementCandidate {
-    schema_version: u32,
-    action: &'static str,
-    queue_disposition: &'static str,
-    settlement_disposition: &'static str,
-    resulting_posture: &'static str,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct LegacyDeliveryObservation {
-    schema_version: u32,
-    boundary: &'static str,
-    input_identity: String,
-    turn_terminal: &'static str,
-    queue_len: usize,
-    turn_in_progress: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct RestrictedDeliveryCandidate {
-    schema_version: u32,
-    action: &'static str,
-    delivery_disposition: &'static str,
-    resulting_posture: &'static str,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct LegacyOperatorInterjectionObservation {
-    schema_version: u32,
-    boundary: &'static str,
-    input_identity: String,
-    interjection_boundary: &'static str,
-    queue_len: usize,
-    turn_in_progress: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct RestrictedOperatorInterjectionCandidate {
-    schema_version: u32,
-    action: &'static str,
-    interjection_boundary: &'static str,
-    queue_disposition: &'static str,
-    resulting_posture: &'static str,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(untagged)]
-pub(crate) enum LegacySchedulerObservation {
-    MessageAdmission(LegacyMessageAdmissionObservation),
-    WorkQueueTick(LegacyWorkQueueTickObservation),
-    WaitResume(LegacyWaitResumeObservation),
-    Settlement(LegacySettlementObservation),
-    Delivery(LegacyDeliveryObservation),
-    OperatorInterjection(LegacyOperatorInterjectionObservation),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(untagged)]
-pub(crate) enum RestrictedSchedulerCandidate {
-    MessageAdmission(RestrictedMessageAdmissionCandidate),
-    WorkQueueTick(RestrictedWorkQueueTickCandidate),
-    WaitResume(RestrictedWaitResumeCandidate),
-    Settlement(RestrictedSettlementCandidate),
-    Delivery(RestrictedDeliveryCandidate),
-    OperatorInterjection(RestrictedOperatorInterjectionCandidate),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SchedulerShadowComparison {
-    pub scenario_class: SchedulerScenarioClass,
-    pub comparison_identity: String,
-    pub boundary: &'static str,
-    pub input_identity: String,
-    pub legacy_observation: LegacySchedulerObservation,
-    pub shadow_candidate: RestrictedSchedulerCandidate,
-    pub matched: bool,
-    pub divergence_code: Option<&'static str>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct SchedulerSemanticShadowDecision {
-    pub input: crate::domain::scheduler_semantic::SemanticDecisionInput,
-    pub provider: SemanticProposalProviderConfig,
-    pub response: SemanticProposalResponse,
-    pub policy: SemanticValidationPolicy,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SchedulerBoundary {
     RunLoop,
@@ -1192,9 +1001,8 @@ pub(crate) fn scheduler_decision_event(decision: &SchedulerDecision) -> AuditEve
 pub(crate) fn scheduler_diagnostic_event(
     agent_id: &str,
     decision: &SchedulerDecision,
-    shadow: Option<&SchedulerShadowComparison>,
 ) -> Result<AuditEvent> {
-    let payload = scheduler_diagnostic_audit_event(agent_id, decision, shadow);
+    let payload = scheduler_diagnostic_audit_event(agent_id, decision);
     AuditEvent::typed(
         crate::runtime_event::RuntimeEventKind::SchedulerDiagnostic,
         &payload,
@@ -1216,8 +1024,6 @@ pub(crate) fn scheduler_invariant_diagnostic_event(
             reason: code.to_string(),
             boundary: Some("bootstrap_recovery".into()),
             scenario_class: None,
-            shadow_matched: None,
-            divergence_code: Some(code.to_string()),
             work_item_id,
             message_id,
             task_id: None,
@@ -1229,10 +1035,9 @@ pub(crate) fn scheduler_invariant_diagnostic_event(
 pub(crate) fn scheduler_decision_events(
     agent_id: &str,
     decision: &SchedulerDecision,
-    shadow: Option<&SchedulerShadowComparison>,
 ) -> Result<[AuditEvent; 2]> {
     Ok([
-        scheduler_diagnostic_event(agent_id, decision, shadow)?,
+        scheduler_diagnostic_event(agent_id, decision)?,
         scheduler_decision_event(decision),
     ])
 }
@@ -1242,7 +1047,7 @@ pub(crate) fn append_scheduler_decision(
     agent_id: &str,
     decision: &SchedulerDecision,
 ) -> Result<bool> {
-    let events = scheduler_decision_events(agent_id, decision, None)?;
+    let events = scheduler_decision_events(agent_id, decision)?;
     let legacy_event = &events[1];
     let duplicate = storage
         .read_recent_events(32)?
@@ -1257,34 +1062,16 @@ pub(crate) fn append_scheduler_decision(
     Ok(true)
 }
 
-/// Construct a public `SchedulerDiagnosticAuditEvent` from a scheduler decision
-/// and an optional shadow comparison. When a shadow comparison is present, the
-/// event carries the scenario class, match status, and divergence code so the
-/// diagnostic stream exposes both the decision and its protocol-path audit
-/// outcome in one record.
 pub(crate) fn scheduler_diagnostic_audit_event(
     agent_id: &str,
     decision: &SchedulerDecision,
-    shadow: Option<&SchedulerShadowComparison>,
 ) -> crate::types::SchedulerDiagnosticAuditEvent {
-    let (scenario_class, shadow_matched, divergence_code) = shadow
-        .map(|sc| {
-            (
-                Some(sc.scenario_class.as_str().to_string()),
-                Some(sc.matched),
-                sc.divergence_code.map(|c| c.to_string()),
-            )
-        })
-        .unwrap_or((None, None, None));
-
     crate::types::SchedulerDiagnosticAuditEvent {
         agent_id: agent_id.to_string(),
         decision: decision.kind.as_str().to_string(),
         reason: decision.reason.clone(),
         boundary: decision.boundary.clone(),
-        scenario_class,
-        shadow_matched,
-        divergence_code,
+        scenario_class: None,
         work_item_id: decision.work_item_id.clone(),
         message_id: decision.message_id.clone(),
         task_id: decision.task_id.clone(),
@@ -1314,63 +1101,6 @@ pub(crate) fn message_processing_decision(
         decision = decision.evidence("model_turn_blocked_by_control_posture");
     }
     decision
-}
-
-pub(crate) fn shadow_comparison_for_message_admission(
-    projection: &SchedulerProjection,
-    message: &MessageEnvelope,
-    decision: &SchedulerDecision,
-    continuation_resolution: Option<&ContinuationResolution>,
-) -> Option<SchedulerShadowComparison> {
-    if !message_admission_scenario_applies(message, continuation_resolution) {
-        return None;
-    }
-
-    let input_identity = format!("message:{}", message.id);
-    let observation =
-        LegacySchedulerObservation::MessageAdmission(LegacyMessageAdmissionObservation {
-            schema_version: 1,
-            boundary: SchedulerBoundary::RunLoop.as_str(),
-            input_identity: input_identity.clone(),
-            input_kind: message.kind.clone(),
-            legacy_decision: decision.kind.as_str(),
-            model_reentry: decision.model_reentry,
-            continuation_class: continuation_resolution.map(|resolution| resolution.class),
-            work_item_id: decision.work_item_id.clone(),
-            queue_len: projection.queue_len,
-            active_waiting_intents: projection.active_waiting_intents,
-            turn_in_progress: projection.turn_in_progress,
-        });
-    let candidate = RestrictedSchedulerCandidate::MessageAdmission(
-        restricted_message_admission_candidate(projection, message),
-    );
-    let matched = match (&observation, &candidate) {
-        (
-            LegacySchedulerObservation::MessageAdmission(observation),
-            RestrictedSchedulerCandidate::MessageAdmission(candidate),
-        ) => {
-            observation.legacy_decision
-                == if candidate.model_reentry {
-                    SchedulerDecisionKind::StartModelTurn.as_str()
-                } else {
-                    SchedulerDecisionKind::ReduceMessageOnly.as_str()
-                }
-                && observation.model_reentry == candidate.model_reentry
-                && observation.work_item_id == candidate.binding_work_item_id
-        }
-        _ => unreachable!(),
-    };
-
-    Some(SchedulerShadowComparison {
-        scenario_class: REDUCER_ONLY_CANDIDATES_SCENARIO,
-        comparison_identity: format!("message_admission:{}", message.id),
-        boundary: SchedulerBoundary::RunLoop.as_str(),
-        input_identity,
-        legacy_observation: observation,
-        shadow_candidate: candidate,
-        matched,
-        divergence_code: (!matched).then_some("message_admission_outcome_mismatch"),
-    })
 }
 
 pub(crate) fn authority_scenarios_for_message_claim(
@@ -1717,95 +1447,6 @@ fn message_admission_scenario_applies(
     )
 }
 
-pub(crate) fn shadow_comparison_for_wait_resume(
-    projection: &SchedulerProjection,
-    message: &MessageEnvelope,
-    decision: &SchedulerDecision,
-) -> Option<SchedulerShadowComparison> {
-    if !wait_resume_scenario_applies(projection, message) {
-        return None;
-    }
-    let matching_waits = matching_wait_conditions_for_work_item(
-        projection,
-        message,
-        message.work_item_id.as_deref(),
-    );
-    if matching_waits.is_empty() {
-        return None;
-    }
-    let resolved_wait_condition_ids: Vec<String> = matching_waits
-        .iter()
-        .map(|condition| condition.id.clone())
-        .collect();
-    let wait_signatures = matching_waits
-        .iter()
-        .map(|condition| {
-            let generation = projection
-                .canonical_wait_generations
-                .get(&condition.id)
-                .map(u64::to_string)
-                .unwrap_or_else(|| "legacy".into());
-            format!(
-                "{}:{generation}:{}",
-                condition.id,
-                condition.work_item_id.as_deref().unwrap_or("agent")
-            )
-        })
-        .collect::<Vec<_>>();
-    let binding_work_item_id = matching_waits
-        .iter()
-        .filter_map(|condition| condition.work_item_id.clone())
-        .next();
-    let wake_source = wait_resume_trigger_kind(message).to_string();
-    let input_identity = format!("message:{}", message.id);
-    let candidate_model_reentry = restricted_wait_resume_model_reentry(projection);
-    let observation = LegacySchedulerObservation::WaitResume(LegacyWaitResumeObservation {
-        schema_version: 1,
-        boundary: SchedulerBoundary::RunLoop.as_str(),
-        input_identity: input_identity.clone(),
-        input_kind: message.kind.clone(),
-        wake_source,
-        resolved_wait_condition_ids: resolved_wait_condition_ids.clone(),
-        wait_signatures: wait_signatures.clone(),
-        legacy_decision: decision.kind.as_str(),
-        model_reentry: decision.model_reentry,
-        work_item_id: decision.work_item_id.clone(),
-        queue_len: projection.queue_len,
-        active_waiting_intents: projection.active_waiting_intents,
-        turn_in_progress: projection.turn_in_progress,
-    });
-    let candidate = RestrictedSchedulerCandidate::WaitResume(RestrictedWaitResumeCandidate {
-        schema_version: 1,
-        action: "wait_resume",
-        consumed_wait_condition_ids: resolved_wait_condition_ids,
-        wait_signatures,
-        binding_work_item_id: binding_work_item_id.clone(),
-        queue_disposition: "claim",
-        resulting_posture: "running",
-        model_reentry: candidate_model_reentry,
-    });
-    let matched = match (&observation, &candidate) {
-        (
-            LegacySchedulerObservation::WaitResume(obs),
-            RestrictedSchedulerCandidate::WaitResume(cand),
-        ) => {
-            obs.model_reentry == cand.model_reentry && obs.work_item_id == cand.binding_work_item_id
-        }
-        _ => unreachable!(),
-    };
-    Some(SchedulerShadowComparison {
-        scenario_class: wait_resume_scenario_class(message)
-            .expect("applicable wait resume has a registered scenario class"),
-        comparison_identity: format!("wait_resume:{}", message.id),
-        boundary: SchedulerBoundary::RunLoop.as_str(),
-        input_identity,
-        legacy_observation: observation,
-        shadow_candidate: candidate,
-        matched,
-        divergence_code: (!matched).then_some("wait_resume_outcome_mismatch"),
-    })
-}
-
 fn wait_resume_scenario_class(message: &MessageEnvelope) -> Option<SchedulerScenarioClass> {
     match message.kind {
         MessageKind::TaskResult => Some(EXACT_TASK_REJOIN_SCENARIO),
@@ -1815,22 +1456,6 @@ fn wait_resume_scenario_class(message: &MessageEnvelope) -> Option<SchedulerScen
         | MessageKind::TimerTick
         | MessageKind::SystemTick => Some(EXACT_WAIT_RESUME_SCENARIO),
         _ => None,
-    }
-}
-
-fn wait_resume_trigger_kind(message: &MessageEnvelope) -> &'static str {
-    match (&message.kind, &message.origin) {
-        (MessageKind::TaskResult, _) => "task_result",
-        (MessageKind::CallbackEvent | MessageKind::WebhookEvent, _) => "external_callback",
-        (MessageKind::ChannelEvent, _) => "channel_signal",
-        (MessageKind::TimerTick, _) => "wait_deadline",
-        (MessageKind::SystemTick, MessageOrigin::System { subsystem })
-            if subsystem == "wake_hint" =>
-        {
-            "operator_wake_hint"
-        }
-        (MessageKind::SystemTick, _) => "system_tick",
-        _ => "unknown",
     }
 }
 
@@ -1912,542 +1537,6 @@ pub(super) fn message_matches_wait_condition(
         }
         _ => false,
     }
-}
-
-fn restricted_wait_resume_model_reentry(projection: &SchedulerProjection) -> bool {
-    if matches!(projection.status, AgentStatus::Stopped) {
-        return false;
-    }
-    !projection.turn_in_progress
-}
-
-pub(crate) fn shadow_comparison_for_settlement(
-    projection: &SchedulerProjection,
-    record: &QueueEntryRecord,
-) -> Option<SchedulerShadowComparison> {
-    let legacy_status = match record.status {
-        QueueEntryStatus::Processed => "complete",
-        QueueEntryStatus::Aborted => "failed",
-        QueueEntryStatus::Interrupted => "interrupted",
-        QueueEntryStatus::Interjected => "interjected",
-        QueueEntryStatus::Dropped => "dropped",
-        QueueEntryStatus::Queued | QueueEntryStatus::Dequeued => return None,
-    };
-    let candidate_disposition = restricted_settlement_disposition(projection, record);
-    let input_identity = format!("message:{}", record.message_id);
-    let observation = LegacySchedulerObservation::Settlement(LegacySettlementObservation {
-        schema_version: 1,
-        boundary: SchedulerBoundary::RunLoop.as_str(),
-        input_identity: input_identity.clone(),
-        settlement_status: legacy_status,
-        queue_len: projection.queue_len,
-        turn_in_progress: projection.turn_in_progress,
-    });
-    let candidate = RestrictedSchedulerCandidate::Settlement(RestrictedSettlementCandidate {
-        schema_version: 1,
-        action: "settle",
-        queue_disposition: "settle",
-        settlement_disposition: candidate_disposition,
-        resulting_posture: "open",
-    });
-    let matched = legacy_status == candidate_disposition;
-    Some(SchedulerShadowComparison {
-        scenario_class: SETTLEMENT_SCENARIO,
-        comparison_identity: format!("settlement:{}", record.message_id),
-        boundary: SchedulerBoundary::RunLoop.as_str(),
-        input_identity,
-        legacy_observation: observation,
-        shadow_candidate: candidate,
-        matched,
-        divergence_code: (!matched).then_some("settlement_outcome_mismatch"),
-    })
-}
-
-fn restricted_settlement_disposition(
-    projection: &SchedulerProjection,
-    record: &QueueEntryRecord,
-) -> &'static str {
-    match record.status {
-        QueueEntryStatus::Aborted | QueueEntryStatus::Dropped => "failed",
-        QueueEntryStatus::Interrupted => "interrupted",
-        QueueEntryStatus::Interjected => "interjected",
-        QueueEntryStatus::Processed => {
-            if matches!(projection.status, AgentStatus::Stopped) {
-                "failed"
-            } else if projection.turn_in_progress {
-                "pending"
-            } else {
-                "complete"
-            }
-        }
-        QueueEntryStatus::Queued | QueueEntryStatus::Dequeued => "pending",
-    }
-}
-
-pub(crate) fn shadow_comparison_for_delivery(
-    projection: &SchedulerProjection,
-    record: &QueueEntryRecord,
-) -> Option<SchedulerShadowComparison> {
-    // Only produce a delivery comparison for terminal settlement statuses;
-    // Queued/Dequeued are not settled and have no delivery to compare.
-    if !matches!(
-        record.status,
-        QueueEntryStatus::Processed
-            | QueueEntryStatus::Aborted
-            | QueueEntryStatus::Interrupted
-            | QueueEntryStatus::Interjected
-            | QueueEntryStatus::Dropped
-    ) {
-        return None;
-    }
-    let legacy_terminal = projection
-        .last_turn_terminal
-        .map(|kind| match kind {
-            TurnTerminalKind::Completed => "completed",
-            TurnTerminalKind::Aborted => "aborted",
-            TurnTerminalKind::BaselineOverBudget => "baseline_over_budget",
-            TurnTerminalKind::DeferredToFallback => "deferred_to_fallback",
-            TurnTerminalKind::ProviderFailedNeedsRecovery => "provider_failed_needs_recovery",
-        })
-        .unwrap_or("none");
-    let candidate_disposition = restricted_delivery_disposition(projection, record);
-    let input_identity = format!("message:{}", record.message_id);
-    let observation = LegacySchedulerObservation::Delivery(LegacyDeliveryObservation {
-        schema_version: 1,
-        boundary: SchedulerBoundary::RunLoop.as_str(),
-        input_identity: input_identity.clone(),
-        turn_terminal: legacy_terminal,
-        queue_len: projection.queue_len,
-        turn_in_progress: projection.turn_in_progress,
-    });
-    let candidate = RestrictedSchedulerCandidate::Delivery(RestrictedDeliveryCandidate {
-        schema_version: 1,
-        action: "deliver",
-        delivery_disposition: candidate_disposition,
-        resulting_posture: "open",
-    });
-    let legacy_category =
-        turn_terminal_delivery_category(projection.last_turn_terminal, &record.status);
-    let matched = legacy_category == candidate_disposition;
-    Some(SchedulerShadowComparison {
-        scenario_class: DELIVERY_SCENARIO,
-        comparison_identity: format!("delivery:{}", record.message_id),
-        boundary: SchedulerBoundary::RunLoop.as_str(),
-        input_identity,
-        legacy_observation: observation,
-        shadow_candidate: candidate,
-        matched,
-        divergence_code: (!matched).then_some("delivery_outcome_mismatch"),
-    })
-}
-
-fn turn_terminal_delivery_category(
-    kind: Option<TurnTerminalKind>,
-    queue_status: &QueueEntryStatus,
-) -> &'static str {
-    match (kind, queue_status) {
-        (
-            Some(
-                TurnTerminalKind::Aborted
-                | TurnTerminalKind::ProviderFailedNeedsRecovery
-                | TurnTerminalKind::BaselineOverBudget,
-            ),
-            QueueEntryStatus::Interrupted | QueueEntryStatus::Interjected,
-        ) => "interrupted",
-        (
-            Some(
-                TurnTerminalKind::Aborted
-                | TurnTerminalKind::ProviderFailedNeedsRecovery
-                | TurnTerminalKind::BaselineOverBudget,
-            ),
-            QueueEntryStatus::Aborted | QueueEntryStatus::Dropped,
-        ) => "failed",
-        (Some(TurnTerminalKind::Completed), _) => "completed",
-        (
-            Some(
-                TurnTerminalKind::Aborted
-                | TurnTerminalKind::ProviderFailedNeedsRecovery
-                | TurnTerminalKind::BaselineOverBudget,
-            ),
-            _,
-        ) => "failed",
-        (Some(TurnTerminalKind::DeferredToFallback), _) => "pending",
-        (None, _) => "none",
-    }
-}
-
-pub(crate) fn shadow_comparison_for_operator_interjection(
-    projection: &SchedulerProjection,
-    message: &MessageEnvelope,
-    boundary: InterjectionBoundary,
-) -> Option<SchedulerShadowComparison> {
-    // Operator interjections are always admitted at the boundary where they
-    // were drained. The shadow comparison records the boundary, queue state,
-    // and turn status so divergences between legacy and typed paths are
-    // auditable per-boundary rather than through a single opaque drain.
-    let boundary_str = boundary.as_str();
-    let input_identity = format!("message:{}", message.id);
-    let observation =
-        LegacySchedulerObservation::OperatorInterjection(LegacyOperatorInterjectionObservation {
-            schema_version: 1,
-            boundary: SchedulerBoundary::RunLoop.as_str(),
-            input_identity: input_identity.clone(),
-            interjection_boundary: boundary_str,
-            queue_len: projection.queue_len,
-            turn_in_progress: projection.turn_in_progress,
-        });
-    let candidate = RestrictedSchedulerCandidate::OperatorInterjection(
-        RestrictedOperatorInterjectionCandidate {
-            schema_version: 1,
-            action: "interject",
-            interjection_boundary: boundary_str,
-            queue_disposition: "consumed",
-            resulting_posture: "running",
-        },
-    );
-    // Both legacy and typed paths admit operator interjections at the same
-    // boundary during turn execution, so they always match in shadow mode.
-    let matched = true;
-    Some(SchedulerShadowComparison {
-        scenario_class: INTERJECTION_SCENARIO,
-        comparison_identity: format!("operator_interjection:{}", message.id),
-        boundary: SchedulerBoundary::RunLoop.as_str(),
-        input_identity,
-        legacy_observation: observation,
-        shadow_candidate: candidate,
-        matched,
-        divergence_code: (!matched).then_some("operator_interjection_outcome_mismatch"),
-    })
-}
-
-fn restricted_delivery_disposition(
-    projection: &SchedulerProjection,
-    record: &QueueEntryRecord,
-) -> &'static str {
-    if matches!(projection.status, AgentStatus::Stopped)
-        && matches!(record.status, QueueEntryStatus::Processed)
-    {
-        return "failed";
-    }
-    // Delegate to the legacy classifier so the shadow candidate uses the same
-    // terminal-kind + queue-status logic. The `turn_in_progress` field is
-    // intentionally not consulted: a Processed entry with turn_in_progress is
-    // structurally unreachable in production (settlement and turn termination
-    // are coupled by the run-loop), so the last_turn_terminal is never stale
-    // when this function is reached for a settled entry.
-    let category = turn_terminal_delivery_category(projection.last_turn_terminal, &record.status);
-    match (category, &record.status) {
-        ("none", QueueEntryStatus::Processed) => "completed",
-        _ => category,
-    }
-}
-
-pub(crate) fn semantic_shadow_decision_for_message_admission(
-    projection: &SchedulerProjection,
-    message: &MessageEnvelope,
-) -> Result<Option<SchedulerSemanticShadowDecision>> {
-    if message.kind != MessageKind::OperatorPrompt {
-        return Ok(None);
-    }
-
-    let ingress = match TrustedSemanticIngress::from_persisted_message(message) {
-        Ok(ingress) => ingress,
-        Err(_) => return Ok(None),
-    };
-    let waits = projection
-        .semantic_waits
-        .iter()
-        .filter_map(|wait| {
-            let owner_work_item_id = wait.work_item_id.clone()?;
-            Some(SemanticWaitCandidate {
-                wait_id: wait.id.clone(),
-                agent_id: wait.agent_id.clone(),
-                generation: semantic_wait_generation(wait),
-                state: SemanticWaitCandidateState::Active,
-                owner_work_item_id,
-                summary: wait.waiting_for.clone(),
-                routing_keys: semantic_routing_keys(&wait.id, wait.subject_ref.as_deref()),
-            })
-        })
-        .collect();
-    let work_items = projection
-        .semantic_work_items
-        .iter()
-        .map(|work_item| SemanticWorkItemCandidate {
-            work_item_id: work_item.id.clone(),
-            agent_id: work_item.agent_id.clone(),
-            revision: work_item.revision,
-            state: if work_item.state == WorkItemState::Completed {
-                SemanticWorkItemCandidateState::Terminal
-            } else if work_item.scheduling_state == WorkItemSchedulingState::Runnable {
-                SemanticWorkItemCandidateState::Runnable
-            } else {
-                SemanticWorkItemCandidateState::Waiting
-            },
-            summary: work_item.objective.clone(),
-            routing_keys: vec![work_item.id.clone()],
-        })
-        .collect();
-    let input = ingress.decision_input(waits, work_items);
-    let proposal = structural_semantic_proposal(&input);
-
-    Ok(Some(SchedulerSemanticShadowDecision {
-        input,
-        provider: SemanticProposalProviderConfig {
-            identity: SemanticProposalProviderIdentity {
-                provider_id: "runtime-structural-shadow".into(),
-                model_ref: "builtin/structural-semantic-proposal".into(),
-                contract_revision: SEMANTIC_CONTRACT_REVISION,
-            },
-        },
-        response: SemanticProposalResponse {
-            proposal,
-            confidence_bps: crate::domain::scheduler_semantic::MAX_CONFIDENCE_BPS,
-            latency_ms: None,
-        },
-        policy: SemanticValidationPolicy::default(),
-    }))
-}
-
-fn semantic_wait_generation(wait: &WaitConditionRecord) -> u64 {
-    u64::try_from(wait.updated_at.timestamp_micros())
-        .unwrap_or(1)
-        .max(1)
-}
-
-fn semantic_routing_keys(id: &str, subject_ref: Option<&str>) -> Vec<String> {
-    let mut keys = vec![id.to_string()];
-    if let Some(subject_ref) = subject_ref
-        .map(str::trim)
-        .filter(|subject_ref| !subject_ref.is_empty() && *subject_ref != id)
-    {
-        keys.push(subject_ref.to_string());
-    }
-    keys
-}
-
-fn restricted_message_admission_candidate(
-    projection: &SchedulerProjection,
-    message: &MessageEnvelope,
-) -> RestrictedMessageAdmissionCandidate {
-    let model_reentry = restricted_message_model_reentry(projection, message);
-    RestrictedMessageAdmissionCandidate {
-        schema_version: 1,
-        action: if model_reentry {
-            "admit_model_turn"
-        } else {
-            "reduce_message_only"
-        },
-        binding_work_item_id: message.work_item_id.clone(),
-        queue_disposition: "claim",
-        resulting_posture: "running",
-        model_reentry,
-    }
-}
-
-fn restricted_message_model_reentry(
-    projection: &SchedulerProjection,
-    message: &MessageEnvelope,
-) -> bool {
-    if matches!(projection.status, AgentStatus::Stopped) {
-        return false;
-    }
-    let Some(trigger_kind) = restricted_trigger_kind(message) else {
-        return false;
-    };
-    let contentful = restricted_message_is_contentful(message);
-    let task_terminal = matches!(message.kind, MessageKind::TaskResult)
-        && message
-            .metadata
-            .as_ref()
-            .and_then(|metadata| metadata.get("task_status"))
-            .and_then(serde_json::Value::as_str)
-            .is_none_or(|status| {
-                matches!(status, "completed" | "failed" | "cancelled" | "interrupted")
-            });
-    let task_work_item_id = message
-        .metadata
-        .as_ref()
-        .and_then(|metadata| metadata.get("work_item_id"))
-        .and_then(serde_json::Value::as_str)
-        .or(message.work_item_id.as_deref());
-    let same_work_item = task_work_item_id
-        == projection
-            .current_work_item
-            .as_ref()
-            .map(|work_item| work_item.id.as_str());
-
-    let Some(waiting_reason) = restricted_waiting_reason(projection) else {
-        return (trigger_kind == crate::types::ContinuationTriggerKind::TaskResult
-            && task_terminal
-            && same_work_item)
-            || matches!(
-                trigger_kind,
-                crate::types::ContinuationTriggerKind::OperatorInput
-                    | crate::types::ContinuationTriggerKind::TimerFire
-                    | crate::types::ContinuationTriggerKind::InternalFollowup
-            )
-            || (matches!(
-                trigger_kind,
-                crate::types::ContinuationTriggerKind::ExternalEvent
-                    | crate::types::ContinuationTriggerKind::SystemTick
-            ) && contentful);
-    };
-
-    let expected = matches!(
-        (waiting_reason, trigger_kind),
-        (
-            Some(crate::types::WaitingReason::AwaitingOperatorInput),
-            crate::types::ContinuationTriggerKind::OperatorInput
-        ) | (
-            Some(crate::types::WaitingReason::AwaitingTaskResult),
-            crate::types::ContinuationTriggerKind::TaskResult
-        ) | (
-            Some(crate::types::WaitingReason::AwaitingExternalChange),
-            crate::types::ContinuationTriggerKind::ExternalEvent
-                | crate::types::ContinuationTriggerKind::SystemTick
-        ) | (
-            Some(crate::types::WaitingReason::AwaitingTimer),
-            crate::types::ContinuationTriggerKind::TimerFire
-        ) | (_, crate::types::ContinuationTriggerKind::InternalFollowup)
-    );
-    if expected {
-        return match trigger_kind {
-            crate::types::ContinuationTriggerKind::TaskResult => task_terminal && same_work_item,
-            crate::types::ContinuationTriggerKind::ExternalEvent
-            | crate::types::ContinuationTriggerKind::SystemTick => contentful,
-            crate::types::ContinuationTriggerKind::InternalFollowup => contentful,
-            _ => true,
-        };
-    }
-    trigger_kind == crate::types::ContinuationTriggerKind::OperatorInput
-        || (trigger_kind == crate::types::ContinuationTriggerKind::TaskResult
-            && task_terminal
-            && same_work_item)
-}
-
-fn restricted_waiting_reason(
-    projection: &SchedulerProjection,
-) -> Option<Option<crate::types::WaitingReason>> {
-    if projection.runtime_error || projection.work_reactivation_signal().is_some() {
-        return None;
-    }
-    if projection.turn_in_progress {
-        return Some(Some(crate::types::WaitingReason::AwaitingExternalChange));
-    }
-    if projection.current_work_item_waits_for_operator() {
-        return Some(Some(crate::types::WaitingReason::AwaitingOperatorInput));
-    }
-    if projection.active_agent_waiting_intents > 0 {
-        return Some(Some(crate::types::WaitingReason::AwaitingExternalChange));
-    }
-    if projection.active_timers > 0 {
-        return Some(Some(crate::types::WaitingReason::AwaitingTimer));
-    }
-    match projection.waiting_work_item_scheduling_state {
-        Some(WorkItemSchedulingState::WaitingTask) => {
-            Some(Some(crate::types::WaitingReason::AwaitingTaskResult))
-        }
-        Some(WorkItemSchedulingState::WaitingExternal) => {
-            Some(Some(crate::types::WaitingReason::AwaitingExternalChange))
-        }
-        Some(WorkItemSchedulingState::WaitingTimer) => {
-            Some(Some(crate::types::WaitingReason::AwaitingTimer))
-        }
-        Some(WorkItemSchedulingState::WaitingOperator) => {
-            Some(Some(crate::types::WaitingReason::AwaitingOperatorInput))
-        }
-        Some(WorkItemSchedulingState::WaitingSystem) => {
-            Some(Some(crate::types::WaitingReason::AwaitingExternalChange))
-        }
-        _ => None,
-    }
-}
-
-fn restricted_trigger_kind(
-    message: &MessageEnvelope,
-) -> Option<crate::types::ContinuationTriggerKind> {
-    match message.kind {
-        MessageKind::TaskStatus
-        | MessageKind::Control
-        | MessageKind::BriefAck
-        | MessageKind::BriefResult => None,
-        _ => Some(crate::types::admission_trigger_kind_for_message_kind(
-            &message.kind,
-        )),
-    }
-}
-
-fn restricted_message_is_contentful(message: &MessageEnvelope) -> bool {
-    let body_is_contentful = |body: &crate::types::MessageBody| match body {
-        crate::types::MessageBody::Text { text } => !text.trim().is_empty(),
-        crate::types::MessageBody::Json { .. } => true,
-        crate::types::MessageBody::Brief { text, .. } => !text.trim().is_empty(),
-    };
-    if matches!(message.kind, MessageKind::SystemTick) {
-        if let Some(wake_hint) = message
-            .metadata
-            .as_ref()
-            .and_then(|metadata| metadata.get("wake_hint"))
-        {
-            return wake_hint
-                .get("body")
-                .cloned()
-                .and_then(|body| serde_json::from_value(body).ok())
-                .is_some_and(|body| body_is_contentful(&body));
-        }
-    }
-    body_is_contentful(&message.body)
-}
-
-pub(crate) fn shadow_comparison_for_work_queue_tick(
-    projection: &SchedulerProjection,
-    work_item: &WorkItemRecord,
-    reason: &str,
-    decision: &SchedulerDecision,
-    boundary: SchedulerBoundary,
-) -> Option<SchedulerShadowComparison> {
-    if !matches!(reason, "continue_active" | "queued_available") {
-        return None;
-    }
-    let idempotency_key = work_queue_tick_idempotency_key(work_item, reason);
-    let input_identity = format!("work_queue_tick:{idempotency_key}");
-    let observation = LegacySchedulerObservation::WorkQueueTick(LegacyWorkQueueTickObservation {
-        schema_version: 1,
-        boundary: boundary.as_str(),
-        input_identity: input_identity.clone(),
-        reason: reason.into(),
-        legacy_decision: decision.kind.as_str(),
-        model_reentry: decision.model_reentry,
-        work_item_id: work_item.id.clone(),
-        work_item_revision: work_item.revision,
-        queue_len: projection.queue_len,
-        active_waiting_intents: projection.active_waiting_intents,
-        turn_in_progress: projection.turn_in_progress,
-    });
-    let candidate = RestrictedSchedulerCandidate::WorkQueueTick(RestrictedWorkQueueTickCandidate {
-        schema_version: 1,
-        action: "emit_work_queue_tick",
-        binding_work_item_id: work_item.id.clone(),
-        binding_work_item_revision: work_item.revision,
-        queue_disposition: "enqueue",
-        resulting_posture: "awake",
-        model_reentry: true,
-    });
-    let matched = matches!(decision.kind, SchedulerDecisionKind::EmitSystemTick)
-        && decision.model_reentry
-        && decision.work_item_id.as_deref() == Some(work_item.id.as_str());
-
-    Some(SchedulerShadowComparison {
-        scenario_class: WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO,
-        comparison_identity: format!("work_queue_idle_tick:{idempotency_key}"),
-        boundary: boundary.as_str(),
-        input_identity,
-        legacy_observation: observation,
-        shadow_candidate: candidate,
-        matched,
-        divergence_code: (!matched).then_some("work_queue_tick_outcome_mismatch"),
-    })
 }
 
 pub(crate) fn idle_noop_decision(projection: &SchedulerProjection) -> SchedulerDecision {
@@ -2850,178 +1939,5 @@ mod tests {
             AdmissionContext::RuntimeOwned,
         );
         assert!(!is_operator_interjection_message(&msg));
-    }
-
-    // --- restricted_delivery_disposition ---
-
-    fn test_projection() -> SchedulerProjection {
-        SchedulerProjection {
-            now: Utc::now(),
-            status: AgentStatus::AwakeIdle,
-            queue_len: 0,
-            active_run_id: None,
-            active_tasks: Vec::new(),
-            has_blocking_active_tasks: false,
-            current_work_item: None,
-            current_work_item_scheduling_state: None,
-            queued_runnable_work_items: Vec::new(),
-            queued_work_items: 0,
-            pending_wake_hint: false,
-            active_waiting_intents: 0,
-            active_work_item_waiting_intents: 0,
-            active_agent_waiting_intents: 0,
-            active_timers: 0,
-            waiting_work_item: None,
-            waiting_work_item_scheduling_state: None,
-            last_turn_terminal: None,
-            turn_in_progress: false,
-            runtime_error: false,
-            semantic_waits: Vec::new(),
-            activation_waits: Vec::new(),
-            canonical_work_statuses: None,
-            canonical_wait_generations: HashMap::new(),
-            semantic_work_items: Vec::new(),
-        }
-    }
-
-    fn test_queue_record(status: QueueEntryStatus) -> QueueEntryRecord {
-        QueueEntryRecord {
-            message_id: "msg-test".into(),
-            agent_id: "agent-test".into(),
-            priority: Priority::Normal,
-            status,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        }
-    }
-
-    #[test]
-    fn delivery_completed_processed() {
-        let mut proj = test_projection();
-        proj.last_turn_terminal = Some(TurnTerminalKind::Completed);
-        let record = test_queue_record(QueueEntryStatus::Processed);
-        assert_eq!(restricted_delivery_disposition(&proj, &record), "completed");
-    }
-
-    #[test]
-    fn delivery_deferred_to_fallback_processed() {
-        let mut proj = test_projection();
-        proj.last_turn_terminal = Some(TurnTerminalKind::DeferredToFallback);
-        let record = test_queue_record(QueueEntryStatus::Processed);
-        assert_eq!(restricted_delivery_disposition(&proj, &record), "pending");
-    }
-
-    #[test]
-    fn delivery_provider_failed_processed() {
-        let mut proj = test_projection();
-        proj.last_turn_terminal = Some(TurnTerminalKind::ProviderFailedNeedsRecovery);
-        let record = test_queue_record(QueueEntryStatus::Processed);
-        assert_eq!(restricted_delivery_disposition(&proj, &record), "failed");
-    }
-
-    #[test]
-    fn delivery_processed_turn_in_progress_invariant() {
-        // Documents the invariant reviewed in PR #2425: a Processed entry
-        // with turn_in_progress == true is structurally unreachable in
-        // production (settlement and turn termination are coupled by the
-        // run-loop). The function intentionally does not consult
-        // turn_in_progress; it delegates to last_turn_terminal instead.
-        let mut proj = test_projection();
-        proj.turn_in_progress = true;
-        proj.last_turn_terminal = Some(TurnTerminalKind::Completed);
-        let record = test_queue_record(QueueEntryStatus::Processed);
-        assert_eq!(restricted_delivery_disposition(&proj, &record), "completed");
-    }
-
-    #[test]
-    fn delivery_interjected_completed() {
-        let mut proj = test_projection();
-        proj.last_turn_terminal = Some(TurnTerminalKind::Completed);
-        let record = test_queue_record(QueueEntryStatus::Interjected);
-        assert_eq!(restricted_delivery_disposition(&proj, &record), "completed");
-    }
-
-    #[test]
-    fn delivery_none_terminal_processed() {
-        let proj = test_projection();
-        let record = test_queue_record(QueueEntryStatus::Processed);
-        assert_eq!(restricted_delivery_disposition(&proj, &record), "completed");
-    }
-
-    #[test]
-    fn delivery_stopped_processed() {
-        let mut proj = test_projection();
-        proj.status = AgentStatus::Stopped;
-        proj.last_turn_terminal = Some(TurnTerminalKind::Completed);
-        let record = test_queue_record(QueueEntryStatus::Processed);
-        assert_eq!(restricted_delivery_disposition(&proj, &record), "failed");
-    }
-
-    #[test]
-    fn delivery_aborted_status() {
-        let mut proj = test_projection();
-        proj.last_turn_terminal = Some(TurnTerminalKind::Aborted);
-        let record = test_queue_record(QueueEntryStatus::Aborted);
-        assert_eq!(restricted_delivery_disposition(&proj, &record), "failed");
-    }
-
-    // --- restricted_message_model_reentry ---
-
-    fn internal_followup_msg(text: &str) -> MessageEnvelope {
-        MessageEnvelope::new(
-            "agent-1",
-            MessageKind::InternalFollowup,
-            MessageOrigin::System {
-                subsystem: "runtime".into(),
-            },
-            AuthorityClass::RuntimeInstruction,
-            Priority::Normal,
-            MessageBody::Text { text: text.into() },
-        )
-        .with_admission(
-            MessageDeliverySurface::RuntimeSystem,
-            AdmissionContext::RuntimeOwned,
-        )
-    }
-
-    #[test]
-    fn internal_followup_with_external_wait_contentful_admits_model_turn() {
-        let mut proj = test_projection();
-        proj.active_agent_waiting_intents = 1;
-        let msg = internal_followup_msg("recovery continuation");
-        assert!(restricted_message_model_reentry(&proj, &msg));
-    }
-
-    #[test]
-    fn internal_followup_with_external_wait_empty_body_reduces_message_only() {
-        let mut proj = test_projection();
-        proj.active_agent_waiting_intents = 1;
-        let msg = internal_followup_msg("  ");
-        assert!(!restricted_message_model_reentry(&proj, &msg));
-    }
-
-    #[test]
-    fn internal_followup_without_wait_admits_model_turn() {
-        let proj = test_projection();
-        let msg = internal_followup_msg("continuation");
-        assert!(restricted_message_model_reentry(&proj, &msg));
-    }
-
-    #[test]
-    fn external_event_with_external_wait_empty_body_reduces_message_only() {
-        let mut proj = test_projection();
-        proj.active_agent_waiting_intents = 1;
-        let msg = MessageEnvelope::new(
-            "agent-1",
-            MessageKind::ChannelEvent,
-            MessageOrigin::Channel {
-                channel_id: "ch".into(),
-                sender_id: None,
-            },
-            AuthorityClass::ExternalEvidence,
-            Priority::Normal,
-            MessageBody::Text { text: "  ".into() },
-        );
-        assert!(!restricted_message_model_reentry(&proj, &msg));
     }
 }

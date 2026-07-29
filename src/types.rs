@@ -4366,13 +4366,10 @@ impl AgentModelOverrideAuditEvent {
     }
 }
 
-/// Public diagnostic event for scheduler decisions and shadow comparison outcomes.
+/// Public diagnostic event for scheduler decisions and invariant violations.
 ///
 /// Extends scheduler observability from internal audit-only records to a typed,
-/// publicly addressable event stream. Each event captures the scheduler decision
-/// (what the runtime chose to do), the boundary where it was made, and—when a
-/// shadow comparison was recorded—whether the legacy and typed protocol paths
-/// agreed or diverged.
+/// publicly addressable event stream.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SchedulerDiagnosticAuditEvent {
     #[serde(alias = "session_id")]
@@ -4383,10 +4380,6 @@ pub struct SchedulerDiagnosticAuditEvent {
     pub boundary: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scenario_class: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub shadow_matched: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub divergence_code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work_item_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

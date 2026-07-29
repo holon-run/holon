@@ -386,15 +386,12 @@ impl RuntimeHandle {
                         break 'outer;
                     };
                     let expected_state = guard.state.clone();
-                    let production_commands_enabled =
-                        self.scheduler_protocol_production_commands_enabled();
                     let protocol_commands = match self.operator_interjection_protocol_commands(
                         agent_id,
                         &expected_state,
                         &message,
                         round,
                         boundary_str,
-                        production_commands_enabled,
                     )? {
                         OperatorInterjectionPlan::Attach(commands) => commands,
                         OperatorInterjectionPlan::LegacyTurnDeferred {
@@ -417,23 +414,6 @@ impl RuntimeHandle {
                     let mut committed_state = expected_state.clone();
                     committed_state.pending = guard.queue.len().saturating_sub(1);
                     let text = render_operator_interjection_text(&message);
-                    let shadow_comparison =
-                        scheduler::SchedulerProjection::from_state_with_queue_len_at(
-                            &self.inner.storage,
-                            &guard.state,
-                            guard.queue.len(),
-                            self.now(),
-                        )
-                        .ok()
-                        .and_then(|projection| {
-                            scheduler::shadow_comparison_for_operator_interjection(
-                                &projection,
-                                &message,
-                                boundary,
-                            )
-                        })
-                        .map(scheduler_executor::scheduler_shadow_comparison_command)
-                        .transpose()?;
                     let transcript = TranscriptEntry::new(
                         message.agent_id.clone(),
                         TranscriptEntryKind::IncomingMessage,
@@ -481,10 +461,7 @@ impl RuntimeHandle {
                         .inner
                         .runtime_db
                         .transitions()
-                        .scheduler_rollout_expectations(
-                            &[scheduler::INTERJECTION_SCENARIO],
-                            production_commands_enabled,
-                        )?;
+                        .scheduler_rollout_expectations(&[scheduler::INTERJECTION_SCENARIO])?;
                     let commit_result = self.inner.runtime_db.transitions().commit_queue(
                         &crate::runtime_db::transitions::QueueTransitionCommand {
                             agent_id: message.agent_id.clone(),
@@ -495,7 +472,6 @@ impl RuntimeHandle {
                             scheduler_claim_work_item: None,
                             scheduler_protocol_bootstrap: None,
                             scheduler_protocol_commands: protocol_commands,
-                            scheduler_authority_scenarios: vec![scheduler::INTERJECTION_SCENARIO],
                             scheduler_rollout_expectations,
                             agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
                                 expected: Some(Box::new(expected_state)),
@@ -505,10 +481,6 @@ impl RuntimeHandle {
                             transcript_entries: vec![transcript],
                             turn_record: None,
                             audit_events: vec![audit_event],
-                            scheduler_shadow_comparison: shadow_comparison,
-                            scheduler_wait_resume_shadow_comparison: None,
-                            scheduler_delivery_shadow_comparison: None,
-                            scheduler_semantic_shadow: None,
                             notify_scheduler: false,
                             fault: self.take_transition_fault(),
                             brief_evidence: Vec::new(),
@@ -566,24 +538,12 @@ impl RuntimeHandle {
         message: &MessageEnvelope,
         round: usize,
         boundary: &str,
-        production_commands_enabled: bool,
     ) -> Result<OperatorInterjectionPlan> {
         use crate::domain::scheduler_protocol::{
             ActivationInputAttachment, ActivationOrigin, ActivationProvenance, ActivationTrust,
             AttachActivationInputCommand, ProtocolCommand, ScenarioMode,
         };
         use crate::types::ExecutionAdmissionProvenance;
-
-        if !production_commands_enabled
-            || self
-                .inner
-                .runtime_db
-                .transitions()
-                .scheduler_scenario_mode(scheduler::INTERJECTION_SCENARIO)?
-                != ScenarioMode::Authoritative
-        {
-            return Ok(OperatorInterjectionPlan::Attach(Vec::new()));
-        }
 
         let execution_binding = expected_state
             .current_execution_binding
