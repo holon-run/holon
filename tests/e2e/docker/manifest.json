@@ -423,10 +423,12 @@
           "id": "worktree-lifecycle",
           "required_tools": [
             "CreateWorkItem",
+            "PickWorkItem",
             "GetWorkspaceState",
             "CreateWorktree",
             "SwitchWorkspace",
             "RemoveWorktree",
+            "UpdateWorkItem",
             "CompleteWorkItem"
           ],
           "forbidden_tools": [
@@ -452,7 +454,10 @@
           "id": "spawn-and-complete",
           "required_tools": [
             "CreateWorkItem",
+            "PickWorkItem",
             "SpawnAgent",
+            "TaskStatus",
+            "UpdateWorkItem",
             "CompleteWorkItem"
           ],
           "forbidden_tools": [
