@@ -1357,7 +1357,7 @@ async fn run_once_injects_turn_budget_warning_on_last_allowed_turn() -> Result<(
 }
 
 #[tokio::test]
-async fn run_once_max_turns_respects_wait_for_command_tasks() -> Result<()> {
+async fn run_once_allows_terminal_task_result_turn_at_budget_boundary() -> Result<()> {
     let test_config = test_config();
     let host = RuntimeHost::new_with_provider(
         test_config.config().clone(),
@@ -1373,7 +1373,8 @@ async fn run_once_max_turns_respects_wait_for_command_tasks() -> Result<()> {
     )
     .await?;
 
-    assert_eq!(response.final_status, RunFinalStatus::MaxTurnsExceeded);
+    assert_eq!(response.final_status, RunFinalStatus::Completed);
+    assert_eq!(response.final_text, "command task queued");
     assert_eq!(response.tasks.len(), 1);
     assert_eq!(response.tasks[0].task.kind, "command_task");
     assert_eq!(response.tasks[0].task.status, TaskStatus::Completed);
