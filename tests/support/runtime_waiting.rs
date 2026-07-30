@@ -603,7 +603,17 @@ pub async fn timer_tick_wakes_sleeping_session() -> Result<()> {
         .schedule_timer(50, None, Some("timer fired".into()))
         .await?;
 
-    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    wait_until_async_for(Duration::from_secs(10), || {
+        let runtime = runtime.clone();
+        async move {
+            Ok(runtime
+                .recent_briefs(10)
+                .await?
+                .iter()
+                .any(|brief| brief.text.contains("timer result")))
+        }
+    })
+    .await?;
     let briefs = runtime.recent_briefs(10).await?;
     assert!(briefs
         .iter()
@@ -663,7 +673,10 @@ pub async fn wake_hint_coalesces_while_running_and_reenters_once() -> Result<()>
     assert_eq!(first, WakeDisposition::Coalesced);
     assert_eq!(second, WakeDisposition::Coalesced);
 
-    wait_until_async(|| async { Ok(provider.calls().await == 2) }).await?;
+    wait_until_async_for(Duration::from_secs(10), || async {
+        Ok(provider.calls().await == 2)
+    })
+    .await?;
 
     let messages = runtime.storage().read_recent_messages(20)?;
     let state = runtime

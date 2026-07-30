@@ -1372,6 +1372,39 @@ fn unbound_terminal_task_result_is_lifecycle_nudge_without_a_wait() {
 }
 
 #[test]
+fn unbound_timer_tick_is_lifecycle_nudge_without_a_wait() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::TimerTick,
+        MessageOrigin::Timer {
+            timer_id: "timer-unbound".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Next,
+        MessageBody::Text {
+            text: "timer fired".into(),
+        },
+    );
+    let candidate = scheduler::canonical_activation_candidate(&message, None, None)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        scheduler::resolve_canonical_activation_scenario(&projection, &message, candidate).unwrap(),
+        Some(
+            scheduler::CanonicalActivationScenario::LifecycleExternalNudge {
+                agent_id: "default".into(),
+            }
+        )
+    );
+}
+
+#[test]
 fn canonical_wait_candidate_does_not_depend_on_legacy_model_reentry() {
     let message = MessageEnvelope::new(
         "default",

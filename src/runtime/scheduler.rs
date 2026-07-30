@@ -1325,7 +1325,10 @@ pub(crate) fn resolve_canonical_activation_scenario(
     }
 
     let Some(wait) = matching_wait else {
-        if message.kind == MessageKind::OperatorPrompt {
+        if matches!(
+            message.kind,
+            MessageKind::OperatorPrompt | MessageKind::TimerTick
+        ) {
             return Ok(Some(CanonicalActivationScenario::LifecycleExternalNudge {
                 agent_id: message.agent_id.clone(),
             }));
