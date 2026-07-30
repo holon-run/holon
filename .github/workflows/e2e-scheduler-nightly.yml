@@ -19,6 +19,7 @@ jobs:
   nightly:
     name: Scheduler E2E Nightly
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     env:
       HOLON_E2E_MODEL: ${{ inputs.model || 'deepseek/deepseek-v4-flash' }}
       HOLON_E2E_DOCKER_ENV_FILE: /tmp/holon-e2e.env
@@ -92,13 +93,20 @@ jobs:
         with:
           script: |
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${process.env.GITHUB_RUN_ID}`;
-            await github.rest.issues.create({
+            const issueParams = {
               owner: context.repo.owner,
               repo: context.repo.repo,
               title: `Scheduler E2E Nightly Failure (${new Date().toISOString().slice(0,10)})`,
-              body: `The nightly scheduler E2E suite failed. See [the run](${runUrl}).`,
-              labels: ["e2e-failure", "scheduler"]
-            });
+              body: `The nightly scheduler E2E suite failed. See [the run](${runUrl}).`
+            };
+            try {
+              await github.rest.issues.create({...issueParams, labels: ["e2e-failure", "scheduler"]});
+            } catch (labelError) {
+              // Labels may not exist in the repo; retry without them so the
+              // failure notification is never silently lost.
+              core.warning(`Could not apply labels: ${labelError.message}`);
+              await github.rest.issues.create(issueParams);
+            }
 
       - name: Remove provider environment
         if: always()

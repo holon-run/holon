@@ -60,8 +60,8 @@ Each case asserts three layers:
 
 | Layer | Trigger | Tiers | Timeout | Blocking |
 |---|---|---|---|---|
-| PR optional | `e2e-scheduler` label | Tier-1 subset | 15 min | no (`continue-on-error`) |
-| Nightly | schedule | Tier-1 all | 45 min | creates issue on failure |
+| PR optional | `e2e-scheduler` label | Tier-1 subset | 20 min | no (`continue-on-error`) |
+| Nightly | schedule | Tier-1 all | 45 min (job) / 15 min (suite `--timeout 900`) | creates issue on failure |
 | Release | release pipeline | Tier-1 + Tier-2 + Tier-3 | 90 min | yes |
 
 ### Approved Decisions
