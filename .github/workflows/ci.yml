@@ -22,6 +22,8 @@ on:
       - "scripts/docker-e2e.py"
       - "scripts/docker-live-acceptance.py"
       - "scripts/docker_e2e/**"
+      - ".github/workflows/e2e-scheduler-nightly.yml"
+      - "tests/e2e/scheduler/**"
   pull_request:
     branches: [main]
     paths:
@@ -43,6 +45,9 @@ on:
       - "scripts/docker-e2e.py"
       - "scripts/docker-live-acceptance.py"
       - "scripts/docker_e2e/**"
+      - ".github/workflows/e2e-scheduler-nightly.yml"
+      - "tests/e2e/scheduler/**"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -240,3 +245,54 @@ jobs:
         with:
           name: coverage-report
           path: lcov.info
+
+  e2e-scheduler:
+    name: E2E Scheduler (optional)
+    needs: changes
+    if: contains(github.event.pull_request.labels.*.name, 'e2e-scheduler')
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 20
+    env:
+      HOLON_E2E_MODEL: ${{ vars.HOLON_E2E_SCHEDULER_MODEL || 'deepseek/deepseek-v4-flash' }}
+      HOLON_E2E_DOCKER_ENV_FILE: /tmp/holon-e2e.env
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          push: false
+          tags: holon:e2e
+          cache-from: type=gha,scope=holon-docker
+          cache-to: type=gha,mode=max,scope=holon-docker
+
+      - name: Prepare provider environment
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${DEEPSEEK_API_KEY}"
+          umask 077
+          printf 'DEEPSEEK_API_KEY=%s\n' "${DEEPSEEK_API_KEY}" > "${HOLON_E2E_DOCKER_ENV_FILE}"
+          chmod 0600 "${HOLON_E2E_DOCKER_ENV_FILE}"
+
+      - name: Run scheduler Tier-1 E2E
+        run: |
+          set -euo pipefail
+          python3 scripts/docker-e2e.py \
+            --image holon:e2e \
+            --skip-build \
+            --suite extended \
+            --tag e2e-tier-1 \
+            --env-file "${HOLON_E2E_DOCKER_ENV_FILE}" \
+            --timeout 600
+
+      - name: Remove provider environment
+        if: always()
+        run: rm -f "${HOLON_E2E_DOCKER_ENV_FILE}"

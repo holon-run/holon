@@ -564,6 +564,9 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 "scheduler-rollout-authoritative-autonomous",
                 "scheduler-terminal-before-settlement-restart",
                 "scheduler-provider-failure-work-queue-retry",
+                "scheduler-multi-workitem-scheduling",
+                "scheduler-external-wait-resume",
+                "scheduler-operator-wait-resume",
             ],
         )
         rollout_cases = selected[:3]
@@ -600,6 +603,35 @@ class DockerE2ERunnerTests(unittest.TestCase):
             "PickWorkItem", authoritative["phases"][1]["required_tools"]
         )
         self.assertFalse(recovery["requires_model"])
+
+    def test_e2e_tier_1_cases_have_correct_config(self) -> None:
+        selected = runner.select_cases(
+            self.manifest, requested=None, suite="extended", tags=["e2e-tier-1"]
+        )
+        self.assertEqual(
+            [case["id"] for case in selected],
+            [
+                "scheduler-multi-workitem-scheduling",
+                "scheduler-external-wait-resume",
+                "scheduler-operator-wait-resume",
+            ],
+        )
+        for case in selected:
+            self.assertTrue(
+                case.get("scheduler_protocol_commands_enabled"),
+                f"{case['id']} must enable scheduler protocol commands",
+            )
+            self.assertEqual(
+                case["runtime_env"]["HOLON_SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS"],
+                "true",
+                f"{case['id']} must set production commands to true",
+            )
+            self.assertNotIn(
+                "HOLON_SCHEDULER_ACCEPTANCE_FIXTURES",
+                case["runtime_env"],
+                f"{case['id']} should not use acceptance fixtures",
+            )
+            self.assertEqual(len(case["phases"]), 1)
 
     def test_manifest_rejects_non_boolean_requires_model(self) -> None:
         invalid = json.loads(json.dumps(self.manifest))
