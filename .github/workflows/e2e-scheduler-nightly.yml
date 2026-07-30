@@ -19,7 +19,7 @@ jobs:
   nightly:
     name: Scheduler E2E Nightly
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       HOLON_E2E_MODEL: ${{ inputs.model || 'deepseek/deepseek-v4-flash' }}
       HOLON_E2E_DOCKER_ENV_FILE: /tmp/holon-e2e.env
@@ -57,6 +57,17 @@ jobs:
             --skip-build \
             --suite extended \
             --tag e2e-tier-1 \
+            --env-file "${HOLON_E2E_DOCKER_ENV_FILE}" \
+            --timeout 900
+
+      - name: Run scheduler Tier-2 E2E
+        run: |
+          set -euo pipefail
+          python3 scripts/docker-e2e.py \
+            --image holon:nightly \
+            --skip-build \
+            --suite extended \
+            --tag e2e-tier-2 \
             --env-file "${HOLON_E2E_DOCKER_ENV_FILE}" \
             --timeout 900
 

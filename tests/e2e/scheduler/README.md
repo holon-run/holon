@@ -26,14 +26,14 @@ implicitly.
 
 ### Tier-2 (Nightly)
 
-| Scenario ID | Description | Status |
-|---|---|---|
-| SCHED-E2E-010 | Dual agent WorkItem claim competition | planned |
-| SCHED-E2E-011 | Operator interject during turn | planned |
-| SCHED-E2E-012 | Compaction continuity | planned |
-| SCHED-E2E-013 | Worktree isolation execution binding | planned |
-| SCHED-E2E-014 | SpawnAgent private_child supervision | planned |
-| SCHED-E2E-015 | Restart checkpoint full replay (drill) | planned |
+| Scenario ID | Case ID | Description | Key Assertions |
+|---|---|---|---|
+| SCHED-E2E-010 | `scheduler-concurrent-claim-fencing` | Interject during external wait creates new WorkItem | both complete; 2 settlements; activation chains; wait resolved; restart persistence |
+| SCHED-E2E-011 | `scheduler-operator-interject-during-wait` | Operator interject during operator wait creates new WorkItem | both complete; 2 settlements; wait resolved; restart persistence |
+| SCHED-E2E-012 | `scheduler-compaction-continuity` | WorkItem survives compaction and restart | compaction triggered; WorkItem completes; brief intact; restart persistence |
+| SCHED-E2E-013 | `scheduler-worktree-isolation` | Agent creates and removes a worktree through model tools | worktree lifecycle; execution binding; clean git state; restart persistence |
+| SCHED-E2E-014 | `scheduler-spawn-agent-supervision` | Agent spawns private_child and completes parent WorkItem | SpawnAgent returns agent_id + task_id; brief intact; restart persistence |
+| SCHED-E2E-015 | `scheduler-checkpoint-replay` | Multiple WorkItems survive restart and converge | B completes; A waits; restart preserves states; both converge; exactly-once |
 
 ### Tier-3 (Release)
 
@@ -61,7 +61,7 @@ Each case asserts three layers:
 | Layer | Trigger | Tiers | Timeout | Blocking |
 |---|---|---|---|---|
 | PR optional | `e2e-scheduler` label | Tier-1 subset | 20 min | no (`continue-on-error`) |
-| Nightly | schedule | Tier-1 all | 45 min (job) / 15 min (suite `--timeout 900`) | creates issue on failure |
+| Nightly | schedule | Tier-1 all + Tier-2 all | 60 min (job) / 15 min (suite `--timeout 900`) | creates issue on failure |
 | Release | release pipeline | Tier-1 + Tier-2 + Tier-3 | 90 min | yes |
 
 ### Approved Decisions

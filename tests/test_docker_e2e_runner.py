@@ -567,6 +567,12 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 "scheduler-multi-workitem-scheduling",
                 "scheduler-external-wait-resume",
                 "scheduler-operator-wait-resume",
+                "scheduler-concurrent-claim-fencing",
+                "scheduler-operator-interject-during-wait",
+                "scheduler-compaction-continuity",
+                "scheduler-worktree-isolation",
+                "scheduler-spawn-agent-supervision",
+                "scheduler-checkpoint-replay",
             ],
         )
         rollout_cases = selected[:3]
@@ -614,6 +620,38 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 "scheduler-multi-workitem-scheduling",
                 "scheduler-external-wait-resume",
                 "scheduler-operator-wait-resume",
+            ],
+        )
+        for case in selected:
+            self.assertTrue(
+                case.get("scheduler_protocol_commands_enabled"),
+                f"{case['id']} must enable scheduler protocol commands",
+            )
+            self.assertEqual(
+                case["runtime_env"]["HOLON_SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS"],
+                "true",
+                f"{case['id']} must set production commands to true",
+            )
+            self.assertNotIn(
+                "HOLON_SCHEDULER_ACCEPTANCE_FIXTURES",
+                case["runtime_env"],
+                f"{case['id']} should not use acceptance fixtures",
+            )
+            self.assertEqual(len(case["phases"]), 1)
+
+    def test_e2e_tier_2_cases_have_correct_config(self) -> None:
+        selected = runner.select_cases(
+            self.manifest, requested=None, suite="extended", tags=["e2e-tier-2"]
+        )
+        self.assertEqual(
+            [case["id"] for case in selected],
+            [
+                "scheduler-concurrent-claim-fencing",
+                "scheduler-operator-interject-during-wait",
+                "scheduler-compaction-continuity",
+                "scheduler-worktree-isolation",
+                "scheduler-spawn-agent-supervision",
+                "scheduler-checkpoint-replay",
             ],
         )
         for case in selected:

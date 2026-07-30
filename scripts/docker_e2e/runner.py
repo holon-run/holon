@@ -3025,6 +3025,730 @@ def run_scheduler_operator_wait_resume_case(
     )
 
 
+def run_scheduler_concurrent_claim_fencing_case(
+    harness: CaseHarness, case: dict[str, Any]
+) -> None:
+    """SCHED-E2E-010: interject during external wait creates new WorkItem."""
+    harness.initialize_workspace()
+    harness.start()
+    marker = secrets.token_hex(4)
+    objective_a_marker = f"SCHEDULER-CONCURRENT-A-{marker}"
+    completion_a = f"SCHEDULER-CONCURRENT-COMPLETE-A-{marker}"
+    objective_b_marker = f"SCHEDULER-CONCURRENT-B-{marker}"
+    completion_b = f"SCHEDULER-CONCURRENT-COMPLETE-B-{marker}"
+    objective_a = (
+        f"{objective_a_marker}. Complete this WorkItem only after an external "
+        "trigger wakes it. On the resume turn, call GetWorkItem, update both "
+        "existing todos to completed, then emit a concise completion result "
+        f"containing {completion_a} immediately followed by "
+        "CompleteWorkItem for the exact current item. Do not wait for more "
+        "operator input."
+    )
+    objective_b = (
+        f"{objective_b_marker}. Complete this WorkItem only after the Runtime "
+        "resumes it through an autonomous work_queue SystemTick. On that "
+        "autonomous turn, inspect the exact current item with ListWorkItems "
+        "using filter current and optionally GetWorkItem, update both existing "
+        f"todos to completed, then emit a concise completion result containing "
+        f"{completion_b} immediately followed by CompleteWorkItem for that "
+        "exact item. Do not wait for more operator input."
+    )
+    callback = harness.reset_callback("scheduler-concurrent-callback")
+    phase = case["phases"][0]
+    baseline, _ = harness.prompt(
+        "scheduler-concurrent-create",
+        phase["prompt"].format(
+            case_id=case["id"],
+            objective_a=json.dumps(objective_a, ensure_ascii=False),
+            marker=marker,
+            completion_a=completion_a,
+        ),
+    )
+    waiting = harness.wait_work_item_scheduling_state(
+        objective_marker=objective_a_marker,
+        expected_scheduling_state="waiting_external",
+        label="scheduler-concurrent-waiting",
+    )
+    harness.wait_agent_asleep()
+    interject_text = (
+        f"Scheduler Docker E2E case {case['id']} interject. Create exactly one "
+        f"WorkItem whose objective is "
+        f"{json.dumps(objective_b, ensure_ascii=False)}, "
+        f"with plan_status ready and exactly these todos: concurrent-b-seed "
+        f"completed, concurrent-b-complete pending. The expected completion "
+        f"marker is {completion_b}. Do not PickWorkItem, WaitFor, or "
+        "CompleteWorkItem in this turn. After CreateWorkItem succeeds, end "
+        "with a concise acknowledgement."
+    )
+    harness.prompt("scheduler-concurrent-interject", interject_text)
+    item_b = harness.wait_work_item(
+        objective_marker=objective_b_marker,
+        expected_state="completed",
+        label="scheduler-concurrent-b-completed",
+    )
+    harness.fire_callback(
+        "scheduler-concurrent-wake",
+        callback["trigger_url"],
+        {"case_id": case["id"], "marker": marker},
+    )
+    item_a = harness.wait_work_item(
+        objective_marker=objective_a_marker,
+        expected_state="completed",
+        label="scheduler-concurrent-a-completed",
+    )
+    required, forbidden = phase_tools(phase)
+    harness.assert_tools("scheduler-concurrent-create", baseline, required, forbidden)
+    work_item_a_id = item_a["id"]
+    work_item_b_id = item_b["id"]
+    require(item_a["state"] == "completed", f"WorkItem A not completed: {item_a}")
+    require(item_b["state"] == "completed", f"WorkItem B not completed: {item_b}")
+    require(work_item_a_id != work_item_b_id, "WorkItem A and B share the same id")
+    for item, letter, completion, brief_label in (
+        (item_a, "A", completion_a, "scheduler-concurrent-result-a"),
+        (item_b, "B", completion_b, "scheduler-concurrent-result-b"),
+    ):
+        brief_id = item.get("result_brief_id")
+        require(
+            isinstance(brief_id, str) and brief_id,
+            f"WorkItem {letter} omitted result brief: {item}",
+        )
+        brief = harness.brief(brief_id, brief_label)
+        require(
+            brief.get("work_item_id") == item["id"]
+            and completion in (brief.get("text") or ""),
+            f"WorkItem {letter} brief mismatch: {brief}",
+        )
+    snapshot = harness.runtime_db_snapshot("scheduler-concurrent")
+    require_scheduler_activation_chain(
+        snapshot,
+        agent_id=harness.agent_id,
+        work_item_id=work_item_a_id,
+        expected_activation_count=2,
+    )
+    require_scheduler_activation_chain(
+        snapshot,
+        agent_id=harness.agent_id,
+        work_item_id=work_item_b_id,
+        expected_activation_count=1,
+    )
+    waits = [
+        row
+        for row in snapshot["wait_conditions"]
+        if row["work_item_id"] == work_item_a_id
+    ]
+    require(
+        len(waits) == 1
+        and waits[0]["kind"] == "external"
+        and waits[0]["status"] == "resolved",
+        f"concurrent external wait did not resolve: {waits}",
+    )
+    canonical_waits = [
+        row
+        for row in snapshot["scheduler_wait_generations"]
+        if row["owner_work_item_id"] == work_item_a_id
+    ]
+    require(
+        len(canonical_waits) == 1
+        and canonical_waits[0]["lifecycle_state"] == "resolved",
+        f"canonical external wait did not resolve: {canonical_waits}",
+    )
+    demands = [
+        row
+        for row in snapshot["scheduler_work_demands"]
+        if row["work_item_id"] in (work_item_a_id, work_item_b_id)
+    ]
+    require(
+        len(demands) == 2
+        and all(d["status"] == "terminal" for d in demands),
+        f"concurrent demands did not converge: {demands}",
+    )
+    harness.restart()
+    restarted_items = harness.work_items("scheduler-concurrent-after-restart")
+    for wid, brief_id in (
+        (work_item_a_id, item_a.get("result_brief_id")),
+        (work_item_b_id, item_b.get("result_brief_id")),
+    ):
+        restarted = next(item for item in restarted_items if item["id"] == wid)
+        require(
+            restarted["state"] == "completed"
+            and restarted.get("result_brief_id") == brief_id,
+            f"concurrent WorkItem did not survive restart: {restarted}",
+        )
+
+
+def run_scheduler_operator_interject_during_wait_case(
+    harness: CaseHarness, case: dict[str, Any]
+) -> None:
+    """SCHED-E2E-011: operator interject during operator wait creates new WorkItem."""
+    harness.initialize_workspace()
+    harness.start()
+    marker = secrets.token_hex(4)
+    objective_a_marker = f"SCHEDULER-INTERJECT-A-{marker}"
+    completion_a = f"SCHEDULER-INTERJECT-COMPLETE-A-{marker}"
+    objective_b_marker = f"SCHEDULER-INTERJECT-B-{marker}"
+    completion_b = f"SCHEDULER-INTERJECT-COMPLETE-B-{marker}"
+    objective_a = (
+        f"{objective_a_marker}. Complete this WorkItem only after the operator "
+        "sends a message. On the resume turn, call GetWorkItem, update both "
+        "existing todos to completed, then emit a concise completion result "
+        f"containing {completion_a} immediately followed by "
+        "CompleteWorkItem for the exact current item. Do not wait for more "
+        "operator input."
+    )
+    objective_b = (
+        f"{objective_b_marker}. Complete this WorkItem only after the Runtime "
+        "resumes it through an autonomous work_queue SystemTick. On that "
+        "autonomous turn, inspect the exact current item with ListWorkItems "
+        "using filter current and optionally GetWorkItem, update both existing "
+        f"todos to completed, then emit a concise completion result containing "
+        f"{completion_b} immediately followed by CompleteWorkItem for that "
+        "exact item. Do not wait for more operator input."
+    )
+    phase = case["phases"][0]
+    baseline, _ = harness.prompt(
+        "scheduler-interject-create",
+        phase["prompt"].format(
+            case_id=case["id"],
+            objective_a=json.dumps(objective_a, ensure_ascii=False),
+            completion_a=completion_a,
+        ),
+    )
+    waiting = harness.wait_work_item_scheduling_state(
+        objective_marker=objective_a_marker,
+        expected_scheduling_state="waiting_operator",
+        label="scheduler-interject-waiting",
+    )
+    harness.wait_agent_asleep()
+    interject_text = (
+        f"Scheduler Docker E2E case {case['id']} interject. Create exactly one "
+        f"WorkItem whose objective is "
+        f"{json.dumps(objective_b, ensure_ascii=False)}, "
+        f"with plan_status ready and exactly these todos: interject-b-seed "
+        f"completed, interject-b-complete pending. The expected completion "
+        f"marker is {completion_b}. Do not PickWorkItem, WaitFor, or "
+        "CompleteWorkItem in this turn. After CreateWorkItem succeeds, end "
+        "with a concise acknowledgement."
+    )
+    harness.prompt("scheduler-interject-b-create", interject_text)
+    item_b = harness.wait_work_item(
+        objective_marker=objective_b_marker,
+        expected_state="completed",
+        label="scheduler-interject-b-completed",
+    )
+    harness.prompt(
+        "scheduler-interject-resume",
+        f"The operator is resuming WorkItem {marker}. Proceed with the "
+        "completion steps described in the objective.",
+    )
+    item_a = harness.wait_work_item(
+        objective_marker=objective_a_marker,
+        expected_state="completed",
+        label="scheduler-interject-a-completed",
+    )
+    required, forbidden = phase_tools(phase)
+    harness.assert_tools("scheduler-interject-create", baseline, required, forbidden)
+    work_item_a_id = item_a["id"]
+    work_item_b_id = item_b["id"]
+    require(item_a["state"] == "completed", f"WorkItem A not completed: {item_a}")
+    require(item_b["state"] == "completed", f"WorkItem B not completed: {item_b}")
+    require(work_item_a_id != work_item_b_id, "WorkItem A and B share the same id")
+    for item, letter, completion, brief_label in (
+        (item_a, "A", completion_a, "scheduler-interject-result-a"),
+        (item_b, "B", completion_b, "scheduler-interject-result-b"),
+    ):
+        brief_id = item.get("result_brief_id")
+        require(
+            isinstance(brief_id, str) and brief_id,
+            f"WorkItem {letter} omitted result brief: {item}",
+        )
+        brief = harness.brief(brief_id, brief_label)
+        require(
+            brief.get("work_item_id") == item["id"]
+            and completion in (brief.get("text") or ""),
+            f"WorkItem {letter} brief mismatch: {brief}",
+        )
+    snapshot = harness.runtime_db_snapshot("scheduler-interject")
+    require_scheduler_activation_chain(
+        snapshot,
+        agent_id=harness.agent_id,
+        work_item_id=work_item_a_id,
+        expected_activation_count=2,
+    )
+    require_scheduler_activation_chain(
+        snapshot,
+        agent_id=harness.agent_id,
+        work_item_id=work_item_b_id,
+        expected_activation_count=1,
+    )
+    waits = [
+        row
+        for row in snapshot["wait_conditions"]
+        if row["work_item_id"] == work_item_a_id
+    ]
+    require(
+        len(waits) == 1
+        and waits[0]["kind"] == "operator"
+        and waits[0]["status"] == "resolved",
+        f"interject operator wait did not resolve: {waits}",
+    )
+    canonical_waits = [
+        row
+        for row in snapshot["scheduler_wait_generations"]
+        if row["owner_work_item_id"] == work_item_a_id
+    ]
+    require(
+        len(canonical_waits) == 1
+        and canonical_waits[0]["lifecycle_state"] == "resolved",
+        f"canonical operator wait did not resolve: {canonical_waits}",
+    )
+    demands = [
+        row
+        for row in snapshot["scheduler_work_demands"]
+        if row["work_item_id"] in (work_item_a_id, work_item_b_id)
+    ]
+    require(
+        len(demands) == 2
+        and all(d["status"] == "terminal" for d in demands),
+        f"interject demands did not converge: {demands}",
+    )
+    harness.restart()
+    restarted_items = harness.work_items("scheduler-interject-after-restart")
+    for wid, brief_id in (
+        (work_item_a_id, item_a.get("result_brief_id")),
+        (work_item_b_id, item_b.get("result_brief_id")),
+    ):
+        restarted = next(item for item in restarted_items if item["id"] == wid)
+        require(
+            restarted["state"] == "completed"
+            and restarted.get("result_brief_id") == brief_id,
+            f"interject WorkItem did not survive restart: {restarted}",
+        )
+
+
+def run_scheduler_compaction_continuity_case(
+    harness: CaseHarness, case: dict[str, Any]
+) -> None:
+    """SCHED-E2E-012: WorkItem survives compaction and restart."""
+    harness.initialize_workspace()
+    harness.start()
+    marker = secrets.token_hex(4)
+    objective_marker = f"SCHEDULER-COMPACTION-{marker}"
+    completion_marker = f"SCHEDULER-COMPACTION-COMPLETE-{marker}"
+    objective = (
+        f"{objective_marker}. Complete this WorkItem only after the operator "
+        "sends a message. On the resume turn, call GetWorkItem, update both "
+        "existing todos to completed, then emit a concise completion result "
+        f"containing {completion_marker} immediately followed by "
+        "CompleteWorkItem for the exact current item. Do not wait for more "
+        "operator input."
+    )
+    phase = case["phases"][0]
+    baseline, _ = harness.prompt(
+        "scheduler-compaction-create",
+        phase["prompt"].format(
+            case_id=case["id"],
+            objective=json.dumps(objective, ensure_ascii=False),
+            completion_marker=completion_marker,
+        ),
+    )
+    waiting = harness.wait_work_item_scheduling_state(
+        objective_marker=objective_marker,
+        expected_scheduling_state="waiting_operator",
+        label="scheduler-compaction-waiting",
+    )
+    harness.wait_agent_asleep()
+    harness.prompt(
+        "scheduler-compaction-resume",
+        f"The operator is resuming WorkItem {marker}. Proceed with the "
+        "completion steps described in the objective.",
+    )
+    item = harness.wait_work_item(
+        objective_marker=objective_marker,
+        expected_state="completed",
+        label="scheduler-compaction-completed",
+    )
+    required, forbidden = phase_tools(phase)
+    harness.assert_tools("scheduler-compaction-create", baseline, required, forbidden)
+    work_item_id = item["id"]
+    require(item["state"] == "completed", f"WorkItem not completed: {item}")
+    require(item["id"] == waiting["id"], "compaction wait-resume changed WorkItem identity")
+    result_brief_id = item.get("result_brief_id")
+    require(
+        isinstance(result_brief_id, str) and result_brief_id,
+        f"compaction WorkItem omitted result brief: {item}",
+    )
+    result_brief = harness.brief(result_brief_id, "scheduler-compaction-result")
+    require(
+        result_brief.get("work_item_id") == work_item_id
+        and completion_marker in (result_brief.get("text") or ""),
+        f"compaction completion brief mismatch: {result_brief}",
+    )
+    snapshot = harness.runtime_db_snapshot("scheduler-compaction")
+    require_scheduler_activation_chain(
+        snapshot,
+        agent_id=harness.agent_id,
+        work_item_id=work_item_id,
+        expected_activation_count=2,
+    )
+    compaction_events = [
+        row
+        for row in snapshot["audit_events"]
+        if row["kind"] == "turn_local_compaction_applied"
+    ]
+    require(
+        len(compaction_events) >= 1,
+        f"compaction was not triggered; audit events: "
+        f"{[r['kind'] for r in snapshot['audit_events']]}",
+    )
+    waits = [
+        row
+        for row in snapshot["wait_conditions"]
+        if row["work_item_id"] == work_item_id
+    ]
+    require(
+        len(waits) == 1
+        and waits[0]["kind"] == "operator"
+        and waits[0]["status"] == "resolved",
+        f"compaction operator wait did not resolve: {waits}",
+    )
+    canonical_waits = [
+        row
+        for row in snapshot["scheduler_wait_generations"]
+        if row["owner_work_item_id"] == work_item_id
+    ]
+    require(
+        len(canonical_waits) == 1
+        and canonical_waits[0]["lifecycle_state"] == "resolved",
+        f"canonical compaction wait did not resolve: {canonical_waits}",
+    )
+    harness.restart()
+    restarted_items = harness.work_items("scheduler-compaction-after-restart")
+    restarted = next(item for item in restarted_items if item["id"] == work_item_id)
+    require(
+        restarted["state"] == "completed"
+        and restarted.get("result_brief_id") == result_brief_id,
+        f"compaction WorkItem did not survive restart: {restarted}",
+    )
+
+
+def run_scheduler_worktree_isolation_case(
+    harness: CaseHarness, case: dict[str, Any]
+) -> None:
+    """SCHED-E2E-013: agent creates and removes a worktree through model tools."""
+    harness.initialize_workspace()
+    harness.start()
+    attached = harness.request(
+        "POST",
+        harness.agent_path("workspace/attach", control=True),
+        {"path": "/acceptance/repo"},
+    )
+    write_json(harness.evidence / "scheduler-worktree-attach.json", attached)
+    workspace_id = attached["workspace_id"]
+    branch = f"e2e-worktree-{secrets.token_hex(4)}"
+    marker = secrets.token_hex(4)
+    objective_marker = f"SCHEDULER-WORKTREE-{marker}"
+    completion_marker = f"SCHEDULER-WORKTREE-COMPLETE-{marker}"
+    objective = (
+        f"{objective_marker}. Create a linked worktree from base_ref main with "
+        f"branch {branch}, activate it, verify it is active with "
+        "GetWorkspaceState, switch back to the canonical workspace, remove the "
+        "worktree, and verify removal. Then complete this WorkItem."
+    )
+    phase = case["phases"][0]
+    baseline, _ = harness.prompt(
+        "scheduler-worktree-lifecycle",
+        phase["prompt"].format(
+            case_id=case["id"],
+            objective=json.dumps(objective, ensure_ascii=False),
+            branch=branch,
+            workspace_id=workspace_id,
+            completion_marker=completion_marker,
+        ),
+    )
+    item = harness.wait_work_item(
+        objective_marker=objective_marker,
+        expected_state="completed",
+        label="scheduler-worktree-completed",
+    )
+    required, forbidden = phase_tools(phase)
+    harness.assert_tools(
+        "scheduler-worktree-lifecycle", baseline, required, forbidden
+    )
+    work_item_id = item["id"]
+    require(item["state"] == "completed", f"WorkItem not completed: {item}")
+    result_brief_id = item.get("result_brief_id")
+    require(
+        isinstance(result_brief_id, str) and result_brief_id,
+        f"worktree WorkItem omitted result brief: {item}",
+    )
+    result_brief = harness.brief(result_brief_id, "scheduler-worktree-result")
+    require(
+        result_brief.get("work_item_id") == work_item_id
+        and completion_marker in (result_brief.get("text") or ""),
+        f"worktree completion brief mismatch: {result_brief}",
+    )
+    git_state = harness.docker(
+        "exec",
+        harness.container,
+        "bash",
+        "-lc",
+        "set -euo pipefail; "
+        "git -C /acceptance/repo status --porcelain; "
+        "printf '%s\n' '--- worktrees ---'; "
+        "git -C /acceptance/repo worktree list --porcelain",
+    ).stdout
+    (harness.evidence / "scheduler-worktree-git.txt").write_text(git_state)
+    status, worktrees = git_state.split("--- worktrees ---\n", 1)
+    require(not status.strip(), f"canonical repository is dirty:\n{status}")
+    require(
+        worktrees.count("worktree ") == 1,
+        f"managed worktree was not removed cleanly:\n{worktrees}",
+    )
+    snapshot = harness.runtime_db_snapshot("scheduler-worktree")
+    require_scheduler_activation_chain(
+        snapshot,
+        agent_id=harness.agent_id,
+        work_item_id=work_item_id,
+        expected_activation_count=1,
+    )
+    harness.restart()
+    restarted_items = harness.work_items("scheduler-worktree-after-restart")
+    restarted = next(item for item in restarted_items if item["id"] == work_item_id)
+    require(
+        restarted["state"] == "completed"
+        and restarted.get("result_brief_id") == result_brief_id,
+        f"worktree WorkItem did not survive restart: {restarted}",
+    )
+
+
+def run_scheduler_spawn_agent_supervision_case(
+    harness: CaseHarness, case: dict[str, Any]
+) -> None:
+    """SCHED-E2E-014: agent spawns a private_child and completes parent WorkItem."""
+    harness.initialize_workspace()
+    harness.start()
+    marker = secrets.token_hex(4)
+    objective_marker = f"SCHEDULER-SPAWN-{marker}"
+    completion_marker = f"SCHEDULER-SPAWN-COMPLETE-{marker}"
+    child_marker = f"SCHEDULER-SPAWN-CHILD-{marker}"
+    objective = (
+        f"{objective_marker}. Spawn a private_child agent, inspect its task "
+        "status, and complete this WorkItem."
+    )
+    phase = case["phases"][0]
+    baseline, _ = harness.prompt(
+        "scheduler-spawn-and-complete",
+        phase["prompt"].format(
+            case_id=case["id"],
+            objective=json.dumps(objective, ensure_ascii=False),
+            child_marker=child_marker,
+            completion_marker=completion_marker,
+        ),
+    )
+    item = harness.wait_work_item(
+        objective_marker=objective_marker,
+        expected_state="completed",
+        label="scheduler-spawn-completed",
+    )
+    required, forbidden = phase_tools(phase)
+    create_events = harness.assert_tools(
+        "scheduler-spawn-and-complete", baseline, required, forbidden
+    )
+    work_item_id = item["id"]
+    require(item["state"] == "completed", f"WorkItem not completed: {item}")
+    result_brief_id = item.get("result_brief_id")
+    require(
+        isinstance(result_brief_id, str) and result_brief_id,
+        f"spawn WorkItem omitted result brief: {item}",
+    )
+    result_brief = harness.brief(result_brief_id, "scheduler-spawn-result")
+    require(
+        result_brief.get("work_item_id") == work_item_id
+        and completion_marker in (result_brief.get("text") or ""),
+        f"spawn completion brief mismatch: {result_brief}",
+    )
+    spawn_event = next(
+        event
+        for event in create_events
+        if event["payload"].get("tool_name") == "SpawnAgent"
+    )
+    spawn_detail = harness.tool_detail(spawn_event, "scheduler-spawn")
+    spawn_result = result_value(spawn_detail)
+    require(
+        isinstance(spawn_result.get("agent_id"), str)
+        and spawn_result["agent_id"],
+        f"SpawnAgent result missing agent_id: {spawn_result}",
+    )
+    task_handle = spawn_result.get("task_handle") or {}
+    task_id = task_handle.get("task_id")
+    require(
+        isinstance(task_id, str) and task_id,
+        f"SpawnAgent result missing task_id: {spawn_result}",
+    )
+    snapshot = harness.runtime_db_snapshot("scheduler-spawn")
+    require_scheduler_activation_chain(
+        snapshot,
+        agent_id=harness.agent_id,
+        work_item_id=work_item_id,
+        expected_activation_count=1,
+    )
+    harness.restart()
+    restarted_items = harness.work_items("scheduler-spawn-after-restart")
+    restarted = next(item for item in restarted_items if item["id"] == work_item_id)
+    require(
+        restarted["state"] == "completed"
+        and restarted.get("result_brief_id") == result_brief_id,
+        f"spawn WorkItem did not survive restart: {restarted}",
+    )
+
+
+def run_scheduler_checkpoint_replay_case(
+    harness: CaseHarness, case: dict[str, Any]
+) -> None:
+    """SCHED-E2E-015: multiple WorkItems survive restart and converge."""
+    harness.initialize_workspace()
+    harness.start()
+    marker = secrets.token_hex(4)
+    objective_a_marker = f"SCHEDULER-REPLAY-A-{marker}"
+    completion_a = f"SCHEDULER-REPLAY-COMPLETE-A-{marker}"
+    objective_b_marker = f"SCHEDULER-REPLAY-B-{marker}"
+    completion_b = f"SCHEDULER-REPLAY-COMPLETE-B-{marker}"
+    callback = harness.reset_callback("scheduler-replay-callback")
+    objective_a = (
+        f"{objective_a_marker}. Complete this WorkItem only after an external "
+        "trigger wakes it. On the resume turn, call GetWorkItem, update both "
+        "existing todos to completed, then emit a concise completion result "
+        f"containing {completion_a} immediately followed by "
+        "CompleteWorkItem for the exact current item. Do not wait for more "
+        "operator input."
+    )
+    objective_b = (
+        f"{objective_b_marker}. Complete this WorkItem only after the Runtime "
+        "resumes it through an autonomous work_queue SystemTick. On that "
+        "autonomous turn, inspect the exact current item with ListWorkItems "
+        "using filter current and optionally GetWorkItem, update both existing "
+        f"todos to completed, then emit a concise completion result containing "
+        f"{completion_b} immediately followed by CompleteWorkItem for that "
+        "exact item. Do not wait for more operator input."
+    )
+    phase = case["phases"][0]
+    baseline, _ = harness.prompt(
+        "scheduler-replay-create",
+        phase["prompt"].format(
+            case_id=case["id"],
+            objective_a=json.dumps(objective_a, ensure_ascii=False),
+            objective_b=json.dumps(objective_b, ensure_ascii=False),
+            completion_a=completion_a,
+            completion_b=completion_b,
+        ),
+    )
+    waiting_a = harness.wait_work_item_scheduling_state(
+        objective_marker=objective_a_marker,
+        expected_scheduling_state="waiting_external",
+        label="scheduler-replay-waiting-a",
+    )
+    item_b = harness.wait_work_item(
+        objective_marker=objective_b_marker,
+        expected_state="completed",
+        label="scheduler-replay-b-completed",
+    )
+    harness.restart()
+    restarted_items = harness.work_items("scheduler-replay-after-restart")
+    restarted_a = next(
+        item for item in restarted_items if item["id"] == waiting_a["id"]
+    )
+    restarted_b = next(
+        item for item in restarted_items if item["id"] == item_b["id"]
+    )
+    require(
+        restarted_a.get("scheduling_state") == "waiting_external",
+        f"WorkItem A did not survive restart in waiting state: {restarted_a}",
+    )
+    require(
+        restarted_b["state"] == "completed"
+        and restarted_b.get("result_brief_id") == item_b.get("result_brief_id"),
+        f"WorkItem B did not survive restart: {restarted_b}",
+    )
+    harness.wait_agent_asleep()
+    harness.fire_callback(
+        "scheduler-replay-wake",
+        callback["trigger_url"],
+        {"case_id": case["id"], "marker": marker},
+    )
+    item_a = harness.wait_work_item(
+        objective_marker=objective_a_marker,
+        expected_state="completed",
+        label="scheduler-replay-a-completed",
+    )
+    required, forbidden = phase_tools(phase)
+    harness.assert_tools("scheduler-replay-create", baseline, required, forbidden)
+    work_item_a_id = item_a["id"]
+    work_item_b_id = item_b["id"]
+    require(item_a["state"] == "completed", f"WorkItem A not completed: {item_a}")
+    require(item_b["state"] == "completed", f"WorkItem B not completed: {item_b}")
+    require(work_item_a_id != work_item_b_id, "WorkItem A and B share the same id")
+    for item, letter, completion, brief_label in (
+        (item_a, "A", completion_a, "scheduler-replay-result-a"),
+        (item_b, "B", completion_b, "scheduler-replay-result-b"),
+    ):
+        brief_id = item.get("result_brief_id")
+        require(
+            isinstance(brief_id, str) and brief_id,
+            f"WorkItem {letter} omitted result brief: {item}",
+        )
+        brief = harness.brief(brief_id, brief_label)
+        require(
+            brief.get("work_item_id") == item["id"]
+            and completion in (brief.get("text") or ""),
+            f"WorkItem {letter} brief mismatch: {brief}",
+        )
+    snapshot = harness.runtime_db_snapshot("scheduler-replay")
+    require_scheduler_activation_chain(
+        snapshot,
+        agent_id=harness.agent_id,
+        work_item_id=work_item_a_id,
+        expected_activation_count=2,
+    )
+    require_scheduler_activation_chain(
+        snapshot,
+        agent_id=harness.agent_id,
+        work_item_id=work_item_b_id,
+        expected_activation_count=1,
+    )
+    waits = [
+        row
+        for row in snapshot["wait_conditions"]
+        if row["work_item_id"] == work_item_a_id
+    ]
+    require(
+        len(waits) == 1
+        and waits[0]["kind"] == "external"
+        and waits[0]["status"] == "resolved",
+        f"replay external wait did not resolve: {waits}",
+    )
+    canonical_waits = [
+        row
+        for row in snapshot["scheduler_wait_generations"]
+        if row["owner_work_item_id"] == work_item_a_id
+    ]
+    require(
+        len(canonical_waits) == 1
+        and canonical_waits[0]["lifecycle_state"] == "resolved",
+        f"canonical replay wait did not resolve: {canonical_waits}",
+    )
+    demands = [
+        row
+        for row in snapshot["scheduler_work_demands"]
+        if row["work_item_id"] in (work_item_a_id, work_item_b_id)
+    ]
+    require(
+        len(demands) == 2
+        and all(d["status"] == "terminal" for d in demands),
+        f"replay demands did not converge: {demands}",
+    )
+
+
+
 CASE_RUNNERS = {
     "runtime-auth-model-delivery": run_runtime_case,
     "memory-agent-home-persistence": run_memory_case,
@@ -3044,6 +3768,12 @@ CASE_RUNNERS = {
     "scheduler-multi-workitem-scheduling": run_scheduler_multi_workitem_case,
     "scheduler-external-wait-resume": run_scheduler_external_wait_resume_case,
     "scheduler-operator-wait-resume": run_scheduler_operator_wait_resume_case,
+    "scheduler-concurrent-claim-fencing": run_scheduler_concurrent_claim_fencing_case,
+    "scheduler-operator-interject-during-wait": run_scheduler_operator_interject_during_wait_case,
+    "scheduler-compaction-continuity": run_scheduler_compaction_continuity_case,
+    "scheduler-worktree-isolation": run_scheduler_worktree_isolation_case,
+    "scheduler-spawn-agent-supervision": run_scheduler_spawn_agent_supervision_case,
+    "scheduler-checkpoint-replay": run_scheduler_checkpoint_replay_case,
 }
 
 
