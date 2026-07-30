@@ -1170,6 +1170,11 @@ pub(crate) fn canonical_activation_candidate(
                 work_item_id: work_item_id.to_string(),
             }));
         }
+        if task.terminal_reentry() {
+            return Ok(Some(CanonicalActivationCandidate::LifecycleExternalNudge {
+                agent_id: message.agent_id.clone(),
+            }));
+        }
         return Ok(Some(CanonicalActivationCandidate::ExactWaitResume {
             expected_work_item_id: None,
             correlated_wait: None,

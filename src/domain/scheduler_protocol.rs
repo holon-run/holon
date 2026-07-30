@@ -3292,6 +3292,7 @@ fn activation_provenance_matches_cause(
                     | ActivationOrigin::Timer
                     | ActivationOrigin::System
                     | ActivationOrigin::Operator
+                    | ActivationOrigin::Task
             ) && activation_provenance_has_valid_authority(provenance)
         }
         ActivationCause::WorkItemRunnable { .. }
@@ -6089,13 +6090,30 @@ mod wire_compatibility_tests {
     use std::collections::BTreeMap;
 
     use super::{
-        reduce_rollout_command, rollout_class_gate, ActivationBinding, ActivationInputAttachment,
-        ActivationSlot, AgentDispatchState, Decision, ProtocolMode, RollbackAction, RollbackPolicy,
-        RollbackTrigger, RolloutClassEvidence, RolloutCommand, RolloutManifest, RolloutState,
-        ScenarioAuthority, ScenarioMode, SchedulerOwner, SchedulerScenarioClass, Snapshot,
-        WaitGenerationRecord, WaitState, MAXIMUM_P99_LATENCY_REGRESSION_BPS,
-        UNIVERSAL_ROLLOUT_EVIDENCE,
+        activation_provenance_matches_cause, reduce_rollout_command, rollout_class_gate,
+        ActivationBinding, ActivationCause, ActivationInputAttachment, ActivationOrigin,
+        ActivationProvenance, ActivationSlot, ActivationTrust, AgentDispatchState, Decision,
+        ProtocolMode, RollbackAction, RollbackPolicy, RollbackTrigger, RolloutClassEvidence,
+        RolloutCommand, RolloutManifest, RolloutState, ScenarioAuthority, ScenarioMode,
+        SchedulerOwner, SchedulerScenarioClass, Snapshot, WaitGenerationRecord, WaitState,
+        MAXIMUM_P99_LATENCY_REGRESSION_BPS, UNIVERSAL_ROLLOUT_EVIDENCE,
     };
+
+    #[test]
+    fn terminal_task_result_can_authorize_lifecycle_nudge() {
+        assert!(activation_provenance_matches_cause(
+            &ActivationProvenance {
+                origin: ActivationOrigin::Task,
+                trust: ActivationTrust::RuntimeInstruction,
+                source_id: "message-task-result".into(),
+                correlation_id: None,
+                causation_id: None,
+            },
+            &ActivationCause::LifecycleExternalNudge {
+                message_id: "message-task-result".into(),
+            },
+        ));
+    }
 
     #[test]
     fn legacy_wait_owner_fields_deserialize_as_work_item_owner() {

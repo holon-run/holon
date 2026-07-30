@@ -1331,6 +1331,47 @@ fn generic_external_wake_is_lifecycle_nudge_even_when_a_wait_matches() {
 }
 
 #[test]
+fn unbound_terminal_task_result_is_lifecycle_nudge_without_a_wait() {
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::TaskResult,
+        MessageOrigin::Task {
+            task_id: "task-terminal".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Next,
+        MessageBody::Text {
+            text: "terminal result".into(),
+        },
+    );
+    message.task_id = Some("task-terminal".into());
+    let task = TaskRecord {
+        id: "task-terminal".into(),
+        agent_id: "default".into(),
+        kind: TaskKind::CommandTask,
+        status: TaskStatus::Completed,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        parent_message_id: None,
+        work_item_id: None,
+        summary: Some("terminal task".into()),
+        detail: Some(serde_json::json!({
+            "terminal_reentry": true,
+        })),
+        recovery: None,
+    };
+
+    assert_eq!(
+        scheduler::canonical_activation_candidate(&message, None, Some(&task)).unwrap(),
+        Some(
+            scheduler::CanonicalActivationCandidate::LifecycleExternalNudge {
+                agent_id: "default".into(),
+            }
+        )
+    );
+}
+
+#[test]
 fn canonical_wait_candidate_does_not_depend_on_legacy_model_reentry() {
     let message = MessageEnvelope::new(
         "default",
