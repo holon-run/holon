@@ -176,21 +176,19 @@ async fn terminal_task_replay_repairs_wait_once_across_restart() {
         .high_watermark_for_agent("default")
         .unwrap();
 
+    let mut message = task_result_message("task-replay");
+    message.task_id = Some("task-replay".into());
+    message.work_item_id = Some(work.id.clone());
     harness
         .runtime()
-        .reduce_task_result_message(
-            &task_result_message("task-replay"),
-            terminal.clone(),
-            false,
-            None,
-        )
+        .reduce_task_result_message(&message, terminal.clone(), false, None)
         .await
         .unwrap();
     let repaired = harness.snapshot();
     harness.restart();
     harness
         .runtime()
-        .reduce_task_result_message(&task_result_message("task-replay"), terminal, false, None)
+        .reduce_task_result_message(&message, terminal, false, None)
         .await
         .unwrap();
 

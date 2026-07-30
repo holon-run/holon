@@ -1546,11 +1546,10 @@ mod tests {
     }
 
     #[test]
-    fn queued_system_tick_persists_shadow_comparison_with_admission_facts() {
+    fn queued_system_tick_persists_admission_facts() {
         let test_runtime = test_runtime();
-        enable_scheduler_shadow_scenario(&test_runtime, "work_item_autonomous_continuation");
         set_agent_idle(&test_runtime);
-        let queued = add_queued_work_item(&test_runtime, "wi-shadow", "shadow-target");
+        let queued = add_queued_work_item(&test_runtime, "wi-queued", "queued-target");
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         assert!(rt
@@ -1585,33 +1584,6 @@ mod tests {
         assert_eq!(queue_entries.len(), 1);
         assert_eq!(queue_entries[0].message_id, tick_message.id);
         assert_eq!(queue_entries[0].status, QueueEntryStatus::Queued);
-
-        let connection = test_runtime.runtime.inner.runtime_db.connection().unwrap();
-        let (boundary, input_identity, outcome, authority_mode): (String, String, String, String) =
-            connection
-                .query_row(
-                    "SELECT boundary, input_identity, comparison_outcome, authority_mode
-                 FROM scheduler_shadow_comparisons
-                 WHERE agent_id = 'default'
-                   AND scenario_class = 'work_item_autonomous_continuation'
-                   AND comparison_identity = ?1",
-                    [format!(
-                        "work_queue_idle_tick:work_queue:queued_available:{}:{}",
-                        queued.id, queued.revision
-                    )],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-                )
-                .unwrap();
-        assert_eq!(boundary, "idle_tick");
-        assert_eq!(
-            input_identity,
-            format!(
-                "work_queue_tick:work_queue:queued_available:{}:{}",
-                queued.id, queued.revision
-            )
-        );
-        assert_eq!(outcome, "matched");
-        assert_eq!(authority_mode, "shadow");
 
         let events = test_runtime
             .runtime

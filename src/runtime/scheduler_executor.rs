@@ -118,9 +118,16 @@ impl RuntimeHandle {
         continuation_resolution: Option<&ContinuationResolution>,
         task: Option<&TaskRecord>,
     ) -> Result<ExecutionAdmissionProvenance> {
-        let scenario_class =
+        let scenario_class = if matches!(
+            message.kind,
+            crate::types::MessageKind::TaskStatus | crate::types::MessageKind::TaskResult
+        ) && task.is_none()
+        {
+            None
+        } else {
             scheduler::canonical_activation_candidate(message, continuation_resolution, task)?
-                .map(|candidate| candidate.scenario_class());
+                .map(|candidate| candidate.scenario_class())
+        };
         Ok(ExecutionAdmissionProvenance::LegacyCompat {
             scenario_class,
             effective_mode: crate::domain::scheduler_protocol::ScenarioMode::Off,
@@ -636,7 +643,10 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         message: &MessageEnvelope,
         dispatch_plan: &MessageDispatchPlan,
     ) -> Result<CanonicalClaimOutcome> {
-        let task = dispatch_plan.task.as_ref().ok().and_then(Option::as_ref);
+        let task = match &dispatch_plan.task {
+            Ok(task) => task.as_ref(),
+            Err(_) => return Ok(CanonicalClaimOutcome::NotApplicable),
+        };
         let Some(candidate) = scheduler::canonical_activation_candidate(
             message,
             dispatch_plan.continuation_resolution.as_ref(),

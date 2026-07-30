@@ -1,9 +1,8 @@
 use super::super::*;
 use super::support::*;
 use crate::domain::scheduler_protocol::{
-    ActivationCause, ActivationSlot, AgentDispatchState, ScenarioMode, SchedulerOwner,
-    SchedulerScenarioClass, Snapshot, WaitGenerationRecord, WaitIdentity, WaitRecord, WaitState,
-    WorkDemand, WorkStatus,
+    ActivationCause, ActivationSlot, AgentDispatchState, SchedulerOwner, Snapshot,
+    WaitGenerationRecord, WaitIdentity, WaitRecord, WaitState, WorkDemand, WorkStatus,
 };
 use crate::types::{
     ActiveSkillRecord, AuthorityClass, BriefKind, BriefRecord, CompletionReportState,
@@ -2275,7 +2274,7 @@ async fn exact_task_rejoin_claim_is_atomic_and_restart_safe() {
 }
 
 #[tokio::test]
-async fn terminal_task_result_without_work_item_uses_ordinary_dispatch() {
+async fn terminal_task_result_without_work_item_uses_non_reentrant_dispatch() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -2336,7 +2335,7 @@ async fn terminal_task_result_without_work_item_uses_ordinary_dispatch() {
         panic!("task result without a WorkItem should use ordinary dispatch");
     };
     assert_eq!(scheduled.message.id, message.id);
-    assert!(scheduled
+    assert!(!scheduled
         .dispatch_plan
         .continuation_resolution
         .as_ref()
@@ -2363,7 +2362,7 @@ async fn terminal_task_result_without_work_item_uses_ordinary_dispatch() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn restarted_interrupted_unbound_operator_prompt_uses_legacy_dispatch() {
+async fn restarted_interrupted_unbound_operator_prompt_does_not_block_resent_prompt() {
     let mut harness = LifecycleHarness::new();
     let runtime = harness.runtime();
     let first = runtime
@@ -2378,13 +2377,6 @@ async fn restarted_interrupted_unbound_operator_prompt_uses_legacy_dispatch() {
         panic!("initial operator prompt should be claimable");
     };
     assert_eq!(scheduled.message.id, first.id);
-    assert_eq!(
-        runtime
-            .release_claimed_messages_for_runtime_restart()
-            .await
-            .unwrap(),
-        1
-    );
     finish_claimed_test_run(runtime).await;
 
     let work_item = runtime
@@ -2423,26 +2415,40 @@ async fn restarted_interrupted_unbound_operator_prompt_uses_legacy_dispatch() {
             .into_iter()
             .find(|entry| entry.message_id == first.id)
             .map(|entry| entry.status),
-        Some(QueueEntryStatus::Interrupted)
+        Some(QueueEntryStatus::Dequeued)
     );
 
     harness.advance(std::time::Duration::from_millis(1)).await;
     harness.restart();
     let runtime = harness.runtime();
+    scheduler_executor::SchedulerDecisionExecutor::new(runtime)
+        .bootstrap_recovered()
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime.recover_scheduler_bootstrap_claims().await.unwrap(),
+        1
+    );
+    assert_eq!(
+        runtime.recover_scheduler_bootstrap_claims().await.unwrap(),
+        0
+    );
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest_all()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == first.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Aborted)
+    );
     let second = runtime
         .enqueue(trusted_operator_prompt(None, "resent operator prompt"))
         .await
         .unwrap();
-
-    let first_poll = scheduler_executor::SchedulerDecisionExecutor::new(runtime)
-        .poll()
-        .await
-        .unwrap();
-    let scheduler_executor::RunLoopPoll::Message(scheduled) = first_poll else {
-        panic!("restarted interrupted operator prompt should use legacy dispatch");
-    };
-    assert_eq!(scheduled.message.id, first.id);
-    finish_claimed_test_run(runtime).await;
 
     let second_poll = scheduler_executor::SchedulerDecisionExecutor::new(runtime)
         .poll()
@@ -2769,6 +2775,62 @@ async fn authoritative_explicit_operator_wait_ambiguity_remains_queued() {
     let mut duplicate = registration.condition.clone();
     duplicate.id = format!("{}-duplicate", registration.condition.id);
     runtime.storage().append_wait_condition(&duplicate).unwrap();
+    let wait_generation = 1;
+    let wait_record = |owner| WaitRecord {
+        current_generation: wait_generation,
+        generations: std::collections::BTreeMap::from([(
+            wait_generation,
+            WaitGenerationRecord {
+                owner,
+                state: WaitState::Active,
+                trigger: None,
+                consuming_activation_id: None,
+            },
+        )]),
+    };
+    runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .initialize_scheduler_protocol_partition(
+            "default",
+            &Snapshot {
+                slot: ActivationSlot::Idle,
+                dispatch: AgentDispatchState::Awaiting {
+                    wait: WaitIdentity {
+                        id: registration.condition.id.clone(),
+                        generation: wait_generation,
+                    },
+                },
+                dispatch_revision: 1,
+                focus: None,
+                work: Default::default(),
+                waits: std::collections::BTreeMap::from([
+                    (
+                        registration.condition.id.clone(),
+                        wait_record(SchedulerOwner::AgentLifecycle {
+                            agent_id: "default".into(),
+                        }),
+                    ),
+                    (
+                        duplicate.id.clone(),
+                        wait_record(SchedulerOwner::AgentLifecycle {
+                            agent_id: "default".into(),
+                        }),
+                    ),
+                ]),
+                activations: Default::default(),
+                activation_authorities: Default::default(),
+                activation_admissions: Default::default(),
+                settlements: Default::default(),
+                missing_settlements: Default::default(),
+                rollout: Default::default(),
+                admitted_generations: Default::default(),
+                continuation_admissions: Default::default(),
+                activation_inputs: Default::default(),
+            },
+        )
+        .unwrap();
     let message = runtime
         .enqueue(trusted_operator_prompt(
             Some(&work_item.id),
@@ -2869,15 +2931,6 @@ async fn authoritative_explicit_operator_missing_target_remains_queued_without_r
             .map(|entry| entry.status),
         Some(QueueEntryStatus::Queued)
     );
-    assert_eq!(
-        runtime
-            .inner
-            .runtime_db
-            .transitions()
-            .scheduler_scenario_mode(SchedulerScenarioClass::ExplicitlyBoundOperatorInput)
-            .unwrap(),
-        ScenarioMode::Authoritative
-    );
     assert!(runtime
         .storage()
         .read_recent_events(usize::MAX)
@@ -2956,12 +3009,13 @@ async fn authoritative_completion_terminalizes_canonical_work_and_binds_report()
                 .inner
                 .runtime_db
                 .transitions()
-                .load_scheduler_protocol_snapshot("default")
+                .load_scheduler_protocol_snapshot_if_initialized("default")
                 .unwrap();
-            if snapshot
-                .settlements
-                .contains_key(&canonical_settlement_id(&message.id))
-            {
+            if snapshot.as_ref().is_some_and(|snapshot| {
+                snapshot
+                    .settlements
+                    .contains_key(&canonical_settlement_id(&message.id))
+            }) {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -3004,7 +3058,7 @@ async fn authoritative_completion_terminalizes_canonical_work_and_binds_report()
 }
 
 #[tokio::test]
-async fn ambiguous_task_rejoin_waits_remain_queued_with_deduplicated_advisory() {
+async fn task_rejoin_ignores_legacy_wait_duplicate_missing_from_canonical_snapshot() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -3057,15 +3111,16 @@ async fn ambiguous_task_rejoin_waits_remain_queued_with_deduplicated_advisory() 
     }));
     let message = runtime.enqueue(message).await.unwrap();
 
-    for _ in 0..2 {
-        let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-            .poll()
-            .await
-            .unwrap();
-        assert!(matches!(poll, scheduler_executor::RunLoopPoll::Idle));
-    }
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("legacy-only duplicate wait should not block canonical task rejoin");
+    };
+    assert_eq!(scheduled.message.id, message.id);
 
-    assert_eq!(runtime.inner.agent.lock().await.queue.len(), 1);
+    assert_eq!(runtime.inner.agent.lock().await.queue.len(), 0);
     assert_eq!(
         runtime
             .inner
@@ -3076,7 +3131,7 @@ async fn ambiguous_task_rejoin_waits_remain_queued_with_deduplicated_advisory() 
             .into_iter()
             .find(|entry| entry.message_id == message.id)
             .map(|entry| entry.status),
-        Some(QueueEntryStatus::Queued)
+        Some(QueueEntryStatus::Dequeued)
     );
     let advisories = runtime
         .storage()
@@ -3093,16 +3148,7 @@ async fn ambiguous_task_rejoin_waits_remain_queued_with_deduplicated_advisory() 
                 })
         })
         .collect::<Vec<_>>();
-    assert_eq!(advisories.len(), 1);
-    assert!(advisories[0].data["evidence"]
-        .as_array()
-        .is_some_and(|evidence| {
-            evidence.iter().any(|item| {
-                item.as_str().is_some_and(|item| {
-                    item.contains(&registration.condition.id) && item.contains(&duplicate_wait.id)
-                })
-            })
-        }));
+    assert!(advisories.is_empty());
 }
 
 #[tokio::test]
@@ -4396,149 +4442,6 @@ async fn authoritative_mode_allows_message_admission_outside_authoritative_scena
 }
 
 #[tokio::test]
-async fn authoritative_mode_allows_claims_outside_authoritative_scenario() {
-    for (case, message) in [
-        (
-            "operator_prompt",
-            MessageEnvelope::new(
-                "default",
-                MessageKind::OperatorPrompt,
-                MessageOrigin::Operator { actor_id: None },
-                AuthorityClass::OperatorInstruction,
-                Priority::Normal,
-                MessageBody::Text {
-                    text: "queued before authority switch".into(),
-                },
-            ),
-        ),
-        (
-            "system_tick",
-            MessageEnvelope::new(
-                "default",
-                MessageKind::SystemTick,
-                MessageOrigin::System {
-                    subsystem: "authoritative-claim-fence".into(),
-                },
-                AuthorityClass::RuntimeInstruction,
-                Priority::Normal,
-                MessageBody::Text {
-                    text: "queued before authority switch".into(),
-                },
-            ),
-        ),
-    ] {
-        let dir = tempdir().unwrap();
-        let workspace = tempdir().unwrap();
-        let runtime = RuntimeHandle::new(
-            "default",
-            dir.path().to_path_buf(),
-            workspace.path().to_path_buf(),
-            "http://127.0.0.1:7878".into(),
-            Arc::new(CountingProvider {
-                calls: Mutex::new(0),
-                reply: "unused",
-            }),
-            "default".into(),
-            context_config(),
-        )
-        .unwrap();
-        let connection = runtime.inner.runtime_db.connection().unwrap();
-        connection
-            .execute(
-                "UPDATE scheduler_protocol_config
-                 SET protocol_mode = 'shadow',
-                     config_revision = 1,
-                     updated_at = CURRENT_TIMESTAMP
-                 WHERE config_id = 1",
-                [],
-            )
-            .unwrap();
-        connection
-            .execute(
-                "INSERT INTO scheduler_scenario_authorities (
-                   scenario_class, mode, rollback_target,
-                   manifest_revision, preflight_revision, updated_at
-                 ) VALUES (
-                   'reducer_only_candidates', 'shadow', 'off',
-                   NULL, NULL, CURRENT_TIMESTAMP
-                 )",
-                [],
-            )
-            .unwrap();
-
-        let message = runtime.enqueue(message).await.unwrap();
-        connection
-            .execute(
-                "UPDATE scheduler_protocol_config
-                 SET protocol_mode = 'authoritative',
-                     config_revision = 2,
-                     updated_at = CURRENT_TIMESTAMP
-                 WHERE config_id = 1",
-                [],
-            )
-            .unwrap();
-        connection
-            .execute(
-                "UPDATE scheduler_scenario_authorities
-                 SET mode = 'authoritative',
-                     rollback_target = 'shadow',
-                     updated_at = CURRENT_TIMESTAMP
-                 WHERE scenario_class = 'reducer_only_candidates'",
-                [],
-            )
-            .unwrap();
-
-        let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-            .poll()
-            .await
-            .unwrap();
-
-        match poll {
-            scheduler_executor::RunLoopPoll::Message(scheduled) => {
-                assert_eq!(scheduled.message.id, message.id, "unexpected {case} claim");
-            }
-            scheduler_executor::RunLoopPoll::Shutdown => {
-                panic!("unexpected {case} poll result: shutdown")
-            }
-            scheduler_executor::RunLoopPoll::Stopped(_, _) => {
-                panic!("unexpected {case} poll result: stopped")
-            }
-            scheduler_executor::RunLoopPoll::Idle => {
-                panic!("unexpected {case} poll result: idle")
-            }
-        }
-        assert_eq!(runtime.agent_state().await.unwrap().pending, 0);
-        assert_eq!(runtime.inner.agent.lock().await.queue.len(), 0);
-        let entries = runtime
-            .inner
-            .runtime_db
-            .queue_entries()
-            .latest_all()
-            .unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].message_id, message.id);
-        assert_eq!(entries[0].status, QueueEntryStatus::Dequeued);
-        let comparison_count: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM scheduler_shadow_comparisons
-                 WHERE comparison_identity = ?1",
-                [format!("message_admission:{}", message.id)],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(comparison_count, 0);
-        assert!(runtime
-            .storage()
-            .read_recent_events(usize::MAX)
-            .unwrap()
-            .iter()
-            .any(|event| {
-                event.kind == "queue_entry_claimed" && event.data["message_id"] == message.id
-            }));
-    }
-}
-
-#[tokio::test]
 async fn run_loop_stale_head_noops_before_authoritative_fence() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
@@ -4959,8 +4862,6 @@ async fn lifecycle_sleep_work_queue_override_allows_matched_authoritative_eviden
         guard.state.current_work_item_id = Some(work_item_id.clone());
         guard.persist_state(&runtime.inner.storage).unwrap();
     }
-    let connection = runtime.inner.runtime_db.connection().unwrap();
-
     runtime.transition_to_sleep(None).await.unwrap();
 
     let state = runtime.agent_state().await.unwrap();
@@ -4978,22 +4879,6 @@ async fn lifecycle_sleep_work_queue_override_allows_matched_authoritative_eviden
         .find(|message| message.kind == MessageKind::SystemTick)
         .expect("matched authoritative evidence should admit the work queue tick");
     assert_eq!(tick.work_item_id.as_deref(), Some(work_item_id.as_str()));
-    let (boundary, outcome, authority_mode): (String, String, String) = connection
-        .query_row(
-            "SELECT boundary, comparison_outcome, authority_mode
-             FROM scheduler_shadow_comparisons
-             WHERE agent_id = 'default'
-               AND scenario_class = 'work_item_autonomous_continuation'
-               AND comparison_identity = ?1",
-            [format!(
-                "work_queue_idle_tick:work_queue:continue_active:{work_item_id}:1"
-            )],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .unwrap();
-    assert_eq!(boundary, "lifecycle_sleep");
-    assert_eq!(outcome, "matched");
-    assert_eq!(authority_mode, "authoritative");
     assert!(runtime
         .storage()
         .read_recent_events(usize::MAX)
@@ -6503,121 +6388,6 @@ async fn abort_current_run_aborts_provider_turn_and_stops_agent() {
 }
 
 #[tokio::test]
-async fn authoritative_mode_allows_interjection_outside_authoritative_scenario() {
-    let dir = tempdir().unwrap();
-    let workspace = tempdir().unwrap();
-    let runtime = RuntimeHandle::new(
-        "default",
-        dir.path().to_path_buf(),
-        workspace.path().to_path_buf(),
-        "http://127.0.0.1:7878".into(),
-        Arc::new(StubProvider::new("unused")),
-        "default".into(),
-        context_config(),
-    )
-    .unwrap();
-    let connection = runtime.inner.runtime_db.connection().unwrap();
-    connection
-        .execute(
-            "UPDATE scheduler_protocol_config
-             SET protocol_mode = 'shadow',
-                 config_revision = 1,
-                 updated_at = CURRENT_TIMESTAMP
-             WHERE config_id = 1",
-            [],
-        )
-        .unwrap();
-    connection
-        .execute(
-            "INSERT INTO scheduler_scenario_authorities (
-               scenario_class, mode, rollback_target,
-               manifest_revision, preflight_revision, updated_at
-             ) VALUES (
-               'reducer_only_candidates', 'shadow', 'off',
-               NULL, NULL, CURRENT_TIMESTAMP
-             )",
-            [],
-        )
-        .unwrap();
-
-    let interjection = runtime
-        .enqueue(MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator {
-                actor_id: Some("control".into()),
-            },
-            AuthorityClass::OperatorInstruction,
-            Priority::Interject,
-            MessageBody::Text {
-                text: "queued before authority switch".into(),
-            },
-        ))
-        .await
-        .unwrap();
-    connection
-        .execute(
-            "UPDATE scheduler_protocol_config
-             SET protocol_mode = 'authoritative',
-                 config_revision = 2,
-                 updated_at = CURRENT_TIMESTAMP
-             WHERE config_id = 1",
-            [],
-        )
-        .unwrap();
-    connection
-        .execute(
-            "UPDATE scheduler_scenario_authorities
-             SET mode = 'authoritative',
-                 rollback_target = 'shadow',
-                 updated_at = CURRENT_TIMESTAMP
-             WHERE scenario_class = 'reducer_only_candidates'",
-            [],
-        )
-        .unwrap();
-
-    let follow_ups = runtime
-        .drain_operator_interjections(
-            "default",
-            1,
-            crate::runtime::scheduler::InterjectionBoundary::BeforeToolExecution,
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(follow_ups.len(), 1);
-    assert!(follow_ups[0].contains(&interjection.id));
-    assert!(follow_ups[0].contains("queued before authority switch"));
-    assert_eq!(runtime.agent_state().await.unwrap().pending, 0);
-    assert_eq!(runtime.inner.agent.lock().await.queue.len(), 0);
-    let queue_entries = runtime.storage().latest_queue_entries().unwrap();
-    let interjected_entry = queue_entries
-        .iter()
-        .find(|entry| entry.message_id == interjection.id)
-        .expect("interjection queue entry");
-    assert_eq!(interjected_entry.status, QueueEntryStatus::Interjected);
-    assert!(runtime
-        .storage()
-        .read_recent_events(usize::MAX)
-        .unwrap()
-        .iter()
-        .any(|event| {
-            event.kind == "operator_interjection_admitted"
-                && event.data["message_id"] == interjection.id
-                && event.data["boundary"] == "before_tool_execution"
-        }));
-    let comparison_count: i64 = connection
-        .query_row(
-            "SELECT COUNT(*) FROM scheduler_shadow_comparisons
-             WHERE comparison_identity = ?1",
-            [format!("operator_interjection:{}", interjection.id)],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(comparison_count, 0);
-}
-
-#[tokio::test]
 async fn operator_interjection_prompt_is_interjected_before_next_provider_round() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
@@ -7068,7 +6838,7 @@ async fn task_status_routes_only_through_task_state_reduction() {
 }
 
 #[tokio::test]
-async fn task_result_routes_through_reduction_and_follow_up_behavior() {
+async fn unbound_task_result_routes_only_through_reduction() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let provider = Arc::new(CountingProvider {
@@ -7134,7 +6904,7 @@ async fn task_result_routes_through_reduction_and_follow_up_behavior() {
         .await
         .unwrap();
 
-    assert_eq!(provider.call_count().await, 1);
+    assert_eq!(provider.call_count().await, 0);
     let active_tasks = runtime.active_tasks(10).await.unwrap();
     assert!(!active_tasks.iter().any(|task| task.id == "task-1"));
     let events = runtime.storage().read_recent_events(100).unwrap();

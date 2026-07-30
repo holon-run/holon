@@ -3354,19 +3354,26 @@ impl RuntimeHandle {
             let Some(activation) = snapshot.activations.get(&activation_id) else {
                 continue;
             };
-            let Some(work_item_id) = activation.owner.work_item_id() else {
+            let work_item_id = activation.owner.work_item_id().map(ToString::to_string);
+            if activation
+                .owner
+                .lifecycle_agent_id()
+                .is_some_and(|owner_agent_id| owner_agent_id != agent_id)
+            {
                 continue;
-            };
+            }
             let Some(message) = self.inner.storage.read_message_by_id(&entry.message_id)? else {
                 continue;
             };
-            if !matches!(
-                (&message.kind, &message.origin),
-                (MessageKind::SystemTick, MessageOrigin::System { subsystem })
-                    if subsystem == "work_queue"
-            ) || message.work_item_id.as_deref() != Some(work_item_id)
-            {
-                continue;
+            if let Some(work_item_id) = work_item_id.as_deref() {
+                if !matches!(
+                    (&message.kind, &message.origin),
+                    (MessageKind::SystemTick, MessageOrigin::System { subsystem })
+                        if subsystem == "work_queue"
+                ) || message.work_item_id.as_deref() != Some(work_item_id)
+                {
+                    continue;
+                }
             }
 
             let terminal_turn = turns.iter().find(|turn| {
@@ -3377,7 +3384,7 @@ impl RuntimeHandle {
                         .and_then(|trigger| trigger.message_id.as_deref())
                         == Some(entry.message_id.as_str())
                     && message.turn_id.as_deref() == Some(turn.turn_id.as_str())
-                    && turn.current_work_item_id.as_deref() == Some(work_item_id)
+                    && turn.current_work_item_id.as_deref() == work_item_id.as_deref()
             });
             let terminal_is_completed = terminal_turn.is_some_and(|turn| {
                 turn.terminal.as_ref().is_some_and(|terminal| {
@@ -3528,7 +3535,7 @@ impl RuntimeHandle {
                     &scheduler::scheduler_invariant_diagnostic_event(
                         &agent_id,
                         "bootstrap_recovery_command_rejected",
-                        Some(work_item_id.to_string()),
+                        work_item_id.clone(),
                         Some(entry.message_id.clone()),
                         diagnostics,
                     )?,
@@ -3536,7 +3543,6 @@ impl RuntimeHandle {
                 continue;
             }
             let message_id = entry.message_id.clone();
-            let work_item_id = work_item_id.to_string();
             let queue_status = entry.status.clone();
             let terminal_turn_id = terminal_turn.map(|turn| turn.turn_id.clone());
             let recovery_outcome = if settles_from_terminal {

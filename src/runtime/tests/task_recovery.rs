@@ -210,10 +210,18 @@ async fn malformed_task_message_does_not_exit_runtime_loop() {
             }));
             break;
         }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "runtime did not process the message after malformed task result"
-        );
+        if tokio::time::Instant::now() >= deadline {
+            let events = runtime.storage().read_recent_events(200).unwrap();
+            let queue = runtime
+                .inner
+                .runtime_db
+                .queue_entries()
+                .recent(Some("default"), 20)
+                .unwrap();
+            panic!(
+                "runtime did not process the message after malformed task result\nqueue={queue:#?}\nevents={events:#?}"
+            );
+        }
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
     runtime_task.abort();

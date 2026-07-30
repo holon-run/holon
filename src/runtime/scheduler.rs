@@ -1175,10 +1175,7 @@ pub(crate) fn canonical_activation_candidate(
                 agent_id: message.agent_id.clone(),
             }));
         }
-        return Ok(Some(CanonicalActivationCandidate::ExactWaitResume {
-            expected_work_item_id: None,
-            correlated_wait: None,
-        }));
+        return Ok(None);
     }
 
     if message.kind == MessageKind::OperatorPrompt {
@@ -1283,6 +1280,7 @@ pub(crate) fn resolve_canonical_activation_scenario(
             {
                 waits.retain(|wait| wait.work_item_id.is_none());
             }
+            waits.retain(|wait| projection.canonical_wait_generations.contains_key(&wait.id));
             waits
         }
     };

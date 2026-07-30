@@ -1545,7 +1545,8 @@ fn unbound_operator_input_exactly_resumes_agent_wait_or_becomes_nudge() {
     );
 
     append_operator_wait_condition(&storage, "wait-operator", "default", None);
-    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let mut projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    projection.set_canonical_wait_generation_for_test("wait-operator", 1);
     let candidate = scheduler::canonical_activation_candidate(&message, Some(&continuation), None)
         .unwrap()
         .unwrap();

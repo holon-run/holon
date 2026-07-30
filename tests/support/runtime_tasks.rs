@@ -171,7 +171,8 @@ pub async fn background_task_rejoins_main_session() -> Result<()> {
     Ok(())
 }
 
-pub async fn background_command_task_result_wakes_sleeping_agent_for_model_reentry() -> Result<()> {
+pub async fn background_command_task_result_wakes_sleeping_agent_via_canonical_lifecycle_nudge(
+) -> Result<()> {
     let provider = Arc::new(SleepThenRecordTaskResultProvider::new());
     let host = RuntimeHost::new_with_provider(test_config(), provider.clone())?;
     let runtime = host.default_runtime().await?;
@@ -240,7 +241,7 @@ pub async fn background_command_task_result_wakes_sleeping_agent_for_model_reent
         .as_ref()
         .is_some_and(|continuation| {
             continuation.trigger_kind == holon::types::ContinuationTriggerKind::TaskResult
-                && continuation.model_reentry
+                && !continuation.model_reentry
         }));
     let tasks = runtime.storage().latest_task_records()?;
     assert!(tasks.iter().any(|record| {
@@ -2221,7 +2222,7 @@ pub async fn blocking_command_task_clears_active_state_while_runtime_stopped() -
     Ok(())
 }
 
-pub async fn command_task_result_is_canonical_follow_up_on_completion() -> Result<()> {
+pub async fn command_task_result_is_canonical_lifecycle_nudge_on_completion() -> Result<()> {
     let host =
         RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
     let runtime = host.default_runtime().await?;
@@ -2257,7 +2258,7 @@ pub async fn command_task_result_is_canonical_follow_up_on_completion() -> Resul
             event.kind == "continuation_resolved"
                 && event.data["message_id"] == message.id
                 && event.data["resolution"]["trigger_kind"] == "task_result"
-                && event.data["resolution"]["model_reentry"] == true
+                && event.data["resolution"]["model_reentry"] == false
         }))
     })
     .await?;

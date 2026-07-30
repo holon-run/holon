@@ -95,7 +95,7 @@ pub(super) fn resolve_continuation(
 ) -> ContinuationResolution {
     let same_work_item = match (trigger.task_work_item_id.as_deref(), agent_work_item_id) {
         (Some(_), None) | (None, Some(_)) => false,
-        (None, None) => true,
+        (None, None) => false,
         (Some(t), Some(a)) => t == a,
     };
     let mut evidence = Vec::new();
@@ -333,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_task_result_resumes_expected_wait() {
+    fn unbound_terminal_task_result_does_not_resume_expected_wait() {
         let resolution = resolve_continuation(
             &waiting(WaitingReason::AwaitingTaskResult),
             &ContinuationTrigger {
@@ -345,8 +345,8 @@ mod tests {
             },
             None,
         );
-        assert_eq!(resolution.class, ContinuationClass::ResumeExpectedWait);
-        assert!(resolution.model_reentry);
+        assert_eq!(resolution.class, ContinuationClass::LivenessOnly);
+        assert!(!resolution.model_reentry);
     }
 
     #[test]
@@ -468,7 +468,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_task_result_resumes_without_prior_wait() {
+    fn unbound_terminal_task_result_does_not_resume_without_prior_wait() {
         let resolution = resolve_continuation(
             &ClosureDecision {
                 outcome: ClosureOutcome::Completed,
@@ -486,12 +486,12 @@ mod tests {
             },
             None,
         );
-        assert_eq!(resolution.class, ContinuationClass::LocalContinuation);
-        assert!(resolution.model_reentry);
+        assert_eq!(resolution.class, ContinuationClass::LivenessOnly);
+        assert!(!resolution.model_reentry);
     }
 
     #[test]
-    fn terminal_task_result_resumes_from_sleeping_posture() {
+    fn unbound_terminal_task_result_does_not_resume_from_sleeping_posture() {
         let resolution = resolve_continuation(
             &ClosureDecision {
                 outcome: ClosureOutcome::Completed,
@@ -509,12 +509,12 @@ mod tests {
             },
             None,
         );
-        assert_eq!(resolution.class, ContinuationClass::LocalContinuation);
-        assert!(resolution.model_reentry);
+        assert_eq!(resolution.class, ContinuationClass::LivenessOnly);
+        assert!(!resolution.model_reentry);
     }
 
     #[test]
-    fn terminal_task_result_overrides_mismatched_wait() {
+    fn unbound_terminal_task_result_does_not_override_mismatched_wait() {
         let resolution = resolve_continuation(
             &waiting(WaitingReason::AwaitingExternalChange),
             &ContinuationTrigger {
@@ -526,8 +526,8 @@ mod tests {
             },
             None,
         );
-        assert_eq!(resolution.class, ContinuationClass::ResumeOverride);
-        assert!(resolution.model_reentry);
+        assert_eq!(resolution.class, ContinuationClass::LivenessOnly);
+        assert!(!resolution.model_reentry);
     }
 
     #[test]

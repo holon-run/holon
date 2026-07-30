@@ -16,7 +16,7 @@ macro_rules! runtime_async_tests {
 
 runtime_async_tests!(
     background_task_rejoins_main_session,
-    background_command_task_result_wakes_sleeping_agent_for_model_reentry,
+    background_command_task_result_wakes_sleeping_agent_via_canonical_lifecycle_nudge,
     stop_task_cancels_running_background_task,
     lifecycle_stop_interrupts_active_command_task,
     tool_use_round_trip_executes_and_returns_result,
@@ -49,7 +49,7 @@ runtime_async_tests!(
     background_command_task_persists_terminal_state_while_runtime_stopped,
     command_task_result_enqueue_retries_stale_agent_state,
     blocking_command_task_clears_active_state_while_runtime_stopped,
-    command_task_result_is_canonical_follow_up_on_completion,
+    command_task_result_is_canonical_lifecycle_nudge_on_completion,
     task_result_rejoin_preserves_runtime_provenance_not_operator_authority,
     command_terminal_reentry_does_not_set_awaiting_task_closure,
     command_task_runner_failure_marks_task_failed_and_cleans_up,

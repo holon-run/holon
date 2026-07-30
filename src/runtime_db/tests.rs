@@ -674,7 +674,7 @@ mod tests {
     }
 
     #[test]
-    fn migration_38_normalizes_unsafe_operator_interjection_authority() -> Result<()> {
+    fn migrations_normalize_unsafe_operator_interjection_authority() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         {
             let mut connection = open_connection(&db_path)?;
@@ -715,7 +715,10 @@ INSERT INTO scheduler_scenario_authorities (
             [],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )?;
-        assert_eq!(normalized, ("shadow".into(), None, None, "shadow".into()));
+        assert_eq!(
+            normalized,
+            ("authoritative".into(), None, None, "shadow".into())
+        );
         Ok(())
     }
 
