@@ -183,7 +183,7 @@ Skill management is split into library operations and agent enablement:
 | `holon debug prompt` | `<TEXT>` | `--agent <AGENT>`; `--trust <TRUST>` default `trusted-operator` | human prompt dump | `internal` | Debug-only prompt inspection. |
 | `holon debug latency` | none | `--agent <AGENT>`; `--limit <LIMIT>` default `10`; `--events-limit <EVENTS_LIMIT>` default `5000` | human latency report | `internal` | Useful diagnostics; prose should not be machine contract. |
 | `holon debug scheduler-fixture` | none | `--agent <AGENT>`; required `--output <OUTPUT>` | writes JSON/JSONL fixture files; prints export summary | `internal` | Fixture file shape may be useful for tests but should be documented separately if stabilized. |
-| `holon debug scheduler-recovery` | none | `--agent <AGENT>`; `--json`; `--apply` | read-only canonical recovery and retired-rollout diagnosis; optional typed apply result | `internal` | Default is read-only. `--apply` requires the daemon to be stopped, creates and verifies a SQLite backup before mutation, and never repairs retired rollout rows into new authority. |
+| `holon debug scheduler-recovery` | none | `--agent <AGENT>`; `--json`; `--apply` | read-only canonical recovery and retired-rollout diagnosis; optional typed apply result | `internal` | Default is read-only. `--json` emits `{ "report": ..., "apply": null | { "changed": ..., "backup_path": ... } }`. `--apply` requires the daemon to be stopped, creates and verifies a SQLite backup before mutation, and never repairs retired rollout rows into new authority. |
 
 ## Environment and config inputs touched by CLI
 

@@ -292,7 +292,7 @@ impl RuntimeDb {
     }
 
     pub(crate) fn create_verified_backup(&self, label: &str) -> Result<PathBuf> {
-        let timestamp = Utc::now().format("%Y%m%dT%H%M%S%.3fZ");
+        let timestamp = Utc::now().format("%Y%m%dT%H%M%S%.9fZ");
         let file_name = self
             .path
             .file_name()

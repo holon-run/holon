@@ -4575,6 +4575,7 @@ fn update_metadata(
 }
 
 #[derive(Debug, Clone)]
+/// Test-only wrapper retained for the retired rollout reducer, not the canonical scheduler snapshot.
 struct RolloutSnapshot {
     rollout: RolloutState,
 }
