@@ -835,7 +835,18 @@ AdmitActivationCommand
 ClaimActivationCommand
 SettleActivationCommand
 TriggerWaitCommand
+AdoptActivationWorkStateCommand
 ```
+
+When a lifecycle nudge runs while dispatch is reserved by an active lifecycle
+wait and the turn creates a WorkItem wait, `AdoptActivationWorkStateCommand`
+may carry the exact source wait identity and expected dispatch revision. The
+same transaction must verify that the reservation belongs to the source
+lifecycle owner, settle the activation, resolve the source wait exactly once,
+and install the target WorkItem demand, wait, focus, and dispatch reservation.
+A stale revision or foreign reservation fails closed. After the adoption is
+recorded, settlement replay reuses the stored command result and must not
+reconstruct a different payload from the post-handoff dispatch state.
 
 The settlement transaction writes every durable fact changed by the
 disposition, including as applicable:

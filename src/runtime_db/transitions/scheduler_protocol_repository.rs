@@ -26,6 +26,7 @@ use crate::domain::scheduler_protocol::{
 
 const CANONICAL_COMMAND_SCHEMA_VERSION: i64 = 1;
 const LEGACY_ADOPTION_REPLACEMENT_SCHEMA_VERSION: i64 = 2;
+const ACTIVATION_WAIT_HANDOFF_SCHEMA_VERSION: i64 = 2;
 
 #[derive(Serialize)]
 struct LegacyActivationAuthorityPayload<'a> {
@@ -308,6 +309,29 @@ impl RuntimeTransitionRepository<'_> {
         let snapshot = load_snapshot_tx(&transaction, agent_id)?;
         transaction.commit()?;
         Ok(Some(snapshot))
+    }
+
+    pub(crate) fn activation_work_state_adoption_was_applied(
+        &self,
+        agent_id: &str,
+        activation_id: &str,
+        work_item_id: &str,
+    ) -> Result<bool> {
+        let connection = self.db.connection()?;
+        let command_identity = format!("{activation_id}:{work_item_id}");
+        let decision = enum_token(&Decision::LegacyWorkStateAdopted)?;
+        Ok(connection.query_row(
+            "SELECT EXISTS(
+               SELECT 1
+               FROM scheduler_protocol_command_results
+               WHERE agent_id = ?1
+                 AND command_kind = 'adopt_activation_work_state'
+                 AND command_identity = ?2
+                 AND decision = ?3
+             )",
+            params![agent_id, command_identity, decision],
+            |row| row.get(0),
+        )?)
     }
 
     pub(crate) fn inspect_retired_scheduler_rollout_metadata(
@@ -1031,6 +1055,11 @@ fn canonical_command_hash(command_kind: &str, command: &ProtocolCommand) -> Resu
             if command.replace_completed_focus.is_some() =>
         {
             LEGACY_ADOPTION_REPLACEMENT_SCHEMA_VERSION
+        }
+        ProtocolCommand::AdoptActivationWorkState(command)
+            if command.source_lifecycle_wait.is_some() =>
+        {
+            ACTIVATION_WAIT_HANDOFF_SCHEMA_VERSION
         }
         _ => CANONICAL_COMMAND_SCHEMA_VERSION,
     };
@@ -2549,6 +2578,7 @@ fn load_activations(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::scheduler_protocol::LifecycleWaitHandoffProof;
 
     fn legacy_adoption_command(replacement: Option<ReplaceCompletedFocusProof>) -> ProtocolCommand {
         ProtocolCommand::AdoptLegacyWorkState(AdoptLegacyWorkStateCommand {
@@ -2567,6 +2597,28 @@ mod tests {
             focus: true,
             reserve_dispatch: false,
             replace_completed_focus: replacement,
+        })
+    }
+
+    fn activation_adoption_command(
+        source_lifecycle_wait: Option<LifecycleWaitHandoffProof>,
+    ) -> ProtocolCommand {
+        ProtocolCommand::AdoptActivationWorkState(AdoptActivationWorkStateCommand {
+            source_activation_id: "activation:message:message-a".into(),
+            source_message_id: "message-a".into(),
+            source_turn_id: "turn-a".into(),
+            source_admitted_generation: 2,
+            work_item_id: "work-a".into(),
+            source_work_item_revision: 3,
+            wait: LegacyWaitAdoption {
+                wait_id: "wait-work-a".into(),
+                generation: 3,
+                owner_work_item_id: "work-a".into(),
+                source_updated_at: "2026-08-01T00:00:00Z".into(),
+            },
+            source_lifecycle_wait,
+            focus: true,
+            reserve_dispatch: true,
         })
     }
 
@@ -2615,6 +2667,25 @@ mod tests {
         let (v2_schema, v2_hash) = canonical_command_hash("adopt_legacy_work_state", &v2)?;
         assert_eq!(v1_schema, 1);
         assert_eq!(v2_schema, LEGACY_ADOPTION_REPLACEMENT_SCHEMA_VERSION);
+        assert_ne!(v1_hash, v2_hash);
+        Ok(())
+    }
+
+    #[test]
+    fn activation_wait_handoff_uses_command_specific_v2_hash() -> Result<()> {
+        let v1 = activation_adoption_command(None);
+        let v2 = activation_adoption_command(Some(LifecycleWaitHandoffProof {
+            wait: WaitIdentity {
+                id: "wait-lifecycle-a".into(),
+                generation: 1,
+            },
+            expected_dispatch_revision: 4,
+        }));
+
+        let (v1_schema, v1_hash) = canonical_command_hash("adopt_activation_work_state", &v1)?;
+        let (v2_schema, v2_hash) = canonical_command_hash("adopt_activation_work_state", &v2)?;
+        assert_eq!(v1_schema, 1);
+        assert_eq!(v2_schema, ACTIVATION_WAIT_HANDOFF_SCHEMA_VERSION);
         assert_ne!(v1_hash, v2_hash);
         Ok(())
     }

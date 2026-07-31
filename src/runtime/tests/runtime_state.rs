@@ -183,6 +183,45 @@ fn canonical_waiting_snapshot(
     }
 }
 
+fn canonical_lifecycle_waiting_snapshot(wait_id: &str, wait_generation: u64) -> Snapshot {
+    Snapshot {
+        slot: ActivationSlot::Idle,
+        dispatch: AgentDispatchState::Awaiting {
+            wait: WaitIdentity {
+                id: wait_id.into(),
+                generation: wait_generation,
+            },
+        },
+        dispatch_revision: 1,
+        focus: None,
+        work: Default::default(),
+        waits: std::collections::BTreeMap::from([(
+            wait_id.into(),
+            WaitRecord {
+                current_generation: wait_generation,
+                generations: std::collections::BTreeMap::from([(
+                    wait_generation,
+                    WaitGenerationRecord {
+                        owner: SchedulerOwner::AgentLifecycle {
+                            agent_id: "default".into(),
+                        },
+                        state: WaitState::Active,
+                        trigger: None,
+                        consuming_activation_id: None,
+                    },
+                )]),
+            },
+        )]),
+        activations: Default::default(),
+        activation_admissions: Default::default(),
+        settlements: Default::default(),
+        missing_settlements: Default::default(),
+        admitted_generations: Default::default(),
+        continuation_admissions: Default::default(),
+        activation_inputs: Default::default(),
+    }
+}
+
 #[test]
 fn append_state_changed_events_emits_single_lightweight_agent_event() {
     let dir = tempdir().unwrap();
@@ -2324,6 +2363,231 @@ async fn lifecycle_settlement_adopts_wait_without_work_item_turn_binding() {
             .find(|entry| entry.message_id == message.id)
             .map(|entry| entry.status),
         Some(QueueEntryStatus::Processed)
+    );
+}
+
+#[tokio::test]
+async fn lifecycle_wait_handoff_to_work_item_wait_is_atomic_idempotent_and_restart_safe() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let lifecycle_wait = runtime
+        .register_wait_for(
+            "default",
+            None,
+            WaitForWakeKind::External,
+            Some("github:holon-run/holon#lifecycle-source".into()),
+            "waiting for lifecycle external event".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let lifecycle_generation = 1;
+    runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .initialize_scheduler_protocol_partition(
+            "default",
+            &canonical_lifecycle_waiting_snapshot(
+                &lifecycle_wait.condition.id,
+                lifecycle_generation,
+            ),
+        )
+        .unwrap();
+
+    let mut message = trusted_operator_prompt(None, "create a WorkItem and wait for its task");
+    message.turn_id = Some("turn-lifecycle-wait-handoff".into());
+    let message = runtime.enqueue(message).await.unwrap();
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Message(_)
+    ));
+    let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+    let admitted = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    assert!(matches!(
+        &admitted.activation_admissions[&activation_id]
+            .activation
+            .cause,
+        ActivationCause::LifecycleExternalNudge { message_id }
+            if message_id == &message.id
+    ));
+
+    runtime
+        .begin_interactive_turn(Some(&message), None, None)
+        .await
+        .unwrap();
+    let work_item = runtime
+        .create_work_item(
+            "work created by lifecycle nudge".into(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    runtime.pick_work_item(work_item.id.clone()).await.unwrap();
+    let work_wait = runtime
+        .register_wait_for(
+            "default",
+            Some(work_item.id.clone()),
+            WaitForWakeKind::TaskResult,
+            Some("task-lifecycle-handoff".into()),
+            "waiting for lifecycle handoff task".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let updated_work_item = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    finish_claimed_test_run(&runtime).await;
+    let terminal = terminal_transition(&message, None);
+    let processed = QueueEntryRecord {
+        message_id: message.id.clone(),
+        agent_id: message.agent_id.clone(),
+        priority: message.priority,
+        status: QueueEntryStatus::Processed,
+        created_at: message.created_at,
+        updated_at: Utc::now(),
+    };
+    runtime
+        .commit_queue_terminal_settlement(processed.clone(), Vec::new(), true, Some(&terminal))
+        .await
+        .unwrap();
+
+    let settled = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    let work_generation = updated_work_item.revision;
+    assert_eq!(settled.slot, ActivationSlot::Idle);
+    assert_eq!(
+        settled.waits[&lifecycle_wait.condition.id].generations[&lifecycle_generation].state,
+        WaitState::Resolved
+    );
+    assert_eq!(
+        settled.work[&work_item.id].status,
+        WorkStatus::Waiting {
+            wait_id: work_wait.condition.id.clone(),
+        }
+    );
+    assert_eq!(
+        settled.waits[&work_wait.condition.id].generations[&work_generation].owner,
+        SchedulerOwner::WorkItem {
+            work_item_id: work_item.id.clone(),
+        }
+    );
+    assert_eq!(
+        settled.dispatch,
+        AgentDispatchState::Awaiting {
+            wait: WaitIdentity {
+                id: work_wait.condition.id.clone(),
+                generation: work_generation,
+            },
+        }
+    );
+    assert_eq!(settled.focus.as_deref(), Some(work_item.id.as_str()));
+    assert!(settled.missing_settlements.is_empty());
+
+    let replay_commands = runtime
+        .canonical_queue_settlement_commands(&processed, Some(&terminal.turn_record))
+        .await
+        .unwrap();
+    assert!(matches!(
+        replay_commands.as_slice(),
+        [crate::domain::scheduler_protocol::ProtocolCommand::SettleActivation(_)]
+    ));
+    assert!(!runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .commit_scheduler_recovery_plan("default", &replay_commands)
+        .unwrap());
+
+    drop(runtime);
+    let reopened = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let mut rejoin = task_result_message("task-lifecycle-handoff").with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    rejoin.work_item_id = Some(work_item.id.clone());
+    rejoin.metadata = Some(serde_json::json!({
+        "task_id": "task-lifecycle-handoff",
+        "task_kind": "command_task",
+        "task_status": "completed",
+        "task_result_id": "result-lifecycle-handoff",
+        "work_item_id": work_item.id,
+    }));
+    rejoin.turn_id = Some("turn-lifecycle-handoff-rejoin".into());
+    let rejoin = reopened.enqueue(rejoin).await.unwrap();
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&reopened)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Message(_)
+    ));
+    let rejoined = reopened
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    assert!(matches!(
+        rejoined.slot,
+        ActivationSlot::Running {
+            owner: SchedulerOwner::WorkItem { ref work_item_id },
+            admitted_generation,
+            ..
+        } if work_item_id == &work_item.id && admitted_generation == work_generation
+    ));
+    assert_eq!(
+        rejoined.waits[&work_wait.condition.id].generations[&work_generation].state,
+        WaitState::Consumed
+    );
+    assert_eq!(
+        rejoined.waits[&work_wait.condition.id].generations[&work_generation]
+            .consuming_activation_id
+            .as_deref(),
+        Some(scheduler_executor::canonical_activation_id(&rejoin.id).as_str())
     );
 }
 

@@ -750,6 +750,12 @@ pub struct AdoptLegacyWorkStateCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LifecycleWaitHandoffProof {
+    pub wait: WaitIdentity,
+    pub expected_dispatch_revision: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdoptActivationWorkStateCommand {
     pub source_activation_id: String,
     pub source_message_id: String,
@@ -758,6 +764,8 @@ pub struct AdoptActivationWorkStateCommand {
     pub work_item_id: String,
     pub source_work_item_revision: u64,
     pub wait: LegacyWaitAdoption,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_lifecycle_wait: Option<LifecycleWaitHandoffProof>,
     #[serde(default)]
     pub focus: bool,
     #[serde(default)]
@@ -1685,11 +1693,14 @@ fn replay_or_conflict(
                         ),
                     ));
                 }
+                if existing.scheduling_generation < command.wait.generation {
+                    return None;
+                }
                 return Some(rejected_command(
                     snapshot,
                     command_conflict(
-                        ProtocolConflictKind::IdentityConflict,
-                        "activation_work_state_adoption_conflict",
+                        ProtocolConflictKind::StaleGeneration,
+                        "activation_work_state_adoption_stale_generation",
                     ),
                 ));
             }
@@ -2221,8 +2232,12 @@ fn adopt_activation_work_state(
         || command.source_work_item_revision == 0
         || command.wait.wait_id.is_empty()
         || command.wait.owner_work_item_id != command.work_item_id
-        || command.wait.generation != command.source_work_item_revision
+        || command.wait.generation == 0
         || command.wait.source_updated_at.is_empty()
+        || command
+            .source_lifecycle_wait
+            .as_ref()
+            .is_some_and(|proof| proof.wait.id.is_empty() || proof.wait.generation == 0)
     {
         return rejected_command(
             snapshot,
@@ -2241,8 +2256,18 @@ fn adopt_activation_work_state(
             ),
         );
     };
+    let source_is_lifecycle_nudge = snapshot
+        .activation_admissions
+        .get(&command.source_activation_id)
+        .is_some_and(|admission| {
+            matches!(
+                admission.activation.cause,
+                ActivationCause::LifecycleExternalNudge { .. }
+            )
+        });
     if command.source_activation_id != format!("activation:message:{}", command.source_message_id)
         || activation.owner.lifecycle_agent_id().is_none()
+        || !source_is_lifecycle_nudge
         || activation.admitted_generation != command.source_admitted_generation
         || activation.state != ActivationState::Settled
     {
@@ -2277,12 +2302,23 @@ fn adopt_activation_work_state(
         _ => None,
     });
     if let Some(existing_work) = existing_work {
-        if existing_work.metadata_revision >= command.source_work_item_revision {
+        if existing_work.metadata_revision > command.source_work_item_revision {
             return rejected_command(
                 snapshot,
                 command_conflict(
                     ProtocolConflictKind::StaleRevision,
                     "activation_work_state_adoption_stale_revision",
+                ),
+            );
+        }
+        if existing_work.metadata_revision == command.source_work_item_revision
+            && existing_work.scheduling_generation >= command.wait.generation
+        {
+            return rejected_command(
+                snapshot,
+                command_conflict(
+                    ProtocolConflictKind::StaleGeneration,
+                    "activation_work_state_adoption_stale_generation",
                 ),
             );
         }
@@ -2365,18 +2401,45 @@ fn adopt_activation_work_state(
             );
         }
     }
+    let existing_work_dispatch_matches = existing_wait_id.is_some_and(|wait_id| {
+        snapshot.dispatch
+            == (AgentDispatchState::Awaiting {
+                wait: WaitIdentity {
+                    id: wait_id.to_string(),
+                    generation: existing_work
+                        .expect("existing wait requires existing work")
+                        .scheduling_generation,
+                },
+            })
+    });
+    let source_lifecycle_dispatch_matches =
+        command.source_lifecycle_wait.as_ref().is_some_and(|proof| {
+            snapshot.dispatch_revision == proof.expected_dispatch_revision
+                && snapshot.dispatch
+                    == (AgentDispatchState::Awaiting {
+                        wait: proof.wait.clone(),
+                    })
+                && snapshot
+                    .waits
+                    .get(&proof.wait.id)
+                    .and_then(|wait| wait.generations.get(&proof.wait.generation))
+                    .is_some_and(|generation| {
+                        generation.owner == activation.owner
+                            && matches!(generation.state, WaitState::Active | WaitState::Triggered)
+                    })
+        });
+    if command.source_lifecycle_wait.is_some() && !source_lifecycle_dispatch_matches {
+        return rejected_command(
+            snapshot,
+            command_conflict(
+                ProtocolConflictKind::BindingConflict,
+                "activation_work_state_source_lifecycle_wait_mismatch",
+            ),
+        );
+    }
     if snapshot.dispatch != AgentDispatchState::Open
-        && !existing_wait_id.is_some_and(|wait_id| {
-            snapshot.dispatch
-                == (AgentDispatchState::Awaiting {
-                    wait: WaitIdentity {
-                        id: wait_id.to_string(),
-                        generation: existing_work
-                            .expect("existing wait requires existing work")
-                            .scheduling_generation,
-                    },
-                })
-        })
+        && !existing_work_dispatch_matches
+        && !source_lifecycle_dispatch_matches
     {
         return rejected_command(
             snapshot,
@@ -2386,10 +2449,49 @@ fn adopt_activation_work_state(
             ),
         );
     }
+    if snapshot.dispatch == AgentDispatchState::Open && command.source_lifecycle_wait.is_some() {
+        return rejected_command(
+            snapshot,
+            command_conflict(
+                ProtocolConflictKind::BindingConflict,
+                "activation_work_state_source_lifecycle_wait_mismatch",
+            ),
+        );
+    }
 
     let mut next = snapshot.clone();
     let mut transitions = Vec::new();
+    if let Some(proof) = &command.source_lifecycle_wait {
+        let wait = next
+            .waits
+            .get_mut(&proof.wait.id)
+            .expect("validated source lifecycle wait exists");
+        let generation = wait
+            .generations
+            .get_mut(&proof.wait.generation)
+            .expect("validated source lifecycle wait generation exists");
+        generation.state = WaitState::Resolved;
+        generation.trigger = None;
+        generation.consuming_activation_id = None;
+        transitions.push(format!(
+            "wait:{}:generation:{}:resolved_by_work_item_handoff",
+            proof.wait.id, proof.wait.generation
+        ));
+    }
     if let Some(existing_wait_id) = existing_wait_id {
+        if command
+            .source_lifecycle_wait
+            .as_ref()
+            .is_some_and(|proof| proof.wait.id == existing_wait_id)
+        {
+            return rejected_command(
+                snapshot,
+                command_conflict(
+                    ProtocolConflictKind::IdentityConflict,
+                    "activation_work_state_wait_conflict",
+                ),
+            );
+        }
         if let Some(wait) = next.waits.get_mut(existing_wait_id) {
             let generation = wait
                 .generations

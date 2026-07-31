@@ -512,8 +512,9 @@ fn canonical_queue_settlement_commands_from_facts(
     };
     use crate::domain::scheduler_protocol::{
         ActivationDisposition, ActivationSettlement, AdoptActivationWorkStateCommand,
-        AgentDispatchDisposition, LegacyWaitAdoption, MissingSettlementRecord, ProtocolCommand,
-        SettleActivationCommand, WaitIdentity,
+        AgentDispatchDisposition, AgentDispatchState, LegacyWaitAdoption,
+        LifecycleWaitHandoffProof, MissingSettlementRecord, ProtocolCommand, SchedulerOwner,
+        SettleActivationCommand, WaitIdentity, WaitState,
     };
 
     let Some(snapshot) = runtime_db
@@ -630,11 +631,51 @@ fn canonical_queue_settlement_commands_from_facts(
             {
                 return Ok(vec![missing_settlement()]);
             }
+            if runtime_db
+                .transitions()
+                .activation_work_state_adoption_was_applied(
+                    &record.agent_id,
+                    &activation_id,
+                    work_item_id,
+                )?
+            {
+                return Ok(commands);
+            }
             let focus = storage
                 .read_agent()?
                 .and_then(|agent| agent.current_work_item_id)
                 .as_deref()
                 == Some(work_item_id);
+            let target_generation = snapshot
+                .work
+                .get(work_item_id)
+                .map(|demand| {
+                    demand
+                        .scheduling_generation
+                        .checked_add(1)
+                        .ok_or_else(|| anyhow!("WorkItem scheduling generation overflow"))
+                })
+                .transpose()?
+                .unwrap_or(work_item.revision)
+                .max(work_item.revision);
+            let source_lifecycle_wait = match &snapshot.dispatch {
+                AgentDispatchState::Awaiting { wait } => snapshot
+                    .waits
+                    .get(&wait.id)
+                    .and_then(|record| record.generations.get(&wait.generation))
+                    .filter(|generation| {
+                        generation.owner
+                            == (SchedulerOwner::AgentLifecycle {
+                                agent_id: record.agent_id.clone(),
+                            })
+                            && matches!(generation.state, WaitState::Active | WaitState::Triggered)
+                    })
+                    .map(|_| LifecycleWaitHandoffProof {
+                        wait: wait.clone(),
+                        expected_dispatch_revision: snapshot.dispatch_revision,
+                    }),
+                AgentDispatchState::Open => None,
+            };
             commands.push(ProtocolCommand::AdoptActivationWorkState(
                 AdoptActivationWorkStateCommand {
                     source_activation_id: activation_id.clone(),
@@ -647,10 +688,11 @@ fn canonical_queue_settlement_commands_from_facts(
                     source_work_item_revision: work_item.revision,
                     wait: LegacyWaitAdoption {
                         wait_id: wait.id.clone(),
-                        generation: work_item.revision,
+                        generation: target_generation,
                         owner_work_item_id: work_item_id.to_string(),
                         source_updated_at: wait.updated_at.to_rfc3339(),
                     },
+                    source_lifecycle_wait,
                     focus,
                     reserve_dispatch: focus,
                 },

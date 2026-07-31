@@ -10,10 +10,10 @@ use model::{
     ActivationProvenance, ActivationRecord, ActivationSettlement, ActivationSlot, ActivationState,
     ActivationTrust, AdmissionCause, AdmitActivationCommand, AdoptActivationWorkStateCommand,
     AgentActivation, AgentDispatchDisposition, AgentDispatchState, Decision, Event,
-    LegacyWaitAdoption, MissingSettlementRecord, PreemptionPolicy, ProtocolCommand,
-    ProtocolConflictKind, RegisterWorkDemandCommand, SchedulerOwner, SettleActivationCommand,
-    Settlement, Snapshot, WaitGenerationRecord, WaitIdentity, WaitRecord, WaitState, WaitTrigger,
-    WorkDemand, WorkStatus, YieldContinuationRecord,
+    LegacyWaitAdoption, LifecycleWaitHandoffProof, MissingSettlementRecord, PreemptionPolicy,
+    ProtocolCommand, ProtocolConflictKind, RegisterWorkDemandCommand, SchedulerOwner,
+    SettleActivationCommand, Settlement, Snapshot, WaitGenerationRecord, WaitIdentity, WaitRecord,
+    WaitState, WaitTrigger, WorkDemand, WorkStatus, YieldContinuationRecord,
 };
 use proptest::prelude::*;
 use serde::Deserialize;
@@ -1803,6 +1803,7 @@ fn lifecycle_settlement_can_atomically_adopt_work_item_wait() {
             owner_work_item_id: "work-1".into(),
             source_updated_at: "2026-07-30T00:00:01Z".into(),
         },
+        source_lifecycle_wait: None,
         focus: true,
         reserve_dispatch: true,
     });
@@ -2075,6 +2076,183 @@ fn lifecycle_settlement_can_atomically_adopt_work_item_wait() {
         reused_wait.outcome.snapshot.dispatch_revision + 1
     );
     assert_invariants(&released.outcome.snapshot).unwrap();
+}
+
+#[test]
+fn lifecycle_wait_handoff_atomically_replaces_exact_reservation() {
+    let source_wait = WaitIdentity {
+        id: "wait-lifecycle".into(),
+        generation: 1,
+    };
+    let lifecycle_owner = SchedulerOwner::AgentLifecycle {
+        agent_id: "agent-1".into(),
+    };
+    let mut snapshot = minimal_snapshot(1);
+    snapshot.focus = None;
+    snapshot.work.clear();
+    snapshot.dispatch = AgentDispatchState::Awaiting {
+        wait: source_wait.clone(),
+    };
+    snapshot.dispatch_revision = 4;
+    snapshot.waits.insert(
+        source_wait.id.clone(),
+        WaitRecord {
+            current_generation: source_wait.generation,
+            generations: BTreeMap::from([(
+                source_wait.generation,
+                WaitGenerationRecord {
+                    owner: lifecycle_owner.clone(),
+                    state: WaitState::Active,
+                    trigger: None,
+                    consuming_activation_id: None,
+                },
+            )]),
+        },
+    );
+
+    let activation_id = "activation:message:msg-handoff";
+    let admitted = reduce_command(
+        &snapshot,
+        &ProtocolCommand::AdmitActivation(AdmitActivationCommand {
+            authority_id: "authority-lifecycle-handoff".into(),
+            activation: AgentActivation {
+                id: activation_id.into(),
+                agent_id: "agent-1".into(),
+                state: ActivationLifecycleState::Admitted,
+                cause: ActivationCause::LifecycleExternalNudge {
+                    message_id: "msg-handoff".into(),
+                },
+                binding: ActivationBinding::Lifecycle {
+                    agent_id: "agent-1".into(),
+                },
+                priority: ActivationPriority::Normal,
+                preemption: PreemptionPolicy::NonPreemptive,
+                source_revision: None,
+                idempotency_key: "lifecycle-msg-handoff".into(),
+                provenance: ActivationProvenance {
+                    origin: ActivationOrigin::Operator,
+                    trust: ActivationTrust::OperatorInstruction,
+                    source_id: "msg-handoff".into(),
+                    correlation_id: None,
+                    causation_id: None,
+                },
+            },
+            expected_scheduling_generation: 2,
+            expected_dispatch_revision: 4,
+        }),
+    );
+    assert_eq!(admitted.outcome.decision, Decision::Admitted);
+    let settled = reduce_command(
+        &admitted.outcome.snapshot,
+        &ProtocolCommand::SettleActivation(SettleActivationCommand {
+            settlement: ActivationSettlement {
+                id: "settlement:message:msg-handoff".into(),
+                activation_id: activation_id.into(),
+                turn_terminal: Some("turn-handoff".into()),
+                disposition: ActivationDisposition::WorkContinues,
+                agent_dispatch: AgentDispatchDisposition::Open,
+                operator_delivery: None,
+                evidence: vec!["message:msg-handoff".into()],
+                created_at: "2026-08-01T00:00:00Z".into(),
+            },
+        }),
+    );
+    assert_eq!(settled.outcome.decision, Decision::Settled);
+    assert_eq!(
+        settled.outcome.snapshot.dispatch,
+        AgentDispatchState::Awaiting {
+            wait: source_wait.clone(),
+        }
+    );
+
+    let command = ProtocolCommand::AdoptActivationWorkState(AdoptActivationWorkStateCommand {
+        source_activation_id: activation_id.into(),
+        source_message_id: "msg-handoff".into(),
+        source_turn_id: "turn-handoff".into(),
+        source_admitted_generation: 2,
+        work_item_id: "work-handoff".into(),
+        source_work_item_revision: 3,
+        wait: LegacyWaitAdoption {
+            wait_id: "wait-work".into(),
+            generation: 3,
+            owner_work_item_id: "work-handoff".into(),
+            source_updated_at: "2026-08-01T00:00:01Z".into(),
+        },
+        source_lifecycle_wait: Some(LifecycleWaitHandoffProof {
+            wait: source_wait.clone(),
+            expected_dispatch_revision: 4,
+        }),
+        focus: true,
+        reserve_dispatch: true,
+    });
+
+    let adopted = reduce_command(&settled.outcome.snapshot, &command);
+    assert_eq!(adopted.outcome.decision, Decision::LegacyWorkStateAdopted);
+    assert_eq!(
+        adopted.outcome.snapshot.waits[&source_wait.id].generations[&source_wait.generation].state,
+        WaitState::Resolved
+    );
+    assert_eq!(
+        adopted.outcome.snapshot.waits["wait-work"].generations[&3].owner,
+        SchedulerOwner::WorkItem {
+            work_item_id: "work-handoff".into(),
+        }
+    );
+    assert_eq!(
+        adopted.outcome.snapshot.dispatch,
+        AgentDispatchState::Awaiting {
+            wait: WaitIdentity {
+                id: "wait-work".into(),
+                generation: 3,
+            },
+        }
+    );
+    assert_eq!(adopted.outcome.snapshot.dispatch_revision, 5);
+    assert_eq!(
+        adopted.outcome.snapshot.focus.as_deref(),
+        Some("work-handoff")
+    );
+    assert_invariants(&adopted.outcome.snapshot).unwrap();
+
+    let replay = reduce_command(&adopted.outcome.snapshot, &command);
+    assert_eq!(replay.outcome.decision, Decision::DuplicateIgnored);
+    assert_eq!(replay.outcome.snapshot, adopted.outcome.snapshot);
+
+    let mut stale_command = command.clone();
+    let ProtocolCommand::AdoptActivationWorkState(stale) = &mut stale_command else {
+        unreachable!("fixture is an activation adoption command");
+    };
+    stale
+        .source_lifecycle_wait
+        .as_mut()
+        .expect("handoff proof")
+        .expected_dispatch_revision = 3;
+    let stale = reduce_command(&settled.outcome.snapshot, &stale_command);
+    assert_eq!(stale.outcome.decision, Decision::Rejected);
+    assert_eq!(
+        stale.conflict.expect("typed conflict").kind,
+        ProtocolConflictKind::BindingConflict
+    );
+    assert_eq!(stale.outcome.snapshot, settled.outcome.snapshot);
+
+    let mut foreign = settled.outcome.snapshot.clone();
+    foreign
+        .waits
+        .get_mut(&source_wait.id)
+        .unwrap()
+        .generations
+        .get_mut(&source_wait.generation)
+        .unwrap()
+        .owner = SchedulerOwner::AgentLifecycle {
+        agent_id: "agent-foreign".into(),
+    };
+    let rejected = reduce_command(&foreign, &command);
+    assert_eq!(rejected.outcome.decision, Decision::Rejected);
+    assert_eq!(
+        rejected.conflict.expect("typed conflict").kind,
+        ProtocolConflictKind::BindingConflict
+    );
+    assert_eq!(rejected.outcome.snapshot, foreign);
 }
 
 #[test]
