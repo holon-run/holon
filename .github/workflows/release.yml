@@ -1,4 +1,3 @@
-
 name: Release
 
 on:
@@ -74,7 +73,15 @@ jobs:
              and (.workflow_run_id | tostring) == $run_id
              and .status == "pass"
              and (.image.ref | contains("@sha256:"))
-             and (.model_route | length > 0)' \
+             and (.model_route | length > 0)
+             and .scheduler_acceptance.schema_version == 1
+             and .scheduler_acceptance.status == "pass"
+             and .scheduler_acceptance.git_sha == $sha
+             and (.scheduler_acceptance.runtime_schema_revision | type == "number")
+             and (.scheduler_acceptance.fixture_corpus_revision | length > 0)
+             and (.scheduler_acceptance.image_digest | contains("@sha256:"))
+             and ([.scheduler_acceptance.engines[] | .engine] == ["legacy", "canonical"])
+             and ([.scheduler_acceptance.engines[] | .status] | all(. == "pass"))' \
             release-e2e-gate/release-e2e-attestation.json >/dev/null
 
           candidate_image="$(jq -r '.image.ref' release-e2e-gate/release-e2e-attestation.json)"

@@ -17,10 +17,9 @@ implicitly.
 
 | Scenario ID | Case ID | Description | Key Assertions |
 |---|---|---|---|
-| SCHED-E2E-001 | `scheduler-autonomous-legacy` | Single agent autonomous loop | brief exists; settlement completed; no duplicate settlement; restart persistence |
+| SCHED-E2E-001 | `scheduler-task-wait-resume` | Autonomous task-result and external-wait continuity | brief binding; task yield/rejoin; wait resolved; restart persistence |
 | SCHED-E2E-002 | `scheduler-multi-workitem-scheduling` | Multi-WorkItem concurrent scheduling | both complete; no conflicts; 2 activations; 2 settlements; restart persistence |
 | SCHED-E2E-003 | `scheduler-provider-failure-work-queue-retry` | Provider failure recovery | recovery turn scheduled; final brief; no death loop; idempotency key preserved |
-| SCHED-E2E-004 | `scheduler-terminal-before-settlement-restart` | SIGKILL crash recovery | settlement idempotent; brief not lost; exactly-once |
 | SCHED-E2E-005 | `scheduler-external-wait-resume` | WaitFor external trigger + resume | wait state correct; external callback wakes; WorkItem resumes; wait resolved |
 | SCHED-E2E-006 | `scheduler-operator-wait-resume` | WaitFor operator_input + resume | wait state correct; operator message wakes; WorkItem resumes; wait resolved |
 
@@ -48,9 +47,11 @@ implicitly.
 
 Each case asserts three layers:
 
-1. **State layer**: SQLite `state.db` queries via `runtime_db_snapshot()`
+1. **State layer**: SQLite `runtime.sqlite` queries via `runtime_db_snapshot()`
    verifying WorkItem state, scheduling_state, settlement records, wait
-   conditions, and activation chains.
+   conditions, and activation chains. Release and nightly matrix runs execute
+   every selected scheduler case once in an isolated `legacy` process and once
+   in an isolated `canonical` process.
 2. **Artifact layer**: Brief existence, content, and work_item binding via
    `brief()` and work-items API.
 3. **Behavior layer**: Event sequence and tool execution checks via

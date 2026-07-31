@@ -55,6 +55,7 @@ jobs:
           python3 scripts/docker-e2e.py \
             --image holon:nightly \
             --skip-build \
+            --scheduler-matrix \
             --suite extended \
             --tag e2e-tier-1 \
             --env-file "${HOLON_E2E_DOCKER_ENV_FILE}" \
@@ -66,6 +67,7 @@ jobs:
           python3 scripts/docker-e2e.py \
             --image holon:nightly \
             --skip-build \
+            --scheduler-matrix \
             --suite extended \
             --tag e2e-tier-2 \
             --env-file "${HOLON_E2E_DOCKER_ENV_FILE}" \

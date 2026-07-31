@@ -48,15 +48,16 @@ deepseek/deepseek-v4-flash
 
 The suite requires network access and provider quota, so ordinary pull-request
 CI only validates its manifest and Python runner. Each release candidate runs
-the core cases plus all scheduler-tagged rollout cases through the protected
-`Release E2E` workflow.
+the core cases plus all scheduler-tagged cases through the protected
+`Release E2E` workflow. Scheduler cases run twice with
+`HOLON_SCHEDULER=legacy` and `HOLON_SCHEDULER=canonical`. Each engine uses a
+separate `holon serve` process, Docker volume, runtime database, and evidence
+directory while sharing the same user-visible and persistence assertions.
 
-The scheduler rollout cases use hidden offline fixtures guarded by
-`HOLON_SCHEDULER_ACCEPTANCE_FIXTURES=true`. Their manifest is explicitly
-synthetic acceptance data: it exercises the production reducer, revision
-fences, atomic batch application, rejection of insufficient evidence, cutover,
-and rollback. It does not claim that one Docker run collected the production
-sample counts or the full fleet evidence corpus encoded by those gates.
+The release gate does not install scheduler manifest/preflight rows, stage
+shadow authority, or import synthetic cutover evidence. It validates the
+temporary process-level rollback switch directly and records canonical-only
+protocol assertions only when the canonical engine is selected.
 
 Run locally with a credential environment variable:
 
@@ -120,7 +121,10 @@ python3 scripts/docker-e2e.py \
 
 The summary records the Git SHA, image ID and repository digest, requested
 model route, manifest hash, timings, provider attempts, token usage, tool
-counts, cleanup status, and previous image when supplied.
+counts, cleanup status, and previous image when supplied. A matrix run also
+writes `scheduler-acceptance-report.json`, which binds the result to the Git
+SHA, immutable image digest, runtime schema revision, fixture corpus revision,
+manifest hash, both scheduler engines, and their per-case evidence identities.
 
 ### Checked-in cases
 
@@ -173,17 +177,20 @@ counts, cleanup status, and previous image when supplied.
 5. Assert the required tools succeeded and the durable completion result
    contains the generated completion marker.
 
-#### Scheduler rollout cases
+#### Scheduler release acceptance cases
 
-The protected release run also selects every case tagged `scheduler`:
+The protected release run selects every case tagged `scheduler` and expands
+each into isolated `legacy` and `canonical` processes. The corpus includes:
 
-1. `scheduler-rollout-authoritative-autonomous` validates shadow evidence,
-   per-scenario authoritative cutover, task-result and external-wait
-   continuations, exact completion delivery binding, restart persistence, and
-   rollback.
-2. `scheduler-terminal-before-settlement-restart` uses a checked-in offline
-   fault fixture to validate bootstrap reconciliation and second-restart
-   idempotence without issuing a model prompt.
+1. `scheduler-task-wait-resume` validates autonomous scheduling, promoted task
+   yield/rejoin, external wait-resume, exact completion delivery binding, and
+   restart persistence.
+2. Provider-failure retry, multi-WorkItem scheduling, external/operator waits,
+   interjection, compaction, worktree isolation, child supervision, and
+   checkpoint replay retain their real process and persistence assertions.
+3. The canonical process additionally requires settled activation, demand,
+   and wait-generation state. The legacy process requires those canonical
+   execution tables to remain unused.
 
 These cases validate the complete boundary:
 
@@ -203,14 +210,17 @@ jobs:
 1. Build and push `candidate-<git-sha>` with OCI version, revision, and source
    labels.
 2. Pull and test the resulting immutable digest in the `release-e2e`
-   environment using `DEEPSEEK_API_KEY`, selecting all core and
-   scheduler-tagged cases in one attested runner invocation.
+   environment using `DEEPSEEK_API_KEY`, selecting all core cases and expanding
+   scheduler-tagged cases with `--scheduler-matrix` in one attested runner
+   invocation.
 
 The E2E job has read-only repository/package permissions and cannot publish a
 GitHub release, promote `latest`, or update Homebrew. Evidence is retained as a
-workflow artifact. The tag-triggered release workflow verifies the matching
-attestation before publishing, then promotes the exact candidate digest that
-passed this suite instead of rebuilding the container image.
+workflow artifact. Its attestation embeds the machine-readable scheduler
+acceptance report. The tag-triggered release workflow verifies that both
+engines passed against the same Git SHA, schema revision, fixture corpus, and
+candidate digest before publishing, then promotes that exact digest instead of
+rebuilding the container image.
 
 ## Phases
 

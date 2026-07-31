@@ -553,15 +553,14 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 docker_run,
             )
 
-    def test_scheduler_extended_cases_declare_rollout_modes(self) -> None:
+    def test_scheduler_extended_cases_use_real_lifecycle_fixtures(self) -> None:
         selected = runner.select_cases(
             self.manifest, requested=None, suite="extended", tags=["scheduler"]
         )
         self.assertEqual(
             [case["id"] for case in selected],
             [
-                "scheduler-rollout-authoritative-autonomous",
-                "scheduler-terminal-before-settlement-restart",
+                "scheduler-task-wait-resume",
                 "scheduler-provider-failure-work-queue-retry",
                 "scheduler-multi-workitem-scheduling",
                 "scheduler-external-wait-resume",
@@ -574,27 +573,43 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 "scheduler-checkpoint-replay",
             ],
         )
-        rollout_cases = selected[:2]
-        self.assertEqual(
-            [
-                case["runtime_env"]["HOLON_SCHEDULER_ACCEPTANCE_FIXTURES"]
-                for case in rollout_cases
-            ],
-            ["true", "true"],
-        )
-        authoritative = rollout_cases[0]
-        recovery = rollout_cases[1]
-        self.assertEqual(len(authoritative["phases"]), 2)
+        task_wait = selected[0]
+        self.assertEqual(len(task_wait["phases"]), 1)
         self.assertIn(
-            "WaitFor", authoritative["phases"][0]["required_tools"]
+            "ExecCommand", task_wait["phases"][0]["required_tools"]
         )
-        self.assertIn(
-            "ExecCommand", authoritative["phases"][1]["required_tools"]
-        )
+        self.assertIn("WaitFor", task_wait["phases"][0]["required_tools"])
         self.assertNotIn(
-            "PickWorkItem", authoritative["phases"][1]["required_tools"]
+            "PickWorkItem", task_wait["phases"][0]["required_tools"]
         )
-        self.assertFalse(recovery["requires_model"])
+        for case in selected:
+            self.assertNotIn(
+                "HOLON_SCHEDULER_ACCEPTANCE_FIXTURES",
+                case.get("runtime_env", {}),
+            )
+            self.assertNotIn("HOLON_SCHEDULER", case.get("runtime_env", {}))
+
+    def test_scheduler_matrix_expands_only_scheduler_cases(self) -> None:
+        selected = runner.select_cases(
+            self.manifest, requested=None, suite="core", tags=[]
+        ) + runner.select_cases(
+            self.manifest,
+            requested=["scheduler-task-wait-resume"],
+            suite="extended",
+            tags=[],
+        )
+        expanded = runner.expand_case_matrix(selected, scheduler_matrix=True)
+        self.assertEqual(
+            [(case["id"], engine) for case, engine in expanded],
+            [
+                ("runtime-auth-model-delivery", None),
+                ("memory-agent-home-persistence", None),
+                ("workspace-restart-lifecycle", None),
+                ("workitem-wait-restart-complete", None),
+                ("scheduler-task-wait-resume", "legacy"),
+                ("scheduler-task-wait-resume", "canonical"),
+            ],
+        )
 
     def test_e2e_tier_1_cases_have_correct_config(self) -> None:
         selected = runner.select_cases(
@@ -645,124 +660,80 @@ class DockerE2ERunnerTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "requires_model must be boolean"):
             runner.validate_manifest(invalid)
 
-    def test_scheduler_rollout_commands_are_revision_fenced(self) -> None:
-        commands = runner.scheduler_rollout_commands(
-            {
-                "work_item_autonomous_continuation": "authoritative",
-                "settlement": "shadow",
-            }
-        )
-        self.assertEqual(
-            [entry["command"]["kind"] for entry in commands],
-            [
-                "open_preflight",
-                "complete_preflight",
-                "install_manifest",
-                "configure_protocol",
-                "change_scenario_authority",
-                "change_scenario_authority",
-                "change_scenario_authority",
-            ],
-        )
-        self.assertEqual(
-            [
-                entry["command"]["expected_config_revision"]
-                for entry in commands[4:]
-            ],
-            [2, 3, 4],
-        )
-        manifest = commands[1]["command"]["manifest"]
-        self.assertEqual(
-            manifest["classes"]["work_item_autonomous_continuation"][
-                "configured_mode"
-            ],
-            "authoritative",
-        )
-        self.assertIn(
-            "work_item_rollback",
-            manifest["classes"]["work_item_autonomous_continuation"][
-                "verified_evidence"
-            ],
-        )
-
-    def test_scheduler_rollout_commands_can_stage_shadow_under_authoritative_approval(
-        self,
-    ) -> None:
-        commands = runner.scheduler_rollout_commands(
-            {"exact_wait_resume": "shadow"},
-            approved_scenario_modes={"exact_wait_resume": "authoritative"},
-        )
-        manifest = commands[1]["command"]["manifest"]
-        self.assertEqual(
-            manifest["classes"]["exact_wait_resume"]["configured_mode"],
-            "authoritative",
-        )
-        self.assertEqual(
-            [
-                entry["command"]["mode"]
-                for entry in commands
-                if entry["command"]["kind"] == "change_scenario_authority"
-            ],
-            ["shadow"],
-        )
-
-    def test_incomplete_scheduler_rollout_fixture_fails_after_open_command(self) -> None:
-        commands = runner.scheduler_incomplete_rollout_commands(
-            {"exact_wait_resume": "authoritative"}
-        )
-        self.assertEqual(
-            [entry["command"]["kind"] for entry in commands],
-            ["open_preflight", "complete_preflight"],
-        )
-        evidence = commands[1]["command"]["manifest"]["classes"][
-            "exact_wait_resume"
-        ]
-        self.assertEqual(evidence["observed_shadow_samples"], 0)
-        self.assertEqual(evidence["verified_evidence"], [])
-
-    def test_scheduler_rollout_oracle_requires_consumed_preflight(self) -> None:
-        snapshot = {
-            "scheduler_protocol_config": [
-                {
-                    "protocol_mode": "authoritative",
-                    "config_revision": 5,
-                    "latest_preflight_revision": 1,
-                }
-            ],
-            "scheduler_rollout_preflights": [
-                {
-                    "preflight_revision": 1,
-                    "manifest_revision": 1,
-                    "state": "consumed",
-                    "manifest_json": "{}",
-                }
-            ],
-            "scheduler_rollout_manifests": [
-                {
-                    "manifest_revision": 1,
-                    "preflight_revision": 1,
-                    "payload_json": "{}",
-                }
-            ],
-            "scheduler_scenario_authorities": [
-                {
-                    "scenario_class": "settlement",
-                    "mode": "authoritative",
-                    "rollback_target": "shadow",
-                    "manifest_revision": 1,
-                    "preflight_revision": 1,
-                }
-            ],
-            "scheduler_rollout_command_results": [
-                {"conflict_kind": None}
-            ],
+    def test_scheduler_acceptance_report_binds_build_and_fixture_identity(self) -> None:
+        run_record = {
+            "git_sha": "abc123",
+            "image": {
+                "ref": "ghcr.io/holon-run/holon@sha256:deadbeef",
+                "id": "sha256:image",
+                "repo_digests": ["ghcr.io/holon-run/holon@sha256:deadbeef"],
+            },
+            "image_digest": "ghcr.io/holon-run/holon@sha256:deadbeef",
+            "manifest_sha256": "manifest-hash",
         }
-        runner.require_rollout_state(snapshot, {"settlement": "authoritative"})
-        snapshot["scheduler_rollout_preflights"][0]["state"] = "completed"
-        with self.assertRaisesRegex(AssertionError, "not consumed"):
-            runner.require_rollout_state(
-                snapshot, {"settlement": "authoritative"}
-            )
+        case_results = [
+            {
+                "id": f"scheduler-task-wait-resume-{engine}",
+                "base_id": "scheduler-task-wait-resume",
+                "scheduler_engine": engine,
+                "status": "pass",
+                "schema_revision": 40,
+            }
+            for engine in runner.SCHEDULER_ENGINES
+        ]
+        report = runner.scheduler_acceptance_report(
+            run_record=run_record,
+            case_results=case_results,
+            fixture_corpus_revision="scheduler-release-acceptance-v1",
+        )
+        self.assertEqual(
+            report["schema_version"],
+            runner.SCHEDULER_ACCEPTANCE_REPORT_SCHEMA_VERSION,
+        )
+        self.assertEqual(report["status"], "pass")
+        self.assertEqual(report["git_sha"], "abc123")
+        self.assertEqual(report["runtime_schema_revision"], 40)
+        self.assertEqual(
+            report["image_digest"],
+            "ghcr.io/holon-run/holon@sha256:deadbeef",
+        )
+        self.assertEqual(
+            report["fixture_corpus_revision"],
+            "scheduler-release-acceptance-v1",
+        )
+        self.assertEqual(
+            [engine["engine"] for engine in report["engines"]],
+            ["legacy", "canonical"],
+        )
+
+    def test_scheduler_acceptance_report_rejects_schema_drift(self) -> None:
+        run_record = {
+            "git_sha": "abc123",
+            "image": {"ref": "holon:test", "id": None, "repo_digests": []},
+            "image_digest": None,
+            "manifest_sha256": "manifest-hash",
+        }
+        case_results = [
+            {
+                "id": f"scheduler-task-wait-resume-{engine}",
+                "base_id": "scheduler-task-wait-resume",
+                "scheduler_engine": engine,
+                "status": "pass",
+                "schema_revision": revision,
+            }
+            for engine, revision in (("legacy", 39), ("canonical", 40))
+        ]
+        report = runner.scheduler_acceptance_report(
+            run_record=run_record,
+            case_results=case_results,
+            fixture_corpus_revision="scheduler-release-acceptance-v1",
+        )
+        self.assertEqual(report["status"], "fail")
+        self.assertIsNone(report["runtime_schema_revision"])
+        self.assertIn(
+            "scheduler_schema_revision_mismatch",
+            {diagnostic["code"] for diagnostic in report["diagnostics"]},
+        )
 
     def test_scheduler_queue_oracle_uses_current_processed_state(self) -> None:
         runner.require_processed_queue_entries(

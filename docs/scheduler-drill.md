@@ -117,6 +117,9 @@ declared parameters alone never satisfy coverage. Historical hard blockers and
 manifest/preflight revisions remain visible while the collector reads the
 compatibility schema, but they do not grant runtime authority.
 
-The historical rollout checks must be removed when those repositories are
-retired. Release Go/No-Go is determined by collected scenario results and build
-identity, not by importing or activating runtime rollout rows.
+Release Go/No-Go is determined by collected scenario results and build
+identity, not by importing or activating runtime rollout rows. The protected
+release workflow separately runs the checked-in lifecycle corpus in isolated
+`legacy` and `canonical` processes and emits
+`scheduler-acceptance-report.json`; the drill remains the larger stress and
+fault corpus rather than a source of runtime authority.

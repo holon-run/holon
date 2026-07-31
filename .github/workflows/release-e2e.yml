@@ -120,6 +120,7 @@ jobs:
           args=(
             --image-digest "${CANDIDATE_IMAGE}"
             --skip-build
+            --scheduler-matrix
             --env-file "${HOLON_E2E_DOCKER_ENV_FILE}"
           )
           while IFS= read -r case_id; do
@@ -151,12 +152,18 @@ jobs:
           if not summaries:
               raise SystemExit("No Docker E2E summary was produced")
           summary = json.loads(summaries[-1].read_text())
+          scheduler_report = json.loads(
+              (summaries[-1].parent / "scheduler-acceptance-report.json").read_text()
+          )
           lines = [
               "# Release Docker E2E",
               "",
               f"- Status: **{summary['status']}**",
               f"- Candidate: `{summary['image']['ref']}`",
               f"- Git SHA: `{summary['git_sha']}`",
+              f"- Scheduler matrix: **{scheduler_report['status']}**",
+              f"- Runtime schema revision: `{scheduler_report['runtime_schema_revision']}`",
+              f"- Fixture corpus: `{scheduler_report['fixture_corpus_revision']}`",
               f"- Model: `{summary['model_route']}`",
               f"- Duration: `{summary['duration_seconds']}s`",
               "",
@@ -186,6 +193,16 @@ jobs:
           summary = json.loads(summaries[-1].read_text())
           if summary["status"] != "pass":
               raise SystemExit(f"Release E2E did not pass: {summary['status']}")
+          scheduler_report_path = summaries[-1].parent / "scheduler-acceptance-report.json"
+          scheduler_report = json.loads(scheduler_report_path.read_text())
+          if scheduler_report["status"] != "pass":
+              raise SystemExit(
+                  f"Scheduler acceptance did not pass: {scheduler_report['status']}"
+              )
+          if scheduler_report["git_sha"] != os.environ["CANDIDATE_SHA"]:
+              raise SystemExit("Scheduler acceptance Git SHA does not match candidate")
+          if scheduler_report["image_digest"] != summary["image_digest"]:
+              raise SystemExit("Scheduler acceptance image digest does not match summary")
           attestation = {
               "schema_version": 1,
               "release_tag": os.environ["RELEASE_TAG"],
@@ -196,7 +213,10 @@ jobs:
               "status": summary["status"],
               "model_route": summary["model_route"],
               "image": summary["image"],
+              "image_digest": summary["image_digest"],
+              "scheduler_acceptance": scheduler_report,
               "summary_path": str(summaries[-1]),
+              "scheduler_acceptance_path": str(scheduler_report_path),
           }
           Path("target/release-e2e-attestation").mkdir(parents=True, exist_ok=True)
           Path("target/release-e2e-attestation/release-e2e-attestation.json").write_text(
