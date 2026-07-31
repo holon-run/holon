@@ -82,8 +82,6 @@ RESTART_CHECKPOINTS = (
     "post_commit_notification",
     "targeted_yield_return",
     "legacy_adoption_atomicity",
-    "preclaim_hard_blocker_fallback",
-    "authority_rollback",
 )
 RESTART_CHECKPOINT_CUT_KINDS = {
     "ingress_queue_admission": "atomic_rollback",
@@ -94,8 +92,6 @@ RESTART_CHECKPOINT_CUT_KINDS = {
     "post_commit_notification": "post_commit_recovery",
     "targeted_yield_return": "durable_recovery",
     "legacy_adoption_atomicity": "atomic_rollback",
-    "preclaim_hard_blocker_fallback": "durable_recovery",
-    "authority_rollback": "atomic_rollback",
 }
 RUN_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{5,63}$")
 FAULT_SCENARIOS = {
@@ -1565,16 +1561,6 @@ def exercise_restart_checkpoint(args: argparse.Namespace) -> int:
     )
     checkpoint = args.checkpoint
     mode = "authoritative"
-    completed_restart_checkpoints = {
-        phase.get("detail", {}).get("restart", {}).get("checkpoint")
-        for phase in record.get("phase_history", [])
-        if phase.get("action") == "restart_checkpoint"
-        and phase.get("status") == "completed"
-    }
-    require(
-        "authority_rollback" not in completed_restart_checkpoints,
-        "authority_rollback must be the final restart checkpoint",
-    )
     phase_label = (
         f"restart-{checkpoint}-{len(record.get('phase_history', [])) + 1}"
     )

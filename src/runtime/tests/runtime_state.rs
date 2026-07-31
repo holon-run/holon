@@ -501,33 +501,6 @@ async fn run_loop_claim_fault_rolls_back_scheduler_events_with_claim_facts() {
             context_config(),
         )
         .unwrap();
-        let connection = runtime.inner.runtime_db.connection().unwrap();
-        connection
-            .execute(
-                "UPDATE scheduler_protocol_config
-                 SET protocol_mode = 'shadow',
-                     config_revision = 1,
-                     updated_at = CURRENT_TIMESTAMP
-                 WHERE config_id = 1",
-                [],
-            )
-            .unwrap();
-        connection
-            .execute("DELETE FROM scheduler_scenario_authorities", [])
-            .unwrap();
-        connection
-            .execute(
-                "INSERT OR REPLACE INTO scheduler_scenario_authorities (
-                   scenario_class, mode, rollback_target,
-                   manifest_revision, preflight_revision, updated_at
-                 ) VALUES (
-                   'reducer_only_candidates', 'shadow', 'off',
-                   NULL, NULL, CURRENT_TIMESTAMP
-                 )",
-                [],
-            )
-            .unwrap();
-
         let message = runtime
             .enqueue(MessageEnvelope::new(
                 "default",
@@ -569,16 +542,6 @@ async fn run_loop_claim_fault_rolls_back_scheduler_events_with_claim_facts() {
             )
             .unwrap();
         assert_eq!(queue_status, "queued");
-        let comparison_count: i64 = connection
-            .query_row(
-                "SELECT COUNT(*)
-                 FROM scheduler_shadow_comparisons
-                 WHERE comparison_identity = ?1",
-                [format!("message_admission:{}", message.id)],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(comparison_count, 0);
         let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
         assert!(!events.iter().any(|event| {
             event.kind == "scheduler_diagnostic"
@@ -4908,7 +4871,7 @@ async fn message_admission_fault_rolls_back_all_canonical_facts() {
 }
 
 #[tokio::test]
-async fn authoritative_mode_allows_message_admission_outside_authoritative_scenario() {
+async fn control_message_admission_does_not_depend_on_retired_rollout_rows() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -4924,29 +4887,6 @@ async fn authoritative_mode_allows_message_admission_outside_authoritative_scena
         context_config(),
     )
     .unwrap();
-    let connection = runtime.inner.runtime_db.connection().unwrap();
-    connection
-        .execute(
-            "UPDATE scheduler_protocol_config
-             SET protocol_mode = 'authoritative',
-                 config_revision = 1,
-                 updated_at = CURRENT_TIMESTAMP
-             WHERE config_id = 1",
-            [],
-        )
-        .unwrap();
-    connection
-        .execute(
-            "INSERT OR REPLACE INTO scheduler_scenario_authorities (
-               scenario_class, mode, rollback_target,
-               manifest_revision, preflight_revision, updated_at
-             ) VALUES (
-               'reducer_only_candidates', 'authoritative', 'shadow',
-               NULL, NULL, CURRENT_TIMESTAMP
-             )",
-            [],
-        )
-        .unwrap();
     let message = MessageEnvelope::new(
         "default",
         MessageKind::Control,
@@ -4956,7 +4896,7 @@ async fn authoritative_mode_allows_message_admission_outside_authoritative_scena
         AuthorityClass::RuntimeInstruction,
         Priority::Normal,
         MessageBody::Text {
-            text: "excluded from shadow comparison".into(),
+            text: "retired rollout rows are not admission inputs".into(),
         },
     );
 
@@ -4985,7 +4925,7 @@ async fn authoritative_mode_allows_message_admission_outside_authoritative_scena
 }
 
 #[tokio::test]
-async fn run_loop_stale_head_noops_before_authoritative_fence() {
+async fn run_loop_stale_head_noops_before_canonical_claim() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -5001,27 +4941,6 @@ async fn run_loop_stale_head_noops_before_authoritative_fence() {
         context_config(),
     )
     .unwrap();
-    let connection = runtime.inner.runtime_db.connection().unwrap();
-    connection
-        .execute(
-            "UPDATE scheduler_protocol_config
-             SET protocol_mode = 'shadow',
-                 config_revision = config_revision + 1,
-                 updated_at = CURRENT_TIMESTAMP
-             WHERE config_id = 1",
-            [],
-        )
-        .unwrap();
-    connection
-        .execute(
-            "UPDATE scheduler_scenario_authorities
-             SET mode = 'shadow',
-                 updated_at = CURRENT_TIMESTAMP
-             WHERE scenario_class = 'reducer_only_candidates'",
-            [],
-        )
-        .unwrap();
-
     let message = runtime
         .enqueue(MessageEnvelope::new(
             "default",
@@ -5053,27 +4972,6 @@ async fn run_loop_stale_head_noops_before_authoritative_fence() {
         .queue_entries()
         .try_claim_queued_message(&competing_claim)
         .unwrap());
-    connection
-        .execute(
-            "UPDATE scheduler_protocol_config
-             SET protocol_mode = 'authoritative',
-                 config_revision = config_revision + 1,
-                 updated_at = CURRENT_TIMESTAMP
-             WHERE config_id = 1",
-            [],
-        )
-        .unwrap();
-    connection
-        .execute(
-            "UPDATE scheduler_scenario_authorities
-             SET mode = 'authoritative',
-                 rollback_target = 'shadow',
-                 updated_at = CURRENT_TIMESTAMP
-             WHERE scenario_class = 'reducer_only_candidates'",
-            [],
-        )
-        .unwrap();
-
     let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
         .poll()
         .await
@@ -5081,16 +4979,6 @@ async fn run_loop_stale_head_noops_before_authoritative_fence() {
 
     assert!(matches!(poll, scheduler_executor::RunLoopPoll::Idle));
     assert_eq!(runtime.agent_state().await.unwrap().pending, 0);
-    let connection = runtime.inner.runtime_db.connection().unwrap();
-    let comparison_count: i64 = connection
-        .query_row(
-            "SELECT COUNT(*) FROM scheduler_shadow_comparisons
-             WHERE comparison_identity = ?1",
-            [format!("message_admission:{}", message.id)],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(comparison_count, 0);
     let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
     assert!(!events.iter().any(|event| {
         event.kind == "scheduler_decision" && event.data["message_id"] == message.id
@@ -5381,7 +5269,7 @@ async fn indefinite_sleep_with_current_runnable_work_item_emits_continuation_tic
 }
 
 #[tokio::test]
-async fn lifecycle_sleep_work_queue_override_allows_matched_authoritative_evidence() {
+async fn lifecycle_sleep_work_queue_override_preserves_active_run() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -5420,7 +5308,7 @@ async fn lifecycle_sleep_work_queue_override_allows_matched_authoritative_eviden
         .unwrap()
         .into_iter()
         .find(|message| message.kind == MessageKind::SystemTick)
-        .expect("matched authoritative evidence should admit the work queue tick");
+        .expect("runnable work should admit the work queue tick");
     assert_eq!(tick.work_item_id.as_deref(), Some(work_item_id.as_str()));
     assert!(runtime
         .storage()

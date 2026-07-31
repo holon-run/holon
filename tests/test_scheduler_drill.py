@@ -705,12 +705,6 @@ class SchedulerDrillTests(unittest.TestCase):
                     mode="authoritative",
                     mode_session=2,
                 ),
-                restart_phase(
-                    "authority_rollback",
-                    status="failed",
-                    cut_kind="durable_recovery",
-                    replay_exactly_once=False,
-                ),
             ]
         )
         coverage = drill.aggregate_restart_coverage(
@@ -721,24 +715,12 @@ class SchedulerDrillTests(unittest.TestCase):
 
         self.assertEqual(
             coverage["completed_checkpoints"],
-            list(drill.RESTART_CHECKPOINTS[:-1]),
+            list(drill.RESTART_CHECKPOINTS),
         )
         self.assertFalse(coverage["missing_checkpoints"])
-        self.assertEqual(
-            set(coverage["failed_checkpoints"]),
-            {"authority_rollback"},
-        )
-        self.assertEqual(
-            coverage["cut_kind_mismatches"]["authority_rollback"],
-            {
-                "expected": "atomic_rollback",
-                "actual": "durable_recovery",
-            },
-        )
-        self.assertEqual(
-            coverage["verification_failures"]["authority_rollback"],
-            ["replay_exactly_once"],
-        )
+        self.assertFalse(coverage["failed_checkpoints"])
+        self.assertFalse(coverage["cut_kind_mismatches"])
+        self.assertFalse(coverage["verification_failures"])
 
         authoritative = drill.aggregate_restart_coverage(
             {"phase_history": phases},

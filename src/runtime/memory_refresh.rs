@@ -1063,32 +1063,6 @@ mod tests {
         }
     }
 
-    fn enable_scheduler_shadow_scenario(test_runtime: &TestRuntime, scenario_class: &str) {
-        let connection = test_runtime.runtime.inner.runtime_db.connection().unwrap();
-        connection
-            .execute(
-                "UPDATE scheduler_protocol_config
-                 SET protocol_mode = 'shadow',
-                     config_revision = config_revision + 1,
-                     updated_at = CURRENT_TIMESTAMP
-                 WHERE config_id = 1",
-                [],
-            )
-            .unwrap();
-        connection
-            .execute("DELETE FROM scheduler_scenario_authorities", [])
-            .unwrap();
-        connection
-            .execute(
-                "INSERT OR REPLACE INTO scheduler_scenario_authorities (
-                   scenario_class, mode, rollback_target,
-                   manifest_revision, preflight_revision, updated_at
-                 ) VALUES (?1, 'shadow', 'off', NULL, NULL, CURRENT_TIMESTAMP)",
-                [scenario_class],
-            )
-            .unwrap();
-    }
-
     fn set_agent_idle(test_runtime: &TestRuntime) {
         let mut guard = test_runtime.runtime.inner.agent.blocking_lock();
         guard.state.status = AgentStatus::AwakeIdle;
@@ -1613,9 +1587,8 @@ mod tests {
             TransitionFaultPoint::BeforeCommit,
         ] {
             let test_runtime = test_runtime();
-            enable_scheduler_shadow_scenario(&test_runtime, "work_item_autonomous_continuation");
             set_agent_idle(&test_runtime);
-            add_queued_work_item(&test_runtime, "wi-shadow-fault", "shadow-target");
+            add_queued_work_item(&test_runtime, "wi-fault", "fault-target");
             let initial_state = test_runtime
                 .runtime
                 .inner
@@ -1661,19 +1634,6 @@ mod tests {
                     .unwrap(),
                 Some(initial_state.clone())
             );
-            let comparison_count: i64 = test_runtime
-                .runtime
-                .inner
-                .runtime_db
-                .connection()
-                .unwrap()
-                .query_row(
-                    "SELECT COUNT(*) FROM scheduler_shadow_comparisons",
-                    [],
-                    |row| row.get(0),
-                )
-                .unwrap();
-            assert_eq!(comparison_count, 0);
             assert!(get_emitted_system_ticks(&test_runtime).is_empty());
             let events = test_runtime
                 .runtime

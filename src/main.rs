@@ -11,8 +11,6 @@ use std::{
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use clap::ValueEnum;
-use serde::Deserialize;
-
 use holon::{
     client::{normalize_control_base_url, LocalClient, LocalHttpError},
     config::{
@@ -281,8 +279,7 @@ fn runtime_command_uses_config_inspection(command: &Commands) -> bool {
     matches!(
         command,
         Commands::Debug {
-            command: DebugCommands::SchedulerRolloutApply { .. }
-                | DebugCommands::SchedulerRecoveryFixture { .. }
+            command: DebugCommands::SchedulerRecoveryFixture { .. }
                 | DebugCommands::SchedulerRestartFixture { .. }
         }
     )
@@ -1499,26 +1496,6 @@ mod tests {
     }
 
     #[test]
-    fn hidden_scheduler_rollout_apply_parses_input_and_json() {
-        let cli = Cli::parse_from([
-            "holon",
-            "debug",
-            "scheduler-rollout-apply",
-            "--input",
-            "/tmp/rollout.json",
-            "--json",
-        ]);
-        let Commands::Debug {
-            command: DebugCommands::SchedulerRolloutApply { input, json },
-        } = cli.command
-        else {
-            panic!("expected hidden scheduler-rollout-apply command");
-        };
-        assert_eq!(input, PathBuf::from("/tmp/rollout.json"));
-        assert!(json);
-    }
-
-    #[test]
     fn hidden_scheduler_recovery_fixture_parses_objective() {
         let cli = Cli::parse_from([
             "holon",
@@ -1583,13 +1560,6 @@ mod tests {
     #[test]
     fn hidden_offline_scheduler_commands_skip_runtime_model_resolution() {
         for args in [
-            vec![
-                "holon",
-                "debug",
-                "scheduler-rollout-apply",
-                "--input",
-                "/tmp/rollout.json",
-            ],
             vec![
                 "holon",
                 "debug",
@@ -2355,9 +2325,6 @@ async fn handle_debug_command(config: AppConfig, command: DebugCommands) -> Resu
         DebugCommands::SchedulerRecovery { agent, json, apply } => {
             print_scheduler_recovery_report(&config, agent, json, apply)
         }
-        DebugCommands::SchedulerRolloutApply { input, json } => {
-            apply_scheduler_rollout_command(&config, &input, json)
-        }
         DebugCommands::SchedulerRecoveryFixture {
             agent,
             objective,
@@ -2372,43 +2339,6 @@ async fn handle_debug_command(config: AppConfig, command: DebugCommands) -> Resu
         } => {
             seed_scheduler_restart_fixture(&config, agent, checkpoint, stage, objective, json).await
         }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct SchedulerRolloutApplyInput {
-    commands: Vec<SchedulerRolloutApplyCommand>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SchedulerRolloutApplyCommand {
-    command_identity: String,
-    command: holon::domain::scheduler_protocol::RolloutCommand,
-}
-
-fn apply_scheduler_rollout_command(config: &AppConfig, input: &Path, json: bool) -> Result<()> {
-    holon::runtime::require_scheduler_acceptance_fixtures_enabled()?;
-    let _maintenance_lock = RuntimeDbLock::try_lock(config.runtime_db_maintenance_lock_path())
-        .context("scheduler rollout apply requires holon serve to be stopped")?;
-    let request: SchedulerRolloutApplyInput = serde_json::from_slice(
-        &fs::read(input).with_context(|| format!("reading {}", input.display()))?,
-    )
-    .with_context(|| format!("parsing scheduler rollout command {}", input.display()))?;
-    let db = RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
-    if request.commands.is_empty() {
-        return Err(anyhow!("scheduler rollout command list must not be empty"));
-    }
-    let commands = request
-        .commands
-        .into_iter()
-        .map(|request| (request.command_identity, request.command))
-        .collect::<Vec<_>>();
-    let receipts = db.apply_scheduler_rollout_commands(&commands)?;
-    if json {
-        print_json(&serde_json::json!({ "receipts": receipts }))
-    } else {
-        println!("{}", serde_json::to_string_pretty(&receipts)?);
-        Ok(())
     }
 }
 

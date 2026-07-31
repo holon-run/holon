@@ -586,13 +586,6 @@ pub enum DebugCommands {
         apply: bool,
     },
     #[command(hide = true)]
-    SchedulerRolloutApply {
-        #[arg(long)]
-        input: PathBuf,
-        #[arg(long)]
-        json: bool,
-    },
-    #[command(hide = true)]
     SchedulerRecoveryFixture {
         #[arg(long)]
         agent: Option<String>,

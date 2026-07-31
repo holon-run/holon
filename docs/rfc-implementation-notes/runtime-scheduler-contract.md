@@ -35,6 +35,13 @@ compatibility data without dropping published history. Existing databases with
 authoritative rows and missing or stale evidence can therefore reopen canonical
 partitions without manual SQL.
 
+The dead rollout reducer, evidence gates, revision fences, repository/API, and
+hidden rollout command have also been removed. The semantic proposal module and
+its public export are gone, and runtime tests no longer configure historical
+scenario-authority rows. Published rollout, shadow-comparison, and semantic
+decision migrations remain immutable and are covered as upgrade compatibility
+schema.
+
 `holon debug scheduler-recovery` reports retired rollout row counts and stale
 authoritative rows separately from typed canonical recovery candidates. The
 default command is read-only. `--apply` only executes canonical reducer-backed
@@ -79,7 +86,6 @@ Focused verification currently lives in:
 - `src/storage/mod.rs` (FIFO WorkItem queue projection)
 - `tests/fixtures/scheduler/`
 - `tests/scheduler_workitem_mvp.rs` (canonical protocol invariants)
-- `tests/scheduler_intent_mvp.rs` (offline semantic experiment coverage)
 
 Useful local checks:
 
@@ -90,12 +96,11 @@ cargo test queued_system_tick_explicit_idempotency_key_wins_over_newer_signals -
 cargo test operator_interjection_prompt_is_interjected_before_next_provider_round --quiet
 cargo test scheduling_advisory --quiet
 cargo test scheduler_diagnostic_audit_event --quiet
-cargo test scheduler_authoritative_scenarios_require_matched_evidence_and_restart_safe_rollback --quiet
 cargo test scheduler_authoritative_queue_commits_survive_sustained_concurrent_load_and_restart --quiet
 cargo test retired_rollout_metadata_does_not_block_canonical_snapshot_reopen --quiet
 cargo test scheduler_repair_dry_run_and_apply_cancel_agent_wait --quiet
 cargo test storage_work_queue_prompt_projection_preserves_fifo_fairness_and_limit --quiet
-cargo test --test scheduler_workitem_mvp --test scheduler_intent_mvp --quiet
+cargo test --test scheduler_workitem_mvp --quiet
 ```
 
 ## Remaining follow-up

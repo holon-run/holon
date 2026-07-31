@@ -82,10 +82,10 @@ mod tests {
             ActivationPriority, ActivationProvenance, ActivationSettlement, ActivationSlot,
             ActivationTrust, AdmitActivationCommand, AgentActivation, AgentDispatchDisposition,
             AgentDispatchState, AttachActivationInputCommand, Continuation, Decision,
-            IssueActivationAuthorityCommand, PreemptionPolicy, ProtocolCommand, ProtocolMode,
-            RegisterWorkDemandCommand, RolloutCommand, SchedulerOwner, SettleActivationCommand,
-            Snapshot, TriggerWaitCommand, WaitGenerationRecord, WaitIdentity, WaitRecord,
-            WaitResumeClaim, WaitState, WaitTrigger, WorkDemand, WorkStatus,
+            IssueActivationAuthorityCommand, PreemptionPolicy, ProtocolCommand,
+            RegisterWorkDemandCommand, SchedulerOwner, SettleActivationCommand, Snapshot,
+            TriggerWaitCommand, WaitGenerationRecord, WaitIdentity, WaitRecord, WaitResumeClaim,
+            WaitState, WaitTrigger, WorkDemand, WorkStatus,
         },
         runtime_db::repositories::{enum_string, slim_task_record_for_payload},
         runtime_db::transitions::{
@@ -511,11 +511,13 @@ mod tests {
             "scheduler_protocol_command_conflict_attempts",
             "scheduler_protocol_migrations",
             "scheduler_protocol_config",
+            "scheduler_rollout_command_results",
             "scheduler_rollout_preflights",
             "scheduler_rollout_manifests",
             "scheduler_scenario_authorities",
             "scheduler_scenario_hard_blockers",
             "scheduler_shadow_comparisons",
+            "scheduler_semantic_shadow_decisions",
         ] {
             let count: i64 = connection.query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
@@ -2025,34 +2027,6 @@ INSERT INTO scheduler_scenario_authorities (
         );
         assert_eq!(conflict.conflict.code, "command_identity_payload_conflict");
 
-        let rollout_command = RolloutCommand::ConfigureProtocol {
-            expected_config_revision: 0,
-            mode: ProtocolMode::Legacy,
-        };
-        db.transitions().commit_scheduler_rollout_command(
-            "rollout-config-identity",
-            &rollout_command,
-            None,
-        )?;
-        let rollout_error = db
-            .transitions()
-            .commit_scheduler_rollout_command(
-                "rollout-config-identity",
-                &RolloutCommand::ConfigureProtocol {
-                    expected_config_revision: 1,
-                    mode: ProtocolMode::Legacy,
-                },
-                None,
-            )
-            .unwrap_err();
-        let rollout_conflict = rollout_error
-            .downcast_ref::<SchedulerProtocolCommandIdentityConflict>()
-            .expect("rollout conflict should retain its protocol type");
-        assert_eq!(rollout_conflict.partition_kind, "global_rollout");
-        assert_eq!(rollout_conflict.partition_key, "global");
-        assert_eq!(rollout_conflict.command_kind, "configure_protocol");
-        assert_eq!(rollout_conflict.command_identity, "rollout-config-identity");
-
         drop(db);
         let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
         let connection = reopened.connection()?;
@@ -2068,20 +2042,12 @@ INSERT INTO scheduler_scenario_authorities (
             .collect::<std::result::Result<_, _>>()?;
         assert_eq!(
             attempts,
-            vec![
-                (
-                    "agent".into(),
-                    agent_id.into(),
-                    "issue_activation_authority".into(),
-                    "authority-a".into(),
-                ),
-                (
-                    "global_rollout".into(),
-                    "global".into(),
-                    "configure_protocol".into(),
-                    "rollout-config-identity".into(),
-                ),
-            ]
+            vec![(
+                "agent".into(),
+                agent_id.into(),
+                "issue_activation_authority".into(),
+                "authority-a".into(),
+            ),]
         );
         let agent_results: i64 = connection.query_row(
             "SELECT COUNT(*) FROM scheduler_protocol_command_results
@@ -2089,14 +2055,7 @@ INSERT INTO scheduler_scenario_authorities (
             [agent_id],
             |row| row.get(0),
         )?;
-        let rollout_results: i64 = connection.query_row(
-            "SELECT COUNT(*) FROM scheduler_rollout_command_results
-             WHERE command_identity = 'rollout-config-identity'",
-            [],
-            |row| row.get(0),
-        )?;
         assert_eq!(agent_results, 1);
-        assert_eq!(rollout_results, 1);
         Ok(())
     }
 

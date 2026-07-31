@@ -80,21 +80,17 @@ broader scheduler vocabulary and projection contract.
 
 ### Current state
 
-As of July 31, 2026, the production path is intended to be canonical-only.
-Startup configuration does not expose a scheduler selector. Historical rollout
-tables and protocol types still participate in snapshot loading, invariants,
-and transaction parameters even though they no longer provide a useful
-production choice.
+As of July 31, 2026, startup exposes a temporary process-wide
+`legacy | canonical` selector. The selected engine is immutable for the process
+and the two engines do not shadow or compare each other in production.
 
-This residual control plane can reject startup when historical
-scenario-authority rows are marked authoritative but have missing or stale
-manifest/preflight revisions. Such rejection is a migration defect: rollout
-approval metadata must not prevent the canonical scheduler from loading valid
-business facts.
-
-Production code no longer writes normal scheduler shadow-comparison rows.
-The semantic proposal module is not part of production admission, although its
-types and tests remain in the repository.
+Historical rollout, shadow-comparison, and semantic-decision tables remain in
+the published migration chain, but production scheduler snapshots and
+transactions do not load or write them. The rollout types, reducer, gates,
+revision fences, repository/API, hidden command surface, and semantic module
+export have been removed. `holon debug scheduler-recovery` retains a read-only
+summary of historical rollout rows so operators can distinguish compatibility
+data from canonical recovery candidates.
 
 ### Transition state
 
@@ -284,8 +280,8 @@ records.
 
 The semantic proposal plane is outside the production scheduler scope.
 
-The production dependency and module export will be removed. Useful fixtures
-or design material may remain as an offline benchmark or experiment, but they:
+The production dependency, module export, and scheduler authority class are
+removed. Any future offline benchmark or experiment:
 
 - cannot propose or grant production admission;
 - cannot add scheduler authority classes;
@@ -338,7 +334,7 @@ Implementation is split into independently reversible changes:
 3. inventory the surviving legacy implementation and add the temporary global
    selector only if it remains small and isolated;
 4. move qualification evidence into CI/release acceptance;
-5. delete dead rollout, shadow, and semantic production surfaces;
+5. delete dead rollout, shadow, and semantic production surfaces (**complete**);
 6. reduce activation types only after rollout authority is gone; and
 7. delete legacy and the selector after one compatibility release.
 

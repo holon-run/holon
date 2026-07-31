@@ -1,5 +1,11 @@
 # Scheduler Protocol Transition Wraps All Scheduler Boundaries Atomically
 
+> Superseded in part by
+> [Scheduler Cutover Simplification](../rfcs/scheduler-cutover-simplification.md).
+> The atomic canonical transition boundary remains; the rollout, shadow
+> comparison, and semantic decision participants described below have been
+> removed from production.
+
 ## Choice
 
 Every scheduler boundary (message admission, work-queue idle tick, operator
