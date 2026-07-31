@@ -5849,6 +5849,9 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
             );
         }
     } else if !snapshot.settlements.is_empty() && snapshot.dispatch != AgentDispatchState::Open {
+        // Settlement may atomically adopt an activation's WorkItem-owned wait,
+        // so the preserved authoritative lane is not limited to lifecycle-owned
+        // waits. It must still identify an active canonical wait generation.
         let active_wait_is_preserved = match &snapshot.dispatch {
             AgentDispatchState::Awaiting { wait } => snapshot
                 .waits

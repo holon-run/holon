@@ -944,6 +944,9 @@ impl RuntimeHandle {
             .canonical_consumed_wait_condition(agent_id, message, &active_conditions)
             .await?;
         if operator_input || callback_event {
+            // Contentful resume messages reconcile only the exact wait
+            // generation consumed by their scheduler admission. Broadly
+            // matching active waits could resolve unrelated conditions.
             return Ok(exact_condition.into_iter().collect());
         }
 

@@ -147,7 +147,9 @@ impl RuntimeHandle {
         // Resolved and the WorkItem blocker cleared before the model starts
         // working.  Otherwise the model may complete the WorkItem first,
         // causing the wait to be Cancelled (work_item_completed) instead of
-        // Resolved.
+        // Resolved. Reconciliation failure intentionally blocks model
+        // processing rather than allowing work to proceed from ambiguous wait
+        // state.
         self.record_wait_reconciliation_signals(&message).await?;
 
         match message.kind {

@@ -443,6 +443,10 @@ fn completion_intent_revision_matches_activation(
     if source_revision == expected_work_revision {
         return true;
     }
+    // Resume admission consumes the wait generation and advances the WorkItem
+    // revision once, so its activation source may be exactly one revision
+    // behind the completion intent. The consumed-wait proof below fences this
+    // tolerance to the same activation.
     if source_revision.checked_add(1) != Some(expected_work_revision) {
         return false;
     }

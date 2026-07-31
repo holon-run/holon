@@ -603,6 +603,11 @@ Require external waits to declare one of:
 
 ## Scheduler responsibility boundary
 
+Message reconciliation is admission-scoped. Operator input and callback events
+resolve only the exact canonical wait generation consumed by the scheduler
+admission for that message. They do not broadly match every active wait; a wait
+that was not admitted as the message's resume source remains untouched.
+
 The scheduler owns:
 
 - deriving `WorkItemSchedulingState`;
