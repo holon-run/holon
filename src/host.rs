@@ -33,24 +33,32 @@ use crate::{
     ids,
     prompt::{build_effective_prompt_with_apply_patch_surface, EffectivePrompt},
     provider::{build_provider_from_config, AgentProvider},
-    runtime::{InitialWorkspaceBinding, LightweightAgentStateProjection, RuntimeHandle},
+    runtime::{
+        InitialWorkspaceBinding, LightweightAgentStateProjection, RuntimeHandle,
+        SchedulerRepairInspection,
+    },
     runtime_db::RuntimeDb,
     skills::{
         effective_skill_root_registrations, skills_runtime_view_from_catalog, SkillVisibility,
         SkillsRegistry,
     },
     storage::{AppStorage, EventBus, PublishedAuditEvent},
-    system::{ExecutionScopeKind, HostLocalBoundary, WorkspaceAccessMode},
+    system::{
+        ExecutionProfile, ExecutionScopeKind, ExecutionSnapshot, HostLocalBoundary,
+        WorkspaceAccessMode,
+    },
     tool::{apply_patch::ApplyPatchSurface, ToolRegistry},
     types::{
         AdmissionContext, AgentDeletionJob, AgentIdentityRecord, AgentIdentityView, AgentKind,
         AgentLifecycleHint, AgentListEntry, AgentOwnership, AgentProfilePreset,
-        AgentRegistryStatus, AgentState, AgentStatus, AgentSummary, AgentVisibility,
-        AuthorityClass, ChildAgentSummary, ClosureOutcome, ExternalTriggerRecord, MessageBody,
+        AgentRegistryStatus, AgentState, AgentStatus, AgentSummary, AgentTokenUsageSummary,
+        AgentVisibility, AuthorityClass, ChildAgentSummary, ClosureOutcome, ExternalTriggerRecord,
+        ExternalTriggerStatus, ExternalTriggerSummary, LoadedAgentsMdView, MessageBody,
         MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin,
-        OperatorNotificationRecord, Priority, RuntimeFailureSummary, SpawnAgentModelResolution,
-        SpawnAgentModelResolutionStatus, TaskKind, TaskRecord, TaskStatus, TimerRecord,
-        TranscriptEntry, TranscriptEntryKind, WorkspaceEntry, WorkspaceOccupancyRecord,
+        OperatorNotificationRecord, Priority, QueueEntryStatus, RuntimeFailureSummary,
+        SpawnAgentModelResolution, SpawnAgentModelResolutionStatus, TaskKind, TaskRecord,
+        TaskStatus, TimerRecord, TokenUsage, TranscriptEntry, TranscriptEntryKind,
+        WaitConditionSummary, WorkspaceEntry, WorkspaceOccupancyRecord,
     },
 };
 
@@ -107,6 +115,7 @@ pub enum PublicAgentError {
     DeleteForbidden { agent_id: String, reason: String },
     Private { agent_id: String },
     Stopped { agent_id: String },
+    ShuttingDown,
     Runtime(anyhow::Error),
 }
 
@@ -126,6 +135,7 @@ impl std::fmt::Display for PublicAgentError {
             Self::Stopped { agent_id } => {
                 write!(f, "agent {} is stopped; start first", agent_id)
             }
+            Self::ShuttingDown => write!(f, "runtime is shutting down"),
             Self::Runtime(error) => write!(f, "{error}"),
         }
     }
@@ -146,13 +156,62 @@ pub(crate) struct HostInner {
     runtime_db_maintenance_lock: Mutex<Option<crate::runtime_db::RuntimeDbLock>>,
     skills_registry: Arc<RwLock<SkillsRegistry>>,
     static_provider: Option<Arc<dyn AgentProvider>>,
-    agents: RwLock<HashMap<String, AgentEntry>>,
+    runtimes: RwLock<HostRuntimeRegistry>,
 }
 
 struct AgentEntry {
     runtime: RuntimeHandle,
     task: JoinHandle<()>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostRuntimePhase {
+    Open,
+    Closing,
+    Closed,
+}
+
+struct HostRuntimeRegistry {
+    phase: HostRuntimePhase,
+    agents: HashMap<String, AgentEntry>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum RuntimeActivationReason {
+    SchedulerDispatch,
+    OperatorControl,
+    ExternalIngress,
+    Wake,
+    StartupRecovery,
+    AgentLifecycle,
+    ChildSupervision,
+}
+
+impl RuntimeActivationReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::SchedulerDispatch => "scheduler_dispatch",
+            Self::OperatorControl => "operator_control",
+            Self::ExternalIngress => "external_ingress",
+            Self::Wake => "wake",
+            Self::StartupRecovery => "startup_recovery",
+            Self::AgentLifecycle => "agent_lifecycle",
+            Self::ChildSupervision => "child_supervision",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct RuntimeAdmissionClosed;
+
+impl std::fmt::Display for RuntimeAdmissionClosed {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("runtime is shutting down")
+    }
+}
+
+impl std::error::Error for RuntimeAdmissionClosed {}
 
 fn stopped_unloaded_agent(agent_id: &str) -> AgentState {
     let mut agent = AgentState::new(agent_id.to_string());
@@ -269,7 +328,10 @@ impl RuntimeHost {
                 runtime_db_maintenance_lock: Mutex::new(None),
                 skills_registry: Arc::new(RwLock::new(SkillsRegistry::new())),
                 static_provider,
-                agents: RwLock::new(HashMap::new()),
+                runtimes: RwLock::new(HostRuntimeRegistry {
+                    phase: HostRuntimePhase::Open,
+                    agents: HashMap::new(),
+                }),
             }),
         };
         host.ensure_default_agent_identity()?;
@@ -295,8 +357,12 @@ impl RuntimeHost {
             .map_err(|e| anyhow!("failed to reload config: {}", e))?;
         self.inner.registry.replace_config(new_config.clone());
         let agent_handles: Vec<RuntimeHandle> = {
-            let agents = self.inner.agents.read().await;
-            agents.values().map(|entry| entry.runtime.clone()).collect()
+            let registry = self.inner.runtimes.read().await;
+            registry
+                .agents
+                .values()
+                .map(|entry| entry.runtime.clone())
+                .collect()
         };
         for runtime in &agent_handles {
             if let Err(e) = runtime.reload_config(&new_config).await {
@@ -583,16 +649,23 @@ impl RuntimeHost {
     }
 
     pub async fn shutdown(&self) -> Result<()> {
+        let entries = {
+            let mut registry = self.inner.runtimes.write().await;
+            match registry.phase {
+                HostRuntimePhase::Open => {
+                    registry.phase = HostRuntimePhase::Closing;
+                    registry
+                        .agents
+                        .drain()
+                        .map(|(_, entry)| entry)
+                        .collect::<Vec<_>>()
+                }
+                HostRuntimePhase::Closing | HostRuntimePhase::Closed => return Ok(()),
+            }
+        };
         self.shutdown_daemon_runtime_db_retention().await;
         self.shutdown_daemon_memory_indexer().await;
         self.shutdown_daemon_deletion_coordinator().await;
-        let entries = {
-            let mut agents = self.inner.agents.write().await;
-            agents.drain().map(|(_, entry)| entry).collect::<Vec<_>>()
-        };
-        if entries.is_empty() {
-            return Ok(());
-        }
         let mut tasks = Vec::with_capacity(entries.len());
         for entry in entries {
             let _ = entry.runtime.request_service_shutdown().await;
@@ -613,11 +686,12 @@ impl RuntimeHost {
                 let _ = task.await;
             }
         }
+        self.inner.runtimes.write().await.phase = HostRuntimePhase::Closed;
         Ok(())
     }
 
     pub(crate) async fn unload_runtime(&self, agent_id: &str) {
-        let entry = self.inner.agents.write().await.remove(agent_id);
+        let entry = self.inner.runtimes.write().await.agents.remove(agent_id);
         if let Some(entry) = entry {
             entry.task.abort();
             let _ = entry.task.await;
@@ -625,8 +699,29 @@ impl RuntimeHost {
     }
 
     pub async fn default_runtime(&self) -> Result<RuntimeHandle> {
-        self.get_or_create_agent(&self.config().default_agent_id)
-            .await
+        self.activate_agent(
+            &self.config().default_agent_id,
+            RuntimeActivationReason::AgentLifecycle,
+        )
+        .await
+    }
+
+    pub async fn recover_orphaned_queue_claims_at_startup(&self) -> Result<Vec<String>> {
+        let recovered_agent_ids = self
+            .runtime_db()
+            .recover_orphaned_dequeued_claims_at_startup()?;
+        for agent_id in &recovered_agent_ids {
+            let state = self
+                .agent_storage_read_only(agent_id)?
+                .read_agent()?
+                .unwrap_or_else(|| AgentState::new(agent_id));
+            if state.status == AgentStatus::Stopped {
+                continue;
+            }
+            self.activate_agent(agent_id, RuntimeActivationReason::StartupRecovery)
+                .await?;
+        }
+        Ok(recovered_agent_ids)
     }
 
     fn active_agent_identity(
@@ -663,14 +758,345 @@ impl RuntimeHost {
         Ok(identity)
     }
 
+    fn public_activation_error(error: anyhow::Error) -> PublicAgentError {
+        if error.downcast_ref::<RuntimeAdmissionClosed>().is_some() {
+            PublicAgentError::ShuttingDown
+        } else {
+            PublicAgentError::Runtime(error)
+        }
+    }
+
+    pub(crate) fn public_agent_read_storage(
+        &self,
+        agent_id: &str,
+    ) -> std::result::Result<AppStorage, PublicAgentError> {
+        self.public_agent_identity(agent_id)?;
+        self.agent_storage_read_only(agent_id)
+            .map_err(PublicAgentError::Runtime)
+    }
+
+    pub(crate) async fn try_get_loaded_runtime(&self, agent_id: &str) -> Option<RuntimeHandle> {
+        let registry = self.inner.runtimes.read().await;
+        registry
+            .agents
+            .get(agent_id)
+            .filter(|entry| !entry.task.is_finished())
+            .map(|entry| entry.runtime.clone())
+    }
+
+    pub(crate) async fn try_get_public_loaded_runtime(
+        &self,
+        agent_id: &str,
+    ) -> std::result::Result<Option<RuntimeHandle>, PublicAgentError> {
+        self.public_agent_identity(agent_id)?;
+        Ok(self.try_get_loaded_runtime(agent_id).await)
+    }
+
+    pub(crate) async fn public_agent_skills_view(
+        &self,
+        agent_id: &str,
+    ) -> std::result::Result<crate::types::SkillsRuntimeView, PublicAgentError> {
+        let identity = self.public_agent_identity(agent_id)?;
+        let identity_view =
+            AgentIdentityView::from_record(&identity, &self.config().default_agent_id);
+        let storage = self
+            .agent_storage_read_only(agent_id)
+            .map_err(PublicAgentError::Runtime)?;
+        let state = storage
+            .read_agent()
+            .map_err(PublicAgentError::Runtime)?
+            .unwrap_or_else(|| AgentState::new(agent_id));
+        let agent_home = self.agent_data_dir(agent_id);
+        let workspace_skill_root = state
+            .active_workspace_entry
+            .as_ref()
+            .map(|entry| entry.execution_root.as_path());
+        let skill_roots = effective_skill_root_registrations(
+            skill_visibility(&identity_view),
+            Some(self.config().home_dir.as_path()),
+            agent_id,
+            &agent_home,
+            workspace_skill_root,
+        );
+        let mut registry = self.inner.skills_registry.write().await;
+        registry
+            .sync_effective_roots(skill_roots.clone())
+            .map_err(PublicAgentError::Runtime)?;
+        let mut skills = skills_runtime_view_from_catalog(
+            registry.catalog_for_roots(&skill_roots, None),
+            &skill_roots,
+            &state.active_skills,
+        );
+        skills.agent_templates_catalog =
+            discover_agent_templates_catalog(Some(self.config().home_dir.as_path()), &agent_home);
+        Ok(skills)
+    }
+
+    pub(crate) async fn search_memory_read_only(
+        &self,
+        query: &str,
+        limit: usize,
+        include_all_workspaces: bool,
+        agent_ids: &[String],
+    ) -> Result<crate::memory::MemorySearchQueryResult> {
+        let default_agent_id = self.config().default_agent_id.clone();
+        let storage = self.agent_storage_read_only(&default_agent_id)?;
+        let active_workspace_id = storage
+            .read_agent()?
+            .and_then(|agent| agent.active_workspace_entry)
+            .map(|entry| entry.workspace_id);
+        let mut agent_storages = Vec::new();
+        for agent_id in agent_ids {
+            self.public_agent_identity(agent_id)
+                .map_err(anyhow::Error::new)?;
+            agent_storages.push(self.agent_storage_read_only(agent_id)?);
+        }
+        let query = query.to_string();
+        let agent_ids = agent_ids.to_vec();
+        tokio::task::spawn_blocking(move || {
+            let _ = crate::memory::ensure_memory_indexes_fresh(
+                &storage,
+                active_workspace_id.as_deref(),
+                &agent_storages,
+            );
+            crate::memory::search_memory_query_for_agent_storages(
+                &storage,
+                &query,
+                limit,
+                active_workspace_id.as_deref(),
+                include_all_workspaces,
+                &agent_ids,
+                &agent_storages,
+            )
+        })
+        .await?
+    }
+
+    pub(crate) async fn get_memory_read_only(
+        &self,
+        source_ref: &str,
+        max_chars: Option<usize>,
+    ) -> Result<Option<crate::memory::MemoryGetResult>> {
+        let storage = self.agent_storage_read_only(&self.config().default_agent_id)?;
+        let active_workspace_id = storage
+            .read_agent()?
+            .and_then(|agent| agent.active_workspace_entry)
+            .map(|entry| entry.workspace_id);
+        let source_ref = source_ref.to_string();
+        tokio::task::spawn_blocking(move || {
+            crate::memory::get_memory(
+                &storage,
+                &source_ref,
+                max_chars,
+                active_workspace_id.as_deref(),
+            )
+        })
+        .await?
+    }
+
+    pub(crate) fn public_agent_scheduler_repair_inspection(
+        &self,
+        agent_id: &str,
+    ) -> std::result::Result<SchedulerRepairInspection, PublicAgentError> {
+        self.public_agent_identity(agent_id)?;
+        let storage = self
+            .agent_storage_read_only(agent_id)
+            .map_err(PublicAgentError::Runtime)?;
+        let active_waits = storage
+            .raw_active_wait_conditions_for_agent(agent_id)
+            .map_err(PublicAgentError::Runtime)?;
+        let mut wake_only_queue_entries = Vec::new();
+        for entry in storage
+            .latest_queue_entries()
+            .map_err(PublicAgentError::Runtime)?
+        {
+            if entry.agent_id != agent_id
+                || !matches!(
+                    entry.status,
+                    QueueEntryStatus::Queued | QueueEntryStatus::Interrupted
+                )
+            {
+                continue;
+            }
+            if storage
+                .read_message_by_id(&entry.message_id)
+                .map_err(PublicAgentError::Runtime)?
+                .as_ref()
+                .is_some_and(crate::runtime::is_wake_only_message)
+            {
+                wake_only_queue_entries.push(entry);
+            }
+        }
+        Ok(SchedulerRepairInspection {
+            agent_id: agent_id.to_string(),
+            active_waits,
+            wake_only_queue_entries,
+        })
+    }
+
+    pub(crate) fn public_agent_worktree_summary(
+        &self,
+        agent_id: &str,
+    ) -> std::result::Result<String, PublicAgentError> {
+        self.public_agent_identity(agent_id)?;
+        let storage = self
+            .agent_storage_read_only(agent_id)
+            .map_err(PublicAgentError::Runtime)?;
+        let tasks = storage
+            .latest_all_task_records(usize::MAX)
+            .map_err(PublicAgentError::Runtime)?;
+        let messages = storage
+            .read_recent_messages(200)
+            .map_err(PublicAgentError::Runtime)?;
+        Ok(crate::runtime::format_worktree_task_summary(
+            &tasks, &messages,
+        ))
+    }
+
+    pub(crate) async fn local_agent_summary(
+        &self,
+        agent_id: &str,
+    ) -> std::result::Result<AgentSummary, PublicAgentError> {
+        self.active_agent_identity(agent_id)?;
+        if let Some(runtime) = self.try_get_loaded_runtime(agent_id).await {
+            return runtime
+                .agent_summary()
+                .await
+                .map_err(PublicAgentError::Runtime);
+        }
+        // Storage-backed fallback: build AgentSummary without activating runtime.
+        let identity = self.active_agent_identity(agent_id)?;
+        let storage = self
+            .agent_storage_read_only(agent_id)
+            .map_err(PublicAgentError::Runtime)?;
+        let agent_state = storage
+            .read_agent()
+            .map_err(PublicAgentError::Runtime)?
+            .unwrap_or_else(|| stopped_unloaded_agent(agent_id));
+        let work_queue = storage
+            .work_queue_read_model()
+            .map_err(PublicAgentError::Runtime)?;
+        let scheduling_posture = storage
+            .agent_posture_projection_with_work_queue(&agent_state, &work_queue)
+            .map_err(PublicAgentError::Runtime)?;
+        let closure = RuntimeHandle::closure_decision_from_storage(&storage, &agent_state)
+            .map_err(PublicAgentError::Runtime)?;
+        let active_children = self
+            .child_agent_summaries(agent_id)
+            .await
+            .map_err(PublicAgentError::Runtime)?;
+        let identity_view =
+            AgentIdentityView::from_record(&identity, &self.config().default_agent_id);
+        let model = crate::runtime::agent_model_state_for_catalog(
+            &RuntimeModelCatalog::from_config(&self.config()),
+            &self.runtime_context_config(),
+            &agent_state,
+        );
+        let token_usage = AgentTokenUsageSummary {
+            total: TokenUsage::new(
+                agent_state.total_input_tokens,
+                agent_state.total_output_tokens,
+            ),
+            total_model_rounds: agent_state.total_model_rounds,
+            last_turn: agent_state.last_turn_token_usage.clone(),
+        };
+        let execution = if let Some(entry) = agent_state.active_workspace_entry.as_ref() {
+            ExecutionSnapshot {
+                profile: ExecutionProfile::default(),
+                policy: ExecutionProfile::default().policy_snapshot(),
+                attached_workspaces: Vec::new(),
+                workspace_id: Some(entry.workspace_id.clone()),
+                workspace_anchor: entry.workspace_anchor.clone(),
+                execution_root: entry.execution_root.clone(),
+                cwd: entry.cwd.clone(),
+                execution_root_id: Some(entry.execution_root_id.clone()),
+                projection_kind: Some(entry.projection_kind),
+                access_mode: Some(entry.access_mode),
+                worktree_root: None,
+                execution_roots: Vec::new(),
+            }
+        } else {
+            ExecutionSnapshot {
+                profile: ExecutionProfile::default(),
+                policy: ExecutionProfile::default().policy_snapshot(),
+                attached_workspaces: Vec::new(),
+                workspace_id: None,
+                workspace_anchor: PathBuf::new(),
+                execution_root: PathBuf::new(),
+                cwd: PathBuf::new(),
+                execution_root_id: None,
+                projection_kind: None,
+                access_mode: None,
+                worktree_root: None,
+                execution_roots: Vec::new(),
+            }
+        };
+        let active_wait_conditions = storage
+            .active_wait_conditions_for_agent(agent_id)
+            .map_err(PublicAgentError::Runtime)?
+            .into_iter()
+            .map(WaitConditionSummary::from)
+            .collect();
+        let active_external_triggers = storage
+            .latest_external_triggers()
+            .map_err(PublicAgentError::Runtime)?
+            .into_iter()
+            .filter(|record| record.status == ExternalTriggerStatus::Active)
+            .map(|record| ExternalTriggerSummary {
+                external_trigger_id: record.external_trigger_id,
+                target_agent_id: record.target_agent_id,
+                scope: record.scope,
+                delivery_mode: record.delivery_mode,
+                status: record.status,
+                delivery_count: record.delivery_count,
+                created_at: record.created_at,
+                revoked_at: record.revoked_at,
+                last_delivered_at: record.last_delivered_at,
+            })
+            .collect();
+        let skills = self.public_agent_skills_view(agent_id).await?;
+        let loaded_agents_md = LoadedAgentsMdView::default();
+        let summary = AgentSummary {
+            identity: identity_view,
+            lifecycle: AgentLifecycleHint::from_status(agent_id, agent_state.status.clone()),
+            agent: agent_state,
+            scheduling_posture,
+            active_task_count: storage
+                .active_task_count_for_agent(agent_id)
+                .map_err(PublicAgentError::Runtime)?,
+            model,
+            token_usage,
+            closure,
+            execution,
+            active_workspace_occupancy: None,
+            loaded_agents_md,
+            skills,
+            active_children,
+            active_wait_conditions,
+            active_external_triggers,
+            recent_operator_notifications: storage
+                .read_recent_operator_notifications(10)
+                .map_err(PublicAgentError::Runtime)?,
+            recent_brief_count: storage
+                .read_recent_briefs(50)
+                .map_err(PublicAgentError::Runtime)?
+                .len(),
+            recent_event_count: storage
+                .read_recent_events(100)
+                .map_err(PublicAgentError::Runtime)?
+                .len(),
+        };
+        Ok(summary)
+    }
+
     pub async fn get_public_agent(
         &self,
         agent_id: &str,
     ) -> std::result::Result<RuntimeHandle, PublicAgentError> {
         self.public_agent_identity(agent_id)?;
-        self.get_or_create_agent(agent_id)
+        self.activate_agent(agent_id, RuntimeActivationReason::OperatorControl)
             .await
-            .map_err(PublicAgentError::Runtime)
+            .map_err(Self::public_activation_error)
     }
 
     pub async fn begin_public_agent_deletion(
@@ -760,8 +1186,9 @@ impl RuntimeHost {
     ) -> std::result::Result<AgentStateReadProjection, PublicAgentError> {
         let identity = self.public_agent_identity(agent_id)?;
         let runtime = {
-            let agents = self.inner.agents.read().await;
-            agents
+            let registry = self.inner.runtimes.read().await;
+            registry
+                .agents
                 .get(agent_id)
                 .filter(|entry| !entry.task.is_finished())
                 .map(|entry| entry.runtime.clone())
@@ -917,9 +1344,9 @@ impl RuntimeHost {
                 agent_id: agent_id.to_string(),
             });
         }
-        self.get_or_create_agent(agent_id)
+        self.activate_agent(agent_id, RuntimeActivationReason::ExternalIngress)
             .await
-            .map_err(PublicAgentError::Runtime)
+            .map_err(Self::public_activation_error)
     }
 
     pub async fn control_public_agent(
@@ -1068,13 +1495,23 @@ impl RuntimeHost {
         )
         .with_lineage_parent_agent_id(lineage_parent_agent_id.map(ToString::to_string));
         self.append_agent_identity(&record)?;
-        let _ = self.get_or_create_agent(agent_id).await?;
+        let _ = self
+            .activate_agent(agent_id, RuntimeActivationReason::AgentLifecycle)
+            .await?;
         Ok((record, true))
     }
 
     pub fn get_or_create_agent<'a>(
         &'a self,
         agent_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<RuntimeHandle>> + Send + 'a>> {
+        self.activate_agent(agent_id, RuntimeActivationReason::AgentLifecycle)
+    }
+
+    pub(crate) fn activate_agent<'a>(
+        &'a self,
+        agent_id: &'a str,
+        reason: RuntimeActivationReason,
     ) -> Pin<Box<dyn Future<Output = Result<RuntimeHandle>> + Send + 'a>> {
         Box::pin(async move {
             self.validate_agent_id(agent_id)?;
@@ -1086,53 +1523,34 @@ impl RuntimeHost {
             if agent_id == self.config().default_agent_id {
                 self.ensure_default_agent_home_initialized().await?;
             }
-            {
-                let agents = self.inner.agents.read().await;
-                if let Some(entry) = agents.get(agent_id) {
-                    if !entry.task.is_finished() {
-                        return Ok(entry.runtime.clone());
-                    }
-                }
-            }
-
-            let stale_entry = {
-                let mut agents = self.inner.agents.write().await;
-                if agents
-                    .get(agent_id)
-                    .is_some_and(|entry| entry.task.is_finished())
-                {
-                    agents.remove(agent_id)
-                } else {
-                    None
-                }
-            };
-            if let Some(entry) = stale_entry {
-                let _ = entry.task.await;
-            }
-
-            let (runtime, runtime_task) = self.spawn_runtime(agent_id)?;
-
             let mut stale_entry = None;
-            let mut agents = self.inner.agents.write().await;
+            let mut registry = self.inner.runtimes.write().await;
+            if registry.phase != HostRuntimePhase::Open {
+                return Err(anyhow::Error::new(RuntimeAdmissionClosed));
+            }
             if let Err(error) = self.active_agent_identity(agent_id) {
-                runtime_task.abort();
                 return Err(anyhow::Error::new(error));
             }
-            if let Some(entry) = agents.get(agent_id) {
+            if let Some(entry) = registry.agents.get(agent_id) {
                 if !entry.task.is_finished() {
-                    runtime_task.abort();
                     return Ok(entry.runtime.clone());
                 }
-                stale_entry = agents.remove(agent_id);
+                stale_entry = registry.agents.remove(agent_id);
             }
-            agents.insert(
+            let (runtime, runtime_task) = self.spawn_runtime(agent_id)?;
+            tracing::debug!(
+                agent_id,
+                activation_reason = reason.as_str(),
+                "activating agent runtime"
+            );
+            registry.agents.insert(
                 agent_id.to_string(),
                 AgentEntry {
                     runtime: runtime.clone(),
                     task: runtime_task,
                 },
             );
-            drop(agents);
+            drop(registry);
             if let Some(entry) = stale_entry {
                 let _ = entry.task.await;
             }
@@ -1263,8 +1681,9 @@ impl RuntimeHost {
                 && record.visibility == AgentVisibility::Public
         }) {
             let runtime = {
-                let agents = self.inner.agents.read().await;
-                agents
+                let registry = self.inner.runtimes.read().await;
+                registry
+                    .agents
                     .get(&identity.agent_id)
                     .filter(|entry| !entry.task.is_finished())
                     .map(|entry| entry.runtime.clone())
@@ -1338,7 +1757,7 @@ impl RuntimeHost {
             record.status == AgentRegistryStatus::Active
                 && record.visibility == AgentVisibility::Public
         }) {
-            if let Some(runtime) = self.loaded_runtime(&identity.agent_id).await {
+            if let Some(runtime) = self.try_get_loaded_runtime(&identity.agent_id).await {
                 let state = runtime.agent_state().await?;
                 let active_task_count = runtime.active_tasks(usize::MAX).await?.len();
                 snapshots.push(PublicAgentActivitySnapshot {
@@ -1601,15 +2020,10 @@ impl RuntimeHost {
         storage: &AppStorage,
         state: &AgentState,
     ) -> Result<crate::types::ChildAgentObservabilitySnapshot> {
-        if let Some(runtime) = self.loaded_runtime(agent_id).await {
+        if let Some(runtime) = self.try_get_loaded_runtime(agent_id).await {
             return runtime.child_agent_observability().await;
         }
         RuntimeHandle::child_agent_observability_from_storage(storage, state)
-    }
-
-    async fn loaded_runtime(&self, agent_id: &str) -> Option<RuntimeHandle> {
-        let agents = self.inner.agents.read().await;
-        agents.get(agent_id).map(|entry| entry.runtime.clone())
     }
 
     pub async fn resolve_external_trigger(
@@ -1703,7 +2117,7 @@ impl RuntimeHost {
             }
         }
 
-        let entry = self.inner.agents.write().await.remove(agent_id);
+        let entry = self.inner.runtimes.write().await.agents.remove(agent_id);
         if let Some(entry) = entry {
             let _ = entry
                 .runtime
@@ -2689,7 +3103,7 @@ mod tests {
             .unwrap();
 
         assert!(prompt.render_dump().contains("inspect prompt"));
-        assert!(host.inner.agents.read().await.is_empty());
+        assert!(host.inner.runtimes.read().await.agents.is_empty());
         assert_eq!(storage.read_agent().unwrap(), None);
         let entries = storage.latest_queue_entries().unwrap();
         assert_eq!(entries.len(), 1);
@@ -2967,7 +3381,7 @@ mod tests {
         state.status = AgentStatus::Asleep;
         host.runtime_db().agent_states().upsert(&state).unwrap();
 
-        assert!(host.inner.agents.read().await.is_empty());
+        assert!(host.inner.runtimes.read().await.agents.is_empty());
         assert!(!host
             .agent_data_dir(&agent_id)
             .join(".holon/state/agent.json")
@@ -2980,7 +3394,7 @@ mod tests {
 
         assert_eq!(projection.source, AgentStateProjectionSource::Storage);
         assert_eq!(projection.agent.agent.status, AgentStatus::Asleep);
-        assert!(host.inner.agents.read().await.is_empty());
+        assert!(host.inner.runtimes.read().await.agents.is_empty());
         assert!(!host
             .agent_data_dir(&agent_id)
             .join(".holon/state/agent.json")
@@ -3903,9 +4317,9 @@ mod tests {
             crate::types::ChildAgentPhase::Running
         );
         {
-            let agents = host.inner.agents.read().await;
+            let registry = host.inner.runtimes.read().await;
             assert!(
-                !agents.contains_key("child_test"),
+                !registry.agents.contains_key("child_test"),
                 "child summary inspection should not start the child runtime"
             );
         }
@@ -4552,17 +4966,17 @@ mod tests {
         let _beta = host.get_public_agent("beta").await.unwrap();
 
         {
-            let agents = host.inner.agents.read().await;
-            assert!(agents.contains_key("alpha"));
-            assert!(agents.contains_key("beta"));
+            let registry = host.inner.runtimes.read().await;
+            assert!(registry.agents.contains_key("alpha"));
+            assert!(registry.agents.contains_key("beta"));
         }
 
         host.unload_runtime("alpha").await;
 
         {
-            let agents = host.inner.agents.read().await;
-            assert!(!agents.contains_key("alpha"));
-            assert!(agents.contains_key("beta"));
+            let registry = host.inner.runtimes.read().await;
+            assert!(!registry.agents.contains_key("alpha"));
+            assert!(registry.agents.contains_key("beta"));
         }
 
         let beta_runtime = host.get_public_agent("beta").await.unwrap();
@@ -4676,8 +5090,9 @@ mod tests {
         };
 
         let old_task = {
-            let mut agents = host.inner.agents.write().await;
-            let entry = agents
+            let mut registry = host.inner.runtimes.write().await;
+            let entry = registry
+                .agents
                 .get_mut(&agent_id)
                 .expect("default runtime should be loaded");
             std::mem::replace(&mut entry.task, replacement_task)
@@ -4832,8 +5247,9 @@ mod tests {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         loop {
             let finished = {
-                let agents = host.inner.agents.read().await;
-                agents
+                let registry = host.inner.runtimes.read().await;
+                registry
+                    .agents
                     .get(&agent_id)
                     .map(|entry| entry.task.is_finished())
                     .unwrap_or(false)
@@ -4867,13 +5283,16 @@ mod tests {
             .unwrap();
         wait_for_brief_count(&started, 1).await;
 
-        let agents = host.inner.agents.read().await;
-        let entry = agents.get(&agent_id).expect("expected live runtime entry");
+        let registry = host.inner.runtimes.read().await;
+        let entry = registry
+            .agents
+            .get(&agent_id)
+            .expect("expected live runtime entry");
         assert!(
             !entry.task.is_finished(),
             "start should restore a live runtime loop"
         );
-        drop(agents);
+        drop(registry);
 
         let briefs = started.storage().read_recent_briefs(10).unwrap();
         assert!(briefs.iter().any(|brief| brief.text.contains("done")));
@@ -4909,9 +5328,10 @@ mod tests {
             let events = runtime.storage().read_recent_events(32).unwrap();
             let task_finished = host
                 .inner
-                .agents
+                .runtimes
                 .read()
                 .await
+                .agents
                 .get(&agent_id)
                 .is_some_and(|entry| entry.task.is_finished());
             if task_finished
@@ -4990,8 +5410,9 @@ mod tests {
             .unwrap()
             .iter()
             .all(|brief| brief.related_message_id.as_deref() != Some(message.id.as_str())));
-        let agents = host.inner.agents.read().await;
-        let entry = agents
+        let registry = host.inner.runtimes.read().await;
+        let entry = registry
+            .agents
             .get(&agent_id)
             .expect("rebuilt runtime should be registered");
         assert!(
@@ -5357,5 +5778,167 @@ mod tests {
                 .status,
             AgentRegistryStatus::Deleted
         );
+    }
+
+    #[tokio::test]
+    async fn read_only_host_methods_do_not_activate_runtime() {
+        let (_home, host) = test_host();
+        let agent_id = host.config().default_agent_id.clone();
+
+        let _storage = host
+            .public_agent_read_storage(&agent_id)
+            .expect("read storage");
+        assert!(host.inner.runtimes.read().await.agents.is_empty());
+
+        let loaded = host.try_get_loaded_runtime(&agent_id).await;
+        assert!(loaded.is_none());
+        assert!(host.inner.runtimes.read().await.agents.is_empty());
+
+        let summary = host
+            .local_agent_summary(&agent_id)
+            .await
+            .expect("local agent summary");
+        assert_eq!(summary.agent.id, agent_id);
+        assert!(host.inner.runtimes.read().await.agents.is_empty());
+
+        let _worktree_summary = host
+            .public_agent_worktree_summary(&agent_id)
+            .expect("worktree summary");
+        assert!(host.inner.runtimes.read().await.agents.is_empty());
+
+        let _inspection = host
+            .public_agent_scheduler_repair_inspection(&agent_id)
+            .expect("scheduler repair inspection");
+        assert!(host.inner.runtimes.read().await.agents.is_empty());
+    }
+
+    #[tokio::test]
+    async fn shutdown_rejects_new_runtime_activation() {
+        let (_home, host) = test_host();
+        let agent_id = host.config().default_agent_id.clone();
+
+        host.shutdown().await.expect("shutdown");
+
+        match host.get_public_agent(&agent_id).await {
+            Err(PublicAgentError::ShuttingDown) => {}
+            Err(err) => panic!("expected ShuttingDown, got {err:?}"),
+            Ok(_) => panic!("activation should be rejected after shutdown"),
+        }
+    }
+
+    #[tokio::test]
+    async fn recover_orphaned_dequeued_claims_recovers_only_orphaned() {
+        let (_home, host) = test_host();
+        let agent_id = host.config().default_agent_id.clone();
+        let runtime_db = host.runtime_db().clone();
+        let storage = AppStorage::new_for_agent(
+            host.agent_data_dir(&agent_id),
+            agent_id.clone(),
+            runtime_db.clone(),
+        )
+        .unwrap();
+
+        let make_message = |id: &str| {
+            let mut msg = MessageEnvelope::new(
+                &agent_id,
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator { actor_id: None },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: format!("test {id}"),
+                },
+            );
+            msg.id = id.to_string();
+            msg
+        };
+        let make_queue_entry = |msg: &MessageEnvelope, status: QueueEntryStatus| QueueEntryRecord {
+            message_id: msg.id.clone(),
+            agent_id: agent_id.clone(),
+            priority: msg.priority.clone(),
+            status,
+            created_at: msg.created_at,
+            updated_at: Utc::now(),
+        };
+
+        // Orphaned: no activation, no terminal turn
+        let msg_a = make_message("msg-orphaned");
+        storage.append_message(&msg_a).unwrap();
+        storage
+            .append_queue_entry(&make_queue_entry(&msg_a, QueueEntryStatus::Dequeued))
+            .unwrap();
+
+        // Has scheduler activation: should NOT be recovered
+        let msg_b = make_message("msg-activated");
+        storage.append_message(&msg_b).unwrap();
+        storage
+            .append_queue_entry(&make_queue_entry(&msg_b, QueueEntryStatus::Dequeued))
+            .unwrap();
+        runtime_db
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO scheduler_activations
+                       (agent_id, activation_id, authority_id, owner_kind, owner_id,
+                        work_item_id, admitted_generation, admission_kind,
+                        recovery_for_activation_id, wait_id, wait_generation,
+                        lifecycle_state, idempotency_key, payload_json, created_at, updated_at)
+                     VALUES (?, ?, '', 'work_item', 'test-work', 'test-work', 0, 'scheduling', NULL, NULL, NULL, 'running', '', '{}', ?, ?)",
+                    rusqlite::params![
+                        &agent_id,
+                        format!("activation:message:{}", msg_b.id),
+                        Utc::now().timestamp_millis(),
+                        Utc::now().timestamp_millis(),
+                    ],
+                )?;
+                Ok(())
+            })
+            .expect("insert activation");
+
+        // Has terminal turn: should NOT be recovered
+        let msg_c = make_message("msg-terminal");
+        storage.append_message(&msg_c).unwrap();
+        storage
+            .append_queue_entry(&make_queue_entry(&msg_c, QueueEntryStatus::Dequeued))
+            .unwrap();
+        let mut turn = crate::types::TurnRecord::new(&agent_id, "turn-terminal", 0);
+        turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&msg_c));
+        turn.terminal = Some(crate::types::TurnTerminalSummary {
+            kind: crate::types::TurnTerminalKind::Completed,
+            reason: None,
+            completed_at: Utc::now(),
+            duration_ms: 100,
+        });
+        runtime_db
+            .turn_records()
+            .upsert(&turn)
+            .expect("upsert turn");
+
+        let recovered = host
+            .recover_orphaned_queue_claims_at_startup()
+            .await
+            .expect("recovery");
+        assert_eq!(recovered, vec![agent_id.clone()]);
+
+        let entries = storage.latest_queue_entries().unwrap();
+        for entry in &entries {
+            match entry.message_id.as_str() {
+                "msg-orphaned" => assert_eq!(
+                    entry.status,
+                    QueueEntryStatus::Interrupted,
+                    "orphaned should be recovered"
+                ),
+                "msg-activated" | "msg-terminal" => assert_eq!(
+                    entry.status,
+                    QueueEntryStatus::Dequeued,
+                    "non-orphaned should not be recovered"
+                ),
+                _ => {}
+            }
+        }
+
+        let events = storage.read_recent_events(32).unwrap();
+        assert!(events
+            .iter()
+            .any(|e| e.kind == "orphaned_queue_claim_recovered"));
     }
 }

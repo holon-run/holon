@@ -246,16 +246,17 @@ impl AppStorage {
         self.store.event_log().enable_event_bus(event_bus)
     }
 
-    /// Attach a shared memory-index notify so the daemon-level indexer is
-    /// woken immediately after new evidence is enqueued for indexing.
-    pub(crate) fn enable_memory_index_notify(&self, notify: Arc<Notify>) -> Result<()> {
-        self.store.index_outbox().enable_notify(notify)
-    }
-
+    #[cfg(test)]
     pub(crate) fn subscribe_events(
         &self,
     ) -> Result<Option<tokio::sync::broadcast::Receiver<PublishedAuditEvent>>> {
         self.store.event_log().subscribe()
+    }
+
+    /// Attach a shared memory-index notify so the daemon-level indexer is
+    /// woken immediately after new evidence is enqueued for indexing.
+    pub(crate) fn enable_memory_index_notify(&self, notify: Arc<Notify>) -> Result<()> {
+        self.store.index_outbox().enable_notify(notify)
     }
 
     pub(crate) fn publish_transition_events(
@@ -827,6 +828,16 @@ impl AppStorage {
             ));
         }
         return Ok(take_recent(runtime_db.tasks().latest_all()?, history_limit));
+    }
+
+    /// Returns all recent task records (including terminal) for the current
+    /// agent scope, deduplicated by task ID. Unlike `latest_active_task_records`,
+    /// this includes completed, failed, and cancelled tasks.
+    pub fn latest_all_task_records(&self, limit: usize) -> Result<Vec<TaskRecord>> {
+        let runtime_db = self.runtime_db.clone();
+        let mut tasks = runtime_db.tasks().latest_all()?;
+        tasks.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        Ok(take_recent(tasks, limit))
     }
 
     pub fn latest_active_task_records(&self, limit: usize) -> Result<Vec<TaskRecord>> {

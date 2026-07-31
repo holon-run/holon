@@ -15,15 +15,13 @@ pub async fn tasks(
     Query(query): Query<LimitQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    let runtime = state
+    let storage = state
         .host
-        .get_public_agent(&agent_id)
-        .await
+        .public_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
     Ok(Json(
-        runtime
-            .active_tasks(query.limit.unwrap_or(50))
-            .await
+        storage
+            .latest_active_task_records(query.limit.unwrap_or(50))
             .map_err(error_response)?,
     ))
 }
@@ -34,24 +32,30 @@ pub async fn task_status(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    let runtime = state
+    let storage = state
         .host
-        .get_public_agent(&agent_id)
-        .await
+        .public_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
-    if !runtime
-        .task_record(&task_id)
-        .await
+    let Some(task) = storage
+        .latest_task_record(&task_id)
         .map_err(error_response)?
-        .is_some_and(|task| task.agent_id == agent_id)
-    {
+        .filter(|task| task.agent_id == agent_id)
+    else {
         return Err(task_not_found_response(&task_id));
-    }
-    let snapshot = runtime
-        .managed_tasks()
-        .task_status_snapshot(&task_id)
+    };
+    let snapshot = match state
+        .host
+        .try_get_public_loaded_runtime(&agent_id)
         .await
-        .map_err(task_lifecycle_error)?;
+        .map_err(agent_access_error)?
+    {
+        Some(runtime) => runtime
+            .managed_tasks()
+            .task_status_snapshot(&task_id)
+            .await
+            .map_err(task_lifecycle_error)?,
+        None => TaskStatusSnapshot::from_task_record(&task),
+    };
     Ok(Json(snapshot))
 }
 
@@ -62,19 +66,33 @@ pub async fn task_output(
     Query(query): Query<TaskOutputQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    let runtime = state
+    let storage = state
         .host
-        .get_public_agent(&agent_id)
-        .await
+        .public_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
-    if !runtime
-        .task_record(&task_id)
-        .await
+    if !storage
+        .latest_task_record(&task_id)
         .map_err(error_response)?
         .is_some_and(|task| task.agent_id == agent_id)
     {
         return Err(task_not_found_response(&task_id));
     }
+    let runtime = state
+        .host
+        .try_get_public_loaded_runtime(&agent_id)
+        .await
+        .map_err(agent_access_error)?
+        .ok_or_else(|| {
+            error_response(
+                RuntimeError::new(
+                    crate::runtime_error::RuntimeErrorDomain::Conflict,
+                    "task_not_live",
+                    format!("task {task_id} is not managed by a loaded runtime"),
+                )
+                .with_safe_context("task_id", &task_id)
+                .into(),
+            )
+        })?;
     let output = runtime
         .managed_tasks()
         .task_output(
@@ -93,13 +111,11 @@ pub async fn tool_execution(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    let runtime = state
+    let storage = state
         .host
-        .get_public_agent(&agent_id)
-        .await
+        .public_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
-    let Some(record) = runtime
-        .storage()
+    let Some(record) = storage
         .read_tool_execution_by_id(&tool_execution_id)
         .map_err(error_response)?
         .filter(|record| record.agent_id == agent_id)
@@ -117,13 +133,11 @@ pub async fn tool_execution_artifact(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    let runtime = state
+    let storage = state
         .host
-        .get_public_agent(&agent_id)
-        .await
+        .public_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
-    let Some(record) = runtime
-        .storage()
+    let Some(record) = storage
         .read_tool_execution_by_id(&tool_execution_id)
         .map_err(error_response)?
         .filter(|record| record.agent_id == agent_id)
@@ -150,8 +164,8 @@ pub async fn tool_execution_artifact(
         .and_then(Value::as_str)
         .ok_or_else(|| not_found(format!("artifact {artifact_index} not found")))?;
 
-    let data_dir = std::fs::canonicalize(runtime.storage().data_dir())
-        .map_err(|error| error_response(error.into()))?;
+    let data_dir =
+        std::fs::canonicalize(storage.data_dir()).map_err(|error| error_response(error.into()))?;
     let requested_path = PathBuf::from(artifact_path);
     let requested_path = if requested_path.is_absolute() {
         requested_path
@@ -521,13 +535,11 @@ pub async fn work_items(
     Query(query): Query<LimitQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    let runtime = state
+    let storage = state
         .host
-        .get_public_agent(&agent_id)
-        .await
+        .public_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
-    let work_items = runtime
-        .storage()
+    let work_items = storage
         .work_queue_read_model()
         .map_err(error_response)?
         .items
@@ -543,13 +555,11 @@ pub async fn work_item(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    let runtime = state
+    let storage = state
         .host
-        .get_public_agent(&agent_id)
-        .await
+        .public_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
-    let Some(work_item) = runtime
-        .storage()
+    let Some(work_item) = storage
         .work_queue_read_model()
         .map_err(error_response)?
         .items
@@ -575,15 +585,13 @@ pub async fn timers(
     Query(query): Query<LimitQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    let runtime = state
+    let storage = state
         .host
-        .get_public_agent(&agent_id)
-        .await
+        .public_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
     Ok(Json(
-        runtime
-            .recent_timers(query.limit.unwrap_or(50))
-            .await
+        storage
+            .read_recent_timers(query.limit.unwrap_or(50))
             .map_err(error_response)?,
     ))
 }
@@ -594,14 +602,12 @@ pub async fn timer(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    let runtime = state
+    let storage = state
         .host
-        .get_public_agent(&agent_id)
-        .await
+        .public_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
-    let Some(timer) = runtime
-        .latest_timer(&timer_id)
-        .await
+    let Some(timer) = storage
+        .latest_timer_record(&timer_id)
         .map_err(error_response)?
         .filter(|timer| timer.agent_id == agent_id)
     else {

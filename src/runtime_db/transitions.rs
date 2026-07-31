@@ -6,6 +6,7 @@
 pub(crate) mod scheduler_protocol_repository;
 
 use anyhow::{anyhow, bail, Result};
+use chrono::Utc;
 use rusqlite::{OptionalExtension, Transaction};
 use std::collections::BTreeMap;
 
@@ -214,6 +215,71 @@ pub(crate) struct RuntimeTransitionRepository<'a> {
 impl RuntimeDb {
     pub(crate) fn transitions(&self) -> RuntimeTransitionRepository<'_> {
         RuntimeTransitionRepository { db: self }
+    }
+
+    pub(crate) fn recover_orphaned_dequeued_claims_at_startup(&self) -> Result<Vec<String>> {
+        self.transaction(|tx| {
+            let mut statement = tx.prepare(
+                "SELECT q.payload_json
+                 FROM queue_entries q
+                 JOIN agent_identities i
+                   ON i.agent_id = q.agent_id
+                  AND i.status = 'active'
+                 WHERE q.status = 'dequeued'
+                   AND NOT EXISTS (
+                     SELECT 1
+                     FROM scheduler_activations a
+                     WHERE a.agent_id = q.agent_id
+                       AND a.activation_id = 'activation:message:' || q.message_id
+                   )
+                   AND NOT EXISTS (
+                     SELECT 1
+                     FROM turn_records t
+                     WHERE t.agent_id = q.agent_id
+                       AND t.trigger_message_id = q.message_id
+                       AND t.terminal_kind IS NOT NULL
+                   )
+                 ORDER BY q.agent_id, q.updated_at, q.message_id",
+            )?;
+            let candidates = statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .map(|row| Ok(serde_json::from_str::<QueueEntryRecord>(&row?)?))
+                .collect::<Result<Vec<_>>>()?;
+            drop(statement);
+
+            let recovered_at = Utc::now();
+            let mut recovered_agents = Vec::new();
+            for expected in candidates {
+                let mut recovered = expected.clone();
+                recovered.status = QueueEntryStatus::Interrupted;
+                recovered.updated_at = recovered_at;
+                if !compare_and_set_queue_entry_tx(tx, &expected, &recovered)? {
+                    continue;
+                }
+                let event = AuditEvent {
+                    id: format!("audit:orphaned-queue-claim:{}", expected.message_id),
+                    event_seq: 0,
+                    event_log_epoch: String::new(),
+                    created_at: recovered_at,
+                    kind: "orphaned_queue_claim_recovered".into(),
+                    contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+                    payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.to_string(),
+                    payload_schema_version: 1,
+                    data: serde_json::json!({
+                        "message_id": expected.message_id,
+                        "agent_id": expected.agent_id,
+                        "reason": "no_canonical_activation_or_terminal_turn",
+                        "previous_status": "dequeued",
+                        "next_status": "interrupted",
+                    }),
+                };
+                append_audit_event_tx(tx, Some(&recovered.agent_id), &event)?;
+                recovered_agents.push(recovered.agent_id);
+            }
+            recovered_agents.sort();
+            recovered_agents.dedup();
+            Ok(recovered_agents)
+        })
     }
 }
 

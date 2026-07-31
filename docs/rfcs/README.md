@@ -49,6 +49,7 @@ implementation and tests.
 - [Runtime Ledger Sequences and Object Revisions](./runtime-ledger-sequences-and-revisions.md)
 - [Runtime Ledger Files and Relations](./runtime-ledger-files-and-relations.md)
 - [Runtime Transition Commit Contract](./runtime-transition-commit-contract.md)
+- [Runtime Host Activation Admission And Read Projections](./runtime-host-activation-admission-and-read-projections.md)
 - [Runtime SQLite Retention And Space Reclamation](./runtime-db-retention.md)
 - [WorkItem Current Focus Canonical Fact](./work-item-current-focus.md)
 

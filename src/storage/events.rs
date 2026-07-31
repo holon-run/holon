@@ -121,6 +121,7 @@ impl RuntimeEventLog {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn subscribe(&self) -> Result<Option<broadcast::Receiver<PublishedAuditEvent>>> {
         Ok(self
             .event_bus

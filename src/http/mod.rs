@@ -88,7 +88,7 @@ pub(crate) use crate::{
         OperatorTransportBindingStatus, OperatorTransportCapabilities,
         OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind, Priority, TaskStatus,
         TaskStatusSnapshot, TaskStopResult, TodoItem, TranscriptEntry, TurnTerminalRecord,
-        WaitingReason, WorkItemPlanStatus, WorkItemRecord, WorkItemState,
+        WorkItemPlanStatus, WorkItemRecord, WorkItemState,
     },
 };
 mod agents;
@@ -1056,6 +1056,12 @@ pub(crate) fn agent_access_error(error: PublicAgentError) -> (StatusCode, Json<V
         PublicAgentError::Stopped { agent_id } => stopped_agent_conflict(
             format!("agent {} is stopped; start first", agent_id),
             agent_id,
+        ),
+        PublicAgentError::ShuttingDown => http_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            HttpErrorEnvelope::new("runtime is shutting down")
+                .code("runtime_shutting_down")
+                .retryable(true),
         ),
         PublicAgentError::Runtime(error) => error_response(error),
     }

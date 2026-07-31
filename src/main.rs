@@ -840,6 +840,7 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
     }
 
     let host = RuntimeHost::new(config.clone())?;
+    host.recover_orphaned_queue_claims_at_startup().await?;
     let runtime = host.default_runtime().await?;
     host.spawn_daemon_memory_indexer();
     host.spawn_daemon_runtime_db_retention();

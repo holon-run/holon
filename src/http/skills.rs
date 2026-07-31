@@ -9,19 +9,11 @@ pub async fn list_skills(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    let runtime = state
+    let skills = state
         .host
-        .get_public_agent(&agent_id)
+        .public_agent_skills_view(&agent_id)
         .await
         .map_err(agent_access_error)?;
-    let identity = runtime
-        .agent_identity_view()
-        .await
-        .map_err(error_response)?;
-    let skills = runtime
-        .skills_runtime_view(&identity)
-        .await
-        .map_err(error_response)?;
     Ok(Json(json!({
         "ok": true,
         "agent_id": agent_id,
@@ -396,19 +388,11 @@ async fn agent_scoped_skill_detail(
     skill_id: &str,
     state: &AppState,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let runtime = state
+    let skills = state
         .host
-        .get_public_agent(agent_id)
+        .public_agent_skills_view(agent_id)
         .await
         .map_err(agent_access_error)?;
-    let identity = runtime
-        .agent_identity_view()
-        .await
-        .map_err(error_response)?;
-    let skills = runtime
-        .skills_runtime_view(&identity)
-        .await
-        .map_err(error_response)?;
     let Some(skill) = skills
         .discoverable_skills
         .into_iter()

@@ -11,33 +11,21 @@ pub async fn events(
         .unwrap_or(DEFAULT_EVENT_STREAM_WINDOW)
         .clamp(1, MAX_EVENT_STREAM_WINDOW);
     let order = query.order.unwrap_or(EventPageOrder::Desc);
-    let runtime = state
+    let storage = state
         .host
-        .get_public_agent(&agent_id)
-        .await
+        .public_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
     if state.require_control_token {
         authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     }
-    let cursor_seq = runtime
-        .storage()
-        .latest_event_seq()
-        .map_err(error_response)?;
-    let event_log_epoch = runtime
-        .storage()
-        .event_log_epoch()
-        .map_err(error_response)?;
+    let cursor_seq = storage.latest_event_seq().map_err(error_response)?;
+    let event_log_epoch = storage.event_log_epoch().map_err(error_response)?;
     let max_level = query.max_level;
     let filter_context = match max_level {
-        Some(_) => Some(
-            event_filter_context(&runtime)
-                .await
-                .map_err(error_response)?,
-        ),
+        Some(_) => Some(event_filter_context(&storage).map_err(error_response)?),
         None => None,
     };
-    let page = runtime
-        .storage()
+    let page = storage
         .read_event_page_matching(
             query.before_seq,
             query.after_seq,
@@ -80,16 +68,14 @@ pub async fn message(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    let runtime = state
+    let storage = state
         .host
-        .get_public_agent(&agent_id)
-        .await
+        .public_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
     if state.require_control_token {
         authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     }
-    let Some(message) = runtime
-        .storage()
+    let Some(message) = storage
         .read_message_by_id(&message_id)
         .map_err(error_response)?
     else {
@@ -107,10 +93,9 @@ pub async fn messages_batch_get(
     headers: HeaderMap,
     Json(request): Json<BatchGetMessagesRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    let runtime = state
+    let storage = state
         .host
-        .get_public_agent(&agent_id)
-        .await
+        .public_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
     if state.require_control_token {
         authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
@@ -118,8 +103,7 @@ pub async fn messages_batch_get(
     let mut messages = Vec::new();
     let mut missing_message_ids = Vec::new();
     for message_id in request.message_ids {
-        match runtime
-            .storage()
+        match storage
             .read_message_by_id(&message_id)
             .map_err(error_response)?
         {
@@ -144,25 +128,16 @@ pub async fn events_stream(
         .unwrap_or(DEFAULT_EVENT_STREAM_WINDOW)
         .clamp(1, MAX_EVENT_STREAM_WINDOW);
     let after_seq = query.after_seq;
-    let runtime = state
+    let storage = state
         .host
-        .get_public_agent(&agent_id)
-        .await
+        .public_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
     if state.require_control_token {
         authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     }
-    let mut live_rx = runtime
-        .storage()
-        .subscribe_events()
-        .map_err(error_response)?
-        .ok_or_else(|| error_response(anyhow!("event bus unavailable")))?;
-    let event_log_epoch = runtime
-        .storage()
-        .event_log_epoch()
-        .map_err(error_response)?;
-    let events = runtime
-        .storage()
+    let mut live_rx = state.host.subscribe_events();
+    let event_log_epoch = storage.event_log_epoch().map_err(error_response)?;
+    let events = storage
         .read_recent_events(event_window_limit.saturating_add(1))
         .map_err(error_response)?;
     let buffered = initial_buffered_events(&events, after_seq)?;
@@ -329,20 +304,18 @@ async fn send_stream_event(
         .await
 }
 
-async fn event_filter_context(
-    runtime: &crate::runtime::RuntimeHandle,
+fn event_filter_context(
+    storage: &crate::storage::AppStorage,
 ) -> Result<OperatorPresentationContext> {
-    let agent = runtime.agent_summary().await?;
-    let completed_work_item_ids = runtime
-        .latest_work_items()
-        .await?
+    let work_queue = storage.work_queue_read_model()?;
+    let completed_work_item_ids = storage
+        .latest_work_items()?
         .into_iter()
         .filter(|item| item.state == WorkItemState::Completed)
         .map(|item| item.id)
         .collect();
     Ok(OperatorPresentationContext {
-        awaiting_operator_input: agent.closure.waiting_reason
-            == Some(WaitingReason::AwaitingOperatorInput),
+        awaiting_operator_input: !work_queue.waiting_for_operator.is_empty(),
         completed_work_item_ids,
     })
 }

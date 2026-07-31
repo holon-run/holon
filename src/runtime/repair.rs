@@ -253,7 +253,7 @@ impl RuntimeHandle {
     }
 }
 
-fn is_wake_only_message(message: &MessageEnvelope) -> bool {
+pub(crate) fn is_wake_only_message(message: &MessageEnvelope) -> bool {
     matches!(
         (&message.kind, &message.origin),
         (MessageKind::SystemTick, MessageOrigin::System { subsystem })

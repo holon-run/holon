@@ -15,7 +15,6 @@ use crate::{
     config::{AppConfig, ModelRef, ModelRouteCapability, ModelRouteRef, RuntimeModelCatalog},
     context::ContextConfig,
     host::RuntimeHostBridge,
-    model_catalog::BuiltInModelMetadata,
     model_discovery::{
         discovery_cache_needs_refresh, discovery_cache_path, discovery_cache_status_for_provider,
         load_discovery_cache_at, refresh_provider_models, ModelDiscoveryCacheFile,
@@ -806,14 +805,6 @@ impl RuntimeHandle {
                 )
             })
             .collect())
-    }
-
-    pub(crate) async fn available_models(&self) -> Result<Vec<BuiltInModelMetadata>> {
-        if let Some(config) = self.model_config_with_fresh_discovery_cache().await {
-            return Ok(RuntimeModelCatalog::from_config(&config).available_models());
-        }
-        let snap = self.inner.config_snapshot.load();
-        Ok(snap.model_catalog.available_models())
     }
 
     pub(crate) async fn model_availability(&self) -> Result<Vec<ResolvedModelAvailability>> {

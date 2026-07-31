@@ -980,7 +980,6 @@ impl RuntimeHandle {
         Ok(changed_files)
     }
 }
-
 pub(super) fn format_worktree_task_result(result: &WorktreeSubagentResult) -> String {
     let mut lines = Vec::new();
     let cleaned = result.text.trim();
@@ -998,6 +997,145 @@ pub(super) fn format_worktree_task_result(result: &WorktreeSubagentResult) -> St
         ));
     }
     lines.join("\n")
+}
+
+pub(crate) fn format_worktree_task_summary(
+    tasks: &[TaskRecord],
+    messages: &[MessageEnvelope],
+) -> String {
+    let worktree_tasks: Vec<_> = tasks
+        .iter()
+        .filter(|task| task.is_worktree_child_agent_task())
+        .collect();
+
+    if worktree_tasks.is_empty() {
+        return "No worktree tasks found.".to_string();
+    }
+
+    let mut summary_lines = Vec::new();
+    summary_lines.push("=".repeat(60));
+    summary_lines.push("Worktree Task Summary".to_string());
+    summary_lines.push(format!("Total tasks: {}", worktree_tasks.len()));
+    summary_lines.push("=".repeat(60));
+    summary_lines.push(String::new());
+
+    let mut completed = Vec::new();
+    let mut failed = Vec::new();
+    let mut running = Vec::new();
+    let mut queued = Vec::new();
+    for task in &worktree_tasks {
+        match task.status {
+            TaskStatus::Completed => completed.push(task),
+            TaskStatus::Failed | TaskStatus::Interrupted => failed.push(task),
+            TaskStatus::Running | TaskStatus::Cancelling => running.push(task),
+            TaskStatus::Queued => queued.push(task),
+            TaskStatus::Cancelled => {}
+        }
+    }
+
+    let format_task = |task: &&TaskRecord| -> String {
+        let task_id = &task.id;
+        let task_summary = task.summary.as_deref().unwrap_or("(no summary)");
+        let worktree_info = task
+            .detail
+            .as_ref()
+            .and_then(|detail| detail.get("worktree").cloned())
+            .or_else(|| {
+                messages
+                    .iter()
+                    .find(|msg| {
+                        matches!(msg.kind, MessageKind::TaskResult)
+                            && msg
+                                .metadata
+                                .as_ref()
+                                .and_then(|m| m.get("task_id"))
+                                .and_then(|id| id.as_str())
+                                == Some(task_id)
+                    })
+                    .and_then(|msg| msg.metadata.as_ref())
+                    .and_then(|m| m.get("worktree").cloned())
+            });
+        let mut lines = Vec::new();
+        lines.push(format!("Task ID: {}", task_id));
+        lines.push(format!("Summary: {}", task_summary));
+        if let Some(worktree) = worktree_info {
+            if let Some(path) = worktree.get("worktree_path").and_then(|v| v.as_str()) {
+                lines.push(format!("Worktree path: {}", path));
+            }
+            if let Some(branch) = worktree.get("worktree_branch").and_then(|v| v.as_str()) {
+                lines.push(format!("Branch: {}", branch));
+            }
+            if let Some(changed) = worktree.get("changed_files").and_then(|v| v.as_array()) {
+                let changed_files: Vec<_> = changed.iter().filter_map(|v| v.as_str()).collect();
+                if changed_files.is_empty() {
+                    lines.push("Changed files: none".to_string());
+                } else {
+                    lines.push(format!("Changed files: {}", changed_files.join(", ")));
+                }
+            }
+            if let Some(retained) = worktree
+                .get("retained_for_review")
+                .and_then(|v| v.as_bool())
+            {
+                if retained {
+                    lines.push("Status: Worktree retained for review".to_string());
+                }
+            }
+            if let Some(cleaned) = worktree.get("auto_cleaned_up").and_then(|v| v.as_bool()) {
+                if cleaned {
+                    lines.push("Status: Worktree auto-cleaned".to_string());
+                }
+            }
+            if let Some(status) = worktree.get("cleanup_status").and_then(|v| v.as_str()) {
+                lines.push(format!("Cleanup status: {}", status));
+            }
+            if let Some(reason) = worktree.get("cleanup_reason").and_then(|v| v.as_str()) {
+                lines.push(format!("Cleanup reason: {}", reason));
+            }
+        }
+        lines.join("\n  ")
+    };
+
+    if !completed.is_empty() {
+        summary_lines.push(format!("Completed Tasks ({})", completed.len()));
+        summary_lines.push("-".repeat(40));
+        for task in completed {
+            summary_lines.push(format!("  {}", format_task(task)));
+            summary_lines.push(String::new());
+        }
+    }
+    if !failed.is_empty() {
+        summary_lines.push(format!("Failed Tasks ({})", failed.len()));
+        summary_lines.push("-".repeat(40));
+        for task in failed {
+            summary_lines.push(format!("  {}", format_task(task)));
+            summary_lines.push(String::new());
+        }
+    }
+    if !running.is_empty() {
+        summary_lines.push(format!("Running Tasks ({})", running.len()));
+        summary_lines.push("-".repeat(40));
+        for task in running {
+            summary_lines.push(format!("  {}", format_task(task)));
+            summary_lines.push(String::new());
+        }
+    }
+    if !queued.is_empty() {
+        summary_lines.push(format!("Queued Tasks ({})", queued.len()));
+        summary_lines.push("-".repeat(40));
+        for task in queued {
+            summary_lines.push(format!("  {}", format_task(task)));
+            summary_lines.push(String::new());
+        }
+    }
+    summary_lines.push("=".repeat(60));
+    summary_lines.push("Review Guidance:".to_string());
+    summary_lines.push("- Inspect worktrees with changes to evaluate approaches".to_string());
+    summary_lines
+        .push("- Use 'git worktree remove <path>' to discard unwanted attempts".to_string());
+    summary_lines.push("- Use 'git diff <worktree-path>' to see detailed changes".to_string());
+    summary_lines.push("=".repeat(60));
+    summary_lines.join("\n")
 }
 
 fn parse_task_owned_worktree_artifact(

@@ -185,12 +185,11 @@ pub async fn status(
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     let started_at = std::time::Instant::now();
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    let runtime = state
+    let agent = state
         .host
-        .get_agent_for_local_status(&agent_id)
+        .local_agent_summary(&agent_id)
         .await
         .map_err(agent_access_error)?;
-    let agent = runtime.agent_summary().await.map_err(error_response)?;
     traced_json("/agents/{agent_id}/status", started_at, agent)
 }
 
@@ -1019,14 +1018,12 @@ pub async fn briefs(
     Query(query): Query<LimitQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    let runtime = state
+    let storage = state
         .host
-        .get_public_agent(&agent_id)
-        .await
+        .public_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
-    let briefs = runtime
-        .recent_briefs(query.limit.unwrap_or(20))
-        .await
+    let briefs = storage
+        .read_recent_briefs(query.limit.unwrap_or(20))
         .map_err(error_response)?;
     Ok(Json(briefs))
 }
@@ -1037,14 +1034,12 @@ pub async fn brief(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    let runtime = state
+    let storage = state
         .host
-        .get_public_agent(&agent_id)
-        .await
+        .public_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
-    let Some(brief) = runtime
-        .brief_by_id(&brief_id)
-        .await
+    let Some(brief) = storage
+        .read_brief_by_id(&brief_id)
         .map_err(error_response)?
         .filter(|brief| brief.agent_id == agent_id)
     else {
@@ -1060,10 +1055,9 @@ pub async fn briefs_batch_get(
     Json(request): Json<BatchGetBriefsRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    let runtime = state
+    let storage = state
         .host
-        .get_public_agent(&agent_id)
-        .await
+        .public_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
     let brief_ids = request
         .brief_ids
@@ -1075,9 +1069,8 @@ pub async fn briefs_batch_get(
             }
             brief_ids
         });
-    let briefs_by_id = runtime
-        .briefs_by_ids(&brief_ids)
-        .await
+    let briefs_by_id = storage
+        .read_briefs_by_ids(&brief_ids)
         .map_err(error_response)?
         .into_iter()
         .filter(|brief| brief.agent_id == agent_id)
@@ -1130,14 +1123,12 @@ pub async fn transcript(
     Query(query): Query<LimitQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    let runtime = state
+    let storage = state
         .host
-        .get_public_agent(&agent_id)
-        .await
+        .public_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
-    let transcript = runtime
-        .recent_transcript(query.limit.unwrap_or(50))
-        .await
+    let transcript = storage
+        .read_recent_transcript(query.limit.unwrap_or(50))
         .map_err(error_response)?;
     Ok(Json(transcript))
 }
@@ -1148,14 +1139,12 @@ pub async fn transcript_entry(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    let runtime = state
+    let storage = state
         .host
-        .get_public_agent(&agent_id)
-        .await
+        .public_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
-    let Some(entry) = runtime
-        .transcript_entry_by_id(&entry_id)
-        .await
+    let Some(entry) = storage
+        .read_transcript_entry_by_id(&entry_id)
         .map_err(error_response)?
         .filter(|entry| entry.agent_id == agent_id)
     else {
@@ -1171,17 +1160,15 @@ pub async fn transcript_batch_get(
     Json(request): Json<BatchGetTranscriptEntriesRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    let runtime = state
+    let storage = state
         .host
-        .get_public_agent(&agent_id)
-        .await
+        .public_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
     let mut entries = Vec::new();
     let mut missing_entry_ids = Vec::new();
     for entry_id in request.entry_ids {
-        match runtime
-            .transcript_entry_by_id(&entry_id)
-            .await
+        match storage
+            .read_transcript_entry_by_id(&entry_id)
             .map_err(error_response)?
         {
             Some(entry) if entry.agent_id == agent_id => entries.push(entry),
@@ -1200,15 +1187,10 @@ pub async fn worktree_summary(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    let runtime = state
+    let summary = state
         .host
-        .get_public_agent(&agent_id)
-        .await
+        .public_agent_worktree_summary(&agent_id)
         .map_err(agent_access_error)?;
-    let summary = runtime
-        .summarize_worktree_tasks()
-        .await
-        .map_err(error_response)?;
     Ok(Json(json!({
         "agent_id": agent_id,
         "summary": summary,

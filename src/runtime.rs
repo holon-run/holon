@@ -31,6 +31,7 @@ mod worktree;
 
 pub use first_run_intro::maybe_enqueue_first_run_intro;
 pub(crate) use lifecycle::LightweightAgentStateProjection;
+pub(crate) use repair::is_wake_only_message;
 pub use repair::{
     SchedulerRepairInspection, SchedulerRepairOperation, SchedulerRepairRequest,
     SchedulerRepairResult,
@@ -44,6 +45,7 @@ pub use tasks::{
     WorkItemFocusTransitionWarning,
 };
 pub(crate) use waiting::{WaitForScope, WaitForWakeKind};
+pub(crate) use worktree::format_worktree_task_summary;
 
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;

@@ -1,4 +1,9 @@
 use super::*;
+use crate::{
+    config::RuntimeModelCatalog,
+    model_discovery::{discovery_cache_path, load_discovery_cache_at},
+    provider::resolved_model_availability,
+};
 
 pub async fn root(
     State(state): State<Arc<AppState>>,
@@ -23,13 +28,16 @@ pub async fn models_handler(
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     let started_at = std::time::Instant::now();
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    let runtime = state.host.default_runtime().await.map_err(error_response)?;
-    let available_models = runtime.available_models().await.map_err(error_response)?;
-    let model_availability = runtime.model_availability().await.map_err(error_response)?;
-    let model_discovery_cache = runtime
-        .model_discovery_status()
-        .await
-        .map_err(error_response)?;
+    let mut config = (*state.host.config()).clone();
+    let cache_path = discovery_cache_path(&config.home_dir);
+    config.model_discovery_cache =
+        tokio::task::spawn_blocking(move || load_discovery_cache_at(&cache_path))
+            .await
+            .map_err(|error| error_response(error.into()))?
+            .map_err(error_response)?;
+    let available_models = RuntimeModelCatalog::from_config(&config).available_models();
+    let model_availability = resolved_model_availability(&config);
+    let model_discovery_cache = Vec::<crate::model_discovery::ModelDiscoveryCacheStatus>::new();
     traced_json(
         "/models",
         started_at,
@@ -56,26 +64,12 @@ pub async fn search(
         .limit
         .unwrap_or(SEARCH_DEFAULT_LIMIT)
         .clamp(1, SEARCH_MAX_LIMIT);
-    let runtime = state.host.default_runtime().await.map_err(error_response)?;
     let agent_ids = normalize_search_agent_ids(request.agent_ids)?;
-    let search_result = if agent_ids.is_empty() {
-        runtime
-            .search_memory(&query, limit, request.include_all_workspaces)
-            .await
-            .map_err(error_response)?
-    } else {
-        for agent_id in &agent_ids {
-            state
-                .host
-                .get_public_agent(agent_id)
-                .await
-                .map_err(agent_access_error)?;
-        }
-        runtime
-            .search_memory_for_agents(&query, limit, request.include_all_workspaces, &agent_ids)
-            .await
-            .map_err(error_response)?
-    };
+    let search_result = state
+        .host
+        .search_memory_read_only(&query, limit, request.include_all_workspaces, &agent_ids)
+        .await
+        .map_err(error_response)?;
     let results = filter_search_results(search_result.results, &request.types);
     traced_json(
         "/search",
@@ -100,9 +94,9 @@ pub async fn memory_get(
     if source_ref.is_empty() {
         return Err(bad_request("source_ref must not be empty"));
     }
-    let runtime = state.host.default_runtime().await.map_err(error_response)?;
-    let memory = runtime
-        .get_memory(source_ref, request.max_chars)
+    let memory = state
+        .host
+        .get_memory_read_only(source_ref, request.max_chars)
         .await
         .map_err(error_response)?
         .ok_or_else(|| not_found(format!("memory source {source_ref} not found")))?;
