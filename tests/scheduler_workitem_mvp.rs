@@ -9,11 +9,12 @@ use model::{
     ActivationDisposition, ActivationLifecycleState, ActivationOrigin, ActivationPriority,
     ActivationProvenance, ActivationRecord, ActivationSettlement, ActivationSlot, ActivationState,
     ActivationTrust, AdmissionCause, AdmitActivationCommand, AdoptActivationWorkStateCommand,
-    AgentActivation, AgentDispatchDisposition, AgentDispatchState, Decision, Event,
-    LegacyWaitAdoption, LifecycleWaitHandoffProof, MissingSettlementRecord, PreemptionPolicy,
-    ProtocolCommand, ProtocolConflictKind, RegisterWorkDemandCommand, SchedulerOwner,
-    SettleActivationCommand, Settlement, Snapshot, WaitGenerationRecord, WaitIdentity, WaitRecord,
-    WaitState, WaitTrigger, WorkDemand, WorkStatus, YieldContinuationRecord,
+    AdoptLegacyWorkStateCommand, AgentActivation, AgentDispatchDisposition, AgentDispatchState,
+    Decision, Event, LegacyWaitAdoption, LifecycleWaitHandoffProof, MissingSettlementRecord,
+    PreemptionPolicy, ProtocolCommand, ProtocolConflictKind, RegisterWorkDemandCommand,
+    SchedulerOwner, SettleActivationCommand, Settlement, Snapshot, WaitGenerationRecord,
+    WaitIdentity, WaitRecord, WaitState, WaitTrigger, WorkDemand, WorkStatus,
+    YieldContinuationRecord,
 };
 use proptest::prelude::*;
 use serde::Deserialize;
@@ -2954,6 +2955,103 @@ fn reducer_rejections_have_explicit_stable_conflict_kinds() {
         rejected.outcome.diagnostics,
         ["settlement_recovery_pending"]
     );
+}
+
+#[test]
+fn legacy_recovery_adoption_reconciles_the_work_items_dispatch_reservation() {
+    let mut snapshot = minimal_snapshot(4);
+    snapshot.work.get_mut("w1").unwrap().status = WorkStatus::Waiting {
+        wait_id: "wait-1".into(),
+    };
+    snapshot.waits.insert(
+        "wait-1".into(),
+        wait_record("w1", 4, WaitState::Active, None, None),
+    );
+    snapshot.dispatch = AgentDispatchState::Awaiting {
+        wait: WaitIdentity {
+            id: "wait-1".into(),
+            generation: 4,
+        },
+    };
+    snapshot.dispatch_revision = 7;
+    assert_invariants(&snapshot).expect("waiting recovery prestate is canonical");
+
+    let rearm = ProtocolCommand::AdoptLegacyWorkState(AdoptLegacyWorkStateCommand {
+        work_item_id: "w1".into(),
+        source_work_item_revision: 5,
+        demand: WorkDemand {
+            metadata_revision: 5,
+            scheduling_generation: 5,
+            status: WorkStatus::Waiting {
+                wait_id: "wait-1".into(),
+            },
+            capabilities: BTreeSet::new(),
+            locks: BTreeSet::new(),
+            locality: "runtime".into(),
+            cost_class: "default".into(),
+        },
+        wait: Some(LegacyWaitAdoption {
+            wait_id: "wait-1".into(),
+            generation: 5,
+            owner_work_item_id: "w1".into(),
+            source_updated_at: "2026-08-01T00:00:00Z".into(),
+        }),
+        focus: true,
+        reserve_dispatch: false,
+        replace_completed_focus: None,
+    });
+    let rearmed = reduce_command(&snapshot, &rearm);
+    assert_eq!(rearmed.outcome.decision, Decision::LegacyWorkStateAdopted);
+    assert_eq!(
+        rearmed.outcome.snapshot.waits["wait-1"].generations[&4].state,
+        WaitState::Resolved
+    );
+    assert_eq!(
+        rearmed.outcome.snapshot.waits["wait-1"].generations[&5].state,
+        WaitState::Active
+    );
+    assert_eq!(
+        rearmed.outcome.snapshot.dispatch,
+        AgentDispatchState::Awaiting {
+            wait: WaitIdentity {
+                id: "wait-1".into(),
+                generation: 5,
+            },
+        }
+    );
+    assert_eq!(rearmed.outcome.snapshot.dispatch_revision, 8);
+    assert_invariants(&rearmed.outcome.snapshot).expect("rearmed recovery state is canonical");
+
+    let replay = reduce_command(&rearmed.outcome.snapshot, &rearm);
+    assert_eq!(replay.outcome.decision, Decision::DuplicateIgnored);
+    assert_eq!(replay.outcome.snapshot, rearmed.outcome.snapshot);
+
+    let release = ProtocolCommand::AdoptLegacyWorkState(AdoptLegacyWorkStateCommand {
+        work_item_id: "w1".into(),
+        source_work_item_revision: 6,
+        demand: WorkDemand {
+            metadata_revision: 6,
+            scheduling_generation: 6,
+            status: WorkStatus::Runnable,
+            capabilities: BTreeSet::new(),
+            locks: BTreeSet::new(),
+            locality: "runtime".into(),
+            cost_class: "default".into(),
+        },
+        wait: None,
+        focus: true,
+        reserve_dispatch: false,
+        replace_completed_focus: None,
+    });
+    let released = reduce_command(&rearmed.outcome.snapshot, &release);
+    assert_eq!(released.outcome.decision, Decision::LegacyWorkStateAdopted);
+    assert_eq!(
+        released.outcome.snapshot.waits["wait-1"].generations[&5].state,
+        WaitState::Resolved
+    );
+    assert_eq!(released.outcome.snapshot.dispatch, AgentDispatchState::Open);
+    assert_eq!(released.outcome.snapshot.dispatch_revision, 9);
+    assert_invariants(&released.outcome.snapshot).expect("released recovery state is canonical");
 }
 
 fn typed_admission(

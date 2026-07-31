@@ -675,6 +675,184 @@ async fn runtime_failure_preserves_canonical_claim_for_bootstrap_reconciliation(
 }
 
 #[tokio::test]
+async fn legacy_recovery_plan_reconciles_an_existing_dispatch_reservation() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item(
+            "legacy recovery dispatch v1".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    runtime
+        .update_work_item_fields(
+            work_item.id.clone(),
+            Some("legacy recovery dispatch v2".into()),
+            None,
+            None,
+            None,
+            Some(None),
+        )
+        .await
+        .unwrap();
+    runtime.pick_work_item(work_item.id.clone()).await.unwrap();
+    let registration = runtime
+        .register_wait_for(
+            "default",
+            Some(work_item.id.clone()),
+            WaitForWakeKind::External,
+            Some("github:holon-run/holon#recovery-dispatch".into()),
+            "waiting before legacy recovery".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let waiting_source = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let old_generation = waiting_source
+        .revision
+        .checked_sub(1)
+        .filter(|generation| *generation > 0)
+        .expect("fixture must have an older canonical generation");
+    let mut canonical =
+        canonical_waiting_snapshot(&waiting_source, &registration.condition.id, old_generation);
+    let demand = canonical.work.get_mut(&work_item.id).unwrap();
+    demand.metadata_revision = old_generation;
+    demand.scheduling_generation = old_generation;
+    runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .initialize_scheduler_protocol_partition("default", &canonical)
+        .unwrap();
+
+    let waiting_report =
+        scheduler_recovery_report(&runtime.inner.storage, &runtime.inner.runtime_db, "default")
+            .unwrap();
+    let waiting_candidate = waiting_report
+        .legacy_adoptions
+        .iter()
+        .find(|candidate| candidate.work_item_id == work_item.id)
+        .expect("waiting legacy adoption candidate");
+    assert!(waiting_candidate.eligible);
+    apply_scheduler_recovery_plan(
+        &runtime.inner.storage,
+        &runtime.inner.runtime_db,
+        "default",
+        &waiting_report,
+    )
+    .unwrap();
+    let rearmed = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    assert_eq!(
+        rearmed.waits[&registration.condition.id].generations[&old_generation].state,
+        WaitState::Resolved
+    );
+    assert_eq!(
+        rearmed.dispatch,
+        AgentDispatchState::Awaiting {
+            wait: WaitIdentity {
+                id: registration.condition.id.clone(),
+                generation: waiting_source.revision,
+            },
+        }
+    );
+
+    let mut resolved = runtime
+        .storage()
+        .latest_wait_conditions()
+        .unwrap()
+        .into_iter()
+        .find(|condition| condition.id == registration.condition.id)
+        .expect("legacy wait condition");
+    let resolved_at = Utc::now();
+    resolved.status = WaitConditionStatus::Resolved;
+    resolved.updated_at = resolved_at;
+    resolved.resolved_at = Some(resolved_at);
+    runtime
+        .inner
+        .runtime_db
+        .wait_conditions()
+        .upsert(&resolved)
+        .unwrap();
+    runtime
+        .update_work_item_fields(
+            work_item.id.clone(),
+            Some("legacy recovery dispatch runnable".into()),
+            None,
+            None,
+            None,
+            Some(None),
+        )
+        .await
+        .unwrap();
+    let runnable_source = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let runnable_report =
+        scheduler_recovery_report(&runtime.inner.storage, &runtime.inner.runtime_db, "default")
+            .unwrap();
+    let runnable_candidate = runnable_report
+        .legacy_adoptions
+        .iter()
+        .find(|candidate| candidate.work_item_id == work_item.id)
+        .expect("runnable legacy adoption candidate");
+    assert!(
+        runnable_candidate.eligible,
+        "runnable candidate rejected: {}",
+        runnable_candidate.reason
+    );
+    apply_scheduler_recovery_plan(
+        &runtime.inner.storage,
+        &runtime.inner.runtime_db,
+        "default",
+        &runnable_report,
+    )
+    .unwrap();
+    let released = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    assert_eq!(released.dispatch, AgentDispatchState::Open);
+    assert_eq!(
+        released.waits[&registration.condition.id].generations[&waiting_source.revision].state,
+        WaitState::Resolved
+    );
+    assert_eq!(
+        released.work[&work_item.id].scheduling_generation,
+        runnable_source.revision
+    );
+    assert_eq!(released.work[&work_item.id].status, WorkStatus::Runnable);
+}
+
+#[tokio::test]
 async fn bootstrap_diagnostics_report_cross_model_scheduler_invariant_failures() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();

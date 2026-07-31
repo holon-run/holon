@@ -848,6 +848,13 @@ A stale revision or foreign reservation fails closed. After the adoption is
 recorded, settlement replay reuses the stored command result and must not
 reconstruct a different payload from the post-handoff dispatch state.
 
+Bootstrap reconciliation has the same atomicity requirement when
+`AdoptLegacyWorkStateCommand` refreshes the WorkItem that owns the exact current
+dispatch reservation. A newer waiting generation resolves the old generation
+and advances dispatch to the replacement wait in the same transaction. A newer
+runnable or paused state resolves the old wait and opens dispatch. Adoption of
+an unrelated WorkItem leaves the existing reservation unchanged.
+
 The settlement transaction writes every durable fact changed by the
 disposition, including as applicable:
 

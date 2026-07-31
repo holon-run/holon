@@ -2051,6 +2051,17 @@ fn adopt_legacy_work_state(
             ),
         );
     }
+    let source_dispatch_wait = snapshot
+        .work
+        .get(&command.work_item_id)
+        .and_then(|demand| match &demand.status {
+            WorkStatus::Waiting { wait_id } => Some(WaitIdentity {
+                id: wait_id.clone(),
+                generation: demand.scheduling_generation,
+            }),
+            _ => None,
+        })
+        .filter(|wait| snapshot.dispatch == (AgentDispatchState::Awaiting { wait: wait.clone() }));
     if command.focus
         && snapshot
             .focus
@@ -2121,7 +2132,10 @@ fn adopt_legacy_work_state(
             }
         }
     }
-    if command.reserve_dispatch && snapshot.dispatch != AgentDispatchState::Open {
+    if command.reserve_dispatch
+        && snapshot.dispatch != AgentDispatchState::Open
+        && source_dispatch_wait.is_none()
+    {
         return rejected_command(
             snapshot,
             command_conflict(
@@ -2153,9 +2167,16 @@ fn adopt_legacy_work_state(
     let mut next = snapshot.clone();
     if let Some(existing) = next.work.get(&command.work_item_id) {
         if let WorkStatus::Waiting { wait_id } = &existing.status {
-            if command.wait.as_ref().map(|wait| wait.wait_id.as_str()) != Some(wait_id.as_str()) {
+            let existing_wait = WaitIdentity {
+                id: wait_id.clone(),
+                generation: existing.scheduling_generation,
+            };
+            let target_preserves_generation = command.wait.as_ref().is_some_and(|wait| {
+                wait.wait_id == existing_wait.id && wait.generation == existing_wait.generation
+            });
+            if !target_preserves_generation {
                 if let Some(wait) = next.waits.get_mut(wait_id) {
-                    if let Some(generation) = wait.generations.get_mut(&wait.current_generation) {
+                    if let Some(generation) = wait.generations.get_mut(&existing_wait.generation) {
                         if matches!(generation.state, WaitState::Active | WaitState::Triggered) {
                             generation.state = WaitState::Resolved;
                             generation.trigger = None;
@@ -2168,32 +2189,48 @@ fn adopt_legacy_work_state(
     next.work
         .insert(command.work_item_id.clone(), command.demand.clone());
     if let Some(wait) = &command.wait {
-        next.waits.insert(
-            wait.wait_id.clone(),
-            WaitRecord {
-                current_generation: wait.generation,
-                generations: BTreeMap::from([(
-                    wait.generation,
-                    WaitGenerationRecord {
-                        owner: SchedulerOwner::WorkItem {
-                            work_item_id: wait.owner_work_item_id.clone(),
-                        },
-                        state: WaitState::Active,
-                        trigger: None,
-                        consuming_activation_id: None,
-                    },
-                )]),
+        let target_generation = WaitGenerationRecord {
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: wait.owner_work_item_id.clone(),
             },
-        );
-        if command.reserve_dispatch {
-            next.dispatch = AgentDispatchState::Awaiting {
-                wait: WaitIdentity {
-                    id: wait.wait_id.clone(),
-                    generation: wait.generation,
+            state: WaitState::Active,
+            trigger: None,
+            consuming_activation_id: None,
+        };
+        if source_dispatch_wait
+            .as_ref()
+            .is_some_and(|source| source.id == wait.wait_id)
+        {
+            let record = next
+                .waits
+                .get_mut(&wait.wait_id)
+                .expect("source dispatch wait exists");
+            record.current_generation = wait.generation;
+            record
+                .generations
+                .insert(wait.generation, target_generation);
+        } else {
+            next.waits.insert(
+                wait.wait_id.clone(),
+                WaitRecord {
+                    current_generation: wait.generation,
+                    generations: BTreeMap::from([(wait.generation, target_generation)]),
                 },
-            };
-            next.dispatch_revision += 1;
+            );
         }
+        if command.reserve_dispatch || source_dispatch_wait.is_some() {
+            set_dispatch_state(
+                &mut next,
+                AgentDispatchState::Awaiting {
+                    wait: WaitIdentity {
+                        id: wait.wait_id.clone(),
+                        generation: wait.generation,
+                    },
+                },
+            );
+        }
+    } else if source_dispatch_wait.is_some() {
+        set_dispatch_state(&mut next, AgentDispatchState::Open);
     }
     // Terminalize the replaced old focus demand if a proof was provided and validated.
     let mut transitions = vec![format!(
