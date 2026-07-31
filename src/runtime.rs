@@ -3105,6 +3105,7 @@ impl RuntimeHandle {
     pub async fn run(self) -> Result<()> {
         let agent_id = self.inner.agent.lock().await.state.id.clone();
         if !self.inner.scheduler_engine.is_canonical() {
+            // Fail fast on residual canonical state before general recovery mutates runtime state.
             self.validate_legacy_engine_startup(&agent_id)?;
         }
         self.bootstrap_recovery().await?;
