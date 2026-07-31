@@ -25,6 +25,7 @@ use crate::domain::scheduler_protocol::{
 };
 
 const CANONICAL_COMMAND_SCHEMA_VERSION: i64 = 1;
+const LEGACY_ADOPTION_REPLACEMENT_SCHEMA_VERSION: i64 = 2;
 
 #[derive(Serialize)]
 struct LegacyActivationAuthorityPayload<'a> {
@@ -73,6 +74,7 @@ impl PreparedProtocolCommands {
 struct PreparedProtocolCommandResult {
     command_kind: &'static str,
     command_identity: String,
+    schema_version: i64,
     payload_hash: String,
     result: SchedulerProtocolCommandResult,
 }
@@ -183,7 +185,7 @@ pub(super) fn validate_protocol_commands_tx(
 
     for command in commands {
         let (command_kind, command_identity) = command_identity(command)?;
-        let payload_hash = canonical_command_hash(command_kind, command)?;
+        let (schema_version, payload_hash) = canonical_command_hash(command_kind, command)?;
         if let Some(stored) =
             stored_command_result_tx(tx, agent_id, command_kind, &command_identity)?
         {
@@ -233,6 +235,7 @@ pub(super) fn validate_protocol_commands_tx(
         results.push(PreparedProtocolCommandResult {
             command_kind,
             command_identity,
+            schema_version,
             payload_hash,
             result,
         });
@@ -262,6 +265,7 @@ pub(super) fn persist_protocol_commands_tx(
             agent_id,
             result.command_kind,
             &result.command_identity,
+            result.schema_version,
             &result.payload_hash,
             &result.result,
         )?;
@@ -443,7 +447,7 @@ impl RuntimeTransitionRepository<'_> {
     ) -> Result<SchedulerProtocolTransitionCommit> {
         validate_command_agent(agent_id, command)?;
         let (command_kind, command_identity) = command_identity(command)?;
-        let payload_hash = canonical_command_hash(command_kind, command)?;
+        let (schema_version, payload_hash) = canonical_command_hash(command_kind, command)?;
 
         let outcome = self.db.transaction(|tx| {
             if let Some(stored) =
@@ -456,6 +460,7 @@ impl RuntimeTransitionRepository<'_> {
                         agent_id,
                         command_kind,
                         &command_identity,
+                        schema_version,
                         &stored.payload_hash,
                         &payload_hash,
                     )?;
@@ -504,6 +509,7 @@ impl RuntimeTransitionRepository<'_> {
                 agent_id,
                 command_kind,
                 &command_identity,
+                schema_version,
                 &payload_hash,
                 &result,
             )?;
@@ -1019,13 +1025,36 @@ fn command_identity(command: &ProtocolCommand) -> Result<(&'static str, String)>
     })
 }
 
-fn canonical_command_hash(command_kind: &str, command: &ProtocolCommand) -> Result<String> {
+fn canonical_command_hash(command_kind: &str, command: &ProtocolCommand) -> Result<(i64, String)> {
+    let schema_version = match command {
+        ProtocolCommand::AdoptLegacyWorkState(command)
+            if command.replace_completed_focus.is_some() =>
+        {
+            LEGACY_ADOPTION_REPLACEMENT_SCHEMA_VERSION
+        }
+        _ => CANONICAL_COMMAND_SCHEMA_VERSION,
+    };
+    let mut command_value = serde_json::to_value(command)?;
+    if matches!(
+        command,
+        ProtocolCommand::AdoptLegacyWorkState(AdoptLegacyWorkStateCommand {
+            replace_completed_focus: None,
+            ..
+        })
+    ) {
+        if let Some(payload) = command_value.as_object_mut() {
+            payload.remove("replace_completed_focus");
+        }
+    }
     let canonical = serde_json::to_vec(&serde_json::json!({
-        "schema_version": CANONICAL_COMMAND_SCHEMA_VERSION,
+        "schema_version": schema_version,
         "command_kind": command_kind,
-        "command": command,
+        "command": command_value,
     }))?;
-    Ok(format!("sha256:{:x}", Sha256::digest(canonical)))
+    Ok((
+        schema_version,
+        format!("sha256:{:x}", Sha256::digest(canonical)),
+    ))
 }
 
 fn command_fact_references(command: &ProtocolCommand) -> Vec<String> {
@@ -1205,6 +1234,7 @@ fn insert_command_identity_conflict_attempt_tx(
     partition_key: &str,
     command_kind: &str,
     command_identity: &str,
+    schema_version: i64,
     existing_payload_hash: &str,
     incoming_payload_hash: &str,
 ) -> Result<SchedulerProtocolCommandIdentityConflict> {
@@ -1230,7 +1260,7 @@ fn insert_command_identity_conflict_attempt_tx(
             partition_key,
             command_kind,
             command_identity,
-            CANONICAL_COMMAND_SCHEMA_VERSION,
+            schema_version,
             existing_payload_hash,
             incoming_payload_hash,
             enum_token(&conflict.kind)?,
@@ -1255,6 +1285,7 @@ fn insert_command_result_tx(
     agent_id: &str,
     command_kind: &str,
     command_identity: &str,
+    schema_version: i64,
     payload_hash: &str,
     result: &SchedulerProtocolCommandResult,
 ) -> Result<()> {
@@ -1287,7 +1318,7 @@ fn insert_command_result_tx(
             agent_id,
             command_kind,
             command_identity,
-            CANONICAL_COMMAND_SCHEMA_VERSION,
+            schema_version,
             payload_hash,
             enum_token(&result.decision)?,
             conflict_kind,
@@ -2513,4 +2544,78 @@ fn load_activations(
         );
     }
     Ok(activations)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn legacy_adoption_command(replacement: Option<ReplaceCompletedFocusProof>) -> ProtocolCommand {
+        ProtocolCommand::AdoptLegacyWorkState(AdoptLegacyWorkStateCommand {
+            work_item_id: "work-a".into(),
+            source_work_item_revision: 3,
+            demand: WorkDemand {
+                metadata_revision: 3,
+                scheduling_generation: 3,
+                status: WorkStatus::Runnable,
+                capabilities: BTreeSet::new(),
+                locks: BTreeSet::new(),
+                locality: "runtime".into(),
+                cost_class: "default".into(),
+            },
+            wait: None,
+            focus: true,
+            reserve_dispatch: false,
+            replace_completed_focus: replacement,
+        })
+    }
+
+    #[test]
+    fn legacy_adoption_default_field_preserves_v1_command_hash() -> Result<()> {
+        let command = legacy_adoption_command(None);
+        let (schema_version, payload_hash) =
+            canonical_command_hash("adopt_legacy_work_state", &command)?;
+        assert_eq!(schema_version, 1);
+
+        let ProtocolCommand::AdoptLegacyWorkState(command) = command else {
+            unreachable!("fixture is a legacy adoption command");
+        };
+        let old_wire_payload = serde_json::json!({
+            "kind": "adopt_legacy_work_state",
+            "work_item_id": command.work_item_id,
+            "source_work_item_revision": command.source_work_item_revision,
+            "demand": command.demand,
+            "wait": command.wait,
+            "focus": command.focus,
+            "reserve_dispatch": command.reserve_dispatch,
+        });
+        let canonical = serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "command_kind": "adopt_legacy_work_state",
+            "command": old_wire_payload,
+        }))?;
+        assert_eq!(
+            payload_hash,
+            format!("sha256:{:x}", Sha256::digest(canonical))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_adoption_replacement_uses_command_specific_v2_hash() -> Result<()> {
+        let v1 = legacy_adoption_command(None);
+        let v2 = legacy_adoption_command(Some(ReplaceCompletedFocusProof {
+            work_item_id: "work-old".into(),
+            source_work_item_revision: 5,
+            expected_metadata_revision: 4,
+            expected_scheduling_generation: 4,
+        }));
+
+        let (v1_schema, v1_hash) = canonical_command_hash("adopt_legacy_work_state", &v1)?;
+        let (v2_schema, v2_hash) = canonical_command_hash("adopt_legacy_work_state", &v2)?;
+        assert_eq!(v1_schema, 1);
+        assert_eq!(v2_schema, LEGACY_ADOPTION_REPLACEMENT_SCHEMA_VERSION);
+        assert_ne!(v1_hash, v2_hash);
+        Ok(())
+    }
 }

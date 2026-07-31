@@ -1823,6 +1823,258 @@ fn lifecycle_settlement_can_atomically_adopt_work_item_wait() {
 
     let replay = reduce_command(&adopted.outcome.snapshot, &command);
     assert_eq!(replay.outcome.decision, Decision::DuplicateIgnored);
+
+    let mut rearm_command = command.clone();
+    let ProtocolCommand::AdoptActivationWorkState(rearm) = &mut rearm_command else {
+        unreachable!("fixture is an activation adoption command");
+    };
+    rearm.source_work_item_revision = 3;
+    rearm.wait.wait_id = "wait-2".into();
+    rearm.wait.generation = 3;
+    rearm.wait.source_updated_at = "2026-07-30T00:00:02Z".into();
+
+    let mut stale_command = rearm_command.clone();
+    let ProtocolCommand::AdoptActivationWorkState(stale) = &mut stale_command else {
+        unreachable!("fixture is an activation adoption command");
+    };
+    stale.source_work_item_revision = 1;
+    stale.wait.generation = 1;
+    let stale = reduce_command(&adopted.outcome.snapshot, &stale_command);
+    assert_eq!(stale.outcome.decision, Decision::Rejected);
+    assert_eq!(
+        stale.conflict.expect("typed conflict").kind,
+        ProtocolConflictKind::StaleRevision
+    );
+
+    let mut terminal_snapshot = adopted.outcome.snapshot.clone();
+    terminal_snapshot.focus = None;
+    terminal_snapshot.dispatch = AgentDispatchState::Open;
+    terminal_snapshot.work.get_mut("work-1").unwrap().status = WorkStatus::Terminal;
+    terminal_snapshot
+        .work
+        .get_mut("work-1")
+        .unwrap()
+        .scheduling_generation = 3;
+    terminal_snapshot
+        .waits
+        .get_mut("wait-1")
+        .unwrap()
+        .generations
+        .get_mut(&2)
+        .unwrap()
+        .state = WaitState::Resolved;
+    assert_invariants(&terminal_snapshot).unwrap();
+    let mut terminal_command = rearm_command.clone();
+    let ProtocolCommand::AdoptActivationWorkState(terminal) = &mut terminal_command else {
+        unreachable!("fixture is an activation adoption command");
+    };
+    terminal.source_work_item_revision = 4;
+    terminal.wait.generation = 4;
+    let terminal = reduce_command(&terminal_snapshot, &terminal_command);
+    assert_eq!(terminal.outcome.decision, Decision::Rejected);
+    assert_eq!(
+        terminal.conflict.expect("typed conflict").kind,
+        ProtocolConflictKind::StateConflict
+    );
+
+    let mut stale_generation_snapshot = adopted.outcome.snapshot.clone();
+    let work = stale_generation_snapshot.work.get_mut("work-1").unwrap();
+    work.scheduling_generation = 5;
+    let wait = stale_generation_snapshot.waits.get_mut("wait-1").unwrap();
+    wait.generations.get_mut(&2).unwrap().state = WaitState::Resolved;
+    wait.current_generation = 5;
+    wait.generations.insert(
+        5,
+        WaitGenerationRecord {
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "work-1".into(),
+            },
+            state: WaitState::Active,
+            trigger: None,
+            consuming_activation_id: None,
+        },
+    );
+    stale_generation_snapshot.dispatch = AgentDispatchState::Awaiting {
+        wait: WaitIdentity {
+            id: "wait-1".into(),
+            generation: 5,
+        },
+    };
+    assert_invariants(&stale_generation_snapshot).unwrap();
+    let stale_generation = reduce_command(&stale_generation_snapshot, &rearm_command);
+    assert_eq!(stale_generation.outcome.decision, Decision::Rejected);
+    assert_eq!(
+        stale_generation.conflict.expect("typed conflict").kind,
+        ProtocolConflictKind::StaleGeneration
+    );
+
+    let mut unrelated_dispatch_snapshot = adopted.outcome.snapshot.clone();
+    unrelated_dispatch_snapshot.waits.insert(
+        "wait-lifecycle".into(),
+        WaitRecord {
+            current_generation: 1,
+            generations: BTreeMap::from([(
+                1,
+                WaitGenerationRecord {
+                    owner: SchedulerOwner::AgentLifecycle {
+                        agent_id: "agent-1".into(),
+                    },
+                    state: WaitState::Active,
+                    trigger: None,
+                    consuming_activation_id: None,
+                },
+            )]),
+        },
+    );
+    unrelated_dispatch_snapshot.dispatch = AgentDispatchState::Awaiting {
+        wait: WaitIdentity {
+            id: "wait-lifecycle".into(),
+            generation: 1,
+        },
+    };
+    assert_invariants(&unrelated_dispatch_snapshot).unwrap();
+    let unrelated_dispatch = reduce_command(&unrelated_dispatch_snapshot, &rearm_command);
+    assert_eq!(unrelated_dispatch.outcome.decision, Decision::Rejected);
+    assert_eq!(
+        unrelated_dispatch.conflict.expect("typed conflict").kind,
+        ProtocolConflictKind::StateConflict
+    );
+
+    let mut ownership_conflict_snapshot = adopted.outcome.snapshot.clone();
+    ownership_conflict_snapshot.work.insert(
+        "work-2".into(),
+        WorkDemand {
+            metadata_revision: 5,
+            scheduling_generation: 5,
+            status: WorkStatus::Runnable,
+            capabilities: BTreeSet::new(),
+            locks: BTreeSet::new(),
+            locality: "runtime".into(),
+            cost_class: "default".into(),
+        },
+    );
+    ownership_conflict_snapshot.waits.insert(
+        "wait-2".into(),
+        WaitRecord {
+            current_generation: 1,
+            generations: BTreeMap::from([(
+                1,
+                WaitGenerationRecord {
+                    owner: SchedulerOwner::WorkItem {
+                        work_item_id: "work-2".into(),
+                    },
+                    state: WaitState::Resolved,
+                    trigger: None,
+                    consuming_activation_id: None,
+                },
+            )]),
+        },
+    );
+    assert_invariants(&ownership_conflict_snapshot).unwrap();
+    let ownership_conflict = reduce_command(&ownership_conflict_snapshot, &rearm_command);
+    assert_eq!(ownership_conflict.outcome.decision, Decision::Rejected);
+    assert_eq!(
+        ownership_conflict.conflict.expect("typed conflict").kind,
+        ProtocolConflictKind::IdentityConflict
+    );
+
+    let mut reusable_wait_snapshot = adopted.outcome.snapshot.clone();
+    reusable_wait_snapshot.waits.insert(
+        "wait-2".into(),
+        WaitRecord {
+            current_generation: 1,
+            generations: BTreeMap::from([(
+                1,
+                WaitGenerationRecord {
+                    owner: SchedulerOwner::WorkItem {
+                        work_item_id: "work-1".into(),
+                    },
+                    state: WaitState::Resolved,
+                    trigger: None,
+                    consuming_activation_id: None,
+                },
+            )]),
+        },
+    );
+    assert_invariants(&reusable_wait_snapshot).unwrap();
+    let reusable_wait = reduce_command(&reusable_wait_snapshot, &rearm_command);
+    assert_eq!(
+        reusable_wait.outcome.decision,
+        Decision::LegacyWorkStateAdopted
+    );
+    assert_eq!(
+        reusable_wait.outcome.snapshot.waits["wait-2"].current_generation,
+        3
+    );
+    assert_eq!(
+        reusable_wait.outcome.snapshot.waits["wait-2"].generations[&1].state,
+        WaitState::Resolved
+    );
+    assert_invariants(&reusable_wait.outcome.snapshot).unwrap();
+
+    let rearmed = reduce_command(&adopted.outcome.snapshot, &rearm_command);
+    assert_eq!(rearmed.outcome.decision, Decision::LegacyWorkStateAdopted);
+    assert_eq!(
+        rearmed.outcome.snapshot.work["work-1"].status,
+        WorkStatus::Waiting {
+            wait_id: "wait-2".into(),
+        }
+    );
+    assert_eq!(
+        rearmed.outcome.snapshot.waits["wait-1"].generations[&2].state,
+        WaitState::Resolved
+    );
+    assert_eq!(
+        rearmed.outcome.snapshot.waits["wait-2"].generations[&3].state,
+        WaitState::Active
+    );
+    assert_eq!(
+        rearmed.outcome.snapshot.dispatch,
+        AgentDispatchState::Awaiting {
+            wait: WaitIdentity {
+                id: "wait-2".into(),
+                generation: 3,
+            },
+        }
+    );
+    assert_invariants(&rearmed.outcome.snapshot).unwrap();
+
+    let mut reused_wait_command = rearm_command.clone();
+    let ProtocolCommand::AdoptActivationWorkState(reused_wait) = &mut reused_wait_command else {
+        unreachable!("fixture is an activation adoption command");
+    };
+    reused_wait.source_work_item_revision = 4;
+    reused_wait.wait.generation = 4;
+    reused_wait.wait.source_updated_at = "2026-07-30T00:00:03Z".into();
+    let reused_wait = reduce_command(&rearmed.outcome.snapshot, &reused_wait_command);
+    assert_eq!(
+        reused_wait.outcome.decision,
+        Decision::LegacyWorkStateAdopted
+    );
+    let wait = &reused_wait.outcome.snapshot.waits["wait-2"];
+    assert_eq!(wait.current_generation, 4);
+    assert_eq!(wait.generations[&3].state, WaitState::Resolved);
+    assert_eq!(wait.generations[&4].state, WaitState::Active);
+    assert_invariants(&reused_wait.outcome.snapshot).unwrap();
+
+    let mut release_dispatch_command = rearm_command;
+    let ProtocolCommand::AdoptActivationWorkState(release_dispatch) = &mut release_dispatch_command
+    else {
+        unreachable!("fixture is an activation adoption command");
+    };
+    release_dispatch.source_work_item_revision = 5;
+    release_dispatch.wait.wait_id = "wait-3".into();
+    release_dispatch.wait.generation = 5;
+    release_dispatch.wait.source_updated_at = "2026-07-30T00:00:04Z".into();
+    release_dispatch.reserve_dispatch = false;
+    let released = reduce_command(&reused_wait.outcome.snapshot, &release_dispatch_command);
+    assert_eq!(released.outcome.decision, Decision::LegacyWorkStateAdopted);
+    assert_eq!(released.outcome.snapshot.dispatch, AgentDispatchState::Open);
+    assert_eq!(
+        released.outcome.snapshot.dispatch_revision,
+        reused_wait.outcome.snapshot.dispatch_revision + 1
+    );
+    assert_invariants(&released.outcome.snapshot).unwrap();
 }
 
 #[test]

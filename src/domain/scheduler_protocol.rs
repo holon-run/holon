@@ -1650,36 +1650,48 @@ fn replay_or_conflict(
                                     consuming_activation_id: None,
                                 })
                     });
-                return Some(
-                    if existing.metadata_revision == command.source_work_item_revision
-                        && existing.scheduling_generation == command.wait.generation
-                        && existing.status
-                            == (WorkStatus::Waiting {
-                                wait_id: command.wait.wait_id.clone(),
-                            })
-                        && wait_matches
-                        && (!command.focus
-                            || snapshot.focus.as_deref() == Some(command.work_item_id.as_str()))
-                        && (!command.reserve_dispatch
-                            || snapshot.dispatch
-                                == (AgentDispatchState::Awaiting {
-                                    wait: WaitIdentity {
-                                        id: command.wait.wait_id.clone(),
-                                        generation: command.wait.generation,
-                                    },
-                                }))
-                    {
-                        duplicate_command(snapshot, "activation_work_state_already_adopted")
-                    } else {
-                        rejected_command(
-                            snapshot,
-                            command_conflict(
-                                ProtocolConflictKind::IdentityConflict,
-                                "activation_work_state_adoption_conflict",
-                            ),
-                        )
-                    },
-                );
+                if existing.metadata_revision == command.source_work_item_revision
+                    && existing.scheduling_generation == command.wait.generation
+                    && existing.status
+                        == (WorkStatus::Waiting {
+                            wait_id: command.wait.wait_id.clone(),
+                        })
+                    && wait_matches
+                    && (!command.focus
+                        || snapshot.focus.as_deref() == Some(command.work_item_id.as_str()))
+                    && (!command.reserve_dispatch
+                        || snapshot.dispatch
+                            == (AgentDispatchState::Awaiting {
+                                wait: WaitIdentity {
+                                    id: command.wait.wait_id.clone(),
+                                    generation: command.wait.generation,
+                                },
+                            }))
+                {
+                    return Some(duplicate_command(
+                        snapshot,
+                        "activation_work_state_already_adopted",
+                    ));
+                }
+                if existing.metadata_revision < command.source_work_item_revision {
+                    return None;
+                }
+                if existing.metadata_revision > command.source_work_item_revision {
+                    return Some(rejected_command(
+                        snapshot,
+                        command_conflict(
+                            ProtocolConflictKind::StaleRevision,
+                            "activation_work_state_adoption_stale_revision",
+                        ),
+                    ));
+                }
+                return Some(rejected_command(
+                    snapshot,
+                    command_conflict(
+                        ProtocolConflictKind::IdentityConflict,
+                        "activation_work_state_adoption_conflict",
+                    ),
+                ));
             }
         }
         ProtocolCommand::AdmitActivation(command) => {
@@ -2259,18 +2271,113 @@ fn adopt_activation_work_state(
             ),
         );
     }
-    if snapshot.work.contains_key(&command.work_item_id)
-        || snapshot.waits.contains_key(&command.wait.wait_id)
-    {
-        return rejected_command(
-            snapshot,
-            command_conflict(
-                ProtocolConflictKind::IdentityConflict,
-                "activation_work_state_identity_conflict",
-            ),
-        );
+    let existing_work = snapshot.work.get(&command.work_item_id);
+    let existing_wait_id = existing_work.and_then(|work| match &work.status {
+        WorkStatus::Waiting { wait_id } => Some(wait_id.as_str()),
+        _ => None,
+    });
+    if let Some(existing_work) = existing_work {
+        if existing_work.metadata_revision >= command.source_work_item_revision {
+            return rejected_command(
+                snapshot,
+                command_conflict(
+                    ProtocolConflictKind::StaleRevision,
+                    "activation_work_state_adoption_stale_revision",
+                ),
+            );
+        }
+        if existing_wait_id.is_none() {
+            return rejected_command(
+                snapshot,
+                command_conflict(
+                    ProtocolConflictKind::StateConflict,
+                    "activation_work_state_existing_work_not_waiting",
+                ),
+            );
+        }
+        if existing_work.scheduling_generation >= command.wait.generation {
+            return rejected_command(
+                snapshot,
+                command_conflict(
+                    ProtocolConflictKind::StaleGeneration,
+                    "activation_work_state_adoption_stale_generation",
+                ),
+            );
+        }
+        let existing_wait_id = existing_wait_id.expect("checked existing waiting work");
+        let Some(existing_wait) = snapshot.waits.get(existing_wait_id) else {
+            return rejected_command(
+                snapshot,
+                command_conflict(
+                    ProtocolConflictKind::StateConflict,
+                    "activation_work_state_existing_wait_conflict",
+                ),
+            );
+        };
+        let Some(current) = existing_wait
+            .generations
+            .get(&existing_wait.current_generation)
+        else {
+            return rejected_command(
+                snapshot,
+                command_conflict(
+                    ProtocolConflictKind::StateConflict,
+                    "activation_work_state_existing_wait_conflict",
+                ),
+            );
+        };
+        if existing_wait.current_generation != existing_work.scheduling_generation
+            || current.owner
+                != (SchedulerOwner::WorkItem {
+                    work_item_id: command.work_item_id.clone(),
+                })
+            || !matches!(current.state, WaitState::Active | WaitState::Triggered)
+        {
+            return rejected_command(
+                snapshot,
+                command_conflict(
+                    ProtocolConflictKind::StateConflict,
+                    "activation_work_state_existing_wait_conflict",
+                ),
+            );
+        }
     }
-    if snapshot.dispatch != AgentDispatchState::Open {
+    if let Some(existing_wait) = snapshot.waits.get(&command.wait.wait_id) {
+        let current = existing_wait
+            .generations
+            .get(&existing_wait.current_generation)
+            .expect("current wait generation exists");
+        let target_is_current_wait = existing_wait_id == Some(command.wait.wait_id.as_str());
+        if !target_is_current_wait
+            && (current.owner
+                != (SchedulerOwner::WorkItem {
+                    work_item_id: command.work_item_id.clone(),
+                })
+                || existing_wait.current_generation >= command.wait.generation
+                || current.state != WaitState::Resolved)
+        {
+            return rejected_command(
+                snapshot,
+                command_conflict(
+                    ProtocolConflictKind::IdentityConflict,
+                    "activation_work_state_wait_conflict",
+                ),
+            );
+        }
+    }
+    if snapshot.dispatch != AgentDispatchState::Open
+        && !existing_wait_id.is_some_and(|wait_id| {
+            snapshot.dispatch
+                == (AgentDispatchState::Awaiting {
+                    wait: WaitIdentity {
+                        id: wait_id.to_string(),
+                        generation: existing_work
+                            .expect("existing wait requires existing work")
+                            .scheduling_generation,
+                    },
+                })
+        })
+    {
         return rejected_command(
             snapshot,
             command_conflict(
@@ -2281,6 +2388,24 @@ fn adopt_activation_work_state(
     }
 
     let mut next = snapshot.clone();
+    let mut transitions = Vec::new();
+    if let Some(existing_wait_id) = existing_wait_id {
+        if let Some(wait) = next.waits.get_mut(existing_wait_id) {
+            let generation = wait
+                .generations
+                .get_mut(&wait.current_generation)
+                .expect("current wait generation exists");
+            if matches!(generation.state, WaitState::Active | WaitState::Triggered) {
+                generation.state = WaitState::Resolved;
+                generation.trigger = None;
+                generation.consuming_activation_id = None;
+                transitions.push(format!(
+                    "wait:{existing_wait_id}:generation:{}:resolved_by_activation_rearm",
+                    wait.current_generation
+                ));
+            }
+        }
+    }
     next.work.insert(
         command.work_item_id.clone(),
         WorkDemand {
@@ -2295,48 +2420,70 @@ fn adopt_activation_work_state(
             cost_class: "default".into(),
         },
     );
-    next.waits.insert(
-        command.wait.wait_id.clone(),
-        WaitRecord {
-            current_generation: command.wait.generation,
-            generations: BTreeMap::from([(
-                command.wait.generation,
-                WaitGenerationRecord {
-                    owner: SchedulerOwner::WorkItem {
-                        work_item_id: command.work_item_id.clone(),
-                    },
-                    state: WaitState::Active,
-                    trigger: None,
-                    consuming_activation_id: None,
+    if let Some(wait) = next.waits.get_mut(&command.wait.wait_id) {
+        wait.current_generation = command.wait.generation;
+        wait.generations.insert(
+            command.wait.generation,
+            WaitGenerationRecord {
+                owner: SchedulerOwner::WorkItem {
+                    work_item_id: command.work_item_id.clone(),
                 },
-            )]),
-        },
-    );
+                state: WaitState::Active,
+                trigger: None,
+                consuming_activation_id: None,
+            },
+        );
+    } else {
+        next.waits.insert(
+            command.wait.wait_id.clone(),
+            WaitRecord {
+                current_generation: command.wait.generation,
+                generations: BTreeMap::from([(
+                    command.wait.generation,
+                    WaitGenerationRecord {
+                        owner: SchedulerOwner::WorkItem {
+                            work_item_id: command.work_item_id.clone(),
+                        },
+                        state: WaitState::Active,
+                        trigger: None,
+                        consuming_activation_id: None,
+                    },
+                )]),
+            },
+        );
+    }
     if command.reserve_dispatch {
-        next.dispatch = AgentDispatchState::Awaiting {
+        let dispatch = AgentDispatchState::Awaiting {
             wait: WaitIdentity {
                 id: command.wait.wait_id.clone(),
                 generation: command.wait.generation,
             },
         };
+        if next.dispatch != dispatch {
+            next.dispatch = dispatch;
+            next.dispatch_revision += 1;
+        }
+    } else if next.dispatch != AgentDispatchState::Open {
+        next.dispatch = AgentDispatchState::Open;
         next.dispatch_revision += 1;
     }
     if command.focus {
         next.focus = Some(command.work_item_id.clone());
     }
+    transitions.extend([
+        format!(
+            "work:{}:activation_state_adopted:generation:{}",
+            command.work_item_id, command.wait.generation
+        ),
+        format!(
+            "wait:{}:generation:{}:armed",
+            command.wait.wait_id, command.wait.generation
+        ),
+    ]);
     ProtocolCommandOutcome {
         outcome: Outcome {
             decision: Decision::LegacyWorkStateAdopted,
-            transitions: vec![
-                format!(
-                    "work:{}:activation_state_adopted:generation:{}",
-                    command.work_item_id, command.wait.generation
-                ),
-                format!(
-                    "wait:{}:generation:{}:armed",
-                    command.wait.wait_id, command.wait.generation
-                ),
-            ],
+            transitions,
             diagnostics: Vec::new(),
             snapshot: next,
         },
