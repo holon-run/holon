@@ -793,8 +793,24 @@ fn canonical_queue_settlement_commands_from_facts(
 pub struct SchedulerRecoveryReport {
     pub agent_id: String,
     pub partition_initialized: bool,
+    pub retired_rollout_metadata: SchedulerRetiredRolloutMetadata,
     pub candidates: Vec<SchedulerRecoveryCandidate>,
     pub legacy_adoptions: Vec<SchedulerLegacyAdoptionCandidate>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SchedulerRetiredRolloutMetadata {
+    pub retirement_marked: bool,
+    pub compatibility_data_present: bool,
+    pub protocol_mode: String,
+    pub config_revision: u64,
+    pub preflight_count: u64,
+    pub manifest_count: u64,
+    pub scenario_count: u64,
+    pub authoritative_scenario_count: u64,
+    pub stale_authoritative_scenario_count: u64,
+    pub hard_blocker_count: u64,
+    pub command_result_count: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -925,6 +941,26 @@ pub fn scheduler_recovery_report(
     runtime_db: &RuntimeDb,
     agent_id: &str,
 ) -> Result<SchedulerRecoveryReport> {
+    let retired = runtime_db
+        .transitions()
+        .inspect_retired_scheduler_rollout_metadata()?;
+    let retired_rollout_metadata = SchedulerRetiredRolloutMetadata {
+        retirement_marked: retired.retirement_marked,
+        compatibility_data_present: retired.preflight_count > 0
+            || retired.manifest_count > 0
+            || retired.scenario_count > 0
+            || retired.hard_blocker_count > 0
+            || retired.command_result_count > 0,
+        protocol_mode: retired.protocol_mode,
+        config_revision: retired.config_revision,
+        preflight_count: retired.preflight_count,
+        manifest_count: retired.manifest_count,
+        scenario_count: retired.scenario_count,
+        authoritative_scenario_count: retired.authoritative_scenario_count,
+        stale_authoritative_scenario_count: retired.stale_authoritative_scenario_count,
+        hard_blocker_count: retired.hard_blocker_count,
+        command_result_count: retired.command_result_count,
+    };
     let Some(snapshot) = runtime_db
         .transitions()
         .load_scheduler_protocol_snapshot_if_initialized(agent_id)?
@@ -932,6 +968,7 @@ pub fn scheduler_recovery_report(
         return Ok(SchedulerRecoveryReport {
             agent_id: agent_id.to_string(),
             partition_initialized: false,
+            retired_rollout_metadata,
             candidates: Vec::new(),
             legacy_adoptions: runtime_db
                 .transitions()
@@ -1237,6 +1274,7 @@ pub fn scheduler_recovery_report(
     Ok(SchedulerRecoveryReport {
         agent_id: agent_id.to_string(),
         partition_initialized: true,
+        retired_rollout_metadata,
         candidates,
         legacy_adoptions: runtime_db
             .transitions()
@@ -1257,7 +1295,7 @@ pub fn apply_scheduler_recovery_plan(
     runtime_db: &RuntimeDb,
     agent_id: &str,
     report: &SchedulerRecoveryReport,
-) -> Result<usize> {
+) -> Result<(usize, Option<std::path::PathBuf>)> {
     let mut commands = report
         .legacy_adoptions
         .iter()
@@ -1269,10 +1307,17 @@ pub fn apply_scheduler_recovery_plan(
     }) {
         commands.extend(candidate.proposed_commands.clone());
     }
-    Ok(usize::from(
-        runtime_db
-            .transitions()
-            .commit_scheduler_recovery_plan(agent_id, &commands)?,
+    if commands.is_empty() {
+        return Ok((0, None));
+    }
+    let backup_path = runtime_db.create_verified_backup("scheduler-recovery")?;
+    Ok((
+        usize::from(
+            runtime_db
+                .transitions()
+                .commit_scheduler_recovery_plan(agent_id, &commands)?,
+        ),
+        Some(backup_path),
     ))
 }
 
@@ -2822,7 +2867,6 @@ impl RuntimeHandle {
                     scheduler_claim_work_item: None,
                     scheduler_protocol_bootstrap: None,
                     scheduler_protocol_commands: Vec::new(),
-                    scheduler_rollout_expectations: Vec::new(),
                     agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
                         expected: Some(Box::new(expected_persisted_state)),
                         record: Box::new(committed_state.clone()),
@@ -2949,14 +2993,6 @@ impl RuntimeHandle {
                 terminal_transition.map(|transition| &transition.turn_record),
             )
             .await?;
-        let scheduler_rollout_expectations = self
-            .inner
-            .runtime_db
-            .transitions()
-            .scheduler_rollout_expectations(&[
-                scheduler::SETTLEMENT_SCENARIO,
-                scheduler::DELIVERY_SCENARIO,
-            ])?;
         let original_audit_len = audit_events.len();
         let mut command = crate::runtime_db::transitions::QueueTransitionCommand {
             agent_id: record.agent_id.clone(),
@@ -2965,7 +3001,6 @@ impl RuntimeHandle {
             scheduler_claim_work_item: None,
             scheduler_protocol_bootstrap: None,
             scheduler_protocol_commands: scheduler_protocol_commands.clone(),
-            scheduler_rollout_expectations: scheduler_rollout_expectations.clone(),
             agent_state: None,
             message_evidence: Vec::new(),
             transcript_entries: transcript_entries.clone(),
@@ -3465,7 +3500,6 @@ impl RuntimeHandle {
                     scheduler_claim_work_item: None,
                     scheduler_protocol_bootstrap: None,
                     scheduler_protocol_commands: Vec::new(),
-                    scheduler_rollout_expectations: Vec::new(),
                     agent_state: None,
                     message_evidence: Vec::new(),
                     transcript_entries: Vec::new(),
@@ -3492,16 +3526,6 @@ impl RuntimeHandle {
     }
 
     async fn recover_scheduler_bootstrap_claims(&self) -> Result<usize> {
-        let scheduler_rollout_expectations = self
-            .inner
-            .runtime_db
-            .transitions()
-            .scheduler_rollout_expectations(&[scheduler::SETTLEMENT_SCENARIO])?;
-        if scheduler_rollout_expectations.iter().any(|expectation| {
-            expectation.mode != crate::domain::scheduler_protocol::ScenarioMode::Authoritative
-        }) {
-            return Ok(0);
-        }
         let agent_id = self.inner.agent.lock().await.state.id.clone();
         let Some(snapshot) = self
             .inner
@@ -3593,7 +3617,6 @@ impl RuntimeHandle {
                         scheduler_claim_work_item: None,
                         scheduler_protocol_bootstrap: None,
                         scheduler_protocol_commands: Vec::new(),
-                        scheduler_rollout_expectations: Vec::new(),
                         agent_state: None,
                         message_evidence: Vec::new(),
                         transcript_entries: Vec::new(),
@@ -3640,7 +3663,6 @@ impl RuntimeHandle {
                         scheduler_claim_work_item: None,
                         scheduler_protocol_bootstrap: None,
                         scheduler_protocol_commands: Vec::new(),
-                        scheduler_rollout_expectations: Vec::new(),
                         agent_state: None,
                         message_evidence: Vec::new(),
                         transcript_entries: Vec::new(),
@@ -3735,7 +3757,6 @@ impl RuntimeHandle {
                     scheduler_claim_work_item: None,
                     scheduler_protocol_bootstrap: None,
                     scheduler_protocol_commands,
-                    scheduler_rollout_expectations: scheduler_rollout_expectations.clone(),
                     agent_state: None,
                     message_evidence: Vec::new(),
                     transcript_entries: Vec::new(),

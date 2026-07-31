@@ -55,6 +55,7 @@ use std::{
 };
 
 use anyhow::{anyhow, bail, Context, Result};
+use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension, Transaction};
 
 use crate::runtime_db::connection::{
@@ -288,6 +289,41 @@ impl RuntimeDb {
 
     pub fn connection(&self) -> Result<Connection> {
         open_connection(&self.path)
+    }
+
+    pub(crate) fn create_verified_backup(&self, label: &str) -> Result<PathBuf> {
+        let timestamp = Utc::now().format("%Y%m%dT%H%M%S%.3fZ");
+        let file_name = self
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("runtime.sqlite");
+        let backup_path = self
+            .path
+            .with_file_name(format!("{file_name}.{label}.{timestamp}.bak"));
+        if backup_path.exists() {
+            bail!(
+                "runtime database backup already exists: {}",
+                backup_path.display()
+            );
+        }
+        let backup_path_text = backup_path.to_string_lossy().into_owned();
+        self.connection()?
+            .execute("VACUUM INTO ?1", [&backup_path_text])
+            .with_context(|| {
+                format!("creating runtime database backup {}", backup_path.display())
+            })?;
+        File::open(&backup_path)?.sync_all()?;
+        let integrity: String =
+            open_connection(&backup_path)?
+                .query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
+        if integrity != "ok" {
+            bail!(
+                "runtime database backup {} failed integrity check: {integrity}",
+                backup_path.display()
+            );
+        }
+        Ok(backup_path)
     }
 
     pub fn transaction<T>(&self, f: impl FnMut(&Transaction<'_>) -> Result<T>) -> Result<T> {

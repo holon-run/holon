@@ -809,13 +809,6 @@ impl RuntimeHandle {
                     created_at: message.created_at,
                     updated_at: Utc::now(),
                 };
-                let scheduler_rollout_expectations = self
-                    .inner
-                    .runtime_db
-                    .transitions()
-                    .scheduler_rollout_expectations(&[
-                        scheduler::WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO,
-                    ])?;
                 let commit_result = self.inner.runtime_db.transitions().commit_queue(
                     &crate::runtime_db::transitions::QueueTransitionCommand {
                         agent_id: message.agent_id.clone(),
@@ -826,7 +819,6 @@ impl RuntimeHandle {
                         scheduler_claim_work_item: None,
                         scheduler_protocol_bootstrap: None,
                         scheduler_protocol_commands: Vec::new(),
-                        scheduler_rollout_expectations,
                         agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
                             expected: Some(Box::new(expected_persisted_state)),
                             record: Box::new(committed_state.clone()),

@@ -2469,24 +2469,49 @@ fn print_scheduler_recovery_report(
     let storage = host.agent_storage(&agent_id)?;
     let mut report =
         holon::runtime::scheduler_recovery_report(&storage, host.runtime_db(), &agent_id)?;
+    let mut apply_result = None;
     if apply {
         let _maintenance_lock = RuntimeDbLock::try_lock(config.runtime_db_maintenance_lock_path())
             .context("scheduler recovery apply requires holon serve to be stopped")?;
-        holon::runtime::apply_scheduler_recovery_plan(
+        apply_result = Some(holon::runtime::apply_scheduler_recovery_plan(
             &storage,
             host.runtime_db(),
             &agent_id,
             &report,
-        )?;
+        )?);
         report = holon::runtime::scheduler_recovery_report(&storage, host.runtime_db(), &agent_id)?;
     }
     if json {
-        return print_json(&serde_json::to_value(report)?);
+        return print_json(&serde_json::json!({
+            "report": report,
+            "apply": apply_result.map(|(changed, backup_path)| serde_json::json!({
+                "changed": changed,
+                "backup_path": backup_path,
+            })),
+        }));
     }
     println!(
         "Scheduler recovery candidates for {} (partition initialized: {})",
         report.agent_id, report.partition_initialized
     );
+    println!(
+        "- retired rollout metadata: marked={} present={} mode={} stale_authoritative={}",
+        report.retired_rollout_metadata.retirement_marked,
+        report.retired_rollout_metadata.compatibility_data_present,
+        report.retired_rollout_metadata.protocol_mode,
+        report
+            .retired_rollout_metadata
+            .stale_authoritative_scenario_count,
+    );
+    if let Some((changed, backup_path)) = apply_result {
+        println!(
+            "- applied recovery changes={} backup={}",
+            changed,
+            backup_path
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "not-created".into())
+        );
+    }
     for candidate in report.candidates {
         println!(
             "- {}: eligible={} reason={} target={:?}",

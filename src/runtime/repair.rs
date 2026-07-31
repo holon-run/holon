@@ -40,6 +40,7 @@ pub struct SchedulerRepairResult {
     pub dry_run: bool,
     pub changed: bool,
     pub operation: &'static str,
+    pub backup_path: Option<std::path::PathBuf>,
     pub before: Value,
     pub after: Value,
 }
@@ -112,6 +113,15 @@ impl RuntimeHandle {
                 cancelled.cancelled_at = Some(cancelled.updated_at);
                 let before = serde_json::to_value(&current)?;
                 let after = serde_json::to_value(&cancelled)?;
+                let backup_path = if request.dry_run {
+                    None
+                } else {
+                    Some(
+                        self.inner
+                            .runtime_db
+                            .create_verified_backup("scheduler-repair")?,
+                    )
+                };
                 if !request.dry_run {
                     let commit = self.inner.runtime_db.transitions().commit_wait(
                         &crate::runtime_db::transitions::WaitTransitionCommand {
@@ -148,6 +158,7 @@ impl RuntimeHandle {
                     dry_run: request.dry_run,
                     changed: true,
                     operation: "cancel_wait",
+                    backup_path,
                     before,
                     after,
                 })
@@ -186,6 +197,15 @@ impl RuntimeHandle {
                 dropped.updated_at = self.now();
                 let before = serde_json::to_value(&current)?;
                 let after = serde_json::to_value(&dropped)?;
+                let backup_path = if request.dry_run {
+                    None
+                } else {
+                    Some(
+                        self.inner
+                            .runtime_db
+                            .create_verified_backup("scheduler-repair")?,
+                    )
+                };
                 if !request.dry_run {
                     let commit = self.inner.runtime_db.transitions().commit_queue(
                         &crate::runtime_db::transitions::QueueTransitionCommand {
@@ -199,7 +219,6 @@ impl RuntimeHandle {
                             scheduler_claim_work_item: None,
                             scheduler_protocol_bootstrap: None,
                             scheduler_protocol_commands: Vec::new(),
-                            scheduler_rollout_expectations: Vec::new(),
                             agent_state: None,
                             message_evidence: Vec::new(),
                             transcript_entries: Vec::new(),
@@ -225,6 +244,7 @@ impl RuntimeHandle {
                     dry_run: request.dry_run,
                     changed: true,
                     operation: "drop_wake_only_queue_entry",
+                    backup_path,
                     before,
                     after,
                 })

@@ -31,18 +31,26 @@ use crate::domain::scheduler_protocol::{
 const CANONICAL_COMMAND_SCHEMA_VERSION: i64 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SchedulerRolloutExpectation {
-    pub scenario_class: SchedulerScenarioClass,
-    pub mode: ScenarioMode,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LegacySchedulerAdoptionCandidate {
     pub agent_id: String,
     pub work_item_id: String,
     pub eligible: bool,
     pub reason: String,
     pub command: Option<ProtocolCommand>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RetiredSchedulerRolloutMetadata {
+    pub retirement_marked: bool,
+    pub protocol_mode: String,
+    pub config_revision: u64,
+    pub preflight_count: u64,
+    pub manifest_count: u64,
+    pub scenario_count: u64,
+    pub authoritative_scenario_count: u64,
+    pub stale_authoritative_scenario_count: u64,
+    pub hard_blocker_count: u64,
+    pub command_result_count: u64,
 }
 
 pub(super) struct PreparedProtocolCommands {
@@ -148,92 +156,6 @@ enum CommandTransactionOutcome<T> {
     Conflict(SchedulerProtocolCommandIdentityConflict),
 }
 
-pub(super) fn validate_protocol_command_authority_tx(
-    commands: &[ProtocolCommand],
-    expectations: &[SchedulerRolloutExpectation],
-) -> Result<()> {
-    validate_rollout_expectations(expectations)?;
-    for required_scenario in required_protocol_command_scenarios(commands) {
-        let expectation = expectations
-            .iter()
-            .find(|expectation| expectation.scenario_class == required_scenario)
-            .ok_or_else(|| {
-                anyhow!(
-                    "scheduler protocol production command is missing rollout expectation for {}",
-                    required_scenario.as_str()
-                )
-            })?;
-        if expectation.mode != ScenarioMode::Authoritative {
-            bail!(
-                "scheduler protocol production commands require authoritative scenario {}, got {:?}",
-                required_scenario.as_str(),
-                expectation.mode
-            );
-        }
-    }
-    Ok(())
-}
-
-fn required_protocol_command_scenarios(
-    commands: &[ProtocolCommand],
-) -> BTreeSet<SchedulerScenarioClass> {
-    let mut required_scenarios = BTreeSet::new();
-    for command in commands {
-        match command {
-            ProtocolCommand::RegisterWorkDemand(_) => {
-                required_scenarios.insert(SchedulerScenarioClass::WorkItemAutonomousContinuation);
-            }
-            ProtocolCommand::AdoptLegacyWorkState(_)
-            | ProtocolCommand::AdoptActivationWorkState(_) => {}
-            ProtocolCommand::IssueActivationAuthority(command) => {
-                required_scenarios.insert(activation_authority_scenario(&command.activation));
-                required_scenarios.insert(SchedulerScenarioClass::Settlement);
-            }
-            ProtocolCommand::AdmitActivation(command) => {
-                required_scenarios.insert(activation_authority_scenario(&command.activation));
-                required_scenarios.insert(SchedulerScenarioClass::Settlement);
-            }
-            ProtocolCommand::TriggerWait(_) => {}
-            ProtocolCommand::AttachActivationInput(_) => {
-                required_scenarios.insert(SchedulerScenarioClass::OperatorInterjection);
-            }
-            ProtocolCommand::SettleActivation(_) | ProtocolCommand::RecordMissingSettlement(_) => {
-                // Terminal commands drain authority granted when the activation was admitted.
-            }
-        }
-    }
-    required_scenarios
-}
-
-fn activation_authority_scenario(
-    activation: &scheduler_protocol::AgentActivation,
-) -> SchedulerScenarioClass {
-    match &activation.cause {
-        ActivationCause::OperatorInput { .. } => match activation.binding {
-            scheduler_protocol::ActivationBinding::WorkItem { .. } => {
-                SchedulerScenarioClass::ExplicitlyBoundOperatorInput
-            }
-            _ => SchedulerScenarioClass::OrdinarySemanticOperatorBinding,
-        },
-        ActivationCause::OperatorInterjection { .. } => {
-            SchedulerScenarioClass::OperatorInterjection
-        }
-        ActivationCause::MessageIngress { .. } => SchedulerScenarioClass::ReducerOnlyCandidates,
-        ActivationCause::TaskRejoin { .. } => SchedulerScenarioClass::ExactTaskRejoin,
-        ActivationCause::WaitResume { .. } | ActivationCause::LifecycleExternalNudge { .. } => {
-            SchedulerScenarioClass::ExactWaitResume
-        }
-        ActivationCause::WorkItemRunnable { .. }
-        | ActivationCause::WorkItemRecheck { .. }
-        | ActivationCause::InternalFollowup { .. } => {
-            SchedulerScenarioClass::WorkItemAutonomousContinuation
-        }
-        ActivationCause::RuntimeRecovery { .. } | ActivationCause::SettlementRecovery { .. } => {
-            SchedulerScenarioClass::Settlement
-        }
-    }
-}
-
 pub(super) fn validate_protocol_commands_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
@@ -249,11 +171,10 @@ pub(super) fn validate_protocol_commands_tx(
 
     let initialized_partition = !scheduler_protocol_partition_exists_tx(tx, agent_id)?;
     let mut snapshot = if initialized_partition {
-        let mut snapshot = bootstrap
+        let snapshot = bootstrap
             .cloned()
             .ok_or_else(|| anyhow!("canonical scheduler claim requires bootstrap state"))?;
         validate_agent_partition(agent_id, &snapshot)?;
-        snapshot.rollout = load_rollout(tx)?;
         scheduler_protocol::assert_invariants(&snapshot)
             .map_err(|error| anyhow!("invalid scheduler protocol bootstrap: {error}"))?;
         snapshot
@@ -372,35 +293,6 @@ fn effective_scenario_mode(
     }
 }
 
-fn rollout_expectation(
-    scenario_class: SchedulerScenarioClass,
-) -> Result<SchedulerRolloutExpectation> {
-    Ok(SchedulerRolloutExpectation {
-        scenario_class,
-        mode: ScenarioMode::Authoritative,
-    })
-}
-
-fn validate_rollout_expectations(expectations: &[SchedulerRolloutExpectation]) -> Result<()> {
-    let mut scenario_classes = BTreeSet::new();
-    for expectation in expectations {
-        if !scenario_classes.insert(expectation.scenario_class) {
-            bail!(
-                "duplicate scheduler rollout expectation for {}",
-                expectation.scenario_class.as_str()
-            );
-        }
-        let current = rollout_expectation(expectation.scenario_class)?;
-        if &current != expectation {
-            bail!(
-                "stale scheduler rollout expectation for {}",
-                expectation.scenario_class.as_str()
-            );
-        }
-    }
-    Ok(())
-}
-
 fn effective_scenario_mode_tx(tx: &Transaction<'_>, scenario_class: &str) -> Result<ScenarioMode> {
     let scenario_class = scenario_class
         .parse::<SchedulerScenarioClass>()
@@ -409,19 +301,6 @@ fn effective_scenario_mode_tx(tx: &Transaction<'_>, scenario_class: &str) -> Res
 }
 
 impl RuntimeTransitionRepository<'_> {
-    pub(crate) fn scheduler_rollout_expectations(
-        &self,
-        scenario_classes: &[SchedulerScenarioClass],
-    ) -> Result<Vec<SchedulerRolloutExpectation>> {
-        let mut unique = BTreeSet::new();
-        scenario_classes
-            .iter()
-            .copied()
-            .filter(|scenario_class| unique.insert(*scenario_class))
-            .map(rollout_expectation)
-            .collect()
-    }
-
     pub(crate) fn scheduler_scenario_mode(
         &self,
         scenario_class: SchedulerScenarioClass,
@@ -440,11 +319,9 @@ impl RuntimeTransitionRepository<'_> {
             if scheduler_protocol_partition_exists_tx(tx, agent_id)? {
                 bail!("scheduler protocol partition for agent {agent_id} is already initialized");
             }
-            let mut initialized = snapshot.clone();
-            initialized.rollout = load_rollout(tx)?;
-            scheduler_protocol::assert_invariants(&initialized)
+            scheduler_protocol::assert_invariants(snapshot)
                 .map_err(|error| anyhow!("invalid scheduler protocol snapshot: {error}"))?;
-            persist_agent_snapshot_tx(tx, agent_id, &initialized)?;
+            persist_agent_snapshot_tx(tx, agent_id, snapshot)?;
             Ok(())
         })
     }
@@ -471,6 +348,59 @@ impl RuntimeTransitionRepository<'_> {
     pub(crate) fn load_scheduler_rollout_state(&self) -> Result<RolloutState> {
         let connection = self.db.connection()?;
         load_rollout(&connection)
+    }
+
+    pub(crate) fn inspect_retired_scheduler_rollout_metadata(
+        &self,
+    ) -> Result<RetiredSchedulerRolloutMetadata> {
+        let connection = self.db.connection()?;
+        let retirement_marked = connection.query_row(
+            "SELECT EXISTS(
+               SELECT 1 FROM scheduler_rollout_retirement WHERE retirement_id = 1
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        let (protocol_mode, config_revision): (String, i64) = connection.query_row(
+            "SELECT protocol_mode, config_revision
+             FROM scheduler_protocol_config
+             WHERE config_id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let count = |sql: &str| -> Result<u64> {
+            let value: i64 = connection.query_row(sql, [], |row| row.get(0))?;
+            to_u64(value, "retired scheduler rollout metadata count")
+        };
+        Ok(RetiredSchedulerRolloutMetadata {
+            retirement_marked,
+            protocol_mode,
+            config_revision: to_u64(config_revision, "rollout config revision")?,
+            preflight_count: count("SELECT COUNT(*) FROM scheduler_rollout_preflights")?,
+            manifest_count: count("SELECT COUNT(*) FROM scheduler_rollout_manifests")?,
+            scenario_count: count("SELECT COUNT(*) FROM scheduler_scenario_authorities")?,
+            authoritative_scenario_count: count(
+                "SELECT COUNT(*) FROM scheduler_scenario_authorities
+                 WHERE mode = 'authoritative'",
+            )?,
+            stale_authoritative_scenario_count: count(
+                "SELECT COUNT(*)
+                 FROM scheduler_scenario_authorities AS authority
+                 LEFT JOIN scheduler_rollout_manifests AS manifest
+                   ON manifest.manifest_revision = authority.manifest_revision
+                 LEFT JOIN scheduler_rollout_preflights AS preflight
+                   ON preflight.preflight_revision = authority.preflight_revision
+                 WHERE authority.mode = 'authoritative'
+                   AND (
+                     authority.manifest_revision IS NULL
+                     OR authority.preflight_revision IS NULL
+                     OR manifest.manifest_revision IS NULL
+                     OR preflight.preflight_revision IS NULL
+                   )",
+            )?,
+            hard_blocker_count: count("SELECT COUNT(*) FROM scheduler_scenario_hard_blockers")?,
+            command_result_count: count("SELECT COUNT(*) FROM scheduler_rollout_command_results")?,
+        })
     }
 
     pub(crate) fn legacy_scheduler_adoption_candidates(
@@ -511,7 +441,7 @@ impl RuntimeTransitionRepository<'_> {
                 }
             }
             let bootstrap = (!scheduler_protocol_partition_exists_tx(tx, agent_id)?)
-                .then(|| rollout_snapshot(load_rollout(tx).expect("rollout state is readable")));
+                .then(canonical_empty_snapshot);
             let prepared =
                 validate_protocol_commands_tx(tx, agent_id, bootstrap.as_ref(), commands)?;
             let changed = prepared
@@ -541,7 +471,7 @@ impl RuntimeTransitionRepository<'_> {
         command: &ProtocolCommand,
         fault: Option<TransitionFaultPoint>,
     ) -> Result<SchedulerProtocolTransitionCommit> {
-        self.commit_scheduler_protocol_command_inner(agent_id, command, fault, true)
+        self.commit_scheduler_protocol_command_inner(agent_id, command, fault)
     }
 
     #[cfg(test)]
@@ -551,7 +481,7 @@ impl RuntimeTransitionRepository<'_> {
         command: &ProtocolCommand,
         fault: Option<TransitionFaultPoint>,
     ) -> Result<SchedulerProtocolTransitionCommit> {
-        self.commit_scheduler_protocol_command_inner(agent_id, command, fault, false)
+        self.commit_scheduler_protocol_command_inner(agent_id, command, fault)
     }
 
     fn commit_scheduler_protocol_command_inner(
@@ -559,24 +489,12 @@ impl RuntimeTransitionRepository<'_> {
         agent_id: &str,
         command: &ProtocolCommand,
         fault: Option<TransitionFaultPoint>,
-        enforce_authority: bool,
     ) -> Result<SchedulerProtocolTransitionCommit> {
         validate_command_agent(agent_id, command)?;
         let (command_kind, command_identity) = command_identity(command)?;
         let payload_hash = canonical_command_hash(command_kind, command)?;
 
         let outcome = self.db.transaction(|tx| {
-            if enforce_authority {
-                let expectations =
-                    required_protocol_command_scenarios(std::slice::from_ref(command))
-                        .into_iter()
-                        .map(rollout_expectation)
-                        .collect::<Result<Vec<_>>>()?;
-                validate_protocol_command_authority_tx(
-                    std::slice::from_ref(command),
-                    &expectations,
-                )?;
-            }
             if let Some(stored) =
                 stored_command_result_tx(tx, agent_id, command_kind, &command_identity)?
             {
@@ -752,14 +670,13 @@ fn apply_scheduler_rollout_command_tx(
     }
 
     let rollout = load_rollout(tx)?;
-    let snapshot = rollout_snapshot(rollout.clone());
-    let outcome = scheduler_protocol::reduce_rollout_command(&snapshot, command);
-    scheduler_protocol::assert_invariants(&outcome.outcome.snapshot)
+    let outcome = scheduler_protocol::reduce_rollout_command(&rollout, command);
+    scheduler_protocol::assert_rollout_invariants(&outcome.outcome.state)
         .map_err(|error| anyhow!("scheduler rollout reducer produced invalid state: {error}"))?;
     inject_fault(fault, TransitionFaultPoint::AfterValidation)?;
 
     if outcome.outcome.decision != Decision::Rejected {
-        persist_rollout_tx(tx, &rollout, &outcome.outcome.snapshot.rollout)?;
+        persist_rollout_tx(tx, &rollout, &outcome.outcome.state)?;
     }
     inject_fault(fault, TransitionFaultPoint::AfterCanonicalWrites)?;
 
@@ -771,10 +688,10 @@ fn apply_scheduler_rollout_command_tx(
         diagnostics: outcome.outcome.diagnostics,
         fact_references: decision_fact_references(
             &decision,
-            rollout_command_fact_references(command, &outcome.outcome.snapshot.rollout),
+            rollout_command_fact_references(command, &outcome.outcome.state),
         ),
         pre_state_fence: rollout_fence(&rollout),
-        post_state_fence: rollout_fence(&outcome.outcome.snapshot.rollout),
+        post_state_fence: rollout_fence(&outcome.outcome.state),
     };
     insert_rollout_command_result_tx(tx, command_kind, command_identity, &payload_hash, &result)?;
     inject_fault(fault, TransitionFaultPoint::BeforeCommit)?;
@@ -819,7 +736,7 @@ fn adopt_legacy_scheduler_state_tx(tx: &Transaction<'_>) -> Result<()> {
     }
     for (agent_id, commands) in by_agent {
         let bootstrap = (!scheduler_protocol_partition_exists_tx(tx, &agent_id)?)
-            .then(|| rollout_snapshot(load_rollout(tx).expect("rollout state was just readable")));
+            .then(canonical_empty_snapshot);
         let prepared = validate_protocol_commands_tx(tx, &agent_id, bootstrap.as_ref(), &commands)?;
         persist_protocol_commands_tx(tx, &agent_id, prepared)?;
     }
@@ -1244,7 +1161,7 @@ fn decision_fact_references(decision: &Decision, references: Vec<String>) -> Vec
     }
 }
 
-fn rollout_snapshot(rollout: RolloutState) -> Snapshot {
+fn canonical_empty_snapshot() -> Snapshot {
     Snapshot {
         slot: ActivationSlot::Idle,
         dispatch: AgentDispatchState::Open,
@@ -1257,7 +1174,6 @@ fn rollout_snapshot(rollout: RolloutState) -> Snapshot {
         activation_admissions: BTreeMap::new(),
         settlements: BTreeMap::new(),
         missing_settlements: BTreeMap::new(),
-        rollout,
         admitted_generations: BTreeSet::new(),
         continuation_admissions: BTreeMap::new(),
         activation_inputs: BTreeMap::new(),
@@ -2614,7 +2530,6 @@ fn load_snapshot_connection_with_hook(
         "SELECT attachment_id, payload_json FROM scheduler_activation_inputs WHERE agent_id = ?1",
         agent_id,
     )?;
-    let rollout = load_rollout(connection)?;
     let admitted_generations = activation_admissions
         .values()
         .map(persisted_admission_fence)
@@ -2631,7 +2546,6 @@ fn load_snapshot_connection_with_hook(
         activation_admissions,
         settlements,
         missing_settlements,
-        rollout,
         admitted_generations,
         continuation_admissions,
         activation_inputs,

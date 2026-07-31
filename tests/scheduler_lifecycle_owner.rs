@@ -5,8 +5,8 @@ use holon::domain::scheduler_protocol::{
     ActivationLifecycleState, ActivationOrigin, ActivationPriority, ActivationProvenance,
     ActivationSettlement, ActivationSlot, ActivationTrust, AdmitActivationCommand, AgentActivation,
     AgentDispatchDisposition, AgentDispatchState, Decision, IssueActivationAuthorityCommand,
-    PreemptionPolicy, ProtocolCommand, RolloutState, SchedulerOwner, SettleActivationCommand,
-    Snapshot, TriggerWaitCommand, WaitGenerationRecord, WaitIdentity, WaitRecord, WaitState,
+    PreemptionPolicy, ProtocolCommand, SchedulerOwner, SettleActivationCommand, Snapshot,
+    TriggerWaitCommand, WaitGenerationRecord, WaitIdentity, WaitRecord, WaitState,
 };
 
 fn owner() -> SchedulerOwner {
@@ -46,7 +46,6 @@ fn waiting_snapshot() -> Snapshot {
         activation_admissions: BTreeMap::new(),
         settlements: BTreeMap::new(),
         missing_settlements: BTreeMap::new(),
-        rollout: RolloutState::default(),
         admitted_generations: BTreeSet::new(),
         continuation_admissions: BTreeMap::new(),
         activation_inputs: BTreeMap::new(),

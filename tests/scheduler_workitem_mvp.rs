@@ -5,17 +5,18 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use model::{
-    assert_invariants, reduce, reduce_command, ActivationAdmissionAuthority, ActivationBinding,
-    ActivationCause, ActivationDisposition, ActivationLifecycleState, ActivationOrigin,
-    ActivationPriority, ActivationProvenance, ActivationRecord, ActivationSettlement,
-    ActivationSlot, ActivationState, ActivationTrust, AdmissionCause, AdmitActivationCommand,
-    AdoptActivationWorkStateCommand, AgentActivation, AgentDispatchDisposition, AgentDispatchState,
-    Decision, Event, IssueActivationAuthorityCommand, LegacyWaitAdoption, MissingSettlementRecord,
-    ObservationalDivergenceAllowance, PreemptionPolicy, ProtocolCommand, ProtocolConflictKind,
-    ProtocolMode, RegisterWorkDemandCommand, RollbackAction, RollbackPolicy, RollbackTrigger,
-    RolloutClassEvidence, RolloutManifest, RolloutPreflightState, RolloutState, ScenarioMode,
-    SchedulerOwner, SettleActivationCommand, Settlement, Snapshot, WaitGenerationRecord,
-    WaitIdentity, WaitRecord, WaitState, WaitTrigger, WorkDemand, WorkStatus,
+    assert_invariants, assert_rollout_invariants, reduce, reduce_command, reduce_rollout_command,
+    ActivationAdmissionAuthority, ActivationBinding, ActivationCause, ActivationDisposition,
+    ActivationLifecycleState, ActivationOrigin, ActivationPriority, ActivationProvenance,
+    ActivationRecord, ActivationSettlement, ActivationSlot, ActivationState, ActivationTrust,
+    AdmissionCause, AdmitActivationCommand, AdoptActivationWorkStateCommand, AgentActivation,
+    AgentDispatchDisposition, AgentDispatchState, Decision, Event, IssueActivationAuthorityCommand,
+    LegacyWaitAdoption, MissingSettlementRecord, ObservationalDivergenceAllowance,
+    PreemptionPolicy, ProtocolCommand, ProtocolConflictKind, ProtocolMode,
+    RegisterWorkDemandCommand, RollbackAction, RollbackPolicy, RollbackTrigger,
+    RolloutClassEvidence, RolloutCommand, RolloutManifest, RolloutPreflightState, RolloutState,
+    ScenarioMode, SchedulerOwner, SettleActivationCommand, Settlement, Snapshot,
+    WaitGenerationRecord, WaitIdentity, WaitRecord, WaitState, WaitTrigger, WorkDemand, WorkStatus,
     YieldContinuationRecord,
 };
 use proptest::prelude::*;
@@ -57,7 +58,6 @@ struct Expected {
     activation_admissions: BTreeMap<String, AdmitActivationCommand>,
     settlements: BTreeMap<String, ActivationSettlement>,
     missing_settlements: BTreeMap<String, MissingSettlementRecord>,
-    rollout: RolloutState,
     admitted_generations: Vec<String>,
     continuation_admissions: Vec<String>,
 }
@@ -112,6 +112,10 @@ fn apply_fixture_input(snapshot: &Snapshot, input: &FixtureInput) -> model::Outc
         }
         FixtureInput::Event { event } => reduce(snapshot, event),
     }
+}
+
+fn apply_rollout(state: &RolloutState, command: &RolloutCommand) -> model::RolloutOutcome {
+    reduce_rollout_command(state, command).outcome
 }
 
 fn apply_event(snapshot: &Snapshot, event: &Event) -> model::Outcome {
@@ -457,11 +461,6 @@ fn historical_scenarios_replay_to_one_explicit_state() {
         assert_eq!(
             snapshot.missing_settlements, fixture.expected.missing_settlements,
             "{}: missing settlements",
-            fixture.name
-        );
-        assert_eq!(
-            snapshot.rollout, fixture.expected.rollout,
-            "{}: rollout",
             fixture.name
         );
         assert_eq!(
@@ -1734,7 +1733,7 @@ fn targeted_yield_is_fenced_and_target_completion_restores_source_once() {
 
 #[test]
 fn rollout_authority_requires_complete_evidence_and_fenced_rollback() {
-    let snapshot = minimal_snapshot(1);
+    let snapshot = RolloutState::default();
     let mut incomplete = rollout_manifest();
     incomplete
         .classes
@@ -1742,9 +1741,9 @@ fn rollout_authority_requires_complete_evidence_and_fenced_rollback() {
         .expect("class")
         .verified_evidence
         .remove("rollback_drill");
-    let rejected = apply_event(
+    let rejected = apply_rollout(
         &snapshot,
-        &Event::InstallRolloutManifest {
+        &RolloutCommand::InstallManifest {
             expected_config_revision: 0,
             manifest: incomplete,
         },
@@ -1854,9 +1853,9 @@ fn rollout_authority_requires_complete_evidence_and_fenced_rollback() {
     }
 
     let (preflight_ready, manifest) = complete_rollout_preflight(&snapshot, rollout_manifest());
-    let installed = apply_event(
+    let installed = apply_rollout(
         &preflight_ready,
-        &Event::InstallRolloutManifest {
+        &RolloutCommand::InstallManifest {
             expected_config_revision: 0,
             manifest,
         },
@@ -1865,10 +1864,10 @@ fn rollout_authority_requires_complete_evidence_and_fenced_rollback() {
 
     let mut stale_preflight_binding = rollout_manifest();
     stale_preflight_binding.revision = 2;
-    assert_rollout_manifest_rejected(&installed.snapshot, stale_preflight_binding);
+    assert_rollout_manifest_rejected(&installed.state, stale_preflight_binding);
 
     let unchanged_new_revision = next_rollout_manifest();
-    assert_rollout_preflight_refresh_required(&installed.snapshot, unchanged_new_revision);
+    assert_rollout_preflight_refresh_required(&installed.state, unchanged_new_revision);
 
     let mut changed_threshold = next_rollout_manifest();
     let class = changed_threshold
@@ -1877,11 +1876,11 @@ fn rollout_authority_requires_complete_evidence_and_fenced_rollback() {
         .expect("class");
     class.minimum_shadow_samples += 1;
     class.observed_shadow_samples += 1;
-    assert_rollout_preflight_refresh_required(&installed.snapshot, changed_threshold);
+    assert_rollout_preflight_refresh_required(&installed.state, changed_threshold);
 
     let mut changed_corpus = next_rollout_manifest();
     changed_corpus.fixture_corpus_revision = "scheduler-workitem-phase0-v2".into();
-    assert_rollout_preflight_refresh_required(&installed.snapshot, changed_corpus);
+    assert_rollout_preflight_refresh_required(&installed.state, changed_corpus);
 
     let mut changed_divergence_allowance = next_rollout_manifest();
     changed_divergence_allowance
@@ -1889,7 +1888,7 @@ fn rollout_authority_requires_complete_evidence_and_fenced_rollback() {
         .get_mut("diagnostic_order")
         .expect("allowance")
         .maximum_rate_bps += 1;
-    assert_rollout_preflight_refresh_required(&installed.snapshot, changed_divergence_allowance);
+    assert_rollout_preflight_refresh_required(&installed.state, changed_divergence_allowance);
 
     let mut changed_classification = next_rollout_manifest();
     changed_classification
@@ -1897,7 +1896,7 @@ fn rollout_authority_requires_complete_evidence_and_fenced_rollback() {
         .get_mut("exact_wait_resume")
         .expect("class")
         .configured_mode = ScenarioMode::Shadow;
-    assert_rollout_preflight_refresh_required(&installed.snapshot, changed_classification);
+    assert_rollout_preflight_refresh_required(&installed.state, changed_classification);
 
     let mut changed_required_evidence = next_rollout_manifest();
     let class = changed_required_evidence
@@ -1906,7 +1905,7 @@ fn rollout_authority_requires_complete_evidence_and_fenced_rollback() {
         .expect("class");
     class.required_evidence.insert("operator_signoff".into());
     class.verified_evidence.insert("operator_signoff".into());
-    assert_rollout_preflight_refresh_required(&installed.snapshot, changed_required_evidence);
+    assert_rollout_preflight_refresh_required(&installed.state, changed_required_evidence);
 
     let mut changed_latency_budget = next_rollout_manifest();
     changed_latency_budget
@@ -1914,7 +1913,7 @@ fn rollout_authority_requires_complete_evidence_and_fenced_rollback() {
         .get_mut("exact_wait_resume")
         .expect("class")
         .maximum_p99_latency_regression_bps = 499;
-    assert_rollout_preflight_refresh_required(&installed.snapshot, changed_latency_budget);
+    assert_rollout_preflight_refresh_required(&installed.state, changed_latency_budget);
 
     let mut changed_rollback_policy = next_rollout_manifest();
     changed_rollback_policy
@@ -1925,13 +1924,13 @@ fn rollout_authority_requires_complete_evidence_and_fenced_rollback() {
         .action = RollbackAction::StopAdmissionsAndRevert {
         target: ScenarioMode::Off,
     };
-    assert_rollout_preflight_refresh_required(&installed.snapshot, changed_rollback_policy);
+    assert_rollout_preflight_refresh_required(&installed.state, changed_rollback_policy);
 
     let mut changed_build_and_schema = next_rollout_manifest();
     changed_build_and_schema.protocol_build = "holon-0.30.1-test".into();
     changed_build_and_schema.schema_build = "scheduler-protocol-schema-v2".into();
     changed_build_and_schema.schema_revision = 2;
-    assert_rollout_preflight_refresh_required(&installed.snapshot, changed_build_and_schema);
+    assert_rollout_preflight_refresh_required(&installed.state, changed_build_and_schema);
 
     let mut changed_observation_results = next_rollout_manifest();
     let class = changed_observation_results
@@ -1941,24 +1940,24 @@ fn rollout_authority_requires_complete_evidence_and_fenced_rollback() {
     class.observed_shadow_samples += 1;
     class.observed_shadow_duration_secs += 1;
     class.observed_p99_latency_regression_bps += 1;
-    assert_rollout_preflight_refresh_required(&installed.snapshot, changed_observation_results);
+    assert_rollout_preflight_refresh_required(&installed.state, changed_observation_results);
 
-    let failed_opened = apply_event(
-        &installed.snapshot,
-        &Event::OpenRolloutPreflight {
+    let failed_opened = apply_rollout(
+        &installed.state,
+        &RolloutCommand::OpenPreflight {
             expected_config_revision: 1,
             manifest_revision: 2,
         },
     );
     assert_eq!(failed_opened.decision, Decision::RolloutPreflightOpened);
-    let failed_preflight_revision = failed_opened.snapshot.rollout.latest_preflight_revision;
+    let failed_preflight_revision = failed_opened.state.latest_preflight_revision;
     let mut failed_preflight = next_rollout_manifest();
     failed_preflight.preflight_revision = failed_preflight_revision;
     failed_preflight.preflight_for_manifest_revision = failed_preflight.revision;
     failed_preflight.preflight_succeeded = false;
-    let failed_completion = apply_event(
-        &failed_opened.snapshot,
-        &Event::CompleteRolloutPreflight {
+    let failed_completion = apply_rollout(
+        &failed_opened.state,
+        &RolloutCommand::CompletePreflight {
             expected_config_revision: 1,
             expected_preflight_revision: failed_preflight_revision,
             manifest: failed_preflight.clone(),
@@ -1966,19 +1965,18 @@ fn rollout_authority_requires_complete_evidence_and_fenced_rollback() {
     );
     assert_eq!(failed_completion.decision, Decision::Rejected);
     assert_eq!(failed_completion.diagnostics, ["rollout_preflight_failed"]);
-    assert_eq!(failed_completion.snapshot, failed_opened.snapshot);
+    assert_eq!(failed_completion.state, failed_opened.state);
 
-    let mut forged_completed = failed_opened.snapshot.clone();
+    let mut forged_completed = failed_opened.state.clone();
     let forged_record = forged_completed
-        .rollout
         .preflights
         .get_mut(&failed_preflight_revision)
         .expect("failed preflight record");
     forged_record.state = RolloutPreflightState::Completed;
     forged_record.manifest = Some(failed_preflight.clone());
-    let failed_installation = apply_event(
+    let failed_installation = apply_rollout(
         &forged_completed,
-        &Event::InstallRolloutManifest {
+        &RolloutCommand::InstallManifest {
             expected_config_revision: 1,
             manifest: failed_preflight,
         },
@@ -1988,20 +1986,19 @@ fn rollout_authority_requires_complete_evidence_and_fenced_rollback() {
         failed_installation.diagnostics,
         ["rollout_preflight_failed"]
     );
-    assert_eq!(failed_installation.snapshot, forged_completed);
+    assert_eq!(failed_installation.state, forged_completed);
 
     let mut replayed_observation = installed
-        .snapshot
-        .rollout
+        .state
         .manifest
         .clone()
         .expect("installed manifest");
     replayed_observation.revision = 2;
     replayed_observation.preflight_revision = 2;
     replayed_observation.preflight_for_manifest_revision = 2;
-    let replayed = apply_event(
-        &installed.snapshot,
-        &Event::InstallRolloutManifest {
+    let replayed = apply_rollout(
+        &installed.state,
+        &RolloutCommand::InstallManifest {
             expected_config_revision: 1,
             manifest: replayed_observation,
         },
@@ -2009,9 +2006,9 @@ fn rollout_authority_requires_complete_evidence_and_fenced_rollback() {
     assert_eq!(replayed.decision, Decision::Rejected);
     assert_eq!(replayed.diagnostics, ["rollout_preflight_record_missing"]);
 
-    let opened_only = apply_event(
-        &installed.snapshot,
-        &Event::OpenRolloutPreflight {
+    let opened_only = apply_rollout(
+        &installed.state,
+        &RolloutCommand::OpenPreflight {
             expected_config_revision: 1,
             manifest_revision: 2,
         },
@@ -2019,9 +2016,9 @@ fn rollout_authority_requires_complete_evidence_and_fenced_rollback() {
     assert_eq!(opened_only.decision, Decision::RolloutPreflightOpened);
     let mut uncompleted_observation = next_rollout_manifest();
     uncompleted_observation.preflight_revision = 2;
-    let uncompleted = apply_event(
-        &opened_only.snapshot,
-        &Event::InstallRolloutManifest {
+    let uncompleted = apply_rollout(
+        &opened_only.state,
+        &RolloutCommand::InstallManifest {
             expected_config_revision: 1,
             manifest: uncompleted_observation,
         },
@@ -2035,16 +2032,16 @@ fn rollout_authority_requires_complete_evidence_and_fenced_rollback() {
     let mut refreshed_preflight = next_rollout_manifest();
     refreshed_preflight.fixture_corpus_revision = "scheduler-workitem-phase0-v2".into();
     let (refreshed_ready, refreshed_preflight) =
-        complete_rollout_preflight(&installed.snapshot, refreshed_preflight);
+        complete_rollout_preflight(&installed.state, refreshed_preflight);
     let mut changed_after_preflight = refreshed_preflight.clone();
     changed_after_preflight
         .classes
         .get_mut("exact_wait_resume")
         .expect("class")
         .observed_shadow_samples += 1;
-    let mismatched = apply_event(
+    let mismatched = apply_rollout(
         &refreshed_ready,
-        &Event::InstallRolloutManifest {
+        &RolloutCommand::InstallManifest {
             expected_config_revision: 1,
             manifest: changed_after_preflight,
         },
@@ -2054,26 +2051,26 @@ fn rollout_authority_requires_complete_evidence_and_fenced_rollback() {
         mismatched.diagnostics,
         ["rollout_preflight_record_mismatch"]
     );
-    let refreshed = apply_event(
+    let refreshed = apply_rollout(
         &refreshed_ready,
-        &Event::InstallRolloutManifest {
+        &RolloutCommand::InstallManifest {
             expected_config_revision: 1,
             manifest: refreshed_preflight,
         },
     );
     assert_eq!(refreshed.decision, Decision::ManifestInstalled);
 
-    let configured = apply_event(
-        &installed.snapshot,
-        &Event::ConfigureProtocol {
+    let configured = apply_rollout(
+        &installed.state,
+        &RolloutCommand::ConfigureProtocol {
             expected_config_revision: 1,
             mode: ProtocolMode::Authoritative,
         },
     );
     assert_eq!(configured.decision, Decision::ProtocolConfigured);
-    let off_to_authoritative = apply_event(
-        &configured.snapshot,
-        &Event::ChangeScenarioAuthority {
+    let off_to_authoritative = apply_rollout(
+        &configured.state,
+        &RolloutCommand::ChangeScenarioAuthority {
             scenario_class: "exact_wait_resume".into(),
             expected_config_revision: 2,
             expected_manifest_revision: 1,
@@ -2083,11 +2080,11 @@ fn rollout_authority_requires_complete_evidence_and_fenced_rollback() {
     );
     assert_eq!(off_to_authoritative.decision, Decision::Rejected);
     assert_eq!(off_to_authoritative.diagnostics, ["scenario_not_shadow"]);
-    assert_eq!(off_to_authoritative.snapshot, configured.snapshot);
+    assert_eq!(off_to_authoritative.state, configured.state);
 
-    let shadowed = apply_event(
-        &configured.snapshot,
-        &Event::ChangeScenarioAuthority {
+    let shadowed = apply_rollout(
+        &configured.state,
+        &RolloutCommand::ChangeScenarioAuthority {
             scenario_class: "exact_wait_resume".into(),
             expected_config_revision: 2,
             expected_manifest_revision: 1,
@@ -2096,9 +2093,9 @@ fn rollout_authority_requires_complete_evidence_and_fenced_rollback() {
         },
     );
     assert_eq!(shadowed.decision, Decision::ScenarioAuthorityChanged);
-    let authorized = apply_event(
-        &shadowed.snapshot,
-        &Event::ChangeScenarioAuthority {
+    let authorized = apply_rollout(
+        &shadowed.state,
+        &RolloutCommand::ChangeScenarioAuthority {
             scenario_class: "exact_wait_resume".into(),
             expected_config_revision: 3,
             expected_manifest_revision: 1,
@@ -2108,9 +2105,9 @@ fn rollout_authority_requires_complete_evidence_and_fenced_rollback() {
     );
     assert_eq!(authorized.decision, Decision::ScenarioAuthorityChanged);
 
-    let skipped_shadow_on_downgrade = apply_event(
-        &authorized.snapshot,
-        &Event::ChangeScenarioAuthority {
+    let skipped_shadow_on_downgrade = apply_rollout(
+        &authorized.state,
+        &RolloutCommand::ChangeScenarioAuthority {
             scenario_class: "exact_wait_resume".into(),
             expected_config_revision: 4,
             expected_manifest_revision: 1,
@@ -2123,11 +2120,11 @@ fn rollout_authority_requires_complete_evidence_and_fenced_rollback() {
         skipped_shadow_on_downgrade.diagnostics,
         ["invalid_scenario_authority_transition"]
     );
-    assert_eq!(skipped_shadow_on_downgrade.snapshot, authorized.snapshot);
+    assert_eq!(skipped_shadow_on_downgrade.state, authorized.state);
 
-    let stale = apply_event(
-        &authorized.snapshot,
-        &Event::ReportScenarioHardBlocker {
+    let stale = apply_rollout(
+        &authorized.state,
+        &RolloutCommand::ReportScenarioHardBlocker {
             scenario_class: "exact_wait_resume".into(),
             blocker_code: "stale_wait_generation_accepted".into(),
             expected_config_revision: 3,
@@ -2138,9 +2135,9 @@ fn rollout_authority_requires_complete_evidence_and_fenced_rollback() {
     assert_eq!(stale.decision, Decision::Rejected);
     assert_eq!(stale.diagnostics, ["stale_rollout_config_revision"]);
 
-    let stale_manifest = apply_event(
-        &authorized.snapshot,
-        &Event::ReportScenarioHardBlocker {
+    let stale_manifest = apply_rollout(
+        &authorized.state,
+        &RolloutCommand::ReportScenarioHardBlocker {
             scenario_class: "exact_wait_resume".into(),
             blocker_code: "stale_wait_generation_accepted".into(),
             expected_config_revision: 4,
@@ -2154,9 +2151,9 @@ fn rollout_authority_requires_complete_evidence_and_fenced_rollback() {
         ["stale_rollout_manifest_revision"]
     );
 
-    let stale_preflight = apply_event(
-        &authorized.snapshot,
-        &Event::ReportScenarioHardBlocker {
+    let stale_preflight = apply_rollout(
+        &authorized.state,
+        &RolloutCommand::ReportScenarioHardBlocker {
             scenario_class: "exact_wait_resume".into(),
             blocker_code: "stale_wait_generation_accepted".into(),
             expected_config_revision: 4,
@@ -2170,22 +2167,21 @@ fn rollout_authority_requires_complete_evidence_and_fenced_rollback() {
         ["stale_rollout_preflight_revision"]
     );
 
-    let blocker = Event::ReportScenarioHardBlocker {
+    let blocker = RolloutCommand::ReportScenarioHardBlocker {
         scenario_class: "exact_wait_resume".into(),
         blocker_code: "stale_wait_generation_accepted".into(),
         expected_config_revision: 4,
         expected_manifest_revision: 1,
         expected_preflight_revision: 1,
     };
-    let rolled_back = apply_event(&authorized.snapshot, &blocker);
+    let rolled_back = apply_rollout(&authorized.state, &blocker);
     assert_eq!(rolled_back.decision, Decision::RollbackTripped);
     assert_eq!(
-        rolled_back.snapshot.rollout.scenarios["exact_wait_resume"].mode,
+        rolled_back.state.scenarios["exact_wait_resume"].mode,
         ScenarioMode::Shadow
     );
     let recorded = rolled_back
-        .snapshot
-        .rollout
+        .state
         .hard_blockers
         .iter()
         .next()
@@ -2203,20 +2199,20 @@ fn rollout_authority_requires_complete_evidence_and_fenced_rollback() {
         }
     );
 
-    let encoded = serde_json::to_vec(&rolled_back.snapshot).expect("serialize rollback snapshot");
-    let reloaded: Snapshot =
+    let encoded = serde_json::to_vec(&rolled_back.state).expect("serialize rollback snapshot");
+    let reloaded: RolloutState =
         serde_json::from_slice(&encoded).expect("deserialize rollback snapshot");
-    assert_eq!(reloaded, rolled_back.snapshot);
+    assert_eq!(reloaded, rolled_back.state);
 
-    let duplicate = apply_event(&reloaded, &blocker);
+    let duplicate = apply_rollout(&reloaded, &blocker);
     assert_eq!(duplicate.decision, Decision::Rejected);
     assert_eq!(duplicate.diagnostics, ["stale_rollout_config_revision"]);
-    assert_eq!(duplicate.snapshot, reloaded);
+    assert_eq!(duplicate.state, reloaded);
 }
 
 #[test]
 fn explicit_startup_authority_bypasses_only_evidence_completion() {
-    let snapshot = minimal_snapshot(1);
+    let snapshot = RolloutState::default();
     let mut manifest = rollout_manifest();
     let class = manifest
         .classes
@@ -2227,24 +2223,24 @@ fn explicit_startup_authority_bypasses_only_evidence_completion() {
     class.observed_shadow_duration_secs = 0;
     class.verified_evidence.clear();
     let (preflight, manifest) = complete_rollout_preflight(&snapshot, manifest);
-    let installed = apply_event(
+    let installed = apply_rollout(
         &preflight,
-        &Event::InstallRolloutManifest {
+        &RolloutCommand::InstallManifest {
             expected_config_revision: 0,
             manifest,
         },
     );
     assert_eq!(installed.decision, Decision::ManifestInstalled);
-    let configured = apply_event(
-        &installed.snapshot,
-        &Event::ConfigureProtocol {
+    let configured = apply_rollout(
+        &installed.state,
+        &RolloutCommand::ConfigureProtocol {
             expected_config_revision: 1,
             mode: ProtocolMode::Authoritative,
         },
     );
-    let shadowed = apply_event(
-        &configured.snapshot,
-        &Event::ChangeScenarioAuthority {
+    let shadowed = apply_rollout(
+        &configured.state,
+        &RolloutCommand::ChangeScenarioAuthority {
             scenario_class: "exact_wait_resume".into(),
             expected_config_revision: 2,
             expected_manifest_revision: 1,
@@ -2254,9 +2250,9 @@ fn explicit_startup_authority_bypasses_only_evidence_completion() {
     );
     assert_eq!(shadowed.decision, Decision::ScenarioAuthorityChanged);
 
-    let ordinary = apply_event(
-        &shadowed.snapshot,
-        &Event::ChangeScenarioAuthority {
+    let ordinary = apply_rollout(
+        &shadowed.state,
+        &RolloutCommand::ChangeScenarioAuthority {
             scenario_class: "exact_wait_resume".into(),
             expected_config_revision: 3,
             expected_manifest_revision: 1,
@@ -2270,9 +2266,9 @@ fn explicit_startup_authority_bypasses_only_evidence_completion() {
         ["scenario_not_approved_for_authority"]
     );
 
-    let explicit = apply_event(
-        &shadowed.snapshot,
-        &Event::ChangeScenarioAuthorityFromExplicitMode {
+    let explicit = apply_rollout(
+        &shadowed.state,
+        &RolloutCommand::ChangeScenarioAuthorityFromExplicitMode {
             scenario_class: "exact_wait_resume".into(),
             expected_config_revision: 3,
             expected_manifest_revision: 1,
@@ -2281,30 +2277,30 @@ fn explicit_startup_authority_bypasses_only_evidence_completion() {
     );
     assert_eq!(explicit.decision, Decision::ScenarioAuthorityChanged);
     assert_eq!(
-        explicit.snapshot.rollout.scenarios["exact_wait_resume"].mode,
+        explicit.state.scenarios["exact_wait_resume"].mode,
         ScenarioMode::Authoritative
     );
-    assert!(assert_invariants(&explicit.snapshot).is_ok());
+    assert!(assert_rollout_invariants(&explicit.state).is_ok());
 }
 
-fn assert_rollout_manifest_rejected(snapshot: &Snapshot, manifest: RolloutManifest) {
-    let rejected = apply_event(
+fn assert_rollout_manifest_rejected(snapshot: &RolloutState, manifest: RolloutManifest) {
+    let rejected = apply_rollout(
         snapshot,
-        &Event::InstallRolloutManifest {
-            expected_config_revision: snapshot.rollout.config_revision,
+        &RolloutCommand::InstallManifest {
+            expected_config_revision: snapshot.config_revision,
             manifest,
         },
     );
     assert_eq!(rejected.decision, Decision::Rejected);
     assert_eq!(rejected.diagnostics, ["rollout_manifest_incomplete"]);
-    assert_eq!(rejected.snapshot, *snapshot);
+    assert_eq!(rejected.state, *snapshot);
 }
 
-fn assert_rollout_preflight_refresh_required(snapshot: &Snapshot, manifest: RolloutManifest) {
-    let rejected = apply_event(
+fn assert_rollout_preflight_refresh_required(snapshot: &RolloutState, manifest: RolloutManifest) {
+    let rejected = apply_rollout(
         snapshot,
-        &Event::InstallRolloutManifest {
-            expected_config_revision: snapshot.rollout.config_revision,
+        &RolloutCommand::InstallManifest {
+            expected_config_revision: snapshot.config_revision,
             manifest,
         },
     );
@@ -2313,34 +2309,34 @@ fn assert_rollout_preflight_refresh_required(snapshot: &Snapshot, manifest: Roll
         rejected.diagnostics,
         ["rollout_preflight_record_not_installable"]
     );
-    assert_eq!(rejected.snapshot, *snapshot);
+    assert_eq!(rejected.state, *snapshot);
 }
 
 fn complete_rollout_preflight(
-    snapshot: &Snapshot,
+    snapshot: &RolloutState,
     mut manifest: RolloutManifest,
-) -> (Snapshot, RolloutManifest) {
-    let opened = apply_event(
+) -> (RolloutState, RolloutManifest) {
+    let opened = apply_rollout(
         snapshot,
-        &Event::OpenRolloutPreflight {
-            expected_config_revision: snapshot.rollout.config_revision,
+        &RolloutCommand::OpenPreflight {
+            expected_config_revision: snapshot.config_revision,
             manifest_revision: manifest.revision,
         },
     );
     assert_eq!(opened.decision, Decision::RolloutPreflightOpened);
-    let preflight_revision = opened.snapshot.rollout.latest_preflight_revision;
+    let preflight_revision = opened.state.latest_preflight_revision;
     manifest.preflight_revision = preflight_revision;
     manifest.preflight_for_manifest_revision = manifest.revision;
-    let completed = apply_event(
-        &opened.snapshot,
-        &Event::CompleteRolloutPreflight {
-            expected_config_revision: snapshot.rollout.config_revision,
+    let completed = apply_rollout(
+        &opened.state,
+        &RolloutCommand::CompletePreflight {
+            expected_config_revision: snapshot.config_revision,
             expected_preflight_revision: preflight_revision,
             manifest: manifest.clone(),
         },
     );
     assert_eq!(completed.decision, Decision::RolloutPreflightCompleted);
-    (completed.snapshot, manifest)
+    (completed.state, manifest)
 }
 
 fn rollout_manifest() -> RolloutManifest {
@@ -3425,7 +3421,6 @@ fn minimal_snapshot(scheduling_generation: u64) -> Snapshot {
         activation_admissions: BTreeMap::new(),
         settlements: BTreeMap::new(),
         missing_settlements: BTreeMap::new(),
-        rollout: Default::default(),
         admitted_generations: Default::default(),
         continuation_admissions: Default::default(),
         activation_inputs: Default::default(),

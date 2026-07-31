@@ -1071,7 +1071,8 @@ async fn seed_scheduler_targeted_yield_restart_fixture(
             &runtime.inner.runtime_db,
             agent_id,
             &report,
-        )? != 1
+        )?
+        .0 != 1
         {
             return Err(anyhow!(
                 "scheduler targeted yield recovery did not apply exactly once"
@@ -2026,7 +2027,8 @@ async fn seed_scheduler_legacy_adoption_restart_fixture(
             &runtime.inner.runtime_db,
             agent_id,
             &report,
-        )? == 1
+        )?
+        .0 == 1
     } else {
         false
     };
@@ -2058,7 +2060,8 @@ async fn seed_scheduler_legacy_adoption_restart_fixture(
             &runtime.inner.runtime_db,
             agent_id,
             &report,
-        )? != 0
+        )?
+        .0 != 0
     {
         return Err(anyhow!(
             "scheduler legacy adoption verify applied duplicate state"

@@ -2349,6 +2349,30 @@ SET
 WHERE mode != 'authoritative';
 "#,
     },
+    Migration {
+        version: 40,
+        name: "retire_scheduler_rollout_authority",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS scheduler_rollout_retirement (
+  retirement_id INTEGER PRIMARY KEY CHECK (retirement_id = 1),
+  retired_schema_revision INTEGER NOT NULL CHECK (retired_schema_revision > 0),
+  reason TEXT NOT NULL,
+  retired_at TEXT NOT NULL
+);
+
+INSERT OR IGNORE INTO scheduler_rollout_retirement (
+  retirement_id,
+  retired_schema_revision,
+  reason,
+  retired_at
+) VALUES (
+  1,
+  40,
+  'production scheduler authority no longer reads rollout metadata',
+  CURRENT_TIMESTAMP
+);
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

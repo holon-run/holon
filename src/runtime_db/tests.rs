@@ -333,7 +333,6 @@ mod tests {
             activation_admissions: BTreeMap::new(),
             settlements: BTreeMap::new(),
             missing_settlements: BTreeMap::new(),
-            rollout: Default::default(),
             admitted_generations: BTreeSet::new(),
             continuation_admissions: BTreeMap::new(),
             activation_inputs: BTreeMap::new(),
@@ -719,6 +718,52 @@ INSERT INTO scheduler_scenario_authorities (
             normalized,
             ("authoritative".into(), None, None, "shadow".into())
         );
+        Ok(())
+    }
+
+    #[test]
+    fn retired_rollout_metadata_does_not_block_canonical_snapshot_reopen() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        db.transitions()
+            .initialize_scheduler_protocol_partition("agent-a", &scheduler_protocol_snapshot(1))?;
+        db.connection()?.execute(
+            "INSERT INTO scheduler_scenario_authorities (
+               scenario_class,
+               mode,
+               rollback_target,
+               manifest_revision,
+               preflight_revision,
+               updated_at
+             ) VALUES (
+               'delivery',
+               'authoritative',
+               'shadow',
+               NULL,
+               NULL,
+               ?1
+             )
+             ON CONFLICT(scenario_class) DO UPDATE SET
+               mode = excluded.mode,
+               rollback_target = excluded.rollback_target,
+               manifest_revision = excluded.manifest_revision,
+               preflight_revision = excluded.preflight_revision,
+               updated_at = excluded.updated_at",
+            [Utc::now().to_rfc3339()],
+        )?;
+        drop(db);
+
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let snapshot = reopened
+            .transitions()
+            .load_scheduler_protocol_snapshot("agent-a")?;
+        assert_eq!(snapshot.work["work-a"].scheduling_generation, 1);
+        let retired = reopened
+            .transitions()
+            .inspect_retired_scheduler_rollout_metadata()?;
+        assert!(retired.retirement_marked);
+        assert!(retired.authoritative_scenario_count > 0);
+        assert!(retired.stale_authoritative_scenario_count > 0);
         Ok(())
     }
 
@@ -2088,7 +2133,6 @@ INSERT INTO scheduler_scenario_authorities (
                         scheduler_claim_work_item: None,
                         scheduler_protocol_bootstrap: None,
                         scheduler_protocol_commands: Vec::new(),
-                        scheduler_rollout_expectations: Vec::new(),
                         agent_state: None,
                         message_evidence: Vec::new(),
                         transcript_entries: Vec::new(),
@@ -2125,14 +2169,9 @@ INSERT INTO scheduler_scenario_authorities (
 
         let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
         assert_counts(&reopened)?;
-        assert_eq!(
-            reopened
-                .transitions()
-                .load_scheduler_protocol_snapshot("agent-a")?
-                .rollout
-                .protocol_mode,
-            ProtocolMode::Authoritative
-        );
+        reopened
+            .transitions()
+            .load_scheduler_protocol_snapshot("agent-a")?;
         Ok(())
     }
 

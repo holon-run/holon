@@ -109,6 +109,12 @@ remain readable for database migration, recovery evidence, and historical
 diagnostics, but they do not select a legacy or shadow execution path at
 startup.
 
+Migration 40 marks the rollout tables as retired compatibility data without
+dropping them. `holon debug scheduler-recovery` reports their retained row
+counts and stale authoritative rows. They are diagnostic only: startup,
+ordinary scheduler transactions, and typed repair do not read them to decide
+authority.
+
 The accepted scheduler transition permits a temporary process-wide
 `legacy|canonical` selector during the compatibility release. It is not
 implemented in the current configuration schema. When introduced, it will

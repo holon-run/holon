@@ -13,6 +13,7 @@ use anyhow::bail;
 use chrono::{DateTime, Utc};
 use std::{collections::HashMap, fmt};
 
+#[cfg(test)]
 pub(crate) const REDUCER_ONLY_CANDIDATES_SCENARIO: SchedulerScenarioClass =
     SchedulerScenarioClass::ReducerOnlyCandidates;
 pub(crate) const WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO: SchedulerScenarioClass =
@@ -23,10 +24,6 @@ pub(crate) const EXACT_WAIT_RESUME_SCENARIO: SchedulerScenarioClass =
     SchedulerScenarioClass::ExactWaitResume;
 pub(crate) const EXPLICITLY_BOUND_OPERATOR_INPUT_SCENARIO: SchedulerScenarioClass =
     SchedulerScenarioClass::ExplicitlyBoundOperatorInput;
-pub(crate) const SETTLEMENT_SCENARIO: SchedulerScenarioClass = SchedulerScenarioClass::Settlement;
-pub(crate) const DELIVERY_SCENARIO: SchedulerScenarioClass = SchedulerScenarioClass::Delivery;
-pub(crate) const INTERJECTION_SCENARIO: SchedulerScenarioClass =
-    SchedulerScenarioClass::OperatorInterjection;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CanonicalActivationScenario {
@@ -1103,6 +1100,7 @@ pub(crate) fn message_processing_decision(
     decision
 }
 
+#[cfg(test)]
 pub(crate) fn authority_scenarios_for_message_claim(
     projection: &SchedulerProjection,
     message: &MessageEnvelope,
@@ -1437,6 +1435,7 @@ fn trusted_explicit_operator_binding(message: &MessageEnvelope) -> bool {
         )
 }
 
+#[cfg(test)]
 fn message_admission_scenario_applies(
     message: &MessageEnvelope,
     continuation_resolution: Option<&ContinuationResolution>,
@@ -1453,6 +1452,7 @@ fn message_admission_scenario_applies(
     )
 }
 
+#[cfg(test)]
 fn wait_resume_scenario_class(message: &MessageEnvelope) -> Option<SchedulerScenarioClass> {
     match message.kind {
         MessageKind::TaskResult => Some(EXACT_TASK_REJOIN_SCENARIO),
@@ -1465,6 +1465,7 @@ fn wait_resume_scenario_class(message: &MessageEnvelope) -> Option<SchedulerScen
     }
 }
 
+#[cfg(test)]
 fn wait_resume_scenario_applies(
     projection: &SchedulerProjection,
     message: &MessageEnvelope,

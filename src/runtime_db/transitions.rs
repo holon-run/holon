@@ -183,8 +183,6 @@ pub(crate) struct QueueTransitionCommand {
     pub scheduler_claim_work_item: Option<WorkItemRecord>,
     pub scheduler_protocol_bootstrap: Option<crate::domain::scheduler_protocol::Snapshot>,
     pub scheduler_protocol_commands: Vec<crate::domain::scheduler_protocol::ProtocolCommand>,
-    pub scheduler_rollout_expectations:
-        Vec<scheduler_protocol_repository::SchedulerRolloutExpectation>,
     pub agent_state: Option<AgentStateMutation>,
     pub message_evidence: Vec<MessageEnvelope>,
     pub transcript_entries: Vec<TranscriptEntry>,
@@ -489,10 +487,6 @@ impl RuntimeTransitionRepository<'_> {
                 &command.agent_id,
                 command.operation,
                 command.scheduler_claim_work_item.as_ref(),
-            )?;
-            scheduler_protocol_repository::validate_protocol_command_authority_tx(
-                &command.scheduler_protocol_commands,
-                &command.scheduler_rollout_expectations,
             )?;
             let scheduler_protocol = scheduler_protocol_repository::validate_protocol_commands_tx(
                 tx,
@@ -1457,7 +1451,6 @@ mod tests {
                     scheduler_claim_work_item: None,
                     scheduler_protocol_bootstrap: None,
                     scheduler_protocol_commands: Vec::new(),
-                    scheduler_rollout_expectations: Vec::new(),
                     agent_state: Some(AgentStateMutation {
                         expected: Some(Box::new(initial_state.clone())),
                         record: Box::new(settled_state),
@@ -1512,7 +1505,6 @@ mod tests {
             scheduler_claim_work_item: None,
             scheduler_protocol_bootstrap: None,
             scheduler_protocol_commands: Vec::new(),
-            scheduler_rollout_expectations: Vec::new(),
             agent_state: None,
             message_evidence: Vec::new(),
             transcript_entries: Vec::new(),
@@ -1565,7 +1557,6 @@ mod tests {
                 scheduler_claim_work_item: Some(work_item.clone()),
                 scheduler_protocol_bootstrap: None,
                 scheduler_protocol_commands: Vec::new(),
-                scheduler_rollout_expectations: Vec::new(),
                 agent_state: None,
                 message_evidence: Vec::new(),
                 transcript_entries: Vec::new(),

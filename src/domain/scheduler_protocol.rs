@@ -1,8 +1,7 @@
 //! Pure deterministic scheduler protocol kernel.
 //!
 //! This module is the production home of the executable Scheduler / WorkItem
-//! baseline. It is intentionally storage-independent and has no call site in
-//! the production scheduler while the legacy scheduler remains authoritative.
+//! baseline. It is intentionally storage-independent.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -23,7 +22,6 @@ pub struct Snapshot {
     pub activation_admissions: BTreeMap<String, AdmitActivationCommand>,
     pub settlements: BTreeMap<String, ActivationSettlement>,
     pub missing_settlements: BTreeMap<String, MissingSettlementRecord>,
-    pub rollout: RolloutState,
     pub admitted_generations: BTreeSet<String>,
     pub continuation_admissions: BTreeMap<String, ContinuationAdmissionRecord>,
     #[serde(default)]
@@ -44,7 +42,6 @@ struct SnapshotWire {
     activation_admissions: Option<BTreeMap<String, AdmitActivationCommand>>,
     settlements: Option<BTreeMap<String, ActivationSettlement>>,
     missing_settlements: Option<BTreeMap<String, MissingSettlementRecord>>,
-    rollout: Option<RolloutState>,
     admitted_generations: Option<BTreeSet<String>>,
     continuation_admissions: Option<BTreeMap<String, ContinuationAdmissionRecord>>,
     #[serde(default)]
@@ -67,9 +64,6 @@ impl TryFrom<SnapshotWire> for Snapshot {
         let activations = wire
             .activations
             .ok_or_else(|| "snapshot is missing canonical activation records".to_string())?;
-        let rollout = wire
-            .rollout
-            .ok_or_else(|| "snapshot is missing canonical rollout state".to_string())?;
         let dispatch = wire.dispatch.into_snapshot_dispatch(&waits)?;
         let activation_authorities = wire
             .activation_authorities
@@ -101,7 +95,6 @@ impl TryFrom<SnapshotWire> for Snapshot {
             activation_admissions,
             settlements,
             missing_settlements,
-            rollout,
             admitted_generations,
             continuation_admissions,
             activation_inputs: wire.activation_inputs.unwrap_or_default(),
@@ -1182,6 +1175,21 @@ pub struct ProtocolCommandOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RolloutOutcome {
+    pub decision: Decision,
+    pub transitions: Vec<String>,
+    pub diagnostics: Vec<String>,
+    pub state: RolloutState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RolloutCommandOutcome {
+    pub outcome: RolloutOutcome,
+    #[serde(default)]
+    pub conflict: Option<ProtocolConflict>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Event {
     Admit {
@@ -1200,43 +1208,6 @@ pub enum Event {
     UpdateMetadata {
         work_item_id: String,
         expected_metadata_revision: u64,
-    },
-    ConfigureProtocol {
-        expected_config_revision: u64,
-        mode: ProtocolMode,
-    },
-    OpenRolloutPreflight {
-        expected_config_revision: u64,
-        manifest_revision: u64,
-    },
-    CompleteRolloutPreflight {
-        expected_config_revision: u64,
-        expected_preflight_revision: u64,
-        manifest: RolloutManifest,
-    },
-    InstallRolloutManifest {
-        expected_config_revision: u64,
-        manifest: RolloutManifest,
-    },
-    ChangeScenarioAuthority {
-        scenario_class: String,
-        expected_config_revision: u64,
-        expected_manifest_revision: u64,
-        expected_preflight_revision: u64,
-        mode: ScenarioMode,
-    },
-    ChangeScenarioAuthorityFromExplicitMode {
-        scenario_class: String,
-        expected_config_revision: u64,
-        expected_manifest_revision: u64,
-        expected_preflight_revision: u64,
-    },
-    ReportScenarioHardBlocker {
-        scenario_class: String,
-        blocker_code: String,
-        expected_config_revision: u64,
-        expected_manifest_revision: u64,
-        expected_preflight_revision: u64,
     },
     OperatorIntervention {
         input_id: String,
@@ -1473,82 +1444,82 @@ pub fn reduce(snapshot: &Snapshot, event: &Event) -> Outcome {
 }
 
 pub fn reduce_rollout_command(
-    snapshot: &Snapshot,
+    state: &RolloutState,
     command: &RolloutCommand,
-) -> ProtocolCommandOutcome {
-    let event = match command {
+) -> RolloutCommandOutcome {
+    let snapshot = RolloutSnapshot {
+        rollout: state.clone(),
+    };
+    let outcome = match command {
         RolloutCommand::ConfigureProtocol {
             expected_config_revision,
             mode,
-        } => Event::ConfigureProtocol {
-            expected_config_revision: *expected_config_revision,
-            mode: *mode,
-        },
+        } => configure_protocol(&snapshot, *expected_config_revision, *mode),
         RolloutCommand::OpenPreflight {
             expected_config_revision,
             manifest_revision,
-        } => Event::OpenRolloutPreflight {
-            expected_config_revision: *expected_config_revision,
-            manifest_revision: *manifest_revision,
-        },
+        } => open_rollout_preflight(&snapshot, *expected_config_revision, *manifest_revision),
         RolloutCommand::CompletePreflight {
             expected_config_revision,
             expected_preflight_revision,
             manifest,
-        } => Event::CompleteRolloutPreflight {
-            expected_config_revision: *expected_config_revision,
-            expected_preflight_revision: *expected_preflight_revision,
-            manifest: manifest.clone(),
-        },
+        } => complete_rollout_preflight(
+            &snapshot,
+            *expected_config_revision,
+            *expected_preflight_revision,
+            manifest,
+        ),
         RolloutCommand::InstallManifest {
             expected_config_revision,
             manifest,
-        } => Event::InstallRolloutManifest {
-            expected_config_revision: *expected_config_revision,
-            manifest: manifest.clone(),
-        },
+        } => install_rollout_manifest(&snapshot, *expected_config_revision, manifest),
         RolloutCommand::ChangeScenarioAuthority {
             scenario_class,
             expected_config_revision,
             expected_manifest_revision,
             expected_preflight_revision,
             mode,
-        } => Event::ChangeScenarioAuthority {
-            scenario_class: scenario_class.clone(),
-            expected_config_revision: *expected_config_revision,
-            expected_manifest_revision: *expected_manifest_revision,
-            expected_preflight_revision: *expected_preflight_revision,
-            mode: *mode,
-        },
+        } => change_scenario_authority(
+            &snapshot,
+            scenario_class,
+            *expected_config_revision,
+            *expected_manifest_revision,
+            *expected_preflight_revision,
+            *mode,
+            false,
+        ),
         RolloutCommand::ChangeScenarioAuthorityFromExplicitMode {
             scenario_class,
             expected_config_revision,
             expected_manifest_revision,
             expected_preflight_revision,
-        } => Event::ChangeScenarioAuthorityFromExplicitMode {
-            scenario_class: scenario_class.clone(),
-            expected_config_revision: *expected_config_revision,
-            expected_manifest_revision: *expected_manifest_revision,
-            expected_preflight_revision: *expected_preflight_revision,
-        },
+        } => change_scenario_authority(
+            &snapshot,
+            scenario_class,
+            *expected_config_revision,
+            *expected_manifest_revision,
+            *expected_preflight_revision,
+            ScenarioMode::Authoritative,
+            true,
+        ),
         RolloutCommand::ReportScenarioHardBlocker {
             scenario_class,
             blocker_code,
             expected_config_revision,
             expected_manifest_revision,
             expected_preflight_revision,
-        } => Event::ReportScenarioHardBlocker {
-            scenario_class: scenario_class.clone(),
-            blocker_code: blocker_code.clone(),
-            expected_config_revision: *expected_config_revision,
-            expected_manifest_revision: *expected_manifest_revision,
-            expected_preflight_revision: *expected_preflight_revision,
-        },
+        } => report_scenario_hard_blocker(
+            &snapshot,
+            scenario_class,
+            blocker_code,
+            *expected_config_revision,
+            *expected_manifest_revision,
+            *expected_preflight_revision,
+        ),
     };
-    let outcome = reduce_event(snapshot, &event);
     let conflict =
         (outcome.decision == Decision::Rejected).then(|| reducer_conflict(&outcome.diagnostics[0]));
-    ProtocolCommandOutcome { outcome, conflict }
+    RolloutCommandOutcome { outcome, conflict }
 }
 
 pub fn migrate_legacy_event(
@@ -1867,71 +1838,6 @@ fn reduce_event(snapshot: &Snapshot, event: &Event) -> Outcome {
             work_item_id,
             expected_metadata_revision,
         } => update_metadata(snapshot, work_item_id, *expected_metadata_revision),
-        Event::ConfigureProtocol {
-            expected_config_revision,
-            mode,
-        } => configure_protocol(snapshot, *expected_config_revision, *mode),
-        Event::OpenRolloutPreflight {
-            expected_config_revision,
-            manifest_revision,
-        } => open_rollout_preflight(snapshot, *expected_config_revision, *manifest_revision),
-        Event::CompleteRolloutPreflight {
-            expected_config_revision,
-            expected_preflight_revision,
-            manifest,
-        } => complete_rollout_preflight(
-            snapshot,
-            *expected_config_revision,
-            *expected_preflight_revision,
-            manifest,
-        ),
-        Event::InstallRolloutManifest {
-            expected_config_revision,
-            manifest,
-        } => install_rollout_manifest(snapshot, *expected_config_revision, manifest),
-        Event::ChangeScenarioAuthority {
-            scenario_class,
-            expected_config_revision,
-            expected_manifest_revision,
-            expected_preflight_revision,
-            mode,
-        } => change_scenario_authority(
-            snapshot,
-            scenario_class,
-            *expected_config_revision,
-            *expected_manifest_revision,
-            *expected_preflight_revision,
-            *mode,
-            false,
-        ),
-        Event::ChangeScenarioAuthorityFromExplicitMode {
-            scenario_class,
-            expected_config_revision,
-            expected_manifest_revision,
-            expected_preflight_revision,
-        } => change_scenario_authority(
-            snapshot,
-            scenario_class,
-            *expected_config_revision,
-            *expected_manifest_revision,
-            *expected_preflight_revision,
-            ScenarioMode::Authoritative,
-            true,
-        ),
-        Event::ReportScenarioHardBlocker {
-            scenario_class,
-            blocker_code,
-            expected_config_revision,
-            expected_manifest_revision,
-            expected_preflight_revision,
-        } => report_scenario_hard_blocker(
-            snapshot,
-            scenario_class,
-            blocker_code,
-            *expected_config_revision,
-            *expected_manifest_revision,
-            *expected_preflight_revision,
-        ),
         Event::OperatorIntervention { input_id } => Outcome {
             decision: Decision::OperatorIntervention,
             transitions: Vec::new(),
@@ -4668,16 +4574,30 @@ fn update_metadata(
     }
 }
 
+#[derive(Debug, Clone)]
+struct RolloutSnapshot {
+    rollout: RolloutState,
+}
+
+fn rollout_rejected(snapshot: &RolloutSnapshot, diagnostic: &str) -> RolloutOutcome {
+    RolloutOutcome {
+        decision: Decision::Rejected,
+        transitions: Vec::new(),
+        diagnostics: vec![diagnostic.to_string()],
+        state: snapshot.rollout.clone(),
+    }
+}
+
 fn configure_protocol(
-    snapshot: &Snapshot,
+    snapshot: &RolloutSnapshot,
     expected_config_revision: u64,
     mode: ProtocolMode,
-) -> Outcome {
+) -> RolloutOutcome {
     if snapshot.rollout.config_revision != expected_config_revision {
-        return rejected(snapshot, "stale_rollout_config_revision");
+        return rollout_rejected(snapshot, "stale_rollout_config_revision");
     }
     if mode != ProtocolMode::Legacy && snapshot.rollout.manifest.is_none() {
-        return rejected(snapshot, "non_legacy_protocol_requires_manifest");
+        return rollout_rejected(snapshot, "non_legacy_protocol_requires_manifest");
     }
     if snapshot
         .rollout
@@ -4685,29 +4605,29 @@ fn configure_protocol(
         .values()
         .any(|scenario| !scenario_allowed(mode, scenario.mode))
     {
-        return rejected(snapshot, "scenario_exceeds_protocol_ceiling");
+        return rollout_rejected(snapshot, "scenario_exceeds_protocol_ceiling");
     }
     let mut next = snapshot.clone();
     next.rollout.protocol_mode = mode;
     next.rollout.config_revision += 1;
-    Outcome {
+    RolloutOutcome {
         decision: Decision::ProtocolConfigured,
         transitions: vec![format!(
             "rollout:protocol:{:?}->{mode:?}",
             snapshot.rollout.protocol_mode
         )],
         diagnostics: Vec::new(),
-        snapshot: next,
+        state: next.rollout,
     }
 }
 
 fn open_rollout_preflight(
-    snapshot: &Snapshot,
+    snapshot: &RolloutSnapshot,
     expected_config_revision: u64,
     manifest_revision: u64,
-) -> Outcome {
+) -> RolloutOutcome {
     if snapshot.rollout.config_revision != expected_config_revision {
-        return rejected(snapshot, "stale_rollout_config_revision");
+        return rollout_rejected(snapshot, "stale_rollout_config_revision");
     }
     if snapshot
         .rollout
@@ -4715,7 +4635,7 @@ fn open_rollout_preflight(
         .as_ref()
         .is_some_and(|current| manifest_revision <= current.revision)
     {
-        return rejected(snapshot, "manifest_revision_not_advanced");
+        return rollout_rejected(snapshot, "manifest_revision_not_advanced");
     }
     if snapshot
         .rollout
@@ -4723,7 +4643,7 @@ fn open_rollout_preflight(
         .values()
         .any(|preflight| preflight.state == RolloutPreflightState::Open)
     {
-        return rejected(snapshot, "rollout_preflight_window_already_open");
+        return rollout_rejected(snapshot, "rollout_preflight_window_already_open");
     }
 
     let mut next = snapshot.clone();
@@ -4738,46 +4658,46 @@ fn open_rollout_preflight(
             manifest: None,
         },
     );
-    Outcome {
+    RolloutOutcome {
         decision: Decision::RolloutPreflightOpened,
         transitions: vec![format!(
             "rollout:preflight:{revision}:opened:manifest:{manifest_revision}"
         )],
         diagnostics: Vec::new(),
-        snapshot: next,
+        state: next.rollout,
     }
 }
 
 fn complete_rollout_preflight(
-    snapshot: &Snapshot,
+    snapshot: &RolloutSnapshot,
     expected_config_revision: u64,
     expected_preflight_revision: u64,
     manifest: &RolloutManifest,
-) -> Outcome {
+) -> RolloutOutcome {
     if snapshot.rollout.config_revision != expected_config_revision {
-        return rejected(snapshot, "stale_rollout_config_revision");
+        return rollout_rejected(snapshot, "stale_rollout_config_revision");
     }
     let Some(preflight) = snapshot
         .rollout
         .preflights
         .get(&expected_preflight_revision)
     else {
-        return rejected(snapshot, "rollout_preflight_record_missing");
+        return rollout_rejected(snapshot, "rollout_preflight_record_missing");
     };
     if preflight.state != RolloutPreflightState::Open {
-        return rejected(snapshot, "rollout_preflight_window_not_open");
+        return rollout_rejected(snapshot, "rollout_preflight_window_not_open");
     }
     if manifest.preflight_revision != expected_preflight_revision
         || manifest.preflight_for_manifest_revision != preflight.manifest_revision
         || manifest.revision != preflight.manifest_revision
     {
-        return rejected(snapshot, "rollout_preflight_binding_mismatch");
+        return rollout_rejected(snapshot, "rollout_preflight_binding_mismatch");
     }
     if !manifest.preflight_succeeded {
-        return rejected(snapshot, "rollout_preflight_failed");
+        return rollout_rejected(snapshot, "rollout_preflight_failed");
     }
     if !rollout_manifest_is_installable(manifest) {
-        return rejected(snapshot, "rollout_manifest_incomplete");
+        return rollout_rejected(snapshot, "rollout_manifest_incomplete");
     }
 
     let mut next = snapshot.clone();
@@ -4788,24 +4708,24 @@ fn complete_rollout_preflight(
         .expect("preflight exists");
     preflight.state = RolloutPreflightState::Completed;
     preflight.manifest = Some(manifest.clone());
-    Outcome {
+    RolloutOutcome {
         decision: Decision::RolloutPreflightCompleted,
         transitions: vec![format!(
             "rollout:preflight:{expected_preflight_revision}:completed:manifest:{}",
             manifest.revision
         )],
         diagnostics: Vec::new(),
-        snapshot: next,
+        state: next.rollout,
     }
 }
 
 fn install_rollout_manifest(
-    snapshot: &Snapshot,
+    snapshot: &RolloutSnapshot,
     expected_config_revision: u64,
     manifest: &RolloutManifest,
-) -> Outcome {
+) -> RolloutOutcome {
     if snapshot.rollout.config_revision != expected_config_revision {
-        return rejected(snapshot, "stale_rollout_config_revision");
+        return rollout_rejected(snapshot, "stale_rollout_config_revision");
     }
     if snapshot
         .rollout
@@ -4813,28 +4733,28 @@ fn install_rollout_manifest(
         .as_ref()
         .is_some_and(|current| manifest.revision <= current.revision)
     {
-        return rejected(snapshot, "manifest_revision_not_advanced");
+        return rollout_rejected(snapshot, "manifest_revision_not_advanced");
     }
     if !manifest.preflight_succeeded {
-        return rejected(snapshot, "rollout_preflight_failed");
+        return rollout_rejected(snapshot, "rollout_preflight_failed");
     }
     if !rollout_manifest_is_installable(manifest) {
-        return rejected(snapshot, "rollout_manifest_incomplete");
+        return rollout_rejected(snapshot, "rollout_manifest_incomplete");
     }
     let Some(preflight) = snapshot
         .rollout
         .preflights
         .get(&manifest.preflight_revision)
     else {
-        return rejected(snapshot, "rollout_preflight_record_missing");
+        return rollout_rejected(snapshot, "rollout_preflight_record_missing");
     };
     if preflight.state != RolloutPreflightState::Completed {
-        return rejected(snapshot, "rollout_preflight_record_not_installable");
+        return rollout_rejected(snapshot, "rollout_preflight_record_not_installable");
     }
     if preflight.manifest_revision != manifest.revision
         || preflight.manifest.as_ref() != Some(manifest)
     {
-        return rejected(snapshot, "rollout_preflight_record_mismatch");
+        return rollout_rejected(snapshot, "rollout_preflight_record_mismatch");
     }
     let mut next = snapshot.clone();
     let mut transitions = vec![format!("rollout:manifest:installed:{}", manifest.revision)];
@@ -4856,37 +4776,37 @@ fn install_rollout_manifest(
         .state = RolloutPreflightState::Consumed;
     next.rollout.manifest = Some(manifest.clone());
     next.rollout.config_revision += 1;
-    Outcome {
+    RolloutOutcome {
         decision: Decision::ManifestInstalled,
         transitions,
         diagnostics: Vec::new(),
-        snapshot: next,
+        state: next.rollout,
     }
 }
 
 fn change_scenario_authority(
-    snapshot: &Snapshot,
+    snapshot: &RolloutSnapshot,
     scenario_class: &str,
     expected_config_revision: u64,
     expected_manifest_revision: u64,
     expected_preflight_revision: u64,
     mode: ScenarioMode,
     explicit_mode: bool,
-) -> Outcome {
+) -> RolloutOutcome {
     if snapshot.rollout.config_revision != expected_config_revision {
-        return rejected(snapshot, "stale_rollout_config_revision");
+        return rollout_rejected(snapshot, "stale_rollout_config_revision");
     }
     if !scenario_allowed(snapshot.rollout.protocol_mode, mode) {
-        return rejected(snapshot, "scenario_exceeds_protocol_ceiling");
+        return rollout_rejected(snapshot, "scenario_exceeds_protocol_ceiling");
     }
     let Some(manifest) = snapshot.rollout.manifest.as_ref() else {
-        return rejected(snapshot, "rollout_manifest_missing");
+        return rollout_rejected(snapshot, "rollout_manifest_missing");
     };
     if manifest.revision != expected_manifest_revision {
-        return rejected(snapshot, "stale_rollout_manifest_revision");
+        return rollout_rejected(snapshot, "stale_rollout_manifest_revision");
     }
     if manifest.preflight_revision != expected_preflight_revision {
-        return rejected(snapshot, "stale_rollout_preflight_revision");
+        return rollout_rejected(snapshot, "stale_rollout_preflight_revision");
     }
     let class = manifest.classes.get(scenario_class);
     let current_mode = snapshot
@@ -4896,7 +4816,7 @@ fn change_scenario_authority(
         .map(|scenario| scenario.mode)
         .unwrap_or(ScenarioMode::Off);
     if mode == ScenarioMode::Authoritative && current_mode != ScenarioMode::Shadow {
-        return rejected(snapshot, "scenario_not_shadow");
+        return rollout_rejected(snapshot, "scenario_not_shadow");
     }
     if !matches!(
         (current_mode, mode),
@@ -4905,7 +4825,7 @@ fn change_scenario_authority(
             | (ScenarioMode::Shadow, ScenarioMode::Authoritative)
             | (ScenarioMode::Authoritative, ScenarioMode::Shadow)
     ) {
-        return rejected(snapshot, "invalid_scenario_authority_transition");
+        return rollout_rejected(snapshot, "invalid_scenario_authority_transition");
     }
     if mode == ScenarioMode::Shadow
         && !class.is_some_and(|class| {
@@ -4915,28 +4835,28 @@ fn change_scenario_authority(
             )
         })
     {
-        return rejected(snapshot, "scenario_not_enabled_by_manifest");
+        return rollout_rejected(snapshot, "scenario_not_enabled_by_manifest");
     }
     if mode == ScenarioMode::Authoritative {
         if !manifest.preflight_succeeded {
-            return rejected(snapshot, "rollout_preflight_failed");
+            return rollout_rejected(snapshot, "rollout_preflight_failed");
         }
         let Some(class) = class else {
-            return rejected(snapshot, "scenario_not_approved_for_authority");
+            return rollout_rejected(snapshot, "scenario_not_approved_for_authority");
         };
         if explicit_mode {
             if !SchedulerScenarioClass::PRODUCTION_AUTHORITY
                 .iter()
                 .any(|candidate| candidate.as_str() == scenario_class)
             {
-                return rejected(snapshot, "scenario_not_in_production_authority_scope");
+                return rollout_rejected(snapshot, "scenario_not_in_production_authority_scope");
             }
         } else {
             if class.configured_mode != ScenarioMode::Authoritative {
-                return rejected(snapshot, "scenario_not_approved_for_authority");
+                return rollout_rejected(snapshot, "scenario_not_approved_for_authority");
             }
             if !rollout_class_evidence_is_complete(scenario_class, class) {
-                return rejected(snapshot, "rollout_class_evidence_incomplete");
+                return rollout_rejected(snapshot, "rollout_class_evidence_incomplete");
             }
         }
         if snapshot.rollout.hard_blockers.iter().any(|blocker| {
@@ -4944,10 +4864,10 @@ fn change_scenario_authority(
                 && blocker.manifest_revision == manifest.revision
                 && blocker.preflight_revision == manifest.preflight_revision
         }) {
-            return rejected(snapshot, "scenario_has_unresolved_hard_blocker");
+            return rollout_rejected(snapshot, "scenario_has_unresolved_hard_blocker");
         }
         let Some(parsed_scenario) = scenario_class.parse::<SchedulerScenarioClass>().ok() else {
-            return rejected(snapshot, "unknown_scenario_class");
+            return rollout_rejected(snapshot, "unknown_scenario_class");
         };
         if parsed_scenario
             .authoritative_dependencies()
@@ -4960,7 +4880,7 @@ fn change_scenario_authority(
                     .is_none_or(|authority| authority.mode != ScenarioMode::Authoritative)
             })
         {
-            return rejected(snapshot, "scenario_authority_dependency_not_satisfied");
+            return rollout_rejected(snapshot, "scenario_authority_dependency_not_satisfied");
         }
     }
     let rollback_target = manifest
@@ -4969,7 +4889,7 @@ fn change_scenario_authority(
         .map(|class| rollback_target(&class.rollback_policy))
         .unwrap_or(ScenarioMode::Off);
     if rollback_target == ScenarioMode::Authoritative {
-        return rejected(snapshot, "invalid_authoritative_rollback_target");
+        return rollout_rejected(snapshot, "invalid_authoritative_rollback_target");
     }
     let mut next = snapshot.clone();
     next.rollout.scenarios.insert(
@@ -4992,39 +4912,39 @@ fn change_scenario_authority(
         );
     }
     next.rollout.config_revision += 1;
-    Outcome {
+    RolloutOutcome {
         decision: Decision::ScenarioAuthorityChanged,
         transitions,
         diagnostics: Vec::new(),
-        snapshot: next,
+        state: next.rollout,
     }
 }
 
 fn report_scenario_hard_blocker(
-    snapshot: &Snapshot,
+    snapshot: &RolloutSnapshot,
     scenario_class: &str,
     blocker_code: &str,
     expected_config_revision: u64,
     expected_manifest_revision: u64,
     expected_preflight_revision: u64,
-) -> Outcome {
+) -> RolloutOutcome {
     if snapshot.rollout.config_revision != expected_config_revision {
-        return rejected(snapshot, "stale_rollout_config_revision");
+        return rollout_rejected(snapshot, "stale_rollout_config_revision");
     }
     let Some(scenario) = snapshot.rollout.scenarios.get(scenario_class) else {
-        return rejected(snapshot, "unknown_scenario_class");
+        return rollout_rejected(snapshot, "unknown_scenario_class");
     };
     if scenario.mode != ScenarioMode::Authoritative {
-        return rejected(snapshot, "scenario_not_authoritative");
+        return rollout_rejected(snapshot, "scenario_not_authoritative");
     }
     if scenario.manifest_revision != Some(expected_manifest_revision) {
-        return rejected(snapshot, "stale_rollout_manifest_revision");
+        return rollout_rejected(snapshot, "stale_rollout_manifest_revision");
     }
     if scenario.preflight_revision != Some(expected_preflight_revision) {
-        return rejected(snapshot, "stale_rollout_preflight_revision");
+        return rollout_rejected(snapshot, "stale_rollout_preflight_revision");
     }
     if blocker_code.is_empty() {
-        return rejected(snapshot, "hard_blocker_code_missing");
+        return rollout_rejected(snapshot, "hard_blocker_code_missing");
     }
     let Some(class) = snapshot
         .rollout
@@ -5032,10 +4952,10 @@ fn report_scenario_hard_blocker(
         .as_ref()
         .and_then(|manifest| manifest.classes.get(scenario_class))
     else {
-        return rejected(snapshot, "scenario_not_approved_for_authority");
+        return rollout_rejected(snapshot, "scenario_not_approved_for_authority");
     };
     if class.rollback_policy.trigger != RollbackTrigger::AnyHardBlocker {
-        return rejected(snapshot, "hard_blocker_trigger_not_configured");
+        return rollout_rejected(snapshot, "hard_blocker_trigger_not_configured");
     }
     let rollback_trigger = class.rollback_policy.trigger;
     let rollback_action = class.rollback_policy.action;
@@ -5073,16 +4993,16 @@ fn report_scenario_hard_blocker(
         "dependency_hard_blocker",
     );
     next.rollout.config_revision += 1;
-    Outcome {
+    RolloutOutcome {
         decision: Decision::RollbackTripped,
         transitions,
         diagnostics: Vec::new(),
-        snapshot: next,
+        state: next.rollout,
     }
 }
 
 fn cascade_rollout_dependents(
-    snapshot: &mut Snapshot,
+    snapshot: &mut RolloutSnapshot,
     changed_scenario: &str,
     transitions: &mut Vec<String>,
     reason: &str,
@@ -5320,8 +5240,8 @@ fn rejected(snapshot: &Snapshot, diagnostic: &str) -> Outcome {
     }
 }
 
-pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
-    for (scenario_class, authority) in &snapshot.rollout.scenarios {
+pub fn assert_rollout_invariants(rollout: &RolloutState) -> Result<(), String> {
+    for (scenario_class, authority) in &rollout.scenarios {
         if authority.mode != ScenarioMode::Authoritative {
             continue;
         }
@@ -5332,8 +5252,7 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
             .authoritative_dependencies()
             .iter()
             .any(|dependency| {
-                snapshot
-                    .rollout
+                rollout
                     .scenarios
                     .get(dependency.as_str())
                     .is_none_or(|authority| authority.mode != ScenarioMode::Authoritative)
@@ -5344,6 +5263,89 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
             ));
         }
     }
+    if let Some(manifest) = &rollout.manifest {
+        if !rollout_manifest_is_installable(manifest) {
+            return Err("rollout manifest is incomplete".into());
+        }
+        let preflight = rollout
+            .preflights
+            .get(&manifest.preflight_revision)
+            .ok_or_else(|| "rollout manifest has no canonical preflight".to_string())?;
+        if preflight.state != RolloutPreflightState::Consumed
+            || preflight.manifest_revision != manifest.revision
+            || preflight.manifest.as_ref() != Some(manifest)
+        {
+            return Err("rollout manifest disagrees with canonical preflight".into());
+        }
+    }
+    if rollout.preflights.iter().any(|(revision, preflight)| {
+        *revision != preflight.revision
+            || *revision > rollout.latest_preflight_revision
+            || match preflight.state {
+                RolloutPreflightState::Open => preflight.manifest.is_some(),
+                RolloutPreflightState::Completed | RolloutPreflightState::Consumed => {
+                    preflight.manifest.as_ref().is_none_or(|manifest| {
+                        manifest.revision != preflight.manifest_revision
+                            || manifest.preflight_revision != preflight.revision
+                            || manifest.preflight_for_manifest_revision
+                                != preflight.manifest_revision
+                    })
+                }
+            }
+    }) {
+        return Err("rollout preflight record is invalid".into());
+    }
+    for blocker in &rollout.hard_blockers {
+        if blocker.scenario_class.is_empty()
+            || blocker.blocker_code.is_empty()
+            || blocker.trigger != RollbackTrigger::AnyHardBlocker
+            || rollback_target(&RollbackPolicy {
+                trigger: blocker.trigger,
+                action: blocker.action,
+            }) == ScenarioMode::Authoritative
+        {
+            return Err("rollout hard blocker record is invalid".into());
+        }
+    }
+    for (scenario_class, scenario) in &rollout.scenarios {
+        if !scenario_allowed(rollout.protocol_mode, scenario.mode) {
+            return Err(format!(
+                "scenario {scenario_class} exceeds the protocol ceiling"
+            ));
+        }
+        match scenario.mode {
+            ScenarioMode::Authoritative => {
+                let manifest = rollout
+                    .manifest
+                    .as_ref()
+                    .ok_or_else(|| "authoritative scenario has no manifest".to_string())?;
+                let class = manifest
+                    .classes
+                    .get(scenario_class)
+                    .ok_or_else(|| "authoritative scenario has no class evidence".to_string())?;
+                if !manifest.preflight_succeeded
+                    || scenario.manifest_revision != Some(manifest.revision)
+                    || scenario.preflight_revision != Some(manifest.preflight_revision)
+                    || scenario.rollback_target != rollback_target(&class.rollback_policy)
+                {
+                    return Err(format!(
+                        "authoritative scenario {scenario_class} has stale rollout evidence"
+                    ));
+                }
+            }
+            ScenarioMode::Off | ScenarioMode::Shadow => {
+                if scenario.manifest_revision.is_some() || scenario.preflight_revision.is_some() {
+                    return Err(format!(
+                        "non-authoritative scenario {scenario_class} retains authority fences"
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
     if let Some(focus) = &snapshot.focus {
         let work = snapshot
             .work
@@ -5868,93 +5870,6 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
             );
         }
     }
-    if let Some(manifest) = &snapshot.rollout.manifest {
-        if !rollout_manifest_is_installable(manifest) {
-            return Err("rollout manifest is incomplete".into());
-        }
-        let preflight = snapshot
-            .rollout
-            .preflights
-            .get(&manifest.preflight_revision)
-            .ok_or_else(|| "rollout manifest has no canonical preflight".to_string())?;
-        if preflight.state != RolloutPreflightState::Consumed
-            || preflight.manifest_revision != manifest.revision
-            || preflight.manifest.as_ref() != Some(manifest)
-        {
-            return Err("rollout manifest disagrees with canonical preflight".into());
-        }
-    }
-    if snapshot
-        .rollout
-        .preflights
-        .iter()
-        .any(|(revision, preflight)| {
-            *revision != preflight.revision
-                || *revision > snapshot.rollout.latest_preflight_revision
-                || match preflight.state {
-                    RolloutPreflightState::Open => preflight.manifest.is_some(),
-                    RolloutPreflightState::Completed | RolloutPreflightState::Consumed => {
-                        preflight.manifest.as_ref().is_none_or(|manifest| {
-                            manifest.revision != preflight.manifest_revision
-                                || manifest.preflight_revision != preflight.revision
-                                || manifest.preflight_for_manifest_revision
-                                    != preflight.manifest_revision
-                        })
-                    }
-                }
-        })
-    {
-        return Err("rollout preflight record is invalid".into());
-    }
-    for blocker in &snapshot.rollout.hard_blockers {
-        if blocker.scenario_class.is_empty()
-            || blocker.blocker_code.is_empty()
-            || blocker.trigger != RollbackTrigger::AnyHardBlocker
-            || rollback_target(&RollbackPolicy {
-                trigger: blocker.trigger,
-                action: blocker.action,
-            }) == ScenarioMode::Authoritative
-        {
-            return Err("rollout hard blocker record is invalid".into());
-        }
-    }
-    for (scenario_class, scenario) in &snapshot.rollout.scenarios {
-        if !scenario_allowed(snapshot.rollout.protocol_mode, scenario.mode) {
-            return Err(format!(
-                "scenario {scenario_class} exceeds the protocol ceiling"
-            ));
-        }
-        match scenario.mode {
-            ScenarioMode::Authoritative => {
-                let manifest = snapshot
-                    .rollout
-                    .manifest
-                    .as_ref()
-                    .ok_or_else(|| "authoritative scenario has no manifest".to_string())?;
-                let class = manifest
-                    .classes
-                    .get(scenario_class)
-                    .ok_or_else(|| "authoritative scenario has no class evidence".to_string())?;
-                if !manifest.preflight_succeeded
-                    || scenario.manifest_revision != Some(manifest.revision)
-                    || scenario.preflight_revision != Some(manifest.preflight_revision)
-                    || scenario.rollback_target != rollback_target(&class.rollback_policy)
-                {
-                    return Err(format!(
-                        "authoritative scenario {scenario_class} has stale rollout evidence"
-                    ));
-                }
-            }
-            ScenarioMode::Off | ScenarioMode::Shadow => {
-                if scenario.manifest_revision.is_some() || scenario.preflight_revision.is_some() {
-                    return Err(format!(
-                        "non-authoritative scenario {scenario_class} retains authority fences"
-                    ));
-                }
-            }
-        }
-    }
-
     match &snapshot.slot {
         ActivationSlot::Idle => {}
         ActivationSlot::Running {
@@ -6311,11 +6226,11 @@ mod wire_compatibility_tests {
     use super::{
         activation_provenance_matches_cause, reduce_rollout_command, rollout_class_gate,
         ActivationBinding, ActivationCause, ActivationInputAttachment, ActivationOrigin,
-        ActivationProvenance, ActivationSlot, ActivationTrust, AgentDispatchState, Decision,
-        ProtocolMode, RollbackAction, RollbackPolicy, RollbackTrigger, RolloutClassEvidence,
-        RolloutCommand, RolloutManifest, RolloutState, ScenarioAuthority, ScenarioMode,
-        SchedulerOwner, SchedulerScenarioClass, Snapshot, WaitGenerationRecord, WaitState,
-        MAXIMUM_P99_LATENCY_REGRESSION_BPS, UNIVERSAL_ROLLOUT_EVIDENCE,
+        ActivationProvenance, ActivationTrust, Decision, ProtocolMode, RollbackAction,
+        RollbackPolicy, RollbackTrigger, RolloutClassEvidence, RolloutCommand, RolloutManifest,
+        RolloutState, ScenarioAuthority, ScenarioMode, SchedulerOwner, SchedulerScenarioClass,
+        WaitGenerationRecord, WaitState, MAXIMUM_P99_LATENCY_REGRESSION_BPS,
+        UNIVERSAL_ROLLOUT_EVIDENCE,
     };
 
     #[test]
@@ -6450,21 +6365,19 @@ mod wire_compatibility_tests {
 
     #[test]
     fn operator_interjection_authority_requires_all_dependencies() {
-        let mut snapshot = rollout_snapshot();
+        let mut rollout = rollout_state();
         for dependency in SchedulerScenarioClass::OperatorInterjection.authoritative_dependencies()
         {
-            snapshot
-                .rollout
+            rollout
                 .scenarios
                 .insert(dependency.as_str().into(), authoritative_scenario());
         }
-        snapshot
-            .rollout
+        rollout
             .scenarios
             .get_mut(SchedulerScenarioClass::ExactWaitResume.as_str())
             .expect("dependency")
             .mode = ScenarioMode::Shadow;
-        snapshot.rollout.scenarios.insert(
+        rollout.scenarios.insert(
             SchedulerScenarioClass::OperatorInterjection.as_str().into(),
             ScenarioAuthority {
                 mode: ScenarioMode::Shadow,
@@ -6475,7 +6388,7 @@ mod wire_compatibility_tests {
         );
 
         let outcome = reduce_rollout_command(
-            &snapshot,
+            &rollout,
             &RolloutCommand::ChangeScenarioAuthority {
                 scenario_class: SchedulerScenarioClass::OperatorInterjection.as_str().into(),
                 expected_config_revision: 7,
@@ -6493,21 +6406,20 @@ mod wire_compatibility_tests {
 
     #[test]
     fn lowering_dependency_cascades_operator_interjection() {
-        let mut snapshot = rollout_snapshot();
+        let mut rollout = rollout_state();
         for dependency in SchedulerScenarioClass::OperatorInterjection.authoritative_dependencies()
         {
-            snapshot
-                .rollout
+            rollout
                 .scenarios
                 .insert(dependency.as_str().into(), authoritative_scenario());
         }
-        snapshot.rollout.scenarios.insert(
+        rollout.scenarios.insert(
             SchedulerScenarioClass::OperatorInterjection.as_str().into(),
             authoritative_scenario(),
         );
 
         let outcome = reduce_rollout_command(
-            &snapshot,
+            &rollout,
             &RolloutCommand::ChangeScenarioAuthority {
                 scenario_class: SchedulerScenarioClass::ExactWaitResume.as_str().into(),
                 expected_config_revision: 7,
@@ -6518,14 +6430,13 @@ mod wire_compatibility_tests {
         );
         assert_eq!(outcome.outcome.decision, Decision::ScenarioAuthorityChanged);
         assert_eq!(
-            outcome.outcome.snapshot.rollout.scenarios
-                [SchedulerScenarioClass::OperatorInterjection.as_str()]
-            .mode,
+            outcome.outcome.state.scenarios[SchedulerScenarioClass::OperatorInterjection.as_str()]
+                .mode,
             ScenarioMode::Shadow
         );
     }
 
-    fn rollout_snapshot() -> Snapshot {
+    fn rollout_state() -> RolloutState {
         let classes = SchedulerScenarioClass::PRODUCTION_AUTHORITY
             .into_iter()
             .map(|scenario_class| {
@@ -6577,27 +6488,11 @@ mod wire_compatibility_tests {
             approver: "test".into(),
             approved_at: "test".into(),
         };
-        Snapshot {
-            slot: ActivationSlot::Idle,
-            dispatch: AgentDispatchState::Open,
-            dispatch_revision: 0,
-            focus: None,
-            work: BTreeMap::new(),
-            waits: BTreeMap::new(),
-            activations: BTreeMap::new(),
-            activation_authorities: BTreeMap::new(),
-            activation_admissions: BTreeMap::new(),
-            settlements: BTreeMap::new(),
-            missing_settlements: BTreeMap::new(),
-            rollout: RolloutState {
-                protocol_mode: ProtocolMode::Authoritative,
-                config_revision: 7,
-                manifest: Some(manifest),
-                ..RolloutState::default()
-            },
-            admitted_generations: Default::default(),
-            continuation_admissions: BTreeMap::new(),
-            activation_inputs: BTreeMap::new(),
+        RolloutState {
+            protocol_mode: ProtocolMode::Authoritative,
+            config_revision: 7,
+            manifest: Some(manifest),
+            ..RolloutState::default()
         }
     }
 

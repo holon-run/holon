@@ -5275,6 +5275,12 @@
           "agent_id": {
             "type": "string"
           },
+          "backup_path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "before": true,
           "changed": {
             "type": "boolean"
@@ -11398,7 +11404,7 @@
         ]
       },
       "post": {
-        "description": "Dry-run or apply one OCC-guarded scheduler repair operation and emit an audit event for committed changes.",
+        "description": "Dry-run or apply one OCC-guarded scheduler repair operation. Non-dry-run requests create and verify a SQLite backup before committing and emit an audit event.",
         "operationId": "applySchedulerRepair",
         "parameters": [
           {

@@ -178,7 +178,6 @@ fn canonical_waiting_snapshot(
         activation_admissions: Default::default(),
         settlements: Default::default(),
         missing_settlements: Default::default(),
-        rollout: Default::default(),
         admitted_generations: Default::default(),
         continuation_admissions: Default::default(),
         activation_inputs: Default::default(),
@@ -997,7 +996,6 @@ async fn settlement_recovery_repairs_processed_cross_work_item_pick_as_targeted_
             scheduler_claim_work_item: None,
             scheduler_protocol_bootstrap: None,
             scheduler_protocol_commands,
-            scheduler_rollout_expectations: Vec::new(),
             agent_state: None,
             message_evidence: Vec::new(),
             transcript_entries: Vec::new(),
@@ -1043,7 +1041,8 @@ async fn settlement_recovery_repairs_processed_cross_work_item_pick_as_targeted_
             "default",
             &report,
         )
-        .unwrap(),
+        .unwrap()
+        .0,
         1
     );
 
@@ -1076,7 +1075,8 @@ async fn settlement_recovery_repairs_processed_cross_work_item_pick_as_targeted_
             )
             .unwrap(),
         )
-        .unwrap(),
+        .unwrap()
+        .0,
         0
     );
 }
@@ -1592,7 +1592,6 @@ async fn stale_bootstrap_recovery_command_cannot_settle_successor_generation() {
             scheduler_claim_work_item: None,
             scheduler_protocol_bootstrap: None,
             scheduler_protocol_commands: vec![stale_command],
-            scheduler_rollout_expectations: Vec::new(),
             agent_state: None,
             message_evidence: Vec::new(),
             transcript_entries: Vec::new(),
@@ -3008,7 +3007,6 @@ async fn authoritative_explicit_operator_wait_ambiguity_remains_queued() {
                 activation_admissions: Default::default(),
                 settlements: Default::default(),
                 missing_settlements: Default::default(),
-                rollout: Default::default(),
                 admitted_generations: Default::default(),
                 continuation_admissions: Default::default(),
                 activation_inputs: Default::default(),
@@ -3957,7 +3955,6 @@ async fn completed_production_settlement_uses_exact_bound_result_brief() {
                 activation_admissions: Default::default(),
                 settlements: Default::default(),
                 missing_settlements: Default::default(),
-                rollout: Default::default(),
                 admitted_generations: Default::default(),
                 continuation_admissions: Default::default(),
                 activation_inputs: Default::default(),
@@ -8603,6 +8600,7 @@ async fn scheduler_repair_dry_run_and_apply_cancel_agent_wait() {
     };
     let dry_run = runtime.apply_scheduler_repair(request).await.unwrap();
     assert!(dry_run.dry_run);
+    assert!(dry_run.backup_path.is_none());
     assert_eq!(
         runtime
             .storage()
@@ -8625,6 +8623,8 @@ async fn scheduler_repair_dry_run_and_apply_cancel_agent_wait() {
         .await
         .unwrap();
     assert!(applied.changed);
+    let backup_path = applied.backup_path.expect("repair backup");
+    assert!(backup_path.exists());
     assert!(runtime
         .storage()
         .raw_active_wait_conditions_for_agent("default")
@@ -8679,7 +8679,6 @@ async fn scheduler_repair_only_drops_wake_only_queue_entries_with_occ() {
             scheduler_claim_work_item: None,
             scheduler_protocol_bootstrap: None,
             scheduler_protocol_commands: Vec::new(),
-            scheduler_rollout_expectations: Vec::new(),
             agent_state: None,
             message_evidence: vec![wake_message],
             transcript_entries: Vec::new(),
@@ -8704,6 +8703,10 @@ async fn scheduler_repair_only_drops_wake_only_queue_entries_with_occ() {
         .await
         .unwrap();
     assert_eq!(result.operation, "drop_wake_only_queue_entry");
+    assert!(result
+        .backup_path
+        .as_ref()
+        .is_some_and(|path| path.exists()));
     assert_eq!(
         runtime
             .storage()
@@ -8890,7 +8893,6 @@ async fn post_commit_agent_state_projection_does_not_overwrite_newer_memory() {
             scheduler_claim_work_item: None,
             scheduler_protocol_bootstrap: None,
             scheduler_protocol_commands: Vec::new(),
-            scheduler_rollout_expectations: Vec::new(),
             agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
                 expected: Some(Box::new(expected)),
                 record: Box::new(committed),
