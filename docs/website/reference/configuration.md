@@ -109,6 +109,11 @@ remain readable for database migration, recovery evidence, and historical
 diagnostics, but they do not select a legacy or shadow execution path at
 startup.
 
+The accepted scheduler transition permits a temporary process-wide
+`legacy|canonical` selector during the compatibility release. It is not
+implemented in the current configuration schema. When introduced, it will
+default to `canonical` and will be removed with the legacy engine.
+
 ## Credential Management
 
 Credentials are stored securely in `~/.holon/credentials.json`. Use `config credentials` subcommands — **never edit this file directly**.

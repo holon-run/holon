@@ -40,11 +40,24 @@ remains authoritative while activation records and decisions run in shadow.
 Authority moves only after deterministic equivalence, persistence, restart,
 fault-injection, and divergence gates pass.
 
+> **Migration policy superseded:** The canonical activation, settlement,
+> generation, replay, and atomicity contract in this RFC remains accepted.
+> The production shadow, manifest/preflight, per-scenario authority,
+> hard-blocker rollback, and semantic-proposal migration described below are
+> superseded by
+> [Scheduler Cutover Simplification](./scheduler-cutover-simplification.md).
+> Those sections are retained as historical design context, not as the current
+> delivery plan.
+
 ## Status And Relationship To Existing RFCs
 
 This RFC is the normative target for scheduler admission, activation binding,
 terminal settlement, WorkItem dispatch generations, agent lane admission, and
 wait trigger/consume generations.
+
+Its protocol semantics remain normative. Its rollout and semantic-provider
+phases are superseded by
+[Scheduler Cutover Simplification](./scheduler-cutover-simplification.md).
 
 It extends:
 

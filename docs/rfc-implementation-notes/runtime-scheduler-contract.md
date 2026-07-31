@@ -20,22 +20,20 @@ scheduler blockers.
 ## Protocol transition layer
 
 An additive `QueueTransitionCommand` protocol layer wraps every scheduler
-boundary in an atomic SQLite transaction. Each boundary records a shadow
-comparison between the legacy decision and the canonical protocol outcome,
-plus a semantic shadow decision when trusted ingress conditions apply. The
-boundaries currently integrated are: message admission, wait resume,
-settlement recovery, delivery disposition, operator interjection (four typed
-boundaries), and work-queue idle tick. A public `SchedulerDiagnosticAuditEvent`
-stream is emitted alongside legacy audit for observability. See
+boundary in an atomic SQLite transaction. The canonical protocol is the
+production execution path for message admission, wait resume, settlement
+recovery, delivery disposition, operator interjection, and work-queue idle
+ticks. A public `SchedulerDiagnosticAuditEvent` stream is emitted for
+observability. See
 [scheduler spec](../website/spec/scheduler.md) and
 [implementation decision 098](../implementation-decisions/098-scheduler-protocol-transition-wraps-legacy-boundaries-atomically.md).
 
-Rollout authority is scenario-local. `Shadow` records matched or divergent
-evidence without changing legacy behavior. `Authoritative` requires matched
-canonical evidence in the same transaction as the queue mutation; missing or
-divergent evidence rejects the complete transaction. A fenced hard-blocker
-command records the blocker and atomically restores the configured rollback
-target. These authority and rollback facts survive restart.
+Historical rollout metadata still leaks into snapshot loading and transaction
+invariants, but no longer provides a useful production choice. It is being
+retired under
+[Scheduler Cutover Simplification](../rfcs/scheduler-cutover-simplification.md).
+Production shadow comparison and semantic proposal routing are not part of the
+target dependency graph; release evidence moves to CI and release artifacts.
 
 ## Landed contract anchors
 
@@ -70,11 +68,11 @@ Focused verification currently lives in:
 - `src/runtime/runtime_db/transitions.rs` (protocol transition atomics)
 - `src/runtime_db/tests.rs` (authoritative cutover, rollback, concurrent load,
   and restart)
-- `src/runtime/turn/execution.rs` (operator interjection per-boundary shadow)
+- `src/runtime/turn/execution.rs` (operator interjection safe-point handling)
 - `src/storage/mod.rs` (FIFO WorkItem queue projection)
 - `tests/fixtures/scheduler/`
 - `tests/scheduler_workitem_mvp.rs` (canonical protocol invariants)
-- `tests/scheduler_intent_mvp.rs` (semantic decision plane shadow scoring)
+- `tests/scheduler_intent_mvp.rs` (offline semantic experiment coverage)
 
 Useful local checks:
 

@@ -23,6 +23,7 @@ implementation and tests.
 - [Agent Status Display Projection](./agent-status-display-projection.md)
 - [Agent Profile Model](./agent-profile-model.md)
 - [Runtime Scheduler Contract](./runtime-scheduler-contract.md)
+- [Scheduler Cutover Simplification](./scheduler-cutover-simplification.md)
 - [Agent Activation, Settlement, and Dispatch](./agent-activation-settlement-and-dispatch.md)
 - [Result Closure](./result-closure.md)
 - [Continuation Trigger](./continuation-trigger.md)

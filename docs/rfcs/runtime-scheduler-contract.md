@@ -54,6 +54,12 @@ activation in the same transaction as the legacy `Interjected` state,
 transcript, and audit evidence. Queue, Turn, and `AgentState` records remain
 compatibility bindings while scenario rollout policy is handled separately.
 
+The rollout policy for this protocol is now defined by
+[Scheduler Cutover Simplification](./scheduler-cutover-simplification.md).
+Runtime shadow comparison, manifest/preflight gates, and per-scenario authority
+are being retired. Canonical remains the default and long-term engine; any
+legacy selector is a temporary process-wide compatibility mechanism.
+
 ## Problem
 
 Holon is headless, event-driven, and long-lived. Scheduler bugs therefore have

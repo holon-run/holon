@@ -9,10 +9,10 @@ order: 30
 This page defines the current contract for Holon's scheduler: what inputs it
 consumes, how it derives posture and runnability, and what decisions it emits.
 It also documents the additive protocol transition layer that wraps scheduler
-decisions in atomic transactions with shadow comparison, semantic decision
-plane integration, and a public diagnostic event stream.
+decisions in atomic transactions with replay protection, explicit activation
+ownership, terminal settlement, and a public diagnostic event stream.
 
-> **Last verified:** 2026-07-21 against `src/runtime/scheduler.rs`,
+> **Last verified:** 2026-07-31 against `src/runtime/scheduler.rs`,
 > `src/runtime/scheduler_executor.rs`, `src/runtime/waiting.rs`,
 > `src/runtime/closure.rs`, `src/runtime/turn/execution.rs`,
 > `src/runtime_event.rs`, `src/types.rs`.
@@ -20,6 +20,7 @@ plane integration, and a public diagnostic event stream.
 ## Source RFCs
 
 - [Runtime Scheduler Contract](https://github.com/holon-run/holon/blob/main/docs/rfcs/runtime-scheduler-contract.md)
+- [Scheduler Cutover Simplification](https://github.com/holon-run/holon/blob/main/docs/rfcs/scheduler-cutover-simplification.md)
 - [Scheduler Wait State And Recoverable Agent Continuation](https://github.com/holon-run/holon/blob/main/docs/rfcs/scheduler-wait-state.md)
 - [Waiting Plane And Reactivation](https://github.com/holon-run/holon/blob/main/docs/rfcs/waiting-plane-and-reactivation.md)
 - [Continuation Trigger](https://github.com/holon-run/holon/blob/main/docs/rfcs/continuation-trigger.md)
@@ -166,9 +167,14 @@ rollout tables and enum values remain readable for migration and recovery
 diagnostics, but startup configuration cannot select legacy or shadow
 execution. Missing activation, terminal-turn, or settlement evidence fails
 closed and the transaction leaves no partial queue, projection, audit,
-activation, or settlement writes. A reported hard blocker atomically records the
-blocker and returns the affected class to its configured `Shadow` or `Off`
-rollback target.
+activation, or settlement writes.
+
+The accepted transition contract retires runtime manifest/preflight gates,
+per-scenario authority, automatic hard-blocker rollback, and production shadow
+comparison. A temporary process-wide `legacy|canonical` startup selector may be
+added during implementation, defaults to canonical, and will be deleted with
+legacy after one compatibility release. It is not available in the current
+configuration surface.
 
 ### Integration points
 
@@ -184,15 +190,10 @@ boundary records the canonical facts required by the next boundary:
 | Operator interjection | `Admit` | running activation and safe-point identity |
 | Work-queue idle tick (`memory_refresh::emit_system_tick_from_work_queue`) | `Admit` | runnable demand and dispatch revision |
 
-The semantic decision plane provides trusted-ingress construction, provider
-validation, and response policy. It returns `Ok(None)` when trusted ingress
-conditions are not met, preventing observation errors from blocking the run
-loop. No provider owns runtime authority; the deterministic resolver and
-validator retain all state-transition control. Wait resume shadow comparison
-is evaluated within the message admission path via `.or_else`, so the same
-`QueueTransitionCommand` transaction records whichever comparison applies.
-Settlement recovery and delivery disposition shadow comparisons are recorded
-in the same `commit_queue_settlement` transaction.
+The semantic decision plane is not part of production admission. Its remaining
+module and fixtures are offline experimental surface and will be removed from
+the production dependency graph. Deterministic structural binding and the
+canonical protocol retain all state-transition control.
 
 ### Public diagnostic event stream
 
@@ -207,8 +208,8 @@ decision that passes through `append_scheduler_decision`. This event carries:
 | `message_id` | Optional message that triggered the decision |
 | `evidence` | Evidence strings used by the decision |
 | `scenario_class` | Optional scenario classification (e.g. `operator_interjection`) |
-| `shadow_matched` | Whether legacy and canonical outcomes agreed, when shadow was present |
-| `divergence_code` | Optional divergence code if outcomes disagreed |
+| `shadow_matched` | Historical compatibility field; production does not require shadow comparison |
+| `divergence_code` | Historical compatibility field for previously recorded comparisons |
 
 The event is emitted via `RuntimeEventKind::SchedulerDiagnostic` alongside
 the legacy `scheduler_decision` audit event. Both are persisted in the same
@@ -235,7 +236,7 @@ authority for scheduling decisions.
   RFC posture labels. The RFC posture is the stable turn-end vocabulary;
   decision variants are concrete runtime actions and duplicate-suppression
   outcomes.
-- The current authoritative acceptance gate validates atomic matched-evidence
-  pass-through, divergence rejection, rollback, restart, bounded concurrent
-  load, and FIFO WorkItem projection. It is not a calibrated production SLO or
-  a substitute for deployment-specific soak and capacity testing.
+- Scheduler release acceptance validates atomicity, restart, bounded
+  concurrent load, fault handling, and FIFO WorkItem projection outside the
+  runtime authority path. It is not a calibrated production SLO or a
+  substitute for deployment-specific soak and capacity testing.

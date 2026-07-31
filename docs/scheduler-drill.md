@@ -5,6 +5,12 @@ collecting authoritative scheduler evidence from one fresh candidate node.
 It never imports a report into the runtime and never writes scheduler protocol
 tables directly.
 
+The report is release acceptance evidence, not runtime scheduler authority.
+Under
+[Scheduler Cutover Simplification](rfcs/scheduler-cutover-simplification.md),
+runtime manifest/preflight/scenario rows are retired from the engine-selection
+contract.
+
 ## Credentials
 
 Create an env file outside the repository and restrict it to the current user:
@@ -107,6 +113,10 @@ The collector reports No-Go when any requested production scenario lacks a
 completed stress operation, a current-revision hard blocker exists, JSON
 evidence is malformed, or canonical activation/settlement/delivery tail state
 is inconsistent. It also requires planned injections to have completed;
-declared parameters alone never satisfy coverage. Historical hard blockers
-remain visible but do not count as current unless their
-config/manifest/preflight fences match current authority.
+declared parameters alone never satisfy coverage. Historical hard blockers and
+manifest/preflight revisions remain visible while the collector reads the
+compatibility schema, but they do not grant runtime authority.
+
+The historical rollout checks must be removed when those repositories are
+retired. Release Go/No-Go is determined by collected scenario results and build
+identity, not by importing or activating runtime rollout rows.
