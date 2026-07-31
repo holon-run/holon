@@ -360,6 +360,43 @@ fn canonical_missing_settlement_id(message_id: &str) -> String {
     format!("missing-settlement:message:{message_id}")
 }
 
+fn canonical_commands_settle_from_terminal(
+    commands: &[crate::domain::scheduler_protocol::ProtocolCommand],
+) -> bool {
+    matches!(
+        commands,
+        [
+            crate::domain::scheduler_protocol::ProtocolCommand::SettleActivation(command),
+            rest @ ..
+        ] if command.settlement.turn_terminal.is_some()
+            && rest.iter().all(|command| matches!(
+                command,
+                crate::domain::scheduler_protocol::ProtocolCommand::AdoptActivationWorkState(_)
+            ))
+    )
+}
+
+fn canonical_command_batch_rejection(
+    snapshot: &crate::domain::scheduler_protocol::Snapshot,
+    commands: &[crate::domain::scheduler_protocol::ProtocolCommand],
+) -> Option<Vec<String>> {
+    let mut proposed = snapshot.clone();
+    for command in commands {
+        let outcome = crate::domain::scheduler_protocol::reduce_command(&proposed, command);
+        if outcome.outcome.decision == crate::domain::scheduler_protocol::Decision::Rejected {
+            let mut diagnostics = outcome.outcome.diagnostics;
+            if diagnostics.is_empty() {
+                if let Some(conflict) = outcome.conflict {
+                    diagnostics.push(conflict.code);
+                }
+            }
+            return Some(diagnostics);
+        }
+        proposed = outcome.outcome.snapshot;
+    }
+    None
+}
+
 fn canonical_matching_terminal_turn(
     runtime_db: &RuntimeDb,
     record: &QueueEntryRecord,
@@ -390,6 +427,75 @@ fn canonical_matching_terminal_turn(
         .find(matches_activation))
 }
 
+fn completion_intent_revision_matches_activation(
+    snapshot: &crate::domain::scheduler_protocol::Snapshot,
+    activation_id: &str,
+    expected_work_revision: u64,
+) -> bool {
+    use crate::domain::scheduler_protocol::{ActivationCause, WaitState};
+
+    let Some(admission) = snapshot.activation_admissions.get(activation_id) else {
+        return false;
+    };
+    let Some(source_revision) = admission.activation.source_revision else {
+        return false;
+    };
+    if source_revision == expected_work_revision {
+        return true;
+    }
+    if source_revision.checked_add(1) != Some(expected_work_revision) {
+        return false;
+    }
+    let resume = match &admission.activation.cause {
+        ActivationCause::OperatorInput {
+            resume: Some(resume),
+            ..
+        }
+        | ActivationCause::TaskRejoin {
+            resume: Some(resume),
+            ..
+        } => resume,
+        ActivationCause::WaitResume {
+            wait_id,
+            wait_generation,
+            trigger_id,
+            trigger_generation,
+        } => {
+            let Some(generation) = snapshot
+                .waits
+                .get(wait_id)
+                .filter(|wait| wait.current_generation == *wait_generation)
+                .and_then(|wait| wait.generations.get(wait_generation))
+            else {
+                return false;
+            };
+            return generation.owner == snapshot.activations[activation_id].owner
+                && generation.state == WaitState::Consumed
+                && generation.consuming_activation_id.as_deref() == Some(activation_id)
+                && generation.trigger.as_ref().is_some_and(|trigger| {
+                    trigger.trigger_id == *trigger_id
+                        && trigger.trigger_generation == *trigger_generation
+                });
+        }
+        _ => return false,
+    };
+    let Some(generation) = snapshot
+        .waits
+        .get(&resume.wait_id)
+        .filter(|wait| wait.current_generation == resume.wait_generation)
+        .and_then(|wait| wait.generations.get(&resume.wait_generation))
+    else {
+        return false;
+    };
+    generation.owner == snapshot.activations[activation_id].owner
+        && generation.state == WaitState::Consumed
+        && generation.consuming_activation_id.as_deref() == Some(activation_id)
+        && generation.trigger.as_ref().is_some_and(|trigger| {
+            trigger.trigger_id == resume.trigger_id
+                && trigger.trigger_generation == resume.trigger_generation
+        })
+}
+
 fn canonical_queue_settlement_commands_from_facts(
     storage: &AppStorage,
     runtime_db: &RuntimeDb,
@@ -400,8 +506,9 @@ fn canonical_queue_settlement_commands_from_facts(
         return Ok(Vec::new());
     };
     use crate::domain::scheduler_protocol::{
-        ActivationDisposition, ActivationSettlement, AgentDispatchDisposition,
-        MissingSettlementRecord, ProtocolCommand, SettleActivationCommand, WaitIdentity,
+        ActivationDisposition, ActivationSettlement, AdoptActivationWorkStateCommand,
+        AgentDispatchDisposition, LegacyWaitAdoption, MissingSettlementRecord, ProtocolCommand,
+        SettleActivationCommand, WaitIdentity,
     };
 
     let Some(snapshot) = runtime_db
@@ -443,20 +550,43 @@ fn canonical_queue_settlement_commands_from_facts(
             return Ok(vec![missing_settlement()]);
         }
         let active_waits = storage
-            .active_wait_conditions_for_agent(&record.agent_id)?
+            .latest_wait_conditions()?
             .into_iter()
-            .filter(|wait| wait.work_item_id.is_none())
-            .filter(|wait| wait.turn_id == message.turn_id)
+            .filter(|wait| wait.agent_id == record.agent_id && wait.turn_id == message.turn_id)
             .collect::<Vec<_>>();
-        let disposition = match active_waits.as_slice() {
-            [] => ActivationDisposition::WorkContinues,
-            [wait] => ActivationDisposition::WorkWaits {
+        let work_item_waits: Vec<_> = active_waits
+            .iter()
+            .filter(|wait| {
+                wait.work_item_id.is_some()
+                    && wait.status == crate::types::WaitConditionStatus::Active
+            })
+            .cloned()
+            .collect();
+        let lifecycle_waits: Vec<_> = active_waits
+            .into_iter()
+            .filter(|wait| {
+                wait.work_item_id.is_none()
+                    && wait.status == crate::types::WaitConditionStatus::Active
+            })
+            .collect::<Vec<_>>();
+        let lifecycle_wait = match lifecycle_waits.as_slice() {
+            [wait] if work_item_waits.is_empty() => Some(wait),
+            [] => None,
+            _ => return Ok(vec![missing_settlement()]),
+        };
+        let work_item_wait = match work_item_waits.as_slice() {
+            [wait] => Some(wait),
+            [] => None,
+            _ => return Ok(vec![missing_settlement()]),
+        };
+        let disposition = match lifecycle_wait {
+            None => ActivationDisposition::WorkContinues,
+            Some(wait) => ActivationDisposition::WorkWaits {
                 wait: WaitIdentity {
                     id: wait.id.clone(),
                     generation: activation.admitted_generation + 1,
                 },
             },
-            _ => return Ok(vec![missing_settlement()]),
         };
         let agent_dispatch = match &disposition {
             ActivationDisposition::WorkWaits { wait } => {
@@ -464,23 +594,64 @@ fn canonical_queue_settlement_commands_from_facts(
             }
             _ => AgentDispatchDisposition::Open,
         };
-        return Ok(vec![ProtocolCommand::SettleActivation(
-            SettleActivationCommand {
-                settlement: ActivationSettlement {
-                    id: canonical_settlement_id(&record.message_id),
-                    activation_id,
-                    turn_terminal,
-                    disposition,
-                    agent_dispatch,
-                    operator_delivery: None,
-                    evidence: vec![
-                        format!("message:{}", record.message_id),
-                        format!("lifecycle_agent:{}", record.agent_id),
-                    ],
-                    created_at: record.updated_at.to_rfc3339(),
-                },
+        let mut evidence = vec![
+            format!("message:{}", record.message_id),
+            format!("lifecycle_agent:{}", record.agent_id),
+        ];
+        if let Some(wait) = lifecycle_wait {
+            evidence.push(format!("wait:{}", wait.id));
+        }
+        let mut commands = vec![ProtocolCommand::SettleActivation(SettleActivationCommand {
+            settlement: ActivationSettlement {
+                id: canonical_settlement_id(&record.message_id),
+                activation_id: activation_id.clone(),
+                turn_terminal: turn_terminal.clone(),
+                disposition,
+                agent_dispatch,
+                operator_delivery: None,
+                evidence,
+                created_at: record.updated_at.to_rfc3339(),
             },
-        )]);
+        })];
+        if let Some(wait) = work_item_wait {
+            let Some(work_item_id) = wait.work_item_id.as_deref() else {
+                return Ok(vec![missing_settlement()]);
+            };
+            let Some(work_item) = storage.latest_work_item(work_item_id)? else {
+                return Ok(vec![missing_settlement()]);
+            };
+            if work_item.agent_id != record.agent_id
+                || work_item.state != crate::types::WorkItemState::Open
+            {
+                return Ok(vec![missing_settlement()]);
+            }
+            let focus = storage
+                .read_agent()?
+                .and_then(|agent| agent.current_work_item_id)
+                .as_deref()
+                == Some(work_item_id);
+            commands.push(ProtocolCommand::AdoptActivationWorkState(
+                AdoptActivationWorkStateCommand {
+                    source_activation_id: activation_id.clone(),
+                    source_message_id: record.message_id.clone(),
+                    source_turn_id: turn_terminal
+                        .clone()
+                        .ok_or_else(|| anyhow!("lifecycle wait handoff requires terminal turn"))?,
+                    source_admitted_generation: activation.admitted_generation,
+                    work_item_id: work_item_id.to_string(),
+                    source_work_item_revision: work_item.revision,
+                    wait: LegacyWaitAdoption {
+                        wait_id: wait.id.clone(),
+                        generation: work_item.revision,
+                        owner_work_item_id: work_item_id.to_string(),
+                        source_updated_at: wait.updated_at.to_rfc3339(),
+                    },
+                    focus,
+                    reserve_dispatch: focus,
+                },
+            ));
+        }
+        return Ok(commands);
     };
     let work_queue = storage.work_queue_prompt_projection()?;
     let scheduling_state = work_queue
@@ -517,17 +688,17 @@ fn canonical_queue_settlement_commands_from_facts(
                 let Some(completion_intent) = work_item.completion_intent.as_ref() else {
                     return Ok(vec![missing_settlement()]);
                 };
-                let Some(admission) = snapshot.activation_admissions.get(&activation_id) else {
-                    return Ok(vec![missing_settlement()]);
-                };
                 if !(completion_intent.work_item_id == work_item_id
                     && completion_intent.source_activation_id.as_deref()
                         == Some(activation_id.as_str())
                     && completion_intent.source_message_id.as_deref()
                         == Some(record.message_id.as_str())
                     && completion_intent.source_turn_id.as_deref() == Some(turn_terminal.as_str())
-                    && admission.activation.source_revision
-                        == Some(completion_intent.expected_work_revision))
+                    && completion_intent_revision_matches_activation(
+                        &snapshot,
+                        &activation_id,
+                        completion_intent.expected_work_revision,
+                    ))
                 {
                     return Ok(vec![missing_settlement()]);
                 }
@@ -1029,10 +1200,7 @@ pub fn scheduler_recovery_report(
             &proposed_entry,
             terminal_turn,
         )?;
-        let settles_from_terminal = matches!(
-            commands.as_slice(),
-            [crate::domain::scheduler_protocol::ProtocolCommand::SettleActivation(_)]
-        );
+        let settles_from_terminal = canonical_commands_settle_from_terminal(&commands);
         if !settles_from_terminal {
             proposed_entry.status = QueueEntryStatus::Aborted;
             commands = canonical_queue_settlement_commands_from_facts(
@@ -1042,11 +1210,7 @@ pub fn scheduler_recovery_report(
                 terminal_turn,
             )?;
         }
-        if let Some(diagnostics) = commands.iter().find_map(|command| {
-            let outcome = crate::domain::scheduler_protocol::reduce_command(&snapshot, command);
-            (outcome.outcome.decision == crate::domain::scheduler_protocol::Decision::Rejected)
-                .then(|| outcome.outcome.diagnostics)
-        }) {
+        if let Some(diagnostics) = canonical_command_batch_rejection(&snapshot, &commands) {
             candidate.reason = "typed_command_rejected".into();
             candidate.evidence.extend(diagnostics);
             candidate.proposed_commands = commands;
@@ -3265,6 +3429,13 @@ impl RuntimeHandle {
 
     async fn release_claimed_messages_for_runtime_restart(&self) -> Result<usize> {
         let agent_id = self.inner.agent.lock().await.state.id.clone();
+        let canonical_activations = self
+            .inner
+            .runtime_db
+            .transitions()
+            .load_scheduler_protocol_snapshot_if_initialized(&agent_id)?
+            .map(|snapshot| snapshot.activations)
+            .unwrap_or_default();
         let claimed = self
             .inner
             .runtime_db
@@ -3275,6 +3446,10 @@ impl RuntimeHandle {
             .collect::<Vec<_>>();
         let mut released = 0;
         for mut entry in claimed {
+            let activation_id = scheduler_executor::canonical_activation_id(&entry.message_id);
+            if canonical_activations.contains_key(&activation_id) {
+                continue;
+            }
             entry.status = QueueEntryStatus::Interrupted;
             entry.updated_at = Utc::now();
             let message_id = entry.message_id.clone();
@@ -3510,10 +3685,8 @@ impl RuntimeHandle {
                     ),
                 ]
             };
-            let settles_from_terminal = matches!(
-                scheduler_protocol_commands.as_slice(),
-                [crate::domain::scheduler_protocol::ProtocolCommand::SettleActivation(_)]
-            );
+            let settles_from_terminal =
+                canonical_commands_settle_from_terminal(&scheduler_protocol_commands);
             if !settles_from_terminal {
                 entry.status = QueueEntryStatus::Aborted;
                 if terminal_is_completed {
@@ -3525,11 +3698,8 @@ impl RuntimeHandle {
                     )?;
                 }
             }
-            let rejected = scheduler_protocol_commands.iter().find_map(|command| {
-                let outcome = crate::domain::scheduler_protocol::reduce_command(&snapshot, command);
-                (outcome.outcome.decision == crate::domain::scheduler_protocol::Decision::Rejected)
-                    .then(|| outcome.outcome.diagnostics)
-            });
+            let rejected =
+                canonical_command_batch_rejection(&snapshot, &scheduler_protocol_commands);
             if let Some(diagnostics) = rejected {
                 self.inner.storage.append_event(
                     &scheduler::scheduler_invariant_diagnostic_event(

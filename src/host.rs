@@ -4883,7 +4883,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runtime_loop_failure_releases_claim_and_rebuilds_on_next_host_access() {
+    async fn runtime_loop_failure_preserves_canonical_claim_and_reconciles_on_next_host_access() {
         let (_home, host) = test_host();
         let agent_id = host.config().default_agent_id.clone();
         let runtime = host.default_runtime().await.unwrap();
@@ -4922,8 +4922,7 @@ mod tests {
                     .unwrap()
                     .iter()
                     .any(|entry| {
-                        entry.message_id == message.id
-                            && entry.status == QueueEntryStatus::Interrupted
+                        entry.message_id == message.id && entry.status == QueueEntryStatus::Dequeued
                     })
             {
                 break;
@@ -4942,18 +4941,53 @@ mod tests {
         assert!(failure
             .summary
             .contains("injected agent runtime loop failure after queue claim"));
+        assert!(runtime
+            .storage()
+            .read_recent_events(32)
+            .unwrap()
+            .iter()
+            .all(|event| {
+                event.kind != "queue_claim_released_for_runtime_restart"
+                    || event.data["message_id"] != message.id
+            }));
 
         let rebuilt = host.get_or_create_agent(&agent_id).await.unwrap();
         assert_eq!(rebuilt.agent_state().await.unwrap().id, agent_id);
-        wait_for_brief_count(&rebuilt, 1).await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let queue_reconciled = rebuilt
+                .storage()
+                .latest_queue_entries()
+                .unwrap()
+                .iter()
+                .any(|entry| {
+                    entry.message_id == message.id && entry.status == QueueEntryStatus::Aborted
+                });
+            let recovery_recorded = rebuilt
+                .storage()
+                .read_recent_events(32)
+                .unwrap()
+                .iter()
+                .any(|event| {
+                    event.kind == "scheduler_bootstrap_claim_recovered"
+                        && event.data["message_id"].as_str() == Some(message.id.as_str())
+                        && event.data["recovery_outcome"].as_str() == Some("settlement_missing")
+                });
+            if queue_reconciled && recovery_recorded {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for canonical claim reconciliation"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         assert!(rebuilt
             .storage()
-            .latest_queue_entries()
+            .read_recent_briefs(10)
             .unwrap()
             .iter()
-            .any(|entry| {
-                entry.message_id == message.id && entry.status == QueueEntryStatus::Processed
-            }));
+            .all(|brief| brief.related_message_id.as_deref() != Some(message.id.as_str())));
         let agents = host.inner.agents.read().await;
         let entry = agents
             .get(&agent_id)

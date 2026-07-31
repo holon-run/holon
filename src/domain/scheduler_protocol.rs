@@ -960,6 +960,21 @@ pub struct AdoptLegacyWorkStateCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdoptActivationWorkStateCommand {
+    pub source_activation_id: String,
+    pub source_message_id: String,
+    pub source_turn_id: String,
+    pub source_admitted_generation: u64,
+    pub work_item_id: String,
+    pub source_work_item_revision: u64,
+    pub wait: LegacyWaitAdoption,
+    #[serde(default)]
+    pub focus: bool,
+    #[serde(default)]
+    pub reserve_dispatch: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LegacyCompletionReport {
     pub turn_terminal: String,
     pub operator_delivery: String,
@@ -1085,6 +1100,7 @@ pub struct AttachActivationInputCommand {
 pub enum ProtocolCommand {
     RegisterWorkDemand(RegisterWorkDemandCommand),
     AdoptLegacyWorkState(AdoptLegacyWorkStateCommand),
+    AdoptActivationWorkState(AdoptActivationWorkStateCommand),
     IssueActivationAuthority(IssueActivationAuthorityCommand),
     AdmitActivation(AdmitActivationCommand),
     SettleActivation(SettleActivationCommand),
@@ -1942,6 +1958,9 @@ pub fn reduce_command(snapshot: &Snapshot, command: &ProtocolCommand) -> Protoco
     if let ProtocolCommand::AdoptLegacyWorkState(command) = command {
         return adopt_legacy_work_state(snapshot, command);
     }
+    if let ProtocolCommand::AdoptActivationWorkState(command) = command {
+        return adopt_activation_work_state(snapshot, command);
+    }
     if let ProtocolCommand::IssueActivationAuthority(command) = command {
         return issue_activation_authority(snapshot, command);
     }
@@ -2102,6 +2121,55 @@ fn replay_or_conflict(
                 );
             }
         }
+        ProtocolCommand::AdoptActivationWorkState(command) => {
+            if let Some(existing) = snapshot.work.get(&command.work_item_id) {
+                let wait_matches = snapshot
+                    .waits
+                    .get(&command.wait.wait_id)
+                    .is_some_and(|wait| {
+                        wait.current_generation == command.wait.generation
+                            && wait.generations.get(&command.wait.generation)
+                                == Some(&WaitGenerationRecord {
+                                    owner: SchedulerOwner::WorkItem {
+                                        work_item_id: command.work_item_id.clone(),
+                                    },
+                                    state: WaitState::Active,
+                                    trigger: None,
+                                    consuming_activation_id: None,
+                                })
+                    });
+                return Some(
+                    if existing.metadata_revision == command.source_work_item_revision
+                        && existing.scheduling_generation == command.wait.generation
+                        && existing.status
+                            == (WorkStatus::Waiting {
+                                wait_id: command.wait.wait_id.clone(),
+                            })
+                        && wait_matches
+                        && (!command.focus
+                            || snapshot.focus.as_deref() == Some(command.work_item_id.as_str()))
+                        && (!command.reserve_dispatch
+                            || snapshot.dispatch
+                                == (AgentDispatchState::Awaiting {
+                                    wait: WaitIdentity {
+                                        id: command.wait.wait_id.clone(),
+                                        generation: command.wait.generation,
+                                    },
+                                }))
+                    {
+                        duplicate_command(snapshot, "activation_work_state_already_adopted")
+                    } else {
+                        rejected_command(
+                            snapshot,
+                            command_conflict(
+                                ProtocolConflictKind::IdentityConflict,
+                                "activation_work_state_adoption_conflict",
+                            ),
+                        )
+                    },
+                );
+            }
+        }
         ProtocolCommand::IssueActivationAuthority(command) => {
             if let Some(existing) = snapshot.activation_authorities.get(&command.authority_id) {
                 return Some(if authority_matches_issue(existing, command) {
@@ -2256,7 +2324,9 @@ fn lower_command(
     command: &ProtocolCommand,
 ) -> Result<Event, ProtocolConflict> {
     match command {
-        ProtocolCommand::RegisterWorkDemand(_) | ProtocolCommand::AdoptLegacyWorkState(_) => {
+        ProtocolCommand::RegisterWorkDemand(_)
+        | ProtocolCommand::AdoptLegacyWorkState(_)
+        | ProtocolCommand::AdoptActivationWorkState(_) => {
             unreachable!("work demand mutations are reduced directly")
         }
         ProtocolCommand::IssueActivationAuthority(_) => {
@@ -2615,6 +2685,153 @@ fn adopt_legacy_work_state(
         outcome: Outcome {
             decision: Decision::LegacyWorkStateAdopted,
             transitions,
+            diagnostics: Vec::new(),
+            snapshot: next,
+        },
+        conflict: None,
+    }
+}
+
+fn adopt_activation_work_state(
+    snapshot: &Snapshot,
+    command: &AdoptActivationWorkStateCommand,
+) -> ProtocolCommandOutcome {
+    if command.source_activation_id.is_empty()
+        || command.source_message_id.is_empty()
+        || command.source_turn_id.is_empty()
+        || command.source_admitted_generation == 0
+        || command.work_item_id.is_empty()
+        || command.source_work_item_revision == 0
+        || command.wait.wait_id.is_empty()
+        || command.wait.owner_work_item_id != command.work_item_id
+        || command.wait.generation != command.source_work_item_revision
+        || command.wait.source_updated_at.is_empty()
+    {
+        return rejected_command(
+            snapshot,
+            command_conflict(
+                ProtocolConflictKind::InvalidCommand,
+                "activation_work_state_adoption_fields_required",
+            ),
+        );
+    }
+    let Some(activation) = snapshot.activations.get(&command.source_activation_id) else {
+        return rejected_command(
+            snapshot,
+            command_conflict(
+                ProtocolConflictKind::NotFound,
+                "activation_work_state_source_activation_missing",
+            ),
+        );
+    };
+    if command.source_activation_id != format!("activation:message:{}", command.source_message_id)
+        || activation.owner.lifecycle_agent_id().is_none()
+        || activation.admitted_generation != command.source_admitted_generation
+        || activation.state != ActivationState::Settled
+    {
+        return rejected_command(
+            snapshot,
+            command_conflict(
+                ProtocolConflictKind::BindingConflict,
+                "activation_work_state_source_activation_mismatch",
+            ),
+        );
+    }
+    let source_settlement = snapshot.settlements.values().find(|settlement| {
+        settlement.activation_id == command.source_activation_id
+            && settlement.turn_terminal.as_deref() == Some(command.source_turn_id.as_str())
+    });
+    if !source_settlement.is_some_and(|settlement| {
+        settlement.disposition == ActivationDisposition::WorkContinues
+            && settlement.agent_dispatch == AgentDispatchDisposition::Open
+            && settlement.operator_delivery.is_none()
+    }) {
+        return rejected_command(
+            snapshot,
+            command_conflict(
+                ProtocolConflictKind::BindingConflict,
+                "activation_work_state_source_settlement_mismatch",
+            ),
+        );
+    }
+    if snapshot.work.contains_key(&command.work_item_id)
+        || snapshot.waits.contains_key(&command.wait.wait_id)
+    {
+        return rejected_command(
+            snapshot,
+            command_conflict(
+                ProtocolConflictKind::IdentityConflict,
+                "activation_work_state_identity_conflict",
+            ),
+        );
+    }
+    if snapshot.dispatch != AgentDispatchState::Open {
+        return rejected_command(
+            snapshot,
+            command_conflict(
+                ProtocolConflictKind::StateConflict,
+                "activation_work_state_dispatch_not_open",
+            ),
+        );
+    }
+
+    let mut next = snapshot.clone();
+    next.work.insert(
+        command.work_item_id.clone(),
+        WorkDemand {
+            metadata_revision: command.source_work_item_revision,
+            scheduling_generation: command.wait.generation,
+            status: WorkStatus::Waiting {
+                wait_id: command.wait.wait_id.clone(),
+            },
+            capabilities: Default::default(),
+            locks: Default::default(),
+            locality: "runtime".into(),
+            cost_class: "default".into(),
+        },
+    );
+    next.waits.insert(
+        command.wait.wait_id.clone(),
+        WaitRecord {
+            current_generation: command.wait.generation,
+            generations: BTreeMap::from([(
+                command.wait.generation,
+                WaitGenerationRecord {
+                    owner: SchedulerOwner::WorkItem {
+                        work_item_id: command.work_item_id.clone(),
+                    },
+                    state: WaitState::Active,
+                    trigger: None,
+                    consuming_activation_id: None,
+                },
+            )]),
+        },
+    );
+    if command.reserve_dispatch {
+        next.dispatch = AgentDispatchState::Awaiting {
+            wait: WaitIdentity {
+                id: command.wait.wait_id.clone(),
+                generation: command.wait.generation,
+            },
+        };
+        next.dispatch_revision += 1;
+    }
+    if command.focus {
+        next.focus = Some(command.work_item_id.clone());
+    }
+    ProtocolCommandOutcome {
+        outcome: Outcome {
+            decision: Decision::LegacyWorkStateAdopted,
+            transitions: vec![
+                format!(
+                    "work:{}:activation_state_adopted:generation:{}",
+                    command.work_item_id, command.wait.generation
+                ),
+                format!(
+                    "wait:{}:generation:{}:armed",
+                    command.wait.wait_id, command.wait.generation
+                ),
+            ],
             diagnostics: Vec::new(),
             snapshot: next,
         },
@@ -5632,18 +5849,17 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
             );
         }
     } else if !snapshot.settlements.is_empty() && snapshot.dispatch != AgentDispatchState::Open {
-        let lifecycle_wait_is_preserved = match &snapshot.dispatch {
+        let active_wait_is_preserved = match &snapshot.dispatch {
             AgentDispatchState::Awaiting { wait } => snapshot
                 .waits
                 .get(&wait.id)
                 .and_then(|record| record.generations.get(&wait.generation))
                 .is_some_and(|generation| {
-                    matches!(generation.owner, SchedulerOwner::AgentLifecycle { .. })
-                        && matches!(generation.state, WaitState::Active | WaitState::Triggered)
+                    matches!(generation.state, WaitState::Active | WaitState::Triggered)
                 }),
             AgentDispatchState::Open => false,
         };
-        if !lifecycle_wait_is_preserved {
+        if !active_wait_is_preserved {
             return Err(
                 "canonical settlement dispatch disagrees with authoritative lane state".into(),
             );

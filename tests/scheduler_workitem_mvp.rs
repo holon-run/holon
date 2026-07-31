@@ -9,10 +9,10 @@ use model::{
     ActivationCause, ActivationDisposition, ActivationLifecycleState, ActivationOrigin,
     ActivationPriority, ActivationProvenance, ActivationRecord, ActivationSettlement,
     ActivationSlot, ActivationState, ActivationTrust, AdmissionCause, AdmitActivationCommand,
-    AgentActivation, AgentDispatchDisposition, AgentDispatchState, Decision, Event,
-    IssueActivationAuthorityCommand, MissingSettlementRecord, ObservationalDivergenceAllowance,
-    PreemptionPolicy, ProtocolCommand, ProtocolConflictKind, ProtocolMode,
-    RegisterWorkDemandCommand, RollbackAction, RollbackPolicy, RollbackTrigger,
+    AdoptActivationWorkStateCommand, AgentActivation, AgentDispatchDisposition, AgentDispatchState,
+    Decision, Event, IssueActivationAuthorityCommand, LegacyWaitAdoption, MissingSettlementRecord,
+    ObservationalDivergenceAllowance, PreemptionPolicy, ProtocolCommand, ProtocolConflictKind,
+    ProtocolMode, RegisterWorkDemandCommand, RollbackAction, RollbackPolicy, RollbackTrigger,
     RolloutClassEvidence, RolloutManifest, RolloutPreflightState, RolloutState, ScenarioMode,
     SchedulerOwner, SettleActivationCommand, Settlement, Snapshot, WaitGenerationRecord,
     WaitIdentity, WaitRecord, WaitState, WaitTrigger, WorkDemand, WorkStatus,
@@ -2506,6 +2506,91 @@ fn typed_settlement_has_one_canonical_identity_and_idempotent_replay() {
         conflicting.outcome.diagnostics,
         ["activation_terminal_settlement_already_recorded"]
     );
+}
+
+#[test]
+fn lifecycle_settlement_can_atomically_adopt_work_item_wait() {
+    let mut snapshot = minimal_snapshot(1);
+    snapshot.focus = None;
+    snapshot.work.clear();
+    let activation_id = "activation:message:msg-1";
+    let admission = AdmitActivationCommand {
+        authority_id: "authority-lifecycle".into(),
+        activation: AgentActivation {
+            id: activation_id.into(),
+            agent_id: "agent-1".into(),
+            state: ActivationLifecycleState::Admitted,
+            cause: ActivationCause::LifecycleExternalNudge {
+                message_id: "msg-1".into(),
+            },
+            binding: ActivationBinding::Lifecycle {
+                agent_id: "agent-1".into(),
+            },
+            priority: ActivationPriority::Normal,
+            preemption: PreemptionPolicy::NonPreemptive,
+            source_revision: None,
+            idempotency_key: "lifecycle-msg-1".into(),
+            provenance: ActivationProvenance {
+                origin: ActivationOrigin::System,
+                trust: ActivationTrust::RuntimeInstruction,
+                source_id: "scheduler".into(),
+                correlation_id: None,
+                causation_id: None,
+            },
+        },
+        expected_scheduling_generation: 1,
+        expected_dispatch_revision: 0,
+    };
+    authorize_admission(&mut snapshot, &admission);
+    let admitted = reduce_command(&snapshot, &ProtocolCommand::AdmitActivation(admission));
+    let settled = reduce_command(
+        &admitted.outcome.snapshot,
+        &ProtocolCommand::SettleActivation(SettleActivationCommand {
+            settlement: ActivationSettlement {
+                id: "settlement:message:msg-1".into(),
+                activation_id: activation_id.into(),
+                turn_terminal: Some("turn-1".into()),
+                disposition: ActivationDisposition::WorkContinues,
+                agent_dispatch: AgentDispatchDisposition::Open,
+                operator_delivery: None,
+                evidence: vec!["message:msg-1".into()],
+                created_at: "2026-07-30T00:00:00Z".into(),
+            },
+        }),
+    );
+    let command = ProtocolCommand::AdoptActivationWorkState(AdoptActivationWorkStateCommand {
+        source_activation_id: activation_id.into(),
+        source_message_id: "msg-1".into(),
+        source_turn_id: "turn-1".into(),
+        source_admitted_generation: 1,
+        work_item_id: "work-1".into(),
+        source_work_item_revision: 2,
+        wait: LegacyWaitAdoption {
+            wait_id: "wait-1".into(),
+            generation: 2,
+            owner_work_item_id: "work-1".into(),
+            source_updated_at: "2026-07-30T00:00:01Z".into(),
+        },
+        focus: true,
+        reserve_dispatch: true,
+    });
+
+    let adopted = reduce_command(&settled.outcome.snapshot, &command);
+    assert_eq!(adopted.outcome.decision, Decision::LegacyWorkStateAdopted);
+    assert_eq!(adopted.outcome.snapshot.focus.as_deref(), Some("work-1"));
+    assert_eq!(
+        adopted.outcome.snapshot.dispatch,
+        AgentDispatchState::Awaiting {
+            wait: WaitIdentity {
+                id: "wait-1".into(),
+                generation: 2,
+            },
+        }
+    );
+    assert_invariants(&adopted.outcome.snapshot).unwrap();
+
+    let replay = reduce_command(&adopted.outcome.snapshot, &command);
+    assert_eq!(replay.outcome.decision, Decision::DuplicateIgnored);
 }
 
 #[test]

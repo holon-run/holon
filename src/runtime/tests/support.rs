@@ -96,6 +96,39 @@ pub(crate) fn continuation_ready_context_config(
     }
 }
 
+pub(crate) async fn finish_claimed_test_run(runtime: &RuntimeHandle) {
+    let mut guard = runtime.inner.agent.lock().await;
+    scheduler::apply_idle_projection(&mut guard.state, &runtime.inner.storage).unwrap();
+    guard.current_run_abort = None;
+    guard.persist_state(&runtime.inner.storage).unwrap();
+}
+
+pub(crate) fn terminal_transition(
+    message: &MessageEnvelope,
+    work_item_id: Option<&str>,
+) -> super::super::turn::TurnTerminalTransition {
+    let turn_id = message.turn_id.clone().expect("test message turn id");
+    let terminal = TurnTerminalRecord {
+        turn_id: turn_id.clone(),
+        turn_index: 1,
+        kind: TurnTerminalKind::Completed,
+        reason: None,
+        last_assistant_message: Some("terminal transition committed".into()),
+        checkpoint: None,
+        completed_at: Utc::now(),
+        duration_ms: 1,
+    };
+    let mut turn_record = TurnRecord::new(&message.agent_id, turn_id, 1);
+    turn_record.current_work_item_id = work_item_id.map(ToString::to_string);
+    turn_record.trigger = Some(crate::types::TurnTriggerSummary::from_message(message));
+    turn_record.input_message_ids = vec![message.id.clone()];
+    turn_record.terminal = Some(crate::types::TurnTerminalSummary::from_terminal(&terminal));
+    super::super::turn::TurnTerminalTransition {
+        terminal,
+        turn_record,
+    }
+}
+
 pub(crate) async fn wait_for_audit_events(
     runtime: &RuntimeHandle,
     limit: usize,

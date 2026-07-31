@@ -51,8 +51,7 @@ CI only validates its manifest and Python runner. Each release candidate runs
 the core cases plus all scheduler-tagged rollout cases through the protected
 `Release E2E` workflow.
 
-The scheduler rollout cases use hidden offline fixtures guarded by both
-`HOLON_SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS=true` and
+The scheduler rollout cases use hidden offline fixtures guarded by
 `HOLON_SCHEDULER_ACCEPTANCE_FIXTURES=true`. Their manifest is explicitly
 synthetic acceptance data: it exercises the production reducer, revision
 fences, atomic batch application, rejection of insufficient evidence, cutover,
@@ -178,12 +177,11 @@ counts, cleanup status, and previous image when supplied.
 
 The protected release run also selects every case tagged `scheduler`:
 
-1. `scheduler-autonomous-legacy` preserves the legacy comparison baseline.
-2. `scheduler-rollout-authoritative-autonomous` validates shadow evidence,
+1. `scheduler-rollout-authoritative-autonomous` validates shadow evidence,
    per-scenario authoritative cutover, task-result and external-wait
    continuations, exact completion delivery binding, restart persistence, and
    rollback.
-3. `scheduler-terminal-before-settlement-restart` uses a checked-in offline
+2. `scheduler-terminal-before-settlement-restart` uses a checked-in offline
    fault fixture to validate bootstrap reconciliation and second-restart
    idempotence without issuing a model prompt.
 

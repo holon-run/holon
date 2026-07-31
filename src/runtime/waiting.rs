@@ -101,8 +101,17 @@ impl RuntimeHandle {
         } else {
             None
         };
+        let external_trigger_id = if wake == WaitForWakeKind::External {
+            self.inner
+                .runtime_db
+                .external_triggers()
+                .active_default_for_agent(&agent_id)?
+                .map(|trigger| trigger.external_trigger_id)
+        } else {
+            None
+        };
         let (kind, subject_ref, wake_sources) =
-            wait_condition_parts(wake, resource.clone(), timer_wake_at)?;
+            wait_condition_parts(wake, resource.clone(), timer_wake_at, external_trigger_id)?;
         let recheck_at = recheck_after_ms.map(|delay| recheck_at_from(now, delay));
         let mut state = self.agent_state().await?;
         let expected_state = state.clone();
@@ -755,6 +764,60 @@ impl RuntimeHandle {
         Ok((work_item_ids.len() == 1).then(|| work_item_ids.remove(0)))
     }
 
+    pub(super) async fn exact_external_wait_correlation(
+        &self,
+        external_trigger_id: Option<&str>,
+    ) -> Result<Option<(String, u64)>> {
+        let Some(external_trigger_id) = external_trigger_id else {
+            return Ok(None);
+        };
+        let agent_id = self.agent_id().await?;
+        let Some(snapshot) = self
+            .inner
+            .runtime_db
+            .transitions()
+            .load_scheduler_protocol_snapshot_if_initialized(&agent_id)?
+        else {
+            return Ok(None);
+        };
+        let correlations = self
+            .inner
+            .storage
+            .active_wait_conditions_for_agent(&agent_id)?
+            .into_iter()
+            .filter(|condition| {
+                condition.wake_sources.iter().any(|source| {
+                    matches!(
+                        source,
+                        WakeSource::ExternalIngress {
+                            external_trigger_id: Some(id),
+                        } if id == external_trigger_id
+                    )
+                })
+            })
+            .filter_map(|condition| {
+                let canonical_wait = snapshot.waits.get(&condition.id)?;
+                let generation = canonical_wait
+                    .generations
+                    .get(&canonical_wait.current_generation)?;
+                let owner_matches = match condition.work_item_id.as_deref() {
+                    Some(work_item_id) => generation.owner.work_item_id() == Some(work_item_id),
+                    None => generation.owner.lifecycle_agent_id() == Some(agent_id.as_str()),
+                };
+                (owner_matches
+                    && matches!(
+                        generation.state,
+                        crate::domain::scheduler_protocol::WaitState::Active
+                    ))
+                .then(|| (condition.id, canonical_wait.current_generation))
+            })
+            .collect::<Vec<_>>();
+        let [correlation] = correlations.as_slice() else {
+            return Ok(None);
+        };
+        Ok(Some(correlation.clone()))
+    }
+
     async fn wait_condition_work_item_id_for_timer(
         &self,
         timer_id: &str,
@@ -822,6 +885,9 @@ impl RuntimeHandle {
         if active_conditions.is_empty() {
             return Ok(());
         }
+        let active_conditions = self
+            .reconciliation_conditions_for_message(&agent_id, message, active_conditions)
+            .await?;
 
         let signals = reconciliation_signals_for_message(message, &active_conditions);
         for signal in &signals {
@@ -850,6 +916,124 @@ impl RuntimeHandle {
             .await?;
 
         Ok(())
+    }
+
+    async fn reconciliation_conditions_for_message(
+        &self,
+        agent_id: &str,
+        message: &MessageEnvelope,
+        active_conditions: Vec<WaitConditionRecord>,
+    ) -> Result<Vec<WaitConditionRecord>> {
+        let operator_input = matches!(
+            (&message.kind, &message.origin),
+            (MessageKind::OperatorPrompt, MessageOrigin::Operator { .. })
+        );
+        let callback_event = matches!(message.kind, MessageKind::CallbackEvent);
+        let external_wake_hint = matches!(message.kind, MessageKind::SystemTick)
+            && message
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("wake_hint"))
+                .and_then(|wake_hint| wake_hint.get("external_trigger_id"))
+                .is_some();
+        if !operator_input && !callback_event && !external_wake_hint {
+            return Ok(active_conditions);
+        }
+
+        let exact_condition = self
+            .canonical_consumed_wait_condition(agent_id, message, &active_conditions)
+            .await?;
+        if operator_input || callback_event {
+            return Ok(exact_condition.into_iter().collect());
+        }
+
+        let mut conditions = active_conditions
+            .into_iter()
+            .filter(|condition| {
+                !condition
+                    .wake_sources
+                    .iter()
+                    .any(|source| matches!(source, WakeSource::ExternalIngress { .. }))
+            })
+            .collect::<Vec<_>>();
+        conditions.extend(exact_condition);
+        Ok(conditions)
+    }
+
+    async fn canonical_consumed_wait_condition(
+        &self,
+        agent_id: &str,
+        message: &MessageEnvelope,
+        active_conditions: &[WaitConditionRecord],
+    ) -> Result<Option<WaitConditionRecord>> {
+        use crate::domain::scheduler_protocol::{ActivationCause, WaitState};
+
+        let Some(snapshot) = self
+            .inner
+            .runtime_db
+            .transitions()
+            .load_scheduler_protocol_snapshot_if_initialized(agent_id)?
+        else {
+            return Ok(None);
+        };
+        let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+        let Some(admission) = snapshot.activation_admissions.get(&activation_id) else {
+            return Ok(None);
+        };
+        let (wait_id, wait_generation, external_resume) = match &admission.activation.cause {
+            ActivationCause::OperatorInput {
+                message_id,
+                resume: Some(resume),
+            } if message_id == &message.id => (&resume.wait_id, resume.wait_generation, false),
+            ActivationCause::WaitResume {
+                wait_id,
+                wait_generation,
+                ..
+            } => (wait_id, *wait_generation, true),
+            _ => return Ok(None),
+        };
+        if external_resume {
+            let correlated_wait_id = message.source_refs.get("wait_id");
+            let correlated_generation = message
+                .source_refs
+                .get("wait_generation")
+                .and_then(|generation| generation.parse::<u64>().ok());
+            if correlated_wait_id != Some(wait_id) || correlated_generation != Some(wait_generation)
+            {
+                return Ok(None);
+            }
+        }
+
+        let Some(condition) = active_conditions
+            .iter()
+            .find(|condition| condition.id == *wait_id)
+        else {
+            return Ok(None);
+        };
+        let Some(wait) = snapshot
+            .waits
+            .get(wait_id)
+            .filter(|wait| wait.current_generation == wait_generation)
+        else {
+            return Ok(None);
+        };
+        let Some(generation) = wait.generations.get(&wait_generation) else {
+            return Ok(None);
+        };
+        let owner_matches = match condition.work_item_id.as_deref() {
+            Some(work_item_id) => {
+                generation.owner.work_item_id() == Some(work_item_id)
+                    && message.work_item_id.as_deref() == Some(work_item_id)
+            }
+            None => {
+                generation.owner.lifecycle_agent_id() == Some(agent_id)
+                    && message.work_item_id.is_none()
+            }
+        };
+        Ok((owner_matches
+            && generation.state == WaitState::Consumed
+            && generation.consuming_activation_id.as_deref() == Some(activation_id.as_str()))
+        .then(|| condition.clone()))
     }
 
     async fn resolve_reconciled_wait_conditions(
@@ -995,6 +1179,7 @@ fn wait_condition_parts(
     wake: WaitForWakeKind,
     resource: Option<String>,
     timer_wake_at: Option<DateTime<Utc>>,
+    external_trigger_id: Option<String>,
 ) -> Result<(WaitConditionKind, Option<String>, Vec<WakeSource>)> {
     match wake {
         WaitForWakeKind::OperatorInput => Ok((
@@ -1014,7 +1199,7 @@ fn wait_condition_parts(
             WaitConditionKind::External,
             optional_wait_resource(resource),
             vec![WakeSource::ExternalIngress {
-                external_trigger_id: None,
+                external_trigger_id,
             }],
         )),
         WaitForWakeKind::Timer => {
@@ -1057,6 +1242,7 @@ mod wait_condition_parts_tests {
             WaitForWakeKind::Timer,
             Some("timer-1".into()),
             Some(wake_at),
+            None,
         )
         .unwrap();
 
@@ -1068,7 +1254,7 @@ mod wait_condition_parts_tests {
     #[test]
     fn system_wait_uses_system_tick_source() {
         let (kind, subject_ref, wake_sources) =
-            wait_condition_parts(WaitForWakeKind::System, None, None).unwrap();
+            wait_condition_parts(WaitForWakeKind::System, None, None, None).unwrap();
 
         assert_eq!(kind, WaitConditionKind::System);
         assert_eq!(subject_ref, None);
@@ -1118,16 +1304,19 @@ fn matching_wake_source(
             .then(|| ("task_result".to_string(), Some(task_id.clone()))),
         (MessageKind::CallbackEvent, _) => {
             let external_trigger_id = message.source_refs.get("external_trigger_id");
+            let correlated_wait_id = message.source_refs.get("wait_id");
+            let has_correlated_generation = message.source_refs.contains_key("wait_generation");
             condition
                 .wake_sources
                 .iter()
                 .any(|source| match source {
                     WakeSource::ExternalIngress {
                         external_trigger_id: Some(id),
-                    } => external_trigger_id == Some(id),
-                    WakeSource::ExternalIngress {
-                        external_trigger_id: None,
-                    } => true,
+                    } => {
+                        external_trigger_id == Some(id)
+                            && correlated_wait_id == Some(&condition.id)
+                            && has_correlated_generation
+                    }
                     _ => false,
                 })
                 .then(|| ("external_ingress".to_string(), external_trigger_id.cloned()))
@@ -1141,11 +1330,18 @@ fn matching_wake_source(
                 .iter()
                 .any(|source| matches!(source, WakeSource::Timer { .. })))
         .then(|| ("timer".to_string(), Some(timer_id.clone()))),
-        (MessageKind::OperatorPrompt, MessageOrigin::Operator { actor_id }) => condition
-            .wake_sources
-            .iter()
-            .any(|source| matches!(source, WakeSource::OperatorInput))
-            .then(|| ("operator_input".to_string(), actor_id.clone())),
+        (MessageKind::OperatorPrompt, MessageOrigin::Operator { actor_id }) => {
+            let owner_matches = match message.work_item_id.as_deref() {
+                Some(work_item_id) => condition.work_item_id.as_deref() == Some(work_item_id),
+                None => condition.work_item_id.is_none(),
+            };
+            (owner_matches
+                && condition
+                    .wake_sources
+                    .iter()
+                    .any(|source| matches!(source, WakeSource::OperatorInput)))
+            .then(|| ("operator_input".to_string(), actor_id.clone()))
+        }
         (MessageKind::SystemTick, MessageOrigin::System { subsystem }) => {
             if let Some(external) = matching_wake_hint_external_source(message, condition) {
                 return Some(external);
@@ -1168,13 +1364,16 @@ fn matching_wake_hint_external_source(
     let external_trigger_id = wake_hint
         .get("external_trigger_id")
         .and_then(serde_json::Value::as_str);
+    let correlated_wait_id = message.source_refs.get("wait_id");
+    let has_correlated_generation = message.source_refs.contains_key("wait_generation");
     let matches_external = condition.wake_sources.iter().any(|source| match source {
         WakeSource::ExternalIngress {
             external_trigger_id: Some(id),
-        } => Some(id.as_str()) == external_trigger_id,
-        WakeSource::ExternalIngress {
-            external_trigger_id: None,
-        } => true,
+        } => {
+            Some(id.as_str()) == external_trigger_id
+                && correlated_wait_id == Some(&condition.id)
+                && has_correlated_generation
+        }
         _ => false,
     });
     matches_external.then(|| {

@@ -560,7 +560,6 @@ class DockerE2ERunnerTests(unittest.TestCase):
         self.assertEqual(
             [case["id"] for case in selected],
             [
-                "scheduler-autonomous-legacy",
                 "scheduler-rollout-authoritative-autonomous",
                 "scheduler-terminal-before-settlement-restart",
                 "scheduler-provider-failure-work-queue-retry",
@@ -575,29 +574,16 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 "scheduler-checkpoint-replay",
             ],
         )
-        rollout_cases = selected[:3]
-        self.assertEqual(
-            [
-                case["runtime_env"][
-                    "HOLON_SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS"
-                ]
-                for case in rollout_cases
-            ],
-            ["false", "true", "true"],
-        )
-        self.assertNotIn(
-            "HOLON_SCHEDULER_ACCEPTANCE_FIXTURES",
-            rollout_cases[0]["runtime_env"],
-        )
+        rollout_cases = selected[:2]
         self.assertEqual(
             [
                 case["runtime_env"]["HOLON_SCHEDULER_ACCEPTANCE_FIXTURES"]
-                for case in rollout_cases[1:]
+                for case in rollout_cases
             ],
             ["true", "true"],
         )
-        authoritative = rollout_cases[1]
-        recovery = rollout_cases[2]
+        authoritative = rollout_cases[0]
+        recovery = rollout_cases[1]
         self.assertEqual(len(authoritative["phases"]), 2)
         self.assertIn(
             "WaitFor", authoritative["phases"][0]["required_tools"]
@@ -623,18 +609,9 @@ class DockerE2ERunnerTests(unittest.TestCase):
             ],
         )
         for case in selected:
-            self.assertTrue(
-                case.get("scheduler_protocol_commands_enabled"),
-                f"{case['id']} must enable scheduler protocol commands",
-            )
-            self.assertEqual(
-                case["runtime_env"]["HOLON_SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS"],
-                "true",
-                f"{case['id']} must set production commands to true",
-            )
             self.assertNotIn(
                 "HOLON_SCHEDULER_ACCEPTANCE_FIXTURES",
-                case["runtime_env"],
+                case.get("runtime_env", {}),
                 f"{case['id']} should not use acceptance fixtures",
             )
             self.assertEqual(len(case["phases"]), 1)
@@ -655,18 +632,9 @@ class DockerE2ERunnerTests(unittest.TestCase):
             ],
         )
         for case in selected:
-            self.assertTrue(
-                case.get("scheduler_protocol_commands_enabled"),
-                f"{case['id']} must enable scheduler protocol commands",
-            )
-            self.assertEqual(
-                case["runtime_env"]["HOLON_SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS"],
-                "true",
-                f"{case['id']} must set production commands to true",
-            )
             self.assertNotIn(
                 "HOLON_SCHEDULER_ACCEPTANCE_FIXTURES",
-                case["runtime_env"],
+                case.get("runtime_env", {}),
                 f"{case['id']} should not use acceptance fixtures",
             )
             self.assertEqual(len(case["phases"]), 1)

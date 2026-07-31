@@ -656,6 +656,15 @@ impl RuntimeHandle {
         message.work_item_id = work_item_id;
         message.correlation_id = correlation_id;
         message.causation_id = causation_id;
+        if let Some((wait_id, wait_generation)) = self
+            .exact_external_wait_correlation(pending.external_trigger_id.as_deref())
+            .await?
+        {
+            message.source_refs.insert("wait_id".into(), wait_id);
+            message
+                .source_refs
+                .insert("wait_generation".into(), wait_generation.to_string());
+        }
         self.inner.storage.append_event(&AuditEvent::legacy(
             "system_tick_emitted",
             serde_json::json!({
@@ -1075,8 +1084,11 @@ mod tests {
             )
             .unwrap();
         connection
+            .execute("DELETE FROM scheduler_scenario_authorities", [])
+            .unwrap();
+        connection
             .execute(
-                "INSERT INTO scheduler_scenario_authorities (
+                "INSERT OR REPLACE INTO scheduler_scenario_authorities (
                    scenario_class, mode, rollback_target,
                    manifest_revision, preflight_revision, updated_at
                  ) VALUES (?1, 'shadow', 'off', NULL, NULL, CURRENT_TIMESTAMP)",

@@ -297,14 +297,16 @@ Mapping:
 | `wake` | `WaitCondition.kind` | `subject_ref` | `wake_sources` |
 |--------|----------------------|---------------|----------------|
 | `task_result` | `Task` | `resource` | `TaskResult { task_id: resource }` |
-| `external` | `External` | `resource` when present | `ExternalIngress { external_trigger_id: None }` |
+| `external` | `External` | `resource` when present | `ExternalIngress { external_trigger_id: Some(default ingress id) }` |
 | `operator_input` | `Operator` | `resource` when present | `OperatorInput` |
 
-Terminal task results and operator input may exactly resume a matching wait
-when the runtime can prove its identity. Generic external wakeups use a
-lifecycle nudge and do not automatically resolve the wait or mutate a
-WorkItem, because the agent must inspect the new evidence. `resource` is
-intent/context, not proof that a wake matches that object.
+Terminal task results, operator input, and callbacks delivered through the
+default ingress bound when `WaitFor(external)` is registered may exactly resume
+a matching wait when the runtime can prove its identity. Legacy wildcard
+external waits and otherwise uncorrelated external wakeups use a lifecycle
+nudge and do not automatically resolve the wait or mutate a WorkItem, because
+the agent must inspect the new evidence. `resource` is intent/context, not
+proof that a wake matches that object.
 
 `CompleteWorkItem` cancels active WorkItem-scoped waits.
 

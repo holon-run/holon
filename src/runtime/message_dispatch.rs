@@ -141,6 +141,15 @@ impl RuntimeHandle {
                 .await?;
         }
 
+        // Resolve wait conditions triggered by this message BEFORE the model
+        // processes it.  If the message is an external trigger or operator
+        // prompt that matches an active wait, the wait must transition to
+        // Resolved and the WorkItem blocker cleared before the model starts
+        // working.  Otherwise the model may complete the WorkItem first,
+        // causing the wait to be Cancelled (work_item_completed) instead of
+        // Resolved.
+        self.record_wait_reconciliation_signals(&message).await?;
+
         match message.kind {
             MessageKind::OperatorPrompt
             | MessageKind::WebhookEvent

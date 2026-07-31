@@ -1620,6 +1620,89 @@ def require_scheduler_activation_chain(
     return activations
 
 
+def require_lifecycle_wait_adoption(
+    snapshot: dict[str, Any],
+    *,
+    agent_id: str,
+    work_item_id: str,
+    wait: dict[str, Any],
+) -> None:
+    source_turn_id = wait.get("last_turn_id")
+    require(
+        isinstance(source_turn_id, str) and source_turn_id,
+        f"adopted wait omitted its source turn: {wait}",
+    )
+    source_turns = [
+        row
+        for row in snapshot["turn_records"]
+        if row["agent_id"] == agent_id and row["turn_id"] == source_turn_id
+    ]
+    require(
+        len(source_turns) == 1,
+        f"adopted wait source turn is missing or duplicated: {source_turns}",
+    )
+    source_message_id = source_turns[0]["trigger_message_id"]
+    activation_id = f"activation:message:{source_message_id}"
+    activations = [
+        row
+        for row in snapshot["scheduler_activations"]
+        if row["agent_id"] == agent_id and row["activation_id"] == activation_id
+    ]
+    require(
+        len(activations) == 1
+        and activations[0]["work_item_id"] is None
+        and activations[0]["lifecycle_state"] == "settled"
+        and activations[0]["admitted_generation"] > 0,
+        f"lifecycle adoption source activation is invalid: {activations}",
+    )
+    settlements = [
+        row
+        for row in snapshot["scheduler_activation_settlements"]
+        if row["agent_id"] == agent_id and row["activation_id"] == activation_id
+    ]
+    settlement = json.loads(settlements[0]["payload_json"]) if len(settlements) == 1 else {}
+    require(
+        len(settlements) == 1
+        and settlement.get("turn_terminal") == source_turn_id
+        and settlement.get("disposition") == {"kind": "work_continues"}
+        and settlement.get("agent_dispatch") == {"kind": "open"}
+        and settlement.get("operator_delivery") is None,
+        f"lifecycle adoption source did not settle WorkContinues: {settlements}",
+    )
+    adoption_rows = [
+        row
+        for row in snapshot["scheduler_protocol_command_results"]
+        if row["agent_id"] == agent_id
+        and row["command_kind"] == "adopt_activation_work_state"
+        and row["command_identity"] == f"{activation_id}:{work_item_id}"
+    ]
+    require(
+        len(adoption_rows) == 1
+        and adoption_rows[0]["decision"] == "legacy_work_state_adopted"
+        and adoption_rows[0]["conflict_kind"] is None
+        and adoption_rows[0]["conflict_code"] is None,
+        f"lifecycle wait adoption command is missing or conflicted: {adoption_rows}",
+    )
+    post_state = json.loads(adoption_rows[0]["post_state_fence_json"])
+    adopted_work = post_state.get("work", {}).get(work_item_id, {})
+    adopted_generation = adopted_work.get("scheduling_generation")
+    references = json.loads(adoption_rows[0]["result_references_json"])
+    require(
+        isinstance(adopted_generation, int)
+        and adopted_generation > 0
+        and adopted_work.get("metadata_revision") == adopted_generation
+        and adopted_work.get("status")
+        == {"kind": "waiting", "wait_id": wait["wait_condition_id"]}
+        and set(references)
+        == {
+            f"activation:{activation_id}",
+            f"work:{work_item_id}",
+            f"wait:{wait['wait_condition_id']}:generation:{adopted_generation}",
+        },
+        f"lifecycle adoption did not preserve wait ownership/generation: {adoption_rows}",
+    )
+
+
 def require_scheduler_comparisons(
     snapshot: dict[str, Any],
     expected: dict[str, int],
@@ -2106,11 +2189,6 @@ def run_scheduler_protocol_case(harness: CaseHarness, case: dict[str, Any]) -> N
     # dequeued are intentionally overwritten by the terminal processed row.
     require_processed_queue_entries(snapshot["queue_entries"], message_ids)
 
-    enabled = case.get("scheduler_protocol_commands_enabled")
-    require(
-        enabled in {True, False},
-        "scheduler case must declare scheduler_protocol_commands_enabled",
-    )
     demands = [
         row
         for row in snapshot["scheduler_work_demands"]
@@ -2135,13 +2213,6 @@ def run_scheduler_protocol_case(harness: CaseHarness, case: dict[str, Any]) -> N
             message_id in row["command_identity"] for message_id in message_ids
         )
     ]
-
-    if not enabled:
-        require(not demands, f"legacy mode wrote canonical demand facts: {demands}")
-        require(not activations, f"legacy mode wrote canonical activations: {activations}")
-        require(not settlements, f"legacy mode wrote canonical settlements: {settlements}")
-        require(not command_rows, f"legacy mode wrote protocol commands: {command_rows}")
-        return
 
     require(
         len(demands) == 1 and demands[0]["status"] == "terminal",
@@ -2757,22 +2828,25 @@ def run_scheduler_multi_workitem_case(
     completion_a = f"SCHEDULER-MULTI-COMPLETE-A-{marker}"
     completion_b = f"SCHEDULER-MULTI-COMPLETE-B-{marker}"
     objective_a = (
-        f"{objective_a_marker}. Complete this WorkItem only after the Runtime "
-        "resumes it through an autonomous work_queue SystemTick. On that "
-        "autonomous turn, inspect the exact current item with ListWorkItems "
-        "using filter current and optionally GetWorkItem, update both existing "
-        f"todos to completed, then emit a concise completion result containing "
-        f"{completion_a} immediately followed by CompleteWorkItem for that "
-        "exact item. Do not wait for more operator input."
+        f"{objective_a_marker}. Inspect the current agent identity by calling "
+        "AgentGet, then call ListWorkItems with filter current to confirm "
+        "this WorkItem is the active focus. Complete this WorkItem only after "
+        "the Runtime resumes it through an autonomous work_queue SystemTick. "
+        "On that autonomous turn, perform the inspection steps, update both "
+        f"existing todos to completed, then emit a concise completion result "
+        f"containing {completion_a} immediately followed by CompleteWorkItem "
+        "for that exact item. Do not wait for more operator input."
     )
     objective_b = (
-        f"{objective_b_marker}. Complete this WorkItem only after the Runtime "
-        "resumes it through an autonomous work_queue SystemTick. On that "
-        "autonomous turn, inspect the exact current item with ListWorkItems "
-        "using filter current and optionally GetWorkItem, update both existing "
-        f"todos to completed, then emit a concise completion result containing "
-        f"{completion_b} immediately followed by CompleteWorkItem for that "
-        "exact item. Do not wait for more operator input."
+        f"{objective_b_marker}. Review the agent workspace by calling "
+        "GetWorkspaceState to inspect the current projection, then call "
+        "ListWorkItems to verify the work item queue. Complete this WorkItem "
+        "only after the Runtime resumes it through an autonomous work_queue "
+        "SystemTick. On that autonomous turn, perform the review steps, "
+        f"update both existing todos to completed, then emit a concise "
+        f"completion result containing {completion_b} immediately followed "
+        "by CompleteWorkItem for that exact item. Do not wait for more "
+        "operator input."
     )
     phase = case["phases"][0]
     baseline, _ = harness.prompt(
@@ -2913,7 +2987,7 @@ def run_scheduler_external_wait_resume_case(
         snapshot,
         agent_id=harness.agent_id,
         work_item_id=work_item_id,
-        expected_activation_count=2,
+        expected_activation_count=1,
     )
     waits = [
         row
@@ -2926,10 +3000,16 @@ def run_scheduler_external_wait_resume_case(
         and waits[0]["status"] == "resolved",
         f"external wait condition did not resolve: {waits}",
     )
+    require_lifecycle_wait_adoption(
+        snapshot,
+        agent_id=harness.agent_id,
+        work_item_id=work_item_id,
+        wait=waits[0],
+    )
     canonical_waits = [
         row
         for row in snapshot["scheduler_wait_generations"]
-        if row["owner_work_item_id"] == work_item_id
+        if row["wait_id"] in {w["wait_condition_id"] for w in waits}
     ]
     require(
         len(canonical_waits) == 1
@@ -2973,6 +3053,7 @@ def run_scheduler_operator_wait_resume_case(
         "scheduler-operator-resume",
         f"The operator is resuming WorkItem {marker}. Proceed with the "
         "completion steps described in the objective.",
+        work_item_id=waiting["id"],
     )
     item = harness.wait_work_item(
         objective_marker=objective_marker,
@@ -3000,7 +3081,7 @@ def run_scheduler_operator_wait_resume_case(
         snapshot,
         agent_id=harness.agent_id,
         work_item_id=work_item_id,
-        expected_activation_count=2,
+        expected_activation_count=1,
     )
     waits = [
         row
@@ -3013,10 +3094,16 @@ def run_scheduler_operator_wait_resume_case(
         and waits[0]["status"] == "resolved",
         f"operator wait condition did not resolve: {waits}",
     )
+    require_lifecycle_wait_adoption(
+        snapshot,
+        agent_id=harness.agent_id,
+        work_item_id=work_item_id,
+        wait=waits[0],
+    )
     canonical_waits = [
         row
         for row in snapshot["scheduler_wait_generations"]
-        if row["owner_work_item_id"] == work_item_id
+        if row["wait_id"] in {w["wait_condition_id"] for w in waits}
     ]
     require(
         len(canonical_waits) == 1
@@ -3754,7 +3841,6 @@ CASE_RUNNERS = {
     "memory-agent-home-persistence": run_memory_case,
     "workspace-restart-lifecycle": run_workspace_case,
     "workitem-wait-restart-complete": run_workitem_case,
-    "scheduler-autonomous-legacy": run_scheduler_protocol_case,
     "scheduler-autonomous-authoritative": run_scheduler_protocol_case,
     "scheduler-rollout-authoritative-autonomous": (
         run_scheduler_rollout_authoritative_case
@@ -3817,11 +3903,6 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             ),
             f"{case_id} runtime_env must contain HOLON_ string entries",
         )
-        if "scheduler_protocol_commands_enabled" in case:
-            require(
-                isinstance(case["scheduler_protocol_commands_enabled"], bool),
-                f"{case_id} scheduler_protocol_commands_enabled must be boolean",
-            )
         phases = case.get("phases")
         require(isinstance(phases, list) and phases, f"{case_id} needs phases")
         phase_ids: set[str] = set()

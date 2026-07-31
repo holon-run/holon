@@ -1,5 +1,6 @@
 use super::super::*;
 use super::support::*;
+use crate::domain::scheduler_protocol::WaitState;
 use crate::types::{
     CompletionReportState, WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WakeSource,
     WorkItemContinuationState, WorkItemPlanStatus, WorkItemReadiness, WorkItemSchedulingState,
@@ -3900,55 +3901,138 @@ async fn external_wake_records_wait_reconciliation_and_resolves_wait() {
         context_config(),
     )
     .unwrap();
-    let now = Utc::now();
     let work = runtime
         .create_work_item("wait for CI".into(), None, None, Vec::new())
         .await
         .unwrap();
     runtime.pick_work_item(work.id.clone()).await.unwrap();
-    let wait_condition_id = "wait-ci".to_string();
-    let trigger_id = "trigger-ci".to_string();
-    runtime
-        .storage()
-        .append_wait_condition(&WaitConditionRecord {
-            id: wait_condition_id.clone(),
-            agent_id: "default".into(),
-            work_item_id: Some(work.id.clone()),
-            status: WaitConditionStatus::Active,
-            kind: WaitConditionKind::External,
-            source: Some("github".into()),
-            subject_ref: Some("holon-run/holon#1292".into()),
-            waiting_for: "checks complete".into(),
-            wake_sources: vec![WakeSource::ExternalIngress {
-                external_trigger_id: Some(trigger_id.clone()),
-            }],
-            continuation: None,
-            created_at: now,
-            updated_at: now,
-            expires_at: None,
-            resolved_at: None,
-            cancelled_at: None,
-            turn_id: None,
-        })
+    let trigger_id = runtime
+        .create_external_trigger(
+            "wait for CI".into(),
+            "github".into(),
+            ExternalTriggerScope::Agent,
+            CallbackDeliveryMode::WakeHint,
+            Some("CI run completed".into()),
+            Some("holon-run/holon#1292".into()),
+        )
+        .await
+        .unwrap()
+        .external_trigger_id;
+
+    let mut wait_message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "wait for CI".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+    wait_message.work_item_id = Some(work.id.clone());
+    wait_message.turn_id = Some("turn-wait-for-ci".into());
+    let wait_message = runtime.enqueue(wait_message).await.unwrap();
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Message(_)
+    ));
+    let wait = runtime
+        .register_wait_for(
+            "default",
+            Some(work.id.clone()),
+            WaitForWakeKind::External,
+            Some("holon-run/holon#1292".into()),
+            "checks complete".into(),
+            None,
+        )
+        .await
         .unwrap();
+    let wait_condition_id = wait.condition.id.clone();
+    assert_eq!(
+        wait.condition.wake_sources,
+        vec![WakeSource::ExternalIngress {
+            external_trigger_id: Some(trigger_id.clone()),
+        }],
+        "external wait should bind the active default ingress"
+    );
+    finish_claimed_test_run(&runtime).await;
+    let terminal = terminal_transition(&wait_message, Some(&work.id));
     runtime
+        .commit_queue_terminal_settlement(
+            QueueEntryRecord {
+                message_id: wait_message.id.clone(),
+                agent_id: wait_message.agent_id.clone(),
+                priority: wait_message.priority,
+                status: QueueEntryStatus::Processed,
+                created_at: wait_message.created_at,
+                updated_at: Utc::now(),
+            },
+            Vec::new(),
+            true,
+            Some(&terminal),
+        )
+        .await
+        .unwrap();
+    let settled = runtime
         .inner
         .runtime_db
-        .external_triggers()
-        .upsert(&ExternalTriggerRecord {
-            external_trigger_id: trigger_id.clone(),
-            target_agent_id: "default".into(),
-            scope: ExternalTriggerScope::Agent,
-            delivery_mode: CallbackDeliveryMode::WakeHint,
-            token: Some("http://127.0.0.1:7878/callbacks/wake/ci".into()),
-            token_hash: "token-hash".into(),
-            status: ExternalTriggerStatus::Active,
-            created_at: now,
-            revoked_at: None,
-            last_delivered_at: None,
-            delivery_count: 0,
-        })
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
         .unwrap();
+    let canonical_wait = settled
+        .waits
+        .get(&wait_condition_id)
+        .expect("settlement should create the canonical external wait");
+    let canonical_generation = canonical_wait.current_generation;
+    assert_eq!(
+        canonical_wait.generations[&canonical_generation]
+            .owner
+            .work_item_id(),
+        Some(work.id.as_str())
+    );
+    assert_eq!(
+        canonical_wait.generations[&canonical_generation].state,
+        WaitState::Active
+    );
+    let local_wait = runtime
+        .storage()
+        .latest_wait_conditions()
+        .unwrap()
+        .into_iter()
+        .find(|condition| condition.id == wait_condition_id)
+        .expect("settlement should preserve the local external wait projection");
+    assert_eq!(
+        local_wait.status,
+        WaitConditionStatus::Active,
+        "canonical settlement should leave the local external wait active"
+    );
+    assert_eq!(local_wait.work_item_id.as_deref(), Some(work.id.as_str()));
+    assert!(
+        runtime
+            .storage()
+            .active_wait_conditions_for_agent("default")
+            .unwrap()
+            .iter()
+            .any(|condition| condition.id == wait_condition_id),
+        "live-scope wait projection should preserve the canonical external wait"
+    );
+    assert_eq!(
+        runtime
+            .exact_external_wait_correlation(Some(&trigger_id))
+            .await
+            .unwrap(),
+        Some((wait_condition_id.clone(), canonical_generation)),
+        "callback ingress should resolve one exact active canonical wait"
+    );
 
     runtime
         .deliver_callback(
@@ -3969,12 +4053,53 @@ async fn external_wake_records_wait_reconciliation_and_resolves_wait() {
         .read_recent_messages(10)
         .unwrap()
         .into_iter()
-        .find(|message| message.kind == MessageKind::SystemTick)
+        .find(|message| {
+            message.kind == MessageKind::SystemTick
+                && message
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.get("wake_hint"))
+                    .and_then(|wake_hint| wake_hint.get("external_trigger_id"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some(trigger_id.as_str())
+        })
         .expect("wake hint should enqueue a system tick");
+    assert_eq!(
+        tick.source_refs.get("wait_id"),
+        Some(&wait_condition_id),
+        "callback should carry exact canonical wait correlation"
+    );
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("external wake should consume the canonical wait");
+    };
+    assert_eq!(scheduled.message.id, tick.id);
+
+    let mut mismatched = scheduled.message.clone();
+    mismatched.source_refs.insert(
+        "wait_generation".into(),
+        canonical_generation.saturating_add(1).to_string(),
+    );
+    runtime
+        .record_wait_reconciliation_signals(&mismatched)
+        .await
+        .unwrap();
+    assert!(
+        runtime
+            .storage()
+            .active_wait_conditions_for_work_item("default", &work.id)
+            .unwrap()
+            .iter()
+            .any(|condition| condition.id == wait_condition_id),
+        "mismatched canonical generation must not resolve the external wait"
+    );
 
     runtime
         .process_message(
-            tick,
+            scheduled.message,
             closure_decision(
                 ClosureOutcome::Waiting,
                 Some(WaitingReason::AwaitingExternalChange),
