@@ -1237,7 +1237,8 @@ def require_scheduler_engine_wait_resolution(
     if harness.canonical_scheduler_enabled:
         require(
             len(canonical_waits) == len(wait_ids)
-            and all(row["lifecycle_state"] == "resolved" for row in canonical_waits),
+            and all(row["lifecycle_state"] == "resolved" for row in canonical_waits)
+            and all(row["consuming_activation_id"] is None for row in canonical_waits),
             f"canonical waits did not resolve exactly once: {canonical_waits}",
         )
         return
@@ -1245,23 +1246,6 @@ def require_scheduler_engine_wait_resolution(
         not canonical_waits,
         f"legacy scheduler wrote canonical wait generations: {canonical_waits}",
     )
-
-
-def require_turns_terminal(
-    snapshot: dict[str, Any], message_ids: set[str]
-) -> list[dict[str, Any]]:
-    turns = [
-        row
-        for row in snapshot["turn_records"]
-        if row.get("trigger_message_id") in message_ids
-    ]
-    require(
-        len(turns) == len(message_ids)
-        and all(row.get("terminal_kind") == "completed" for row in turns),
-        f"scheduler turns did not reach completed terminal state: {turns}",
-    )
-    return turns
-
 
 def require_scheduler_activation_chain(
     snapshot: dict[str, Any],

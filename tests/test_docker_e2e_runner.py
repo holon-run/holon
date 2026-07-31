@@ -751,6 +751,37 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 {"scheduler-tick"},
             )
 
+    def test_canonical_wait_resolution_rejects_consuming_activation(self) -> None:
+        harness = type(
+            "CanonicalHarness",
+            (),
+            {"canonical_scheduler_enabled": True},
+        )()
+        canonical_wait = {
+            "wait_id": "wait-1",
+            "owner_work_item_id": "work-1",
+            "lifecycle_state": "resolved",
+            "consuming_activation_id": None,
+        }
+        snapshot = {"scheduler_wait_generations": [canonical_wait]}
+        runner.require_scheduler_engine_wait_resolution(
+            harness,
+            snapshot,
+            work_item_id="work-1",
+            wait_ids={"wait-1"},
+        )
+
+        canonical_wait["consuming_activation_id"] = "activation-unexpected"
+        with self.assertRaisesRegex(
+            AssertionError, "canonical waits did not resolve exactly once"
+        ):
+            runner.require_scheduler_engine_wait_resolution(
+                harness,
+                snapshot,
+                work_item_id="work-1",
+                wait_ids={"wait-1"},
+            )
+
     def test_wait_work_item_fails_fast_on_duplicate_objective_marker(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             harness = runner.CaseHarness(
