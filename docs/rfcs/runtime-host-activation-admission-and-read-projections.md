@@ -79,6 +79,13 @@ Blocking task output is a live-runtime operation. If the target runtime is not
 loaded, callers may read already persisted output without blocking, but a
 blocking request returns a typed conflict instead of activating the agent.
 
+Event-stream filtering derives `awaiting_operator_input` from durable
+work-item scheduling state. It therefore reports open work items waiting for
+operator input, but does not project a transient agent-level
+`WaitFor(operator_input)` that has no associated work item. Preserving that
+broader live-runtime closure signal would require activation or a separate
+durable projection and is outside this read-only contract.
+
 ## Startup recovery of orphaned claims
 
 Startup recovery runs before listeners accept requests. It may change a queue
