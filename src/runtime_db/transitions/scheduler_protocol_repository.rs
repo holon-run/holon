@@ -16,16 +16,24 @@ use sha2::{Digest, Sha256};
 
 use super::{inject_fault, RuntimeTransitionRepository, TransitionFaultPoint};
 use crate::domain::scheduler_protocol::{
-    self, ActivationAdmissionAuthority, ActivationCause, ActivationInputAttachment,
-    ActivationRecord, ActivationSlot, ActivationState, AdmitActivationCommand,
-    AdoptActivationWorkStateCommand, AdoptLegacyWorkStateCommand, AgentDispatchState,
-    ContinuationAdmissionRecord, Decision, LegacyWaitAdoption, MissingSettlementRecord,
-    ProtocolCommand, ProtocolConflict, ProtocolConflictKind, ReplaceCompletedFocusProof,
-    SchedulerOwner, Snapshot, WaitGenerationRecord, WaitIdentity, WaitRecord, WaitState,
-    WaitTrigger, WorkDemand, WorkStatus,
+    self, ActivationCause, ActivationInputAttachment, ActivationRecord, ActivationSlot,
+    ActivationState, AdmitActivationCommand, AdoptActivationWorkStateCommand,
+    AdoptLegacyWorkStateCommand, AgentActivation, AgentDispatchState, ContinuationAdmissionRecord,
+    Decision, LegacyWaitAdoption, MissingSettlementRecord, ProtocolCommand, ProtocolConflict,
+    ProtocolConflictKind, ReplaceCompletedFocusProof, SchedulerOwner, Snapshot,
+    WaitGenerationRecord, WaitIdentity, WaitRecord, WaitState, WaitTrigger, WorkDemand, WorkStatus,
 };
 
 const CANONICAL_COMMAND_SCHEMA_VERSION: i64 = 1;
+
+#[derive(Serialize)]
+struct LegacyActivationAuthorityPayload<'a> {
+    authority_id: &'a str,
+    activation: &'a AgentActivation,
+    expected_scheduling_generation: u64,
+    expected_dispatch_revision: u64,
+    consumed_by: Option<&'a str>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LegacySchedulerAdoptionCandidate {
@@ -375,11 +383,6 @@ impl RuntimeTransitionRepository<'_> {
                     | ProtocolCommand::RegisterWorkDemand(_)
                     | ProtocolCommand::SettleActivation(_)
                     | ProtocolCommand::RecordMissingSettlement(_) => {}
-                    ProtocolCommand::IssueActivationAuthority(command)
-                        if matches!(
-                            command.activation.cause,
-                            ActivationCause::SettlementRecovery { .. }
-                        ) => {}
                     ProtocolCommand::AdmitActivation(command)
                         if matches!(
                             command.activation.cause,
@@ -948,7 +951,6 @@ fn canonical_empty_snapshot() -> Snapshot {
         work: BTreeMap::new(),
         waits: BTreeMap::new(),
         activations: BTreeMap::new(),
-        activation_authorities: BTreeMap::new(),
         activation_admissions: BTreeMap::new(),
         settlements: BTreeMap::new(),
         missing_settlements: BTreeMap::new(),
@@ -998,9 +1000,6 @@ fn command_identity(command: &ProtocolCommand) -> Result<(&'static str, String)>
             "adopt_activation_work_state",
             format!("{}:{}", command.source_activation_id, command.work_item_id),
         ),
-        ProtocolCommand::IssueActivationAuthority(command) => {
-            ("issue_activation_authority", command.authority_id.clone())
-        }
         ProtocolCommand::AdmitActivation(command) => {
             ("admit_activation", command.activation.id.clone())
         }
@@ -1055,9 +1054,6 @@ fn command_fact_references(command: &ProtocolCommand) -> Vec<String> {
                 command.wait.wait_id, command.wait.generation
             ),
         ],
-        ProtocolCommand::IssueActivationAuthority(command) => {
-            vec![format!("activation_authority:{}", command.authority_id)]
-        }
         ProtocolCommand::AdmitActivation(command) => vec![
             format!("activation:{}", command.activation.id),
             format!("activation_authority:{}", command.authority_id),
@@ -1086,7 +1082,6 @@ fn validate_command_agent(agent_id: &str, command: &ProtocolCommand) -> Result<(
         ProtocolCommand::RegisterWorkDemand(_)
         | ProtocolCommand::AdoptLegacyWorkState(_)
         | ProtocolCommand::AdoptActivationWorkState(_) => None,
-        ProtocolCommand::IssueActivationAuthority(command) => Some(&command.activation.agent_id),
         ProtocolCommand::AdmitActivation(command) => Some(&command.activation.agent_id),
         ProtocolCommand::SettleActivation(_)
         | ProtocolCommand::RecordMissingSettlement(_)
@@ -1102,14 +1097,6 @@ fn validate_command_agent(agent_id: &str, command: &ProtocolCommand) -> Result<(
 fn validate_agent_partition(agent_id: &str, snapshot: &Snapshot) -> Result<()> {
     if agent_id.is_empty() {
         bail!("scheduler protocol partition requires a non-empty agent id");
-    }
-    for authority in snapshot.activation_authorities.values() {
-        if authority.activation.agent_id != agent_id {
-            bail!(
-                "activation authority {} belongs to another agent",
-                authority.authority_id
-            );
-        }
     }
     for admission in snapshot.activation_admissions.values() {
         if admission.activation.agent_id != agent_id {
@@ -1503,9 +1490,16 @@ fn persist_agent_snapshot_tx(
         }
     }
 
-    for (authority_id, authority) in &snapshot.activation_authorities {
-        let owner = activation_owner(&authority.activation)?;
+    for admission in snapshot.activation_admissions.values() {
+        let owner = activation_owner(&admission.activation)?;
         let (owner_kind, owner_id, work_item_id) = scheduler_owner_columns(&owner);
+        let authority = LegacyActivationAuthorityPayload {
+            authority_id: &admission.authority_id,
+            activation: &admission.activation,
+            expected_scheduling_generation: admission.expected_scheduling_generation,
+            expected_dispatch_revision: admission.expected_dispatch_revision,
+            consumed_by: None,
+        };
         tx.execute(
             "INSERT INTO scheduler_activation_authorities (
                agent_id,
@@ -1531,20 +1525,20 @@ fn persist_agent_snapshot_tx(
                payload_json = excluded.payload_json",
             params![
                 agent_id,
-                authority_id,
-                &authority.activation.id,
+                &admission.authority_id,
+                &admission.activation.id,
                 owner_kind,
                 owner_id,
                 work_item_id,
                 to_i64(
-                    authority.expected_scheduling_generation,
+                    admission.expected_scheduling_generation,
                     "authority scheduling generation",
                 )?,
                 to_i64(
-                    authority.expected_dispatch_revision,
+                    admission.expected_dispatch_revision,
                     "authority dispatch revision",
                 )?,
-                serde_json::to_string(authority)?,
+                serde_json::to_string(&authority)?,
                 &now,
             ],
         )?;
@@ -1645,19 +1639,27 @@ fn persist_agent_snapshot_tx(
         }
     }
 
-    for (authority_id, authority) in &snapshot.activation_authorities {
+    for admission in snapshot.activation_admissions.values() {
+        let authority = LegacyActivationAuthorityPayload {
+            authority_id: &admission.authority_id,
+            activation: &admission.activation,
+            expected_scheduling_generation: admission.expected_scheduling_generation,
+            expected_dispatch_revision: admission.expected_dispatch_revision,
+            consumed_by: Some(&admission.activation.id),
+        };
         tx.execute(
             "UPDATE scheduler_activation_authorities
              SET consumed_by_activation_id = ?3, payload_json = ?4
              WHERE agent_id = ?1 AND authority_id = ?2",
             params![
                 agent_id,
-                authority_id,
-                authority.consumed_by.as_deref(),
-                serde_json::to_string(authority)?,
+                &admission.authority_id,
+                &admission.activation.id,
+                serde_json::to_string(&authority)?,
             ],
         )?;
     }
+
     for (wait_id, wait) in &snapshot.waits {
         for (generation, record) in &wait.generations {
             tx.execute(
@@ -1872,11 +1874,6 @@ fn load_snapshot_connection_with_hook(
         agent_id,
     )?;
     let waits = load_waits(connection, agent_id)?;
-    let activation_authorities = load_payload_map::<ActivationAdmissionAuthority>(
-        connection,
-        "SELECT authority_id, payload_json FROM scheduler_activation_authorities WHERE agent_id = ?1",
-        agent_id,
-    )?;
     let activation_admissions = load_payload_map::<AdmitActivationCommand>(
         connection,
         "SELECT activation_id, payload_json FROM scheduler_activations WHERE agent_id = ?1",
@@ -1915,7 +1912,6 @@ fn load_snapshot_connection_with_hook(
         work,
         waits,
         activations,
-        activation_authorities,
         activation_admissions,
         settlements,
         missing_settlements,

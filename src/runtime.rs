@@ -861,9 +861,8 @@ fn canonical_settlement_recovery_commands(
     use crate::domain::scheduler_protocol::{
         ActivationBinding, ActivationCause, ActivationLifecycleState, ActivationOrigin,
         ActivationPriority, ActivationProvenance, ActivationSettlement, ActivationTrust,
-        AdmitActivationCommand, AgentActivation, AgentDispatchDisposition,
-        IssueActivationAuthorityCommand, MissingSettlementRecord, PreemptionPolicy,
-        ProtocolCommand, RegisterWorkDemandCommand, SettleActivationCommand,
+        AdmitActivationCommand, AgentActivation, AgentDispatchDisposition, MissingSettlementRecord,
+        PreemptionPolicy, ProtocolCommand, RegisterWorkDemandCommand, SettleActivationCommand,
     };
     let activation_id = format!("settlement-recovery:{missing_activation_id}");
     let authority_id = format!("authority:{activation_id}");
@@ -899,20 +898,12 @@ fn canonical_settlement_recovery_commands(
             },
         ));
     }
-    commands.extend([
-        ProtocolCommand::IssueActivationAuthority(IssueActivationAuthorityCommand {
-            authority_id: authority_id.clone(),
-            activation: activation.clone(),
-            expected_scheduling_generation: generation,
-            expected_dispatch_revision: snapshot.dispatch_revision,
-        }),
-        ProtocolCommand::AdmitActivation(AdmitActivationCommand {
-            authority_id,
-            activation,
-            expected_scheduling_generation: generation,
-            expected_dispatch_revision: snapshot.dispatch_revision,
-        }),
-    ]);
+    commands.push(ProtocolCommand::AdmitActivation(AdmitActivationCommand {
+        authority_id,
+        activation,
+        expected_scheduling_generation: generation,
+        expected_dispatch_revision: snapshot.dispatch_revision,
+    }));
     commands.push(match resolution {
         Some((disposition, turn_terminal, operator_delivery, evidence)) => {
             ProtocolCommand::SettleActivation(SettleActivationCommand {

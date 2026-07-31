@@ -18,7 +18,6 @@ pub struct Snapshot {
     pub work: BTreeMap<String, WorkDemand>,
     pub waits: BTreeMap<String, WaitRecord>,
     pub activations: BTreeMap<String, ActivationRecord>,
-    pub activation_authorities: BTreeMap<String, ActivationAdmissionAuthority>,
     pub activation_admissions: BTreeMap<String, AdmitActivationCommand>,
     pub settlements: BTreeMap<String, ActivationSettlement>,
     pub missing_settlements: BTreeMap<String, MissingSettlementRecord>,
@@ -38,7 +37,6 @@ struct SnapshotWire {
     work: Option<BTreeMap<String, WorkDemand>>,
     waits: Option<BTreeMap<String, WaitRecord>>,
     activations: Option<BTreeMap<String, ActivationRecord>>,
-    activation_authorities: Option<BTreeMap<String, ActivationAdmissionAuthority>>,
     activation_admissions: Option<BTreeMap<String, AdmitActivationCommand>>,
     settlements: Option<BTreeMap<String, ActivationSettlement>>,
     missing_settlements: Option<BTreeMap<String, MissingSettlementRecord>>,
@@ -65,9 +63,6 @@ impl TryFrom<SnapshotWire> for Snapshot {
             .activations
             .ok_or_else(|| "snapshot is missing canonical activation records".to_string())?;
         let dispatch = wire.dispatch.into_snapshot_dispatch(&waits)?;
-        let activation_authorities = wire
-            .activation_authorities
-            .ok_or_else(|| "snapshot is missing canonical activation authorities".to_string())?;
         let activation_admissions = wire
             .activation_admissions
             .ok_or_else(|| "snapshot is missing canonical activation admissions".to_string())?;
@@ -91,7 +86,6 @@ impl TryFrom<SnapshotWire> for Snapshot {
             work,
             waits,
             activations,
-            activation_authorities,
             activation_admissions,
             settlements,
             missing_settlements,
@@ -381,16 +375,6 @@ pub struct AgentActivation {
     pub source_revision: Option<u64>,
     pub idempotency_key: String,
     pub provenance: ActivationProvenance,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ActivationAdmissionAuthority {
-    pub authority_id: String,
-    pub activation: AgentActivation,
-    pub expected_scheduling_generation: u64,
-    pub expected_dispatch_revision: u64,
-    #[serde(default)]
-    pub consumed_by: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -717,14 +701,6 @@ pub struct AdmitActivationCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IssueActivationAuthorityCommand {
-    pub authority_id: String,
-    pub activation: AgentActivation,
-    pub expected_scheduling_generation: u64,
-    pub expected_dispatch_revision: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SettleActivationCommand {
     pub settlement: ActivationSettlement,
 }
@@ -809,8 +785,6 @@ pub struct LegacyEventMigrationContext {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LegacyEventMigration {
-    #[serde(default)]
-    pub authority_command: Option<IssueActivationAuthorityCommand>,
     pub command: ProtocolCommand,
     pub outcome: ProtocolCommandOutcome,
 }
@@ -915,7 +889,6 @@ pub enum ProtocolCommand {
     RegisterWorkDemand(RegisterWorkDemandCommand),
     AdoptLegacyWorkState(AdoptLegacyWorkStateCommand),
     AdoptActivationWorkState(AdoptActivationWorkStateCommand),
-    IssueActivationAuthority(IssueActivationAuthorityCommand),
     AdmitActivation(AdmitActivationCommand),
     SettleActivation(SettleActivationCommand),
     RecordMissingSettlement(MissingSettlementRecord),
@@ -1181,7 +1154,6 @@ pub struct Outcome {
 pub enum Decision {
     WorkDemandRegistered,
     LegacyWorkStateAdopted,
-    AuthorityIssued,
     Admitted,
     Settled,
     WaitTriggered,
@@ -1217,7 +1189,7 @@ pub fn migrate_legacy_event(
         ));
     }
 
-    let (command, authority_command) = match event {
+    let command = match event {
         Event::Admit {
             activation_id,
             owner,
@@ -1337,28 +1309,16 @@ pub fn migrate_legacy_event(
                 expected_scheduling_generation: *expected_generation,
                 expected_dispatch_revision: *expected_dispatch_revision,
             };
-            let authority_command = IssueActivationAuthorityCommand {
-                authority_id: command.authority_id.clone(),
-                activation: command.activation.clone(),
-                expected_scheduling_generation: command.expected_scheduling_generation,
-                expected_dispatch_revision: command.expected_dispatch_revision,
-            };
-            (
-                ProtocolCommand::AdmitActivation(command),
-                Some(authority_command),
-            )
+            ProtocolCommand::AdmitActivation(command)
         }
         Event::Settle {
             activation_id,
             settlement: Settlement::Missing,
-        } => (
-            ProtocolCommand::RecordMissingSettlement(MissingSettlementRecord {
-                id: context.record_id.clone(),
-                activation_id: activation_id.clone(),
-                created_at: context.recorded_at.clone(),
-            }),
-            None,
-        ),
+        } => ProtocolCommand::RecordMissingSettlement(MissingSettlementRecord {
+            id: context.record_id.clone(),
+            activation_id: activation_id.clone(),
+            created_at: context.recorded_at.clone(),
+        }),
         Event::Settle {
             activation_id,
             settlement,
@@ -1431,23 +1391,20 @@ pub fn migrate_legacy_event(
                     "legacy_completion_report_required",
                 ));
             }
-            (
-                ProtocolCommand::SettleActivation(SettleActivationCommand {
-                    settlement: ActivationSettlement {
-                        id: context.record_id.clone(),
-                        activation_id: activation_id.clone(),
-                        turn_terminal: report.map(|report| report.turn_terminal.clone()),
-                        disposition,
-                        agent_dispatch,
-                        operator_delivery: report.map(|report| report.operator_delivery.clone()),
-                        evidence: report
-                            .map(|report| report.evidence.clone())
-                            .unwrap_or_default(),
-                        created_at: context.recorded_at.clone(),
-                    },
-                }),
-                None,
-            )
+            ProtocolCommand::SettleActivation(SettleActivationCommand {
+                settlement: ActivationSettlement {
+                    id: context.record_id.clone(),
+                    activation_id: activation_id.clone(),
+                    turn_terminal: report.map(|report| report.turn_terminal.clone()),
+                    disposition,
+                    agent_dispatch,
+                    operator_delivery: report.map(|report| report.operator_delivery.clone()),
+                    evidence: report
+                        .map(|report| report.evidence.clone())
+                        .unwrap_or_default(),
+                    created_at: context.recorded_at.clone(),
+                },
+            })
         }
         _ => {
             return Err(command_conflict(
@@ -1457,32 +1414,11 @@ pub fn migrate_legacy_event(
         }
     };
 
-    let authorized = if let Some(authority_command) = &authority_command {
-        let issued = reduce_command(
-            snapshot,
-            &ProtocolCommand::IssueActivationAuthority(authority_command.clone()),
-        );
-        if issued.outcome.decision == Decision::Rejected {
-            return Err(issued.conflict.unwrap_or_else(|| {
-                command_conflict(
-                    ProtocolConflictKind::AuthorityConflict,
-                    "legacy_migration_authority_conflict",
-                )
-            }));
-        }
-        issued.outcome.snapshot
-    } else {
-        snapshot.clone()
-    };
-    let mut outcome = reduce_command(&authorized, &command);
+    let mut outcome = reduce_command(snapshot, &command);
     if outcome.outcome.decision == Decision::Rejected {
         outcome.outcome.snapshot = snapshot.clone();
     }
-    Ok(LegacyEventMigration {
-        authority_command,
-        command,
-        outcome,
-    })
+    Ok(LegacyEventMigration { command, outcome })
 }
 
 fn reduce_event(snapshot: &Snapshot, event: &Event) -> Outcome {
@@ -1546,9 +1482,6 @@ pub fn reduce_command(snapshot: &Snapshot, command: &ProtocolCommand) -> Protoco
     if let ProtocolCommand::AdoptActivationWorkState(command) = command {
         return adopt_activation_work_state(snapshot, command);
     }
-    if let ProtocolCommand::IssueActivationAuthority(command) = command {
-        return issue_activation_authority(snapshot, command);
-    }
     let event = match lower_command(snapshot, command) {
         Ok(event) => event,
         Err(conflict) => {
@@ -1558,12 +1491,6 @@ pub fn reduce_command(snapshot: &Snapshot, command: &ProtocolCommand) -> Protoco
     let mut outcome = reduce_event(snapshot, &event);
     match (command, &outcome.decision) {
         (ProtocolCommand::AdmitActivation(command), Decision::Admitted) => {
-            outcome
-                .snapshot
-                .activation_authorities
-                .get_mut(&command.authority_id)
-                .expect("validated activation authority exists")
-                .consumed_by = Some(command.activation.id.clone());
             outcome
                 .snapshot
                 .activation_admissions
@@ -1755,21 +1682,6 @@ fn replay_or_conflict(
                 );
             }
         }
-        ProtocolCommand::IssueActivationAuthority(command) => {
-            if let Some(existing) = snapshot.activation_authorities.get(&command.authority_id) {
-                return Some(if authority_matches_issue(existing, command) {
-                    duplicate_command(snapshot, "activation_authority_already_issued")
-                } else {
-                    rejected_command(
-                        snapshot,
-                        command_conflict(
-                            ProtocolConflictKind::AuthorityConflict,
-                            "activation_authority_id_command_conflict",
-                        ),
-                    )
-                });
-            }
-        }
         ProtocolCommand::AdmitActivation(command) => {
             if let Some(existing) = snapshot.activation_admissions.get(&command.activation.id) {
                 return Some(if existing == command {
@@ -1792,6 +1704,19 @@ fn replay_or_conflict(
                     command_conflict(
                         ProtocolConflictKind::IdempotencyConflict,
                         "activation_idempotency_key_conflict",
+                    ),
+                ));
+            }
+            if snapshot
+                .activation_admissions
+                .values()
+                .any(|existing| existing.authority_id == command.authority_id)
+            {
+                return Some(rejected_command(
+                    snapshot,
+                    command_conflict(
+                        ProtocolConflictKind::AuthorityConflict,
+                        "activation_authority_id_command_conflict",
                     ),
                 ));
             }
@@ -1914,12 +1839,7 @@ fn lower_command(
         | ProtocolCommand::AdoptActivationWorkState(_) => {
             unreachable!("work demand mutations are reduced directly")
         }
-        ProtocolCommand::IssueActivationAuthority(_) => {
-            unreachable!("authority issuance is reduced directly")
-        }
-        ProtocolCommand::AdmitActivation(command) => {
-            lower_admit_activation(snapshot, command, false)
-        }
+        ProtocolCommand::AdmitActivation(command) => lower_admit_activation(command),
         ProtocolCommand::SettleActivation(command) => {
             if !snapshot
                 .activation_admissions
@@ -2424,73 +2344,7 @@ fn adopt_activation_work_state(
     }
 }
 
-fn authority_matches_issue(
-    authority: &ActivationAdmissionAuthority,
-    command: &IssueActivationAuthorityCommand,
-) -> bool {
-    authority.authority_id == command.authority_id
-        && authority.activation == command.activation
-        && authority.expected_scheduling_generation == command.expected_scheduling_generation
-        && authority.expected_dispatch_revision == command.expected_dispatch_revision
-}
-
-fn issue_activation_authority(
-    snapshot: &Snapshot,
-    command: &IssueActivationAuthorityCommand,
-) -> ProtocolCommandOutcome {
-    if snapshot.activation_authorities.values().any(|authority| {
-        authority.activation.id == command.activation.id
-            || authority.activation.idempotency_key == command.activation.idempotency_key
-    }) {
-        return rejected_command(
-            snapshot,
-            command_conflict(
-                ProtocolConflictKind::IdentityConflict,
-                "activation_authority_identity_conflict",
-            ),
-        );
-    }
-
-    let authority = ActivationAdmissionAuthority {
-        authority_id: command.authority_id.clone(),
-        activation: command.activation.clone(),
-        expected_scheduling_generation: command.expected_scheduling_generation,
-        expected_dispatch_revision: command.expected_dispatch_revision,
-        consumed_by: None,
-    };
-    let mut validating = snapshot.clone();
-    validating
-        .activation_authorities
-        .insert(command.authority_id.clone(), authority.clone());
-    let admission = AdmitActivationCommand {
-        authority_id: command.authority_id.clone(),
-        activation: command.activation.clone(),
-        expected_scheduling_generation: command.expected_scheduling_generation,
-        expected_dispatch_revision: command.expected_dispatch_revision,
-    };
-    if let Err(conflict) = lower_admit_activation(&validating, &admission, false) {
-        return rejected_command(snapshot, conflict);
-    }
-
-    ProtocolCommandOutcome {
-        outcome: Outcome {
-            decision: Decision::AuthorityIssued,
-            transitions: vec![format!(
-                "activation_authority:{}:issued:{}",
-                command.authority_id, command.activation.id
-            )],
-            diagnostics: Vec::new(),
-            snapshot: validating,
-        },
-        conflict: None,
-    }
-}
-
-fn lower_admit_activation(
-    snapshot: &Snapshot,
-    command: &AdmitActivationCommand,
-    allow_consumed_authority: bool,
-) -> Result<Event, ProtocolConflict> {
+fn lower_admit_activation(command: &AdmitActivationCommand) -> Result<Event, ProtocolConflict> {
     let activation = &command.activation;
     if command.authority_id.is_empty()
         || activation.id.is_empty()
@@ -2513,34 +2367,6 @@ fn lower_admit_activation(
         return Err(command_conflict(
             ProtocolConflictKind::InvalidCommand,
             "activation_identity_or_provenance_required",
-        ));
-    }
-    let authority = snapshot
-        .activation_authorities
-        .get(&command.authority_id)
-        .ok_or_else(|| {
-            command_conflict(
-                ProtocolConflictKind::NotFound,
-                "activation_authority_not_found",
-            )
-        })?;
-    if authority.authority_id != command.authority_id
-        || authority.activation != command.activation
-        || authority.expected_scheduling_generation != command.expected_scheduling_generation
-        || authority.expected_dispatch_revision != command.expected_dispatch_revision
-    {
-        return Err(command_conflict(
-            ProtocolConflictKind::BindingConflict,
-            "activation_authority_mismatch",
-        ));
-    }
-    if authority.consumed_by.is_some()
-        && !(allow_consumed_authority
-            && authority.consumed_by.as_deref() == Some(activation.id.as_str()))
-    {
-        return Err(command_conflict(
-            ProtocolConflictKind::Duplicate,
-            "activation_authority_already_consumed",
         ));
     }
     if !activation_provenance_matches_cause(&activation.provenance, &activation.cause) {
@@ -4270,7 +4096,7 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
         let Some(activation) = snapshot.activations.get(activation_id) else {
             return Err("canonical activation admission record is invalid".into());
         };
-        let event = lower_admit_activation(snapshot, command, true)
+        let event = lower_admit_activation(command)
             .map_err(|_| "canonical activation admission record is invalid".to_string())?;
         let Event::Admit {
             activation_id: event_activation_id,
@@ -4310,16 +4136,9 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
             || activation.admitted_generation != expected_generation
             || activation.recovery_for != recovery_for
             || expected_dispatch_revision > snapshot.dispatch_revision
-            || snapshot
-                .activation_authorities
-                .get(&command.authority_id)
-                .and_then(|authority| authority.consumed_by.as_deref())
-                != Some(activation_id.as_str())
             || !idempotency_keys.insert(command.activation.idempotency_key.as_str())
         {
-            return Err(
-                "canonical activation admission record disagrees with authority state".into(),
-            );
+            return Err("canonical activation admission record is invalid".into());
         }
     }
     if snapshot.admitted_generations != canonical_admission_fences {
@@ -4328,30 +4147,13 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
             snapshot.admitted_generations
         ));
     }
-    let mut authority_activation_ids = BTreeSet::new();
-    let mut authority_idempotency_keys = BTreeSet::new();
-    for (authority_id, authority) in &snapshot.activation_authorities {
-        if authority_id != &authority.authority_id {
-            return Err("activation authority map key disagrees with authority identity".into());
-        }
-        if !authority_activation_ids.insert(authority.activation.id.as_str())
-            || !authority_idempotency_keys.insert(authority.activation.idempotency_key.as_str())
-        {
-            return Err("activation authorities reuse activation identity".into());
-        }
-        if let Some(activation_id) = &authority.consumed_by {
-            let Some(command) = snapshot.activation_admissions.get(activation_id) else {
-                return Err("consumed activation authority has no canonical admission".into());
-            };
-            if authority_id != &command.authority_id
-                || authority.activation != command.activation
-                || authority.expected_scheduling_generation
-                    != command.expected_scheduling_generation
-                || authority.expected_dispatch_revision != command.expected_dispatch_revision
-            {
-                return Err("consumed activation authority disagrees with admission".into());
-            }
-        }
+    let mut authority_ids = BTreeSet::new();
+    if snapshot
+        .activation_admissions
+        .values()
+        .any(|command| !authority_ids.insert(command.authority_id.as_str()))
+    {
+        return Err("canonical activation admissions reuse authority identity".into());
     }
     let mut activation_input_message_ids = BTreeSet::new();
     for (attachment_id, attachment) in &snapshot.activation_inputs {

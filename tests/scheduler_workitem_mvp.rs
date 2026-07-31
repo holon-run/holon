@@ -5,16 +5,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use model::{
-    assert_invariants, reduce, reduce_command, ActivationAdmissionAuthority, ActivationBinding,
-    ActivationCause, ActivationDisposition, ActivationLifecycleState, ActivationOrigin,
-    ActivationPriority, ActivationProvenance, ActivationRecord, ActivationSettlement,
-    ActivationSlot, ActivationState, ActivationTrust, AdmissionCause, AdmitActivationCommand,
-    AdoptActivationWorkStateCommand, AgentActivation, AgentDispatchDisposition, AgentDispatchState,
-    Decision, Event, IssueActivationAuthorityCommand, LegacyWaitAdoption, MissingSettlementRecord,
-    PreemptionPolicy, ProtocolCommand, ProtocolConflictKind, RegisterWorkDemandCommand,
-    SchedulerOwner, SettleActivationCommand, Settlement, Snapshot, WaitGenerationRecord,
-    WaitIdentity, WaitRecord, WaitState, WaitTrigger, WorkDemand, WorkStatus,
-    YieldContinuationRecord,
+    assert_invariants, reduce, reduce_command, ActivationBinding, ActivationCause,
+    ActivationDisposition, ActivationLifecycleState, ActivationOrigin, ActivationPriority,
+    ActivationProvenance, ActivationRecord, ActivationSettlement, ActivationSlot, ActivationState,
+    ActivationTrust, AdmissionCause, AdmitActivationCommand, AdoptActivationWorkStateCommand,
+    AgentActivation, AgentDispatchDisposition, AgentDispatchState, Decision, Event,
+    LegacyWaitAdoption, MissingSettlementRecord, PreemptionPolicy, ProtocolCommand,
+    ProtocolConflictKind, RegisterWorkDemandCommand, SchedulerOwner, SettleActivationCommand,
+    Settlement, Snapshot, WaitGenerationRecord, WaitIdentity, WaitRecord, WaitState, WaitTrigger,
+    WorkDemand, WorkStatus, YieldContinuationRecord,
 };
 use proptest::prelude::*;
 use serde::Deserialize;
@@ -30,14 +29,8 @@ struct Fixture {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "surface", rename_all = "snake_case")]
 enum FixtureInput {
-    Protocol {
-        command: ProtocolCommand,
-        #[serde(default)]
-        authority: Option<ActivationAdmissionAuthority>,
-    },
-    Event {
-        event: Event,
-    },
+    Protocol { command: ProtocolCommand },
+    Event { event: Event },
 }
 
 #[derive(Debug, Deserialize)]
@@ -51,7 +44,6 @@ struct Expected {
     work: BTreeMap<String, WorkDemand>,
     waits: BTreeMap<String, WaitRecord>,
     activations: BTreeMap<String, ActivationRecord>,
-    activation_authorities: BTreeMap<String, ActivationAdmissionAuthority>,
     activation_admissions: BTreeMap<String, AdmitActivationCommand>,
     settlements: BTreeMap<String, ActivationSettlement>,
     missing_settlements: BTreeMap<String, MissingSettlementRecord>,
@@ -74,39 +66,7 @@ fn fixtures() -> Vec<Fixture> {
 
 fn apply_fixture_input(snapshot: &Snapshot, input: &FixtureInput) -> model::Outcome {
     match input {
-        FixtureInput::Protocol { command, authority } => {
-            let mut authorized = snapshot.clone();
-            let authority_id = authority.as_ref().map(|authority| {
-                let authority_id = match command {
-                    ProtocolCommand::AdmitActivation(command) => command.authority_id.clone(),
-                    _ => panic!("fixture authority requires an admission command"),
-                };
-                authorized
-                    .activation_authorities
-                    .insert(authority_id.clone(), authority.clone());
-                authority_id
-            });
-            let previous_authority = authority_id.as_ref().and_then(|authority_id| {
-                snapshot.activation_authorities.get(authority_id).cloned()
-            });
-            let mut outcome = reduce_command(&authorized, command).outcome;
-            if outcome.decision != Decision::Admitted {
-                if let Some(authority_id) = authority_id {
-                    if let Some(previous_authority) = previous_authority {
-                        outcome
-                            .snapshot
-                            .activation_authorities
-                            .insert(authority_id, previous_authority);
-                    } else {
-                        outcome
-                            .snapshot
-                            .activation_authorities
-                            .remove(&authority_id);
-                    }
-                }
-            }
-            outcome
-        }
+        FixtureInput::Protocol { command } => reduce_command(snapshot, command).outcome,
         FixtureInput::Event { event } => reduce(snapshot, event),
     }
 }
@@ -233,29 +193,7 @@ fn apply_event(snapshot: &Snapshot, event: &Event) -> model::Outcome {
                 expected_scheduling_generation: *expected_generation,
                 expected_dispatch_revision: *expected_dispatch_revision,
             };
-            let mut authorized = snapshot.clone();
-            let previous_authority = authorized
-                .activation_authorities
-                .get(&command.authority_id)
-                .cloned();
-            authorize_admission(&mut authorized, &command);
-            let authority_id = command.authority_id.clone();
-            let mut outcome =
-                reduce_command(&authorized, &ProtocolCommand::AdmitActivation(command)).outcome;
-            if outcome.decision != Decision::Admitted {
-                if let Some(previous_authority) = previous_authority {
-                    outcome
-                        .snapshot
-                        .activation_authorities
-                        .insert(authority_id, previous_authority);
-                } else {
-                    outcome
-                        .snapshot
-                        .activation_authorities
-                        .remove(&authority_id);
-                }
-            }
-            outcome
+            reduce_command(snapshot, &ProtocolCommand::AdmitActivation(command)).outcome
         }
         Event::Settle {
             activation_id,
@@ -437,11 +375,6 @@ fn historical_scenarios_replay_to_one_explicit_state() {
             fixture.name
         );
         assert_eq!(
-            snapshot.activation_authorities, fixture.expected.activation_authorities,
-            "{}: activation authorities",
-            fixture.name
-        );
-        assert_eq!(
             snapshot.activation_admissions, fixture.expected.activation_admissions,
             "{}: activation admissions",
             fixture.name
@@ -519,8 +452,7 @@ fn serialized_snapshot_preserves_canonical_activation_replay_fence() {
 #[test]
 fn legacy_wait_shapes_replay_with_explicit_generation_fences() {
     let command = typed_admission("a1", "key-1", 1);
-    let mut snapshot = minimal_snapshot(1);
-    authorize_admission(&mut snapshot, &command);
+    let snapshot = minimal_snapshot(1);
     let admitted = reduce_command(&snapshot, &ProtocolCommand::AdmitActivation(command));
     let legacy_event: Event = serde_json::from_value(serde_json::json!({
         "kind": "settle",
@@ -571,8 +503,7 @@ fn legacy_wait_shapes_replay_with_explicit_generation_fences() {
 #[test]
 fn explicit_zero_wait_generations_are_not_upgraded_as_legacy_shapes() {
     let command = typed_admission("a1", "key-1", 1);
-    let mut snapshot = minimal_snapshot(1);
-    authorize_admission(&mut snapshot, &command);
+    let snapshot = minimal_snapshot(1);
     let admitted = reduce_command(&snapshot, &ProtocolCommand::AdmitActivation(command));
     let settlement = typed_settlement(
         "s1",
@@ -779,10 +710,6 @@ fn legacy_wait_resume_migration_preserves_original_callback_provenance() {
     let migrated = model::migrate_legacy_event(&triggered.snapshot, &resume, &context)
         .expect("legacy wait resume migration");
     assert_eq!(migrated.outcome.outcome.decision, Decision::Admitted);
-    let authority = migrated
-        .authority_command
-        .expect("admission migration issues authority");
-    assert_eq!(authority.activation.provenance, provenance);
     let ProtocolCommand::AdmitActivation(command) = migrated.command else {
         panic!("legacy wait resume must migrate to typed admission");
     };
@@ -811,18 +738,17 @@ fn snapshot_without_canonical_protocol_facts_is_rejected() {
     encoded
         .as_object_mut()
         .expect("snapshot object")
-        .remove("activation_authorities");
+        .remove("activation_admissions");
     let error = serde_json::from_value::<Snapshot>(encoded).expect_err("reject legacy snapshot");
     assert!(error
         .to_string()
-        .contains("snapshot is missing canonical activation authorities"));
+        .contains("snapshot is missing canonical activation admissions"));
 }
 
 #[test]
 fn wait_settlement_generation_mismatch_is_classified_as_stale_generation() {
     let command = typed_admission("a1", "key-1", 1);
-    let mut snapshot = minimal_snapshot(1);
-    authorize_admission(&mut snapshot, &command);
+    let snapshot = minimal_snapshot(1);
     let admitted = reduce_command(&snapshot, &ProtocolCommand::AdmitActivation(command));
     let snapshot = admitted.outcome.snapshot;
     let rejected = reduce_command(
@@ -1137,8 +1063,7 @@ fn stale_wait_generation_cannot_trigger_or_resume_reused_wait_id() {
 #[test]
 fn activation_cannot_settle_after_scheduling_generation_changes() {
     let command = typed_admission("a1", "key-1", 4);
-    let mut snapshot = minimal_snapshot(4);
-    authorize_admission(&mut snapshot, &command);
+    let snapshot = minimal_snapshot(4);
     let mut snapshot = reduce_command(&snapshot, &ProtocolCommand::AdmitActivation(command))
         .outcome
         .snapshot;
@@ -1552,10 +1477,6 @@ fn settlement_recovery_rejects_a_current_revision_with_an_awaiting_reservation()
     combined.waits = waiting.snapshot.waits.clone();
     combined.dispatch = waiting.snapshot.dispatch.clone();
     combined.dispatch_revision = waiting.snapshot.dispatch_revision;
-    combined.activation_authorities.insert(
-        "authority-a-wait".into(),
-        waiting.snapshot.activation_authorities["authority-a-wait"].clone(),
-    );
     combined.activation_admissions.insert(
         "a-wait".into(),
         waiting.snapshot.activation_admissions["a-wait"].clone(),
@@ -1576,7 +1497,6 @@ fn settlement_recovery_rejects_a_current_revision_with_an_awaiting_reservation()
         activation_id: "a-missing".into(),
     };
     recovery.activation.provenance.origin = ActivationOrigin::RuntimeRecovery;
-    authorize_admission(&mut combined, &recovery);
     assert_invariants(&combined)
         .expect("missing settlement and another work item's wait reservation are canonical");
 
@@ -1727,8 +1647,7 @@ fn targeted_yield_is_fenced_and_target_completion_restores_source_once() {
 #[test]
 fn typed_commands_retain_admission_identity_and_replay_deterministically() {
     let command = typed_admission("a1", "key-1", 1);
-    let mut snapshot = minimal_snapshot(1);
-    authorize_admission(&mut snapshot, &command);
+    let snapshot = minimal_snapshot(1);
     let admitted = reduce_command(
         &snapshot,
         &ProtocolCommand::AdmitActivation(command.clone()),
@@ -1763,20 +1682,19 @@ fn typed_commands_retain_admission_identity_and_replay_deterministically() {
 }
 
 #[test]
-fn typed_admission_rejects_provenance_authority_spoofing() {
+fn typed_admission_rejects_provenance_spoofing() {
     let mut command = typed_admission("a1", "key-1", 1);
-    let mut snapshot = minimal_snapshot(1);
-    authorize_admission(&mut snapshot, &command);
-    command.activation.provenance.source_id = "attacker-self-declared-runtime".into();
+    let snapshot = minimal_snapshot(1);
+    command.activation.provenance.trust = ActivationTrust::ExternalEvidence;
     let rejected = reduce_command(&snapshot, &ProtocolCommand::AdmitActivation(command));
     assert_eq!(rejected.outcome.decision, Decision::Rejected);
     assert_eq!(
         rejected.conflict.expect("typed conflict").kind,
-        ProtocolConflictKind::BindingConflict
+        ProtocolConflictKind::InvalidCommand
     );
     assert_eq!(
         rejected.outcome.diagnostics,
-        ["activation_authority_mismatch"]
+        ["activation_provenance_authority_mismatch"]
     );
     assert_eq!(rejected.outcome.snapshot, snapshot);
 }
@@ -1784,8 +1702,7 @@ fn typed_admission_rejects_provenance_authority_spoofing() {
 #[test]
 fn typed_settlement_has_one_canonical_identity_and_idempotent_replay() {
     let command = typed_admission("a1", "key-1", 1);
-    let mut snapshot = minimal_snapshot(1);
-    authorize_admission(&mut snapshot, &command);
+    let snapshot = minimal_snapshot(1);
     let admitted = reduce_command(&snapshot, &ProtocolCommand::AdmitActivation(command));
     let settlement = typed_settlement("s1", "a1", ActivationDisposition::WorkContinues);
     let settled = reduce_command(
@@ -1857,7 +1774,6 @@ fn lifecycle_settlement_can_atomically_adopt_work_item_wait() {
         expected_scheduling_generation: 1,
         expected_dispatch_revision: 0,
     };
-    authorize_admission(&mut snapshot, &admission);
     let admitted = reduce_command(&snapshot, &ProtocolCommand::AdmitActivation(admission));
     let settled = reduce_command(
         &admitted.outcome.snapshot,
@@ -1958,71 +1874,71 @@ fn work_demand_registration_is_typed_idempotent_and_conflict_safe() {
 }
 
 #[test]
-fn activation_authority_is_issued_once_and_cannot_have_an_unconsumed_alias() {
+fn admission_authority_id_is_unique_and_cannot_have_an_alias() {
     let admission = typed_admission("a1", "key-1", 1);
-    let issue = IssueActivationAuthorityCommand {
-        authority_id: admission.authority_id.clone(),
-        activation: admission.activation.clone(),
-        expected_scheduling_generation: admission.expected_scheduling_generation,
-        expected_dispatch_revision: admission.expected_dispatch_revision,
-    };
-    let issued = reduce_command(
+    let admitted = reduce_command(
         &minimal_snapshot(1),
-        &ProtocolCommand::IssueActivationAuthority(issue.clone()),
+        &ProtocolCommand::AdmitActivation(admission.clone()),
     );
-    assert_eq!(issued.outcome.decision, Decision::AuthorityIssued);
-    assert_eq!(
-        issued.outcome.snapshot.activation_authorities["authority-a1"].authority_id,
-        "authority-a1"
-    );
-    assert_invariants(&issued.outcome.snapshot).expect("issued authority must be canonical");
+    assert_eq!(admitted.outcome.decision, Decision::Admitted);
+    assert_invariants(&admitted.outcome.snapshot).expect("admission must be canonical");
 
     let replay = reduce_command(
-        &issued.outcome.snapshot,
-        &ProtocolCommand::IssueActivationAuthority(issue.clone()),
+        &admitted.outcome.snapshot,
+        &ProtocolCommand::AdmitActivation(admission.clone()),
     );
     assert_eq!(replay.outcome.decision, Decision::DuplicateIgnored);
-    assert_eq!(replay.outcome.snapshot, issued.outcome.snapshot);
+    assert_eq!(replay.outcome.snapshot, admitted.outcome.snapshot);
 
-    let mut duplicate_identity = issue;
-    duplicate_identity.authority_id = "authority-alias".into();
+    let mut duplicate_identity = typed_admission("a2", "key-2", 2);
+    duplicate_identity.authority_id = admission.authority_id;
     let rejected = reduce_command(
-        &issued.outcome.snapshot,
-        &ProtocolCommand::IssueActivationAuthority(duplicate_identity),
+        &admitted.outcome.snapshot,
+        &ProtocolCommand::AdmitActivation(duplicate_identity),
     );
     assert_eq!(rejected.outcome.decision, Decision::Rejected);
     assert_eq!(
         rejected.conflict.expect("typed conflict").kind,
-        ProtocolConflictKind::IdentityConflict
+        ProtocolConflictKind::AuthorityConflict
     );
     assert_eq!(
         rejected.outcome.diagnostics,
-        ["activation_authority_identity_conflict"]
+        ["activation_authority_id_command_conflict"]
     );
-    assert_eq!(rejected.outcome.snapshot, issued.outcome.snapshot);
+    assert_eq!(rejected.outcome.snapshot, admitted.outcome.snapshot);
 
-    let mut unconsumed_alias = issued.outcome.snapshot;
-    let authority = unconsumed_alias.activation_authorities["authority-a1"].clone();
-    unconsumed_alias
-        .activation_authorities
-        .insert("authority-alias".into(), authority);
-    assert_eq!(
-        assert_invariants(&unconsumed_alias),
-        Err("activation authority map key disagrees with authority identity".into())
+    let mut aliased = admitted.outcome.snapshot;
+    let mut alias = typed_admission("a2", "key-2", 2);
+    alias.authority_id = aliased.activation_admissions["a1"].authority_id.clone();
+    aliased.activation_admissions.insert("a2".into(), alias);
+    aliased.activations.insert(
+        "a2".into(),
+        ActivationRecord {
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "w1".into(),
+            },
+            admitted_generation: 2,
+            state: ActivationState::Settled,
+            recovery_for: None,
+        },
     );
-    let encoded = serde_json::to_value(unconsumed_alias).expect("serialize invalid snapshot");
-    let error =
-        serde_json::from_value::<Snapshot>(encoded).expect_err("reject aliased authority snapshot");
+    aliased.admitted_generations.insert("work:w1:2".into());
+    assert_eq!(
+        assert_invariants(&aliased),
+        Err("canonical activation admissions reuse authority identity".into())
+    );
+    let encoded = serde_json::to_value(aliased).expect("serialize invalid snapshot");
+    let error = serde_json::from_value::<Snapshot>(encoded)
+        .expect_err("reject aliased admission authority id");
     assert!(error
         .to_string()
-        .contains("activation authority map key disagrees with authority identity"));
+        .contains("canonical activation admissions reuse authority identity"));
 }
 
 #[test]
 fn typed_wait_settlement_rejects_empty_wait_identity_without_mutation() {
     let command = typed_admission("a1", "key-1", 1);
-    let mut snapshot = minimal_snapshot(1);
-    authorize_admission(&mut snapshot, &command);
+    let snapshot = minimal_snapshot(1);
     let admitted = reduce_command(&snapshot, &ProtocolCommand::AdmitActivation(command));
     let snapshot = admitted.outcome.snapshot;
     let rejected = reduce_command(
@@ -2054,7 +1970,6 @@ fn already_admitted_generation_is_classified_as_duplicate() {
     let mut snapshot = minimal_snapshot(1);
     snapshot.admitted_generations.insert("work:w1:1".into());
     let command = typed_admission("a2", "key-2", 1);
-    authorize_admission(&mut snapshot, &command);
     let rejected = reduce_command(&snapshot, &ProtocolCommand::AdmitActivation(command));
     assert_eq!(rejected.outcome.decision, Decision::Rejected);
     assert_eq!(
@@ -2070,8 +1985,7 @@ fn already_admitted_generation_is_classified_as_duplicate() {
 #[test]
 fn wait_history_rejects_future_generations_and_rearm_never_overwrites_them() {
     let command = typed_admission("a1", "key-1", 3);
-    let mut snapshot = minimal_snapshot(3);
-    authorize_admission(&mut snapshot, &command);
+    let snapshot = minimal_snapshot(3);
     let admitted = reduce_command(&snapshot, &ProtocolCommand::AdmitActivation(command));
     let mut snapshot = admitted.outcome.snapshot;
     snapshot.waits.insert(
@@ -2172,8 +2086,7 @@ fn wait_history_rejects_future_generations_and_rearm_never_overwrites_them() {
 #[test]
 fn canonical_admissions_rebuild_exact_unique_reservation_fences() {
     let command = typed_admission("a1", "key-1", 1);
-    let mut snapshot = minimal_snapshot(1);
-    authorize_admission(&mut snapshot, &command);
+    let snapshot = minimal_snapshot(1);
     let admitted = reduce_command(&snapshot, &ProtocolCommand::AdmitActivation(command));
     let snapshot = admitted.outcome.snapshot;
 
@@ -2193,16 +2106,6 @@ fn canonical_admissions_rebuild_exact_unique_reservation_fences() {
 
     let mut duplicate = snapshot;
     let duplicate_command = typed_admission("a2", "key-2", 1);
-    duplicate.activation_authorities.insert(
-        duplicate_command.authority_id.clone(),
-        ActivationAdmissionAuthority {
-            authority_id: duplicate_command.authority_id.clone(),
-            activation: duplicate_command.activation.clone(),
-            expected_scheduling_generation: 1,
-            expected_dispatch_revision: 0,
-            consumed_by: Some("a2".into()),
-        },
-    );
     duplicate
         .activation_admissions
         .insert("a2".into(), duplicate_command);
@@ -2224,10 +2127,9 @@ fn canonical_admissions_rebuild_exact_unique_reservation_fences() {
 }
 
 #[test]
-fn canonical_admission_recovery_rejects_future_dispatch_fences_and_alias_authorities() {
+fn canonical_admission_recovery_rejects_future_dispatch_fences_and_alias_authority_ids() {
     let command = typed_admission("a1", "key-1", 1);
-    let mut snapshot = minimal_snapshot(1);
-    authorize_admission(&mut snapshot, &command);
+    let snapshot = minimal_snapshot(1);
     let admitted = reduce_command(&snapshot, &ProtocolCommand::AdmitActivation(command));
     let snapshot = admitted.outcome.snapshot;
 
@@ -2237,42 +2139,47 @@ fn canonical_admission_recovery_rejects_future_dispatch_fences_and_alias_authori
         .get_mut("a1")
         .expect("admission")
         .expected_dispatch_revision = 99;
-    future_dispatch_fence
-        .activation_authorities
-        .get_mut("authority-a1")
-        .expect("authority")
-        .expected_dispatch_revision = 99;
     assert_eq!(
         assert_invariants(&future_dispatch_fence),
-        Err("canonical activation admission record disagrees with authority state".into())
+        Err("canonical activation admission record is invalid".into())
     );
 
     let mut aliased_authority = snapshot;
-    let mut authority = aliased_authority
-        .activation_authorities
-        .get("authority-a1")
-        .expect("authority")
+    let mut alias = typed_admission("a2", "key-2", 2);
+    alias.authority_id = aliased_authority.activation_admissions["a1"]
+        .authority_id
         .clone();
-    authority.authority_id = "authority-alias".into();
     aliased_authority
-        .activation_authorities
-        .insert("authority-alias".into(), authority);
+        .activation_admissions
+        .insert("a2".into(), alias);
+    aliased_authority.activations.insert(
+        "a2".into(),
+        ActivationRecord {
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "w1".into(),
+            },
+            admitted_generation: 2,
+            state: ActivationState::Settled,
+            recovery_for: None,
+        },
+    );
+    aliased_authority
+        .admitted_generations
+        .insert("work:w1:2".into());
     assert_eq!(
         assert_invariants(&aliased_authority),
-        Err("activation authorities reuse activation identity".into())
+        Err("canonical activation admissions reuse authority identity".into())
     );
 }
 
 #[test]
 fn every_activation_requires_a_canonical_admission_and_terminal_record() {
     let command = typed_admission("a1", "key-1", 1);
-    let mut snapshot = minimal_snapshot(1);
-    authorize_admission(&mut snapshot, &command);
+    let snapshot = minimal_snapshot(1);
     let admitted = reduce_command(&snapshot, &ProtocolCommand::AdmitActivation(command));
 
     let mut running_without_admission = admitted.outcome.snapshot.clone();
     running_without_admission.activation_admissions.clear();
-    running_without_admission.activation_authorities.clear();
     running_without_admission.admitted_generations.clear();
     assert_eq!(
         assert_invariants(&running_without_admission),
@@ -2317,7 +2224,6 @@ fn completion_continuation_requires_a_runnable_caller() {
         "caller-wait".into(),
         wait_record("caller", 1, WaitState::Active, None, None),
     );
-    authorize_admission(&mut snapshot, &command);
     let admitted = reduce_command(&snapshot, &ProtocolCommand::AdmitActivation(command));
     assert_invariants(&admitted.outcome.snapshot).expect("waiting caller prestate is canonical");
 
@@ -2385,7 +2291,6 @@ fn canonical_continuation_records_are_exact_and_preserve_the_caller_prestate_fen
             cost_class: "standard".into(),
         },
     );
-    authorize_admission(&mut snapshot, &command);
     let admitted = reduce_command(&snapshot, &ProtocolCommand::AdmitActivation(command));
     let completed = reduce_command(
         &admitted.outcome.snapshot,
@@ -2432,8 +2337,7 @@ fn canonical_continuation_records_are_exact_and_preserve_the_caller_prestate_fen
 #[test]
 fn canonical_typed_records_must_match_authoritative_activation_and_wait_facts() {
     let command = typed_admission("a1", "key-1", 1);
-    let mut snapshot = minimal_snapshot(1);
-    authorize_admission(&mut snapshot, &command);
+    let snapshot = minimal_snapshot(1);
     let admitted = reduce_command(&snapshot, &ProtocolCommand::AdmitActivation(command));
 
     let mut mismatched_admission = admitted.outcome.snapshot.clone();
@@ -2473,8 +2377,7 @@ fn canonical_typed_records_must_match_authoritative_activation_and_wait_facts() 
     assert!(assert_invariants(&runnable_settlement_with_terminal_work).is_err());
 
     let command = typed_admission("a2", "key-2", 1);
-    let mut snapshot = minimal_snapshot(1);
-    authorize_admission(&mut snapshot, &command);
+    let snapshot = minimal_snapshot(1);
     let admitted = reduce_command(&snapshot, &ProtocolCommand::AdmitActivation(command));
     let completed = reduce_command(
         &admitted.outcome.snapshot,
@@ -2495,8 +2398,7 @@ fn canonical_typed_records_must_match_authoritative_activation_and_wait_facts() 
     assert!(assert_invariants(&completed_with_runnable_work).is_err());
 
     let command = typed_admission("a3", "key-3", 1);
-    let mut snapshot = minimal_snapshot(1);
-    authorize_admission(&mut snapshot, &command);
+    let snapshot = minimal_snapshot(1);
     let admitted = reduce_command(&snapshot, &ProtocolCommand::AdmitActivation(command));
     let mut wait_settlement = typed_settlement(
         "s3",
@@ -2538,8 +2440,7 @@ fn canonical_typed_records_must_match_authoritative_activation_and_wait_facts() 
     assert!(assert_invariants(&waiting_with_resolved_current_generation).is_err());
 
     let command = typed_admission("a4", "key-4", 1);
-    let mut snapshot = minimal_snapshot(1);
-    authorize_admission(&mut snapshot, &command);
+    let snapshot = minimal_snapshot(1);
     let admitted = reduce_command(&snapshot, &ProtocolCommand::AdmitActivation(command));
     let missing = reduce_command(
         &admitted.outcome.snapshot,
@@ -2613,8 +2514,7 @@ fn reducer_rejections_have_explicit_stable_conflict_kinds() {
         },
     );
     let command = typed_admission("a2", "key-2", 1);
-    let mut snapshot = missing.snapshot;
-    authorize_admission(&mut snapshot, &command);
+    let snapshot = missing.snapshot;
     let rejected = reduce_command(&snapshot, &ProtocolCommand::AdmitActivation(command));
     assert_eq!(
         rejected.conflict.expect("typed conflict").kind,
@@ -2659,19 +2559,6 @@ fn typed_admission(
         expected_scheduling_generation: generation,
         expected_dispatch_revision: 0,
     }
-}
-
-fn authorize_admission(snapshot: &mut Snapshot, command: &AdmitActivationCommand) {
-    snapshot.activation_authorities.insert(
-        command.authority_id.clone(),
-        ActivationAdmissionAuthority {
-            authority_id: command.authority_id.clone(),
-            activation: command.activation.clone(),
-            expected_scheduling_generation: command.expected_scheduling_generation,
-            expected_dispatch_revision: command.expected_dispatch_revision,
-            consumed_by: None,
-        },
-    );
 }
 
 fn typed_settlement(
@@ -2737,7 +2624,6 @@ fn minimal_snapshot(scheduling_generation: u64) -> Snapshot {
         )]),
         waits: BTreeMap::new(),
         activations: BTreeMap::new(),
-        activation_authorities: BTreeMap::new(),
         activation_admissions: BTreeMap::new(),
         settlements: BTreeMap::new(),
         missing_settlements: BTreeMap::new(),

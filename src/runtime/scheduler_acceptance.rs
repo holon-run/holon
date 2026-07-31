@@ -1299,9 +1299,6 @@ async fn seed_scheduler_wait_trigger_restart_fixture(
             || before_fault
                 .activation_admissions
                 .contains_key(&activation_id)
-            || before_fault
-                .activation_authorities
-                .contains_key(&format!("authority:{activation_id}"))
         {
             return Err(anyhow!(
                 "scheduler wait trigger prepare did not leave a queued durable trigger"

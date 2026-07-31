@@ -773,9 +773,9 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         use crate::domain::scheduler_protocol::{
             ActivationBinding, ActivationCause, ActivationLifecycleState, ActivationOrigin,
             ActivationPriority, ActivationProvenance, ActivationSlot, ActivationTrust,
-            AdmitActivationCommand, AgentActivation, AgentDispatchState,
-            IssueActivationAuthorityCommand, PreemptionPolicy, ProtocolCommand,
-            RegisterWorkDemandCommand, Snapshot, TriggerWaitCommand, WaitResumeClaim, WorkDemand,
+            AdmitActivationCommand, AgentActivation, AgentDispatchState, PreemptionPolicy,
+            ProtocolCommand, RegisterWorkDemandCommand, Snapshot, TriggerWaitCommand,
+            WaitResumeClaim, WorkDemand,
         };
 
         if let Some(snapshot) = existing.as_ref() {
@@ -895,7 +895,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                         work: Default::default(),
                         waits: Default::default(),
                         activations: Default::default(),
-                        activation_authorities: Default::default(),
                         activation_admissions: Default::default(),
                         settlements: Default::default(),
                         missing_settlements: Default::default(),
@@ -1054,12 +1053,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             },
         };
         let authority_id = format!("authority:{activation_id}");
-        let authority = IssueActivationAuthorityCommand {
-            authority_id: authority_id.clone(),
-            activation: activation.clone(),
-            expected_scheduling_generation: scheduling_generation,
-            expected_dispatch_revision,
-        };
         let admission = AdmitActivationCommand {
             authority_id,
             activation,
@@ -1076,7 +1069,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 trigger_generation: resume.trigger_generation,
             }));
         }
-        commands.push(ProtocolCommand::IssueActivationAuthority(authority));
         commands.push(ProtocolCommand::AdmitActivation(admission));
 
         Ok(CanonicalClaimOutcome::Plan(CanonicalClaimPlan {
@@ -1105,8 +1097,8 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         use crate::domain::scheduler_protocol::{
             ActivationBinding, ActivationCause, ActivationLifecycleState, ActivationPriority,
             ActivationProvenance, ActivationSlot, AdmitActivationCommand, AgentActivation,
-            AgentDispatchState, IssueActivationAuthorityCommand, PreemptionPolicy, ProtocolCommand,
-            SchedulerOwner, Snapshot, TriggerWaitCommand, WaitResumeClaim,
+            AgentDispatchState, PreemptionPolicy, ProtocolCommand, SchedulerOwner, Snapshot,
+            TriggerWaitCommand, WaitResumeClaim,
         };
 
         let owner = SchedulerOwner::AgentLifecycle {
@@ -1156,7 +1148,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             work: Default::default(),
             waits: Default::default(),
             activations: Default::default(),
-            activation_authorities: Default::default(),
             activation_admissions: Default::default(),
             settlements: Default::default(),
             missing_settlements: Default::default(),
@@ -1295,14 +1286,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 trigger_generation: resume.trigger_generation,
             }));
         }
-        commands.push(ProtocolCommand::IssueActivationAuthority(
-            IssueActivationAuthorityCommand {
-                authority_id: authority_id.clone(),
-                activation: activation.clone(),
-                expected_scheduling_generation: expected_generation,
-                expected_dispatch_revision,
-            },
-        ));
         commands.push(ProtocolCommand::AdmitActivation(AdmitActivationCommand {
             authority_id,
             activation,

@@ -63,39 +63,6 @@
           "expected_scheduling_generation": 1
         }
       },
-      "activation_authorities": {
-        "authority-a1": {
-          "authority_id": "authority-a1",
-          "activation": {
-            "agent_id": "agent-1",
-            "binding": {
-              "kind": "work_item",
-              "work_item_id": "w1"
-            },
-            "cause": {
-              "kind": "work_item_runnable",
-              "scheduling_generation": 1,
-              "work_item_id": "w1"
-            },
-            "id": "a1",
-            "idempotency_key": "activation-a1",
-            "preemption": "non_preemptive",
-            "priority": "normal",
-            "provenance": {
-              "causation_id": null,
-              "correlation_id": null,
-              "origin": "system",
-              "source_id": "fixture",
-              "trust": "runtime_instruction"
-            },
-            "source_revision": null,
-            "state": "admitted"
-          },
-          "consumed_by": "a1",
-          "expected_dispatch_revision": 0,
-          "expected_scheduling_generation": 1
-        }
-      },
       "activations": {
         "a1": {
           "admitted_generation": 1,
@@ -240,39 +207,6 @@
           "status": {
             "kind": "runnable"
           }
-        }
-      },
-      "activation_authorities": {
-        "authority-a1": {
-          "authority_id": "authority-a1",
-          "activation": {
-            "id": "a1",
-            "agent_id": "agent-1",
-            "state": "admitted",
-            "cause": {
-              "kind": "work_item_runnable",
-              "work_item_id": "w1",
-              "scheduling_generation": 1
-            },
-            "binding": {
-              "kind": "work_item",
-              "work_item_id": "w1"
-            },
-            "priority": "normal",
-            "preemption": "non_preemptive",
-            "source_revision": null,
-            "idempotency_key": "activation-a1",
-            "provenance": {
-              "origin": "system",
-              "trust": "runtime_instruction",
-              "source_id": "fixture",
-              "correlation_id": null,
-              "causation_id": null
-            }
-          },
-          "expected_scheduling_generation": 1,
-          "expected_dispatch_revision": 0,
-          "consumed_by": "a1"
         }
       },
       "activation_admissions": {
@@ -472,70 +406,6 @@
           "expected_scheduling_generation": 7
         }
       },
-      "activation_authorities": {
-        "authority-a1": {
-          "authority_id": "authority-a1",
-          "activation": {
-            "agent_id": "agent-1",
-            "binding": {
-              "kind": "work_item",
-              "work_item_id": "w1"
-            },
-            "cause": {
-              "kind": "work_item_runnable",
-              "scheduling_generation": 1,
-              "work_item_id": "w1"
-            },
-            "id": "a1",
-            "idempotency_key": "activation-a1",
-            "preemption": "non_preemptive",
-            "priority": "normal",
-            "provenance": {
-              "causation_id": null,
-              "correlation_id": null,
-              "origin": "system",
-              "source_id": "fixture",
-              "trust": "runtime_instruction"
-            },
-            "source_revision": null,
-            "state": "admitted"
-          },
-          "consumed_by": "a1",
-          "expected_dispatch_revision": 0,
-          "expected_scheduling_generation": 1
-        },
-        "authority-a2": {
-          "authority_id": "authority-a2",
-          "activation": {
-            "agent_id": "agent-1",
-            "binding": {
-              "kind": "work_item",
-              "work_item_id": "w2"
-            },
-            "cause": {
-              "kind": "work_item_runnable",
-              "scheduling_generation": 7,
-              "work_item_id": "w2"
-            },
-            "id": "a2",
-            "idempotency_key": "activation-a2",
-            "preemption": "non_preemptive",
-            "priority": "normal",
-            "provenance": {
-              "causation_id": null,
-              "correlation_id": null,
-              "origin": "system",
-              "source_id": "scheduler",
-              "trust": "runtime_instruction"
-            },
-            "source_revision": null,
-            "state": "admitted"
-          },
-          "consumed_by": "a2",
-          "expected_dispatch_revision": 0,
-          "expected_scheduling_generation": 7
-        }
-      },
       "activations": {
         "a1": {
           "admitted_generation": 1,
@@ -722,39 +592,6 @@
           }
         }
       },
-      "activation_authorities": {
-        "authority-a1": {
-          "authority_id": "authority-a1",
-          "activation": {
-            "id": "a1",
-            "agent_id": "agent-1",
-            "state": "admitted",
-            "cause": {
-              "kind": "work_item_runnable",
-              "work_item_id": "w1",
-              "scheduling_generation": 1
-            },
-            "binding": {
-              "kind": "work_item",
-              "work_item_id": "w1"
-            },
-            "priority": "normal",
-            "preemption": "non_preemptive",
-            "source_revision": null,
-            "idempotency_key": "activation-a1",
-            "provenance": {
-              "origin": "system",
-              "trust": "runtime_instruction",
-              "source_id": "fixture",
-              "correlation_id": null,
-              "causation_id": null
-            }
-          },
-          "expected_scheduling_generation": 1,
-          "expected_dispatch_revision": 0,
-          "consumed_by": "a1"
-        }
-      },
       "activation_admissions": {
         "a1": {
           "authority_id": "authority-a1",
@@ -936,45 +773,6 @@
           "expected_scheduling_generation": 2
         }
       },
-      "activation_authorities": {
-        "authority-a2": {
-          "authority_id": "authority-a2",
-          "activation": {
-            "agent_id": "agent-1",
-            "binding": {
-              "kind": "wait_owner",
-              "wait_id": "wait-1",
-              "owner": {
-                "kind": "work_item",
-                "work_item_id": "w1"
-              }
-            },
-            "cause": {
-              "kind": "wait_resume",
-              "trigger_generation": 1,
-              "trigger_id": "wait-1-trigger-2",
-              "wait_generation": 2,
-              "wait_id": "wait-1"
-            },
-            "id": "a2",
-            "idempotency_key": "activation-a2",
-            "preemption": "non_preemptive",
-            "priority": "normal",
-            "provenance": {
-              "causation_id": null,
-              "correlation_id": null,
-              "origin": "system",
-              "source_id": "wait-resume",
-              "trust": "runtime_instruction"
-            },
-            "source_revision": null,
-            "state": "admitted"
-          },
-          "consumed_by": "a2",
-          "expected_dispatch_revision": 0,
-          "expected_scheduling_generation": 2
-        }
-      },
       "activations": {
         "a2": {
           "admitted_generation": 2,
@@ -1110,7 +908,6 @@
           }
         }
       },
-      "activation_authorities": {},
       "activation_admissions": {},
       "settlements": {},
       "missing_settlements": {},
@@ -1131,7 +928,6 @@
     ],
     "expected": {
       "activation_admissions": {},
-      "activation_authorities": {},
       "activations": {},
       "decisions": [
         "operator_intervention"
@@ -1245,7 +1041,6 @@
           }
         }
       },
-      "activation_authorities": {},
       "activation_admissions": {},
       "settlements": {},
       "missing_settlements": {},
@@ -1295,39 +1090,6 @@
             "state": "admitted"
           },
           "authority_id": "authority-a1",
-          "expected_dispatch_revision": 0,
-          "expected_scheduling_generation": 4
-        }
-      },
-      "activation_authorities": {
-        "authority-a1": {
-          "authority_id": "authority-a1",
-          "activation": {
-            "agent_id": "agent-1",
-            "binding": {
-              "kind": "work_item",
-              "work_item_id": "w1"
-            },
-            "cause": {
-              "kind": "work_item_runnable",
-              "scheduling_generation": 4,
-              "work_item_id": "w1"
-            },
-            "id": "a1",
-            "idempotency_key": "activation-a1",
-            "preemption": "non_preemptive",
-            "priority": "normal",
-            "provenance": {
-              "causation_id": null,
-              "correlation_id": null,
-              "origin": "system",
-              "source_id": "fixture",
-              "trust": "runtime_instruction"
-            },
-            "source_revision": null,
-            "state": "admitted"
-          },
-          "consumed_by": "a1",
           "expected_dispatch_revision": 0,
           "expected_scheduling_generation": 4
         }
@@ -1442,39 +1204,6 @@
           "status": {
             "kind": "runnable"
           }
-        }
-      },
-      "activation_authorities": {
-        "authority-a1": {
-          "authority_id": "authority-a1",
-          "activation": {
-            "id": "a1",
-            "agent_id": "agent-1",
-            "state": "admitted",
-            "cause": {
-              "kind": "work_item_runnable",
-              "work_item_id": "w1",
-              "scheduling_generation": 4
-            },
-            "binding": {
-              "kind": "work_item",
-              "work_item_id": "w1"
-            },
-            "priority": "normal",
-            "preemption": "non_preemptive",
-            "source_revision": null,
-            "idempotency_key": "activation-a1",
-            "provenance": {
-              "origin": "system",
-              "trust": "runtime_instruction",
-              "source_id": "fixture",
-              "correlation_id": null,
-              "causation_id": null
-            }
-          },
-          "expected_scheduling_generation": 4,
-          "expected_dispatch_revision": 0,
-          "consumed_by": "a1"
         }
       },
       "activation_admissions": {
@@ -1703,45 +1432,6 @@
           "expected_scheduling_generation": 2
         }
       },
-      "activation_authorities": {
-        "authority-a-resume": {
-          "authority_id": "authority-a-resume",
-          "activation": {
-            "agent_id": "agent-1",
-            "binding": {
-              "kind": "wait_owner",
-              "wait_id": "wait-1",
-              "owner": {
-                "kind": "work_item",
-                "work_item_id": "w1"
-              }
-            },
-            "cause": {
-              "kind": "wait_resume",
-              "trigger_generation": 1,
-              "trigger_id": "wait-1-trigger-2",
-              "wait_generation": 2,
-              "wait_id": "wait-1"
-            },
-            "id": "a-resume",
-            "idempotency_key": "activation-a-resume",
-            "preemption": "non_preemptive",
-            "priority": "normal",
-            "provenance": {
-              "causation_id": null,
-              "correlation_id": null,
-              "origin": "system",
-              "source_id": "wait-resume",
-              "trust": "runtime_instruction"
-            },
-            "source_revision": null,
-            "state": "admitted"
-          },
-          "consumed_by": "a-resume",
-          "expected_dispatch_revision": 0,
-          "expected_scheduling_generation": 2
-        }
-      },
       "activations": {
         "a-resume": {
           "admitted_generation": 2,
@@ -1910,7 +1600,6 @@
           }
         }
       },
-      "activation_authorities": {},
       "activation_admissions": {},
       "settlements": {},
       "missing_settlements": {},
@@ -2016,39 +1705,6 @@
             "state": "admitted"
           },
           "authority_id": "authority-a2",
-          "expected_dispatch_revision": 0,
-          "expected_scheduling_generation": 3
-        }
-      },
-      "activation_authorities": {
-        "authority-a2": {
-          "authority_id": "authority-a2",
-          "activation": {
-            "agent_id": "agent-1",
-            "binding": {
-              "kind": "work_item",
-              "work_item_id": "w2"
-            },
-            "cause": {
-              "kind": "work_item_runnable",
-              "scheduling_generation": 3,
-              "work_item_id": "w2"
-            },
-            "id": "a2",
-            "idempotency_key": "activation-a2",
-            "preemption": "non_preemptive",
-            "priority": "normal",
-            "provenance": {
-              "causation_id": null,
-              "correlation_id": null,
-              "origin": "system",
-              "source_id": "scheduler",
-              "trust": "runtime_instruction"
-            },
-            "source_revision": null,
-            "state": "admitted"
-          },
-          "consumed_by": "a2",
           "expected_dispatch_revision": 0,
           "expected_scheduling_generation": 3
         }
@@ -2207,7 +1863,6 @@
           }
         }
       },
-      "activation_authorities": {},
       "activation_admissions": {},
       "settlements": {},
       "missing_settlements": {},
@@ -2313,39 +1968,6 @@
             "state": "admitted"
           },
           "authority_id": "authority-a-background",
-          "expected_dispatch_revision": 0,
-          "expected_scheduling_generation": 4
-        }
-      },
-      "activation_authorities": {
-        "authority-a-background": {
-          "authority_id": "authority-a-background",
-          "activation": {
-            "agent_id": "agent-1",
-            "binding": {
-              "kind": "work_item",
-              "work_item_id": "background"
-            },
-            "cause": {
-              "kind": "work_item_runnable",
-              "scheduling_generation": 4,
-              "work_item_id": "background"
-            },
-            "id": "a-background",
-            "idempotency_key": "activation-a-background",
-            "preemption": "non_preemptive",
-            "priority": "normal",
-            "provenance": {
-              "causation_id": null,
-              "correlation_id": null,
-              "origin": "system",
-              "source_id": "scheduler",
-              "trust": "runtime_instruction"
-            },
-            "source_revision": null,
-            "state": "admitted"
-          },
-          "consumed_by": "a-background",
           "expected_dispatch_revision": 0,
           "expected_scheduling_generation": 4
         }
@@ -2494,7 +2116,6 @@
           }
         }
       },
-      "activation_authorities": {},
       "activation_admissions": {},
       "settlements": {},
       "missing_settlements": {},
@@ -2652,45 +2273,6 @@
           "expected_scheduling_generation": 2
         }
       },
-      "activation_authorities": {
-        "authority-a2": {
-          "authority_id": "authority-a2",
-          "activation": {
-            "agent_id": "agent-1",
-            "binding": {
-              "kind": "wait_owner",
-              "wait_id": "wait-1",
-              "owner": {
-                "kind": "work_item",
-                "work_item_id": "w1"
-              }
-            },
-            "cause": {
-              "kind": "wait_resume",
-              "trigger_generation": 1,
-              "trigger_id": "wait-1-trigger-2",
-              "wait_generation": 2,
-              "wait_id": "wait-1"
-            },
-            "id": "a2",
-            "idempotency_key": "activation-a2",
-            "preemption": "non_preemptive",
-            "priority": "normal",
-            "provenance": {
-              "causation_id": null,
-              "correlation_id": null,
-              "origin": "system",
-              "source_id": "wait-resume",
-              "trust": "runtime_instruction"
-            },
-            "source_revision": null,
-            "state": "admitted"
-          },
-          "consumed_by": "a2",
-          "expected_dispatch_revision": 0,
-          "expected_scheduling_generation": 2
-        }
-      },
       "activations": {
         "a2": {
           "admitted_generation": 2,
@@ -2823,7 +2405,6 @@
           }
         }
       },
-      "activation_authorities": {},
       "activation_admissions": {},
       "settlements": {},
       "missing_settlements": {},
@@ -2918,39 +2499,6 @@
             "state": "admitted"
           },
           "authority_id": "authority-a-child",
-          "expected_dispatch_revision": 0,
-          "expected_scheduling_generation": 3
-        }
-      },
-      "activation_authorities": {
-        "authority-a-child": {
-          "authority_id": "authority-a-child",
-          "activation": {
-            "agent_id": "agent-1",
-            "binding": {
-              "kind": "work_item",
-              "work_item_id": "child"
-            },
-            "cause": {
-              "kind": "work_item_runnable",
-              "scheduling_generation": 3,
-              "work_item_id": "child"
-            },
-            "id": "a-child",
-            "idempotency_key": "activation-a-child",
-            "preemption": "non_preemptive",
-            "priority": "normal",
-            "provenance": {
-              "causation_id": null,
-              "correlation_id": null,
-              "origin": "system",
-              "source_id": "fixture",
-              "trust": "runtime_instruction"
-            },
-            "source_revision": null,
-            "state": "admitted"
-          },
-          "consumed_by": "a-child",
           "expected_dispatch_revision": 0,
           "expected_scheduling_generation": 3
         }
@@ -3115,39 +2663,6 @@
           }
         }
       },
-      "activation_authorities": {
-        "authority-a-child": {
-          "authority_id": "authority-a-child",
-          "activation": {
-            "id": "a-child",
-            "agent_id": "agent-1",
-            "state": "admitted",
-            "cause": {
-              "kind": "work_item_runnable",
-              "work_item_id": "child",
-              "scheduling_generation": 3
-            },
-            "binding": {
-              "kind": "work_item",
-              "work_item_id": "child"
-            },
-            "priority": "normal",
-            "preemption": "non_preemptive",
-            "source_revision": null,
-            "idempotency_key": "activation-a-child",
-            "provenance": {
-              "origin": "system",
-              "trust": "runtime_instruction",
-              "source_id": "fixture",
-              "correlation_id": null,
-              "causation_id": null
-            }
-          },
-          "expected_scheduling_generation": 3,
-          "expected_dispatch_revision": 0,
-          "consumed_by": "a-child"
-        }
-      },
       "activation_admissions": {
         "a-child": {
           "authority_id": "authority-a-child",
@@ -3242,39 +2757,6 @@
             "state": "admitted"
           },
           "authority_id": "authority-a1",
-          "expected_dispatch_revision": 0,
-          "expected_scheduling_generation": 1
-        }
-      },
-      "activation_authorities": {
-        "authority-a1": {
-          "authority_id": "authority-a1",
-          "activation": {
-            "agent_id": "agent-1",
-            "binding": {
-              "kind": "work_item",
-              "work_item_id": "w1"
-            },
-            "cause": {
-              "kind": "work_item_runnable",
-              "scheduling_generation": 1,
-              "work_item_id": "w1"
-            },
-            "id": "a1",
-            "idempotency_key": "activation-a1",
-            "preemption": "non_preemptive",
-            "priority": "normal",
-            "provenance": {
-              "causation_id": null,
-              "correlation_id": null,
-              "origin": "system",
-              "source_id": "fixture",
-              "trust": "runtime_instruction"
-            },
-            "source_revision": null,
-            "state": "admitted"
-          },
-          "consumed_by": "a1",
           "expected_dispatch_revision": 0,
           "expected_scheduling_generation": 1
         }
@@ -3399,39 +2881,6 @@
           }
         }
       },
-      "activation_authorities": {
-        "authority-a1": {
-          "authority_id": "authority-a1",
-          "activation": {
-            "id": "a1",
-            "agent_id": "agent-1",
-            "state": "admitted",
-            "cause": {
-              "kind": "work_item_runnable",
-              "work_item_id": "w1",
-              "scheduling_generation": 1
-            },
-            "binding": {
-              "kind": "work_item",
-              "work_item_id": "w1"
-            },
-            "priority": "normal",
-            "preemption": "non_preemptive",
-            "source_revision": null,
-            "idempotency_key": "activation-a1",
-            "provenance": {
-              "origin": "system",
-              "trust": "runtime_instruction",
-              "source_id": "fixture",
-              "correlation_id": null,
-              "causation_id": null
-            }
-          },
-          "expected_scheduling_generation": 1,
-          "expected_dispatch_revision": 0,
-          "consumed_by": "a1"
-        }
-      },
       "activation_admissions": {
         "a1": {
           "authority_id": "authority-a1",
@@ -3544,7 +2993,6 @@
     ],
     "expected": {
       "activation_admissions": {},
-      "activation_authorities": {},
       "activations": {},
       "decisions": [
         "rejected"
@@ -3621,7 +3069,6 @@
           }
         }
       },
-      "activation_authorities": {},
       "activation_admissions": {},
       "settlements": {},
       "missing_settlements": {},

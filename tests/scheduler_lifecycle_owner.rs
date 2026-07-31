@@ -4,9 +4,9 @@ use holon::domain::scheduler_protocol::{
     assert_invariants, reduce_command, ActivationBinding, ActivationCause, ActivationDisposition,
     ActivationLifecycleState, ActivationOrigin, ActivationPriority, ActivationProvenance,
     ActivationSettlement, ActivationSlot, ActivationTrust, AdmitActivationCommand, AgentActivation,
-    AgentDispatchDisposition, AgentDispatchState, Decision, IssueActivationAuthorityCommand,
-    PreemptionPolicy, ProtocolCommand, SchedulerOwner, SettleActivationCommand, Snapshot,
-    TriggerWaitCommand, WaitGenerationRecord, WaitIdentity, WaitRecord, WaitState,
+    AgentDispatchDisposition, AgentDispatchState, Decision, PreemptionPolicy, ProtocolCommand,
+    SchedulerOwner, SettleActivationCommand, Snapshot, TriggerWaitCommand, WaitGenerationRecord,
+    WaitIdentity, WaitRecord, WaitState,
 };
 
 fn owner() -> SchedulerOwner {
@@ -42,7 +42,6 @@ fn waiting_snapshot() -> Snapshot {
             },
         )]),
         activations: BTreeMap::new(),
-        activation_authorities: BTreeMap::new(),
         activation_admissions: BTreeMap::new(),
         settlements: BTreeMap::new(),
         missing_settlements: BTreeMap::new(),
@@ -81,20 +80,7 @@ fn admission(id: &str, cause: ActivationCause) -> AdmitActivationCommand {
 }
 
 fn admit(snapshot: &Snapshot, command: AdmitActivationCommand) -> Snapshot {
-    let issued = reduce_command(
-        snapshot,
-        &ProtocolCommand::IssueActivationAuthority(IssueActivationAuthorityCommand {
-            authority_id: command.authority_id.clone(),
-            activation: command.activation.clone(),
-            expected_scheduling_generation: command.expected_scheduling_generation,
-            expected_dispatch_revision: command.expected_dispatch_revision,
-        }),
-    );
-    assert_eq!(issued.outcome.decision, Decision::AuthorityIssued);
-    let admitted = reduce_command(
-        &issued.outcome.snapshot,
-        &ProtocolCommand::AdmitActivation(command),
-    );
+    let admitted = reduce_command(snapshot, &ProtocolCommand::AdmitActivation(command));
     assert_eq!(admitted.outcome.decision, Decision::Admitted);
     admitted.outcome.snapshot
 }

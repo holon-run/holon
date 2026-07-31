@@ -48,6 +48,14 @@ fault-injection, and divergence gates pass.
 > [Scheduler Cutover Simplification](./scheduler-cutover-simplification.md).
 > Those sections are retained as historical design context, not as the current
 > delivery plan.
+>
+> **Admission lifecycle refinement:** Production claim has no durable
+> authority-issuance phase before admission. `AdmitActivationCommand` is the
+> single canonical admission fact and validates identity, provenance, binding,
+> generation, dispatch revision, and idempotency fences atomically. The
+> historical `scheduler_activation_authorities` table remains only as a
+> compatibility row derived from the admission while the existing schema
+> foreign key is retained.
 
 ## Status And Relationship To Existing RFCs
 
@@ -484,11 +492,10 @@ Each plan preserves the source-specific cause and binding, message provenance
 and trust, correlation and causation, expected WorkItem scheduling generation,
 expected dispatch revision, exact task or wait generation where applicable,
 and the legacy queue/Turn compatibility identity. Demand registration, wait
-trigger, authority issuance, `AdmitActivation`, queue claim, and running
-projection either commit together or all roll back. Duplicate command identity
-returns the first canonical result; stale generations, wrong-agent bindings,
-ambiguous waits, and out-of-order source identities reject before execution
-ownership changes.
+trigger, `AdmitActivation`, queue claim, and running projection either commit
+together or all roll back. Duplicate command identity returns the first
+canonical result; stale generations, wrong-agent bindings, ambiguous waits,
+and out-of-order source identities reject before execution ownership changes.
 
 ### Activation owner and lifecycle nudge
 
@@ -881,12 +888,14 @@ records:
 - `scheduler_wait_generations`: one immutable-identity row per
   `(agent_id, wait_id, generation)`, with lifecycle state, trigger identity,
   and consuming activation;
-- `scheduler_activation_authorities`: one row per
-  `(agent_id, authority_id)`, uniquely bound to the full activation identity
-  and recording its one allowed consumer;
+- `scheduler_activation_authorities`: a compatibility row per
+  `(agent_id, authority_id)`, derived from the canonical admission to preserve
+  the existing schema foreign key; it is not reconstructed as a second domain
+  state or independently issued by production commands;
 - `scheduler_activations`: one row per `(agent_id, activation_id)`, including
-  the authority, canonical admission fence, cause, binding, provenance,
-  lifecycle state, admitted WorkItem generation, and optional recovery target;
+  the admission authority identity, canonical admission fence, cause, binding,
+  provenance, lifecycle state, admitted WorkItem generation, and optional
+  recovery target;
 - `scheduler_activation_settlements`: one immutable settlement record per
   `(agent_id, settlement_id)`, with a uniqueness fence on the same-agent
   activation identity;
@@ -931,8 +940,8 @@ Foreign keys and unique indexes reinforce, but do not replace, reducer
 validation. Required database constraints include:
 
 - at most one running slot per agent;
-- at most one admitted activation for an authority;
-- at most one consumer for an authority;
+- at most one admitted activation for an authority identity;
+- one authority identity per canonical admission;
 - one focus row per agent, whose non-null target is an open same-agent demand;
 - for ordinary `Scheduling` and `WaitResume`, one shared admission fence per
   `(agent_id, work_item_id, scheduling_generation)`;
@@ -971,7 +980,6 @@ empty default.
 The first command surface is:
 
 ```text
-IssueActivationAuthorityCommand
 AdmitActivationCommand
 SettleActivationCommand
 RecordMissingSettlementCommand
@@ -980,9 +988,8 @@ TriggerWaitCommand
 
 Each command type has a stable canonical identity:
 
-- authority issuance uses `authority_id`;
-- admission uses `activation_id`, with activation idempotency key retained as
-  an additional uniqueness fence;
+- admission uses `activation_id`, with `authority_id` and activation
+  idempotency key retained as additional uniqueness fences;
 - settlement uses `settlement_id`;
 - missing-settlement recording uses the missing-settlement record identity;
   and
@@ -1007,11 +1014,11 @@ conflicting attempt in audit evidence without replacing that result.
 For a new command, the reducer decision and command-result row commit in the
 same transaction as all produced protocol facts. The result row is also
 committed for deterministic business rejection, including stale revision,
-stale generation, stale authority, invalid binding, duplicate identity, and
-unsupported transition. Its bounded outcome envelope stores the original
-decision, conflict, transition or result references, and state fences; it is
-not an authoritative serialized `Snapshot`. A caller that needs current state
-performs a separate projection read.
+stale generation, conflicting authority identity, invalid binding, duplicate
+identity, and unsupported transition. Its bounded outcome envelope stores the
+original decision, conflict, transition or result references, and state
+fences; it is not an authoritative serialized `Snapshot`. A caller that needs
+current state performs a separate projection read.
 
 SQLite busy, lock, process loss, or commit failure before a durable
 command-result row may use the existing transient retry path. Once a result row
