@@ -1070,6 +1070,7 @@ mod tests {
     fn runtime_mutable_config_keys_include_visual_model_defaults() {
         assert!(is_runtime_mutable_config_key("vision.default"));
         assert!(is_runtime_mutable_config_key("image_generation.default"));
+        assert!(!is_runtime_mutable_config_key("runtime.scheduler"));
     }
 
     fn encoded(bytes: &[u8]) -> String {

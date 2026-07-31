@@ -264,6 +264,7 @@ struct RuntimeInner {
     notify: Notify,
     storage: AppStorage,
     runtime_db: RuntimeDb,
+    scheduler_engine: crate::config::SchedulerEngineMode,
     clock: Arc<dyn clock::Clock>,
     provider: RwLock<Arc<dyn AgentProvider>>,
     context_config: RwLock<ContextConfig>,
@@ -2955,7 +2956,9 @@ impl RuntimeHandle {
         transcript_entries: Vec<TranscriptEntry>,
         brief_evidence: Vec<BriefRecord>,
     ) -> Result<bool> {
-        if record.status == QueueEntryStatus::Processed {
+        if self.inner.scheduler_engine.is_canonical()
+            && record.status == QueueEntryStatus::Processed
+        {
             if let Some(message) = self.inner.storage.read_message_by_id(&record.message_id)? {
                 if let Some(snapshot) = self
                     .inner
@@ -2987,12 +2990,15 @@ impl RuntimeHandle {
                 }
             }
         }
-        let scheduler_protocol_commands = self
-            .canonical_queue_settlement_commands(
+        let scheduler_protocol_commands = if self.inner.scheduler_engine.is_canonical() {
+            self.canonical_queue_settlement_commands(
                 &record,
                 terminal_transition.map(|transition| &transition.turn_record),
             )
-            .await?;
+            .await?
+        } else {
+            Vec::new()
+        };
         let original_audit_len = audit_events.len();
         let mut command = crate::runtime_db::transitions::QueueTransitionCommand {
             agent_id: record.agent_id.clone(),
@@ -3097,21 +3103,28 @@ impl RuntimeHandle {
     }
 
     pub async fn run(self) -> Result<()> {
-        self.bootstrap_recovery().await?;
         let agent_id = self.inner.agent.lock().await.state.id.clone();
-        let recovery =
-            scheduler_recovery_report(&self.inner.storage, &self.inner.runtime_db, &agent_id)?;
-        apply_scheduler_recovery_plan(
-            &self.inner.storage,
-            &self.inner.runtime_db,
-            &agent_id,
-            &recovery,
-        )?;
+        if !self.inner.scheduler_engine.is_canonical() {
+            self.validate_legacy_engine_startup(&agent_id)?;
+        }
+        self.bootstrap_recovery().await?;
+        if self.inner.scheduler_engine.is_canonical() {
+            let recovery =
+                scheduler_recovery_report(&self.inner.storage, &self.inner.runtime_db, &agent_id)?;
+            apply_scheduler_recovery_plan(
+                &self.inner.storage,
+                &self.inner.runtime_db,
+                &agent_id,
+                &recovery,
+            )?;
+        }
         scheduler_executor::SchedulerDecisionExecutor::new(&self)
             .bootstrap_recovered()
             .await?;
-        self.recover_scheduler_bootstrap_claims().await?;
-        self.record_scheduler_bootstrap_diagnostics().await?;
+        if self.inner.scheduler_engine.is_canonical() {
+            self.recover_scheduler_bootstrap_claims().await?;
+            self.record_scheduler_bootstrap_diagnostics().await?;
+        }
 
         loop {
             let poll = scheduler_executor::SchedulerDecisionExecutor::new(&self)
@@ -3468,13 +3481,16 @@ impl RuntimeHandle {
 
     async fn release_claimed_messages_for_runtime_restart(&self) -> Result<usize> {
         let agent_id = self.inner.agent.lock().await.state.id.clone();
-        let canonical_activations = self
-            .inner
-            .runtime_db
-            .transitions()
-            .load_scheduler_protocol_snapshot_if_initialized(&agent_id)?
-            .map(|snapshot| snapshot.activations)
-            .unwrap_or_default();
+        let canonical_activations = if self.inner.scheduler_engine.is_canonical() {
+            self.inner
+                .runtime_db
+                .transitions()
+                .load_scheduler_protocol_snapshot_if_initialized(&agent_id)?
+                .map(|snapshot| snapshot.activations)
+                .unwrap_or_default()
+        } else {
+            Default::default()
+        };
         let claimed = self
             .inner
             .runtime_db
@@ -3523,6 +3539,48 @@ impl RuntimeHandle {
             self.apply_transition_commit(commit).await;
         }
         Ok(released)
+    }
+
+    fn validate_legacy_engine_startup(&self, agent_id: &str) -> Result<()> {
+        if let Some(snapshot) = self
+            .inner
+            .runtime_db
+            .transitions()
+            .load_scheduler_protocol_snapshot_if_initialized(agent_id)?
+        {
+            let running = snapshot
+                .activations
+                .iter()
+                .filter(|(_, activation)| {
+                    activation.state == crate::domain::scheduler_protocol::ActivationState::Running
+                })
+                .map(|(activation_id, _)| activation_id.as_str())
+                .collect::<Vec<_>>();
+            if !running.is_empty() {
+                return Err(anyhow!(
+                    "legacy scheduler startup refused for agent {agent_id}: non-terminal \
+                     canonical activations remain ({})",
+                    running.join(", ")
+                ));
+            }
+        }
+        let dequeued = self
+            .inner
+            .runtime_db
+            .queue_entries()
+            .recent(Some(agent_id), usize::MAX)?
+            .into_iter()
+            .filter(|entry| entry.status == QueueEntryStatus::Dequeued)
+            .map(|entry| entry.message_id)
+            .collect::<Vec<_>>();
+        if dequeued.is_empty() {
+            return Ok(());
+        }
+        Err(anyhow!(
+            "legacy scheduler startup refused for agent {agent_id}: dequeued queue claims \
+             require diagnosis or repair ({})",
+            dequeued.join(", ")
+        ))
     }
 
     async fn recover_scheduler_bootstrap_claims(&self) -> Result<usize> {

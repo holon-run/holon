@@ -7,6 +7,7 @@ use std::{
 
 use anyhow::{anyhow, Context, Result};
 use axum::http::{HeaderName, HeaderValue, Method};
+use schemars::JsonSchema;
 use serde::{de::Error as DeError, Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{json, Value};
 
@@ -73,6 +74,7 @@ pub struct AppConfig {
     pub default_tool_output_tokens: u32,
     pub max_tool_output_tokens: u32,
     pub disable_provider_fallback: bool,
+    pub scheduler_engine: SchedulerEngineMode,
     pub tui_alternate_screen: AltScreenMode,
     pub validated_model_overrides: HashMap<ModelRef, ModelRuntimeOverride>,
     pub validated_unknown_model_fallback: Option<ModelRuntimeOverride>,
@@ -87,6 +89,14 @@ pub enum AltScreenMode {
     Auto,
     Always,
     Never,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SchedulerEngineMode {
+    Legacy,
+    #[default]
+    Canonical,
 }
 
 impl AppConfig {
@@ -128,6 +138,7 @@ impl AppConfig {
         reloaded.max_relevant_episodes = self.max_relevant_episodes;
         reloaded.control_token = self.control_token.clone();
         reloaded.control_auth_mode = self.control_auth_mode;
+        reloaded.scheduler_engine = self.scheduler_engine;
         reloaded.config_file_path = self.config_file_path.clone();
         Ok(reloaded)
     }
@@ -253,6 +264,7 @@ impl AppConfig {
             .max(default_tool_output_tokens);
 
         let disable_provider_fallback = resolve_disable_provider_fallback(&stored_config)?;
+        let scheduler_engine = resolve_scheduler_engine(&stored_config)?;
         resolve_runtime_db_retention_policy(&stored_config)?;
         let validated_model_overrides = resolve_model_catalog(&stored_config)?;
         let validated_unknown_model_fallback =
@@ -336,6 +348,7 @@ impl AppConfig {
             default_tool_output_tokens,
             max_tool_output_tokens,
             disable_provider_fallback,
+            scheduler_engine,
             tui_alternate_screen,
             validated_model_overrides,
             validated_unknown_model_fallback,
@@ -449,6 +462,27 @@ impl AltScreenMode {
     }
 }
 
+impl SchedulerEngineMode {
+    pub fn parse(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "legacy" => Ok(Self::Legacy),
+            "canonical" => Ok(Self::Canonical),
+            _ => Err(anyhow!("scheduler engine expects legacy or canonical")),
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Legacy => "legacy",
+            Self::Canonical => "canonical",
+        }
+    }
+
+    pub const fn is_canonical(self) -> bool {
+        matches!(self, Self::Canonical)
+    }
+}
+
 pub fn load_settings_env() -> Result<HashMap<String, String>> {
     let path = settings_path();
     if !path.exists() {
@@ -482,6 +516,21 @@ fn resolve_disable_provider_fallback(stored_config: &HolonConfigFile) -> Result<
         env::var("HOLON_DISABLE_PROVIDER_FALLBACK").ok().as_deref(),
         stored_config,
     )
+}
+
+fn resolve_scheduler_engine(stored_config: &HolonConfigFile) -> Result<SchedulerEngineMode> {
+    resolve_scheduler_engine_from_values(env::var("HOLON_SCHEDULER").ok().as_deref(), stored_config)
+}
+
+fn resolve_scheduler_engine_from_values(
+    env_override: Option<&str>,
+    stored_config: &HolonConfigFile,
+) -> Result<SchedulerEngineMode> {
+    env_override
+        .map(SchedulerEngineMode::parse)
+        .transpose()?
+        .or(stored_config.runtime.scheduler)
+        .map_or(Ok(SchedulerEngineMode::Canonical), Ok)
 }
 
 fn resolve_runtime_db_retention_policy(

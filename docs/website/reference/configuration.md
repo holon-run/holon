@@ -36,6 +36,7 @@ and description.
 | `model.default` | model_route_ref | Default executable route, e.g. `"anthropic@default/claude-sonnet-4-6"` |
 | `model.fallbacks` | model_route_ref_list | Ordered executable fallback routes |
 | `runtime.disable_provider_fallback` | boolean | Disable provider/model fallback; require deterministic single-provider execution |
+| `runtime.scheduler` | `legacy` or `canonical` | Startup-only process-wide scheduler engine; defaults to `canonical` |
 
 ```bash
 # Set the default model
@@ -103,11 +104,17 @@ Do not combine `api.cors.allow_credentials=true` with
 
 ### Scheduler
 
-The canonical scheduler is always authoritative in production. There is no
-`HOLON_SCHEDULER` or production-command feature switch. Existing rollout rows
-remain readable for database migration, recovery evidence, and historical
-diagnostics, but they do not select a legacy or shadow execution path at
-startup.
+The process selects exactly one scheduler engine at startup:
+
+```text
+HOLON_SCHEDULER > runtime.scheduler > canonical
+```
+
+Accepted values are `legacy` and `canonical`. The selected engine is immutable
+until process restart, global to every agent in the process, and never enables
+shadow execution or per-scenario authority. `runtime.scheduler` is startup-only:
+stop the daemon before changing it with `holon config set`, or use the
+`HOLON_SCHEDULER` environment override for the next process start.
 
 Migration 40 marks the rollout tables as retired compatibility data without
 dropping them. `holon debug scheduler-recovery` reports their retained row
@@ -115,10 +122,11 @@ counts and stale authoritative rows. They are diagnostic only: startup,
 ordinary scheduler transactions, and typed repair do not read them to decide
 authority.
 
-The accepted scheduler transition permits a temporary process-wide
-`legacy|canonical` selector during the compatibility release. It is not
-implemented in the current configuration schema. When introduced, it will
-default to `canonical` and will be removed with the legacy engine.
+`legacy` is a temporary compatibility fallback. It does not write canonical
+activation or settlement facts, and startup fails closed if non-terminal
+canonical activations remain. Stop admission and settle or interrupt in-flight
+canonical work before changing engines. The selector will be removed with the
+legacy engine after the compatibility release.
 
 ## Credential Management
 

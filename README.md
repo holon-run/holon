@@ -95,8 +95,9 @@ docker run --rm \
 
 Replace the model and credential environment variable when using another
 provider. Holon validates that the configured model provider is available
-before the service starts. The canonical scheduler is the only production
-execution path; no scheduler-mode environment variable is required.
+before the service starts. The canonical scheduler remains the default and
+long-term production path. During the bounded compatibility window,
+`HOLON_SCHEDULER=legacy|canonical` selects one process-wide engine at startup.
 
 The base image includes Git and common shell/network utilities. Mount a
 writable workspace at `/workspace`, or derive a project-specific image when

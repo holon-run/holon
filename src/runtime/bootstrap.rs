@@ -135,6 +135,42 @@ impl RuntimeHandle {
             None,
             None,
             None,
+            crate::config::SchedulerEngineMode::Canonical,
+            Arc::new(SystemClock),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_scheduler_engine(
+        agent_id: impl Into<String>,
+        data_dir: PathBuf,
+        initial_workspace: impl Into<InitialWorkspaceBinding>,
+        callback_base_url: String,
+        provider: Arc<dyn AgentProvider>,
+        default_agent_id: String,
+        context_config: ContextConfig,
+        scheduler_engine: crate::config::SchedulerEngineMode,
+    ) -> Result<Self> {
+        let base_context_config = context_config.clone();
+        Self::new_internal(
+            agent_id,
+            data_dir,
+            initial_workspace,
+            callback_base_url,
+            provider,
+            default_agent_id,
+            base_context_config,
+            context_config,
+            RuntimeModelCatalog::default(),
+            Vec::new(),
+            crate::tool::helpers::DEFAULT_TOOL_OUTPUT_TOKENS,
+            crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS,
+            crate::web::WebConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            scheduler_engine,
             Arc::new(SystemClock),
         )
     }
@@ -163,6 +199,7 @@ impl RuntimeHandle {
             Some(runtime_db),
             None,
             None,
+            crate::config::SchedulerEngineMode::Canonical,
             Arc::new(SystemClock),
         )
     }
@@ -197,6 +234,7 @@ impl RuntimeHandle {
             None,
             None,
             None,
+            crate::config::SchedulerEngineMode::Canonical,
             clock,
         )
     }
@@ -213,6 +251,7 @@ impl RuntimeHandle {
         host_bridge: RuntimeHostBridge,
         model_catalog: RuntimeModelCatalog,
         event_bus: EventBus,
+        scheduler_engine: crate::config::SchedulerEngineMode,
     ) -> Result<Self> {
         let base_context_config = context_config.clone();
         Self::new_internal(
@@ -233,6 +272,7 @@ impl RuntimeHandle {
             Some(runtime_db),
             Some(host_bridge),
             Some(event_bus),
+            scheduler_engine,
             Arc::new(SystemClock),
         )
     }
@@ -260,6 +300,7 @@ impl RuntimeHandle {
             build_provider_from_model_chain(&provider_config, &model_catalog.provider_chain(None))?;
         let resolved_context_config =
             model_catalog.resolved_context_config(&base_context_config, None);
+        let scheduler_engine = config.scheduler_engine;
         Self::new_internal(
             agent_id,
             data_dir,
@@ -278,6 +319,7 @@ impl RuntimeHandle {
             Some(runtime_db),
             Some(host_bridge),
             Some(event_bus),
+            scheduler_engine,
             Arc::new(SystemClock),
         )
     }
@@ -300,6 +342,7 @@ impl RuntimeHandle {
         runtime_db: Option<RuntimeDb>,
         host_bridge: Option<RuntimeHostBridge>,
         event_bus: Option<EventBus>,
+        scheduler_engine: crate::config::SchedulerEngineMode,
         clock: Arc<dyn Clock>,
     ) -> Result<Self> {
         let x_search_config = provider_reconfig
@@ -368,6 +411,7 @@ impl RuntimeHandle {
                 notify: Notify::new(),
                 storage,
                 runtime_db,
+                scheduler_engine,
                 clock,
                 provider: RwLock::new(provider),
                 config_snapshot: ArcSwap::from(config_snapshot),

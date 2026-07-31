@@ -4374,6 +4374,13 @@
                 "minimum": 0,
                 "type": "integer"
               },
+              "scheduler": {
+                "enum": [
+                  "legacy",
+                  "canonical"
+                ],
+                "type": "string"
+              },
               "unknown_model_fallback_configured": {
                 "type": "boolean"
               },
@@ -4469,6 +4476,7 @@
               "default_tool_output_tokens",
               "max_tool_output_tokens",
               "disable_provider_fallback",
+              "scheduler",
               "runtime_db_retention",
               "providers",
               "web_search",
@@ -4807,6 +4815,13 @@
                 "minimum": 0,
                 "type": "integer"
               },
+              "scheduler": {
+                "enum": [
+                  "legacy",
+                  "canonical"
+                ],
+                "type": "string"
+              },
               "unknown_model_fallback_configured": {
                 "type": "boolean"
               },
@@ -4902,6 +4917,7 @@
               "default_tool_output_tokens",
               "max_tool_output_tokens",
               "disable_provider_fallback",
+              "scheduler",
               "runtime_db_retention",
               "providers",
               "web_search",

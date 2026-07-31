@@ -348,6 +348,13 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             allowed_values: vec!["true", "false"],
         },
         ConfigSchemaEntry {
+            key: "runtime.scheduler",
+            kind: "enum",
+            description: "Startup-only process-wide scheduler engine. Canonical is the default; legacy is a temporary compatibility fallback.",
+            default: json!("canonical"),
+            allowed_values: vec!["legacy", "canonical"],
+        },
+        ConfigSchemaEntry {
             key: "runtime.retention.enabled",
             kind: "boolean",
             description: "Enable bounded runtime SQLite retention. Disabled unless explicitly configured.",
@@ -752,6 +759,11 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
             .disable_provider_fallback
             .map(Value::Bool)
             .unwrap_or(Value::Null)),
+        "runtime.scheduler" => Ok(config
+            .runtime
+            .scheduler
+            .map(|mode| json!(mode.as_str()))
+            .unwrap_or(Value::Null)),
         "runtime.retention.enabled" => Ok(config
             .runtime
             .retention
@@ -1095,6 +1107,9 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
                 parse_bool_value(raw_value)?.ok_or_else(|| anyhow!("{key} expects a boolean"))?,
             );
         }
+        "runtime.scheduler" => {
+            config.runtime.scheduler = Some(SchedulerEngineMode::parse(raw_value)?);
+        }
         "runtime.retention.enabled" => {
             config.runtime.retention.enabled = Some(
                 parse_bool_value(raw_value)?.ok_or_else(|| anyhow!("{key} expects a boolean"))?,
@@ -1395,6 +1410,7 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
         "runtime.default_tool_output_tokens" => config.runtime.default_tool_output_tokens = None,
         "runtime.max_tool_output_tokens" => config.runtime.max_tool_output_tokens = None,
         "runtime.disable_provider_fallback" => config.runtime.disable_provider_fallback = None,
+        "runtime.scheduler" => config.runtime.scheduler = None,
         "runtime.retention.enabled" => config.runtime.retention.enabled = None,
         "runtime.retention.audit_events_days" => {
             config.runtime.retention.audit_events_days = None;
@@ -1642,8 +1658,7 @@ pub(crate) fn parse_url_value(key: &str, raw_value: &str) -> Result<()> {
 }
 
 pub(crate) fn is_startup_only_config_key(key: &str) -> bool {
-    let _ = key;
-    false
+    key == "runtime.scheduler"
 }
 
 pub(crate) fn startup_only_config_key_error(key: &str) -> anyhow::Error {

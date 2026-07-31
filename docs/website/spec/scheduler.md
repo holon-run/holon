@@ -148,9 +148,9 @@ WorkItems flow through scheduling states that the scheduler consumes:
 
 ## Protocol transition layer
 
-The scheduler decision flow above is implemented by the canonical protocol.
-Every scheduler boundary is committed through an atomic
-`QueueTransitionCommand` transaction that can simultaneously:
+The scheduler decision flow above is shared by both startup-selectable engines.
+The canonical engine wraps each boundary in an atomic `QueueTransitionCommand`
+transaction that can simultaneously:
 
 1. commit the queue operation (admit, claim, or enqueue);
 2. update the agent state projection;
@@ -162,19 +162,18 @@ All effects commit in the same SQLite transaction. If the transaction fails or
 the CAS does not match, no partial queue, activation, settlement, or delivery
 state is left behind.
 
-The canonical protocol is the only production scheduler path. Historical
-rollout tables and enum values remain readable for migration and recovery
-diagnostics, but startup configuration cannot select legacy or shadow
-execution. Missing activation, terminal-turn, or settlement evidence fails
-closed and the transaction leaves no partial queue, projection, audit,
-activation, or settlement writes.
+The process selects `legacy` or `canonical` once at startup through
+`HOLON_SCHEDULER` or `runtime.scheduler`; canonical is the default. The legacy
+engine uses the shared queue, WorkItem, wait, task, Turn, transcript, brief,
+delivery, and audit contracts but does not write canonical activation or
+settlement facts. It fails closed when startup finds non-terminal canonical
+activations or unreconciled dequeued claims.
 
 The accepted transition contract retires runtime manifest/preflight gates,
 per-scenario authority, automatic hard-blocker rollback, and production shadow
-comparison. A temporary process-wide `legacy|canonical` startup selector may be
-added during implementation, defaults to canonical, and will be deleted with
-legacy after one compatibility release. It is not available in the current
-configuration surface.
+comparison. The process-wide selector is temporary, cannot change while the
+process is running, never enables mixed or per-scenario authority, and will be
+deleted with legacy after one compatibility release.
 
 ### Integration points
 

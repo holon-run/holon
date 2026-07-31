@@ -50,6 +50,7 @@ fn test_config() -> AppConfig {
         default_tool_output_tokens: 8_000,
         max_tool_output_tokens: 64_000,
         disable_provider_fallback: false,
+        scheduler_engine: holon::config::SchedulerEngineMode::Canonical,
         tui_alternate_screen: holon::config::AltScreenMode::Auto,
         validated_model_overrides: std::collections::HashMap::new(),
         validated_unknown_model_fallback: None,

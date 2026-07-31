@@ -1754,6 +1754,152 @@ async fn bootstrap_recovery_fault_rolls_back_queue_canonical_and_audit() {
 }
 
 #[tokio::test]
+async fn legacy_engine_claim_and_settlement_do_not_write_canonical_protocol() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new_with_scheduler_engine(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+        crate::config::SchedulerEngineMode::Legacy,
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item("legacy production loop".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "run legacy work".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+    message.work_item_id = Some(work_item.id.clone());
+    message.turn_id = Some("turn-legacy-production-loop".into());
+    let message = runtime.enqueue(message).await.unwrap();
+
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    assert!(matches!(poll, scheduler_executor::RunLoopPoll::Message(_)));
+    assert!(runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot_if_initialized("default")
+        .unwrap()
+        .is_none());
+
+    finish_claimed_test_run(&runtime).await;
+    let terminal = terminal_transition(&message, Some(&work_item.id));
+    runtime
+        .commit_queue_terminal_settlement(
+            QueueEntryRecord {
+                message_id: message.id.clone(),
+                agent_id: message.agent_id.clone(),
+                priority: message.priority,
+                status: QueueEntryStatus::Processed,
+                created_at: message.created_at,
+                updated_at: Utc::now(),
+            },
+            Vec::new(),
+            true,
+            Some(&terminal),
+        )
+        .await
+        .unwrap();
+
+    assert!(runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot_if_initialized("default")
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn legacy_engine_startup_rejects_running_canonical_activation() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let provider = Arc::new(CountingProvider {
+        calls: Mutex::new(0),
+        reply: "unused",
+    });
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider.clone(),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item("canonical in flight".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "leave canonical activation running".into(),
+        },
+    );
+    message.work_item_id = Some(work_item.id);
+    message.turn_id = Some("turn-canonical-in-flight".into());
+    runtime.enqueue(message).await.unwrap();
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Message(_)
+    ));
+    drop(runtime);
+
+    let legacy = RuntimeHandle::new_with_scheduler_engine(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider,
+        "default".into(),
+        context_config(),
+        crate::config::SchedulerEngineMode::Legacy,
+    )
+    .unwrap();
+    let error = legacy.run().await.unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("non-terminal canonical activations remain"));
+}
+
+#[tokio::test]
 async fn production_protocol_claim_and_settlement_release_the_canonical_slot() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
@@ -7412,6 +7558,113 @@ async fn task_result_records_wait_reconciliation_and_resolves_task_wait_conditio
     assert!(latest_conditions.iter().any(|condition| {
         condition.id == "wait-task-1" && condition.status == WaitConditionStatus::Resolved
     }));
+}
+
+#[tokio::test]
+async fn legacy_task_result_resolves_unique_wait_without_canonical_partition() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new_with_scheduler_engine(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "legacy task follow-up",
+        }),
+        "default".into(),
+        context_config(),
+        crate::config::SchedulerEngineMode::Legacy,
+    )
+    .unwrap();
+    let now = Utc::now();
+    let mut work_item = WorkItemRecord::new("default", "legacy task wait", WorkItemState::Open);
+    work_item.id = "wi-legacy-task".into();
+    work_item.blocked_by = Some("task result".into());
+    runtime.storage().append_work_item(&work_item).unwrap();
+    runtime
+        .storage()
+        .append_wait_condition(&WaitConditionRecord {
+            id: "wait-legacy-task".into(),
+            agent_id: "default".into(),
+            work_item_id: Some(work_item.id.clone()),
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::Task,
+            source: None,
+            subject_ref: Some("task-legacy".into()),
+            waiting_for: "task result".into(),
+            wake_sources: vec![WakeSource::TaskResult {
+                task_id: "task-legacy".into(),
+            }],
+            continuation: None,
+            created_at: now,
+            updated_at: now,
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: None,
+        })
+        .unwrap();
+
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::TaskResult,
+        MessageOrigin::Task {
+            task_id: "task-legacy".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "task completed".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    message.metadata = Some(serde_json::json!({
+        "task_id": "task-legacy",
+        "task_kind": "child_agent_task",
+        "task_status": "completed",
+        "work_item_id": work_item.id,
+    }));
+    message.task_id = Some("task-legacy".into());
+    message.work_item_id = Some(work_item.id.clone());
+
+    runtime
+        .process_message(
+            message,
+            closure_decision(
+                ClosureOutcome::Waiting,
+                Some(WaitingReason::AwaitingTaskResult),
+            ),
+        )
+        .await
+        .unwrap();
+
+    assert!(runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot_if_initialized("default")
+        .unwrap()
+        .is_none());
+    assert!(runtime
+        .storage()
+        .latest_wait_conditions()
+        .unwrap()
+        .iter()
+        .any(|condition| {
+            condition.id == "wait-legacy-task" && condition.status == WaitConditionStatus::Resolved
+        }));
+    assert!(runtime
+        .inner
+        .runtime_db
+        .work_items()
+        .latest(&work_item.id)
+        .unwrap()
+        .is_some_and(|work| work.blocked_by.is_none()));
 }
 
 #[tokio::test]

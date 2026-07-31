@@ -494,6 +494,31 @@ fn config_set_surfaces_daemon_rejection_reason() {
 }
 
 #[test]
+fn config_set_rejects_runtime_scheduler_while_daemon_is_running() {
+    let home = tempfile::tempdir().expect("create isolated HOLON_HOME");
+    let (_serve, addr) = spawn_local_serve(&home);
+
+    let (stdout, stderr) = run_failure_with_env(
+        &home,
+        &["config", "set", "runtime.scheduler", "legacy"],
+        &[("HOLON_HTTP_ADDR", &addr)],
+    );
+
+    assert!(
+        stdout.is_empty(),
+        "failed config set should not emit JSON stdout"
+    );
+    assert!(
+        stderr.contains("daemon rejected runtime config update for runtime.scheduler"),
+        "stderr should name the startup-only key: {stderr}"
+    );
+    assert!(
+        stderr.contains("unsupported or startup-only config key"),
+        "stderr should explain that scheduler selection requires restart: {stderr}"
+    );
+}
+
+#[test]
 fn onboard_json_contract_is_secret_safe_and_actionable() {
     let home = tempfile::tempdir().expect("create isolated HOLON_HOME");
     let _set = run_json(

@@ -2229,6 +2229,7 @@ impl RuntimeHost {
                 self.bridge(),
                 RuntimeModelCatalog::from_config(&config),
                 self.inner.event_bus.clone(),
+                config.scheduler_engine,
             )?
         } else {
             RuntimeHandle::new_reconfigurable_with_host_bridge(
@@ -2794,6 +2795,7 @@ mod tests {
             default_tool_output_tokens: crate::tool::helpers::DEFAULT_TOOL_OUTPUT_TOKENS as u32,
             max_tool_output_tokens: crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS as u32,
             disable_provider_fallback: false,
+            scheduler_engine: crate::config::SchedulerEngineMode::Canonical,
             tui_alternate_screen: crate::config::AltScreenMode::Auto,
             validated_model_overrides: std::collections::HashMap::new(),
             validated_unknown_model_fallback: None,

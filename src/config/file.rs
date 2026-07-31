@@ -230,6 +230,8 @@ pub struct RuntimeConfigFile {
     pub max_tool_output_tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disable_provider_fallback: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduler: Option<SchedulerEngineMode>,
     #[serde(default, skip_serializing_if = "RuntimeRetentionConfigFile::is_empty")]
     pub retention: RuntimeRetentionConfigFile,
 }
@@ -440,6 +442,7 @@ impl RuntimeConfigFile {
             && self.default_tool_output_tokens.is_none()
             && self.max_tool_output_tokens.is_none()
             && self.disable_provider_fallback.is_none()
+            && self.scheduler.is_none()
             && self.retention.is_empty()
     }
 }

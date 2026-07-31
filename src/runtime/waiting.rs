@@ -768,6 +768,9 @@ impl RuntimeHandle {
         &self,
         external_trigger_id: Option<&str>,
     ) -> Result<Option<(String, u64)>> {
+        if !self.inner.scheduler_engine.is_canonical() {
+            return Ok(None);
+        }
         let Some(external_trigger_id) = external_trigger_id else {
             return Ok(None);
         };
@@ -938,6 +941,23 @@ impl RuntimeHandle {
                 .is_some();
         if !operator_input && !callback_event && !external_wake_hint {
             return Ok(active_conditions);
+        }
+
+        if !self.inner.scheduler_engine.is_canonical() {
+            let matching = active_conditions
+                .into_iter()
+                .filter(|condition| {
+                    reconciliation_signal_for_condition(message, condition).is_some()
+                })
+                .collect::<Vec<_>>();
+            if matching.len() > 1 {
+                return Err(anyhow!(
+                    "legacy wait resume is ambiguous for message {}: {} matching waits",
+                    message.id,
+                    matching.len()
+                ));
+            }
+            return Ok(matching);
         }
 
         let exact_condition = self

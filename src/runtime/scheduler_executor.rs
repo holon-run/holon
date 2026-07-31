@@ -115,6 +115,12 @@ impl RuntimeHandle {
         continuation_resolution: Option<&ContinuationResolution>,
         task: Option<&TaskRecord>,
     ) -> Result<ExecutionAdmissionProvenance> {
+        if !self.inner.scheduler_engine.is_canonical() {
+            return Ok(ExecutionAdmissionProvenance::LegacyCompat {
+                scenario_class: None,
+                effective_mode: crate::domain::scheduler_protocol::ScenarioMode::Off,
+            });
+        }
         let scenario_class = if matches!(
             message.kind,
             crate::types::MessageKind::TaskStatus | crate::types::MessageKind::TaskResult
@@ -381,6 +387,11 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             candidate.queue_len,
             self.runtime.now(),
         )?;
+        let projection = if self.runtime.inner.scheduler_engine.is_canonical() {
+            projection
+        } else {
+            projection.without_canonical_authority()
+        };
         let legacy_decision = scheduler::decide_next_action(
             &projection,
             scheduler::SchedulerBoundary::RunLoop,
@@ -398,7 +409,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             .storage
             .read_message_by_id(&candidate.message.id)?
             .ok_or_else(|| anyhow!("claimed message is missing persisted ingress evidence"))?;
-        let canonical_claim =
+        let canonical_claim = if self.runtime.inner.scheduler_engine.is_canonical() {
             match self.canonical_activation_plan(&projection, &persisted_message, &dispatch_plan) {
                 Ok(CanonicalClaimOutcome::NotApplicable) => None,
                 Ok(CanonicalClaimOutcome::Plan(plan)) => Some(plan),
@@ -444,7 +455,10 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     }
                     return Err(error);
                 }
-            };
+            }
+        } else {
+            None
+        };
         if let Some(plan) = canonical_claim.as_ref() {
             dispatch_plan.execution_admission_provenance =
                 ExecutionAdmissionProvenance::Canonical {

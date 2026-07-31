@@ -27,7 +27,7 @@ use crate::config::{
     ProviderAuthConfig, ProviderBuiltinWebSearchConfig, ProviderConfigFile,
     ProviderEndpointConfigFile, ProviderEndpointId, ProviderId, ProviderPlanConfigFile,
     ProviderRegistry, ProviderRuntimeConfig, ProviderTransportKind, RuntimeModelCatalog,
-    XSearchRuntimeConfig, DEFAULT_LOCAL_AGENT_ID, DEFAULT_X_SEARCH_MODEL,
+    SchedulerEngineMode, XSearchRuntimeConfig, DEFAULT_LOCAL_AGENT_ID, DEFAULT_X_SEARCH_MODEL,
     OPENAI_CODEX_CREDENTIAL_PROFILE,
 };
 
@@ -167,6 +167,7 @@ fn test_app_config(default_model: &str, fallback_models: &[&str]) -> TestAppConf
         default_tool_output_tokens: crate::tool::helpers::DEFAULT_TOOL_OUTPUT_TOKENS as u32,
         max_tool_output_tokens: crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS as u32,
         disable_provider_fallback: false,
+        scheduler_engine: crate::config::SchedulerEngineMode::Canonical,
         tui_alternate_screen: crate::config::AltScreenMode::Auto,
         validated_model_overrides: HashMap::new(),
         validated_unknown_model_fallback: None,
@@ -592,6 +593,64 @@ fn set_get_and_unset_round_trip_runtime_disable_provider_fallback() {
         get_config_key(&config, "runtime.disable_provider_fallback").unwrap(),
         Value::Null
     );
+}
+
+#[test]
+fn set_get_and_unset_round_trip_runtime_scheduler() {
+    let mut config = HolonConfigFile::default();
+    set_config_key(&mut config, "runtime.scheduler", "legacy").unwrap();
+    assert_eq!(
+        get_config_key(&config, "runtime.scheduler").unwrap(),
+        json!("legacy")
+    );
+
+    unset_config_key(&mut config, "runtime.scheduler").unwrap();
+    assert_eq!(
+        get_config_key(&config, "runtime.scheduler").unwrap(),
+        Value::Null
+    );
+}
+
+#[test]
+fn scheduler_engine_precedence_is_env_then_config_then_canonical() {
+    let mut config = HolonConfigFile::default();
+    assert_eq!(
+        super::resolve_scheduler_engine_from_values(None, &config).unwrap(),
+        SchedulerEngineMode::Canonical
+    );
+
+    config.runtime.scheduler = Some(SchedulerEngineMode::Legacy);
+    assert_eq!(
+        super::resolve_scheduler_engine_from_values(None, &config).unwrap(),
+        SchedulerEngineMode::Legacy
+    );
+    assert_eq!(
+        super::resolve_scheduler_engine_from_values(Some("canonical"), &config).unwrap(),
+        SchedulerEngineMode::Canonical
+    );
+    assert!(
+        super::resolve_scheduler_engine_from_values(Some("shadow"), &config)
+            .unwrap_err()
+            .to_string()
+            .contains("expects legacy or canonical")
+    );
+}
+
+#[test]
+fn app_config_rejects_invalid_scheduler_env() {
+    let home = tempdir().unwrap();
+    std::fs::write(
+        home.path().join("config.json"),
+        r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+    )
+    .unwrap();
+    let _env = EnvVarGuard::set("HOLON_SCHEDULER", "shadow");
+
+    let error = AppConfig::load_with_home_for_config_inspection(Some(home.path().to_path_buf()))
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("scheduler engine expects legacy or canonical"));
 }
 
 #[test]
@@ -2198,6 +2257,7 @@ fn schema_contains_expected_keys() {
     assert!(keys.contains(&"runtime.default_tool_output_tokens"));
     assert!(keys.contains(&"runtime.max_tool_output_tokens"));
     assert!(keys.contains(&"runtime.disable_provider_fallback"));
+    assert!(keys.contains(&"runtime.scheduler"));
     assert!(keys.contains(&"tui.alternate_screen"));
     assert!(keys.contains(&"web.fetch.enabled"));
     assert!(keys.contains(&"web.fetch.allowed_hosts"));

@@ -81,6 +81,11 @@ impl RuntimeHandle {
             scheduler_state.pending,
             self.now(),
         )?;
+        let scheduler_projection = if self.inner.scheduler_engine.is_canonical() {
+            scheduler_projection
+        } else {
+            scheduler_projection.without_canonical_authority()
+        };
         let scheduler_decision = scheduler::decide_next_action(
             &scheduler_projection,
             scheduler::SchedulerBoundary::MessageProcessing,
