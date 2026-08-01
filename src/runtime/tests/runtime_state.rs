@@ -853,6 +853,110 @@ async fn legacy_recovery_plan_reconciles_an_existing_dispatch_reservation() {
 }
 
 #[tokio::test]
+async fn legacy_recovery_isolates_a_stale_candidate_and_keeps_other_work_available() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let first = runtime
+        .create_work_item(
+            "legacy recovery first".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let stale = runtime
+        .create_work_item(
+            "legacy recovery stale".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let stale_report =
+        scheduler_recovery_report(&runtime.inner.storage, &runtime.inner.runtime_db, "default")
+            .unwrap();
+    runtime
+        .update_work_item_fields(
+            stale.id.clone(),
+            Some("legacy recovery stale updated".into()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        apply_scheduler_recovery_plan(
+            &runtime.inner.storage,
+            &runtime.inner.runtime_db,
+            "default",
+            &stale_report,
+        )
+        .unwrap()
+        .0,
+        1
+    );
+    let isolated = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    assert!(isolated.work.contains_key(&first.id));
+    assert!(!isolated.work.contains_key(&stale.id));
+    assert!(runtime
+        .storage()
+        .read_recent_events(32)
+        .unwrap()
+        .iter()
+        .any(|event| {
+            event.kind == "scheduler_diagnostic"
+                && event.data["reason"] == "legacy_adoption_rejected"
+                && event.data["work_item_id"] == stale.id
+        }));
+
+    let fresh_report =
+        scheduler_recovery_report(&runtime.inner.storage, &runtime.inner.runtime_db, "default")
+            .unwrap();
+    assert_eq!(
+        apply_scheduler_recovery_plan(
+            &runtime.inner.storage,
+            &runtime.inner.runtime_db,
+            "default",
+            &fresh_report,
+        )
+        .unwrap()
+        .0,
+        1
+    );
+    let recovered = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    assert!(recovered.work.contains_key(&first.id));
+    assert!(recovered.work.contains_key(&stale.id));
+}
+
+#[tokio::test]
 async fn bootstrap_diagnostics_report_cross_model_scheduler_invariant_failures() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();

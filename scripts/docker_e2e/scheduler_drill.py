@@ -91,7 +91,7 @@ RESTART_CHECKPOINT_CUT_KINDS = {
     "settlement_delivery": "durable_recovery",
     "post_commit_notification": "post_commit_recovery",
     "targeted_yield_return": "durable_recovery",
-    "legacy_adoption_atomicity": "atomic_rollback",
+    "legacy_adoption_atomicity": "candidate_isolation",
 }
 RUN_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{5,63}$")
 FAULT_SCENARIOS = {

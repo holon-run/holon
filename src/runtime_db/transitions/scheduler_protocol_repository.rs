@@ -130,6 +130,32 @@ impl fmt::Display for SchedulerProtocolCommandIdentityConflict {
 
 impl StdError for SchedulerProtocolCommandIdentityConflict {}
 
+#[derive(Debug)]
+pub(crate) struct LegacySchedulerAdoptionRejected {
+    pub reason: String,
+}
+
+impl fmt::Display for LegacySchedulerAdoptionRejected {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "legacy adoption rejected: {}", self.reason)
+    }
+}
+
+impl StdError for LegacySchedulerAdoptionRejected {}
+
+#[derive(Debug)]
+pub(crate) struct SchedulerProtocolReducerRejected {
+    pub reason: String,
+}
+
+impl fmt::Display for SchedulerProtocolReducerRejected {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.reason)
+    }
+}
+
+impl StdError for SchedulerProtocolReducerRejected {}
+
 #[derive(Debug, Serialize)]
 struct SnapshotFence<'a> {
     slot: &'a ActivationSlot,
@@ -210,7 +236,9 @@ pub(super) fn validate_protocol_commands_tx(
         let pre_state_fence = snapshot_fence(&snapshot)?;
         let outcome = scheduler_protocol::reduce_command(&snapshot, command);
         scheduler_protocol::assert_invariants(&outcome.outcome.snapshot).map_err(|error| {
-            anyhow!("scheduler protocol reducer produced invalid state: {error}")
+            SchedulerProtocolReducerRejected {
+                reason: format!("scheduler protocol reducer produced invalid state: {error}"),
+            }
         })?;
         if outcome.outcome.decision == Decision::Rejected {
             let code = outcome
@@ -219,7 +247,10 @@ pub(super) fn validate_protocol_commands_tx(
                 .map(|conflict| conflict.code.as_str())
                 .or_else(|| outcome.outcome.diagnostics.first().map(String::as_str))
                 .unwrap_or("rejected_without_diagnostic");
-            bail!("canonical scheduler command {command_kind} rejected: {code}");
+            return Err(SchedulerProtocolReducerRejected {
+                reason: format!("canonical scheduler command {command_kind} rejected: {code}"),
+            }
+            .into());
         }
         let post_state_fence = snapshot_fence(&outcome.outcome.snapshot)?;
         let decision = outcome.outcome.decision.clone();
@@ -508,7 +539,9 @@ impl RuntimeTransitionRepository<'_> {
             }
             let outcome = scheduler_protocol::reduce_command(&snapshot, command);
             scheduler_protocol::assert_invariants(&outcome.outcome.snapshot).map_err(|error| {
-                anyhow!("scheduler protocol reducer produced invalid state: {error}")
+                SchedulerProtocolReducerRejected {
+                    reason: format!("scheduler protocol reducer produced invalid state: {error}"),
+                }
             })?;
             inject_fault(fault, TransitionFaultPoint::AfterValidation)?;
 
@@ -858,18 +891,21 @@ fn validate_legacy_adoption_source_tx(
         .optional()?
         .map(|payload| crate::runtime_db::repositories::decode_work_item_payload(&payload))
         .transpose()?
-        .ok_or_else(|| anyhow!("legacy adoption source WorkItem is missing or closed"))?;
+        .ok_or_else(|| LegacySchedulerAdoptionRejected {
+            reason: "source_work_item_missing_or_closed".into(),
+        })?;
     let candidate = legacy_scheduler_adoption_candidate_tx(tx, &work_item)?;
     if !candidate.eligible
         || candidate.command.as_ref()
             != Some(&ProtocolCommand::AdoptLegacyWorkState(command.clone()))
     {
-        bail!(
-            "legacy adoption source changed for {}:{} ({})",
-            agent_id,
-            command.work_item_id,
-            candidate.reason
-        );
+        return Err(LegacySchedulerAdoptionRejected {
+            reason: format!(
+                "source_changed:{}:{}:{}",
+                agent_id, command.work_item_id, candidate.reason
+            ),
+        }
+        .into());
     }
     Ok(())
 }

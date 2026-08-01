@@ -1902,6 +1902,7 @@ async fn seed_scheduler_legacy_adoption_restart_fixture(
                 eligible.len()
             ));
         }
+        let valid_work_item_id = eligible[0].work_item_id.clone();
         let stale_work_item_id = eligible[1].work_item_id.clone();
         let stale = runtime
             .inner
@@ -1919,39 +1920,57 @@ async fn seed_scheduler_legacy_adoption_restart_fixture(
                 None,
             )
             .await?;
-        let error = super::apply_scheduler_recovery_plan(
+        let applied = super::apply_scheduler_recovery_plan(
             &runtime.inner.storage,
             &runtime.inner.runtime_db,
             agent_id,
             &report,
-        )
-        .expect_err("stale legacy adoption report must be rejected");
-        if !error.to_string().contains("legacy adoption source changed") {
-            return Err(error).context("unexpected legacy adoption rollback failure");
+        )?;
+        if applied.0 != 1 {
+            return Err(anyhow!(
+                "scheduler legacy adoption did not apply the valid isolated candidate"
+            ));
         }
-        let partition_initialized = runtime
+        let snapshot = runtime
             .inner
             .runtime_db
             .transitions()
             .load_scheduler_protocol_snapshot_if_initialized(agent_id)?
-            .is_some();
-        if partition_initialized {
+            .ok_or_else(|| anyhow!("valid isolated adoption did not initialize partition"))?;
+        if !snapshot.work.contains_key(&valid_work_item_id)
+            || snapshot.work.contains_key(&stale_work_item_id)
+        {
             return Err(anyhow!(
-                "stale legacy adoption report left partial canonical state"
+                "legacy adoption candidate isolation changed the wrong WorkItems"
+            ));
+        }
+        let isolated_diagnostic = runtime
+            .inner
+            .storage
+            .read_recent_events(32)?
+            .into_iter()
+            .any(|event| {
+                event.kind == "scheduler_diagnostic"
+                    && event.data["reason"] == "legacy_adoption_rejected"
+                    && event.data["work_item_id"] == stale_work_item_id
+            });
+        if !isolated_diagnostic {
+            return Err(anyhow!(
+                "stale legacy adoption did not emit an isolation diagnostic"
             ));
         }
         return Ok(SchedulerLegacyAdoptionRestartFixture {
             checkpoint: "legacy_adoption_atomicity".into(),
             stage: stage.into(),
-            cut_kind: "atomic_rollback".into(),
+            cut_kind: "candidate_isolation".into(),
             agent_id: agent_id.into(),
             work_item_id: stale_work_item_id,
             precommit_fault_rolled_back: true,
             replay_applied: false,
             replay_exactly_once: false,
-            partition_initialized,
+            partition_initialized: true,
             work_status: None,
-            focus_work_item_id: None,
+            focus_work_item_id: snapshot.focus,
         });
     }
     if stage != "replay" && stage != "verify" {
@@ -2019,7 +2038,7 @@ async fn seed_scheduler_legacy_adoption_restart_fixture(
     Ok(SchedulerLegacyAdoptionRestartFixture {
         checkpoint: "legacy_adoption_atomicity".into(),
         stage: stage.into(),
-        cut_kind: "atomic_rollback".into(),
+        cut_kind: "candidate_isolation".into(),
         agent_id: agent_id.into(),
         work_item_id: stale.id.clone(),
         precommit_fault_rolled_back: stage == "verify",

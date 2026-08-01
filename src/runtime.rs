@@ -1327,34 +1327,151 @@ pub fn scheduler_recovery_report(
 }
 
 pub fn apply_scheduler_recovery_plan(
-    _storage: &AppStorage,
+    storage: &AppStorage,
     runtime_db: &RuntimeDb,
     agent_id: &str,
     report: &SchedulerRecoveryReport,
 ) -> Result<(usize, Option<std::path::PathBuf>)> {
-    let mut commands = report
+    let legacy_adoptions = report
         .legacy_adoptions
         .iter()
         .filter(|candidate| candidate.eligible)
-        .filter_map(|candidate| candidate.proposed_command.clone())
+        .filter_map(|candidate| {
+            candidate
+                .proposed_command
+                .as_ref()
+                .map(|command| (candidate, command))
+        })
         .collect::<Vec<_>>();
-    if let Some(candidate) = report.candidates.iter().find(|candidate| {
-        candidate.kind == SchedulerRecoveryCandidateKind::NeedsSettlement && candidate.eligible
-    }) {
-        commands.extend(candidate.proposed_commands.clone());
-    }
-    if commands.is_empty() {
+    let settlement_recovery = report
+        .candidates
+        .iter()
+        .find(|candidate| {
+            candidate.kind == SchedulerRecoveryCandidateKind::NeedsSettlement && candidate.eligible
+        })
+        .map(|candidate| candidate.proposed_commands.as_slice())
+        .unwrap_or_default();
+    if legacy_adoptions.is_empty() && settlement_recovery.is_empty() {
         return Ok((0, None));
     }
+    if let Some(snapshot) = runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot_if_initialized(agent_id)?
+    {
+        crate::domain::scheduler_protocol::assert_invariants(&snapshot)
+            .map_err(|error| anyhow!("invalid canonical scheduler recovery prestate: {error}"))?;
+    }
     let backup_path = runtime_db.create_verified_backup("scheduler-recovery")?;
-    Ok((
-        usize::from(
-            runtime_db
-                .transitions()
-                .commit_scheduler_recovery_plan(agent_id, &commands)?,
-        ),
-        Some(backup_path),
-    ))
+    let mut applied = false;
+    for (candidate, command) in legacy_adoptions {
+        if let Some(reason) =
+            preflight_legacy_adoption(runtime_db, agent_id, &candidate.work_item_id, command)?
+        {
+            record_legacy_adoption_rejection(storage, agent_id, &candidate.work_item_id, reason)?;
+            continue;
+        }
+        match runtime_db
+            .transitions()
+            .commit_scheduler_recovery_plan(agent_id, std::slice::from_ref(command))
+        {
+            Ok(changed) => applied |= changed,
+            Err(error) => {
+                let Some(reason) = isolated_legacy_adoption_rejection(&error) else {
+                    return Err(error);
+                };
+                record_legacy_adoption_rejection(
+                    storage,
+                    agent_id,
+                    &candidate.work_item_id,
+                    reason,
+                )?;
+            }
+        }
+    }
+    if !settlement_recovery.is_empty() {
+        applied |= runtime_db
+            .transitions()
+            .commit_scheduler_recovery_plan(agent_id, settlement_recovery)?;
+    }
+    Ok((usize::from(applied), Some(backup_path)))
+}
+
+fn preflight_legacy_adoption(
+    runtime_db: &RuntimeDb,
+    agent_id: &str,
+    work_item_id: &str,
+    command: &crate::domain::scheduler_protocol::ProtocolCommand,
+) -> Result<Option<String>> {
+    let current = runtime_db
+        .transitions()
+        .legacy_scheduler_adoption_candidates(agent_id)?
+        .into_iter()
+        .find(|candidate| candidate.work_item_id == work_item_id);
+    let Some(current) = current else {
+        return Ok(Some("source_work_item_missing_or_closed".into()));
+    };
+    if !current.eligible || current.command.as_ref() != Some(command) {
+        return Ok(Some(format!(
+            "source_changed:{agent_id}:{work_item_id}:{}",
+            current.reason
+        )));
+    }
+    let Some(snapshot) = runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot_if_initialized(agent_id)?
+    else {
+        return Ok(None);
+    };
+    let outcome = crate::domain::scheduler_protocol::reduce_command(&snapshot, command);
+    if let Err(error) =
+        crate::domain::scheduler_protocol::assert_invariants(&outcome.outcome.snapshot)
+    {
+        return Ok(Some(format!(
+            "scheduler protocol reducer produced invalid state: {error}"
+        )));
+    }
+    if outcome.outcome.decision == crate::domain::scheduler_protocol::Decision::Rejected {
+        return Ok(Some(
+            outcome
+                .conflict
+                .map(|conflict| conflict.code)
+                .or_else(|| outcome.outcome.diagnostics.into_iter().next())
+                .unwrap_or_else(|| "rejected_without_diagnostic".into()),
+        ));
+    }
+    Ok(None)
+}
+
+fn record_legacy_adoption_rejection(
+    storage: &AppStorage,
+    agent_id: &str,
+    work_item_id: &str,
+    reason: String,
+) -> Result<()> {
+    storage.append_event(&scheduler::scheduler_invariant_diagnostic_event(
+        agent_id,
+        "legacy_adoption_rejected",
+        Some(work_item_id.to_string()),
+        None,
+        vec![reason],
+    )?)
+}
+
+fn isolated_legacy_adoption_rejection(error: &anyhow::Error) -> Option<String> {
+    error.chain().find_map(|source| {
+        source
+            .downcast_ref::<
+                crate::runtime_db::transitions::scheduler_protocol_repository::LegacySchedulerAdoptionRejected,
+            >()
+            .map(|error| error.reason.clone())
+            .or_else(|| {
+                source
+                    .downcast_ref::<
+                        crate::runtime_db::transitions::scheduler_protocol_repository::SchedulerProtocolReducerRejected,
+                    >()
+                    .map(|error| error.reason.clone())
+            })
+    })
 }
 
 fn runtime_error_queue_settlement(

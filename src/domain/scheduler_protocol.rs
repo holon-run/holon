@@ -2164,79 +2164,83 @@ fn adopt_legacy_work_state(
         );
     }
 
-    let mut next = snapshot.clone();
-    if let Some(existing) = next.work.get(&command.work_item_id) {
-        if let WorkStatus::Waiting { wait_id } = &existing.status {
-            let existing_wait = WaitIdentity {
-                id: wait_id.clone(),
-                generation: existing.scheduling_generation,
-            };
-            let target_preserves_generation = command.wait.as_ref().is_some_and(|wait| {
-                wait.wait_id == existing_wait.id && wait.generation == existing_wait.generation
-            });
-            if !target_preserves_generation {
-                if let Some(wait) = next.waits.get_mut(wait_id) {
-                    if let Some(generation) = wait.generations.get_mut(&existing_wait.generation) {
-                        if matches!(generation.state, WaitState::Active | WaitState::Triggered) {
-                            generation.state = WaitState::Resolved;
-                            generation.trigger = None;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    next.work
-        .insert(command.work_item_id.clone(), command.demand.clone());
-    if let Some(wait) = &command.wait {
-        let target_generation = WaitGenerationRecord {
-            owner: SchedulerOwner::WorkItem {
-                work_item_id: wait.owner_work_item_id.clone(),
-            },
-            state: WaitState::Active,
-            trigger: None,
-            consuming_activation_id: None,
-        };
-        if source_dispatch_wait
-            .as_ref()
-            .is_some_and(|source| source.id == wait.wait_id)
-        {
-            let record = next
-                .waits
-                .get_mut(&wait.wait_id)
-                .expect("source dispatch wait exists");
-            record.current_generation = wait.generation;
-            record
-                .generations
-                .insert(wait.generation, target_generation);
-        } else {
-            next.waits.insert(
-                wait.wait_id.clone(),
-                WaitRecord {
-                    current_generation: wait.generation,
-                    generations: BTreeMap::from([(wait.generation, target_generation)]),
-                },
-            );
-        }
-        if command.reserve_dispatch || source_dispatch_wait.is_some() {
-            set_dispatch_state(
-                &mut next,
-                AgentDispatchState::Awaiting {
-                    wait: WaitIdentity {
-                        id: wait.wait_id.clone(),
-                        generation: wait.generation,
-                    },
-                },
-            );
-        }
-    } else if source_dispatch_wait.is_some() {
-        set_dispatch_state(&mut next, AgentDispatchState::Open);
-    }
-    // Terminalize the replaced old focus demand if a proof was provided and validated.
     let mut transitions = vec![format!(
         "work:{}:legacy_state_adopted:generation:{}",
         command.work_item_id, command.demand.scheduling_generation
     )];
+    let resolutions = snapshot
+        .work
+        .get(&command.work_item_id)
+        .and_then(|existing| match &existing.status {
+            WorkStatus::Waiting { wait_id } => Some(WaitIdentity {
+                id: wait_id.clone(),
+                generation: existing.scheduling_generation,
+            }),
+            _ => None,
+        })
+        .filter(|existing_wait| {
+            !command.wait.as_ref().is_some_and(|target| {
+                target.wait_id == existing_wait.id && target.generation == existing_wait.generation
+            })
+        })
+        .and_then(|existing_wait| {
+            snapshot
+                .waits
+                .get(&existing_wait.id)
+                .and_then(|wait| wait.generations.get(&existing_wait.generation))
+                .filter(|generation| {
+                    matches!(generation.state, WaitState::Active | WaitState::Triggered)
+                })
+                .cloned()
+                .map(|expected| LaneWaitResolution {
+                    wait: existing_wait,
+                    expected,
+                    reason: "resolved_by_legacy_adoption",
+                })
+        })
+        .into_iter()
+        .collect::<Vec<_>>();
+    let arm = command.wait.as_ref().map(|wait| LaneWaitArm {
+        wait: WaitIdentity {
+            id: wait.wait_id.clone(),
+            generation: wait.generation,
+        },
+        owner: SchedulerOwner::WorkItem {
+            work_item_id: wait.owner_work_item_id.clone(),
+        },
+    });
+    let target_dispatch = if let Some(arm) = &arm {
+        if command.reserve_dispatch || source_dispatch_wait.is_some() {
+            AgentDispatchState::Awaiting {
+                wait: arm.wait.clone(),
+            }
+        } else {
+            snapshot.dispatch.clone()
+        }
+    } else if source_dispatch_wait.is_some() {
+        AgentDispatchState::Open
+    } else {
+        snapshot.dispatch.clone()
+    };
+    let mut next = snapshot.clone();
+    if let Err(code) = apply_lane_transition(
+        &mut next,
+        &snapshot.dispatch,
+        &resolutions,
+        arm.as_ref(),
+        target_dispatch,
+        Some(LaneWorkUpdate {
+            work_item_id: command.work_item_id.clone(),
+            demand: command.demand.clone(),
+        }),
+        &mut transitions,
+    ) {
+        return rejected_command(
+            snapshot,
+            command_conflict(ProtocolConflictKind::StateConflict, code),
+        );
+    }
+    // Terminalize the replaced old focus demand if a proof was provided and validated.
     if let Some(proof) = &command.replace_completed_focus {
         if let Some(old_demand) = next.work.get_mut(&proof.work_item_id) {
             old_demand.status = WorkStatus::Terminal;
@@ -2496,24 +2500,19 @@ fn adopt_activation_work_state(
         );
     }
 
-    let mut next = snapshot.clone();
-    let mut transitions = Vec::new();
+    let mut resolutions = Vec::new();
     if let Some(proof) = &command.source_lifecycle_wait {
-        let wait = next
+        let expected = snapshot
             .waits
-            .get_mut(&proof.wait.id)
-            .expect("validated source lifecycle wait exists");
-        let generation = wait
-            .generations
-            .get_mut(&proof.wait.generation)
-            .expect("validated source lifecycle wait generation exists");
-        generation.state = WaitState::Resolved;
-        generation.trigger = None;
-        generation.consuming_activation_id = None;
-        transitions.push(format!(
-            "wait:{}:generation:{}:resolved_by_work_item_handoff",
-            proof.wait.id, proof.wait.generation
-        ));
+            .get(&proof.wait.id)
+            .and_then(|wait| wait.generations.get(&proof.wait.generation))
+            .expect("validated source lifecycle wait generation exists")
+            .clone();
+        resolutions.push(LaneWaitResolution {
+            wait: proof.wait.clone(),
+            expected,
+            reason: "resolved_by_work_item_handoff",
+        });
     }
     if let Some(existing_wait_id) = existing_wait_id {
         if command
@@ -2529,82 +2528,68 @@ fn adopt_activation_work_state(
                 ),
             );
         }
-        if let Some(wait) = next.waits.get_mut(existing_wait_id) {
-            let generation = wait
+        if let Some(wait) = snapshot.waits.get(existing_wait_id) {
+            let expected = wait
                 .generations
-                .get_mut(&wait.current_generation)
+                .get(&wait.current_generation)
                 .expect("current wait generation exists");
-            if matches!(generation.state, WaitState::Active | WaitState::Triggered) {
-                generation.state = WaitState::Resolved;
-                generation.trigger = None;
-                generation.consuming_activation_id = None;
-                transitions.push(format!(
-                    "wait:{existing_wait_id}:generation:{}:resolved_by_activation_rearm",
-                    wait.current_generation
-                ));
+            if matches!(expected.state, WaitState::Active | WaitState::Triggered) {
+                resolutions.push(LaneWaitResolution {
+                    wait: WaitIdentity {
+                        id: existing_wait_id.to_string(),
+                        generation: wait.current_generation,
+                    },
+                    expected: expected.clone(),
+                    reason: "resolved_by_activation_rearm",
+                });
             }
         }
     }
-    next.work.insert(
-        command.work_item_id.clone(),
-        WorkDemand {
-            metadata_revision: command.source_work_item_revision,
-            scheduling_generation: command.wait.generation,
-            status: WorkStatus::Waiting {
-                wait_id: command.wait.wait_id.clone(),
-            },
-            capabilities: Default::default(),
-            locks: Default::default(),
-            locality: "runtime".into(),
-            cost_class: "default".into(),
+    let demand = WorkDemand {
+        metadata_revision: command.source_work_item_revision,
+        scheduling_generation: command.wait.generation,
+        status: WorkStatus::Waiting {
+            wait_id: command.wait.wait_id.clone(),
         },
-    );
-    if let Some(wait) = next.waits.get_mut(&command.wait.wait_id) {
-        wait.current_generation = command.wait.generation;
-        wait.generations.insert(
-            command.wait.generation,
-            WaitGenerationRecord {
-                owner: SchedulerOwner::WorkItem {
-                    work_item_id: command.work_item_id.clone(),
-                },
-                state: WaitState::Active,
-                trigger: None,
-                consuming_activation_id: None,
-            },
-        );
-    } else {
-        next.waits.insert(
-            command.wait.wait_id.clone(),
-            WaitRecord {
-                current_generation: command.wait.generation,
-                generations: BTreeMap::from([(
-                    command.wait.generation,
-                    WaitGenerationRecord {
-                        owner: SchedulerOwner::WorkItem {
-                            work_item_id: command.work_item_id.clone(),
-                        },
-                        state: WaitState::Active,
-                        trigger: None,
-                        consuming_activation_id: None,
-                    },
-                )]),
-            },
-        );
-    }
-    if command.reserve_dispatch {
-        let dispatch = AgentDispatchState::Awaiting {
-            wait: WaitIdentity {
-                id: command.wait.wait_id.clone(),
-                generation: command.wait.generation,
-            },
-        };
-        if next.dispatch != dispatch {
-            next.dispatch = dispatch;
-            next.dispatch_revision += 1;
+        capabilities: Default::default(),
+        locks: Default::default(),
+        locality: "runtime".into(),
+        cost_class: "default".into(),
+    };
+    let arm = LaneWaitArm {
+        wait: WaitIdentity {
+            id: command.wait.wait_id.clone(),
+            generation: command.wait.generation,
+        },
+        owner: SchedulerOwner::WorkItem {
+            work_item_id: command.work_item_id.clone(),
+        },
+    };
+    let target_dispatch = if command.reserve_dispatch {
+        AgentDispatchState::Awaiting {
+            wait: arm.wait.clone(),
         }
-    } else if next.dispatch != AgentDispatchState::Open {
-        next.dispatch = AgentDispatchState::Open;
-        next.dispatch_revision += 1;
+    } else {
+        AgentDispatchState::Open
+    };
+    let mut next = snapshot.clone();
+    let mut transitions = Vec::new();
+    if let Err(code) = apply_lane_transition(
+        &mut next,
+        &snapshot.dispatch,
+        &resolutions,
+        Some(&arm),
+        target_dispatch,
+        Some(LaneWorkUpdate {
+            work_item_id: command.work_item_id.clone(),
+            demand,
+        }),
+        &mut transitions,
+    ) {
+        return rejected_command(
+            snapshot,
+            command_conflict(ProtocolConflictKind::StateConflict, code),
+        );
     }
     if command.focus {
         next.focus = Some(command.work_item_id.clone());
@@ -3862,10 +3847,6 @@ fn settle_work_item(
     }
     let mut next = snapshot.clone();
     let next_generation = current_work.scheduling_generation + 1;
-    next.work
-        .get_mut(work_item_id)
-        .expect("running work item exists")
-        .scheduling_generation = next_generation;
 
     let mut transitions = vec![
         format!("activation:{activation_id}:settled"),
@@ -3877,23 +3858,59 @@ fn settle_work_item(
 
     match settlement {
         Settlement::Continue | Settlement::Yield => {
-            resolve_consumed_wait(&mut next, consumed_wait_id.as_deref(), &mut transitions);
-            next.work
-                .get_mut(work_item_id)
-                .expect("running work item exists")
-                .status = WorkStatus::Runnable;
-            set_dispatch_state(&mut next, AgentDispatchState::Open);
+            let mut demand = current_work.clone();
+            demand.scheduling_generation = next_generation;
+            demand.status = WorkStatus::Runnable;
+            let resolutions = current_lane_resolution(
+                snapshot,
+                consumed_wait_id.as_deref(),
+                "consumed->resolved",
+            )
+            .into_iter()
+            .collect::<Vec<_>>();
+            if let Err(code) = apply_lane_transition(
+                &mut next,
+                &snapshot.dispatch,
+                &resolutions,
+                None,
+                AgentDispatchState::Open,
+                Some(LaneWorkUpdate {
+                    work_item_id: work_item_id.to_string(),
+                    demand,
+                }),
+                &mut transitions,
+            ) {
+                return rejected(snapshot, code);
+            }
             transitions.push(format!("work:{work_item_id}:runnable"));
         }
         Settlement::TargetedYield { continuation } => {
-            resolve_consumed_wait(&mut next, consumed_wait_id.as_deref(), &mut transitions);
-            next.work
-                .get_mut(work_item_id)
-                .expect("running work item exists")
-                .status = WorkStatus::Yielded {
+            let mut demand = current_work.clone();
+            demand.scheduling_generation = next_generation;
+            demand.status = WorkStatus::Yielded {
                 continuation: continuation.clone(),
             };
-            set_dispatch_state(&mut next, AgentDispatchState::Open);
+            let resolutions = current_lane_resolution(
+                snapshot,
+                consumed_wait_id.as_deref(),
+                "consumed->resolved",
+            )
+            .into_iter()
+            .collect::<Vec<_>>();
+            if let Err(code) = apply_lane_transition(
+                &mut next,
+                &snapshot.dispatch,
+                &resolutions,
+                None,
+                AgentDispatchState::Open,
+                Some(LaneWorkUpdate {
+                    work_item_id: work_item_id.to_string(),
+                    demand,
+                }),
+                &mut transitions,
+            ) {
+                return rejected(snapshot, code);
+            }
             next.focus = Some(continuation.target_work_item_id.clone());
             transitions.push(format!(
                 "work:{work_item_id}:yielded:{}:{}",
@@ -3917,7 +3934,7 @@ fn settle_work_item(
                 id: wait.id.clone(),
                 generation: wait_generation,
             };
-            if let Some(existing_wait) = next.waits.get(&wait.id) {
+            if let Some(existing_wait) = snapshot.waits.get(&wait.id) {
                 let current_generation = existing_wait
                     .generations
                     .get(&existing_wait.current_generation)
@@ -3952,84 +3969,66 @@ fn settle_work_item(
                     return rejected(snapshot, "wait_id_consumed_by_other_activation");
                 }
             }
-            next.work
-                .get_mut(work_item_id)
-                .expect("running work item exists")
-                .status = WorkStatus::Waiting {
+            let mut demand = current_work.clone();
+            demand.scheduling_generation = next_generation;
+            demand.status = WorkStatus::Waiting {
                 wait_id: wait.id.clone(),
             };
-            if consumed_wait_id.as_deref().is_some_and(|id| id != wait.id) {
-                resolve_consumed_wait(&mut next, consumed_wait_id.as_deref(), &mut transitions);
-            }
-            let previous_generation = next
-                .waits
-                .get(&wait.id)
-                .map(|record| record.current_generation);
-            if let Some(record) = next.waits.get_mut(&wait.id) {
-                let previous = record
-                    .generations
-                    .get_mut(&record.current_generation)
-                    .expect("current wait generation exists");
-                if previous.state == WaitState::Consumed {
-                    previous.state = WaitState::Resolved;
-                    previous.consuming_activation_id = None;
-                    transitions.push(format!(
-                        "wait:{}:generation:{}:consumed->resolved",
-                        wait.id, record.current_generation
-                    ));
-                }
-                record.current_generation = next_generation;
-                record.generations.insert(
-                    next_generation,
-                    WaitGenerationRecord {
-                        owner: owner.clone(),
-                        state: WaitState::Active,
-                        trigger: None,
-                        consuming_activation_id: None,
-                    },
-                );
-            } else {
-                next.waits.insert(
-                    wait.id.clone(),
-                    WaitRecord {
-                        current_generation: next_generation,
-                        generations: BTreeMap::from([(
-                            next_generation,
-                            WaitGenerationRecord {
-                                owner: owner.clone(),
-                                state: WaitState::Active,
-                                trigger: None,
-                                consuming_activation_id: None,
-                            },
-                        )]),
-                    },
-                );
-            }
-            let dispatch = match mode {
+            let resolutions = current_lane_resolution(
+                snapshot,
+                consumed_wait_id.as_deref(),
+                "consumed->resolved",
+            )
+            .into_iter()
+            .collect::<Vec<_>>();
+            let arm = LaneWaitArm {
+                wait: wait.clone(),
+                owner: owner.clone(),
+            };
+            let target_dispatch = match mode {
                 WaitMode::AwaitThis => AgentDispatchState::Awaiting { wait: wait.clone() },
                 WaitMode::AcceptScheduling => AgentDispatchState::Open,
             };
-            set_dispatch_state(&mut next, dispatch);
-            transitions.push(match previous_generation {
-                Some(generation) => {
-                    format!(
-                        "wait:{}:generation:{generation}->{next_generation}:active",
-                        wait.id
-                    )
-                }
-                None => format!(
-                    "wait:{}:generation:{next_generation}:created:active",
-                    wait.id
-                ),
-            });
+            if let Err(code) = apply_lane_transition(
+                &mut next,
+                &snapshot.dispatch,
+                &resolutions,
+                Some(&arm),
+                target_dispatch,
+                Some(LaneWorkUpdate {
+                    work_item_id: work_item_id.to_string(),
+                    demand,
+                }),
+                &mut transitions,
+            ) {
+                return rejected(snapshot, code);
+            }
         }
         Settlement::Complete { continuation } => {
-            resolve_consumed_wait(&mut next, consumed_wait_id.as_deref(), &mut transitions);
-            next.work
-                .get_mut(work_item_id)
-                .expect("running work item exists")
-                .status = WorkStatus::Terminal;
-            set_dispatch_state(&mut next, AgentDispatchState::Open);
+            let mut demand = current_work.clone();
+            demand.scheduling_generation = next_generation;
+            demand.status = WorkStatus::Terminal;
+            let resolutions = current_lane_resolution(
+                snapshot,
+                consumed_wait_id.as_deref(),
+                "consumed->resolved",
+            )
+            .into_iter()
+            .collect::<Vec<_>>();
+            if let Err(code) = apply_lane_transition(
+                &mut next,
+                &snapshot.dispatch,
+                &resolutions,
+                None,
+                AgentDispatchState::Open,
+                Some(LaneWorkUpdate {
+                    work_item_id: work_item_id.to_string(),
+                    demand,
+                }),
+                &mut transitions,
+            ) {
+                return rejected(snapshot, code);
+            }
             transitions.push(format!("work:{work_item_id}:terminal"));
             let restored_focus = continuation
                 .as_ref()
@@ -4164,8 +4163,24 @@ fn settle_lifecycle(
     match settlement {
         Settlement::Continue | Settlement::Yield | Settlement::Complete { continuation: None } => {
             if !lifecycle_nudge {
-                resolve_consumed_wait(&mut next, consumed_wait_id.as_deref(), &mut transitions);
-                set_dispatch_state(&mut next, AgentDispatchState::Open);
+                let resolutions = current_lane_resolution(
+                    snapshot,
+                    consumed_wait_id.as_deref(),
+                    "consumed->resolved",
+                )
+                .into_iter()
+                .collect::<Vec<_>>();
+                if let Err(code) = apply_lane_transition(
+                    &mut next,
+                    &snapshot.dispatch,
+                    &resolutions,
+                    None,
+                    AgentDispatchState::Open,
+                    None,
+                    &mut transitions,
+                ) {
+                    return rejected(snapshot, code);
+                }
             }
         }
         Settlement::Wait {
@@ -4188,7 +4203,7 @@ fn settle_lifecycle(
                 id: wait.id.clone(),
                 generation: wait_generation,
             };
-            if let Some(existing_wait) = next.waits.get(&wait.id) {
+            if let Some(existing_wait) = snapshot.waits.get(&wait.id) {
                 let current = existing_wait
                     .generations
                     .get(&existing_wait.current_generation)
@@ -4203,90 +4218,55 @@ fn settle_lifecycle(
                     return rejected(snapshot, "wait_generation_not_advanced");
                 }
             }
-            if consumed_wait_id.as_deref().is_some_and(|id| id != wait.id) {
-                resolve_consumed_wait(&mut next, consumed_wait_id.as_deref(), &mut transitions);
-            }
+            let mut resolutions = current_lane_resolution(
+                snapshot,
+                consumed_wait_id.as_deref(),
+                "consumed->resolved",
+            )
+            .into_iter()
+            .collect::<Vec<_>>();
             if lifecycle_nudge {
-                for (existing_wait_id, record) in &mut next.waits {
+                for (existing_wait_id, record) in &snapshot.waits {
                     if existing_wait_id == &wait.id {
                         continue;
                     }
                     let generation = record
                         .generations
-                        .get_mut(&record.current_generation)
+                        .get(&record.current_generation)
                         .expect("current wait generation exists");
                     if generation.owner == owner
                         && matches!(generation.state, WaitState::Active | WaitState::Triggered)
                     {
-                        generation.state = WaitState::Resolved;
-                        generation.trigger = None;
-                        generation.consuming_activation_id = None;
-                        transitions.push(format!(
-                            "wait:{existing_wait_id}:generation:{}:resolved_by_lifecycle_rearm",
-                            record.current_generation
-                        ));
+                        resolutions.push(LaneWaitResolution {
+                            wait: WaitIdentity {
+                                id: existing_wait_id.clone(),
+                                generation: record.current_generation,
+                            },
+                            expected: generation.clone(),
+                            reason: "resolved_by_lifecycle_rearm",
+                        });
                     }
                 }
             }
-            let previous_generation = next
-                .waits
-                .get(&wait.id)
-                .map(|record| record.current_generation);
-            if let Some(record) = next.waits.get_mut(&wait.id) {
-                let previous = record
-                    .generations
-                    .get_mut(&record.current_generation)
-                    .expect("current wait generation exists");
-                if previous.state == WaitState::Consumed {
-                    previous.state = WaitState::Resolved;
-                    previous.consuming_activation_id = None;
-                }
-                record.current_generation = next_generation;
-                record.generations.insert(
-                    next_generation,
-                    WaitGenerationRecord {
-                        owner: owner.clone(),
-                        state: WaitState::Active,
-                        trigger: None,
-                        consuming_activation_id: None,
-                    },
-                );
-            } else {
-                next.waits.insert(
-                    wait.id.clone(),
-                    WaitRecord {
-                        current_generation: next_generation,
-                        generations: BTreeMap::from([(
-                            next_generation,
-                            WaitGenerationRecord {
-                                owner: owner.clone(),
-                                state: WaitState::Active,
-                                trigger: None,
-                                consuming_activation_id: None,
-                            },
-                        )]),
-                    },
-                );
-            }
-            set_dispatch_state(
+            let arm = LaneWaitArm {
+                wait: wait.clone(),
+                owner: owner.clone(),
+            };
+            let target_dispatch = match mode {
+                WaitMode::AwaitThis => AgentDispatchState::Awaiting { wait: wait.clone() },
+                WaitMode::AcceptScheduling => AgentDispatchState::Open,
+            };
+            if let Err(code) = apply_lane_transition(
                 &mut next,
-                match mode {
-                    WaitMode::AwaitThis => AgentDispatchState::Awaiting { wait: wait.clone() },
-                    WaitMode::AcceptScheduling => AgentDispatchState::Open,
-                },
-            );
-            transitions.push(match previous_generation {
-                Some(generation) => {
-                    format!(
-                        "wait:{}:generation:{generation}->{next_generation}:active",
-                        wait.id
-                    )
-                }
-                None => format!(
-                    "wait:{}:generation:{next_generation}:created:active",
-                    wait.id
-                ),
-            });
+                &snapshot.dispatch,
+                &resolutions,
+                Some(&arm),
+                target_dispatch,
+                None,
+                &mut transitions,
+            ) {
+                return rejected(snapshot, code);
+            }
         }
         Settlement::TargetedYield { .. }
         | Settlement::Complete {
@@ -4307,28 +4287,158 @@ fn settle_lifecycle(
     }
 }
 
-fn resolve_consumed_wait(
-    snapshot: &mut Snapshot,
+#[derive(Debug, Clone)]
+struct LaneWaitResolution {
+    wait: WaitIdentity,
+    expected: WaitGenerationRecord,
+    reason: &'static str,
+}
+
+#[derive(Debug, Clone)]
+struct LaneWaitArm {
+    wait: WaitIdentity,
+    owner: SchedulerOwner,
+}
+
+#[derive(Debug, Clone)]
+struct LaneWorkUpdate {
+    work_item_id: String,
+    demand: WorkDemand,
+}
+
+fn current_lane_resolution(
+    snapshot: &Snapshot,
     wait_id: Option<&str>,
+    reason: &'static str,
+) -> Option<LaneWaitResolution> {
+    let wait_id = wait_id?;
+    let wait = snapshot.waits.get(wait_id)?;
+    let expected = wait.generations.get(&wait.current_generation)?.clone();
+    Some(LaneWaitResolution {
+        wait: WaitIdentity {
+            id: wait_id.to_string(),
+            generation: wait.current_generation,
+        },
+        expected,
+        reason,
+    })
+}
+
+fn apply_lane_transition(
+    snapshot: &mut Snapshot,
+    expected_dispatch: &AgentDispatchState,
+    resolutions: &[LaneWaitResolution],
+    arm: Option<&LaneWaitArm>,
+    target_dispatch: AgentDispatchState,
+    work_update: Option<LaneWorkUpdate>,
     transitions: &mut Vec<String>,
-) {
-    let Some(wait_id) = wait_id else {
-        return;
-    };
-    let wait = snapshot
-        .waits
-        .get_mut(wait_id)
-        .expect("consumed wait exists");
-    let generation = wait
-        .generations
-        .get_mut(&wait.current_generation)
-        .expect("current wait generation exists");
-    generation.state = WaitState::Resolved;
-    generation.consuming_activation_id = None;
-    transitions.push(format!(
-        "wait:{wait_id}:generation:{}:consumed->resolved",
-        wait.current_generation
-    ));
+) -> Result<(), &'static str> {
+    if &snapshot.dispatch != expected_dispatch {
+        return Err("lane_transition_source_dispatch_changed");
+    }
+    for resolution in resolutions {
+        let Some(wait) = snapshot.waits.get(&resolution.wait.id) else {
+            return Err("lane_transition_source_wait_missing");
+        };
+        if wait.current_generation != resolution.wait.generation
+            || wait.generations.get(&resolution.wait.generation) != Some(&resolution.expected)
+        {
+            return Err("lane_transition_source_wait_changed");
+        }
+    }
+    if let Some(arm) = arm {
+        if let Some(wait) = snapshot.waits.get(&arm.wait.id) {
+            let Some(current) = wait.generations.get(&wait.current_generation) else {
+                return Err("lane_transition_target_wait_missing_generation");
+            };
+            let current_is_resolved_by_transition = resolutions.iter().any(|resolution| {
+                resolution.wait.id == arm.wait.id
+                    && resolution.wait.generation == wait.current_generation
+            });
+            if current.owner != arm.owner
+                || wait.current_generation >= arm.wait.generation
+                || wait.generations.contains_key(&arm.wait.generation)
+                || wait
+                    .generations
+                    .keys()
+                    .any(|generation| *generation > wait.current_generation)
+                || (current.state != WaitState::Resolved && !current_is_resolved_by_transition)
+            {
+                return Err("lane_transition_target_wait_conflict");
+            }
+        }
+    }
+    if let AgentDispatchState::Awaiting { wait } = &target_dispatch {
+        if !arm.is_some_and(|arm| arm.wait == *wait) {
+            return Err("lane_transition_target_dispatch_mismatch");
+        }
+    }
+    if let (Some(arm), Some(work_update)) = (arm, work_update.as_ref()) {
+        if let SchedulerOwner::WorkItem { work_item_id } = &arm.owner {
+            if work_item_id != &work_update.work_item_id
+                || work_update.demand.scheduling_generation != arm.wait.generation
+                || work_update.demand.status
+                    != (WorkStatus::Waiting {
+                        wait_id: arm.wait.id.clone(),
+                    })
+            {
+                return Err("lane_transition_work_projection_mismatch");
+            }
+        }
+    }
+
+    for resolution in resolutions {
+        let generation = snapshot
+            .waits
+            .get_mut(&resolution.wait.id)
+            .expect("validated lane source wait exists")
+            .generations
+            .get_mut(&resolution.wait.generation)
+            .expect("validated lane source wait generation exists");
+        generation.state = WaitState::Resolved;
+        generation.trigger = None;
+        generation.consuming_activation_id = None;
+        transitions.push(format!(
+            "wait:{}:generation:{}:{}",
+            resolution.wait.id, resolution.wait.generation, resolution.reason
+        ));
+    }
+    if let Some(work_update) = work_update {
+        snapshot
+            .work
+            .insert(work_update.work_item_id, work_update.demand);
+    }
+    if let Some(arm) = arm {
+        let generation = WaitGenerationRecord {
+            owner: arm.owner.clone(),
+            state: WaitState::Active,
+            trigger: None,
+            consuming_activation_id: None,
+        };
+        if let Some(wait) = snapshot.waits.get_mut(&arm.wait.id) {
+            let previous_generation = wait.current_generation;
+            wait.current_generation = arm.wait.generation;
+            wait.generations.insert(arm.wait.generation, generation);
+            transitions.push(format!(
+                "wait:{}:generation:{previous_generation}->{}:active",
+                arm.wait.id, arm.wait.generation
+            ));
+        } else {
+            snapshot.waits.insert(
+                arm.wait.id.clone(),
+                WaitRecord {
+                    current_generation: arm.wait.generation,
+                    generations: BTreeMap::from([(arm.wait.generation, generation)]),
+                },
+            );
+            transitions.push(format!(
+                "wait:{}:generation:{}:created:active",
+                arm.wait.id, arm.wait.generation
+            ));
+        }
+    }
+    set_dispatch_state(snapshot, target_dispatch);
+    Ok(())
 }
 
 fn set_dispatch_state(snapshot: &mut Snapshot, dispatch: AgentDispatchState) {
@@ -4469,7 +4579,6 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
     }
     let mut settled_activations = BTreeSet::new();
     let mut terminal_records = BTreeMap::<String, usize>::new();
-    let mut current_awaiting_settlements = BTreeSet::<(String, u64)>::new();
     let mut expected_continuation_admissions =
         BTreeMap::<String, ContinuationAdmissionRecord>::new();
     let mut continuation_prestate_fences = BTreeSet::<(String, u64)>::new();
@@ -4511,7 +4620,7 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
                 | Settlement::Complete { continuation: None } => {}
                 Settlement::Wait {
                     wait,
-                    mode,
+                    mode: _,
                     legacy_wait_id,
                 } => {
                     if legacy_wait_id || wait.generation != settlement_generation {
@@ -4531,11 +4640,6 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
                     };
                     if generation.owner != activation.owner {
                         return Err("canonical lifecycle wait settlement owner mismatch".into());
-                    }
-                    if mode == WaitMode::AwaitThis
-                        && matches!(generation.state, WaitState::Active | WaitState::Triggered)
-                    {
-                        current_awaiting_settlements.insert((wait.id, wait.generation));
                     }
                 }
                 Settlement::TargetedYield { .. }
@@ -4596,7 +4700,7 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
             }
             Settlement::Wait {
                 wait,
-                mode,
+                mode: _,
                 legacy_wait_id,
             } => {
                 if legacy_wait_id {
@@ -4628,12 +4732,6 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
                     return Err(
                         "canonical wait settlement disagrees with authoritative work state".into(),
                     );
-                }
-                if projects_current_work_state
-                    && mode == WaitMode::AwaitThis
-                    && matches!(generation.state, WaitState::Active | WaitState::Triggered)
-                {
-                    current_awaiting_settlements.insert((wait.id, wait.generation));
                 }
             }
             Settlement::Complete {
@@ -4827,42 +4925,6 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
         {
             return Err(
                 "settlement-missing activation has no canonical missing-settlement record".into(),
-            );
-        }
-    }
-    if current_awaiting_settlements.len() > 1 {
-        return Err("multiple canonical settlements reserve the single agent lane".into());
-    }
-    if let Some((wait_id, generation)) = current_awaiting_settlements.iter().next() {
-        if snapshot.dispatch
-            != (AgentDispatchState::Awaiting {
-                wait: WaitIdentity {
-                    id: wait_id.clone(),
-                    generation: *generation,
-                },
-            })
-        {
-            return Err(
-                "canonical settlement dispatch disagrees with authoritative lane state".into(),
-            );
-        }
-    } else if !snapshot.settlements.is_empty() && snapshot.dispatch != AgentDispatchState::Open {
-        // Settlement may atomically adopt an activation's WorkItem-owned wait,
-        // so the preserved authoritative lane is not limited to lifecycle-owned
-        // waits. It must still identify an active canonical wait generation.
-        let active_wait_is_preserved = match &snapshot.dispatch {
-            AgentDispatchState::Awaiting { wait } => snapshot
-                .waits
-                .get(&wait.id)
-                .and_then(|record| record.generations.get(&wait.generation))
-                .is_some_and(|generation| {
-                    matches!(generation.state, WaitState::Active | WaitState::Triggered)
-                }),
-            AgentDispatchState::Open => false,
-        };
-        if !active_wait_is_preserved {
-            return Err(
-                "canonical settlement dispatch disagrees with authoritative lane state".into(),
             );
         }
     }

@@ -222,7 +222,7 @@ activated.
 
 ### Agent Dispatch State
 
-The agent's explicit terminal choice about whether its free lane accepts
+The current canonical fact describing whether the agent's free lane accepts
 ordinary autonomous work:
 
 ```text
@@ -599,6 +599,13 @@ AgentDispatchDisposition =
     Open
   | Awaiting(wait_id)
 ```
+
+`AgentDispatchDisposition` records the lane outcome committed by that attempt.
+It is immutable execution evidence, not continuing authority over the live
+lane: a later fenced transition may rearm the wait, hand the lane to another
+owner, or open it. Current admission validates `scheduler_agent_dispatch`
+against the current wait generation, WorkItem demand, and activation slot; it
+does not reconstruct current dispatch from historical settlements.
 
 `WorkYielded(target, mode)` has two distinct forms:
 
@@ -1110,6 +1117,15 @@ read-only and reports the same ordered recovery plan, typed evidence,
 conflicts, holds, and stable command identities that the apply path would use.
 No debug path may repair protocol state through direct SQL.
 
+Compatibility adoption is isolated per legacy WorkItem. Each candidate is
+revalidated and committed in deterministic order. A stale source, typed
+protocol rejection, or invalid candidate poststate rolls back and diagnoses
+only that candidate; other valid candidates and the agent runtime continue.
+The rejected WorkItem remains outside the canonical partition and is retried
+from fresh source facts on a later recovery pass. An invalid canonical
+prestate, storage failure, or canonical missing-settlement recovery failure
+remains fail closed.
+
 An optional serialized snapshot may be stored only as a versioned,
 checksummed recovery cache. Canonical rows remain the source of truth, and the
 cache must be discarded and rebuilt when its schema version, checksum, or
@@ -1190,7 +1206,8 @@ expose it initially.
 ### Agent Lane
 
 22. `Awaiting(wait_id)` references a live owned wait.
-23. Only settlement or explicit runtime control writes agent dispatch state.
+23. Wait, WorkDemand, and dispatch changes use one fenced lane transition; a
+    historical settlement does not constrain a later valid lane state.
 24. `Running` and `Unavailable` are runtime projections.
 25. Display posture is never admission authority.
 

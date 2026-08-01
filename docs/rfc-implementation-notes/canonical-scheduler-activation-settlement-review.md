@@ -307,6 +307,23 @@ owner 检查。
 
 Runtime loop 不应把普通 protocol rejection 无差别转成 agent restart。
 
+## 已采用的近期收缩
+
+在不更换 scheduler、不修改持久化 schema 的前提下，近期实现先收缩最容易反复出错的
+lane 边界：
+
+- settlement 中的 dispatch disposition 保留为 attempt 结束时的不可变证据，不再通过
+  扫描历史 settlement 推导当前 lane；
+- 当前 lane 只校验实时 dispatch、当前 wait generation、WorkDemand 和 activation slot；
+- legacy adoption、activation adoption、WorkItem settlement 和 lifecycle settlement 通过
+  同一个内部 lane transition 同步 resolve/rearm wait、WorkDemand 与 dispatch revision；
+- legacy compatibility adoption 按 WorkItem 隔离，单个 stale/rejected candidate 留在
+  canonical partition 之外并产生诊断，不再阻止 agent 处理已经合法的 canonical work；
+- canonical prestate 损坏、存储错误和 missing-settlement recovery 仍然 fail closed。
+
+这是面向稳定性的有界修正，不代表 activation/settlement 的长期职责收缩已经完成。后续
+是否继续简化，应以生产 trace replay、restart drill 和 invariant 规模是否明显下降为依据。
+
 ## 验证和测试缺口
 
 本次复核的 focused tests 结果为：

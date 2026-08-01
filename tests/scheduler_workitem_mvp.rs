@@ -2856,7 +2856,8 @@ fn canonical_typed_records_must_match_authoritative_activation_and_wait_facts() 
     let waiting_snapshot = waiting.outcome.snapshot;
     let mut waiting_with_open_lane = waiting_snapshot.clone();
     waiting_with_open_lane.dispatch = AgentDispatchState::Open;
-    assert!(assert_invariants(&waiting_with_open_lane).is_err());
+    assert_invariants(&waiting_with_open_lane)
+        .expect("historical settlement disposition must not control the current lane");
 
     let mut waiting_with_resolved_current_generation = waiting_snapshot;
     waiting_with_resolved_current_generation.dispatch = AgentDispatchState::Open;
@@ -3052,6 +3053,97 @@ fn legacy_recovery_adoption_reconciles_the_work_items_dispatch_reservation() {
     assert_eq!(released.outcome.snapshot.dispatch, AgentDispatchState::Open);
     assert_eq!(released.outcome.snapshot.dispatch_revision, 9);
     assert_invariants(&released.outcome.snapshot).expect("released recovery state is canonical");
+}
+
+#[test]
+fn historical_wait_settlement_does_not_override_recovered_lane_state() {
+    let admitted = reduce_command(
+        &minimal_snapshot(3),
+        &ProtocolCommand::AdmitActivation(typed_admission("a-history", "key-history", 3)),
+    );
+    let old_wait = WaitIdentity {
+        id: "wait-history".into(),
+        generation: 4,
+    };
+    let mut settlement = typed_settlement(
+        "s-history",
+        "a-history",
+        ActivationDisposition::WorkWaits {
+            wait: old_wait.clone(),
+        },
+    );
+    settlement.agent_dispatch = AgentDispatchDisposition::Awaiting {
+        wait: old_wait.clone(),
+    };
+    let settled = reduce_command(
+        &admitted.outcome.snapshot,
+        &ProtocolCommand::SettleActivation(SettleActivationCommand { settlement }),
+    );
+    assert_invariants(&settled.outcome.snapshot).expect("historical wait settlement prestate");
+
+    let rearm = ProtocolCommand::AdoptLegacyWorkState(AdoptLegacyWorkStateCommand {
+        work_item_id: "w1".into(),
+        source_work_item_revision: 5,
+        demand: WorkDemand {
+            metadata_revision: 5,
+            scheduling_generation: 5,
+            status: WorkStatus::Waiting {
+                wait_id: old_wait.id.clone(),
+            },
+            capabilities: BTreeSet::new(),
+            locks: BTreeSet::new(),
+            locality: "runtime".into(),
+            cost_class: "default".into(),
+        },
+        wait: Some(LegacyWaitAdoption {
+            wait_id: old_wait.id.clone(),
+            generation: 5,
+            owner_work_item_id: "w1".into(),
+            source_updated_at: "2026-08-01T00:00:01Z".into(),
+        }),
+        focus: true,
+        reserve_dispatch: false,
+        replace_completed_focus: None,
+    });
+    let rearmed = reduce_command(&settled.outcome.snapshot, &rearm);
+    assert_eq!(rearmed.outcome.decision, Decision::LegacyWorkStateAdopted);
+    assert_eq!(
+        rearmed.outcome.snapshot.settlements["s-history"].agent_dispatch,
+        AgentDispatchDisposition::Awaiting { wait: old_wait }
+    );
+    assert_eq!(
+        rearmed.outcome.snapshot.dispatch,
+        AgentDispatchState::Awaiting {
+            wait: WaitIdentity {
+                id: "wait-history".into(),
+                generation: 5,
+            },
+        }
+    );
+    assert_invariants(&rearmed.outcome.snapshot)
+        .expect("historical settlement must not reject the recovered wait generation");
+
+    let release = ProtocolCommand::AdoptLegacyWorkState(AdoptLegacyWorkStateCommand {
+        work_item_id: "w1".into(),
+        source_work_item_revision: 6,
+        demand: WorkDemand {
+            metadata_revision: 6,
+            scheduling_generation: 6,
+            status: WorkStatus::Runnable,
+            capabilities: BTreeSet::new(),
+            locks: BTreeSet::new(),
+            locality: "runtime".into(),
+            cost_class: "default".into(),
+        },
+        wait: None,
+        focus: true,
+        reserve_dispatch: false,
+        replace_completed_focus: None,
+    });
+    let released = reduce_command(&rearmed.outcome.snapshot, &release);
+    assert_eq!(released.outcome.snapshot.dispatch, AgentDispatchState::Open);
+    assert_invariants(&released.outcome.snapshot)
+        .expect("historical settlement must not reject the released lane");
 }
 
 fn typed_admission(
