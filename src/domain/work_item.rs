@@ -22,6 +22,7 @@ fn default_work_item_revision() -> u64 {
 #[serde(rename_all = "snake_case")]
 pub enum WorkItemState {
     Open,
+    Completing,
     Completed,
 }
 
@@ -40,6 +41,7 @@ pub enum WorkItemReadiness {
     Yielded,
     WaitingForOperator,
     Blocked,
+    Completing,
     Completed,
 }
 
@@ -54,6 +56,7 @@ pub enum WorkItemSchedulingState {
     WaitingTimer,
     WaitingSystem,
     Blocked,
+    Completing,
     Completed,
 }
 

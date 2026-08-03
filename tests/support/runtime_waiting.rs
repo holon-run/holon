@@ -377,7 +377,7 @@ pub async fn terminal_brief_uses_last_assistant_message_without_terminal_deliver
     );
     runtime.enqueue(message.clone()).await?;
 
-    wait_until(|| {
+    eventually_for(Duration::from_secs(15), || {
         let briefs = runtime.storage().read_recent_briefs(10)?;
         Ok(briefs.iter().any(|brief| {
             brief.related_message_id.as_deref() == Some(message.id.as_str())

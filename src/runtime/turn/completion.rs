@@ -98,6 +98,12 @@ impl RuntimeHandle {
                         "completion_report_source".into(),
                         serde_json::json!("same_assistant_round_preceding_text"),
                     );
+                    if let Some(continuation_resumed) = promotion.continuation_resumed.as_ref() {
+                        object.insert(
+                            "continuation_resumed".into(),
+                            serde_json::to_value(continuation_resumed)?,
+                        );
+                    }
                 }
             }
             update_tool_result_block_content(index, tool_results, &tool_result_envelopes[index])?;

@@ -96,9 +96,12 @@ impl RuntimeHandle {
         if bound_brief.work_item_id.is_none() && bound_brief.kind == BriefKind::Result {
             if let Some(work_item) = self.pending_completion_intent_for_brief(&bound_brief)? {
                 bound_brief.work_item_id = Some(work_item.id.clone());
-                self.persist_completion_brief_binding(work_item, &bound_brief)
-                    .await?;
-                return Ok(());
+                if self
+                    .persist_completion_brief_binding(work_item, &bound_brief)
+                    .await?
+                {
+                    return Ok(());
+                }
             }
         }
         if bound_brief.work_item_id.is_none() {
@@ -148,54 +151,26 @@ impl RuntimeHandle {
         &self,
         existing: WorkItemRecord,
         brief: &BriefRecord,
-    ) -> Result<()> {
-        let mut completion_intent = existing
-            .completion_intent
-            .clone()
-            .ok_or_else(|| anyhow!("completion brief binding requires a completion intent"))?;
-        completion_intent.report_state = CompletionReportState::Bound;
-        completion_intent.result_brief_id = Some(brief.id.clone());
-        completion_intent.updated_at = Utc::now();
-        let record = WorkItemRecord {
-            revision: existing.revision + 1,
-            result_brief_id: Some(brief.id.clone()),
-            completion_intent: Some(completion_intent),
-            updated_at: Utc::now(),
-            ..existing
-        };
+    ) -> Result<bool> {
         let event_payload = BriefCreatedAuditEvent::from_brief(brief);
-        let commit = self.inner.runtime_db.transitions().commit_work_item(
-            &crate::runtime_db::transitions::WorkItemTransitionCommand {
-                agent_id: record.agent_id.clone(),
-                mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
-                    record: record.clone(),
-                    expected_revision: record.revision - 1,
-                },
-                agent_state: None,
-                brief_evidence: vec![brief.clone()],
-                audit_events: vec![
-                    AuditEvent::typed(RuntimeEventKind::BriefCreated, &event_payload)?,
-                    AuditEvent::legacy(
-                        "work_item_completion_report_bound_from_final",
-                        serde_json::json!({
-                            "agent_id": record.agent_id,
-                            "work_item_id": record.id,
-                            "brief_id": brief.id,
-                            "turn_id": brief.turn_id,
-                            "source_message_id": brief.related_message_id,
-                        }),
-                    ),
-                ],
-                index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
-                notify_scheduler: false,
-                fault: self.take_transition_fault(),
-            },
-        )?;
-        self.apply_transition_commit(commit).await;
-        let mut guard = self.inner.agent.lock().await;
-        guard.state.last_brief_at = Some(brief.created_at);
-        guard.persist_state(&self.inner.storage)?;
-        Ok(())
+        let finalized = self
+            .finalize_work_item_completion_with_brief(
+                &existing.id,
+                brief,
+                AuditEvent::legacy(
+                    "work_item_completion_report_bound_from_final",
+                    serde_json::json!({
+                        "agent_id": existing.agent_id,
+                        "work_item_id": existing.id,
+                        "brief_id": brief.id,
+                        "turn_id": brief.turn_id,
+                        "source_message_id": brief.related_message_id,
+                        "brief_event": event_payload,
+                    }),
+                ),
+            )
+            .await?;
+        Ok(finalized.is_some())
     }
 
     fn attach_generated_image_brief_attachments(&self, brief: &mut BriefRecord) -> Result<()> {

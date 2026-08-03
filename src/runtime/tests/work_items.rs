@@ -38,6 +38,29 @@ fn continuation_context_config() -> ContextConfig {
     }
 }
 
+async fn finalize_completion_with_report(
+    runtime: &RuntimeHandle,
+    work_item_id: &str,
+    report_text: &str,
+) -> WorkItemCompletionReportPromotion {
+    match runtime
+        .promote_work_item_completion_report_with_metadata(
+            work_item_id.to_string(),
+            report_text.to_string(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap()
+    {
+        WorkItemCompletionReportPromotionOutcome::Promoted(promotion) => promotion,
+        WorkItemCompletionReportPromotionOutcome::Unchanged(record) => {
+            panic!("expected completion promotion for {}", record.id)
+        }
+    }
+}
+
 struct CompleteWorkItemReportProvider {
     work_item_id: String,
     report_text: Option<String>,
@@ -726,7 +749,7 @@ async fn work_item_query_tools_return_current_open_done_views() {
 }
 
 #[tokio::test]
-async fn work_item_query_tools_fall_back_to_delivery_summary_report() {
+async fn completing_work_item_does_not_fall_back_to_delivery_summary_report() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -760,7 +783,6 @@ async fn work_item_query_tools_fall_back_to_delivery_summary_report() {
         Some(11),
         None,
     );
-    let summary_id = summary.id.clone();
     runtime.storage().append_delivery_summary(&summary).unwrap();
 
     let registry = crate::tool::ToolRegistry::new(runtime.workspace_root());
@@ -778,17 +800,8 @@ async fn work_item_query_tools_fall_back_to_delivery_summary_report() {
         .await
         .unwrap();
     let payload = result.envelope.result.unwrap();
-    let report = &payload["work_item"]["completion_report"];
-    assert_eq!(
-        report["text"].as_str(),
-        Some("Legacy delivery summary report.")
-    );
-    assert_eq!(report["source"].as_str(), Some("delivery_summary"));
-    assert_eq!(
-        report["delivery_summary_id"].as_str(),
-        Some(summary_id.as_str())
-    );
-    assert_eq!(report["source_turn_index"].as_u64(), Some(11));
+    assert_eq!(payload["work_item"]["state"].as_str(), Some("completing"));
+    assert!(payload["work_item"]["completion_report"].is_null());
 }
 
 #[tokio::test]
@@ -889,7 +902,7 @@ async fn work_item_completion_ignores_running_tasks_and_clears_explicit_waits() 
         .complete_work_item(explicit_wait.id.clone(), Vec::new())
         .await
         .unwrap();
-    assert_eq!(completed_wait.state, WorkItemState::Completed);
+    assert_eq!(completed_wait.state, WorkItemState::Completing);
     assert!(completed_wait.blocked_by.is_none());
 }
 
@@ -1431,7 +1444,7 @@ async fn complete_work_item_refreshes_latest_plan_artifact_snapshot() {
         .await
         .unwrap();
 
-    assert_eq!(completed.state, WorkItemState::Completed);
+    assert_eq!(completed.state, WorkItemState::Completing);
     assert_eq!(completed.plan_status, WorkItemPlanStatus::Ready);
     assert_eq!(completed.plan_artifact.as_ref(), Some(&expected));
     let latest = runtime.latest_work_item(&work.id).await.unwrap().unwrap();
@@ -2358,11 +2371,14 @@ async fn turn_end_marks_unbound_completion_report_missing_and_persists_restart()
         guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
-    assert!(runtime
-        .maybe_commit_turn_end_work_item_transition()
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        runtime
+            .maybe_commit_turn_end_work_item_transition()
+            .await
+            .unwrap()
+            .is_none(),
+        "completion should already have released the turn work item focus"
+    );
     let missing = runtime
         .latest_work_item(&work_item.id)
         .await
@@ -2710,7 +2726,7 @@ async fn complete_work_item_without_same_round_report_warns_without_summary() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(completed.state, WorkItemState::Completed);
+    assert_eq!(completed.state, WorkItemState::Completing);
     assert_eq!(completed.result_summary, None);
     assert!(runtime
         .storage()
@@ -3132,19 +3148,19 @@ async fn complete_work_item_with_unfinished_todos_returns_structured_warning() {
         Some(1)
     );
     let events = runtime.storage().read_recent_events(20).unwrap();
-    let completed_event = events
+    let completing_event = events
         .iter()
         .find(|event| {
-            event.kind == "work_item_written" && event.data["action"].as_str() == Some("completed")
+            event.kind == "work_item_written" && event.data["action"].as_str() == Some("completing")
         })
-        .expect("completion event should be recorded");
+        .expect("completion intent event should be recorded");
     assert_eq!(
-        completed_event.data["work_item_id"].as_str(),
+        completing_event.data["work_item_id"].as_str(),
         Some(work_item.id.as_str())
     );
-    assert_eq!(completed_event.data["warning_count"].as_u64(), Some(1));
-    assert!(completed_event.data.get("warnings").is_none());
-    assert!(completed_event.data.get("record").is_none());
+    assert_eq!(completing_event.data["warning_count"].as_u64(), Some(1));
+    assert!(completing_event.data.get("warnings").is_none());
+    assert!(completing_event.data.get("record").is_none());
 }
 
 #[tokio::test]
@@ -3883,7 +3899,7 @@ async fn default_external_ingress_wakes_without_owning_work_item_wait_state() {
         .complete_work_item(work.id.clone(), Vec::new())
         .await
         .unwrap();
-    assert_eq!(completed.state, WorkItemState::Completed);
+    assert_eq!(completed.state, WorkItemState::Completing);
     assert!(completed.blocked_by.is_none());
 }
 
@@ -5437,13 +5453,16 @@ async fn pick_from_runnable_current_yields_and_complete_resumes_caller() {
         Some("yielded")
     );
 
-    let completed = runtime
+    let completing = runtime
         .complete_work_item_with_continuation(next.id.clone(), Vec::new())
         .await
         .unwrap();
-    let resumed = completed
+    assert_eq!(completing.work_item.state, WorkItemState::Completing);
+    assert!(completing.continuation_resumed.is_none());
+    let promotion = finalize_completion_with_report(&runtime, &next.id, "next completed").await;
+    let resumed = promotion
         .continuation_resumed
-        .expect("completion should resume direct caller");
+        .expect("completion finalization should resume direct caller");
     assert_eq!(resumed.suspended_work_item_id.as_str(), current.id.as_str());
     assert_eq!(resumed.active_work_item_id.as_str(), next.id.as_str());
     let state = runtime.agent_state().await.unwrap();
@@ -5534,6 +5553,7 @@ async fn work_item_continuation_stack_resumes_nested_callers() {
         .complete_work_item_with_continuation(review.id.clone(), Vec::new())
         .await
         .unwrap();
+    finalize_completion_with_report(&runtime, &review.id, "review completed").await;
     let state = runtime.agent_state().await.unwrap();
     assert_eq!(
         state.current_work_item_id.as_deref(),
@@ -5551,6 +5571,7 @@ async fn work_item_continuation_stack_resumes_nested_callers() {
         .complete_work_item_with_continuation(issue.id.clone(), Vec::new())
         .await
         .unwrap();
+    finalize_completion_with_report(&runtime, &issue.id, "issue completed").await;
     let state = runtime.agent_state().await.unwrap();
     assert_eq!(
         state.current_work_item_id.as_deref(),

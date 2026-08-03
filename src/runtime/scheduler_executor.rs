@@ -841,7 +841,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 ));
             }
         };
-        if work_item.state == crate::types::WorkItemState::Completed
+        if work_item.state != crate::types::WorkItemState::Open
             && matches!(
                 scenario,
                 scheduler::CanonicalActivationScenario::ExactTaskRejoin { .. }

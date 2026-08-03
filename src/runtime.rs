@@ -144,6 +144,7 @@ pub(crate) const ENQUEUE_AGENT_STATE_MAX_ATTEMPTS: usize = 3;
 pub(super) struct WorkItemCompletionReportPromotion {
     pub(super) record: crate::types::WorkItemRecord,
     pub(super) brief_id: String,
+    pub(super) continuation_resumed: Option<WorkItemContinuationSummary>,
 }
 
 #[derive(Debug, Clone)]

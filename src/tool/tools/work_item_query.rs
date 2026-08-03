@@ -22,6 +22,7 @@ use crate::{
 #[serde(rename_all = "snake_case")]
 pub(crate) enum WorkItemLifecycleView {
     Open,
+    Completing,
     Completed,
 }
 
@@ -286,6 +287,7 @@ fn completion_report_view_from_brief(
 pub(crate) fn lifecycle_view(state: &WorkItemState) -> WorkItemLifecycleView {
     match state {
         WorkItemState::Open => WorkItemLifecycleView::Open,
+        WorkItemState::Completing => WorkItemLifecycleView::Completing,
         WorkItemState::Completed => WorkItemLifecycleView::Completed,
     }
 }

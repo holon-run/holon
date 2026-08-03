@@ -313,32 +313,100 @@ impl RuntimeHost {
     /// scheduler promotion or dispatch.
     async fn deletion_phase_scheduler(&self, agent_id: &str) -> Result<()> {
         let storage = self.agent_storage(agent_id)?;
-        let open_work_items = self
+        let terminalizing_work_items = self
             .runtime_db()
             .work_items()
             .latest_for_agent(agent_id, usize::MAX)?
             .into_iter()
-            .filter(|work_item| work_item.state == WorkItemState::Open)
+            .filter(|work_item| work_item.state != WorkItemState::Completed)
             .collect::<Vec<_>>();
         let now = Utc::now();
-        for existing in &open_work_items {
-            let mut completed = existing.clone();
-            completed.revision = existing.revision.saturating_add(1);
+        for existing in &terminalizing_work_items {
+            let completing = if existing.state == WorkItemState::Open {
+                let mut completing = existing.clone();
+                completing.revision = existing.revision.saturating_add(1);
+                completing.state = WorkItemState::Completing;
+                completing.blocked_by = None;
+                completing.recheck_at = None;
+                completing.recheck_consumed_at = None;
+                completing.completion_intent = Some(WorkItemCompletionIntent {
+                    work_item_id: existing.id.clone(),
+                    source_activation_id: None,
+                    source_message_id: None,
+                    source_turn_id: None,
+                    expected_work_revision: existing.revision,
+                    report_requirement: CompletionReportRequirement::Required,
+                    report_state: CompletionReportState::Pending,
+                    result_brief_id: None,
+                    created_at: now,
+                    updated_at: now,
+                });
+                completing.updated_at = now;
+                self.runtime_db().transitions().commit_work_item(
+                    &crate::runtime_db::transitions::WorkItemTransitionCommand {
+                        agent_id: agent_id.to_string(),
+                        mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
+                            record: completing.clone(),
+                            expected_revision: existing.revision,
+                        },
+                        agent_state: None,
+                        brief_evidence: Vec::new(),
+                        audit_events: vec![AuditEvent::legacy(
+                            "work_item_completion_intent_recorded_for_agent_deletion",
+                            serde_json::json!({
+                                "agent_id": agent_id,
+                                "work_item_id": completing.id,
+                                "revision": completing.revision,
+                                "reason": "agent_deleted",
+                            }),
+                        )],
+                        index_changes: storage.index_changes_for_work_item(&completing)?,
+                        notify_scheduler: true,
+                        fault: None,
+                    },
+                )?;
+                completing
+            } else {
+                existing.clone()
+            };
+            let mut completion_intent = completing.completion_intent.clone().ok_or_else(|| {
+                anyhow!(
+                    "completing work item {} is missing completion intent",
+                    completing.id
+                )
+            })?;
+            let mut brief = BriefRecord::new(
+                agent_id,
+                BriefKind::Result,
+                "Agent deleted before work completed",
+                completion_intent.source_message_id.clone(),
+                None,
+            );
+            brief.work_item_id = Some(completing.id.clone());
+            brief.workspace_id = completing.workspace_id.clone();
+            brief.turn_id = completion_intent.source_turn_id.clone();
+            completion_intent.report_state = CompletionReportState::Bound;
+            completion_intent.result_brief_id = Some(brief.id.clone());
+            completion_intent.updated_at = now;
+            let mut completed = completing.clone();
+            completed.revision = completing.revision.saturating_add(1);
             completed.state = WorkItemState::Completed;
             completed.blocked_by = None;
             completed.recheck_at = None;
             completed.recheck_consumed_at = None;
+            completed.result_brief_id = Some(brief.id.clone());
             completed.result_summary = Some("Agent deleted before work completed".into());
+            completed.completion_intent = Some(completion_intent);
             completed.updated_at = now;
             self.runtime_db().transitions().commit_work_item(
                 &crate::runtime_db::transitions::WorkItemTransitionCommand {
                     agent_id: agent_id.to_string(),
                     mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
                         record: completed.clone(),
-                        expected_revision: existing.revision,
+                        expected_revision: completing.revision,
                     },
                     agent_state: None,
-                    brief_evidence: Vec::new(),
+                    brief_evidence: vec![brief],
                     audit_events: vec![AuditEvent::legacy(
                         "work_item_completed_for_agent_deletion",
                         serde_json::json!({
@@ -356,8 +424,8 @@ impl RuntimeHost {
         }
         debug!(
             agent_id,
-            work_items_completed = open_work_items.len(),
-            "scheduler phase terminalized open work items"
+            work_items_completed = terminalizing_work_items.len(),
+            "scheduler phase terminalized incomplete work items"
         );
         Ok(())
     }

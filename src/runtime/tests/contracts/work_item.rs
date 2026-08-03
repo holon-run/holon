@@ -135,6 +135,37 @@ async fn work_item_focus_and_continuation_survive_restart() {
             .agent_state()
             .await
             .unwrap()
+            .current_work_item_id,
+        None
+    );
+    let pending = harness
+        .runtime()
+        .storage()
+        .latest_work_item_continuations()
+        .unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(
+        pending[0].state,
+        crate::types::WorkItemContinuationState::Active
+    );
+
+    harness
+        .runtime()
+        .promote_work_item_completion_report(
+            callee.id.clone(),
+            "callee completed".into(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        harness
+            .runtime()
+            .agent_state()
+            .await
+            .unwrap()
             .current_work_item_id
             .as_deref(),
         Some(caller.id.as_str())

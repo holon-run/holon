@@ -16,6 +16,7 @@
       "name": "WorkItemState",
       "serialized_values": [
         "open",
+        "completing",
         "completed"
       ],
       "source": "src/domain/work_item.rs"
@@ -36,6 +37,7 @@
         "yielded",
         "waiting_for_operator",
         "blocked",
+        "completing",
         "completed"
       ],
       "source": "src/domain/work_item.rs"

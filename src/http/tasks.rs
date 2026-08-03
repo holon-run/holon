@@ -499,6 +499,10 @@ pub async fn complete_work_item(
     Json(request): Json<CompleteWorkItemRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let report_text = request.report_text.trim();
+    if report_text.is_empty() {
+        return Err(bad_request("report_text must not be empty"));
+    }
     let admission_context = control_admission_context(&state);
     let provided_trust = request.authority_class;
     let runtime = state
@@ -509,8 +513,18 @@ pub async fn complete_work_item(
     let boundary = current_boundary_metadata(&runtime)
         .await
         .map_err(error_response)?;
-    let record = runtime
+    let completing = runtime
         .complete_work_item(work_item_id, Vec::new())
+        .await
+        .map_err(work_item_lifecycle_error)?;
+    let record = runtime
+        .promote_work_item_completion_report(
+            completing.id,
+            report_text.to_string(),
+            None,
+            None,
+            Vec::new(),
+        )
         .await
         .map_err(work_item_lifecycle_error)?;
     runtime

@@ -29,6 +29,7 @@ const MAX_LIMIT: usize = 100;
 pub(crate) enum ListWorkItemsFilter {
     All,
     Open,
+    Completing,
     Completed,
     Current,
     Queued,
@@ -132,6 +133,9 @@ fn matches_filter(
         ListWorkItemsFilter::All => true,
         ListWorkItemsFilter::Open => {
             lifecycle_view(&projection.work_item.state) == WorkItemLifecycleView::Open
+        }
+        ListWorkItemsFilter::Completing => {
+            lifecycle_view(&projection.work_item.state) == WorkItemLifecycleView::Completing
         }
         ListWorkItemsFilter::Completed => {
             lifecycle_view(&projection.work_item.state) == WorkItemLifecycleView::Completed

@@ -144,6 +144,12 @@ impl RuntimeReadModels {
             .take(3)
             .cloned()
             .collect::<Vec<_>>();
+        let completing = items
+            .iter()
+            .filter(|item| item.candidate_class == WorkItemCandidateClass::Completing)
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>();
         let completed_recent = items
             .iter()
             .filter(|item| item.candidate_class == WorkItemCandidateClass::CompletedRecent)
@@ -179,6 +185,7 @@ impl RuntimeReadModels {
             yielded,
             waiting_for_operator,
             blocked,
+            completing,
             completed_recent,
         })
     }

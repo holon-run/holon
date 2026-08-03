@@ -45,7 +45,7 @@ impl RuntimeHandle {
                     .inner
                     .storage
                     .latest_work_item(work_item_id)?
-                    .is_some_and(|work_item| work_item.state == WorkItemState::Completed) =>
+                    .is_some_and(|work_item| work_item.state != WorkItemState::Open) =>
             {
                 None
             }

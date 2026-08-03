@@ -61,7 +61,7 @@ pub(crate) async fn execute(
     let before = runtime.latest_work_item(&work_item_id).await?;
     let completed_transition = before
         .as_ref()
-        .map(|record| record.state != WorkItemState::Completed)
+        .map(|record| record.state == WorkItemState::Open)
         .unwrap_or(false);
     let warnings = before.as_ref().map(completion_warnings).unwrap_or_default();
     let completed = runtime
@@ -104,7 +104,7 @@ pub(crate) fn completion_warnings(record: &WorkItemRecord) -> Vec<WorkItemComple
         .collect();
     vec![WorkItemCompletionWarning {
         kind: "unfinished_todos".into(),
-        message: "Work item completed with unfinished todo items.".into(),
+        message: "Work item completion requested with unfinished todo items.".into(),
         pending_count: Some(pending_count),
         in_progress_count: Some(in_progress_count),
         sample,

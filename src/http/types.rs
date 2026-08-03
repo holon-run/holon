@@ -381,6 +381,7 @@ pub struct UpdateWorkItemRequest {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CompleteWorkItemRequest {
+    pub report_text: String,
     pub authority_class: Option<AuthorityClass>,
 }
 

@@ -681,6 +681,7 @@ pub async fn work_item_mutation_routes_pick_update_and_complete() -> Result<()> 
             second_id = second.id
         ))
         .json(&serde_json::json!({
+            "report_text": "Completed through the HTTP control plane.",
             "authority_class": "integration_signal"
         }))
         .send()
@@ -759,7 +760,9 @@ pub async fn work_item_mutation_routes_validate_bad_requests() -> Result<()> {
         .post(format!(
             "{base}/api/control/agents/default/work-items/missing-work/complete"
         ))
-        .json(&serde_json::json!({}))
+        .json(&serde_json::json!({
+            "report_text": "This work item does not exist."
+        }))
         .send()
         .await?;
     assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);

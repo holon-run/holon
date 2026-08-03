@@ -1185,6 +1185,13 @@ fn render_work_item_candidates(
     )?;
     append_candidate_group(
         &mut lines,
+        "Completing work items:",
+        &projection.completing,
+        &completion_reports,
+        agent_home,
+    )?;
+    append_candidate_group(
+        &mut lines,
         "Recently completed work items:",
         &projection.completed_recent,
         &completion_reports,
@@ -1235,6 +1242,7 @@ fn append_candidate_group(
             crate::storage::WorkItemCandidateClass::Yielded => "yielded",
             crate::storage::WorkItemCandidateClass::WaitingForOperator => "waiting_for_operator",
             crate::storage::WorkItemCandidateClass::Blocked => "blocked",
+            crate::storage::WorkItemCandidateClass::Completing => "completing",
             crate::storage::WorkItemCandidateClass::CompletedRecent => "completed_recent",
             crate::storage::WorkItemCandidateClass::CurrentRunnable => "current_runnable",
         };

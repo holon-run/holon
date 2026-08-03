@@ -174,6 +174,7 @@ pub(crate) struct WorkItemFocusTransitionCommand {
     pub wait_conditions: Vec<WaitConditionRecord>,
     pub continuations: Vec<WorkItemContinuationFrame>,
     pub agent_state: AgentStateMutation,
+    pub brief_evidence: Vec<BriefRecord>,
     pub audit_events: Vec<AuditEvent>,
     pub index_changes: Vec<RuntimeIndexChange>,
     pub notify_scheduler: bool,
@@ -337,6 +338,9 @@ impl RuntimeTransitionRepository<'_> {
             }
             if !applied {
                 return Ok(TransitionCommit::default());
+            }
+            for brief in &command.brief_evidence {
+                insert_brief_evidence_tx(tx, brief)?;
             }
             inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
 
@@ -934,6 +938,7 @@ fn apply_agent_state_mutation_tx(
 }
 
 fn validate_work_item_mutation_tx(tx: &Transaction<'_>, mutation: &WorkItemMutation) -> Result<()> {
+    validate_work_item_completion_contract(mutation.record())?;
     match mutation {
         WorkItemMutation::Insert { record } => {
             if record.revision != 1 {
@@ -970,6 +975,8 @@ fn validate_work_item_mutation_tx(tx: &Transaction<'_>, mutation: &WorkItemMutat
                 update_expected_work_item_tx(tx, record, *expected_revision)?;
                 return Ok(());
             };
+            let existing_record: WorkItemRecord = serde_json::from_str(&payload)?;
+            validate_work_item_state_transition(&existing_record, record)?;
             let actual_revision = u64::try_from(actual_revision)?;
             if actual_revision != *expected_revision
                 && !(actual_revision == record.revision
@@ -979,6 +986,85 @@ fn validate_work_item_mutation_tx(tx: &Transaction<'_>, mutation: &WorkItemMutat
             }
         }
     }
+    Ok(())
+}
+
+fn validate_work_item_completion_contract(record: &WorkItemRecord) -> Result<()> {
+    match record.state {
+        WorkItemState::Open => {
+            anyhow::ensure!(
+                record.completion_intent.is_none() && record.result_brief_id.is_none(),
+                "open work item {} cannot carry completion binding",
+                record.id
+            );
+        }
+        WorkItemState::Completing => {
+            let intent = record.completion_intent.as_ref().ok_or_else(|| {
+                anyhow!(
+                    "completing work item {} requires completion intent",
+                    record.id
+                )
+            })?;
+            anyhow::ensure!(
+                intent.work_item_id == record.id
+                    && matches!(
+                        intent.report_state,
+                        crate::types::CompletionReportState::Pending
+                            | crate::types::CompletionReportState::Missing
+                    )
+                    && intent.result_brief_id.is_none()
+                    && record.result_brief_id.is_none(),
+                "completing work item {} has invalid completion intent",
+                record.id
+            );
+        }
+        WorkItemState::Completed => {
+            let intent = record.completion_intent.as_ref().ok_or_else(|| {
+                anyhow!(
+                    "completed work item {} requires completion intent",
+                    record.id
+                )
+            })?;
+            let result_brief_id = record
+                .result_brief_id
+                .as_deref()
+                .filter(|brief_id| !brief_id.trim().is_empty())
+                .ok_or_else(|| {
+                    anyhow!("completed work item {} requires result brief", record.id)
+                })?;
+            anyhow::ensure!(
+                intent.work_item_id == record.id
+                    && intent.report_state == crate::types::CompletionReportState::Bound
+                    && intent.result_brief_id.as_deref() == Some(result_brief_id),
+                "completed work item {} has inconsistent completion binding",
+                record.id
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_work_item_state_transition(
+    existing: &WorkItemRecord,
+    incoming: &WorkItemRecord,
+) -> Result<()> {
+    let allowed = matches!(
+        (&existing.state, &incoming.state),
+        (
+            WorkItemState::Open,
+            WorkItemState::Open | WorkItemState::Completing
+        ) | (
+            WorkItemState::Completing,
+            WorkItemState::Completing | WorkItemState::Completed
+        ) | (WorkItemState::Completed, WorkItemState::Completed)
+    );
+    anyhow::ensure!(
+        allowed,
+        "invalid work item lifecycle transition {:?} -> {:?} for {}",
+        existing.state,
+        incoming.state,
+        incoming.id
+    );
     Ok(())
 }
 
@@ -1172,8 +1258,9 @@ mod tests {
         runtime_db::{RuntimeIndexChange, RuntimeIndexOperation},
         types::{
             AgentIdentityRecord, AgentKind, AgentOwnership, AgentProfilePreset, AgentVisibility,
-            Priority, QueueEntryStatus, TaskKind, TaskStatus, WaitConditionKind,
-            WaitConditionStatus, WakeSource, WorkItemContinuationState, WorkItemState,
+            BriefKind, CompletionReportRequirement, CompletionReportState, Priority,
+            QueueEntryStatus, TaskKind, TaskStatus, WaitConditionKind, WaitConditionStatus,
+            WakeSource, WorkItemCompletionIntent, WorkItemContinuationState, WorkItemState,
         },
     };
     use chrono::Utc;
@@ -1408,6 +1495,7 @@ mod tests {
                         expected: Some(Box::new(initial_state.clone())),
                         record: Box::new(next_state),
                     },
+                    brief_evidence: Vec::new(),
                     audit_events: vec![AuditEvent::legacy(
                         "work_item_picked",
                         serde_json::json!({}),
@@ -1429,7 +1517,22 @@ mod tests {
     fn work_item_focus_transition_restores_caller_atomically_with_completion() -> Result<()> {
         let (_dir, db) = runtime_db()?;
         let caller = work_item("work-caller");
-        let active = work_item("work-active");
+        let mut active = work_item("work-active");
+        let now = Utc::now();
+        active.state = WorkItemState::Completing;
+        active.completion_intent = Some(WorkItemCompletionIntent {
+            work_item_id: active.id.clone(),
+            source_activation_id: None,
+            source_message_id: None,
+            source_turn_id: None,
+            expected_work_revision: active.revision,
+            report_requirement: CompletionReportRequirement::Required,
+            report_state: CompletionReportState::Pending,
+            result_brief_id: None,
+            created_at: now,
+            updated_at: now,
+        });
+        active.updated_at = now;
         db.work_items().insert_new(&caller)?;
         db.work_items().insert_new(&active)?;
         let frame = WorkItemContinuationFrame::new_on_completed(
@@ -1439,15 +1542,37 @@ mod tests {
             None,
         );
         db.work_item_continuations().upsert(&frame)?;
-        let mut initial_state = AgentState::new("agent-a");
-        initial_state.current_work_item_id = Some(active.id.clone());
+        let initial_state = AgentState::new("agent-a");
         db.agent_states().upsert(&initial_state)?;
         let mut next_state = initial_state.clone();
         next_state.current_work_item_id = Some(caller.id.clone());
+        next_state.current_turn_work_item_id = Some(caller.id.clone());
+        let mut result_brief = BriefRecord::new(
+            "agent-a",
+            BriefKind::Result,
+            "transition completed",
+            None,
+            None,
+        );
+        result_brief.work_item_id = Some(active.id.clone());
         let mut completed = active.clone();
         completed.revision = 2;
         completed.state = WorkItemState::Completed;
-        completed.updated_at = Utc::now();
+        completed.result_brief_id = Some(result_brief.id.clone());
+        completed.result_summary = Some(result_brief.text.clone());
+        completed.completion_intent = Some(WorkItemCompletionIntent {
+            work_item_id: active.id.clone(),
+            source_activation_id: None,
+            source_message_id: None,
+            source_turn_id: None,
+            expected_work_revision: active.revision,
+            report_requirement: CompletionReportRequirement::Required,
+            report_state: CompletionReportState::Bound,
+            result_brief_id: Some(result_brief.id.clone()),
+            created_at: now,
+            updated_at: now,
+        });
+        completed.updated_at = now;
         let resumed = frame.resume("active_work_item_completed");
 
         db.transitions()
@@ -1463,6 +1588,7 @@ mod tests {
                     expected: Some(Box::new(initial_state)),
                     record: Box::new(next_state.clone()),
                 },
+                brief_evidence: vec![result_brief],
                 audit_events: Vec::new(),
                 index_changes: Vec::new(),
                 notify_scheduler: true,
@@ -1502,6 +1628,7 @@ mod tests {
                     expected: Some(Box::new(initial_state.clone())),
                     record: Box::new(next_state),
                 },
+                brief_evidence: Vec::new(),
                 audit_events: Vec::new(),
                 index_changes: Vec::new(),
                 notify_scheduler: true,

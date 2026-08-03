@@ -1688,6 +1688,7 @@
                     "waiting_for_operator",
                     "yielded",
                     "blocked",
+                    "completing",
                     "completed_recent"
                   ],
                   "type": "string"
@@ -1725,6 +1726,7 @@
                     "queued",
                     "yielded",
                     "blocked",
+                    "completing",
                     "completed"
                   ],
                   "type": "string"
@@ -1755,12 +1757,14 @@
                     "yielded",
                     "waiting_for_operator",
                     "blocked",
+                    "completing",
                     "completed"
                   ],
                   "type": "string"
                 },
                 "reason_code": {
                   "enum": [
+                    "completing",
                     "completed",
                     "continuation_yielded",
                     "active_task_wait",
@@ -1808,6 +1812,7 @@
                     "waiting_timer",
                     "waiting_system",
                     "blocked",
+                    "completing",
                     "completed"
                   ],
                   "type": "string"
@@ -1815,6 +1820,7 @@
                 "state": {
                   "enum": [
                     "open",
+                    "completing",
                     "completed"
                   ],
                   "type": "string"
@@ -2296,8 +2302,14 @@
               "string",
               "null"
             ]
+          },
+          "report_text": {
+            "type": "string"
           }
         },
+        "required": [
+          "report_text"
+        ],
         "title": "CompleteWorkItemRequest",
         "type": "object"
       },
@@ -3558,6 +3570,7 @@
               "state": {
                 "enum": [
                   "open",
+                  "completing",
                   "completed"
                 ],
                 "type": "string"
@@ -3868,6 +3881,7 @@
               "state": {
                 "enum": [
                   "open",
+                  "completing",
                   "completed"
                 ],
                 "type": "string"
@@ -4009,6 +4023,7 @@
                   "yielded",
                   "waiting_for_operator",
                   "blocked",
+                  "completing",
                   "completed"
                 ],
                 "type": "string"
@@ -4022,6 +4037,7 @@
                   "yielded",
                   "waiting_for_operator",
                   "blocked",
+                  "completing",
                   "completed",
                   null
                 ],
@@ -5582,6 +5598,7 @@
               "waiting_for_operator",
               "yielded",
               "blocked",
+              "completing",
               "completed_recent"
             ],
             "type": "string"
@@ -5619,6 +5636,7 @@
               "queued",
               "yielded",
               "blocked",
+              "completing",
               "completed"
             ],
             "type": "string"
@@ -5649,12 +5667,14 @@
               "yielded",
               "waiting_for_operator",
               "blocked",
+              "completing",
               "completed"
             ],
             "type": "string"
           },
           "reason_code": {
             "enum": [
+              "completing",
               "completed",
               "continuation_yielded",
               "active_task_wait",
@@ -5702,6 +5722,7 @@
               "waiting_timer",
               "waiting_system",
               "blocked",
+              "completing",
               "completed"
             ],
             "type": "string"
@@ -5709,6 +5730,7 @@
           "state": {
             "enum": [
               "open",
+              "completing",
               "completed"
             ],
             "type": "string"
@@ -8471,6 +8493,7 @@
           "state": {
             "enum": [
               "open",
+              "completing",
               "completed"
             ],
             "type": "string"

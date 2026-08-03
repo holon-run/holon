@@ -24,6 +24,7 @@ pub enum WorkItemCandidateClass {
     WaitingForOperator,
     Yielded,
     Blocked,
+    Completing,
     CompletedRecent,
 }
 
@@ -34,12 +35,14 @@ pub enum WorkItemFocus {
     Queued,
     Yielded,
     Blocked,
+    Completing,
     Completed,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkItemSchedulingReasonCode {
+    Completing,
     Completed,
     ContinuationYielded,
     ActiveTaskWait,
@@ -119,6 +122,7 @@ pub struct WorkQueueReadModel {
     pub yielded: Vec<WorkItemSchedulingProjection>,
     pub waiting_for_operator: Vec<WorkItemSchedulingProjection>,
     pub blocked: Vec<WorkItemSchedulingProjection>,
+    pub completing: Vec<WorkItemSchedulingProjection>,
     pub completed_recent: Vec<WorkItemSchedulingProjection>,
 }
 
@@ -132,6 +136,7 @@ impl WorkQueueReadModel {
                 .iter()
                 .any(|item| !item.is_current)
             || self.blocked.iter().any(|item| !item.is_current)
+            || self.completing.iter().any(|item| !item.is_current)
             || self.completed_recent.iter().any(|item| !item.is_current)
     }
 }
@@ -247,14 +252,14 @@ pub fn derive_work_item_scheduling(
     }
 
     let mut diagnostics = Vec::new();
-    if facts.work_item.state == WorkItemState::Completed && facts.is_current {
-        diagnostics.push("completed_work_item_marked_current".into());
+    if facts.work_item.state != WorkItemState::Open && facts.is_current {
+        diagnostics.push("terminalizing_work_item_marked_current".into());
     }
     if facts.is_yielded && facts.is_current {
         diagnostics.push("yielded_work_item_marked_current".into());
     }
-    if facts.work_item.state == WorkItemState::Completed && !waits.is_empty() {
-        diagnostics.push("completed_work_item_has_active_wait".into());
+    if facts.work_item.state != WorkItemState::Open && !waits.is_empty() {
+        diagnostics.push("terminalizing_work_item_has_active_wait".into());
     }
     if wait_states.kind_count() > 1 {
         diagnostics.push("multiple_active_wait_kinds".into());
@@ -264,6 +269,11 @@ pub fn derive_work_item_scheduling(
         (
             WorkItemSchedulingState::Completed,
             WorkItemSchedulingReasonCode::Completed,
+        )
+    } else if facts.work_item.state == WorkItemState::Completing {
+        (
+            WorkItemSchedulingState::Completing,
+            WorkItemSchedulingReasonCode::Completing,
         )
     } else if facts.is_yielded {
         (
@@ -306,6 +316,8 @@ pub fn derive_work_item_scheduling(
     let is_current = facts.is_current && facts.work_item.state == WorkItemState::Open;
     let focus = if facts.work_item.state == WorkItemState::Completed {
         WorkItemFocus::Completed
+    } else if facts.work_item.state == WorkItemState::Completing {
+        WorkItemFocus::Completing
     } else if is_current {
         WorkItemFocus::Current
     } else if facts.is_yielded {
@@ -320,6 +332,8 @@ pub fn derive_work_item_scheduling(
         WorkItemCandidateClass::CurrentRunnable
     } else if facts.work_item.state == WorkItemState::Completed {
         WorkItemCandidateClass::CompletedRecent
+    } else if facts.work_item.state == WorkItemState::Completing {
+        WorkItemCandidateClass::Completing
     } else if has_triggered_waits && facts.work_item.blocked_by.is_some() {
         WorkItemCandidateClass::TriggeredBlocked
     } else if scheduling_state == WorkItemSchedulingState::Runnable {
@@ -372,6 +386,7 @@ pub fn readiness_for_scheduling_state(state: WorkItemSchedulingState) -> WorkIte
         | WorkItemSchedulingState::WaitingTimer
         | WorkItemSchedulingState::WaitingSystem
         | WorkItemSchedulingState::Blocked => WorkItemReadiness::Blocked,
+        WorkItemSchedulingState::Completing => WorkItemReadiness::Completing,
         WorkItemSchedulingState::Completed => WorkItemReadiness::Completed,
     }
 }
@@ -398,6 +413,7 @@ pub fn compare_scheduling_projection_order(
             WorkItemCandidateClass::Yielded
             | WorkItemCandidateClass::WaitingForOperator
             | WorkItemCandidateClass::Blocked
+            | WorkItemCandidateClass::Completing
             | WorkItemCandidateClass::CompletedRecent => {
                 compare_timestamp_desc(left.work_item.updated_at, right.work_item.updated_at)
             }
@@ -425,7 +441,8 @@ pub fn candidate_class_rank(class: WorkItemCandidateClass) -> u8 {
         WorkItemCandidateClass::Yielded => 3,
         WorkItemCandidateClass::WaitingForOperator => 4,
         WorkItemCandidateClass::Blocked => 5,
-        WorkItemCandidateClass::CompletedRecent => 6,
+        WorkItemCandidateClass::Completing => 6,
+        WorkItemCandidateClass::CompletedRecent => 7,
     }
 }
 
@@ -529,7 +546,7 @@ mod tests {
         assert!(!projection.is_runnable);
         assert!(projection
             .diagnostics
-            .contains(&"completed_work_item_has_active_wait".to_string()));
+            .contains(&"terminalizing_work_item_has_active_wait".to_string()));
     }
 
     #[test]

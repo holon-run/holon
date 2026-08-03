@@ -3261,7 +3261,7 @@
       "stability": "stable"
     },
     {
-      "description": "List recent work items with explicit current, open, completed, queued, yielded, blocked, waiting_for_operator, and runnable views. Use this before relying on memory briefs for work-item focus.\n",
+      "description": "List recent work items with explicit current, open, completing, completed, queued, yielded, blocked, waiting_for_operator, and runnable views. Use this before relying on memory briefs for work-item focus.\n",
       "family": "core_agent",
       "freeform_grammar": null,
       "input_schema": {
@@ -3272,6 +3272,7 @@
             "enum": [
               "all",
               "open",
+              "completing",
               "completed",
               "current",
               "queued",
