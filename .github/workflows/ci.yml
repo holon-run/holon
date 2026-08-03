@@ -23,6 +23,7 @@ on:
       - "scripts/docker-live-acceptance.py"
       - "scripts/docker_e2e/**"
       - ".github/workflows/e2e-scheduler-nightly.yml"
+      - ".github/workflows/release-e2e.yml"
       - "tests/e2e/scheduler/**"
   pull_request:
     branches: [main]
@@ -46,6 +47,7 @@ on:
       - "scripts/docker-live-acceptance.py"
       - "scripts/docker_e2e/**"
       - ".github/workflows/e2e-scheduler-nightly.yml"
+      - ".github/workflows/release-e2e.yml"
       - "tests/e2e/scheduler/**"
   workflow_dispatch:
 
@@ -81,6 +83,8 @@ jobs:
               - 'scripts/docker-e2e.py'
               - 'scripts/docker-live-acceptance.py'
               - 'scripts/docker_e2e/**'
+              - '.github/workflows/e2e-scheduler-nightly.yml'
+              - '.github/workflows/release-e2e.yml'
             rust:
               - '.github/workflows/ci.yml'
               - 'src/**'
@@ -247,7 +251,7 @@ jobs:
           path: lcov.info
 
   e2e-scheduler:
-    name: E2E Scheduler Live (optional)
+    name: Scheduler Live Canary (optional)
     needs: changes
     if: contains(github.event.pull_request.labels.*.name, 'e2e-scheduler')
     runs-on: ubuntu-latest
@@ -282,17 +286,49 @@ jobs:
           printf 'DEEPSEEK_API_KEY=%s\n' "${DEEPSEEK_API_KEY}" > "${HOLON_E2E_DOCKER_ENV_FILE}"
           chmod 0600 "${HOLON_E2E_DOCKER_ENV_FILE}"
 
-      - name: Run scheduler Tier-1 E2E
+      - name: Run scheduler live canary
         run: |
           set -euo pipefail
           python3 scripts/docker-e2e.py \
             --image holon:e2e \
             --skip-build \
+            --profile scheduler-live-canary \
             --scheduler-matrix \
-            --suite extended \
-            --tag e2e-tier-1 \
             --env-file "${HOLON_E2E_DOCKER_ENV_FILE}" \
-            --timeout 600
+            --timeout 120 \
+            --evidence-dir target/docker-e2e/scheduler-live-canary
+
+      - name: Publish live canary summary
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          report_path = Path(
+              "target/docker-e2e/scheduler-live-canary/"
+              "scheduler-live-canary-report.json"
+          )
+          if not report_path.is_file():
+              raise SystemExit(0)
+          report = json.loads(report_path.read_text())
+          lines = [
+              "# Scheduler Live Canary",
+              "",
+              f"- Status: **{report['status']}**",
+              f"- Model: `{report['model_route']}`",
+              f"- Provider retries: `{report['provider_retries']}`",
+              f"- Tool counts: `{json.dumps(report['cases'][0]['tool_counts'], sort_keys=True)}`",
+              f"- Behavioral variance: `{json.dumps(report['behavioral_variances'], sort_keys=True)}`",
+          ]
+          Path(os.environ["GITHUB_STEP_SUMMARY"]).write_text("\n".join(lines) + "\n")
+          PY
+
+      - name: Upload live canary evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scheduler-live-canary
+          path: target/docker-e2e/scheduler-live-canary
 
       - name: Remove provider environment
         if: always()
@@ -303,7 +339,7 @@ jobs:
     needs: changes
     if: github.event_name == 'push' || needs.changes.outputs.docker == 'true' || needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -328,7 +364,7 @@ jobs:
             --skip-build \
             --profile scheduler-required \
             --scheduler-matrix \
-            --timeout 600 \
+            --timeout 120 \
             --evidence-dir target/docker-e2e/scheduler-required
 
       - name: Verify required reports

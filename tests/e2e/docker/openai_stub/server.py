@@ -9,7 +9,19 @@ from typing import Any
 CALLBACK_CAPABILITY_PATTERN = re.compile(
     r"(/api/callbacks/(?:wake|enqueue)/)[A-Za-z0-9_-]+"
 )
-SCENARIOS = ("scheduler-multi", "scheduler-external", "scheduler-operator")
+SCENARIOS = (
+    "scheduler-task-wait",
+    "scheduler-provider-retry",
+    "scheduler-multi",
+    "scheduler-external",
+    "scheduler-operator",
+    "scheduler-concurrent",
+    "scheduler-interject",
+    "scheduler-compaction",
+    "scheduler-worktree",
+    "scheduler-spawn",
+    "scheduler-checkpoint",
+)
 
 def redact_evidence(value: Any) -> Any:
     if isinstance(value, dict):
@@ -32,6 +44,9 @@ def call_item(cid: str, name: str, args: dict[str, Any]) -> dict[str, Any]:
 class Scenario:
     def __init__(self, name: str) -> None:
         self.name, self.phase, self.work_ids, self.markers = name, 0, [], {}
+        self.task_ids: list[str] = []
+        self.workspace_ids: list[str] = []
+        self.execution_root_ids: list[str] = []
         self.first_turn_closed = False
         self.current_input_text = ""
         self.extra_requests = 0
@@ -42,11 +57,34 @@ class Scenario:
         for wid in re.findall(r"work_[0-9a-f]{15}", raw):
             if wid not in self.work_ids:
                 self.work_ids.append(wid)
+        for task_id in re.findall(r"task_[0-9a-f]{15}", raw):
+            if task_id not in self.task_ids:
+                self.task_ids.append(task_id)
+        for workspace_id in re.findall(r"ws_[0-9a-f]+", raw):
+            if workspace_id not in self.workspace_ids:
+                self.workspace_ids.append(workspace_id)
+        for execution_root_id in re.findall(r"git_worktree_root:[^\"\\\\]+", raw):
+            if execution_root_id not in self.execution_root_ids:
+                self.execution_root_ids.append(execution_root_id)
         for key, pattern in {
             "multi_a": r"SCHEDULER-MULTI-A-[0-9a-f]+", "multi_b": r"SCHEDULER-MULTI-B-[0-9a-f]+",
             "multi_complete_a": r"SCHEDULER-MULTI-COMPLETE-A-[0-9a-f]+", "multi_complete_b": r"SCHEDULER-MULTI-COMPLETE-B-[0-9a-f]+",
             "external": r"SCHEDULER-EXTERNAL-WAIT-[0-9a-f]+", "external_complete": r"SCHEDULER-EXTERNAL-COMPLETE-[0-9a-f]+",
             "operator": r"SCHEDULER-OPERATOR-WAIT-[0-9a-f]+", "operator_complete": r"SCHEDULER-OPERATOR-COMPLETE-[0-9a-f]+",
+            "task": r"SCHEDULER-TASK-WAIT-[0-9a-f]+", "task_result": r"SCHEDULER-TASK-RESULT-[0-9a-f]+",
+            "task_complete": r"SCHEDULER-TASK-WAIT-COMPLETE-[0-9a-f]+",
+            "provider": r"SCHEDULER-PROVIDER-RETRY-[0-9a-f]+", "provider_complete": r"SCHEDULER-PROVIDER-RETRY-COMPLETE-[0-9a-f]+",
+            "concurrent_a": r"SCHEDULER-CONCURRENT-A-[0-9a-f]+", "concurrent_b": r"SCHEDULER-CONCURRENT-B-[0-9a-f]+",
+            "concurrent_complete_a": r"SCHEDULER-CONCURRENT-COMPLETE-A-[0-9a-f]+", "concurrent_complete_b": r"SCHEDULER-CONCURRENT-COMPLETE-B-[0-9a-f]+",
+            "interject_a": r"SCHEDULER-INTERJECT-A-[0-9a-f]+", "interject_b": r"SCHEDULER-INTERJECT-B-[0-9a-f]+",
+            "interject_complete_a": r"SCHEDULER-INTERJECT-COMPLETE-A-[0-9a-f]+", "interject_complete_b": r"SCHEDULER-INTERJECT-COMPLETE-B-[0-9a-f]+",
+            "compaction": r"SCHEDULER-COMPACTION-[0-9a-f]+", "compaction_complete": r"SCHEDULER-COMPACTION-COMPLETE-[0-9a-f]+",
+            "worktree": r"SCHEDULER-WORKTREE-[0-9a-f]+", "worktree_complete": r"SCHEDULER-WORKTREE-COMPLETE-[0-9a-f]+",
+            "spawn": r"SCHEDULER-SPAWN-[0-9a-f]+", "spawn_complete": r"SCHEDULER-SPAWN-COMPLETE-[0-9a-f]+",
+            "spawn_child": r"SCHEDULER-SPAWN-CHILD-[0-9a-f]+",
+            "checkpoint_a": r"SCHEDULER-REPLAY-A-[0-9a-f]+", "checkpoint_b": r"SCHEDULER-REPLAY-B-[0-9a-f]+",
+            "checkpoint_complete_a": r"SCHEDULER-REPLAY-COMPLETE-A-[0-9a-f]+", "checkpoint_complete_b": r"SCHEDULER-REPLAY-COMPLETE-B-[0-9a-f]+",
+            "branch": r"e2e-worktree-[0-9a-f]+",
             "callback": r"docker-e2e:[0-9a-f]+",
         }.items():
             match = re.search(pattern, raw)
@@ -83,6 +121,18 @@ class Scenario:
             current_input = self.current_input(request)
             self.current_input_text = current_input
             if (
+                self.name == "scheduler-spawn"
+                and "SCHEDULER-SPAWN-CHILD-" in current_input
+                and "Scheduler Docker E2E case" not in current_input
+            ):
+                marker = self.markers.get(
+                    "spawn_child", "SCHEDULER-SPAWN-CHILD-deterministic"
+                )
+                return 200, response(
+                    [text_item(f"Child completed {marker}.")],
+                    "resp_scheduler_spawn_child",
+                )
+            if (
                 "[trigger:internal_followup][runtime_instruction][InternalFollowup]"
                 in current_input
                 and "This is the first run of Holon" in current_input
@@ -104,8 +154,25 @@ class Scenario:
                 }
             if self.name == "scheduler-multi":
                 return self.multi()
+            if self.name == "scheduler-task-wait":
+                return self.task_wait()
+            if self.name == "scheduler-provider-retry":
+                return self.provider_retry()
             if self.name in {"scheduler-external", "scheduler-operator"}:
-                return self.wait(self.name.removeprefix("scheduler-"))
+                kind = self.name.removeprefix("scheduler-")
+                return self.wait(kind, kind, kind)
+            if self.name == "scheduler-concurrent":
+                return self.interject("concurrent", "external")
+            if self.name == "scheduler-interject":
+                return self.interject("interject", "operator_input")
+            if self.name == "scheduler-compaction":
+                return self.wait("compaction", "compaction", "operator_input")
+            if self.name == "scheduler-worktree":
+                return self.worktree()
+            if self.name == "scheduler-spawn":
+                return self.spawn()
+            if self.name == "scheduler-checkpoint":
+                return self.checkpoint()
             return 409, {"error": {"type": "unknown_scenario", "message": self.name}}
 
     def multi(self) -> tuple[int, dict[str, Any]]:
@@ -156,38 +223,450 @@ class Scenario:
             return self.call("CompleteWorkItem", {"work_item_id": wid}, completion)
         return 409, {"error": {"type": "transcript_exhausted", "message": str(self.phase)}}
 
-    def wait(self, kind: str) -> tuple[int, dict[str, Any]]:
+    def wait(
+        self, marker_key: str, todo_prefix: str, wake: str
+    ) -> tuple[int, dict[str, Any]]:
         if self.phase == 0:
-            return self.call("CreateWorkItem", {"objective": self.markers.get(kind, f"SCHEDULER-{kind.upper()}-WAIT"), "plan_status": "ready", "todo_list": [{"text": f"{kind}-wait", "state": "pending"}, {"text": f"{kind}-complete", "state": "pending"}]})
+            return self.call("CreateWorkItem", {"objective": self.markers.get(marker_key, f"SCHEDULER-{marker_key.upper()}-WAIT"), "plan_status": "ready", "todo_list": [{"text": f"{todo_prefix}-wait", "state": "pending"}, {"text": f"{todo_prefix}-complete", "state": "pending"}]})
         if not self.work_ids:
             return 409, {"error": {"type": "missing_work_item_id", "message": str(self.phase)}}
         wid = self.work_ids[0]
         if self.phase == 1:
             return self.call("PickWorkItem", {"work_item_id": wid})
         if self.phase == 2:
-            args: dict[str, Any] = {"wake": "external" if kind == "external" else "operator_input", "reason": f"deterministic {kind} wait"}
-            if kind == "external":
+            args: dict[str, Any] = {"wake": wake, "reason": f"deterministic {marker_key} wait"}
+            if wake == "external":
                 args["resource"] = self.markers.get("callback", "docker-e2e:deterministic")
             return self.call("WaitFor", args)
         if self.phase == 3:
             return self.call("GetWorkItem", {"work_item_id": wid, "include_todo_list": True})
         if self.phase == 4:
-            return self.call("UpdateWorkItem", {"work_item_id": wid, "todo_list": [{"text": f"{kind}-wait", "state": "completed"}, {"text": f"{kind}-complete", "state": "completed"}]})
+            return self.call("UpdateWorkItem", {"work_item_id": wid, "todo_list": [{"text": f"{todo_prefix}-wait", "state": "completed"}, {"text": f"{todo_prefix}-complete", "state": "completed"}]})
         if self.phase == 5:
-            completion = self.markers.get(f"{kind}_complete") or self.markers[
-                kind
+            completion = self.markers.get(f"{marker_key}_complete") or self.markers[
+                marker_key
             ].replace(
-                f"SCHEDULER-{kind.upper()}-WAIT-",
-                f"SCHEDULER-{kind.upper()}-COMPLETE-",
+                f"SCHEDULER-{marker_key.upper()}-WAIT-",
+                f"SCHEDULER-{marker_key.upper()}-COMPLETE-",
             )
             return self.call("CompleteWorkItem", {"work_item_id": wid}, completion)
         return 409, {"error": {"type": "transcript_exhausted", "message": str(self.phase)}}
 
+    def task_wait(self) -> tuple[int, dict[str, Any]]:
+        if self.phase == 0:
+            return self.call(
+                "CreateWorkItem",
+                {
+                    "objective": self.markers.get("task", "SCHEDULER-TASK-WAIT"),
+                    "plan_status": "ready",
+                    "todo_list": [
+                        {"text": "task-continuation", "state": "pending"},
+                        {"text": "external-continuation", "state": "pending"},
+                    ],
+                },
+            )
+        if not self.work_ids:
+            return 409, {"error": {"type": "missing_work_item_id", "message": str(self.phase)}}
+        wid = self.work_ids[0]
+        if self.phase == 1:
+            marker = self.markers.get("task_result", "SCHEDULER-TASK-RESULT")
+            return self.call(
+                "ExecCommand",
+                {
+                    "cmd": f"sleep 15; printf {marker}",
+                    "yield_time_ms": 50,
+                    "max_output_tokens": 100,
+                },
+            )
+        if self.phase == 2:
+            if not self.task_ids:
+                return 409, {"error": {"type": "missing_task_id", "message": str(self.phase)}}
+            return self.call(
+                "WaitFor",
+                {
+                    "wake": "task_result",
+                    "resource": self.task_ids[-1],
+                    "reason": "deterministic task completion",
+                },
+            )
+        if self.phase in {3, 5}:
+            return self.call(
+                "GetWorkItem",
+                {"work_item_id": wid, "include_todo_list": True},
+            )
+        if self.phase == 4:
+            return self.call(
+                "WaitFor",
+                {
+                    "wake": "external",
+                    "resource": self.markers.get("callback", "docker-e2e:deterministic"),
+                    "reason": "deterministic external completion",
+                },
+            )
+        if self.phase == 6:
+            return self.call(
+                "UpdateWorkItem",
+                {
+                    "work_item_id": wid,
+                    "todo_list": [
+                        {"text": "task-continuation", "state": "completed"},
+                        {"text": "external-continuation", "state": "completed"},
+                    ],
+                },
+            )
+        if self.phase == 7:
+            return self.call(
+                "CompleteWorkItem",
+                {"work_item_id": wid},
+                self.markers.get("task_complete", "SCHEDULER-TASK-WAIT-COMPLETE"),
+            )
+        return 409, {"error": {"type": "transcript_exhausted", "message": str(self.phase)}}
+
+    def provider_retry(self) -> tuple[int, dict[str, Any]]:
+        if not self.work_ids:
+            return 409, {"error": {"type": "missing_work_item_id", "message": str(self.phase)}}
+        wid = self.work_ids[0]
+        if self.phase == 0:
+            return self.call(
+                "ListWorkItems",
+                {"filter": "current", "include_todo_list": True},
+            )
+        if self.phase == 1:
+            return self.call(
+                "CompleteWorkItem",
+                {"work_item_id": wid},
+                self.markers.get(
+                    "provider_complete", "SCHEDULER-PROVIDER-RETRY-COMPLETE"
+                ),
+            )
+        return 409, {"error": {"type": "transcript_exhausted", "message": str(self.phase)}}
+
+    def interject(self, prefix: str, wake: str) -> tuple[int, dict[str, Any]]:
+        if self.phase == 0:
+            return self.call(
+                "CreateWorkItem",
+                {
+                    "objective": self.markers.get(f"{prefix}_a", prefix),
+                    "plan_status": "ready",
+                    "todo_list": [
+                        {"text": f"{prefix}-wait", "state": "pending"},
+                        {"text": f"{prefix}-complete", "state": "pending"},
+                    ],
+                },
+            )
+        if not self.work_ids:
+            return 409, {"error": {"type": "missing_work_item_id", "message": str(self.phase)}}
+        if self.phase == 1:
+            return self.call("PickWorkItem", {"work_item_id": self.work_ids[0]})
+        if self.phase == 2:
+            args: dict[str, Any] = {
+                "wake": wake,
+                "reason": f"deterministic {prefix} wait",
+            }
+            if wake == "external":
+                args["resource"] = self.markers.get(
+                    "callback", "docker-e2e:deterministic"
+                )
+            return self.call("WaitFor", args)
+        if self.phase == 3:
+            return self.call(
+                "CreateWorkItem",
+                {
+                    "objective": self.markers.get(f"{prefix}_b", f"{prefix}-b"),
+                    "plan_status": "ready",
+                    "todo_list": [
+                        {"text": f"{prefix}-b-seed", "state": "completed"},
+                        {"text": f"{prefix}-b-complete", "state": "pending"},
+                    ],
+                },
+            )
+        if self.phase == 4:
+            self.phase += 1
+            return 200, response(
+                [text_item("Created deterministic interject WorkItem.")],
+                f"resp_{prefix}_interject_created",
+            )
+        if len(self.work_ids) < 2:
+            return 409, {"error": {"type": "missing_work_item_id", "message": str(self.phase)}}
+        if self.phase == 5:
+            return self.call(
+                "ListWorkItems",
+                {"filter": "current", "include_todo_list": True},
+            )
+        if self.phase == 6:
+            return self.call(
+                "UpdateWorkItem",
+                {
+                    "work_item_id": self.work_ids[1],
+                    "todo_list": [
+                        {"text": f"{prefix}-b-seed", "state": "completed"},
+                        {"text": f"{prefix}-b-complete", "state": "completed"},
+                    ],
+                },
+            )
+        if self.phase == 7:
+            return self.call(
+                "CompleteWorkItem",
+                {"work_item_id": self.work_ids[1]},
+                self.markers.get(f"{prefix}_complete_b", f"{prefix}-complete-b"),
+            )
+        if self.phase == 8:
+            self.phase += 1
+            return 200, response(
+                [text_item("Completed deterministic interject WorkItem.")],
+                f"resp_{prefix}_interject_complete",
+            )
+        if self.phase == 9:
+            return self.call(
+                "GetWorkItem",
+                {"work_item_id": self.work_ids[0], "include_todo_list": True},
+            )
+        if self.phase == 10:
+            return self.call(
+                "UpdateWorkItem",
+                {
+                    "work_item_id": self.work_ids[0],
+                    "todo_list": [
+                        {"text": f"{prefix}-wait", "state": "completed"},
+                        {"text": f"{prefix}-complete", "state": "completed"},
+                    ],
+                },
+            )
+        if self.phase == 11:
+            return self.call(
+                "CompleteWorkItem",
+                {"work_item_id": self.work_ids[0]},
+                self.markers.get(f"{prefix}_complete_a", f"{prefix}-complete-a"),
+            )
+        return 409, {"error": {"type": "transcript_exhausted", "message": str(self.phase)}}
+
+    def worktree(self) -> tuple[int, dict[str, Any]]:
+        if self.phase == 0:
+            return self.call(
+                "CreateWorkItem",
+                {
+                    "objective": self.markers.get("worktree", "SCHEDULER-WORKTREE"),
+                    "plan_status": "ready",
+                    "todo_list": [
+                        {"text": "worktree-create", "state": "pending"},
+                        {"text": "worktree-cleanup", "state": "pending"},
+                    ],
+                },
+            )
+        if not self.work_ids:
+            return 409, {"error": {"type": "missing_work_item_id", "message": str(self.phase)}}
+        wid = self.work_ids[0]
+        if self.phase == 1:
+            return self.call("PickWorkItem", {"work_item_id": wid})
+        if self.phase in {2, 4, 6, 8}:
+            return self.call("GetWorkspaceState", {})
+        if self.phase == 3:
+            if not self.workspace_ids:
+                return 409, {"error": {"type": "missing_workspace_id", "message": str(self.phase)}}
+            return self.call(
+                "CreateWorktree",
+                {
+                    "workspace_id": self.workspace_ids[0],
+                    "base_ref": "main",
+                    "branch": self.markers.get("branch", "e2e-worktree-deterministic"),
+                    "activate": True,
+                },
+            )
+        if self.phase == 5:
+            return self.call(
+                "SwitchWorkspace",
+                {"workspace_id": self.workspace_ids[0]},
+            )
+        if self.phase == 7:
+            if not self.execution_root_ids:
+                return 409, {"error": {"type": "missing_execution_root_id", "message": str(self.phase)}}
+            return self.call(
+                "RemoveWorktree",
+                {
+                    "execution_root_id": self.execution_root_ids[-1],
+                    "branch_policy": "keep",
+                },
+            )
+        if self.phase == 9:
+            return self.call(
+                "UpdateWorkItem",
+                {
+                    "work_item_id": wid,
+                    "todo_list": [
+                        {"text": "worktree-create", "state": "completed"},
+                        {"text": "worktree-cleanup", "state": "completed"},
+                    ],
+                },
+            )
+        if self.phase == 10:
+            return self.call(
+                "CompleteWorkItem",
+                {"work_item_id": wid},
+                self.markers.get("worktree_complete", "SCHEDULER-WORKTREE-COMPLETE"),
+            )
+        return 409, {"error": {"type": "transcript_exhausted", "message": str(self.phase)}}
+
+    def spawn(self) -> tuple[int, dict[str, Any]]:
+        if self.phase == 0:
+            return self.call(
+                "CreateWorkItem",
+                {
+                    "objective": self.markers.get("spawn", "SCHEDULER-SPAWN"),
+                    "plan_status": "ready",
+                    "todo_list": [
+                        {"text": "spawn-child", "state": "pending"},
+                        {"text": "verify-child", "state": "pending"},
+                    ],
+                },
+            )
+        if not self.work_ids:
+            return 409, {"error": {"type": "missing_work_item_id", "message": str(self.phase)}}
+        wid = self.work_ids[0]
+        if self.phase == 1:
+            return self.call("PickWorkItem", {"work_item_id": wid})
+        if self.phase == 2:
+            marker = self.markers.get(
+                "spawn_child", "SCHEDULER-SPAWN-CHILD-deterministic"
+            )
+            return self.call(
+                "SpawnAgent",
+                {
+                    "preset": "private_child",
+                    "initial_message": (
+                        f"Respond with one sentence containing the marker {marker} "
+                        "and then stop."
+                    ),
+                },
+            )
+        if self.phase == 3:
+            if not self.task_ids:
+                return 409, {"error": {"type": "missing_task_id", "message": str(self.phase)}}
+            return self.call("TaskStatus", {"task_id": self.task_ids[-1]})
+        if self.phase == 4:
+            return self.call(
+                "UpdateWorkItem",
+                {
+                    "work_item_id": wid,
+                    "todo_list": [
+                        {"text": "spawn-child", "state": "completed"},
+                        {"text": "verify-child", "state": "completed"},
+                    ],
+                },
+            )
+        if self.phase == 5:
+            return self.call(
+                "CompleteWorkItem",
+                {"work_item_id": wid},
+                self.markers.get("spawn_complete", "SCHEDULER-SPAWN-COMPLETE"),
+            )
+        return 409, {"error": {"type": "transcript_exhausted", "message": str(self.phase)}}
+
+    def checkpoint(self) -> tuple[int, dict[str, Any]]:
+        if self.phase in {0, 1}:
+            key = "checkpoint_a" if self.phase == 0 else "checkpoint_b"
+            suffix = "a" if self.phase == 0 else "b"
+            return self.call(
+                "CreateWorkItem",
+                {
+                    "objective": self.markers.get(key, f"SCHEDULER-REPLAY-{suffix}"),
+                    "plan_status": "ready",
+                    "todo_list": [
+                        {
+                            "text": "replay-wait" if suffix == "a" else "replay-seed",
+                            "state": "pending" if suffix == "a" else "completed",
+                        },
+                        {"text": "replay-complete", "state": "pending"},
+                    ],
+                },
+            )
+        if self.phase == 2:
+            return self.call("ListWorkItems", {"include_todo_list": True})
+        if self.phase == 3:
+            self.phase += 1
+            return 200, response(
+                [text_item("Created deterministic checkpoint WorkItems.")],
+                "resp_checkpoint_created",
+            )
+        if len(self.work_ids) < 2:
+            return 409, {"error": {"type": "missing_work_item_id", "message": str(self.phase)}}
+        if self.phase == 4:
+            return self.call(
+                "WaitFor",
+                {
+                    "wake": "external",
+                    "resource": self.markers.get("callback", "docker-e2e:deterministic"),
+                    "reason": "deterministic checkpoint wait",
+                },
+            )
+        if self.phase == 5:
+            return self.call(
+                "ListWorkItems",
+                {"filter": "current", "include_todo_list": True},
+            )
+        if self.phase == 6:
+            return self.call(
+                "UpdateWorkItem",
+                {
+                    "work_item_id": self.work_ids[1],
+                    "todo_list": [
+                        {"text": "replay-seed", "state": "completed"},
+                        {"text": "replay-complete", "state": "completed"},
+                    ],
+                },
+            )
+        if self.phase == 7:
+            return self.call(
+                "CompleteWorkItem",
+                {"work_item_id": self.work_ids[1]},
+                self.markers.get(
+                    "checkpoint_complete_b", "SCHEDULER-REPLAY-COMPLETE-B"
+                ),
+            )
+        if self.phase == 8:
+            self.phase += 1
+            return 200, response(
+                [text_item("Completed deterministic checkpoint WorkItem B.")],
+                "resp_checkpoint_b_complete",
+            )
+        if self.phase == 9:
+            return self.call(
+                "GetWorkItem",
+                {"work_item_id": self.work_ids[0], "include_todo_list": True},
+            )
+        if self.phase == 10:
+            return self.call(
+                "UpdateWorkItem",
+                {
+                    "work_item_id": self.work_ids[0],
+                    "todo_list": [
+                        {"text": "replay-wait", "state": "completed"},
+                        {"text": "replay-complete", "state": "completed"},
+                    ],
+                },
+            )
+        if self.phase == 11:
+            return self.call(
+                "CompleteWorkItem",
+                {"work_item_id": self.work_ids[0]},
+                self.markers.get(
+                    "checkpoint_complete_a", "SCHEDULER-REPLAY-COMPLETE-A"
+                ),
+            )
+        return 409, {"error": {"type": "transcript_exhausted", "message": str(self.phase)}}
+
     def expected_phase(self) -> int:
         return {
+            "scheduler-task-wait": 9,
+            "scheduler-provider-retry": 3,
             "scheduler-multi": 12,
             "scheduler-external": 7,
             "scheduler-operator": 7,
+            "scheduler-concurrent": 13,
+            "scheduler-interject": 13,
+            "scheduler-compaction": 7,
+            "scheduler-worktree": 12,
+            "scheduler-spawn": 7,
+            "scheduler-checkpoint": 13,
         }[self.name]
 
     def status(self) -> dict[str, Any]:

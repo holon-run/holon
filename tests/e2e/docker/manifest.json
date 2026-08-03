@@ -1,22 +1,24 @@
 {
   "version": 2,
-  "scheduler_fixture_corpus_revision": "scheduler-release-acceptance-v1",
+  "scheduler_fixture_corpus_revision": "scheduler-release-gate-split-v2",
   "profiles": {
     "scheduler-required": {
+      "gate_kind": "required",
       "provider_mode": "stub",
+      "tool_assertion_mode": "strict",
       "case_ids": [
+        "scheduler-task-wait-resume",
+        "scheduler-provider-failure-work-queue-retry",
         "scheduler-multi-workitem-scheduling",
         "scheduler-external-wait-resume",
-        "scheduler-operator-wait-resume"
+        "scheduler-operator-wait-resume",
+        "scheduler-concurrent-claim-fencing",
+        "scheduler-operator-interject-during-wait",
+        "scheduler-compaction-continuity",
+        "scheduler-worktree-isolation",
+        "scheduler-spawn-agent-supervision",
+        "scheduler-checkpoint-replay"
       ],
-      "required_coverage_ids": [
-        "scheduler-multi-workitem-scheduling",
-        "scheduler-external-wait-resume",
-        "scheduler-operator-wait-resume"
-      ]
-    },
-    "scheduler-acceptance": {
-      "provider_mode": "live",
       "required_coverage_ids": [
         "scheduler-task-wait-resume",
         "scheduler-provider-failure-work-queue-retry",
@@ -29,6 +31,17 @@
         "scheduler-worktree-isolation",
         "scheduler-spawn-agent-supervision",
         "scheduler-checkpoint-replay"
+      ]
+    },
+    "scheduler-live-canary": {
+      "gate_kind": "live_canary",
+      "provider_mode": "live",
+      "tool_assertion_mode": "observe",
+      "case_ids": [
+        "scheduler-external-wait-resume"
+      ],
+      "required_coverage_ids": [
+        "scheduler-external-wait-resume"
       ]
     }
   },
@@ -152,9 +165,10 @@
     {
       "id": "scheduler-task-wait-resume",
       "coverage_ids": ["scheduler-task-wait-resume"],
+      "stub_scenario": "scheduler-task-wait",
       "tier": "extended",
       "tags": ["scheduler", "workitem", "task-result", "yield", "wait", "restart", "replay", "delivery"],
-      "timeout_seconds": 900,
+      "timeout_seconds": 120,
       "description": "Verify one WorkItem crosses autonomous scheduling, promoted task-result rejoin, external wait-resume, exact completion delivery, and process restart.",
       "phases": [
         {
@@ -179,9 +193,10 @@
     {
       "id": "scheduler-provider-failure-work-queue-retry",
       "coverage_ids": ["scheduler-provider-failure-work-queue-retry"],
+      "stub_scenario": "scheduler-provider-retry",
       "tier": "extended",
       "tags": ["scheduler", "provider", "failure", "retry", "workitem", "restart"],
-      "timeout_seconds": 600,
+      "timeout_seconds": 120,
       "description": "Force a real provider transport failure for a current WorkItem, restore the provider endpoint across a serve restart, and verify the same continue-active idempotency key is retried to successful completion.",
       "phases": [
         {
@@ -204,7 +219,7 @@
       "stub_scenario": "scheduler-multi",
       "tier": "extended",
       "tags": ["scheduler", "workitem", "multi", "priority", "e2e-tier-1"],
-      "timeout_seconds": 600,
+      "timeout_seconds": 120,
       "description": "Verify real-LLM multi-WorkItem scheduling: two WorkItems created in one turn both complete autonomously without conflicts or duplicate settlements.",
       "scheduler_protocol_commands_enabled": true,
       "phases": [
@@ -234,7 +249,7 @@
       "stub_scenario": "scheduler-external",
       "tier": "extended",
       "tags": ["scheduler", "workitem", "external", "wait", "resume", "e2e-tier-1"],
-      "timeout_seconds": 600,
+      "timeout_seconds": 120,
       "description": "Verify real-LLM WaitFor(external) + external trigger callback + autonomous resume and completion.",
       "scheduler_protocol_commands_enabled": true,
       "phases": [
@@ -262,7 +277,7 @@
       "stub_scenario": "scheduler-operator",
       "tier": "extended",
       "tags": ["scheduler", "workitem", "operator", "wait", "resume", "e2e-tier-1"],
-      "timeout_seconds": 600,
+      "timeout_seconds": 120,
       "description": "Verify real-LLM WaitFor(operator_input) + operator message + autonomous resume and completion.",
       "scheduler_protocol_commands_enabled": true,
       "phases": [
@@ -287,9 +302,10 @@
     {
       "id": "scheduler-concurrent-claim-fencing",
       "coverage_ids": ["scheduler-concurrent-claim-fencing"],
+      "stub_scenario": "scheduler-concurrent",
       "tier": "extended",
       "tags": ["scheduler", "workitem", "concurrent", "claim", "interject", "e2e-tier-2"],
-      "timeout_seconds": 600,
+      "timeout_seconds": 120,
       "description": "Verify interject prompt during external wait creates a new WorkItem without disrupting the waiting WorkItem; both complete correctly.",
       "scheduler_protocol_commands_enabled": true,
       "phases": [
@@ -314,9 +330,10 @@
     {
       "id": "scheduler-operator-interject-during-wait",
       "coverage_ids": ["scheduler-operator-interject-during-wait"],
+      "stub_scenario": "scheduler-interject",
       "tier": "extended",
       "tags": ["scheduler", "workitem", "operator", "interject", "e2e-tier-2"],
-      "timeout_seconds": 600,
+      "timeout_seconds": 120,
       "description": "Verify operator interject during operator wait creates a new WorkItem; original resumes correctly after interject completes.",
       "scheduler_protocol_commands_enabled": true,
       "phases": [
@@ -341,9 +358,10 @@
     {
       "id": "scheduler-compaction-continuity",
       "coverage_ids": ["scheduler-compaction-continuity"],
+      "stub_scenario": "scheduler-compaction",
       "tier": "extended",
       "tags": ["scheduler", "workitem", "compaction", "continuity", "e2e-tier-2"],
-      "timeout_seconds": 600,
+      "timeout_seconds": 120,
       "description": "Verify WorkItem state survives compaction triggered during a multi-turn lifecycle and persists across restart.",
       "scheduler_protocol_commands_enabled": true,
       "runtime_env": {
@@ -374,9 +392,10 @@
     {
       "id": "scheduler-worktree-isolation",
       "coverage_ids": ["scheduler-worktree-isolation"],
+      "stub_scenario": "scheduler-worktree",
       "tier": "extended",
       "tags": ["scheduler", "workitem", "worktree", "isolation", "e2e-tier-2"],
-      "timeout_seconds": 600,
+      "timeout_seconds": 120,
       "description": "Verify agent creates, inspects, and removes a worktree through real model tool calls with correct execution binding.",
       "scheduler_protocol_commands_enabled": true,
       "phases": [
@@ -403,9 +422,10 @@
     {
       "id": "scheduler-spawn-agent-supervision",
       "coverage_ids": ["scheduler-spawn-agent-supervision"],
+      "stub_scenario": "scheduler-spawn",
       "tier": "extended",
       "tags": ["scheduler", "workitem", "spawn", "agent", "supervision", "e2e-tier-2"],
-      "timeout_seconds": 600,
+      "timeout_seconds": 120,
       "description": "Verify agent spawns a private_child agent, inspects task status, and completes the parent WorkItem.",
       "scheduler_protocol_commands_enabled": true,
       "phases": [
@@ -430,9 +450,10 @@
     {
       "id": "scheduler-checkpoint-replay",
       "coverage_ids": ["scheduler-checkpoint-replay"],
+      "stub_scenario": "scheduler-checkpoint",
       "tier": "extended",
       "tags": ["scheduler", "workitem", "checkpoint", "replay", "restart", "e2e-tier-2"],
-      "timeout_seconds": 600,
+      "timeout_seconds": 120,
       "description": "Verify multiple WorkItems in different states survive restart and converge correctly with exactly-once settlement.",
       "scheduler_protocol_commands_enabled": true,
       "phases": [

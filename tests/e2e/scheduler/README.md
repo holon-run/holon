@@ -59,32 +59,36 @@ Each case asserts three layers:
 
 ## CI Layering
 
-| Layer | Trigger | Tiers | Timeout | Blocking |
+| Layer | Trigger | Scope | Timeout | Blocking |
 |---|---|---|---|---|
-| PR required | every scheduler/runtime Docker-relevant PR | deterministic Tier-1: multi-WorkItem, external wait, operator wait; legacy + canonical | 20 min | yes (`Scheduler E2E Required`) |
-| PR live optional | `e2e-scheduler` label | real-provider Tier-1 subset; legacy + canonical | 20 min | no (`continue-on-error`) |
-| Nightly | schedule | Tier-1 all + Tier-2 all | 60 min (job) / 15 min (suite `--timeout 900`) | creates issue on failure |
-| Release | release pipeline | Tier-1 + Tier-2 + Tier-3 | 90 min | yes |
+| PR required | every scheduler/runtime Docker-relevant PR | all scheduler invariant cases through the deterministic provider; legacy + canonical | 45 min job / 120s per case | yes (`Scheduler E2E Required`) |
+| PR live canary | `e2e-scheduler` label | real-provider external wait/resume smoke; legacy + canonical | 20 min job / 120s per case | no (`continue-on-error`) |
+| Nightly | schedule | deterministic required matrix plus the independent live canary | 60 min | deterministic only |
+| Release | release pipeline | core real-model suite, deterministic scheduler gate, and independent live canary | 90 min | core + deterministic |
 
-The required profile uses the dependency-free OpenAI Responses stub in
-`tests/e2e/docker/openai_stub/`. It produces `scheduler-coverage-report.json`
-from an explicit required coverage set; omitted cases therefore fail even when
-the selected matrix is internally symmetric. Real-provider runs remain the
-interoperability gate for provider behavior that a scripted transport cannot
-prove.
+The `scheduler-required` profile uses the dependency-free OpenAI Responses stub
+in `tests/e2e/docker/openai_stub/`. It covers task-result, provider retry,
+multi-WorkItem scheduling, wait/resume, claim/interject, compaction, worktree,
+child supervision, and checkpoint/restart invariants in both scheduler engines.
+Its exact tool and turn contract remains strict and its
+`scheduler-coverage-report.json` is release-blocking.
+
+The `scheduler-live-canary` profile uses a real provider and records the model
+route, provider attempt/retry counts, tool counts, and behavioral variance in
+`scheduler-live-canary-report.json`. Tool-order and forbidden-tool differences
+are evidence, not invariant failures; runtime fatal errors, failed tools, and
+failure to complete the smoke lifecycle still fail the canary. Canary failure
+does not replace or override the deterministic gate result.
 
 ### Current Decisions
 
 - **Required CI provider**: local deterministic OpenAI Responses stub, with no
   provider secret or PR label.
-- **Live CI provider**: single low-cost model via env var; multi-provider
-  matrix only in release pipeline (max 2 providers).
+- **Live CI provider**: single low-cost model via env var, reported separately
+  from deterministic runtime invariants.
 - **PR blocking**: the deterministic profile is required; the live provider
   job remains optional and `continue-on-error`.
-- **Phase order**: Phase 1 (infrastructure) → 2 (Tier-1) → 3 (Tier-2) → 4
-  (Tier-3); within Phase 2, crash recovery and provider failure are highest
-  priority.
-- **Case migration**: existing 4 scheduler cases remain in the shared
-  `manifest.json`; new cases are added alongside them.
+- **Case migration**: scheduler invariant cases remain in the shared
+  `manifest.json`; each required case names a deterministic `stub_scenario`.
 - **Drill harness**: `scheduler_drill.py` is reused for Tier-2 checkpoint
   replay; no separate Python module extracted yet.

@@ -39,7 +39,20 @@ jobs:
           cache-from: type=gha,scope=holon-docker
           cache-to: type=gha,mode=max,scope=holon-docker
 
+      - name: Run deterministic scheduler matrix
+        run: |
+          set -euo pipefail
+          python3 scripts/docker-e2e.py \
+            --image holon:nightly \
+            --skip-build \
+            --profile scheduler-required \
+            --scheduler-matrix \
+            --timeout 120 \
+            --evidence-dir target/docker-e2e/scheduler-required
+
       - name: Prepare provider environment
+        id: provider-env
+        continue-on-error: true
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
@@ -49,29 +62,20 @@ jobs:
           printf 'DEEPSEEK_API_KEY=%s\n' "${DEEPSEEK_API_KEY}" > "${HOLON_E2E_DOCKER_ENV_FILE}"
           chmod 0600 "${HOLON_E2E_DOCKER_ENV_FILE}"
 
-      - name: Run scheduler Tier-1 E2E
+      - name: Run scheduler live canary
+        id: live-canary
+        if: steps.provider-env.outcome == 'success'
+        continue-on-error: true
         run: |
           set -euo pipefail
           python3 scripts/docker-e2e.py \
             --image holon:nightly \
             --skip-build \
+            --profile scheduler-live-canary \
             --scheduler-matrix \
-            --suite extended \
-            --tag e2e-tier-1 \
             --env-file "${HOLON_E2E_DOCKER_ENV_FILE}" \
-            --timeout 900
-
-      - name: Run scheduler Tier-2 E2E
-        run: |
-          set -euo pipefail
-          python3 scripts/docker-e2e.py \
-            --image holon:nightly \
-            --skip-build \
-            --scheduler-matrix \
-            --suite extended \
-            --tag e2e-tier-2 \
-            --env-file "${HOLON_E2E_DOCKER_ENV_FILE}" \
-            --timeout 900
+            --timeout 120 \
+            --evidence-dir target/docker-e2e/scheduler-live-canary
 
       - name: Publish run summary
         if: always()
@@ -79,26 +83,46 @@ jobs:
           python3 - <<'PY'
           import json, os
           from pathlib import Path
-          summaries = sorted(Path("target/docker-e2e").glob("*/summary.json"))
-          if not summaries:
-              raise SystemExit("No Docker E2E summary was produced")
-          summary = json.loads(summaries[-1].read_text())
+          required = json.loads(
+              Path("target/docker-e2e/scheduler-required/summary.json").read_text()
+          )
+          canary_path = Path(
+              "target/docker-e2e/scheduler-live-canary/"
+              "scheduler-live-canary-report.json"
+          )
+          canary = json.loads(canary_path.read_text()) if canary_path.is_file() else None
           lines = [
               "# Scheduler E2E Nightly",
               "",
-              f"- Status: **{summary['status']}**",
-              f"- Model: `{summary['model_route']}`",
-              f"- Duration: `{summary['duration_seconds']}s`",
+              f"- Deterministic gate: **{required['status']}**",
+              f"- Live canary: **{canary['status'] if canary else 'missing'}**",
+              f"- Live model: `{canary['model_route'] if canary else 'unknown'}`",
+              f"- Live provider retries: `{canary['provider_retries'] if canary else 'unknown'}`",
               "",
-              "| Case | Result | Duration |",
+              "| Deterministic case | Result | Duration |",
               "| --- | --- | ---: |",
           ]
-          for case in summary["case_results"]:
+          for case in required["case_results"]:
               lines.append(
                   f"| `{case['id']}` | {case['status']} | {case['duration_seconds']}s |"
               )
+          if canary:
+              lines.extend([
+                  "",
+                  f"- Live tool counts: `{json.dumps(canary['cases'][0]['tool_counts'], sort_keys=True)}`",
+                  f"- Live behavioral variance: `{json.dumps(canary['behavioral_variances'], sort_keys=True)}`",
+              ])
           Path(os.environ["GITHUB_STEP_SUMMARY"]).write_text("\n".join(lines) + "\n")
           PY
+
+      - name: Upload scheduler evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scheduler-e2e-nightly
+          path: |
+            target/docker-e2e/scheduler-required
+            target/docker-e2e/scheduler-live-canary
 
       - name: Create issue on failure
         if: failure()

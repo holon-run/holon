@@ -120,27 +120,38 @@ jobs:
           args=(
             --image-digest "${CANDIDATE_IMAGE}"
             --skip-build
-            --scheduler-matrix
-            --profile scheduler-acceptance
+            --suite core
             --env-file "${HOLON_E2E_DOCKER_ENV_FILE}"
-          )
-          while IFS= read -r case_id; do
-            args+=(--case "${case_id}")
-          done < <(
-            python3 -c '
-            import json
-            from pathlib import Path
-            manifest = json.loads(Path("tests/e2e/docker/manifest.json").read_text())
-            print("\n".join(
-                case["id"] for case in manifest["cases"]
-                if case["tier"] == "core" or "scheduler" in case.get("tags", [])
-            ))
-            '
+            --evidence-dir target/docker-e2e/release-core
           )
           if [ -n "${HOLON_E2E_PREVIOUS_IMAGE}" ]; then
             args+=(--previous-image "${HOLON_E2E_PREVIOUS_IMAGE}")
           fi
           python3 scripts/docker-e2e.py "${args[@]}"
+
+      - name: Run deterministic scheduler release gate
+        run: |
+          set -euo pipefail
+          python3 scripts/docker-e2e.py \
+            --image-digest "${CANDIDATE_IMAGE}" \
+            --skip-build \
+            --profile scheduler-required \
+            --scheduler-matrix \
+            --timeout 120 \
+            --evidence-dir target/docker-e2e/scheduler-required
+
+      - name: Run scheduler live canary
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          python3 scripts/docker-e2e.py \
+            --image-digest "${CANDIDATE_IMAGE}" \
+            --skip-build \
+            --profile scheduler-live-canary \
+            --scheduler-matrix \
+            --env-file "${HOLON_E2E_DOCKER_ENV_FILE}" \
+            --timeout 120 \
+            --evidence-dir target/docker-e2e/scheduler-live-canary
 
       - name: Publish run summary
         if: always()
@@ -149,23 +160,34 @@ jobs:
           import json
           from pathlib import Path
 
-          summaries = sorted(Path("target/docker-e2e").glob("*/summary.json"))
-          if not summaries:
-              raise SystemExit("No Docker E2E summary was produced")
-          summary = json.loads(summaries[-1].read_text())
-          scheduler_report = json.loads(
-              (summaries[-1].parent / "scheduler-acceptance-report.json").read_text()
+          summary = json.loads(
+              Path("target/docker-e2e/release-core/summary.json").read_text()
           )
+          scheduler_report = json.loads(
+              Path(
+                  "target/docker-e2e/scheduler-required/"
+                  "scheduler-acceptance-report.json"
+              ).read_text()
+          )
+          canary_path = Path(
+              "target/docker-e2e/scheduler-live-canary/"
+              "scheduler-live-canary-report.json"
+          )
+          canary = json.loads(canary_path.read_text()) if canary_path.is_file() else None
           lines = [
               "# Release Docker E2E",
               "",
               f"- Status: **{summary['status']}**",
               f"- Candidate: `{summary['image']['ref']}`",
               f"- Git SHA: `{summary['git_sha']}`",
-              f"- Scheduler matrix: **{scheduler_report['status']}**",
+              f"- Deterministic scheduler gate: **{scheduler_report['status']}**",
+              f"- Scheduler live canary: **{canary['status'] if canary else 'missing'}**",
               f"- Runtime schema revision: `{scheduler_report['runtime_schema_revision']}`",
               f"- Fixture corpus: `{scheduler_report['fixture_corpus_revision']}`",
-              f"- Model: `{summary['model_route']}`",
+              f"- Core model: `{summary['model_route']}`",
+              f"- Canary provider retries: `{canary['provider_retries'] if canary else 'unknown'}`",
+              f"- Canary tool counts: `{json.dumps(canary['cases'][0]['tool_counts'], sort_keys=True) if canary else 'unknown'}`",
+              f"- Canary behavioral variance: `{json.dumps(canary['behavioral_variances'], sort_keys=True) if canary else 'unknown'}`",
               f"- Duration: `{summary['duration_seconds']}s`",
               "",
               "| Case | Result | Duration |",
@@ -188,16 +210,24 @@ jobs:
           import os
           from pathlib import Path
 
-          summaries = sorted(Path("target/docker-e2e").glob("*/summary.json"))
-          if not summaries:
-              raise SystemExit("No Docker E2E summary was produced")
-          summary = json.loads(summaries[-1].read_text())
+          summary_path = Path("target/docker-e2e/release-core/summary.json")
+          summary = json.loads(summary_path.read_text())
           if summary["status"] != "pass":
               raise SystemExit(f"Release E2E did not pass: {summary['status']}")
-          scheduler_report_path = summaries[-1].parent / "scheduler-acceptance-report.json"
+          scheduler_root = Path("target/docker-e2e/scheduler-required")
+          scheduler_report_path = scheduler_root / "scheduler-acceptance-report.json"
           scheduler_report = json.loads(scheduler_report_path.read_text())
-          coverage_report_path = summaries[-1].parent / "scheduler-coverage-report.json"
+          coverage_report_path = scheduler_root / "scheduler-coverage-report.json"
           coverage_report = json.loads(coverage_report_path.read_text())
+          canary_report_path = Path(
+              "target/docker-e2e/scheduler-live-canary/"
+              "scheduler-live-canary-report.json"
+          )
+          canary_report = (
+              json.loads(canary_report_path.read_text())
+              if canary_report_path.is_file()
+              else None
+          )
           if scheduler_report["status"] != "pass":
               raise SystemExit(
                   f"Scheduler acceptance did not pass: {scheduler_report['status']}"
@@ -214,8 +244,8 @@ jobs:
               raise SystemExit("Scheduler coverage Git SHA does not match candidate")
           if coverage_report["image_digest"] != summary["image_digest"]:
               raise SystemExit("Scheduler coverage image digest does not match summary")
-          if coverage_report["profile"] != "scheduler-acceptance":
-              raise SystemExit("Scheduler coverage profile is not scheduler-acceptance")
+          if coverage_report["profile"] != "scheduler-required":
+              raise SystemExit("Scheduler coverage profile is not scheduler-required")
           attestation = {
               "schema_version": 1,
               "release_tag": os.environ["RELEASE_TAG"],
@@ -229,9 +259,13 @@ jobs:
               "image_digest": summary["image_digest"],
               "scheduler_acceptance": scheduler_report,
               "scheduler_coverage": coverage_report,
-              "summary_path": str(summaries[-1]),
+              "scheduler_live_canary": canary_report,
+              "summary_path": str(summary_path),
               "scheduler_acceptance_path": str(scheduler_report_path),
               "scheduler_coverage_path": str(coverage_report_path),
+              "scheduler_live_canary_path": (
+                  str(canary_report_path) if canary_report is not None else None
+              ),
           }
           Path("target/release-e2e-attestation").mkdir(parents=True, exist_ok=True)
           Path("target/release-e2e-attestation/release-e2e-attestation.json").write_text(
@@ -254,32 +288,42 @@ jobs:
           import json
           from pathlib import Path
 
-          summaries = sorted(Path("target/docker-e2e").glob("*/summary.json"))
-          if not summaries:
+          evidence_roots = [
+              path
+              for path in (
+                  Path("target/docker-e2e/release-core"),
+                  Path("target/docker-e2e/scheduler-required"),
+                  Path("target/docker-e2e/scheduler-live-canary"),
+              )
+              if (path / "summary.json").is_file()
+          ]
+          if not evidence_roots:
               Path("target/docker-e2e-upload/upload-blocked.txt").write_text(
                   "Raw evidence upload blocked because no secret-scan.json was produced.\n"
               )
               raise SystemExit(0)
-          evidence = summaries[-1].parent
-          if not (evidence / "secret-scan.json").is_file():
-              Path("target/docker-e2e-upload/upload-blocked.txt").write_text(
-                  f"Raw evidence upload blocked because {evidence}/secret-scan.json is missing.\n"
-              )
-              raise SystemExit(0)
-          scan = json.loads((evidence / "secret-scan.json").read_text())
-          if scan.get("status") != "pass":
+          for evidence in evidence_roots:
               destination = Path("target/docker-e2e-upload") / evidence.name
-              destination.mkdir(parents=True, exist_ok=True)
-              for name in ("secret-scan.json", "summary.json", "junit.xml"):
-                  source = evidence / name
-                  if source.is_file():
-                      shutil.copy2(source, destination / name)
-              (destination / "raw-evidence-blocked.txt").write_text(
-                  "Raw evidence upload blocked because the secret scan failed. "
-                  "Only metadata was uploaded.\n"
-              )
-              raise SystemExit(0)
-          shutil.copytree(evidence, Path("target/docker-e2e-upload") / evidence.name)
+              scan_path = evidence / "secret-scan.json"
+              if not scan_path.is_file():
+                  destination.mkdir(parents=True, exist_ok=True)
+                  (destination / "raw-evidence-blocked.txt").write_text(
+                      f"Raw evidence upload blocked because {scan_path} is missing.\n"
+                  )
+                  continue
+              scan = json.loads(scan_path.read_text())
+              if scan.get("status") != "pass":
+                  destination.mkdir(parents=True, exist_ok=True)
+                  for name in ("secret-scan.json", "summary.json", "junit.xml"):
+                      source = evidence / name
+                      if source.is_file():
+                          shutil.copy2(source, destination / name)
+                  (destination / "raw-evidence-blocked.txt").write_text(
+                      "Raw evidence upload blocked because the secret scan failed. "
+                      "Only metadata was uploaded.\n"
+                  )
+                  continue
+              shutil.copytree(evidence, destination)
           PY
 
       - name: Upload E2E evidence

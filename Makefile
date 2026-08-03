@@ -1,4 +1,4 @@
-.PHONY: help web web-ci transport-types transport-types-check snapshots-check snapshots-refresh build all test test-resource-lint test-concurrent test-concurrent-repeat test-live test-live-openai test-live-anthropic test-live-codex test-live-xai test-live-images test-live-runtime docker-build docker-smoke docker-e2e docker-e2e-validate docker-live-acceptance fmt fmt-check lint check ci run clean
+.PHONY: help web web-ci transport-types transport-types-check snapshots-check snapshots-refresh build all test test-resource-lint test-concurrent test-concurrent-repeat test-live test-live-openai test-live-anthropic test-live-codex test-live-xai test-live-images test-live-runtime docker-build docker-smoke docker-e2e docker-e2e-scheduler-required docker-e2e-scheduler-live-canary docker-e2e-validate docker-live-acceptance fmt fmt-check lint check ci run clean
 
 WEB_DIR := web-gui/app
 OPENAPI_TOOLS_DIR := web-gui/openapi-tools
@@ -152,6 +152,12 @@ docker-smoke: docker-build ## Start the image and verify the real service readin
 
 docker-e2e: docker-build ## Run the release core Docker E2E suite with a real LLM
 	python3 scripts/docker-e2e.py --image "$(DOCKER_IMAGE)" --skip-build --suite core
+
+docker-e2e-scheduler-required: docker-build ## Run the deterministic scheduler release gate
+	python3 scripts/docker-e2e.py --image "$(DOCKER_IMAGE)" --skip-build --profile scheduler-required --scheduler-matrix --timeout 120
+
+docker-e2e-scheduler-live-canary: docker-build ## Run the real-model scheduler canary
+	python3 scripts/docker-e2e.py --image "$(DOCKER_IMAGE)" --skip-build --profile scheduler-live-canary --scheduler-matrix --timeout 120
 
 docker-e2e-validate: ## Validate the Docker E2E manifest and runner unit tests
 	python3 scripts/docker-e2e.py --validate-manifest

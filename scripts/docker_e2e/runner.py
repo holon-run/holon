@@ -35,6 +35,7 @@ OFFLINE_MODEL_CREDENTIAL = "docker-e2e-offline-provider-unused"
 EVIDENCE_SCHEMA_VERSION = 1
 SCHEDULER_ACCEPTANCE_REPORT_SCHEMA_VERSION = 1
 SCHEDULER_COVERAGE_REPORT_SCHEMA_VERSION = 1
+SCHEDULER_LIVE_CANARY_REPORT_SCHEMA_VERSION = 1
 SCHEDULER_ENGINES = ("legacy", "canonical")
 TERMINAL_STATUSES = {"awake_idle", "asleep", "awaiting_task"}
 RUNTIME_DB_COPY_TIMEOUT_SECONDS = 120
@@ -178,6 +179,7 @@ class CaseHarness:
         keep: bool,
         provider_mode: str = "live",
         stub_scenario: str | None = None,
+        tool_assertion_mode: str = "strict",
         resource_names: dict[str, str] | None = None,
         control_token: str | None = None,
     ) -> None:
@@ -202,6 +204,7 @@ class CaseHarness:
         self.keep = keep
         self.provider_mode = provider_mode
         self.stub_scenario = stub_scenario
+        self.tool_assertion_mode = tool_assertion_mode
         names = resource_names or {}
         self.volume = names.get("volume", f"holon-live-{case_id}-{suffix}")
         self.network = names.get("network", f"holon-live-{case_id}-{suffix}")
@@ -1265,8 +1268,21 @@ class CaseHarness:
         )
         actual = [event["payload"].get("tool_name") for event in events]
         missing = [name for name in expected if name not in actual]
-        require(not missing, f"{label} missing successful tools {missing}; got {actual}")
         forbidden_actual = [name for name in (forbidden or []) if name in actual]
+        if self.tool_assertion_mode == "observe":
+            write_json(
+                self.evidence / f"{label}-tool-observation.json",
+                {
+                    "mode": "observe",
+                    "expected": expected,
+                    "forbidden": forbidden or [],
+                    "actual": actual,
+                    "missing": missing,
+                    "forbidden_actual": forbidden_actual,
+                },
+            )
+            return events
+        require(not missing, f"{label} missing successful tools {missing}; got {actual}")
         require(
             not forbidden_actual,
             f"{label} used forbidden tools {forbidden_actual}; got {actual}",
@@ -2381,8 +2397,8 @@ def run_scheduler_provider_failure_retry_case(
 ) -> None:
     harness.initialize_workspace()
     base_url_env = provider_base_url_env(harness.model)
-    original_base_url = harness.runtime_env.get(base_url_env)
     harness.start()
+    original_base_url = harness.runtime_env.get(base_url_env)
 
     harness.request(
         "POST",
@@ -3805,6 +3821,23 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             profile.get("provider_mode", "live") in {"live", "stub"},
             f"profile {profile_id} has invalid provider_mode",
         )
+        require(
+            profile.get("gate_kind", "required") in {"required", "live_canary"},
+            f"profile {profile_id} has invalid gate_kind",
+        )
+        require(
+            profile.get("tool_assertion_mode", "strict") in {"strict", "observe"},
+            f"profile {profile_id} has invalid tool_assertion_mode",
+        )
+        if profile.get("gate_kind") == "live_canary":
+            require(
+                profile.get("provider_mode", "live") == "live",
+                f"profile {profile_id} live canary must use live provider mode",
+            )
+            require(
+                profile.get("tool_assertion_mode") == "observe",
+                f"profile {profile_id} live canary must observe tool assertions",
+            )
         required = profile.get("required_coverage_ids", [])
         require(
             isinstance(required, list)
@@ -3905,9 +3938,34 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
                 f"{case_id}/{phase_id} has required/forbidden tool overlap",
             )
     known_case_ids = {case["id"] for case in cases}
+    cases_by_id = {case["id"]: case for case in cases}
+    known_coverage_ids = {
+        coverage_id
+        for case in cases
+        for coverage_id in case.get("coverage_ids", [])
+    }
     for profile_id, profile in profiles.items():
-        unknown = sorted(set(profile.get("case_ids", [])) - known_case_ids)
+        profile_case_ids = profile.get("case_ids", [])
+        unknown = sorted(set(profile_case_ids) - known_case_ids)
         require(not unknown, f"profile {profile_id} has unknown cases: {unknown}")
+        unknown_coverage = sorted(
+            set(profile.get("required_coverage_ids", [])) - known_coverage_ids
+        )
+        require(
+            not unknown_coverage,
+            f"profile {profile_id} has unknown coverage ids: {unknown_coverage}",
+        )
+        if profile.get("provider_mode", "live") == "stub":
+            missing_stub_scenarios = sorted(
+                case_id
+                for case_id in profile_case_ids
+                if not cases_by_id[case_id].get("stub_scenario")
+            )
+            require(
+                not missing_stub_scenarios,
+                f"profile {profile_id} cases require stub_scenario: "
+                f"{missing_stub_scenarios}",
+            )
 
 
 def select_cases(
@@ -3936,7 +3994,12 @@ def resolve_profile(
     manifest: dict[str, Any], profile_id: str | None
 ) -> dict[str, Any]:
     if profile_id is None:
-        return {"provider_mode": "live", "required_coverage_ids": []}
+        return {
+            "gate_kind": "suite",
+            "provider_mode": "live",
+            "tool_assertion_mode": "strict",
+            "required_coverage_ids": [],
+        }
     profiles = manifest.get("profiles", {})
     require(profile_id in profiles, f"unknown profile: {profile_id}")
     return profiles[profile_id]
@@ -4035,7 +4098,10 @@ def image_identity(image: str) -> dict[str, Any]:
 
 def collect_case_metrics(evidence: Path) -> dict[str, Any]:
     tool_counts: dict[str, int] = {}
+    behavioral_variances: list[dict[str, Any]] = []
+    provider_rounds = 0
     provider_attempts = 0
+    seen_event_seqs: set[int] = set()
     token_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
     for path in evidence.glob("*-events.json"):
         try:
@@ -4043,11 +4109,17 @@ def collect_case_metrics(evidence: Path) -> dict[str, Any]:
         except (OSError, json.JSONDecodeError):
             continue
         for event in events:
+            event_seq = event.get("event_seq")
+            if isinstance(event_seq, int):
+                if event_seq in seen_event_seqs:
+                    continue
+                seen_event_seqs.add(event_seq)
             event_type = event.get("type")
             if event_type == "tool_executed":
                 name = event.get("payload", {}).get("tool_name", "unknown")
                 tool_counts[name] = tool_counts.get(name, 0) + 1
             if event_type == "provider_round_completed":
+                provider_rounds += 1
                 payload = event.get("payload", {})
                 provider_attempts += len(
                     (payload.get("provider_attempt_timeline") or {}).get("attempts") or []
@@ -4055,9 +4127,27 @@ def collect_case_metrics(evidence: Path) -> dict[str, Any]:
                 usage = payload.get("token_usage") or {}
                 for key in token_usage:
                     token_usage[key] += int(usage.get(key) or 0)
+    for path in evidence.glob("*-tool-observation.json"):
+        try:
+            observation = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        missing = list(observation.get("missing") or [])
+        forbidden_actual = list(observation.get("forbidden_actual") or [])
+        if missing or forbidden_actual:
+            behavioral_variances.append(
+                {
+                    "scope": path.name.removesuffix("-tool-observation.json"),
+                    "missing_tools": missing,
+                    "forbidden_tools_used": forbidden_actual,
+                }
+            )
     return {
         "tool_counts": tool_counts,
+        "behavioral_variances": behavioral_variances,
+        "provider_rounds": provider_rounds,
         "provider_attempts": provider_attempts,
+        "provider_retries": max(0, provider_attempts - provider_rounds),
         "token_usage": token_usage,
     }
 
@@ -4250,6 +4340,75 @@ def scheduler_coverage_report(
     }
 
 
+def scheduler_live_canary_report(
+    *,
+    run_record: dict[str, Any],
+    case_results: list[dict[str, Any]],
+    scheduler_acceptance_status: str,
+    scheduler_coverage_status: str,
+    secret_scan_status: str,
+) -> dict[str, Any]:
+    scheduler_results = [
+        result
+        for result in case_results
+        if result.get("scheduler_engine") in SCHEDULER_ENGINES
+    ]
+    return {
+        "schema_version": SCHEDULER_LIVE_CANARY_REPORT_SCHEMA_VERSION,
+        "status": (
+            "pass"
+            if scheduler_results
+            and all(result["status"] == "pass" for result in scheduler_results)
+            and scheduler_acceptance_status == "pass"
+            and scheduler_coverage_status == "pass"
+            and secret_scan_status == "pass"
+            else "fail"
+        ),
+        "git_sha": run_record["git_sha"],
+        "image_digest": run_record["image_digest"],
+        "manifest_sha256": run_record["manifest_sha256"],
+        "profile": run_record["profile"],
+        "provider_mode": run_record["provider_mode"],
+        "model_route": run_record["model_route"],
+        "tool_assertion_mode": run_record["tool_assertion_mode"],
+        "scheduler_acceptance": scheduler_acceptance_status,
+        "scheduler_coverage": scheduler_coverage_status,
+        "secret_scan": secret_scan_status,
+        "provider_rounds": sum(
+            int(result.get("provider_rounds") or 0) for result in scheduler_results
+        ),
+        "provider_attempts": sum(
+            int(result.get("provider_attempts") or 0) for result in scheduler_results
+        ),
+        "provider_retries": sum(
+            int(result.get("provider_retries") or 0) for result in scheduler_results
+        ),
+        "behavioral_variances": [
+            {
+                "case_id": result["id"],
+                **variance,
+            }
+            for result in scheduler_results
+            for variance in result.get("behavioral_variances", [])
+        ],
+        "cases": [
+            {
+                "id": result["id"],
+                "base_id": result["base_id"],
+                "scheduler_engine": result["scheduler_engine"],
+                "status": result["status"],
+                "error": result["error"],
+                "provider_rounds": result.get("provider_rounds", 0),
+                "provider_attempts": result.get("provider_attempts", 0),
+                "provider_retries": result.get("provider_retries", 0),
+                "tool_counts": result.get("tool_counts", {}),
+                "behavioral_variances": result.get("behavioral_variances", []),
+            }
+            for result in scheduler_results
+        ],
+    }
+
+
 def write_junit(path: Path, cases: list[dict[str, Any]], duration: float) -> None:
     suite = ElementTree.Element(
         "testsuite",
@@ -4403,7 +4562,9 @@ def main(argv: list[str] | None = None) -> int:
         "manifest_sha256": hashlib.sha256(args.manifest.read_bytes()).hexdigest(),
         "scheduler_matrix": args.scheduler_matrix,
         "profile": args.profile,
+        "gate_kind": profile.get("gate_kind", "suite"),
         "provider_mode": profile.get("provider_mode", "live"),
+        "tool_assertion_mode": profile.get("tool_assertion_mode", "strict"),
     }
     write_json(evidence_root / "run.json", run_record)
 
@@ -4465,6 +4626,7 @@ def main(argv: list[str] | None = None) -> int:
                 "provider_mode", profile.get("provider_mode", "live")
             ),
             stub_scenario=case.get("stub_scenario", profile.get("stub_scenario")),
+            tool_assertion_mode=profile.get("tool_assertion_mode", "strict"),
         )
         control_tokens.append(harness.token)
         error_text = ""
@@ -4548,7 +4710,10 @@ def main(argv: list[str] | None = None) -> int:
                 "duration_seconds": 0.0,
                 "cleanup": "not-applicable",
                 "tool_counts": {},
+                "behavioral_variances": [],
+                "provider_rounds": 0,
                 "provider_attempts": 0,
+                "provider_retries": 0,
                 "token_usage": {
                     "input_tokens": 0,
                     "output_tokens": 0,
@@ -4594,6 +4759,20 @@ def main(argv: list[str] | None = None) -> int:
         write_json(evidence_root / "scheduler-acceptance-report.json", report)
         if report["status"] != "pass":
             report_failures.append("scheduler-acceptance-report: fail")
+        if profile.get("gate_kind") == "live_canary":
+            canary_report = scheduler_live_canary_report(
+                run_record=run_record,
+                case_results=case_results,
+                scheduler_acceptance_status=report["status"],
+                scheduler_coverage_status=coverage_report["status"],
+                secret_scan_status=scan["status"],
+            )
+            write_json(
+                evidence_root / "scheduler-live-canary-report.json",
+                canary_report,
+            )
+            if canary_report["status"] != "pass":
+                report_failures.append("scheduler-live-canary-report: fail")
     write_junit(evidence_root / "junit.xml", case_results, duration)
 
     print(f"Evidence: {evidence_root}")

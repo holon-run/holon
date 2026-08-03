@@ -129,19 +129,35 @@ class DockerE2ERunnerTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "no registered runner"):
             runner.validate_manifest(invalid)
 
-    def test_profile_exposes_explicit_scheduler_required_set(self) -> None:
-        profile = runner.resolve_profile(self.manifest, "scheduler-acceptance")
+    def test_scheduler_live_canary_profile_is_observational(self) -> None:
+        profile = runner.resolve_profile(self.manifest, "scheduler-live-canary")
+        self.assertEqual(profile["gate_kind"], "live_canary")
         self.assertEqual(profile["provider_mode"], "live")
+        self.assertEqual(profile["tool_assertion_mode"], "observe")
         self.assertEqual(
-            set(profile["required_coverage_ids"]),
-            {
-                case["id"]
-                for case in self.manifest["cases"]
-                if "scheduler" in case.get("tags", [])
-            },
+            profile["case_ids"],
+            ["scheduler-external-wait-resume"],
         )
 
-    def test_scheduler_required_profile_selects_three_stub_cases(self) -> None:
+    def test_workflows_keep_required_gate_independent_and_publish_canary(self) -> None:
+        ci = (ROOT / ".github/workflows/ci.yml").read_text()
+        nightly = (ROOT / ".github/workflows/e2e-scheduler-nightly.yml").read_text()
+        release = (ROOT / ".github/workflows/release-e2e.yml").read_text()
+
+        self.assertLess(
+            nightly.index("Run deterministic scheduler matrix"),
+            nightly.index("Prepare provider environment"),
+        )
+        self.assertIn("if: steps.provider-env.outcome == 'success'", nightly)
+        self.assertIn("continue-on-error: true", nightly)
+        for workflow in (ci, nightly, release):
+            self.assertIn("scheduler-live-canary-report.json", workflow)
+            self.assertIn("behavioral_variances", workflow)
+            self.assertIn("tool_counts", workflow)
+        self.assertIn("name: scheduler-live-canary", ci)
+        self.assertIn("name: scheduler-e2e-nightly", nightly)
+
+    def test_scheduler_required_profile_selects_all_stub_cases(self) -> None:
         profile = runner.resolve_profile(self.manifest, "scheduler-required")
         selected = runner.select_cases(
             self.manifest,
@@ -149,16 +165,143 @@ class DockerE2ERunnerTests(unittest.TestCase):
             suite="core",
             tags=[],
         )
+        expected = [
+            case["id"]
+            for case in self.manifest["cases"]
+            if "scheduler" in case.get("tags", [])
+        ]
+        self.assertEqual(profile["gate_kind"], "required")
         self.assertEqual(profile["provider_mode"], "stub")
+        self.assertEqual(profile["tool_assertion_mode"], "strict")
+        self.assertEqual([case["id"] for case in selected], expected)
+        self.assertEqual(profile["required_coverage_ids"], expected)
+        self.assertTrue(all(case.get("stub_scenario") for case in selected))
+        self.assertTrue(
+            all(case["timeout_seconds"] <= 120 for case in selected)
+        )
+
+    def test_manifest_rejects_live_canary_with_strict_tools(self) -> None:
+        invalid = json.loads(json.dumps(self.manifest))
+        invalid["profiles"]["scheduler-live-canary"][
+            "tool_assertion_mode"
+        ] = "strict"
+        with self.assertRaisesRegex(
+            AssertionError,
+            "live canary must observe tool assertions",
+        ):
+            runner.validate_manifest(invalid)
+
+    def test_manifest_rejects_required_case_without_stub_scenario(self) -> None:
+        invalid = json.loads(json.dumps(self.manifest))
+        invalid["cases"][-1].pop("stub_scenario")
+        with self.assertRaisesRegex(
+            AssertionError,
+            "cases require stub_scenario",
+        ):
+            runner.validate_manifest(invalid)
+
+    def test_scheduler_live_canary_report_records_model_and_retries(self) -> None:
+        report = runner.scheduler_live_canary_report(
+            run_record={
+                "git_sha": "git-sha",
+                "image_digest": "image@sha256:digest",
+                "manifest_sha256": "manifest-hash",
+                "profile": "scheduler-live-canary",
+                "provider_mode": "live",
+                "model_route": "provider/model",
+                "tool_assertion_mode": "observe",
+            },
+            case_results=[
+                {
+                    "id": "scheduler-external-wait-resume-legacy",
+                    "base_id": "scheduler-external-wait-resume",
+                    "scheduler_engine": "legacy",
+                    "status": "pass",
+                    "error": "",
+                    "provider_rounds": 2,
+                    "provider_attempts": 3,
+                    "provider_retries": 1,
+                    "tool_counts": {"WaitFor": 1},
+                    "behavioral_variances": [
+                        {
+                            "scope": "scheduler-external-resume",
+                            "missing_tools": ["GetWorkItem"],
+                            "forbidden_tools_used": [],
+                        }
+                    ],
+                },
+                {
+                    "id": "scheduler-external-wait-resume-canonical",
+                    "base_id": "scheduler-external-wait-resume",
+                    "scheduler_engine": "canonical",
+                    "status": "pass",
+                    "error": "",
+                    "provider_rounds": 2,
+                    "provider_attempts": 2,
+                    "provider_retries": 0,
+                    "tool_counts": {"WaitFor": 1},
+                    "behavioral_variances": [],
+                },
+            ],
+            scheduler_acceptance_status="pass",
+            scheduler_coverage_status="pass",
+            secret_scan_status="pass",
+        )
+        self.assertEqual(report["status"], "pass")
+        self.assertEqual(report["model_route"], "provider/model")
+        self.assertEqual(report["provider_rounds"], 4)
+        self.assertEqual(report["provider_attempts"], 5)
+        self.assertEqual(report["provider_retries"], 1)
         self.assertEqual(
-            [case["id"] for case in selected],
+            report["behavioral_variances"],
             [
-                "scheduler-multi-workitem-scheduling",
-                "scheduler-external-wait-resume",
-                "scheduler-operator-wait-resume",
+                {
+                    "case_id": "scheduler-external-wait-resume-legacy",
+                    "scope": "scheduler-external-resume",
+                    "missing_tools": ["GetWorkItem"],
+                    "forbidden_tools_used": [],
+                }
             ],
         )
-        self.assertTrue(all(case.get("stub_scenario") for case in selected))
+
+    def test_collect_case_metrics_deduplicates_overlapping_event_snapshots(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory)
+            events = [
+                {
+                    "event_seq": 10,
+                    "type": "tool_executed",
+                    "payload": {"tool_name": "WaitFor"},
+                },
+                {
+                    "event_seq": 11,
+                    "type": "provider_round_completed",
+                    "payload": {
+                        "provider_attempt_timeline": {
+                            "attempts": [{"status": "failed"}, {"status": "success"}]
+                        },
+                        "token_usage": {
+                            "input_tokens": 3,
+                            "output_tokens": 2,
+                            "total_tokens": 5,
+                        },
+                    },
+                },
+            ]
+            (evidence / "first-events.json").write_text(
+                json.dumps({"events": events})
+            )
+            (evidence / "second-events.json").write_text(
+                json.dumps({"events": events})
+            )
+
+            metrics = runner.collect_case_metrics(evidence)
+
+        self.assertEqual(metrics["tool_counts"], {"WaitFor": 1})
+        self.assertEqual(metrics["provider_rounds"], 1)
+        self.assertEqual(metrics["provider_attempts"], 2)
+        self.assertEqual(metrics["provider_retries"], 1)
+        self.assertEqual(metrics["token_usage"]["total_tokens"], 5)
 
     def test_scheduler_coverage_reports_missing_and_duplicate_ids(self) -> None:
         report = runner.scheduler_coverage_report(
@@ -319,6 +462,129 @@ class DockerE2ERunnerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(response["output"][0]["name"], "GetWorkspaceState")
         self.assertEqual(scenario.phase, 8)
+
+    def test_openai_stub_registers_every_required_scenario(self) -> None:
+        profile = runner.resolve_profile(self.manifest, "scheduler-required")
+        selected = runner.select_cases(
+            self.manifest,
+            requested=profile["case_ids"],
+            suite="core",
+            tags=[],
+        )
+        self.assertEqual(
+            {case["stub_scenario"] for case in selected},
+            set(stub.SCENARIOS),
+        )
+        for case in selected:
+            scenario = stub.Scenario(case["stub_scenario"])
+            self.assertGreater(scenario.expected_phase(), 0)
+
+    def test_openai_stub_required_scenarios_reach_exact_completion(self) -> None:
+        expected_calls = {
+            "scheduler-task-wait": [
+                "CreateWorkItem", "ExecCommand", "WaitFor", "GetWorkItem",
+                "WaitFor", "GetWorkItem", "UpdateWorkItem", "CompleteWorkItem",
+            ],
+            "scheduler-provider-retry": ["ListWorkItems", "CompleteWorkItem"],
+            "scheduler-multi": [
+                "CreateWorkItem", "CreateWorkItem", "AgentGet", "ListWorkItems",
+                "UpdateWorkItem", "CompleteWorkItem", "GetWorkspaceState",
+                "ListWorkItems", "UpdateWorkItem", "CompleteWorkItem",
+            ],
+            "scheduler-external": [
+                "CreateWorkItem", "PickWorkItem", "WaitFor", "GetWorkItem",
+                "UpdateWorkItem", "CompleteWorkItem",
+            ],
+            "scheduler-operator": [
+                "CreateWorkItem", "PickWorkItem", "WaitFor", "GetWorkItem",
+                "UpdateWorkItem", "CompleteWorkItem",
+            ],
+            "scheduler-concurrent": [
+                "CreateWorkItem", "PickWorkItem", "WaitFor", "CreateWorkItem",
+                "ListWorkItems", "UpdateWorkItem", "CompleteWorkItem",
+                "GetWorkItem", "UpdateWorkItem", "CompleteWorkItem",
+            ],
+            "scheduler-interject": [
+                "CreateWorkItem", "PickWorkItem", "WaitFor", "CreateWorkItem",
+                "ListWorkItems", "UpdateWorkItem", "CompleteWorkItem",
+                "GetWorkItem", "UpdateWorkItem", "CompleteWorkItem",
+            ],
+            "scheduler-compaction": [
+                "CreateWorkItem", "PickWorkItem", "WaitFor", "GetWorkItem",
+                "UpdateWorkItem", "CompleteWorkItem",
+            ],
+            "scheduler-worktree": [
+                "CreateWorkItem", "PickWorkItem", "GetWorkspaceState",
+                "CreateWorktree", "GetWorkspaceState", "SwitchWorkspace",
+                "GetWorkspaceState", "RemoveWorktree", "GetWorkspaceState",
+                "UpdateWorkItem", "CompleteWorkItem",
+            ],
+            "scheduler-spawn": [
+                "CreateWorkItem", "PickWorkItem", "SpawnAgent", "TaskStatus",
+                "UpdateWorkItem", "CompleteWorkItem",
+            ],
+            "scheduler-checkpoint": [
+                "CreateWorkItem", "CreateWorkItem", "ListWorkItems", "WaitFor",
+                "ListWorkItems", "UpdateWorkItem", "CompleteWorkItem",
+                "GetWorkItem", "UpdateWorkItem", "CompleteWorkItem",
+            ],
+        }
+        transcript = (
+            "## current_input\nCurrent input:\n"
+            "- [system][trigger:system_tick] Scheduler Docker E2E case "
+            "SCHEDULER-TASK-WAIT-abcd SCHEDULER-TASK-RESULT-abcd "
+            "SCHEDULER-TASK-WAIT-COMPLETE-abcd "
+            "SCHEDULER-PROVIDER-RETRY-abcd "
+            "SCHEDULER-PROVIDER-RETRY-COMPLETE-abcd "
+            "SCHEDULER-MULTI-A-abcd SCHEDULER-MULTI-B-abcd "
+            "SCHEDULER-MULTI-COMPLETE-A-abcd "
+            "SCHEDULER-MULTI-COMPLETE-B-abcd "
+            "SCHEDULER-EXTERNAL-WAIT-abcd "
+            "SCHEDULER-EXTERNAL-COMPLETE-abcd "
+            "SCHEDULER-OPERATOR-WAIT-abcd "
+            "SCHEDULER-OPERATOR-COMPLETE-abcd "
+            "SCHEDULER-CONCURRENT-A-abcd SCHEDULER-CONCURRENT-B-abcd "
+            "SCHEDULER-CONCURRENT-COMPLETE-A-abcd "
+            "SCHEDULER-CONCURRENT-COMPLETE-B-abcd "
+            "SCHEDULER-INTERJECT-A-abcd SCHEDULER-INTERJECT-B-abcd "
+            "SCHEDULER-INTERJECT-COMPLETE-A-abcd "
+            "SCHEDULER-INTERJECT-COMPLETE-B-abcd "
+            "SCHEDULER-COMPACTION-abcd "
+            "SCHEDULER-COMPACTION-COMPLETE-abcd "
+            "SCHEDULER-WORKTREE-abcd "
+            "SCHEDULER-WORKTREE-COMPLETE-abcd "
+            "SCHEDULER-SPAWN-abcd SCHEDULER-SPAWN-CHILD-abcd "
+            "SCHEDULER-SPAWN-COMPLETE-abcd "
+            "SCHEDULER-REPLAY-A-abcd SCHEDULER-REPLAY-B-abcd "
+            "SCHEDULER-REPLAY-COMPLETE-A-abcd "
+            "SCHEDULER-REPLAY-COMPLETE-B-abcd "
+            "docker-e2e:abcd e2e-worktree-abcd "
+            "work_0123456789abcde work_fedcba987654321 "
+            "task_0123456789abcde ws_0123456789abcdef "
+            "git_worktree_root:deterministic"
+        )
+        request = {
+            "input": [{
+                "type": "message",
+                "content": [{"type": "input_text", "text": transcript}],
+            }]
+        }
+        for name, expected in expected_calls.items():
+            scenario = stub.Scenario(name)
+            actual = []
+            for _ in range(scenario.expected_phase()):
+                status, value = scenario.consume(request)
+                self.assertEqual(status, 200, name)
+                actual.extend(
+                    item["name"]
+                    for item in value["output"]
+                    if item["type"] == "function_call"
+                )
+            self.assertEqual(actual, expected, name)
+            self.assertTrue(scenario.status()["complete"], name)
+            status, value = scenario.consume(request)
+            self.assertEqual(status, 409, name)
+            self.assertEqual(value["error"]["type"], "transcript_exhausted")
 
     def test_secret_scan_reports_value_without_echoing_it(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
