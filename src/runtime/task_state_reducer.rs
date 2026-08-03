@@ -507,11 +507,7 @@ fn task_result_parent_turn_already_delivered(
     let Some(parent_turn_id) = task_parent_turn_id(task) else {
         return Ok(false);
     };
-    let Some(parent_turn) = storage
-        .read_recent_turns(usize::MAX)?
-        .into_iter()
-        .find(|turn| turn.turn_id == parent_turn_id)
-    else {
+    let Some(parent_turn) = storage.read_turn_by_id(parent_turn_id)? else {
         return Ok(false);
     };
     Ok(storage

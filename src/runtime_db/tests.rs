@@ -4430,6 +4430,17 @@ CREATE TABLE working_memory_deltas (
         assert_eq!(records[0].produced_brief_ids, vec!["brief-1"]);
         assert_eq!(records[0].tool_execution_ids, vec!["tool-1"]);
         assert_eq!(records[0].current_work_item_id.as_deref(), Some("work-1"));
+        assert_eq!(
+            db.turn_records()
+                .by_id(Some("agent-a"), "turn-a")?
+                .expect("turn should be addressable directly")
+                .turn_index,
+            7
+        );
+        assert!(db
+            .turn_records()
+            .by_id(Some("agent-b"), "turn-a")?
+            .is_none());
         let domain = db
             .storage_domain("turn_records")?
             .expect("turn_records domain");

@@ -1695,6 +1695,36 @@ impl TurnRecordRepository<'_> {
         self.db.transaction(|tx| upsert_turn_record_tx(tx, record))
     }
 
+    pub fn by_id(&self, agent_id: Option<&str>, turn_id: &str) -> Result<Option<TurnRecord>> {
+        let connection = self.db.connection()?;
+        let payload = if let Some(agent_id) = agent_id {
+            connection
+                .query_row(
+                    "SELECT payload_json
+                     FROM turn_records
+                     WHERE agent_id = ?1 AND turn_id = ?2
+                     LIMIT 1",
+                    params![agent_id, turn_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+        } else {
+            connection
+                .query_row(
+                    "SELECT payload_json
+                     FROM turn_records
+                     WHERE turn_id = ?1
+                     LIMIT 1",
+                    [turn_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+        };
+        payload
+            .map(|payload| decode_turn_record_payload(&payload))
+            .transpose()
+    }
+
     pub fn recent_for_agent(&self, agent_id: &str, limit: usize) -> Result<Vec<TurnRecord>> {
         if limit == 0 {
             return Ok(Vec::new());

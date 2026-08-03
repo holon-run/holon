@@ -204,6 +204,8 @@ impl SchedulerProjection {
         wait_id: impl Into<String>,
         generation: u64,
     ) {
+        self.canonical_work_statuses
+            .get_or_insert_with(HashMap::new);
         self.canonical_wait_generations
             .insert(wait_id.into(), generation);
     }
@@ -1276,6 +1278,8 @@ pub(crate) fn resolve_canonical_activation_scenario(
                 condition.id == *wait_id
                     && condition.status == WaitConditionStatus::Active
                     && *generation > 0
+                    && (projection.canonical_work_statuses.is_none()
+                        || projection.canonical_wait_generations.get(wait_id) == Some(generation))
                     && condition.work_item_id.as_deref() == candidate.expected_work_item_id()
             })
             .collect(),

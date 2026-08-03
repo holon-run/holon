@@ -2312,7 +2312,7 @@ impl RuntimeHost {
             crate::types::MessageOrigin::Task {
                 task_id: task.id.clone(),
             },
-            AuthorityClass::RuntimeInstruction,
+            authority_class.clone(),
             crate::types::Priority::Normal,
             crate::types::MessageBody::Text { text: prompt },
         )
@@ -2897,7 +2897,7 @@ impl RuntimeHostBridge {
             crate::types::MessageOrigin::Task {
                 task_id: task_id.to_string(),
             },
-            AuthorityClass::RuntimeInstruction,
+            authority_class.clone(),
             crate::types::Priority::Normal,
             crate::types::MessageBody::Text {
                 text: input.to_string(),
@@ -3615,12 +3615,13 @@ mod tests {
     async fn private_child_initial_message_sets_task_label_and_supervision_provenance() {
         let (_home, host) = test_host();
         let parent = host.default_runtime().await.unwrap();
+        let parent_agent_id = parent.agent_state().await.unwrap().id;
         let initial_message = "  investigate   remote\nTUI  access ".to_string();
 
         let spawned = parent
             .spawn_agent(
                 Some(initial_message.clone()),
-                AuthorityClass::OperatorInstruction,
+                AuthorityClass::ExternalEvidence,
                 AgentProfilePreset::PrivateChild,
                 None,
                 false,
@@ -3662,6 +3663,7 @@ mod tests {
                 task_id: task_id.clone()
             }
         );
+        assert_eq!(delegated.authority_class, AuthorityClass::ExternalEvidence);
         assert_eq!(
             delegated.metadata.as_ref().unwrap()["parent_supervised"],
             true
@@ -3675,6 +3677,35 @@ mod tests {
             MessageBody::Text {
                 text: initial_message
             }
+        );
+
+        assert!(host
+            .bridge()
+            .deliver_child_followup(
+                &parent_agent_id,
+                &task_id,
+                &spawned.agent_id,
+                "additional untrusted evidence",
+                AuthorityClass::ExternalEvidence,
+            )
+            .await
+            .unwrap());
+        let messages = child.storage().read_recent_messages(10).unwrap();
+        let followup = messages
+            .iter()
+            .find(|message| {
+                message
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.get("followup_via"))
+                    .and_then(|value| value.as_str())
+                    == Some("task_input")
+            })
+            .expect("child should receive the task input follow-up");
+        assert_eq!(followup.authority_class, AuthorityClass::ExternalEvidence);
+        assert_eq!(
+            followup.metadata.as_ref().unwrap()["delegated_authority_class"],
+            serde_json::json!("external_evidence")
         );
     }
 

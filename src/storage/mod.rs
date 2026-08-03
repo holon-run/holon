@@ -686,6 +686,12 @@ impl AppStorage {
         return runtime_db.turn_records().recent(limit);
     }
 
+    pub fn read_turn_by_id(&self, turn_id: &str) -> Result<Option<TurnRecord>> {
+        self.runtime_db
+            .turn_records()
+            .by_id(self.current_agent_id()?.as_deref(), turn_id)
+    }
+
     pub fn read_recent_transcript(&self, limit: usize) -> Result<Vec<TranscriptEntry>> {
         let runtime_db = self.runtime_db.clone();
         return runtime_db

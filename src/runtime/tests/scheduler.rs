@@ -1564,6 +1564,18 @@ fn correlated_wait_resume_requires_the_exact_expected_owner() {
             wait_id: "wait-lifecycle".into(),
         })
     );
+    assert_eq!(
+        scheduler::resolve_canonical_activation_scenario(
+            &projection,
+            &message,
+            scheduler::CanonicalActivationCandidate::ExactWaitResume {
+                expected_work_item_id: Some("work-a".into()),
+                correlated_wait: Some(("wait-work".into(), 6)),
+            },
+        )
+        .unwrap(),
+        None
+    );
 }
 
 #[test]
