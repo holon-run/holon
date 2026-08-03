@@ -364,11 +364,10 @@
       "timeout_seconds": 120,
       "description": "Verify WorkItem state survives compaction triggered during a multi-turn lifecycle and persists across restart.",
       "scheduler_protocol_commands_enabled": true,
-      "runtime_env": {
-        "HOLON_COMPACTION_TRIGGER_MESSAGES": "3",
-        "HOLON_COMPACTION_KEEP_RECENT_MESSAGES": "2",
-        "HOLON_COMPACTION_TRIGGER_ESTIMATED_TOKENS": "1",
-        "HOLON_COMPACTION_KEEP_RECENT_ESTIMATED_TOKENS": "1"
+      "model_runtime_override": {
+        "prompt_budget_estimated_tokens": 80000,
+        "compaction_trigger_estimated_tokens": 70000,
+        "compaction_keep_recent_estimated_tokens": 4000
       },
       "phases": [
         {
@@ -376,14 +375,14 @@
           "required_tools": [
             "CreateWorkItem",
             "PickWorkItem",
+            "ExecCommand",
             "WaitFor",
             "GetWorkItem",
             "UpdateWorkItem",
             "CompleteWorkItem"
           ],
           "forbidden_tools": [
-            "ApplyPatch",
-            "ExecCommand"
+            "ApplyPatch"
           ],
           "prompt": "Scheduler Docker E2E case {case_id}. Create exactly one WorkItem whose objective is {objective}, with plan_status ready and exactly these todos: compaction-wait pending, compaction-complete pending. Pick that WorkItem, then call WaitFor with wake=operator_input and a concrete reason. Do not complete it in this turn. When the operator message later resumes this exact WorkItem, call GetWorkItem, update both todos to completed, then emit a concise completion result containing {completion_marker} immediately followed by CompleteWorkItem for the exact current item. Do not create another WorkItem and do not modify files."
         }

@@ -164,10 +164,10 @@ class Scenario:
                 return self.wait(kind, kind, wake)
             if self.name == "scheduler-concurrent":
                 return self.concurrent()
+            if self.name == "scheduler-compaction":
+                return self.compaction()
             if self.name == "scheduler-interject":
                 return self.interject("interject", "operator_input")
-            if self.name == "scheduler-compaction":
-                return self.wait("compaction", "compaction", "operator_input")
             if self.name == "scheduler-worktree":
                 return self.worktree()
             if self.name == "scheduler-spawn":
@@ -436,6 +436,76 @@ class Scenario:
                 ),
             )
         return 409, {"error": {"type": "transcript_exhausted", "message": str(self.phase)}}
+
+    def compaction(self) -> tuple[int, dict[str, Any]]:
+        if self.phase == 0:
+            return self.call(
+                "CreateWorkItem",
+                {
+                    "objective": self.markers.get(
+                        "compaction", "SCHEDULER-COMPACTION"
+                    ),
+                    "plan_status": "ready",
+                    "todo_list": [
+                        {"text": "compaction-wait", "state": "pending"},
+                        {"text": "compaction-complete", "state": "pending"},
+                    ],
+                },
+            )
+        if not self.work_ids:
+            return 409, {
+                "error": {"type": "missing_work_item_id", "message": str(self.phase)}
+            }
+        wid = self.work_ids[0]
+        if self.phase == 1:
+            return self.call("PickWorkItem", {"work_item_id": wid})
+        if self.phase == 2:
+            return self.call(
+                "ExecCommand",
+                {
+                    "cmd": (
+                        "i=0; while [ \"$i\" -lt 16000 ]; do "
+                        "printf 'compaction-payload-%04d\\n' \"$i\"; "
+                        "i=$((i+1)); done"
+                    ),
+                    "max_output_tokens": 64000,
+                },
+            )
+        if self.phase == 3:
+            return self.call(
+                "WaitFor",
+                {
+                    "wake": "operator_input",
+                    "reason": "deterministic compaction wait",
+                },
+            )
+        if self.phase == 4:
+            return self.call(
+                "GetWorkItem",
+                {"work_item_id": wid, "include_todo_list": True},
+            )
+        if self.phase == 5:
+            return self.call(
+                "UpdateWorkItem",
+                {
+                    "work_item_id": wid,
+                    "todo_list": [
+                        {"text": "compaction-wait", "state": "completed"},
+                        {"text": "compaction-complete", "state": "completed"},
+                    ],
+                },
+            )
+        if self.phase == 6:
+            return self.call(
+                "CompleteWorkItem",
+                {"work_item_id": wid},
+                self.markers.get(
+                    "compaction_complete", "SCHEDULER-COMPACTION-COMPLETE"
+                ),
+            )
+        return 409, {
+            "error": {"type": "transcript_exhausted", "message": str(self.phase)}
+        }
 
     def interject(self, prefix: str, wake: str) -> tuple[int, dict[str, Any]]:
         if self.phase == 0:
@@ -759,7 +829,7 @@ class Scenario:
             "scheduler-operator": 7,
             "scheduler-concurrent": 11,
             "scheduler-interject": 13,
-            "scheduler-compaction": 7,
+            "scheduler-compaction": 8,
             "scheduler-worktree": 12,
             "scheduler-spawn": 7,
             "scheduler-checkpoint": 13,

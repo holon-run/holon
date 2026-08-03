@@ -179,6 +179,7 @@ class CaseHarness:
         keep: bool,
         provider_mode: str = "live",
         stub_scenario: str | None = None,
+        model_runtime_override: dict[str, int] | None = None,
         tool_assertion_mode: str = "strict",
         resource_names: dict[str, str] | None = None,
         control_token: str | None = None,
@@ -205,6 +206,8 @@ class CaseHarness:
         self.provider_mode = provider_mode
         self.stub_scenario = stub_scenario
         self.stub_provider_base_url: str | None = None
+        self.model_runtime_override = dict(model_runtime_override or {})
+        self._model_runtime_override_seeded = False
         self.tool_assertion_mode = tool_assertion_mode
         names = resource_names or {}
         self.volume = names.get("volume", f"holon-live-{case_id}-{suffix}")
@@ -511,6 +514,29 @@ class CaseHarness:
                 self.stub_provider_base_url or "http://provider-stub:8080/v1"
             )
             self.runtime_env["OPENAI_API_KEY"] = "deterministic-test-key"
+        if self.model_runtime_override and not self._model_runtime_override_seeded:
+            config = {
+                "models": {
+                    "catalog": {
+                        self.model: self.model_runtime_override,
+                    }
+                }
+            }
+            self.docker(
+                "run",
+                "--rm",
+                "--volume",
+                f"{self.volume}:/var/lib/holon",
+                "--entrypoint",
+                "bash",
+                self.image,
+                "-lc",
+                "set -euo pipefail; umask 077; "
+                "printf '%s' \"$1\" > /var/lib/holon/config.json",
+                "bash",
+                json.dumps(config, separators=(",", ":")),
+            )
+            self._model_runtime_override_seeded = True
         args = [
             "run",
             "--detach",
@@ -1464,51 +1490,21 @@ def require_processed_queue_entries(
     )
 
 
-def require_compaction_evidence(
+def require_turn_local_compaction(
     snapshot: dict[str, Any],
     *,
     label: str,
-    previous_compression_epoch: int = 0,
 ) -> list[dict[str, Any]]:
-    turn_local_events = [
+    events = [
         json.loads(row["data_json"])["data"]
         for row in snapshot["audit_events"]
         if row["kind"] == "turn_local_compaction_applied"
     ]
-    context_events = [
-        json.loads(row["data_json"])["data"]
-        for row in snapshot["audit_events"]
-        if row["kind"] == "provider_round_completed"
-        and int(
-            json.loads(row["data_json"])["data"].get("compression_epoch") or 0
-        )
-        > previous_compression_epoch
-    ]
-    compacted_turn_local_events = [
-        event
-        for event in turn_local_events
-        if int(event.get("compacted_rounds") or 0) > 0
-    ]
     require(
-        compacted_turn_local_events or context_events,
-        f"{label} compaction stimulus did not produce compaction evidence: "
-        f"turn_local={turn_local_events}, context={context_events}",
+        events and any(int(event.get("compacted_rounds") or 0) > 0 for event in events),
+        f"{label} compaction stimulus did not produce compacted rounds: {events}",
     )
-    return compacted_turn_local_events or context_events
-
-
-def latest_compression_epoch(snapshot: dict[str, Any]) -> int:
-    return max(
-        (
-            int(
-                json.loads(row["data_json"])["data"].get("compression_epoch")
-                or 0
-            )
-            for row in snapshot["audit_events"]
-            if row["kind"] == "provider_round_completed"
-        ),
-        default=0,
-    )
+    return events
 
 
 def require_scheduler_engine_activation_chain(
@@ -1724,6 +1720,70 @@ def require_scheduler_activation_chain(
         f"canonical activation slot was not released: {slots}",
     )
     return activations
+
+
+def require_checkpoint_restart_activation_lineage(
+    before_restart_snapshot: dict[str, Any],
+    snapshot: dict[str, Any],
+    *,
+    work_item_id: str,
+    wait_id: str,
+) -> None:
+    before_restart_activations = [
+        row
+        for row in before_restart_snapshot["scheduler_activations"]
+        if row["work_item_id"] == work_item_id
+    ]
+    require(
+        len(before_restart_activations) == 1
+        and before_restart_activations[0]["admitted_generation"] == 1
+        and before_restart_activations[0]["admission_kind"] == "scheduling"
+        and str(before_restart_activations[0]["idempotency_key"]).startswith(
+            "work-queue-attempt:"
+        ),
+        "checkpoint replay restart boundary did not preserve exactly the initial "
+        f"scheduling activation: {before_restart_activations}",
+    )
+    activations = sorted(
+        (
+            row
+            for row in snapshot["scheduler_activations"]
+            if row["work_item_id"] == work_item_id
+        ),
+        key=lambda row: row["admitted_generation"],
+    )
+    require(
+        len(activations) == 2,
+        f"checkpoint replay expected exactly two WorkItem activations: {activations}",
+    )
+    scheduling, wait_resume = activations
+    require(
+        scheduling["admitted_generation"] == 1
+        and scheduling["admission_kind"] == "scheduling"
+        and str(scheduling["idempotency_key"]).startswith("work-queue-attempt:"),
+        f"checkpoint replay initial scheduling activation mismatch: {scheduling}",
+    )
+    expected_wait_resume_key = (
+        f"wait-resume:{wait_id}:2:{wait_resume['activation_id']}"
+    )
+    require(
+        wait_resume["admitted_generation"] == 2
+        and wait_resume["admission_kind"] == "wait_resume"
+        and wait_resume["idempotency_key"] == expected_wait_resume_key,
+        f"checkpoint replay wait-resume activation mismatch: {wait_resume}",
+    )
+    wait_generations = [
+        row
+        for row in snapshot["scheduler_wait_generations"]
+        if row["wait_id"] == wait_id
+    ]
+    require(
+        len(wait_generations) == 1
+        and wait_generations[0]["owner_work_item_id"] == work_item_id
+        and wait_generations[0]["generation"] == 2
+        and wait_generations[0]["lifecycle_state"] == "resolved",
+        f"checkpoint replay wait generation mismatch: {wait_generations}",
+    )
 
 
 def require_lifecycle_wait_adoption(
@@ -3365,8 +3425,6 @@ def run_scheduler_compaction_continuity_case(
         "CompleteWorkItem for the exact current item. Do not wait for more "
         "operator input."
     )
-    before_snapshot = harness.runtime_db_snapshot("scheduler-compaction-before")
-    previous_compression_epoch = latest_compression_epoch(before_snapshot)
     phase = case["phases"][0]
     baseline, _ = harness.prompt(
         "scheduler-compaction-create",
@@ -3384,10 +3442,9 @@ def run_scheduler_compaction_continuity_case(
     stimulus_snapshot = harness.runtime_db_snapshot(
         "scheduler-compaction-stimulus"
     )
-    require_compaction_evidence(
+    require_turn_local_compaction(
         stimulus_snapshot,
         label="scheduler-compaction",
-        previous_compression_epoch=previous_compression_epoch,
     )
     harness.wait_agent_asleep()
     harness.prompt(
@@ -3447,10 +3504,9 @@ def run_scheduler_compaction_continuity_case(
             harness.prompt_scope("scheduler-compaction-create")["message_id"]
         },
     )
-    require_compaction_evidence(
+    require_turn_local_compaction(
         snapshot,
         label="scheduler-compaction",
-        previous_compression_epoch=previous_compression_epoch,
     )
     waits = require_scheduler_wait_terminal(
         harness,
@@ -3713,6 +3769,9 @@ def run_scheduler_checkpoint_replay_case(
         expected_state="completed",
         label="scheduler-replay-b-completed",
     )
+    before_restart_snapshot = harness.runtime_db_snapshot(
+        "scheduler-replay-before-restart"
+    )
     harness.restart()
     restarted_items = harness.work_items("scheduler-replay-after-restart")
     restarted_a = next(
@@ -3803,6 +3862,12 @@ def run_scheduler_checkpoint_replay_case(
         wait_ids={wait["wait_condition_id"] for wait in waits},
     )
     if harness.canonical_scheduler_enabled:
+        require_checkpoint_restart_activation_lineage(
+            before_restart_snapshot,
+            snapshot,
+            work_item_id=work_item_a_id,
+            wait_id=waits[0]["wait_condition_id"],
+        )
         demands = [
             row
             for row in snapshot["scheduler_work_demands"]
@@ -3946,6 +4011,41 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
                 for name, value in runtime_env.items()
             ),
             f"{case_id} runtime_env must contain HOLON_ string entries",
+        )
+        model_runtime_override = case.get("model_runtime_override", {})
+        require(
+            isinstance(model_runtime_override, dict)
+            and all(
+                name
+                in {
+                    "prompt_budget_estimated_tokens",
+                    "compaction_trigger_estimated_tokens",
+                    "compaction_keep_recent_estimated_tokens",
+                }
+                and isinstance(value, int)
+                and value > 0
+                for name, value in model_runtime_override.items()
+            ),
+            f"{case_id} model_runtime_override must contain positive supported integers",
+        )
+        prompt_budget = model_runtime_override.get("prompt_budget_estimated_tokens")
+        compaction_trigger = model_runtime_override.get(
+            "compaction_trigger_estimated_tokens"
+        )
+        keep_recent = model_runtime_override.get(
+            "compaction_keep_recent_estimated_tokens"
+        )
+        require(
+            prompt_budget is None
+            or compaction_trigger is None
+            or compaction_trigger <= prompt_budget,
+            f"{case_id} compaction trigger exceeds prompt budget",
+        )
+        require(
+            compaction_trigger is None
+            or keep_recent is None
+            or keep_recent <= compaction_trigger,
+            f"{case_id} compaction keep-recent exceeds trigger",
         )
         phases = case.get("phases")
         require(isinstance(phases, list) and phases, f"{case_id} needs phases")
@@ -4663,6 +4763,7 @@ def main(argv: list[str] | None = None) -> int:
                 "provider_mode", profile.get("provider_mode", "live")
             ),
             stub_scenario=case.get("stub_scenario", profile.get("stub_scenario")),
+            model_runtime_override=case.get("model_runtime_override"),
             tool_assertion_mode=profile.get("tool_assertion_mode", "strict"),
         )
         control_tokens.append(harness.token)

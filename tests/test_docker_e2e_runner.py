@@ -494,7 +494,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
 
     def test_openai_stub_concurrent_callback_starts_a_resume_tools(self) -> None:
         scenario = stub.Scenario("scheduler-concurrent")
-        scenario.phase = 6
+        scenario.phase = 5
         scenario.work_ids = [
             "work_0123456789abcde",
             "work_fedcba987654321",
@@ -517,6 +517,12 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 }
             ]
         }
+
+        status, response = scenario.consume({"input": []})
+
+        self.assertEqual(status, 200)
+        self.assertEqual(response["output"][-1]["name"], "CompleteWorkItem")
+        self.assertEqual(scenario.phase, 6)
 
         status, response = scenario.consume(callback)
 
@@ -571,7 +577,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 "GetWorkItem", "UpdateWorkItem", "CompleteWorkItem",
             ],
             "scheduler-compaction": [
-                "CreateWorkItem", "PickWorkItem", "WaitFor", "GetWorkItem",
+                "CreateWorkItem", "PickWorkItem", "ExecCommand", "WaitFor", "GetWorkItem",
                 "UpdateWorkItem", "CompleteWorkItem",
             ],
             "scheduler-worktree": [
@@ -1314,6 +1320,70 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 docker_run,
             )
 
+    def test_stub_start_forces_endpoint_and_seeds_model_override_once(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            harness = runner.CaseHarness(
+                case_id="stub-model-override",
+                image="holon:test",
+                model="external/model",
+                credential_envs=[],
+                env_file=None,
+                runtime_env={
+                    "HOLON_OPENAI_BASE_URL": "https://external.invalid/v1",
+                },
+                evidence_root=Path(directory),
+                timeout_seconds=1,
+                keep=True,
+                provider_mode="stub",
+                stub_scenario="scheduler-compaction",
+                model_runtime_override={
+                    "prompt_budget_estimated_tokens": 80_000,
+                    "compaction_trigger_estimated_tokens": 70_000,
+                    "compaction_keep_recent_estimated_tokens": 4_000,
+                },
+            )
+            commands: list[tuple[str, ...]] = []
+
+            def fake_docker(
+                *args: str, **_: object
+            ) -> subprocess.CompletedProcess[str]:
+                commands.append(args)
+                if args[:2] in {
+                    ("network", "inspect"),
+                    ("inspect", "--format"),
+                }:
+                    return subprocess.CompletedProcess(["docker", *args], 1, "", "")
+                if args[:2] == ("port", harness.container):
+                    return subprocess.CompletedProcess(
+                        ["docker", *args], 0, "127.0.0.1:49152\n", ""
+                    )
+                return subprocess.CompletedProcess(["docker", *args], 0, "", "")
+
+            harness.docker = fake_docker
+            harness.wait_readiness = lambda: None
+            harness.wait_agent_idle = lambda: None
+
+            harness.start()
+            harness.start()
+
+            self.assertEqual(harness.model, "openai/gpt-5.4")
+            self.assertEqual(
+                harness.runtime_env["HOLON_OPENAI_BASE_URL"],
+                "http://provider-stub:8080/v1",
+            )
+            seed_runs = [
+                command
+                for command in commands
+                if command[0] == "run"
+                and "/var/lib/holon/config.json" in " ".join(command)
+            ]
+            self.assertEqual(len(seed_runs), 1)
+            seeded = json.loads(seed_runs[0][-1])
+            self.assertEqual(
+                seeded["models"]["catalog"]["openai/gpt-5.4"],
+                harness.model_runtime_override,
+            )
+
     def test_scheduler_extended_cases_use_real_lifecycle_fixtures(self) -> None:
         selected = runner.select_cases(
             self.manifest, requested=None, suite="extended", tags=["scheduler"]
@@ -1420,12 +1490,11 @@ class DockerE2ERunnerTests(unittest.TestCase):
             if case["id"] == "scheduler-compaction-continuity"
         )
         self.assertEqual(
-            compaction["runtime_env"],
+            compaction["model_runtime_override"],
             {
-                "HOLON_COMPACTION_TRIGGER_MESSAGES": "3",
-                "HOLON_COMPACTION_KEEP_RECENT_MESSAGES": "2",
-                "HOLON_COMPACTION_TRIGGER_ESTIMATED_TOKENS": "1",
-                "HOLON_COMPACTION_KEEP_RECENT_ESTIMATED_TOKENS": "1",
+                "prompt_budget_estimated_tokens": 80000,
+                "compaction_trigger_estimated_tokens": 70000,
+                "compaction_keep_recent_estimated_tokens": 4000,
             },
         )
 
@@ -1842,7 +1911,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 {"data": {"compacted_rounds": 2, "exact_tail_rounds": 1}}
             ),
         }
-        events = runner.require_compaction_evidence(
+        events = runner.require_turn_local_compaction(
             {"audit_events": [event]},
             label="test",
         )
@@ -1851,25 +1920,83 @@ class DockerE2ERunnerTests(unittest.TestCase):
         event["data_json"] = json.dumps(
             {"data": {"compacted_rounds": 0, "exact_tail_rounds": 3}}
         )
-        context_event = {
-            "kind": "provider_round_completed",
-            "data_json": json.dumps({"data": {"compression_epoch": 1}}),
-        }
-        events = runner.require_compaction_evidence(
-            {"audit_events": [event, context_event]},
-            label="test",
-            previous_compression_epoch=0,
-        )
-        self.assertEqual(events[0]["compression_epoch"], 1)
-
         with self.assertRaisesRegex(
             AssertionError,
-            "compaction stimulus did not produce compaction evidence",
+            "compaction stimulus did not produce compacted rounds",
         ):
-            runner.require_compaction_evidence(
-                {"audit_events": [event, context_event]},
+            runner.require_turn_local_compaction(
+                {
+                    "audit_events": [
+                        event,
+                        {
+                            "kind": "provider_round_completed",
+                            "data_json": json.dumps(
+                                {"data": {"compression_epoch": 1}}
+                            ),
+                        },
+                    ]
+                },
                 label="test",
-                previous_compression_epoch=1,
+            )
+
+    def test_checkpoint_restart_lineage_binds_wait_generation(self) -> None:
+        before_restart_snapshot = {
+            "scheduler_activations": [
+                {
+                    "activation_id": "activation:schedule",
+                    "work_item_id": "work-1",
+                    "admitted_generation": 1,
+                    "admission_kind": "scheduling",
+                    "idempotency_key": "work-queue-attempt:activation:schedule",
+                }
+            ]
+        }
+        snapshot = {
+            "scheduler_activations": [
+                {
+                    "activation_id": "activation:schedule",
+                    "work_item_id": "work-1",
+                    "admitted_generation": 1,
+                    "admission_kind": "scheduling",
+                    "idempotency_key": "work-queue-attempt:activation:schedule",
+                },
+                {
+                    "activation_id": "activation:resume",
+                    "work_item_id": "work-1",
+                    "admitted_generation": 2,
+                    "admission_kind": "wait_resume",
+                    "idempotency_key": "wait-resume:wait-1:2:activation:resume",
+                },
+            ],
+            "scheduler_wait_generations": [
+                {
+                    "wait_id": "wait-1",
+                    "owner_work_item_id": "work-1",
+                    "generation": 2,
+                    "lifecycle_state": "resolved",
+                }
+            ],
+        }
+
+        runner.require_checkpoint_restart_activation_lineage(
+            before_restart_snapshot,
+            snapshot,
+            work_item_id="work-1",
+            wait_id="wait-1",
+        )
+
+        snapshot["scheduler_activations"][1]["idempotency_key"] = (
+            "wait-resume:other-wait:2:activation:resume"
+        )
+        with self.assertRaisesRegex(
+            AssertionError,
+            "wait-resume activation mismatch",
+        ):
+            runner.require_checkpoint_restart_activation_lineage(
+                before_restart_snapshot,
+                snapshot,
+                work_item_id="work-1",
+                wait_id="wait-1",
             )
 
     def test_wait_work_item_fails_fast_on_duplicate_objective_marker(self) -> None:
