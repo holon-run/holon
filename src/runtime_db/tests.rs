@@ -816,6 +816,18 @@ INSERT INTO scheduler_activations (
             ordinary_fence_sql.contains("internal_followup"),
             "migration 42 must include InternalFollowup in the ordinary admission fence"
         );
+        let state_index_count: i64 = connection.query_row(
+            "SELECT COUNT(*)
+             FROM sqlite_master
+             WHERE type = 'index'
+               AND name = 'idx_scheduler_activations_state'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            state_index_count, 1,
+            "migration 42 must restore the scheduler activation state index"
+        );
         let foreign_key_violations = connection
             .prepare("PRAGMA foreign_key_check")?
             .query_map([], |_| Ok(()))?

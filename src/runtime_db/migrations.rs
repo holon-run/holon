@@ -726,6 +726,9 @@ SELECT * FROM scheduler_activations;
 DROP TABLE scheduler_activations;
 ALTER TABLE scheduler_activations_v42 RENAME TO scheduler_activations;
 
+CREATE INDEX idx_scheduler_activations_state
+  ON scheduler_activations(agent_id, lifecycle_state);
+
 CREATE UNIQUE INDEX idx_scheduler_activations_ordinary_admission_fence
   ON scheduler_activations(
     agent_id, owner_kind, owner_id, admitted_generation
