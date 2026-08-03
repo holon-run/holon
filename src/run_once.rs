@@ -408,6 +408,7 @@ pub async fn run_once_with_host(
         RunSessionCleanup::Temporary { runtime_task } => {
             let _ = session.runtime.control(ControlAction::Stop).await;
             let _ = runtime_task.await;
+            let _ = host.archive_temporary_runtime_identity(&session.agent_id);
             let data_dir = host.agent_data_dir(&session.agent_id);
             if data_dir.exists() {
                 let _ = std::fs::remove_dir_all(&data_dir);

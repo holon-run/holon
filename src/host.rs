@@ -8,7 +8,8 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
+use chrono::Utc;
 use serde_json::{json, Value};
 use tokio::{
     sync::{Notify, RwLock},
@@ -49,12 +50,12 @@ use crate::{
     },
     tool::{apply_patch::ApplyPatchSurface, ToolRegistry},
     types::{
-        AdmissionContext, AgentDeletionJob, AgentIdentityRecord, AgentIdentityView, AgentKind,
-        AgentLifecycleHint, AgentListEntry, AgentOwnership, AgentProfilePreset,
-        AgentRegistryStatus, AgentState, AgentStatus, AgentSummary, AgentTokenUsageSummary,
-        AgentVisibility, AuthorityClass, ChildAgentSummary, ClosureOutcome, ExternalTriggerRecord,
-        ExternalTriggerStatus, ExternalTriggerSummary, LoadedAgentsMdView, MessageBody,
-        MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin,
+        AdmissionContext, AgentDeletionJob, AgentDurability, AgentIdentityRecord,
+        AgentIdentityView, AgentKind, AgentLifecycleHint, AgentListEntry, AgentOwnership,
+        AgentProfilePreset, AgentRegistryStatus, AgentState, AgentStatus, AgentSummary,
+        AgentTokenUsageSummary, AgentVisibility, AuthorityClass, ChildAgentSummary, ClosureOutcome,
+        ExternalTriggerRecord, ExternalTriggerStatus, ExternalTriggerSummary, LoadedAgentsMdView,
+        MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin,
         OperatorNotificationRecord, Priority, QueueEntryStatus, RuntimeFailureSummary,
         SpawnAgentModelResolution, SpawnAgentModelResolutionStatus, TaskKind, TaskRecord,
         TaskStatus, TimerRecord, TokenUsage, TranscriptEntry, TranscriptEntryKind,
@@ -1567,8 +1568,42 @@ impl RuntimeHost {
             other => ids::runtime_id(&format!("{TEMP_AGENT_PREFIX}{other}")),
         };
         self.validate_agent_id(&agent_id)?;
-        let (runtime, runtime_task) = self.spawn_runtime(&agent_id)?;
+        let mut identity = AgentIdentityRecord::new(
+            agent_id.clone(),
+            AgentKind::Named,
+            AgentVisibility::Private,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        identity.durability = Some(AgentDurability::Ephemeral);
+        self.append_agent_identity(&identity)?;
+        let (runtime, runtime_task) = match self.spawn_runtime(&agent_id) {
+            Ok(spawned) => spawned,
+            Err(error) => {
+                let _ = self.archive_temporary_runtime_identity(&agent_id);
+                return Err(error);
+            }
+        };
         Ok((agent_id, runtime, runtime_task))
+    }
+
+    pub(crate) fn archive_temporary_runtime_identity(&self, agent_id: &str) -> Result<()> {
+        if !Self::is_temporary_agent_id(agent_id) {
+            bail!("agent {agent_id} is not a temporary runtime");
+        }
+        let Some(mut identity) = self.agent_identity_record(agent_id)? else {
+            bail!("temporary runtime {agent_id} is missing its host identity");
+        };
+        if identity.status != AgentRegistryStatus::Deleted {
+            identity.status = AgentRegistryStatus::Deleted;
+            identity.revision = identity.revision.saturating_add(1);
+            identity.deleted_at = Some(Utc::now());
+            identity.updated_at = Utc::now();
+            self.append_agent_identity(&identity)?;
+        }
+        Ok(())
     }
 
     pub fn workspace_entries(&self) -> Result<Vec<WorkspaceEntry>> {

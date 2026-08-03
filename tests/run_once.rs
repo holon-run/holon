@@ -11,7 +11,10 @@ use holon::{
     },
     run_once::{run_once_with_host, RunFinalStatus, RunOnceRequest},
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
-    types::{AuthorityClass, ControlAction, FailureArtifactCategory, TaskStatus, TokenUsage},
+    types::{
+        AgentDurability, AgentRegistryStatus, AuthorityClass, ControlAction,
+        FailureArtifactCategory, TaskStatus, TokenUsage,
+    },
 };
 use serde_json::json;
 use tokio::sync::Mutex;
@@ -79,6 +82,11 @@ async fn run_once_returns_completed_text_for_simple_prompt() -> Result<()> {
     assert!(!response.render_text().contains("Token usage:"));
     assert!(response.agent_id.starts_with("tmp_run_"));
     assert!(response.tasks.is_empty());
+    let identity = host
+        .agent_identity_record(&response.agent_id)?
+        .expect("temporary run identity should remain as a host tombstone");
+    assert_eq!(identity.status, AgentRegistryStatus::Deleted);
+    assert_eq!(identity.durability, Some(AgentDurability::Ephemeral));
     let listed_agents = host
         .list_agents()
         .await?
