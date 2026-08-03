@@ -402,12 +402,17 @@ requires a non-empty blocker.
 
 **`POST /api/control/agents/:id/work-items/:work_item_id/complete`** — Complete work item
 
-Marks an open work item completed and returns the updated `WorkItemRecord`.
-Cancel, close-without-completion, and delete are intentionally out of scope for
-this lifecycle surface.
+Records completion intent for an open work item and returns the updated
+`WorkItemRecord` in the `completing` state. The work item becomes `completed`
+only after the supplied report is persisted as its result brief and atomically
+bound to the completion intent. Cancel, close-without-completion, and delete are
+intentionally out of scope for this lifecycle surface.
 
 ```json
-{ "authority_class": "operator_instruction" }
+{
+  "report_text": "Build fixed and all checks passed.",
+  "authority_class": "operator_instruction"
+}
 ```
 
 **`POST /api/control/agents/:id/timers`** — Create timer

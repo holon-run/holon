@@ -2371,7 +2371,7 @@ def run_scheduler_external_wait_resume_case(
             and waits[0]["status"] == "cancelled"
             and any(
                 event.get("work_item_id") == work_item_id
-                and event.get("reason") == "work_item_completed"
+                and event.get("reason") == "completion_intent_recorded"
                 and waits[0]["wait_condition_id"]
                 in event.get("wait_condition_ids", [])
                 for event in cancellation_events
@@ -2381,7 +2381,7 @@ def run_scheduler_external_wait_resume_case(
                 for event in callback_events
             )
             and len(resume_messages) == 1,
-            "legacy external wait did not follow wake-hint then completion "
+            "legacy external wait did not follow wake-hint then completion-intent "
             f"cancellation semantics: waits={waits}, "
             f"cancellations={cancellation_events}, "
             f"callbacks={callback_events}, resumes={resume_messages}",

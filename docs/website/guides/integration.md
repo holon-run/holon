@@ -153,7 +153,7 @@ curl -X PATCH http://localhost:8787/control/agents/my-agent/work-items/work_123 
 
 curl -X POST http://localhost:8787/control/agents/my-agent/work-items/work_123/complete \
   -H "Content-Type: application/json" \
-  -d '{}'
+  -d '{"report_text": "Build fixed and all checks passed."}'
 ```
 
 ### Create and cancel a timer
