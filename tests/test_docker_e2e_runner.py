@@ -18,6 +18,11 @@ SPEC = importlib.util.spec_from_file_location("docker_e2e_runner", RUNNER_PATH)
 assert SPEC is not None and SPEC.loader is not None
 runner = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(runner)
+STUB_PATH = ROOT / "tests/e2e/docker/openai_stub/server.py"
+STUB_SPEC = importlib.util.spec_from_file_location("openai_stub", STUB_PATH)
+assert STUB_SPEC is not None and STUB_SPEC.loader is not None
+stub = importlib.util.module_from_spec(STUB_SPEC)
+STUB_SPEC.loader.exec_module(stub)
 
 
 class DockerE2ERunnerTests(unittest.TestCase):
@@ -123,6 +128,52 @@ class DockerE2ERunnerTests(unittest.TestCase):
         invalid["cases"][0]["id"] = "not-implemented"
         with self.assertRaisesRegex(AssertionError, "no registered runner"):
             runner.validate_manifest(invalid)
+
+    def test_profile_exposes_explicit_scheduler_required_set(self) -> None:
+        profile = runner.resolve_profile(self.manifest, "scheduler-acceptance")
+        self.assertEqual(profile["provider_mode"], "live")
+        self.assertEqual(
+            set(profile["required_coverage_ids"]),
+            {
+                case["id"]
+                for case in self.manifest["cases"]
+                if "scheduler" in case.get("tags", [])
+            },
+        )
+
+    def test_scheduler_coverage_reports_missing_and_duplicate_ids(self) -> None:
+        report = runner.scheduler_coverage_report(
+            case_results=[
+                {"id": "a-legacy", "coverage_ids": ["a"]},
+                {"id": "a-canonical", "coverage_ids": ["a"]},
+                {"id": "a-extra", "coverage_ids": ["a"]},
+            ],
+            required_coverage_ids={"a", "b"},
+        )
+        self.assertEqual(report["status"], "fail")
+        self.assertEqual(report["missing_coverage_ids"], ["b"])
+        self.assertEqual(
+            report["duplicate_or_incomplete_coverage_ids"]["a"],
+            ["a-legacy", "a-canonical", "a-extra"],
+        )
+
+    def test_openai_stub_consumes_transcript_deterministically(self) -> None:
+        transcript = stub.Transcript(
+            [
+                {
+                    "request": {"model": "stub", "input": "hello"},
+                    "response": {"id": "response-1", "object": "response"},
+                }
+            ]
+        )
+        status, response = transcript.consume(
+            {"model": "stub", "input": "hello", "stream": False}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(response["id"], "response-1")
+        status, response = transcript.consume({"model": "stub", "input": "hello"})
+        self.assertEqual(status, 409)
+        self.assertEqual(response["error"]["type"], "transcript_exhausted")
 
     def test_secret_scan_reports_value_without_echoing_it(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -685,6 +736,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
             run_record=run_record,
             case_results=case_results,
             fixture_corpus_revision="scheduler-release-acceptance-v1",
+            required_coverage_ids={"scheduler-task-wait-resume"},
         )
         self.assertEqual(
             report["schema_version"],
@@ -727,6 +779,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
             run_record=run_record,
             case_results=case_results,
             fixture_corpus_revision="scheduler-release-acceptance-v1",
+            required_coverage_ids={"scheduler-task-wait-resume"},
         )
         self.assertEqual(report["status"], "fail")
         self.assertIsNone(report["runtime_schema_revision"])

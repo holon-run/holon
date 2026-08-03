@@ -1,6 +1,24 @@
 {
   "version": 2,
   "scheduler_fixture_corpus_revision": "scheduler-release-acceptance-v1",
+  "profiles": {
+    "scheduler-acceptance": {
+      "provider_mode": "live",
+      "required_coverage_ids": [
+        "scheduler-task-wait-resume",
+        "scheduler-provider-failure-work-queue-retry",
+        "scheduler-multi-workitem-scheduling",
+        "scheduler-external-wait-resume",
+        "scheduler-operator-wait-resume",
+        "scheduler-concurrent-claim-fencing",
+        "scheduler-operator-interject-during-wait",
+        "scheduler-compaction-continuity",
+        "scheduler-worktree-isolation",
+        "scheduler-spawn-agent-supervision",
+        "scheduler-checkpoint-replay"
+      ]
+    }
+  },
   "cases": [
     {
       "id": "runtime-auth-model-delivery",
@@ -120,6 +138,7 @@
     },
     {
       "id": "scheduler-task-wait-resume",
+      "coverage_ids": ["scheduler-task-wait-resume"],
       "tier": "extended",
       "tags": ["scheduler", "workitem", "task-result", "yield", "wait", "restart", "replay", "delivery"],
       "timeout_seconds": 900,
@@ -146,6 +165,7 @@
     },
     {
       "id": "scheduler-provider-failure-work-queue-retry",
+      "coverage_ids": ["scheduler-provider-failure-work-queue-retry"],
       "tier": "extended",
       "tags": ["scheduler", "provider", "failure", "retry", "workitem", "restart"],
       "timeout_seconds": 600,
@@ -167,6 +187,7 @@
     },
     {
       "id": "scheduler-multi-workitem-scheduling",
+      "coverage_ids": ["scheduler-multi-workitem-scheduling"],
       "tier": "extended",
       "tags": ["scheduler", "workitem", "multi", "priority", "e2e-tier-1"],
       "timeout_seconds": 600,
@@ -195,6 +216,7 @@
     },
     {
       "id": "scheduler-external-wait-resume",
+      "coverage_ids": ["scheduler-external-wait-resume"],
       "tier": "extended",
       "tags": ["scheduler", "workitem", "external", "wait", "resume", "e2e-tier-1"],
       "timeout_seconds": 600,
@@ -221,6 +243,7 @@
     },
     {
       "id": "scheduler-operator-wait-resume",
+      "coverage_ids": ["scheduler-operator-wait-resume"],
       "tier": "extended",
       "tags": ["scheduler", "workitem", "operator", "wait", "resume", "e2e-tier-1"],
       "timeout_seconds": 600,
@@ -247,6 +270,7 @@
     },
     {
       "id": "scheduler-concurrent-claim-fencing",
+      "coverage_ids": ["scheduler-concurrent-claim-fencing"],
       "tier": "extended",
       "tags": ["scheduler", "workitem", "concurrent", "claim", "interject", "e2e-tier-2"],
       "timeout_seconds": 600,
@@ -273,6 +297,7 @@
     },
     {
       "id": "scheduler-operator-interject-during-wait",
+      "coverage_ids": ["scheduler-operator-interject-during-wait"],
       "tier": "extended",
       "tags": ["scheduler", "workitem", "operator", "interject", "e2e-tier-2"],
       "timeout_seconds": 600,
@@ -299,6 +324,7 @@
     },
     {
       "id": "scheduler-compaction-continuity",
+      "coverage_ids": ["scheduler-compaction-continuity"],
       "tier": "extended",
       "tags": ["scheduler", "workitem", "compaction", "continuity", "e2e-tier-2"],
       "timeout_seconds": 600,
@@ -329,6 +355,7 @@
     },
     {
       "id": "scheduler-worktree-isolation",
+      "coverage_ids": ["scheduler-worktree-isolation"],
       "tier": "extended",
       "tags": ["scheduler", "workitem", "worktree", "isolation", "e2e-tier-2"],
       "timeout_seconds": 600,
@@ -357,6 +384,7 @@
     },
     {
       "id": "scheduler-spawn-agent-supervision",
+      "coverage_ids": ["scheduler-spawn-agent-supervision"],
       "tier": "extended",
       "tags": ["scheduler", "workitem", "spawn", "agent", "supervision", "e2e-tier-2"],
       "timeout_seconds": 600,
@@ -383,6 +411,7 @@
     },
     {
       "id": "scheduler-checkpoint-replay",
+      "coverage_ids": ["scheduler-checkpoint-replay"],
       "tier": "extended",
       "tags": ["scheduler", "workitem", "checkpoint", "replay", "restart", "e2e-tier-2"],
       "timeout_seconds": 600,
