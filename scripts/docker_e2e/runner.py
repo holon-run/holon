@@ -1149,8 +1149,17 @@ class CaseHarness:
             time.sleep(1)
         write_json(self.evidence / f"{label}-timeout-state.json", last_state)
         self.capture_logs()
+        target_state = (
+            "target turn was not observed"
+            if target_turn_id is None
+            else (
+                f"target turn {target_turn_id} started at index "
+                f"{target_turn_index} but did not reach terminal"
+            )
+        )
         raise TimeoutError(
-            f"timed out after {self.timeout_seconds}s waiting for phase {label}"
+            f"timed out after {self.timeout_seconds}s waiting for phase {label}: "
+            f"{target_state}"
         )
 
     def prompt_scope(self, label: str) -> dict[str, Any]:
@@ -1197,7 +1206,12 @@ class CaseHarness:
                 return payload.get("turn_id") in message_turn_ids
             if turn_ids is not None:
                 return payload.get("turn_id") in turn_ids
-            turn_index = int(payload.get("turn_index", 0))
+            turn_index = int(
+                turn_indexes.get(
+                    payload.get("turn_id"),
+                    payload.get("turn_index", 0),
+                )
+            )
             return turn_index > baseline_turn and (
                 end_turn is None or turn_index <= end_turn
             )
@@ -1206,20 +1220,7 @@ class CaseHarness:
             event
             for event in events
             if event["type"] == "runtime_error"
-            and (
-                in_scope(event)
-                or (
-                    message_id is None
-                    and turn_ids is None
-                    and turn_indexes.get(event["payload"].get("turn_id"), 0)
-                    > baseline_turn
-                    and (
-                        end_turn is None
-                        or turn_indexes.get(event["payload"].get("turn_id"), 0)
-                        <= end_turn
-                    )
-                )
-            )
+            and in_scope(event)
         ]
         if runtime_failures:
             failure = runtime_failures[-1]["payload"]
@@ -1541,6 +1542,7 @@ def require_scheduler_wait_terminal(
     work_item_id: str,
     wait_kind: str,
     require_callback_trigger: bool = False,
+    callback_external_trigger_id: str | None = None,
 ) -> list[dict[str, Any]]:
     waits = [
         row
@@ -1581,6 +1583,10 @@ def require_scheduler_wait_terminal(
             f"wait={wait}, cancellations={cancellation_events}",
         )
     if require_callback_trigger:
+        require(
+            callback_external_trigger_id is not None,
+            "callback trigger evidence requires an external trigger id",
+        )
         callback_events = [
             json.loads(row["data_json"])["data"]
             for row in snapshot["audit_events"]
@@ -1589,10 +1595,13 @@ def require_scheduler_wait_terminal(
         require(
             any(
                 event.get("disposition") == "triggered"
+                and event.get("external_trigger_id")
+                == callback_external_trigger_id
                 for event in callback_events
             ),
             f"legacy {wait_kind} wait lacked callback trigger evidence: "
-            f"{callback_events}",
+            f"external_trigger_id={callback_external_trigger_id}, "
+            f"callbacks={callback_events}",
         )
     return waits
 
@@ -2774,6 +2783,7 @@ def run_scheduler_external_wait_resume_case(
         work_item_id=work_item_id,
         wait_kind="external",
         require_callback_trigger=True,
+        callback_external_trigger_id=callback["external_trigger_id"],
     )
     if harness.canonical_scheduler_enabled:
         require_lifecycle_wait_adoption(
@@ -3067,6 +3077,7 @@ def run_scheduler_concurrent_claim_fencing_case(
         work_item_id=work_item_a_id,
         wait_kind="external",
         require_callback_trigger=True,
+        callback_external_trigger_id=callback["external_trigger_id"],
     )
     require_scheduler_engine_wait_resolution(
         harness,

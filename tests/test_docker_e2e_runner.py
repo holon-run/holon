@@ -715,6 +715,41 @@ class DockerE2ERunnerTests(unittest.TestCase):
             ):
                 harness.assert_tools("complete", 3, ["CompleteWorkItem"])
 
+    def test_tool_assertion_uses_turn_started_index_for_all_events(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            harness = runner.CaseHarness(
+                case_id="turn-index-scope-test",
+                image="holon:test",
+                model="deepseek/deepseek-v4-flash",
+                credential_envs=[],
+                env_file=None,
+                runtime_env={},
+                evidence_root=Path(directory),
+                timeout_seconds=1,
+                keep=False,
+            )
+            harness.events = lambda _: [
+                {
+                    "type": "turn_started",
+                    "payload": {"turn_id": "turn-target", "turn_index": 4},
+                },
+                {
+                    "type": "runtime_error",
+                    "payload": {
+                        "turn_id": "turn-target",
+                        "turn_index": 1,
+                        "domain": "provider",
+                        "error": "provider request failed",
+                    },
+                },
+            ]
+
+            with self.assertRaisesRegex(
+                AssertionError,
+                "runtime failure occurred in complete: provider",
+            ):
+                harness.assert_tools("complete", 3, ["CompleteWorkItem"])
+
     def test_prompt_waits_for_the_submitted_message_terminal(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             harness = runner.CaseHarness(
@@ -1262,7 +1297,23 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 {
                     "kind": "callback_delivered",
                     "data_json": json.dumps(
-                        {"data": {"disposition": "triggered"}}
+                        {
+                            "data": {
+                                "disposition": "triggered",
+                                "external_trigger_id": "trigger-unrelated",
+                            }
+                        }
+                    ),
+                },
+                {
+                    "kind": "callback_delivered",
+                    "data_json": json.dumps(
+                        {
+                            "data": {
+                                "disposition": "triggered",
+                                "external_trigger_id": "trigger-target",
+                            }
+                        }
                     ),
                 },
                 {
@@ -1286,10 +1337,11 @@ class DockerE2ERunnerTests(unittest.TestCase):
             work_item_id="work-1",
             wait_kind="external",
             require_callback_trigger=True,
+            callback_external_trigger_id="trigger-target",
         )
         self.assertEqual(waits[0]["status"], "cancelled")
 
-        snapshot["audit_events"] = snapshot["audit_events"][:1]
+        snapshot["audit_events"] = snapshot["audit_events"][:2]
         with self.assertRaisesRegex(
             AssertionError,
             "cancellation lacked completion evidence",
@@ -1300,6 +1352,35 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 work_item_id="work-1",
                 wait_kind="external",
                 require_callback_trigger=True,
+                callback_external_trigger_id="trigger-target",
+            )
+
+        snapshot["audit_events"] = [
+            snapshot["audit_events"][0],
+            {
+                "kind": "wait_conditions_cancelled",
+                "data_json": json.dumps(
+                    {
+                        "data": {
+                            "work_item_id": "work-1",
+                            "reason": "work_item_completed",
+                            "wait_condition_ids": ["wait-1"],
+                        }
+                    }
+                ),
+            },
+        ]
+        with self.assertRaisesRegex(
+            AssertionError,
+            "lacked callback trigger evidence",
+        ):
+            runner.require_scheduler_wait_terminal(
+                harness,
+                snapshot,
+                work_item_id="work-1",
+                wait_kind="external",
+                require_callback_trigger=True,
+                callback_external_trigger_id="trigger-target",
             )
 
     def test_canonical_activation_oracle_distinguishes_lifecycle_and_work_item(self) -> None:
