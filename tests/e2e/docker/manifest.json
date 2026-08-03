@@ -348,7 +348,9 @@
       "scheduler_protocol_commands_enabled": true,
       "runtime_env": {
         "HOLON_COMPACTION_TRIGGER_MESSAGES": "3",
-        "HOLON_COMPACTION_KEEP_RECENT_MESSAGES": "2"
+        "HOLON_COMPACTION_KEEP_RECENT_MESSAGES": "2",
+        "HOLON_COMPACTION_TRIGGER_ESTIMATED_TOKENS": "1",
+        "HOLON_COMPACTION_KEEP_RECENT_ESTIMATED_TOKENS": "1"
       },
       "phases": [
         {

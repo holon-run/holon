@@ -612,6 +612,50 @@ class DockerE2ERunnerTests(unittest.TestCase):
             self.assertFalse(any("/briefs?" in path for path in paths))
             self.assertFalse(any("/transcript?" in path for path in paths))
 
+    def test_event_batch_pages_until_the_latest_event(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            harness = runner.CaseHarness(
+                case_id="event-pagination-test",
+                image="holon:test",
+                model="deepseek/deepseek-v4-flash",
+                credential_envs=[],
+                env_file=None,
+                runtime_env={},
+                evidence_root=Path(directory),
+                timeout_seconds=1,
+                keep=False,
+            )
+            harness.agent_id = "default"
+            pages = [
+                {
+                    "events": [{"type": "turn_started", "payload": {}}],
+                    "newest_seq": 12,
+                    "has_newer": True,
+                },
+                {
+                    "events": [{"type": "turn_terminal", "payload": {}}],
+                    "newest_seq": 14,
+                    "has_newer": False,
+                },
+            ]
+            paths: list[str] = []
+
+            def request(method: str, path: str, *_: object, **__: object) -> object:
+                self.assertEqual(method, "GET")
+                paths.append(path)
+                return pages.pop(0)
+
+            harness.request = request
+            batch = harness.event_batch("paged", after_seq=10, limit=2)
+
+            self.assertEqual(
+                [event["type"] for event in batch["events"]],
+                ["turn_started", "turn_terminal"],
+            )
+            self.assertEqual(batch["newest_seq"], 14)
+            self.assertIn("after_seq=10", paths[0])
+            self.assertIn("after_seq=12", paths[1])
+
     def test_cleanup_fails_when_resource_still_exists(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             harness = runner.CaseHarness(
@@ -670,6 +714,155 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 "runtime failure occurred in complete: provider: connection closed",
             ):
                 harness.assert_tools("complete", 3, ["CompleteWorkItem"])
+
+    def test_prompt_waits_for_the_submitted_message_terminal(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            harness = runner.CaseHarness(
+                case_id="prompt-target-test",
+                image="holon:test",
+                model="deepseek/deepseek-v4-flash",
+                credential_envs=[],
+                env_file=None,
+                runtime_env={},
+                evidence_root=Path(directory),
+                timeout_seconds=1,
+                keep=False,
+            )
+            harness.agent_id = "default"
+            state = {
+                "agent": {
+                    "agent": {
+                        "turn_index": 8,
+                        "status": "awake_idle",
+                        "current_run_id": None,
+                        "last_runtime_failure": None,
+                    }
+                },
+                "session": {"pending_count": 4},
+            }
+            requests: list[tuple[str, str]] = []
+
+            def request(
+                method: str,
+                path: str,
+                body: object = None,
+                **_: object,
+            ) -> object:
+                requests.append((method, path))
+                if method == "POST":
+                    self.assertEqual(body, {"text": "target prompt"})
+                    return {"ok": True, "message_id": "message-target"}
+                if "events?limit=1" in path:
+                    return {"events": [], "cursor_seq": 10}
+                if path.endswith("/state"):
+                    return state
+                if "events?limit=300" in path:
+                    return {
+                        "events": [
+                            {
+                                "type": "turn_started",
+                                "payload": {
+                                    "message_id": "message-target",
+                                    "turn_id": "turn-target",
+                                    "turn_index": 8,
+                                },
+                            },
+                            {
+                                "type": "turn_terminal",
+                                "payload": {
+                                    "turn_id": "turn-target",
+                                    "turn_index": 8,
+                                    "kind": "completed",
+                                },
+                            },
+                        ]
+                    }
+                if "/work-items?" in path:
+                    return []
+                raise AssertionError(f"unexpected request: {method} {path}")
+
+            harness.request = request
+            with patch.object(harness, "capture_context"):
+                baseline, final_state = harness.prompt(
+                    "target",
+                    "target prompt",
+                )
+
+            self.assertEqual(baseline, 8)
+            self.assertIs(final_state, state)
+            self.assertEqual(
+                harness.prompt_scope("target"),
+                {
+                    "message_id": "message-target",
+                    "turn_id": "turn-target",
+                    "turn_index": 8,
+                    "terminal_kind": "completed",
+                },
+            )
+            self.assertEqual(state["session"]["pending_count"], 4)
+
+    def test_tool_assertion_can_scope_to_prompt_message(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            harness = runner.CaseHarness(
+                case_id="tool-scope-test",
+                image="holon:test",
+                model="deepseek/deepseek-v4-flash",
+                credential_envs=[],
+                env_file=None,
+                runtime_env={},
+                evidence_root=Path(directory),
+                timeout_seconds=1,
+                keep=False,
+            )
+            harness.events = lambda _: [
+                {
+                    "type": "turn_started",
+                    "payload": {
+                        "message_id": "message-target",
+                        "turn_id": "turn-target",
+                        "turn_index": 4,
+                    },
+                },
+                {
+                    "type": "turn_started",
+                    "payload": {
+                        "message_id": "message-other",
+                        "turn_id": "turn-other",
+                        "turn_index": 5,
+                    },
+                },
+                {
+                    "type": "tool_executed",
+                    "payload": {
+                        "turn_id": "turn-target",
+                        "turn_index": 4,
+                        "tool_name": "CreateWorkItem",
+                        "status": "success",
+                    },
+                },
+                {
+                    "type": "tool_executed",
+                    "payload": {
+                        "turn_id": "turn-other",
+                        "turn_index": 5,
+                        "tool_name": "CompleteWorkItem",
+                        "status": "success",
+                    },
+                },
+            ]
+
+            events = harness.assert_tools(
+                "create",
+                3,
+                ["CreateWorkItem"],
+                ["CompleteWorkItem"],
+                message_id="message-target",
+            )
+
+            self.assertEqual(
+                [event["payload"]["tool_name"] for event in events],
+                ["CreateWorkItem"],
+            )
 
     def test_no_model_harness_uses_inert_provider_bootstrap(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -849,6 +1042,20 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 f"{case['id']} should not use acceptance fixtures",
             )
             self.assertEqual(len(case["phases"]), 1)
+        compaction = next(
+            case
+            for case in selected
+            if case["id"] == "scheduler-compaction-continuity"
+        )
+        self.assertEqual(
+            compaction["runtime_env"],
+            {
+                "HOLON_COMPACTION_TRIGGER_MESSAGES": "3",
+                "HOLON_COMPACTION_KEEP_RECENT_MESSAGES": "2",
+                "HOLON_COMPACTION_TRIGGER_ESTIMATED_TOKENS": "1",
+                "HOLON_COMPACTION_KEEP_RECENT_ESTIMATED_TOKENS": "1",
+            },
+        )
 
     def test_manifest_rejects_non_boolean_requires_model(self) -> None:
         invalid = json.loads(json.dumps(self.manifest))
@@ -933,6 +1140,62 @@ class DockerE2ERunnerTests(unittest.TestCase):
             {diagnostic["code"] for diagnostic in report["diagnostics"]},
         )
 
+    def test_scheduler_acceptance_report_distinguishes_missing_schema_evidence(self) -> None:
+        run_record = {
+            "git_sha": "abc123",
+            "image": {"ref": "holon:test", "id": None, "repo_digests": []},
+            "image_digest": None,
+            "manifest_sha256": "manifest-hash",
+        }
+        case_results = [
+            {
+                "id": f"scheduler-task-wait-resume-{engine}",
+                "base_id": "scheduler-task-wait-resume",
+                "scheduler_engine": engine,
+                "status": "fail",
+                "schema_revision": None,
+                "failure_kind": (
+                    "case_timeout" if engine == "legacy" else None
+                ),
+                "evidence_collection_error": (
+                    "docker cp failed" if engine == "canonical" else ""
+                ),
+            }
+            for engine in ("legacy", "canonical")
+        ]
+
+        report = runner.scheduler_acceptance_report(
+            run_record=run_record,
+            case_results=case_results,
+            fixture_corpus_revision="scheduler-release-acceptance-v1",
+            required_coverage_ids={"scheduler-task-wait-resume"},
+        )
+
+        diagnostic = next(
+            value
+            for value in report["diagnostics"]
+            if value["code"] == "missing_schema_revision_cases"
+        )
+        self.assertEqual(
+            report["missing_schema_revision_cases"],
+            [
+                "scheduler-task-wait-resume-canonical",
+                "scheduler-task-wait-resume-legacy",
+            ],
+        )
+        self.assertEqual(
+            diagnostic["case_timeouts"],
+            ["scheduler-task-wait-resume-legacy"],
+        )
+        self.assertEqual(
+            diagnostic["evidence_collection_failures"],
+            ["scheduler-task-wait-resume-canonical"],
+        )
+        self.assertNotIn(
+            "scheduler_schema_revision_mismatch",
+            {value["code"] for value in report["diagnostics"]},
+        )
+
     def test_scheduler_queue_oracle_uses_current_processed_state(self) -> None:
         runner.require_processed_queue_entries(
             [
@@ -978,6 +1241,151 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 snapshot,
                 work_item_id="work-1",
                 wait_ids={"wait-1"},
+            )
+
+    def test_legacy_wait_terminal_accepts_completion_cancellation_evidence(self) -> None:
+        harness = type(
+            "LegacyHarness",
+            (),
+            {"canonical_scheduler_enabled": False},
+        )()
+        snapshot = {
+            "wait_conditions": [
+                {
+                    "wait_condition_id": "wait-1",
+                    "work_item_id": "work-1",
+                    "kind": "external",
+                    "status": "cancelled",
+                }
+            ],
+            "audit_events": [
+                {
+                    "kind": "callback_delivered",
+                    "data_json": json.dumps(
+                        {"data": {"disposition": "triggered"}}
+                    ),
+                },
+                {
+                    "kind": "wait_conditions_cancelled",
+                    "data_json": json.dumps(
+                        {
+                            "data": {
+                                "work_item_id": "work-1",
+                                "reason": "work_item_completed",
+                                "wait_condition_ids": ["wait-1"],
+                            }
+                        }
+                    ),
+                },
+            ],
+        }
+
+        waits = runner.require_scheduler_wait_terminal(
+            harness,
+            snapshot,
+            work_item_id="work-1",
+            wait_kind="external",
+            require_callback_trigger=True,
+        )
+        self.assertEqual(waits[0]["status"], "cancelled")
+
+        snapshot["audit_events"] = snapshot["audit_events"][:1]
+        with self.assertRaisesRegex(
+            AssertionError,
+            "cancellation lacked completion evidence",
+        ):
+            runner.require_scheduler_wait_terminal(
+                harness,
+                snapshot,
+                work_item_id="work-1",
+                wait_kind="external",
+                require_callback_trigger=True,
+            )
+
+    def test_canonical_activation_oracle_distinguishes_lifecycle_and_work_item(self) -> None:
+        harness = type(
+            "CanonicalHarness",
+            (),
+            {
+                "canonical_scheduler_enabled": True,
+                "agent_id": "default",
+            },
+        )()
+        snapshot = {
+            "scheduler_activations": [
+                {
+                    "agent_id": "default",
+                    "activation_id": "activation:message:message-create",
+                    "work_item_id": None,
+                    "admission_kind": "lifecycle_external_nudge",
+                    "lifecycle_state": "settled",
+                },
+                {
+                    "agent_id": "default",
+                    "activation_id": "activation:message:message-resume",
+                    "work_item_id": "work-1",
+                    "admission_kind": "wait_resume",
+                    "lifecycle_state": "settled",
+                },
+            ],
+            "scheduler_activation_settlements": [
+                {"activation_id": "activation:message:message-create"},
+                {"activation_id": "activation:message:message-resume"},
+            ],
+            "scheduler_missing_settlements": [],
+            "scheduler_agent_slots": [
+                {
+                    "agent_id": "default",
+                    "slot_kind": "idle",
+                    "activation_id": None,
+                }
+            ],
+        }
+
+        runner.require_scheduler_engine_activation_chain(
+            harness,
+            snapshot,
+            work_item_id="work-1",
+            expected_admission_kinds=("wait_resume",),
+            lifecycle_message_ids={"message-create"},
+        )
+
+        snapshot["scheduler_activations"][0]["work_item_id"] = "work-1"
+        with self.assertRaisesRegex(
+            AssertionError,
+            "lifecycle activations did not settle without claiming a WorkItem",
+        ):
+            runner.require_scheduler_engine_activation_chain(
+                harness,
+                snapshot,
+                work_item_id="work-1",
+                expected_admission_kinds=("wait_resume",),
+                lifecycle_message_ids={"message-create"},
+            )
+
+    def test_compaction_oracle_requires_actual_compacted_rounds(self) -> None:
+        event = {
+            "kind": "turn_local_compaction_applied",
+            "data_json": json.dumps(
+                {"data": {"compacted_rounds": 2, "exact_tail_rounds": 1}}
+            ),
+        }
+        events = runner.require_turn_local_compaction(
+            {"audit_events": [event]},
+            label="test",
+        )
+        self.assertEqual(events[0]["compacted_rounds"], 2)
+
+        event["data_json"] = json.dumps(
+            {"data": {"compacted_rounds": 0, "exact_tail_rounds": 3}}
+        )
+        with self.assertRaisesRegex(
+            AssertionError,
+            "compaction stimulus did not produce compacted rounds",
+        ):
+            runner.require_turn_local_compaction(
+                {"audit_events": [event]},
+                label="test",
             )
 
     def test_wait_work_item_fails_fast_on_duplicate_objective_marker(self) -> None:

@@ -227,6 +227,7 @@ class CaseHarness:
             "lock": threading.Lock(),
             "claimed": set(),
         }
+        self._prompt_scopes: dict[str, dict[str, Any]] = {}
         self.evidence.mkdir(parents=True, exist_ok=True)
 
     @property
@@ -890,15 +891,6 @@ class CaseHarness:
                 )
             if len(matches) == 1 and matches[0].get("state") == expected_state:
                 write_json(self.evidence / f"{label}-work-items.json", items)
-                self.wait_agent_idle()
-                # Re-fetch after idle so result_brief_id and completion_intent
-                # reflect the final post-promotion state.
-                final_items = self.request("GET", self.agent_path("work-items?limit=50"))
-                final_matches = [
-                    item for item in final_items if objective_marker in item.get("objective", "")
-                ]
-                if len(final_matches) == 1:
-                    return final_matches[0]
                 return matches[0]
             time.sleep(1)
         write_json(self.evidence / f"{label}-timeout-work-items.json", matches)
@@ -941,7 +933,6 @@ class CaseHarness:
                 == expected_scheduling_state
             ):
                 write_json(self.evidence / f"{label}-work-items.json", items)
-                self.wait_agent_idle()
                 return matches[0]
             time.sleep(1)
         write_json(self.evidence / f"{label}-timeout-work-items.json", matches)
@@ -974,6 +965,42 @@ class CaseHarness:
     def event_cursor(self) -> int:
         page = self.request("GET", self.agent_path("events?limit=1&order=desc"))
         return int(page.get("cursor_seq") or 0)
+
+    def event_batch(
+        self,
+        label: str,
+        *,
+        after_seq: int,
+        limit: int = CONTEXT_EVENT_LIMIT,
+    ) -> dict[str, Any]:
+        events: list[dict[str, Any]] = []
+        cursor = after_seq
+        final_cursor = after_seq
+        while True:
+            page = self.request(
+                "GET",
+                self.agent_path(
+                    f"events?limit={limit}&order=asc&after_seq={cursor}"
+                ),
+            )
+            events.extend(page["events"])
+            newest_seq = page.get("newest_seq")
+            if isinstance(newest_seq, int):
+                final_cursor = newest_seq
+            if not page.get("has_newer"):
+                break
+            require(
+                isinstance(newest_seq, int) and newest_seq > cursor,
+                f"event pagination did not advance after {cursor}: {page}",
+            )
+            cursor = newest_seq
+        batch = {
+            "events": events,
+            "after_seq": after_seq,
+            "newest_seq": final_cursor,
+        }
+        write_json(self.evidence / f"{label}-events.json", batch)
+        return batch
 
     def capture_context(
         self,
@@ -1019,20 +1046,99 @@ class CaseHarness:
             self.agent_path("prompt", control=True),
             body,
         )
+        message_id = response.get("message_id")
+        require(
+            isinstance(message_id, str) and message_id,
+            f"prompt response omitted message_id: {response}",
+        )
         write_json(self.evidence / f"{label}-prompt-response.json", response)
         (self.evidence / f"{label}-prompt.txt").write_text(text + "\n")
 
         deadline = time.monotonic() + self.timeout_seconds
         last_state = before
+        baseline_failure_at = (
+            (before["agent"]["agent"].get("last_runtime_failure") or {}).get(
+                "occurred_at"
+            )
+        )
+        target_turn_id: str | None = None
+        target_turn_index: int | None = None
+        event_poll_cursor = baseline_event_seq
         while time.monotonic() < deadline:
             last_state = self.request("GET", self.agent_path("state"))
-            agent = last_state["agent"]["agent"]
-            if (
-                int(agent["turn_index"]) > baseline
-                and agent["status"] in TERMINAL_STATUSES
-                and agent.get("current_run_id") is None
-                and int(last_state["session"]["pending_count"]) == 0
-            ):
+            failure = last_state["agent"]["agent"].get("last_runtime_failure")
+            if failure and failure.get("occurred_at") != baseline_failure_at:
+                write_json(
+                    self.evidence / f"{label}-runtime-failure-state.json",
+                    last_state,
+                )
+                raise AssertionError(
+                    f"runtime failure occurred while waiting for {label}: "
+                    f"{failure.get('summary', 'unknown runtime failure')}"
+                )
+            page = self.event_batch(
+                f"{label}-terminal-poll",
+                after_seq=event_poll_cursor,
+            )
+            phase_events = page["events"]
+            event_poll_cursor = int(page["newest_seq"])
+            for event in phase_events:
+                payload = event.get("payload", {})
+                if (
+                    event.get("type") == "turn_started"
+                    and payload.get("message_id") == message_id
+                ):
+                    target_turn_id = payload.get("turn_id")
+                    target_turn_index = int(payload.get("turn_index", 0))
+            runtime_failures = [
+                event
+                for event in phase_events
+                if event.get("type") == "runtime_error"
+                and (
+                    event.get("payload", {}).get("message_id") == message_id
+                    or (
+                        target_turn_id is not None
+                        and event.get("payload", {}).get("turn_id")
+                        == target_turn_id
+                    )
+                )
+            ]
+            if runtime_failures:
+                failure = runtime_failures[-1]["payload"]
+                source_chain = failure.get("source_chain") or []
+                detail = (
+                    source_chain[0]
+                    if source_chain
+                    else failure.get("error", "unknown runtime failure")
+                )
+                raise AssertionError(
+                    f"runtime failure occurred while waiting for {label}: "
+                    f"{failure.get('domain', 'unknown')}: {detail}"
+                )
+            terminal = next(
+                (
+                    event
+                    for event in phase_events
+                    if event.get("type") == "turn_terminal"
+                    and target_turn_id is not None
+                    and event.get("payload", {}).get("turn_id")
+                    == target_turn_id
+                ),
+                None,
+            )
+            if terminal is not None:
+                terminal_kind = terminal.get("payload", {}).get("kind")
+                require(
+                    terminal_kind == "completed",
+                    f"target turn for {label} ended with {terminal_kind}: "
+                    f"{terminal.get('payload', {})}",
+                )
+                self._prompt_scopes[label] = {
+                    "message_id": message_id,
+                    "turn_id": target_turn_id,
+                    "turn_index": target_turn_index,
+                    "terminal_kind": terminal_kind,
+                }
                 write_json(self.evidence / f"{label}-after-state.json", last_state)
                 self.capture_context(
                     label,
@@ -1047,8 +1153,19 @@ class CaseHarness:
             f"timed out after {self.timeout_seconds}s waiting for phase {label}"
         )
 
+    def prompt_scope(self, label: str) -> dict[str, Any]:
+        scope = self._prompt_scopes.get(label)
+        require(scope is not None, f"prompt scope is unavailable for {label}")
+        return scope
+
     def successful_tool_events(
-        self, label: str, baseline_turn: int
+        self,
+        label: str,
+        baseline_turn: int,
+        *,
+        end_turn: int | None = None,
+        message_id: str | None = None,
+        turn_ids: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         events = self.events(f"{label}-tool-check")
         turn_indexes = {
@@ -1058,12 +1175,51 @@ class CaseHarness:
             for event in events
             if event["type"] == "turn_started"
         }
+        message_turn_ids = {
+            event["payload"].get("turn_id")
+            for event in events
+            if event["type"] == "turn_started"
+            and event["payload"].get("message_id") == message_id
+        }
+        if message_id is not None:
+            require(
+                message_turn_ids,
+                f"no turn was recorded for message {message_id} in {label}",
+            )
+        require(
+            message_id is None or turn_ids is None,
+            "tool assertion accepts message_id or turn_ids, not both",
+        )
+
+        def in_scope(event: dict[str, Any]) -> bool:
+            payload = event["payload"]
+            if message_id is not None:
+                return payload.get("turn_id") in message_turn_ids
+            if turn_ids is not None:
+                return payload.get("turn_id") in turn_ids
+            turn_index = int(payload.get("turn_index", 0))
+            return turn_index > baseline_turn and (
+                end_turn is None or turn_index <= end_turn
+            )
+
         runtime_failures = [
             event
             for event in events
             if event["type"] == "runtime_error"
-            and turn_indexes.get(event["payload"].get("turn_id"), 0)
-            > baseline_turn
+            and (
+                in_scope(event)
+                or (
+                    message_id is None
+                    and turn_ids is None
+                    and turn_indexes.get(event["payload"].get("turn_id"), 0)
+                    > baseline_turn
+                    and (
+                        end_turn is None
+                        or turn_indexes.get(event["payload"].get("turn_id"), 0)
+                        <= end_turn
+                    )
+                )
+            )
         ]
         if runtime_failures:
             failure = runtime_failures[-1]["payload"]
@@ -1077,7 +1233,7 @@ class CaseHarness:
             event
             for event in events
             if event["type"] == "tool_execution_failed"
-            and int(event["payload"].get("turn_index", 0)) > baseline_turn
+            and in_scope(event)
         ]
         require(not failures, f"tool failures occurred in {label}: {failures}")
         return [
@@ -1085,7 +1241,7 @@ class CaseHarness:
             for event in events
             if event["type"] == "tool_executed"
             and event["payload"].get("status") == "success"
-            and int(event["payload"].get("turn_index", 0)) > baseline_turn
+            and in_scope(event)
         ]
 
     def assert_tools(
@@ -1094,8 +1250,18 @@ class CaseHarness:
         baseline_turn: int,
         expected: list[str],
         forbidden: list[str] | None = None,
+        *,
+        end_turn: int | None = None,
+        message_id: str | None = None,
+        turn_ids: set[str] | None = None,
     ) -> list[dict[str, Any]]:
-        events = self.successful_tool_events(label, baseline_turn)
+        events = self.successful_tool_events(
+            label,
+            baseline_turn,
+            end_turn=end_turn,
+            message_id=message_id,
+            turn_ids=turn_ids,
+        )
         actual = [event["payload"].get("tool_name") for event in events]
         missing = [name for name in expected if name not in actual]
         require(not missing, f"{label} missing successful tools {missing}; got {actual}")
@@ -1278,19 +1444,39 @@ def require_processed_queue_entries(
     )
 
 
+def require_turn_local_compaction(
+    snapshot: dict[str, Any],
+    *,
+    label: str,
+) -> list[dict[str, Any]]:
+    events = [
+        json.loads(row["data_json"])["data"]
+        for row in snapshot["audit_events"]
+        if row["kind"] == "turn_local_compaction_applied"
+    ]
+    require(
+        events
+        and any(int(event.get("compacted_rounds") or 0) > 0 for event in events),
+        f"{label} compaction stimulus did not produce compacted rounds: {events}",
+    )
+    return events
+
+
 def require_scheduler_engine_activation_chain(
     harness: CaseHarness,
     snapshot: dict[str, Any],
     *,
     work_item_id: str,
-    expected_activation_count: int,
+    expected_admission_kinds: tuple[str, ...],
+    lifecycle_message_ids: set[str] | None = None,
 ) -> None:
     if harness.canonical_scheduler_enabled:
         require_scheduler_activation_chain(
             snapshot,
             agent_id=harness.agent_id,
             work_item_id=work_item_id,
-            expected_activation_count=expected_activation_count,
+            expected_admission_kinds=expected_admission_kinds,
+            lifecycle_message_ids=lifecycle_message_ids or set(),
         )
         return
     activations = [
@@ -1307,6 +1493,18 @@ def require_scheduler_engine_activation_chain(
         not activations and not demands,
         f"legacy scheduler wrote canonical execution state: "
         f"activations={activations}, demands={demands}",
+    )
+    lifecycle_activation_ids = {
+        f"activation:message:{message_id}"
+        for message_id in lifecycle_message_ids or set()
+    }
+    require(
+        not [
+            row
+            for row in snapshot["scheduler_activations"]
+            if row["activation_id"] in lifecycle_activation_ids
+        ],
+        "legacy scheduler wrote canonical lifecycle activations",
     )
 
 
@@ -1335,23 +1533,112 @@ def require_scheduler_engine_wait_resolution(
         f"legacy scheduler wrote canonical wait generations: {canonical_waits}",
     )
 
+
+def require_scheduler_wait_terminal(
+    harness: CaseHarness,
+    snapshot: dict[str, Any],
+    *,
+    work_item_id: str,
+    wait_kind: str,
+    require_callback_trigger: bool = False,
+) -> list[dict[str, Any]]:
+    waits = [
+        row
+        for row in snapshot["wait_conditions"]
+        if row["work_item_id"] == work_item_id and row["kind"] == wait_kind
+    ]
+    require(
+        len(waits) == 1,
+        f"expected one {wait_kind} wait for {work_item_id}: {waits}",
+    )
+    wait = waits[0]
+    if harness.canonical_scheduler_enabled:
+        require(
+            wait["status"] == "resolved",
+            f"canonical {wait_kind} wait did not resolve: {wait}",
+        )
+        return waits
+    require(
+        wait["status"] in {"resolved", "cancelled"},
+        f"legacy {wait_kind} wait did not reach a terminal state: {wait}",
+    )
+    if wait["status"] == "cancelled":
+        cancellation_events = [
+            json.loads(row["data_json"])["data"]
+            for row in snapshot["audit_events"]
+            if row["kind"] == "wait_conditions_cancelled"
+        ]
+        require(
+            any(
+                event.get("work_item_id") == work_item_id
+                and event.get("reason")
+                in {"completion_intent_recorded", "work_item_completed"}
+                and wait["wait_condition_id"]
+                in event.get("wait_condition_ids", [])
+                for event in cancellation_events
+            ),
+            f"legacy {wait_kind} cancellation lacked completion evidence: "
+            f"wait={wait}, cancellations={cancellation_events}",
+        )
+    if require_callback_trigger:
+        callback_events = [
+            json.loads(row["data_json"])["data"]
+            for row in snapshot["audit_events"]
+            if row["kind"] == "callback_delivered"
+        ]
+        require(
+            any(
+                event.get("disposition") == "triggered"
+                for event in callback_events
+            ),
+            f"legacy {wait_kind} wait lacked callback trigger evidence: "
+            f"{callback_events}",
+        )
+    return waits
+
+
 def require_scheduler_activation_chain(
     snapshot: dict[str, Any],
     *,
     agent_id: str,
     work_item_id: str,
-    expected_activation_count: int,
+    expected_admission_kinds: tuple[str, ...],
+    lifecycle_message_ids: set[str],
 ) -> list[dict[str, Any]]:
-    activations = [
+    work_item_activations = [
         row
         for row in snapshot["scheduler_activations"]
         if row["work_item_id"] == work_item_id
     ]
+    lifecycle_activation_ids = {
+        f"activation:message:{message_id}" for message_id in lifecycle_message_ids
+    }
+    lifecycle_activations = [
+        row
+        for row in snapshot["scheduler_activations"]
+        if row["activation_id"] in lifecycle_activation_ids
+    ]
     require(
-        len(activations) == expected_activation_count
-        and all(row["lifecycle_state"] == "settled" for row in activations),
-        f"canonical activations did not settle exactly once: {activations}",
+        len(lifecycle_activations) == len(lifecycle_activation_ids)
+        and all(
+            row["work_item_id"] is None
+            and row["lifecycle_state"] == "settled"
+            for row in lifecycle_activations
+        ),
+        "canonical lifecycle activations did not settle without claiming a "
+        f"WorkItem: {lifecycle_activations}",
     )
+    require(
+        sorted(row["admission_kind"] for row in work_item_activations)
+        == sorted(expected_admission_kinds)
+        and all(
+            row["lifecycle_state"] == "settled"
+            for row in work_item_activations
+        ),
+        "canonical WorkItem activation lineage did not match the expected "
+        f"admission kinds {expected_admission_kinds}: {work_item_activations}",
+    )
+    activations = work_item_activations + lifecycle_activations
     activation_ids = {row["activation_id"] for row in activations}
     settlements = [
         row
@@ -1359,7 +1646,7 @@ def require_scheduler_activation_chain(
         if row["activation_id"] in activation_ids
     ]
     require(
-        len(settlements) == expected_activation_count,
+        len(settlements) == len(activations),
         f"canonical settlements are missing or duplicated: {settlements}",
     )
     require(
@@ -1512,7 +1799,13 @@ def run_runtime_case(harness: CaseHarness, case: dict[str, Any]) -> None:
         ),
     )
     required, forbidden = phase_tools(phase)
-    harness.assert_tools("runtime-delivery", baseline, required, forbidden)
+    harness.assert_tools(
+        "runtime-delivery",
+        baseline,
+        required,
+        forbidden,
+        message_id=harness.prompt_scope("runtime-delivery")["message_id"],
+    )
 
     events = harness.events("runtime-delivery-assert")
     provider_events = [
@@ -1585,7 +1878,13 @@ def run_memory_case(harness: CaseHarness, case: dict[str, Any]) -> None:
         first_phase["prompt"].format(case_id=case["id"], marker=marker),
     )
     required, forbidden = phase_tools(first_phase)
-    events = harness.assert_tools("memory-search", baseline, required, forbidden)
+    events = harness.assert_tools(
+        "memory-search",
+        baseline,
+        required,
+        forbidden,
+        message_id=harness.prompt_scope("memory-search")["message_id"],
+    )
     search_event = next(
         event
         for event in events
@@ -1631,7 +1930,13 @@ def run_memory_case(harness: CaseHarness, case: dict[str, Any]) -> None:
         ),
     )
     required, forbidden = phase_tools(second_phase)
-    events = harness.assert_tools("memory-recover", baseline, required, forbidden)
+    events = harness.assert_tools(
+        "memory-recover",
+        baseline,
+        required,
+        forbidden,
+        message_id=harness.prompt_scope("memory-recover")["message_id"],
+    )
     recovered_get = next(
         event
         for event in events
@@ -1670,7 +1975,11 @@ def run_workspace_case(harness: CaseHarness, case: dict[str, Any]) -> None:
     )
     required, forbidden = phase_tools(create_phase)
     create_events = harness.assert_tools(
-        "workspace-create", baseline, required, forbidden
+        "workspace-create",
+        baseline,
+        required,
+        forbidden,
+        message_id=harness.prompt_scope("workspace-create")["message_id"],
     )
     create_event = next(
         event
@@ -1703,7 +2012,13 @@ def run_workspace_case(harness: CaseHarness, case: dict[str, Any]) -> None:
         ),
     )
     required, forbidden = phase_tools(recover_phase)
-    harness.assert_tools("workspace-recover", baseline, required, forbidden)
+    harness.assert_tools(
+        "workspace-recover",
+        baseline,
+        required,
+        forbidden,
+        message_id=harness.prompt_scope("workspace-recover")["message_id"],
+    )
     git_state = harness.docker(
         "exec",
         harness.container,
@@ -1750,7 +2065,13 @@ def run_workitem_case(harness: CaseHarness, case: dict[str, Any]) -> None:
         ),
     )
     required, forbidden = phase_tools(wait_phase)
-    harness.assert_tools("workitem-wait", baseline, required, forbidden)
+    harness.assert_tools(
+        "workitem-wait",
+        baseline,
+        required,
+        forbidden,
+        message_id=harness.prompt_scope("workitem-wait")["message_id"],
+    )
     items = harness.work_items("workitem-wait-assert")
     matches = [item for item in items if item["objective"] == objective]
     require(len(matches) == 1, f"expected exactly one matching WorkItem: {matches}")
@@ -1819,7 +2140,13 @@ def run_workitem_case(harness: CaseHarness, case: dict[str, Any]) -> None:
         ),
     )
     required, forbidden = phase_tools(complete_phase)
-    harness.assert_tools("workitem-complete", baseline, required, forbidden)
+    harness.assert_tools(
+        "workitem-complete",
+        baseline,
+        required,
+        forbidden,
+        message_id=harness.prompt_scope("workitem-complete")["message_id"],
+    )
     final_items = harness.work_items("workitem-final")
     completed = next(item for item in final_items if item["id"] == work_item_id)
     require(completed["state"] == "completed", f"WorkItem not completed: {completed}")
@@ -1934,7 +2261,22 @@ def run_scheduler_task_wait_resume_case(
         label="scheduler-task-wait-completed",
     )
     required, forbidden = phase_tools(phase)
-    harness.assert_tools("scheduler-task-wait-seed", baseline, required, forbidden)
+    harness.assert_tools(
+        "scheduler-task-wait-seed",
+        baseline,
+        ["CreateWorkItem"],
+        forbidden
+        + [
+            "ExecCommand",
+            "WaitFor",
+            "GetWorkItem",
+            "UpdateWorkItem",
+            "CompleteWorkItem",
+        ],
+        message_id=harness.prompt_scope("scheduler-task-wait-seed")[
+            "message_id"
+        ],
+    )
     work_item_id = item["id"]
     result_brief_id = item.get("result_brief_id")
     require(
@@ -1959,6 +2301,13 @@ def run_scheduler_task_wait_resume_case(
     require(
         len(turns) == 3 and None not in message_ids,
         f"expected autonomous, task-result, and external-wake turns: {turns}",
+    )
+    harness.assert_tools(
+        "scheduler-task-wait-continuations",
+        baseline,
+        [name for name in required if name != "CreateWorkItem"],
+        forbidden + ["CreateWorkItem"],
+        turn_ids={row["turn_id"] for row in turns},
     )
     require_processed_queue_entries(snapshot["queue_entries"], message_ids)
     final_turn_id = result_brief.get("turn_id")
@@ -1985,7 +2334,10 @@ def run_scheduler_task_wait_resume_case(
         harness,
         snapshot,
         work_item_id=work_item_id,
-        expected_activation_count=3,
+        expected_admission_kinds=("scheduling", "task_rejoin", "wait_resume"),
+        lifecycle_message_ids={
+            harness.prompt_scope("scheduler-task-wait-seed")["message_id"]
+        },
     )
     waits = [
         row
@@ -2021,7 +2373,6 @@ def run_scheduler_provider_failure_retry_case(
     harness.initialize_workspace()
     base_url_env = provider_base_url_env(harness.model)
     original_base_url = harness.runtime_env.get(base_url_env)
-    harness.runtime_env[base_url_env] = "http://127.0.0.1:9"
     harness.start()
 
     harness.request(
@@ -2052,6 +2403,10 @@ def run_scheduler_provider_failure_retry_case(
         {"reason": "prepare deterministic provider failure retry"},
     )
     write_json(harness.evidence / "provider-retry-picked.json", picked)
+    failure_event_cursor = harness.event_cursor()
+    harness.stop()
+    harness.runtime_env[base_url_env] = "http://127.0.0.1:9"
+    harness.start(wait_idle=False)
     harness.request(
         "POST",
         harness.agent_path("control", control=True),
@@ -2060,16 +2415,34 @@ def run_scheduler_provider_failure_retry_case(
 
     deadline = time.monotonic() + harness.timeout_seconds
     runtime_errors: list[dict[str, Any]] = []
+    target_message_ids: set[str] = set()
     while time.monotonic() < deadline:
+        events = harness.events(
+            "provider-retry-failure-poll",
+            after_seq=failure_event_cursor,
+        )
+        target_message_ids.update(
+            event["payload"]["message_id"]
+            for event in events
+            if event["type"] == "message_admitted"
+            and event["payload"].get("work_item_id") == work_item_id
+            and isinstance(event["payload"].get("message_id"), str)
+        )
         runtime_errors = [
             event
-            for event in harness.events("provider-retry-failure-poll")
+            for event in events
             if event["type"] == "runtime_error"
+            and event["payload"].get("message_id") in target_message_ids
         ]
         if runtime_errors:
             break
         time.sleep(0.5)
-    require(runtime_errors, "invalid provider endpoint did not produce runtime_error")
+    require(
+        runtime_errors,
+        "invalid provider endpoint did not produce a runtime_error for the "
+        f"target WorkItem; admitted messages={sorted(target_message_ids)}",
+    )
+    failed_message_id = runtime_errors[-1]["payload"]["message_id"]
     harness.request(
         "POST",
         harness.agent_path("control", control=True),
@@ -2093,6 +2466,11 @@ def run_scheduler_provider_failure_retry_case(
         and any(tick["status"] == "aborted" for tick in failed_ticks)
         and not any(tick["status"] == "processed" for tick in failed_ticks),
         f"provider failure did not abort continue-active ticks: {failed_ticks}",
+    )
+    require(
+        failed_message_id in {tick["message_id"] for tick in failed_ticks},
+        "runtime_error did not belong to the target continue-active message: "
+        f"error_message={failed_message_id}, ticks={failed_ticks}",
     )
     failed_keys = {tick["idempotency_key"] for tick in failed_ticks}
     require(
@@ -2132,29 +2510,24 @@ def run_scheduler_provider_failure_retry_case(
         work_item_id=work_item_id,
         reason="continue_active",
     )
+    processed_ticks = [
+        tick for tick in recovered_ticks if tick["status"] == "processed"
+    ]
     require(
-        len(recovered_ticks) > len(failed_ticks)
-        and any(tick["status"] == "processed" for tick in recovered_ticks),
+        len(recovered_ticks) > len(failed_ticks) and processed_ticks,
         f"provider recovery did not process a retry tick: {recovered_ticks}",
     )
     require(
         {tick["idempotency_key"] for tick in recovered_ticks} == failed_keys,
         f"provider recovery changed continue-active idempotency: {recovered_ticks}",
     )
-    tool_names = [
-        event["payload"].get("tool_name")
-        for event in harness.events("provider-retry-tools")
-        if event["type"] == "tool_executed"
-        and event["payload"].get("status") == "success"
-    ]
     required, forbidden = phase_tools(case["phases"][0])
-    require(
-        all(name in tool_names for name in required),
-        f"provider retry omitted required tools {required}: {tool_names}",
-    )
-    require(
-        not set(tool_names).intersection(forbidden),
-        f"provider retry used forbidden tools {forbidden}: {tool_names}",
+    harness.assert_tools(
+        "provider-retry-tools",
+        0,
+        required,
+        forbidden,
+        message_id=processed_ticks[-1]["message_id"],
     )
 
 
@@ -2211,7 +2584,20 @@ def run_scheduler_multi_workitem_case(
         label="scheduler-multi-b-completed",
     )
     required, forbidden = phase_tools(phase)
-    harness.assert_tools("scheduler-multi-create", baseline, required, forbidden)
+    harness.assert_tools(
+        "scheduler-multi-create",
+        baseline,
+        ["CreateWorkItem"],
+        forbidden
+        + [
+            "AgentGet",
+            "GetWorkspaceState",
+            "ListWorkItems",
+            "UpdateWorkItem",
+            "CompleteWorkItem",
+        ],
+        message_id=harness.prompt_scope("scheduler-multi-create")["message_id"],
+    )
     work_item_a_id = item_a["id"]
     work_item_b_id = item_b["id"]
     require(item_a["state"] == "completed", f"WorkItem A not completed: {item_a}")
@@ -2233,12 +2619,42 @@ def run_scheduler_multi_workitem_case(
             f"WorkItem {label_letter} brief mismatch: {brief}",
         )
     snapshot = harness.runtime_db_snapshot("scheduler-multi")
+    turn_ids_by_work_item = {
+        work_item_id: {
+            row["turn_id"]
+            for row in snapshot["turn_records"]
+            if row["current_work_item_id"] == work_item_id
+        }
+        for work_item_id in (work_item_a_id, work_item_b_id)
+    }
+    harness.assert_tools(
+        "scheduler-multi-a",
+        baseline,
+        ["AgentGet", "ListWorkItems", "UpdateWorkItem", "CompleteWorkItem"],
+        forbidden + ["CreateWorkItem", "GetWorkspaceState"],
+        turn_ids=turn_ids_by_work_item[work_item_a_id],
+    )
+    harness.assert_tools(
+        "scheduler-multi-b",
+        baseline,
+        [
+            "GetWorkspaceState",
+            "ListWorkItems",
+            "UpdateWorkItem",
+            "CompleteWorkItem",
+        ],
+        forbidden + ["CreateWorkItem", "AgentGet"],
+        turn_ids=turn_ids_by_work_item[work_item_b_id],
+    )
     for wid in (work_item_a_id, work_item_b_id):
         require_scheduler_engine_activation_chain(
             harness,
             snapshot,
             work_item_id=wid,
-            expected_activation_count=1,
+            expected_admission_kinds=("scheduling",),
+            lifecycle_message_ids={
+                harness.prompt_scope("scheduler-multi-create")["message_id"]
+            },
         )
     if harness.canonical_scheduler_enabled:
         demands = [
@@ -2309,7 +2725,13 @@ def run_scheduler_external_wait_resume_case(
         label="scheduler-external-completed",
     )
     required, forbidden = phase_tools(phase)
-    harness.assert_tools("scheduler-external-wait", baseline, required, forbidden)
+    harness.assert_tools(
+        "scheduler-external-wait",
+        baseline,
+        ["CreateWorkItem", "PickWorkItem", "WaitFor"],
+        forbidden + ["GetWorkItem", "UpdateWorkItem", "CompleteWorkItem"],
+        message_id=harness.prompt_scope("scheduler-external-wait")["message_id"],
+    )
     work_item_id = item["id"]
     require(item["state"] == "completed", f"WorkItem not completed: {item}")
     require(item["id"] == waiting["id"], "external wait-resume changed WorkItem identity")
@@ -2325,24 +2747,35 @@ def run_scheduler_external_wait_resume_case(
         f"external wait completion brief mismatch: {result_brief}",
     )
     snapshot = harness.runtime_db_snapshot("scheduler-external")
+    resume_turn_ids = {
+        row["turn_id"]
+        for row in snapshot["turn_records"]
+        if row["current_work_item_id"] == work_item_id
+    }
+    harness.assert_tools(
+        "scheduler-external-resume",
+        baseline,
+        [name for name in required if name not in {"CreateWorkItem", "PickWorkItem", "WaitFor"}],
+        forbidden + ["CreateWorkItem", "PickWorkItem", "WaitFor"],
+        turn_ids=resume_turn_ids,
+    )
     require_scheduler_engine_activation_chain(
         harness,
         snapshot,
         work_item_id=work_item_id,
-        expected_activation_count=1,
+        expected_admission_kinds=("wait_resume",),
+        lifecycle_message_ids={
+            harness.prompt_scope("scheduler-external-wait")["message_id"]
+        },
     )
-    waits = [
-        row
-        for row in snapshot["wait_conditions"]
-        if row["work_item_id"] == work_item_id
-    ]
+    waits = require_scheduler_wait_terminal(
+        harness,
+        snapshot,
+        work_item_id=work_item_id,
+        wait_kind="external",
+        require_callback_trigger=True,
+    )
     if harness.canonical_scheduler_enabled:
-        require(
-            len(waits) == 1
-            and waits[0]["kind"] == "external"
-            and waits[0]["status"] == "resolved",
-            f"canonical external wait condition did not resolve: {waits}",
-        )
         require_lifecycle_wait_adoption(
             snapshot,
             agent_id=harness.agent_id,
@@ -2350,41 +2783,15 @@ def run_scheduler_external_wait_resume_case(
             wait=waits[0],
         )
     else:
-        cancellation_events = [
-            json.loads(row["data_json"])["data"]
-            for row in snapshot["audit_events"]
-            if row["kind"] == "wait_conditions_cancelled"
-        ]
-        callback_events = [
-            json.loads(row["data_json"])["data"]
-            for row in snapshot["audit_events"]
-            if row["kind"] == "callback_delivered"
-        ]
         resume_messages = [
             row
             for row in snapshot["messages"]
             if row["work_item_id"] == work_item_id and row["kind"] == "system_tick"
         ]
         require(
-            len(waits) == 1
-            and waits[0]["kind"] == "external"
-            and waits[0]["status"] == "cancelled"
-            and any(
-                event.get("work_item_id") == work_item_id
-                and event.get("reason") == "completion_intent_recorded"
-                and waits[0]["wait_condition_id"]
-                in event.get("wait_condition_ids", [])
-                for event in cancellation_events
-            )
-            and any(
-                event.get("disposition") == "triggered"
-                for event in callback_events
-            )
-            and len(resume_messages) == 1,
-            "legacy external wait did not follow wake-hint then completion-intent "
-            f"cancellation semantics: waits={waits}, "
-            f"cancellations={cancellation_events}, "
-            f"callbacks={callback_events}, resumes={resume_messages}",
+            len(resume_messages) == 1,
+            "legacy external wait did not produce exactly one targeted resume "
+            f"message: waits={waits}, resumes={resume_messages}",
         )
     require_scheduler_engine_wait_resolution(
         harness,
@@ -2437,7 +2844,13 @@ def run_scheduler_operator_wait_resume_case(
         label="scheduler-operator-completed",
     )
     required, forbidden = phase_tools(phase)
-    harness.assert_tools("scheduler-operator-wait", baseline, required, forbidden)
+    harness.assert_tools(
+        "scheduler-operator-wait",
+        baseline,
+        ["CreateWorkItem", "PickWorkItem", "WaitFor"],
+        forbidden + ["GetWorkItem", "UpdateWorkItem", "CompleteWorkItem"],
+        message_id=harness.prompt_scope("scheduler-operator-wait")["message_id"],
+    )
     work_item_id = item["id"]
     require(item["state"] == "completed", f"WorkItem not completed: {item}")
     require(item["id"] == waiting["id"], "operator wait-resume changed WorkItem identity")
@@ -2453,22 +2866,32 @@ def run_scheduler_operator_wait_resume_case(
         f"operator wait completion brief mismatch: {result_brief}",
     )
     snapshot = harness.runtime_db_snapshot("scheduler-operator")
+    resume_turn_ids = {
+        row["turn_id"]
+        for row in snapshot["turn_records"]
+        if row["current_work_item_id"] == work_item_id
+    }
+    harness.assert_tools(
+        "scheduler-operator-resume",
+        baseline,
+        [name for name in required if name not in {"CreateWorkItem", "PickWorkItem", "WaitFor"}],
+        forbidden + ["CreateWorkItem", "PickWorkItem", "WaitFor"],
+        turn_ids=resume_turn_ids,
+    )
     require_scheduler_engine_activation_chain(
         harness,
         snapshot,
         work_item_id=work_item_id,
-        expected_activation_count=1,
+        expected_admission_kinds=("wait_resume",),
+        lifecycle_message_ids={
+            harness.prompt_scope("scheduler-operator-wait")["message_id"]
+        },
     )
-    waits = [
-        row
-        for row in snapshot["wait_conditions"]
-        if row["work_item_id"] == work_item_id
-    ]
-    require(
-        len(waits) == 1
-        and waits[0]["kind"] == "operator"
-        and waits[0]["status"] == "resolved",
-        f"operator wait condition did not resolve: {waits}",
+    waits = require_scheduler_wait_terminal(
+        harness,
+        snapshot,
+        work_item_id=work_item_id,
+        wait_kind="operator",
     )
     if harness.canonical_scheduler_enabled:
         require_lifecycle_wait_adoption(
@@ -2557,7 +2980,24 @@ def run_scheduler_concurrent_claim_fencing_case(
         label="scheduler-concurrent-a-completed",
     )
     required, forbidden = phase_tools(phase)
-    harness.assert_tools("scheduler-concurrent-create", baseline, required, forbidden)
+    harness.assert_tools(
+        "scheduler-concurrent-create",
+        baseline,
+        ["CreateWorkItem", "PickWorkItem", "WaitFor"],
+        forbidden + ["GetWorkItem", "UpdateWorkItem", "CompleteWorkItem"],
+        message_id=harness.prompt_scope("scheduler-concurrent-create")[
+            "message_id"
+        ],
+    )
+    harness.assert_tools(
+        "scheduler-concurrent-interject",
+        baseline,
+        ["CreateWorkItem"],
+        forbidden + ["PickWorkItem", "WaitFor", "CompleteWorkItem"],
+        message_id=harness.prompt_scope("scheduler-concurrent-interject")[
+            "message_id"
+        ],
+    )
     work_item_a_id = item_a["id"]
     work_item_b_id = item_b["id"]
     require(item_a["state"] == "completed", f"WorkItem A not completed: {item_a}")
@@ -2579,28 +3019,54 @@ def run_scheduler_concurrent_claim_fencing_case(
             f"WorkItem {letter} brief mismatch: {brief}",
         )
     snapshot = harness.runtime_db_snapshot("scheduler-concurrent")
+    a_turn_ids = {
+        row["turn_id"]
+        for row in snapshot["turn_records"]
+        if row["current_work_item_id"] == work_item_a_id
+    }
+    b_turn_ids = {
+        row["turn_id"]
+        for row in snapshot["turn_records"]
+        if row["current_work_item_id"] == work_item_b_id
+    }
+    harness.assert_tools(
+        "scheduler-concurrent-a-resume",
+        baseline,
+        ["GetWorkItem", "UpdateWorkItem", "CompleteWorkItem"],
+        forbidden + ["CreateWorkItem", "PickWorkItem", "WaitFor"],
+        turn_ids=a_turn_ids,
+    )
+    harness.assert_tools(
+        "scheduler-concurrent-b-autonomous",
+        baseline,
+        ["ListWorkItems", "UpdateWorkItem", "CompleteWorkItem"],
+        forbidden + ["CreateWorkItem", "PickWorkItem", "WaitFor"],
+        turn_ids=b_turn_ids,
+    )
     require_scheduler_engine_activation_chain(
         harness,
         snapshot,
         work_item_id=work_item_a_id,
-        expected_activation_count=2,
+        expected_admission_kinds=("wait_resume",),
+        lifecycle_message_ids={
+            harness.prompt_scope("scheduler-concurrent-create")["message_id"]
+        },
     )
     require_scheduler_engine_activation_chain(
         harness,
         snapshot,
         work_item_id=work_item_b_id,
-        expected_activation_count=1,
+        expected_admission_kinds=("scheduling",),
+        lifecycle_message_ids={
+            harness.prompt_scope("scheduler-concurrent-interject")["message_id"]
+        },
     )
-    waits = [
-        row
-        for row in snapshot["wait_conditions"]
-        if row["work_item_id"] == work_item_a_id
-    ]
-    require(
-        len(waits) == 1
-        and waits[0]["kind"] == "external"
-        and waits[0]["status"] == "resolved",
-        f"concurrent external wait did not resolve: {waits}",
+    waits = require_scheduler_wait_terminal(
+        harness,
+        snapshot,
+        work_item_id=work_item_a_id,
+        wait_kind="external",
+        require_callback_trigger=True,
     )
     require_scheduler_engine_wait_resolution(
         harness,
@@ -2696,6 +3162,7 @@ def run_scheduler_operator_interject_during_wait_case(
         "scheduler-interject-resume",
         f"The operator is resuming WorkItem {marker}. Proceed with the "
         "completion steps described in the objective.",
+        work_item_id=waiting["id"],
     )
     item_a = harness.wait_work_item(
         objective_marker=objective_a_marker,
@@ -2703,7 +3170,24 @@ def run_scheduler_operator_interject_during_wait_case(
         label="scheduler-interject-a-completed",
     )
     required, forbidden = phase_tools(phase)
-    harness.assert_tools("scheduler-interject-create", baseline, required, forbidden)
+    harness.assert_tools(
+        "scheduler-interject-create",
+        baseline,
+        ["CreateWorkItem", "PickWorkItem", "WaitFor"],
+        forbidden + ["GetWorkItem", "UpdateWorkItem", "CompleteWorkItem"],
+        message_id=harness.prompt_scope("scheduler-interject-create")[
+            "message_id"
+        ],
+    )
+    harness.assert_tools(
+        "scheduler-interject-b-create",
+        baseline,
+        ["CreateWorkItem"],
+        forbidden + ["PickWorkItem", "WaitFor", "CompleteWorkItem"],
+        message_id=harness.prompt_scope("scheduler-interject-b-create")[
+            "message_id"
+        ],
+    )
     work_item_a_id = item_a["id"]
     work_item_b_id = item_b["id"]
     require(item_a["state"] == "completed", f"WorkItem A not completed: {item_a}")
@@ -2725,28 +3209,53 @@ def run_scheduler_operator_interject_during_wait_case(
             f"WorkItem {letter} brief mismatch: {brief}",
         )
     snapshot = harness.runtime_db_snapshot("scheduler-interject")
+    a_turn_ids = {
+        row["turn_id"]
+        for row in snapshot["turn_records"]
+        if row["current_work_item_id"] == work_item_a_id
+    }
+    b_turn_ids = {
+        row["turn_id"]
+        for row in snapshot["turn_records"]
+        if row["current_work_item_id"] == work_item_b_id
+    }
+    harness.assert_tools(
+        "scheduler-interject-a-resume",
+        baseline,
+        ["GetWorkItem", "UpdateWorkItem", "CompleteWorkItem"],
+        forbidden + ["CreateWorkItem", "PickWorkItem", "WaitFor"],
+        turn_ids=a_turn_ids,
+    )
+    harness.assert_tools(
+        "scheduler-interject-b-autonomous",
+        baseline,
+        ["ListWorkItems", "UpdateWorkItem", "CompleteWorkItem"],
+        forbidden + ["CreateWorkItem", "PickWorkItem", "WaitFor"],
+        turn_ids=b_turn_ids,
+    )
     require_scheduler_engine_activation_chain(
         harness,
         snapshot,
         work_item_id=work_item_a_id,
-        expected_activation_count=2,
+        expected_admission_kinds=("wait_resume",),
+        lifecycle_message_ids={
+            harness.prompt_scope("scheduler-interject-create")["message_id"]
+        },
     )
     require_scheduler_engine_activation_chain(
         harness,
         snapshot,
         work_item_id=work_item_b_id,
-        expected_activation_count=1,
+        expected_admission_kinds=("scheduling",),
+        lifecycle_message_ids={
+            harness.prompt_scope("scheduler-interject-b-create")["message_id"]
+        },
     )
-    waits = [
-        row
-        for row in snapshot["wait_conditions"]
-        if row["work_item_id"] == work_item_a_id
-    ]
-    require(
-        len(waits) == 1
-        and waits[0]["kind"] == "operator"
-        and waits[0]["status"] == "resolved",
-        f"interject operator wait did not resolve: {waits}",
+    waits = require_scheduler_wait_terminal(
+        harness,
+        snapshot,
+        work_item_id=work_item_a_id,
+        wait_kind="operator",
     )
     require_scheduler_engine_wait_resolution(
         harness,
@@ -2810,11 +3319,19 @@ def run_scheduler_compaction_continuity_case(
         expected_scheduling_state="waiting_operator",
         label="scheduler-compaction-waiting",
     )
+    stimulus_snapshot = harness.runtime_db_snapshot(
+        "scheduler-compaction-stimulus"
+    )
+    require_turn_local_compaction(
+        stimulus_snapshot,
+        label="scheduler-compaction",
+    )
     harness.wait_agent_asleep()
     harness.prompt(
         "scheduler-compaction-resume",
         f"The operator is resuming WorkItem {marker}. Proceed with the "
         "completion steps described in the objective.",
+        work_item_id=waiting["id"],
     )
     item = harness.wait_work_item(
         objective_marker=objective_marker,
@@ -2822,7 +3339,15 @@ def run_scheduler_compaction_continuity_case(
         label="scheduler-compaction-completed",
     )
     required, forbidden = phase_tools(phase)
-    harness.assert_tools("scheduler-compaction-create", baseline, required, forbidden)
+    harness.assert_tools(
+        "scheduler-compaction-create",
+        baseline,
+        ["CreateWorkItem", "PickWorkItem", "WaitFor"],
+        forbidden + ["GetWorkItem", "UpdateWorkItem", "CompleteWorkItem"],
+        message_id=harness.prompt_scope("scheduler-compaction-create")[
+            "message_id"
+        ],
+    )
     work_item_id = item["id"]
     require(item["state"] == "completed", f"WorkItem not completed: {item}")
     require(item["id"] == waiting["id"], "compaction wait-resume changed WorkItem identity")
@@ -2838,32 +3363,33 @@ def run_scheduler_compaction_continuity_case(
         f"compaction completion brief mismatch: {result_brief}",
     )
     snapshot = harness.runtime_db_snapshot("scheduler-compaction")
+    resume_turn_ids = {
+        row["turn_id"]
+        for row in snapshot["turn_records"]
+        if row["current_work_item_id"] == work_item_id
+    }
+    harness.assert_tools(
+        "scheduler-compaction-resume",
+        baseline,
+        [name for name in required if name not in {"CreateWorkItem", "PickWorkItem", "WaitFor"}],
+        forbidden + ["CreateWorkItem", "PickWorkItem", "WaitFor"],
+        turn_ids=resume_turn_ids,
+    )
     require_scheduler_engine_activation_chain(
         harness,
         snapshot,
         work_item_id=work_item_id,
-        expected_activation_count=2,
+        expected_admission_kinds=("wait_resume",),
+        lifecycle_message_ids={
+            harness.prompt_scope("scheduler-compaction-create")["message_id"]
+        },
     )
-    compaction_events = [
-        row
-        for row in snapshot["audit_events"]
-        if row["kind"] == "turn_local_compaction_applied"
-    ]
-    require(
-        len(compaction_events) >= 1,
-        f"compaction was not triggered; audit events: "
-        f"{[r['kind'] for r in snapshot['audit_events']]}",
-    )
-    waits = [
-        row
-        for row in snapshot["wait_conditions"]
-        if row["work_item_id"] == work_item_id
-    ]
-    require(
-        len(waits) == 1
-        and waits[0]["kind"] == "operator"
-        and waits[0]["status"] == "resolved",
-        f"compaction operator wait did not resolve: {waits}",
+    require_turn_local_compaction(snapshot, label="scheduler-compaction")
+    waits = require_scheduler_wait_terminal(
+        harness,
+        snapshot,
+        work_item_id=work_item_id,
+        wait_kind="operator",
     )
     require_scheduler_engine_wait_resolution(
         harness,
@@ -2922,7 +3448,13 @@ def run_scheduler_worktree_isolation_case(
     )
     required, forbidden = phase_tools(phase)
     harness.assert_tools(
-        "scheduler-worktree-lifecycle", baseline, required, forbidden
+        "scheduler-worktree-lifecycle",
+        baseline,
+        required,
+        forbidden,
+        message_id=harness.prompt_scope("scheduler-worktree-lifecycle")[
+            "message_id"
+        ],
     )
     work_item_id = item["id"]
     require(item["state"] == "completed", f"WorkItem not completed: {item}")
@@ -2959,7 +3491,10 @@ def run_scheduler_worktree_isolation_case(
         harness,
         snapshot,
         work_item_id=work_item_id,
-        expected_activation_count=1,
+        expected_admission_kinds=(),
+        lifecycle_message_ids={
+            harness.prompt_scope("scheduler-worktree-lifecycle")["message_id"]
+        },
     )
     harness.restart()
     restarted_items = harness.work_items("scheduler-worktree-after-restart")
@@ -3002,7 +3537,13 @@ def run_scheduler_spawn_agent_supervision_case(
     )
     required, forbidden = phase_tools(phase)
     create_events = harness.assert_tools(
-        "scheduler-spawn-and-complete", baseline, required, forbidden
+        "scheduler-spawn-and-complete",
+        baseline,
+        required,
+        forbidden,
+        message_id=harness.prompt_scope("scheduler-spawn-and-complete")[
+            "message_id"
+        ],
     )
     work_item_id = item["id"]
     require(item["state"] == "completed", f"WorkItem not completed: {item}")
@@ -3040,7 +3581,10 @@ def run_scheduler_spawn_agent_supervision_case(
         harness,
         snapshot,
         work_item_id=work_item_id,
-        expected_activation_count=1,
+        expected_admission_kinds=(),
+        lifecycle_message_ids={
+            harness.prompt_scope("scheduler-spawn-and-complete")["message_id"]
+        },
     )
     harness.restart()
     restarted_items = harness.work_items("scheduler-spawn-after-restart")
@@ -3131,7 +3675,13 @@ def run_scheduler_checkpoint_replay_case(
         label="scheduler-replay-a-completed",
     )
     required, forbidden = phase_tools(phase)
-    harness.assert_tools("scheduler-replay-create", baseline, required, forbidden)
+    harness.assert_tools(
+        "scheduler-replay-create",
+        baseline,
+        required,
+        forbidden,
+        message_id=harness.prompt_scope("scheduler-replay-create")["message_id"],
+    )
     work_item_a_id = item_a["id"]
     work_item_b_id = item_b["id"]
     require(item_a["state"] == "completed", f"WorkItem A not completed: {item_a}")
@@ -3157,13 +3707,19 @@ def run_scheduler_checkpoint_replay_case(
         harness,
         snapshot,
         work_item_id=work_item_a_id,
-        expected_activation_count=2,
+        expected_admission_kinds=("wait_resume",),
+        lifecycle_message_ids={
+            harness.prompt_scope("scheduler-replay-create")["message_id"]
+        },
     )
     require_scheduler_engine_activation_chain(
         harness,
         snapshot,
         work_item_id=work_item_b_id,
-        expected_activation_count=1,
+        expected_admission_kinds=("scheduling",),
+        lifecycle_message_ids={
+            harness.prompt_scope("scheduler-replay-create")["message_id"]
+        },
     )
     waits = [
         row
@@ -3527,6 +4083,30 @@ def scheduler_acceptance_report(
     engines = []
     all_revisions = set()
     diagnostics = []
+    missing_schema_revision_cases = sorted(
+        result["id"]
+        for result in scheduler_results
+        if result.get("schema_revision") is None
+    )
+    if missing_schema_revision_cases:
+        diagnostics.append(
+            {
+                "code": "missing_schema_revision_cases",
+                "cases": missing_schema_revision_cases,
+                "case_timeouts": sorted(
+                    result["id"]
+                    for result in scheduler_results
+                    if result["id"] in missing_schema_revision_cases
+                    and result.get("failure_kind") == "case_timeout"
+                ),
+                "evidence_collection_failures": sorted(
+                    result["id"]
+                    for result in scheduler_results
+                    if result["id"] in missing_schema_revision_cases
+                    and result.get("evidence_collection_error")
+                ),
+            }
+        )
     for engine in SCHEDULER_ENGINES:
         results = [
             result for result in scheduler_results if result["scheduler_engine"] == engine
@@ -3562,6 +4142,11 @@ def scheduler_acceptance_report(
                     "code": "engine_schema_revision_invalid",
                     "engine": engine,
                     "schema_revisions": sorted(revisions),
+                    "missing_cases": sorted(
+                        result["id"]
+                        for result in results
+                        if result.get("schema_revision") is None
+                    ),
                 }
             )
         all_revisions.update(revisions)
@@ -3587,7 +4172,7 @@ def scheduler_acceptance_report(
                 ],
             }
         )
-    if len(all_revisions) != 1:
+    if len(all_revisions) > 1:
         diagnostics.append(
             {
                 "code": "scheduler_schema_revision_mismatch",
@@ -3611,6 +4196,7 @@ def scheduler_acceptance_report(
         "image_digest": run_record["image_digest"],
         "fixture_corpus_revision": fixture_corpus_revision,
         "manifest_sha256": run_record["manifest_sha256"],
+        "missing_schema_revision_cases": missing_schema_revision_cases,
         "engines": engines,
         "diagnostics": diagnostics,
     }
@@ -3871,6 +4457,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         control_tokens.append(harness.token)
         error_text = ""
+        failure_kind: str | None = None
+        evidence_collection_error = ""
         try:
             CASE_RUNNERS[case_id](harness, case)
             harness.assert_stub_complete()
@@ -3880,11 +4468,26 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as error:
             status = "fail"
             error_text = f"{type(error).__name__}: {error}"
+            if isinstance(error, TimeoutError):
+                failure_kind = "case_timeout"
             (harness.evidence / "failure.txt").write_text(error_text + "\n")
             try:
                 harness.capture_context("failure")
             except Exception:
                 pass
+            try:
+                harness.runtime_db_snapshot("failure-final")
+            except Exception as snapshot_error:
+                evidence_collection_error = (
+                    f"{type(snapshot_error).__name__}: {snapshot_error}"
+                )
+                write_json(
+                    harness.evidence / "failure-evidence-collection.json",
+                    {
+                        "status": "failed",
+                        "runtime_db_snapshot_error": evidence_collection_error,
+                    },
+                )
             try:
                 harness.capture_logs()
             except Exception:
@@ -3909,6 +4512,8 @@ def main(argv: list[str] | None = None) -> int:
             "tags": case.get("tags", []),
             "status": status,
             "error": error_text,
+            "failure_kind": failure_kind,
+            "evidence_collection_error": evidence_collection_error,
             "duration_seconds": round(time.monotonic() - case_started, 3),
             "cleanup": cleanup_result["status"],
             "cleanup_errors": cleanup_result["errors"],

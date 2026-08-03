@@ -523,24 +523,51 @@ def attach_running(harness: CaseHarness) -> None:
     harness.wait_readiness()
 
 
-def wait_for_turn_after(harness: CaseHarness, baseline_turn: int, label: str) -> None:
-    deadline = datetime.now(timezone.utc).timestamp() + harness.timeout_seconds
-    last_state: dict[str, Any] | None = None
-    while datetime.now(timezone.utc).timestamp() < deadline:
-        last_state = harness.request("GET", harness.agent_path("state"))
-        agent = last_state["agent"]["agent"]
-        if (
-            int(agent["turn_index"]) > baseline_turn
-            and agent["status"] in {"awake_idle", "asleep", "awaiting_task"}
-            and agent.get("current_run_id") is None
-            and int(last_state["session"]["pending_count"]) == 0
-        ):
-            write_json(harness.evidence / f"{label}-state.json", last_state)
-            return
-        import time
+def wait_for_turn_after(
+    harness: CaseHarness,
+    *,
+    after_seq: int,
+    message_id: str,
+    label: str,
+) -> None:
+    import time
 
-        time.sleep(1)
-    write_json(harness.evidence / f"{label}-timeout-state.json", last_state)
+    deadline = time.monotonic() + harness.timeout_seconds
+    event_poll_cursor = after_seq
+    target_turn_ids: set[str] = set()
+    while time.monotonic() < deadline:
+        batch = harness.event_batch(
+            f"{label}-poll",
+            after_seq=event_poll_cursor,
+        )
+        events = batch["events"]
+        event_poll_cursor = int(batch["newest_seq"])
+        target_turn_ids.update(
+            event["payload"].get("turn_id")
+            for event in events
+            if event["type"] == "turn_started"
+            and event["payload"].get("message_id") == message_id
+        )
+        failures = [
+            event
+            for event in events
+            if event["type"] == "runtime_error"
+            and (
+                event["payload"].get("message_id") == message_id
+                or event["payload"].get("turn_id") in target_turn_ids
+            )
+        ]
+        require(
+            not failures,
+            f"runtime failure occurred while waiting for {label}: {failures}",
+        )
+        if any(
+            event["type"] == "turn_terminal"
+            and event["payload"].get("turn_id") in target_turn_ids
+            for event in events
+        ):
+            return
+        time.sleep(0.5)
     raise TimeoutError(f"timed out waiting for {label}")
 
 
@@ -1019,8 +1046,8 @@ def exercise_wrong_fence(harness: CaseHarness, marker: str) -> dict[str, Any]:
         label="wrong-fence-target-waiting",
     )
     bogus_work_item_id = f"work-drill-missing-{marker}"
-    before = harness.state("wrong-fence-before")
-    baseline = int(before["agent"]["agent"]["turn_index"])
+    harness.state("wrong-fence-before")
+    event_cursor = harness.event_cursor()
     response = harness.request(
         "POST",
         harness.agent_path("prompt", control=True),
@@ -1033,7 +1060,12 @@ def exercise_wrong_fence(harness: CaseHarness, marker: str) -> dict[str, Any]:
         },
     )
     write_json(harness.evidence / "wrong-fence-response.json", response)
-    wait_for_turn_after(harness, baseline, "wrong-fence-finished")
+    wait_for_turn_after(
+        harness,
+        after_seq=event_cursor,
+        message_id=response["message_id"],
+        label="wrong-fence-finished",
+    )
     items = harness.work_items("wrong-fence-check")
     matches = [
         item
@@ -1293,6 +1325,7 @@ def exercise_interjection(harness: CaseHarness, marker: str) -> None:
         baseline_turn=baseline,
         label="interjection-tool-start",
     )
+    event_cursor = harness.event_cursor()
     second = harness.request(
         "POST",
         harness.agent_path("prompt", control=True),
@@ -1301,7 +1334,12 @@ def exercise_interjection(harness: CaseHarness, marker: str) -> None:
         },
     )
     write_json(harness.evidence / "interjection-second.json", second)
-    wait_for_turn_after(harness, baseline, "interjection-finished")
+    wait_for_turn_after(
+        harness,
+        after_seq=event_cursor,
+        message_id=second["message_id"],
+        label="interjection-finished",
+    )
 
 
 def stress_agent_id(run_id: str, worker: int) -> str:
