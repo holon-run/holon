@@ -247,7 +247,7 @@ jobs:
           path: lcov.info
 
   e2e-scheduler:
-    name: E2E Scheduler (optional)
+    name: E2E Scheduler Live (optional)
     needs: changes
     if: contains(github.event.pull_request.labels.*.name, 'e2e-scheduler')
     runs-on: ubuntu-latest
@@ -288,6 +288,7 @@ jobs:
           python3 scripts/docker-e2e.py \
             --image holon:e2e \
             --skip-build \
+            --scheduler-matrix \
             --suite extended \
             --tag e2e-tier-1 \
             --env-file "${HOLON_E2E_DOCKER_ENV_FILE}" \
@@ -296,3 +297,59 @@ jobs:
       - name: Remove provider environment
         if: always()
         run: rm -f "${HOLON_E2E_DOCKER_ENV_FILE}"
+
+  scheduler-e2e-required:
+    name: Scheduler E2E Required
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.docker == 'true' || needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          push: false
+          tags: holon:scheduler-required
+          cache-from: type=gha,scope=holon-docker
+          cache-to: type=gha,mode=max,scope=holon-docker
+
+      - name: Run deterministic scheduler E2E
+        run: |
+          set -euo pipefail
+          python3 scripts/docker-e2e.py \
+            --image holon:scheduler-required \
+            --skip-build \
+            --profile scheduler-required \
+            --scheduler-matrix \
+            --timeout 600 \
+            --evidence-dir target/docker-e2e/scheduler-required
+
+      - name: Verify required reports
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("target/docker-e2e/scheduler-required")
+          for name in (
+              "summary.json",
+              "scheduler-acceptance-report.json",
+              "scheduler-coverage-report.json",
+          ):
+              report = json.loads((root / name).read_text())
+              if report["status"] != "pass":
+                  raise SystemExit(f"{name} did not pass: {report['status']}")
+          PY
+
+      - name: Upload scheduler evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scheduler-e2e-required
+          path: target/docker-e2e/scheduler-required

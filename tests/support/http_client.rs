@@ -341,6 +341,15 @@ pub async fn agent_list_entries_tolerate_unloaded_agent_with_corrupt_work_queue(
     let (host, _base, server) = spawn_server_with_config(config.clone()).await?;
     host.create_named_agent("corrupt-list", None).await?;
     server.abort();
+    host.shutdown().await?;
+
+    let mut canonical_state = host
+        .runtime_db()
+        .agent_states()
+        .latest("corrupt-list")?
+        .expect("created agent should have canonical RuntimeDb state");
+    canonical_state.status = AgentStatus::Asleep;
+    host.runtime_db().agent_states().upsert(&canonical_state)?;
 
     let work_items_path = data_dir
         .join("agents")

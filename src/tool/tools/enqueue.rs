@@ -57,7 +57,13 @@ pub(crate) async fn execute(
         EnqueuePriority::Normal => Priority::Normal,
         EnqueuePriority::Background => Priority::Background,
     };
-    let message = MessageEnvelope::new(
+    let state = runtime.agent_state().await?;
+    let work_item_id = state
+        .current_execution_binding
+        .as_ref()
+        .and_then(|binding| binding.work_item_id.clone())
+        .or(state.current_turn_work_item_id);
+    let mut message = MessageEnvelope::new(
         agent_id.to_string(),
         MessageKind::InternalFollowup,
         MessageOrigin::System {
@@ -71,6 +77,7 @@ pub(crate) async fn execute(
         MessageDeliverySurface::RuntimeSystem,
         crate::types::AdmissionContext::RuntimeOwned,
     );
+    message.work_item_id = work_item_id;
     runtime.enqueue(message).await?;
     serialize_success(
         NAME,

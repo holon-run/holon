@@ -2842,6 +2842,17 @@ fn lower_admit_activation(command: &AdmitActivationCommand) -> Result<Event, Pro
             },
         ),
         (
+            ActivationCause::InternalFollowup { message_id },
+            ActivationBinding::Lifecycle { agent_id },
+        ) if agent_id == &activation.agent_id => (
+            SchedulerOwner::AgentLifecycle {
+                agent_id: agent_id.clone(),
+            },
+            AdmissionCause::InternalFollowup {
+                message_id: message_id.clone(),
+            },
+        ),
+        (
             ActivationCause::WorkItemRunnable { .. }
             | ActivationCause::TaskRejoin { .. }
             | ActivationCause::OperatorInput { .. }
@@ -3276,12 +3287,14 @@ fn activation_provenance_matches_cause(
                     | ActivationOrigin::Task
             ) && activation_provenance_has_valid_authority(provenance)
         }
-        ActivationCause::WorkItemRunnable { .. }
-        | ActivationCause::WorkItemRecheck { .. }
-        | ActivationCause::InternalFollowup { .. } => {
+        ActivationCause::WorkItemRunnable { .. } | ActivationCause::WorkItemRecheck { .. } => {
             provenance.origin == ActivationOrigin::System
                 && provenance.trust == ActivationTrust::RuntimeInstruction
         }
+        ActivationCause::InternalFollowup { .. } => matches!(
+            provenance.origin,
+            ActivationOrigin::System | ActivationOrigin::Task
+        ),
         ActivationCause::RuntimeRecovery { .. } | ActivationCause::SettlementRecovery { .. } => {
             matches!(
                 provenance.origin,
@@ -3318,10 +3331,9 @@ fn admission_fence(
         AdmissionCause::LifecycleExternalNudge { message_id } => {
             format!("lifecycle_message:{message_id}")
         }
-        AdmissionCause::InternalFollowup { message_id } => {
-            format!("internal_followup:{message_id}")
-        }
-        AdmissionCause::Scheduling | AdmissionCause::WaitResume { .. } => {
+        AdmissionCause::Scheduling
+        | AdmissionCause::WaitResume { .. }
+        | AdmissionCause::InternalFollowup { .. } => {
             format!("{owner_identity}:{expected_generation}")
         }
     }
@@ -3621,17 +3633,34 @@ fn admit(
             ));
         }
         AdmissionCause::InternalFollowup { message_id } => {
-            let Some(work) = work else {
-                return rejected(snapshot, "internal_followup_requires_work_item_owner");
-            };
             if message_id.is_empty() {
                 return rejected(snapshot, "internal_followup_identity_required");
             }
-            if !matches!(work.status, WorkStatus::Runnable) {
-                return rejected(snapshot, "work_item_not_runnable");
-            }
-            if !matches!(snapshot.dispatch, AgentDispatchState::Open) {
-                return rejected(snapshot, "agent_lane_reserved");
+            if let Some(work) = work {
+                if !matches!(work.status, WorkStatus::Runnable) {
+                    return rejected(snapshot, "work_item_not_runnable");
+                }
+                if !matches!(snapshot.dispatch, AgentDispatchState::Open) {
+                    return rejected(snapshot, "agent_lane_reserved");
+                }
+            } else {
+                let SchedulerOwner::AgentLifecycle { .. } = owner else {
+                    return rejected(snapshot, "internal_followup_owner_invalid");
+                };
+                if let AgentDispatchState::Awaiting { wait } = &snapshot.dispatch {
+                    let Some(generation) = snapshot
+                        .waits
+                        .get(&wait.id)
+                        .and_then(|record| record.generations.get(&wait.generation))
+                    else {
+                        return rejected(snapshot, "agent_lane_reservation_missing");
+                    };
+                    if generation.owner != *owner
+                        || !matches!(generation.state, WaitState::Active | WaitState::Triggered)
+                    {
+                        return rejected(snapshot, "agent_lane_reserved_by_other_owner");
+                    }
+                }
             }
         }
     }

@@ -1150,7 +1150,7 @@ fn adopt_pre_execution_protocol_attempt(
     };
     use crate::domain::scheduler_protocol::SchedulerOwner;
 
-    let _admission = snapshot
+    let admission = snapshot
         .activation_admissions
         .get(activation_id)
         .ok_or_else(|| anyhow!("legacy activation {activation_id} has no canonical admission"))?;
@@ -1210,8 +1210,15 @@ fn adopt_pre_execution_protocol_attempt(
         agent_id: agent_id.to_string(),
         source_message_id: Some(message.id.clone()),
         source: ExecutionSource {
-            identity: ExecutionSourceIdentity::QueueMessage {
-                message_id: message.id.clone(),
+            identity: match admission.activation.cause {
+                crate::domain::scheduler_protocol::ActivationCause::InternalFollowup { .. } => {
+                    ExecutionSourceIdentity::InternalFollowup {
+                        message_id: message.id.clone(),
+                    }
+                }
+                _ => ExecutionSourceIdentity::QueueMessage {
+                    message_id: message.id.clone(),
+                },
             },
             generation: source_revision,
         },

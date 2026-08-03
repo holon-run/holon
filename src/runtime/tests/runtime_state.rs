@@ -7336,6 +7336,529 @@ async fn enqueue_normalizes_runtime_followup_without_authority_upgrade() {
 }
 
 #[tokio::test]
+async fn enqueue_inherits_current_work_item_and_preserves_canonical_provenance() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item("enqueue follow-up owner".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.current_turn_work_item_id = Some(work_item.id.clone());
+        guard.persist_state(&runtime.inner.storage).unwrap();
+    }
+
+    crate::tool::tools::execute_builtin_tool(
+        &runtime,
+        "default",
+        &AuthorityClass::ExternalEvidence,
+        &crate::tool::ToolCall {
+            id: "enqueue-bound-follow-up".into(),
+            name: "Enqueue".into(),
+            input: serde_json::json!({
+                "text": "continue with external evidence",
+                "priority": "next"
+            }),
+        },
+    )
+    .await
+    .unwrap();
+
+    let message = runtime
+        .storage()
+        .read_recent_messages(10)
+        .unwrap()
+        .into_iter()
+        .find(|message| {
+            matches!(
+                &message.origin,
+                MessageOrigin::System { subsystem } if subsystem == "tool_enqueue"
+            )
+        })
+        .expect("Enqueue should persist its follow-up");
+    assert_eq!(message.work_item_id.as_deref(), Some(work_item.id.as_str()));
+    assert_eq!(message.authority_class, AuthorityClass::ExternalEvidence);
+
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Message(_)
+    ));
+    let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+    let scheduler = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    let activation = &scheduler.activation_admissions[&activation_id].activation;
+    assert_eq!(
+        activation.provenance.origin,
+        crate::domain::scheduler_protocol::ActivationOrigin::System
+    );
+    assert_eq!(
+        activation.provenance.trust,
+        crate::domain::scheduler_protocol::ActivationTrust::ExternalEvidence
+    );
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .expect("canonical claim should initialize execution protocol");
+    assert_eq!(
+        execution.attempts[&activation_id].provenance.trust,
+        crate::domain::execution_protocol::ExecutionTrust::ExternalEvidence
+    );
+    assert!(matches!(
+        execution.attempts[&activation_id].source.identity,
+        crate::domain::execution_protocol::ExecutionSourceIdentity::InternalFollowup { .. }
+    ));
+}
+
+#[tokio::test]
+async fn enqueue_does_not_bind_to_focus_without_current_turn_ownership() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item("focused but not executing".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.current_work_item_id = Some(work_item.id);
+        guard.state.current_turn_work_item_id = None;
+        guard.state.current_execution_binding = None;
+        guard.persist_state(&runtime.inner.storage).unwrap();
+    }
+
+    crate::tool::tools::execute_builtin_tool(
+        &runtime,
+        "default",
+        &AuthorityClass::RuntimeInstruction,
+        &crate::tool::ToolCall {
+            id: "enqueue-unbound-focus".into(),
+            name: "Enqueue".into(),
+            input: serde_json::json!({
+                "text": "do not inherit focus",
+                "priority": "next"
+            }),
+        },
+    )
+    .await
+    .unwrap();
+
+    let message = runtime
+        .storage()
+        .read_recent_messages(10)
+        .unwrap()
+        .into_iter()
+        .find(|message| {
+            matches!(
+                &message.origin,
+                MessageOrigin::System { subsystem } if subsystem == "tool_enqueue"
+            )
+        })
+        .expect("Enqueue should persist its follow-up");
+    assert_eq!(message.work_item_id, None);
+}
+
+#[tokio::test]
+async fn runtime_owned_followup_preserves_all_authority_classes() {
+    use crate::domain::{execution_protocol::ExecutionTrust, scheduler_protocol::ActivationTrust};
+
+    for (authority, activation_trust, execution_trust) in [
+        (
+            AuthorityClass::OperatorInstruction,
+            ActivationTrust::OperatorInstruction,
+            ExecutionTrust::OperatorInstruction,
+        ),
+        (
+            AuthorityClass::RuntimeInstruction,
+            ActivationTrust::RuntimeInstruction,
+            ExecutionTrust::RuntimeInstruction,
+        ),
+        (
+            AuthorityClass::IntegrationSignal,
+            ActivationTrust::IntegrationSignal,
+            ExecutionTrust::IntegrationSignal,
+        ),
+        (
+            AuthorityClass::ExternalEvidence,
+            ActivationTrust::ExternalEvidence,
+            ExecutionTrust::ExternalEvidence,
+        ),
+    ] {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(CountingProvider {
+                calls: Mutex::new(0),
+                reply: "unused",
+            }),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        let message = runtime
+            .enqueue(
+                MessageEnvelope::new(
+                    "default",
+                    MessageKind::InternalFollowup,
+                    MessageOrigin::System {
+                        subsystem: "authority-preservation".into(),
+                    },
+                    authority.clone(),
+                    Priority::Next,
+                    MessageBody::Text {
+                        text: "preserve authority".into(),
+                    },
+                )
+                .with_admission(
+                    MessageDeliverySurface::RuntimeSystem,
+                    AdmissionContext::RuntimeOwned,
+                ),
+            )
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+                .poll()
+                .await
+                .unwrap(),
+            scheduler_executor::RunLoopPoll::Message(_)
+        ));
+        let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+        let scheduler = runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_scheduler_protocol_snapshot("default")
+            .unwrap();
+        assert_eq!(
+            scheduler.activation_admissions[&activation_id]
+                .activation
+                .provenance
+                .trust,
+            activation_trust
+        );
+        let execution = runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("default")
+            .unwrap()
+            .expect("canonical claim should initialize execution protocol");
+        assert_eq!(
+            execution.attempts[&activation_id].provenance.trust,
+            execution_trust
+        );
+        assert_eq!(message.authority_class, authority);
+    }
+}
+
+#[tokio::test]
+async fn runtime_owned_task_followup_preserves_task_origin_and_external_evidence() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "child",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let message = runtime
+        .enqueue(
+            MessageEnvelope::new(
+                "child",
+                MessageKind::InternalFollowup,
+                MessageOrigin::Task {
+                    task_id: "task-parent".into(),
+                },
+                AuthorityClass::ExternalEvidence,
+                Priority::Next,
+                MessageBody::Text {
+                    text: "delegated evidence".into(),
+                },
+            )
+            .with_admission(
+                MessageDeliverySurface::RuntimeSystem,
+                AdmissionContext::RuntimeOwned,
+            ),
+        )
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Message(_)
+    ));
+    let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+    let scheduler = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("child")
+        .unwrap();
+    let activation = &scheduler.activation_admissions[&activation_id].activation;
+    assert_eq!(
+        activation.provenance.origin,
+        crate::domain::scheduler_protocol::ActivationOrigin::Task
+    );
+    assert_eq!(
+        activation.provenance.trust,
+        crate::domain::scheduler_protocol::ActivationTrust::ExternalEvidence
+    );
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("child")
+        .unwrap()
+        .expect("canonical claim should initialize execution protocol");
+    assert_eq!(
+        execution.attempts[&activation_id].provenance.origin,
+        crate::domain::execution_protocol::ExecutionOrigin::Task
+    );
+    assert_eq!(
+        execution.attempts[&activation_id].provenance.trust,
+        crate::domain::execution_protocol::ExecutionTrust::ExternalEvidence
+    );
+}
+
+#[tokio::test]
+async fn runtime_owned_bound_task_followup_survives_scheduler_reload() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "child",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item("bound delegated follow-up".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let mut followup = MessageEnvelope::new(
+        "child",
+        MessageKind::InternalFollowup,
+        MessageOrigin::Task {
+            task_id: "task-parent".into(),
+        },
+        AuthorityClass::ExternalEvidence,
+        Priority::Next,
+        MessageBody::Text {
+            text: "bound delegated evidence".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+    followup.work_item_id = Some(work_item.id.clone());
+    let message = runtime.enqueue(followup).await.unwrap();
+
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Message(_)
+    ));
+    let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+    drop(runtime);
+
+    let reopened = RuntimeHandle::new(
+        "child",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let scheduler = reopened
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("child")
+        .unwrap();
+    let activation = &scheduler.activation_admissions[&activation_id].activation;
+    assert_eq!(
+        activation.provenance.origin,
+        crate::domain::scheduler_protocol::ActivationOrigin::Task
+    );
+    assert_eq!(
+        activation.provenance.trust,
+        crate::domain::scheduler_protocol::ActivationTrust::ExternalEvidence
+    );
+    assert!(matches!(
+        activation.binding,
+        crate::domain::scheduler_protocol::ActivationBinding::WorkItem {
+            ref work_item_id
+        } if work_item_id == &work_item.id
+    ));
+    let execution = reopened
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("child")
+        .unwrap()
+        .expect("canonical claim should persist execution protocol");
+    assert!(matches!(
+        execution.attempts[&activation_id].source.identity,
+        crate::domain::execution_protocol::ExecutionSourceIdentity::InternalFollowup { .. }
+    ));
+}
+
+#[tokio::test]
+async fn canonical_unclassified_model_reentry_is_dropped_without_blocking_next_message() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let poison = runtime
+        .enqueue(MessageEnvelope::new(
+            "default",
+            MessageKind::InternalFollowup,
+            MessageOrigin::System {
+                subsystem: "untrusted_followup".into(),
+            },
+            AuthorityClass::ExternalEvidence,
+            Priority::Next,
+            MessageBody::Text {
+                text: "unclassified follow-up".into(),
+            },
+        ))
+        .await
+        .unwrap();
+    let valid = runtime
+        .enqueue(trusted_operator_prompt(None, "continue after poison"))
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Idle
+    ));
+    assert_eq!(
+        runtime
+            .storage()
+            .latest_queue_entries()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == poison.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Dropped)
+    );
+    assert!(runtime
+        .storage()
+        .read_recent_events(usize::MAX)
+        .unwrap()
+        .iter()
+        .any(|event| {
+            event.kind == "scheduler_authority_input_rejected"
+                && event.data["message_id"] == poison.id
+                && event.data["reason"] == "canonical_model_reentry_candidate_unclassified"
+                && event.data["queue_disposition"] == "dropped"
+        }));
+
+    drop(runtime);
+    let reopened = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&reopened)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("valid message behind dropped poison head should be claimed after restart");
+    };
+    assert_eq!(scheduled.message.id, valid.id);
+}
+
+#[tokio::test]
 async fn enqueue_normalizes_system_wake_as_coordination_with_work_item_binding() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();

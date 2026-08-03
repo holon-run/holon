@@ -2444,6 +2444,7 @@ fn activation_admission_columns(
         ActivationCause::LifecycleExternalNudge { .. } => {
             Ok(("lifecycle_external_nudge", None, None, None))
         }
+        ActivationCause::InternalFollowup { .. } => Ok(("internal_followup", None, None, None)),
         _ => bail!(
             "activation {} has unsupported persisted admission cause",
             admission.activation.id
@@ -2495,6 +2496,24 @@ fn persisted_admission_fence(admission: &AdmitActivationCommand) -> Result<Strin
             scheduler_protocol::ActivationBinding::Lifecycle { .. },
         ) => return Ok(format!("lifecycle_message:{message_id}")),
         (
+            ActivationCause::InternalFollowup { .. },
+            scheduler_protocol::ActivationBinding::WorkItem { work_item_id },
+        ) => {
+            return Ok(format!(
+                "work:{work_item_id}:{}",
+                admission.expected_scheduling_generation
+            ));
+        }
+        (
+            ActivationCause::InternalFollowup { .. },
+            scheduler_protocol::ActivationBinding::Lifecycle { agent_id },
+        ) => {
+            return Ok(format!(
+                "lifecycle:{agent_id}:{}",
+                admission.expected_scheduling_generation
+            ));
+        }
+        (
             ActivationCause::SettlementRecovery { activation_id },
             scheduler_protocol::ActivationBinding::WorkItem { work_item_id },
         ) => {
@@ -2518,6 +2537,7 @@ fn activation_source_columns(admission: &AdmitActivationCommand) -> Option<(&'st
     match &admission.activation.cause {
         ActivationCause::TaskRejoin { task_id, .. } => Some(("task_rejoin", task_id)),
         ActivationCause::OperatorInput { message_id, .. } => Some(("operator_input", message_id)),
+        ActivationCause::InternalFollowup { message_id } => Some(("internal_followup", message_id)),
         _ => None,
     }
 }

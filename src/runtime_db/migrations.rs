@@ -630,6 +630,133 @@ fn migrate_work_item_focus(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_scheduler_internal_followup_admission(
+    connection: &mut Connection,
+    migration: &Migration,
+) -> Result<()> {
+    connection.execute_batch("PRAGMA foreign_keys = OFF;")?;
+    let result = (|| -> Result<()> {
+        let transaction = connection.transaction()?;
+        transaction.execute_batch(
+            r#"
+DROP INDEX IF EXISTS idx_scheduler_activations_ordinary_admission_fence;
+DROP INDEX IF EXISTS idx_scheduler_activations_recovery_admission_fence;
+
+CREATE TABLE scheduler_activation_sources_v42 (
+  agent_id TEXT NOT NULL,
+  activation_id TEXT NOT NULL,
+  source_kind TEXT NOT NULL CHECK (
+    source_kind IN ('task_rejoin', 'operator_input', 'internal_followup')
+  ),
+  source_identity TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, activation_id),
+  UNIQUE (agent_id, source_kind, source_identity)
+);
+
+INSERT INTO scheduler_activation_sources_v42
+SELECT * FROM scheduler_activation_sources;
+
+DROP TABLE scheduler_activation_sources;
+ALTER TABLE scheduler_activation_sources_v42
+  RENAME TO scheduler_activation_sources;
+
+CREATE TABLE scheduler_activations_v42 (
+  agent_id TEXT NOT NULL,
+  activation_id TEXT NOT NULL,
+  authority_id TEXT NOT NULL,
+  owner_kind TEXT NOT NULL CHECK (owner_kind IN ('work_item', 'agent_lifecycle')),
+  owner_id TEXT NOT NULL,
+  work_item_id TEXT,
+  admitted_generation INTEGER NOT NULL CHECK (admitted_generation >= 0),
+  admission_kind TEXT NOT NULL CHECK (
+    admission_kind IN (
+      'scheduling', 'wait_resume', 'lifecycle_external_nudge',
+      'internal_followup', 'settlement_recovery'
+    )
+  ),
+  recovery_for_activation_id TEXT,
+  wait_id TEXT,
+  wait_generation INTEGER CHECK (wait_generation IS NULL OR wait_generation >= 0),
+  lifecycle_state TEXT NOT NULL CHECK (
+    lifecycle_state IN (
+      'admitted', 'running', 'settled', 'interrupted',
+      'cancelled', 'settlement_missing'
+    )
+  ),
+  idempotency_key TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, activation_id),
+  UNIQUE (agent_id, authority_id),
+  UNIQUE (agent_id, idempotency_key),
+  UNIQUE (agent_id, activation_id, owner_kind, owner_id, admitted_generation),
+  UNIQUE (agent_id, activation_id, work_item_id, admitted_generation),
+  CHECK (
+    (owner_kind = 'work_item' AND work_item_id = owner_id)
+    OR (owner_kind = 'agent_lifecycle' AND work_item_id IS NULL AND owner_id = agent_id)
+  ),
+  CHECK (
+    (admission_kind IN ('scheduling', 'internal_followup')
+      AND recovery_for_activation_id IS NULL
+      AND wait_id IS NULL
+      AND wait_generation IS NULL)
+    OR (admission_kind = 'wait_resume'
+      AND recovery_for_activation_id IS NULL
+      AND wait_id IS NOT NULL
+      AND wait_generation IS NOT NULL)
+    OR (admission_kind = 'lifecycle_external_nudge'
+      AND recovery_for_activation_id IS NULL
+      AND wait_id IS NULL
+      AND wait_generation IS NULL
+      AND owner_kind = 'agent_lifecycle')
+    OR (admission_kind = 'settlement_recovery'
+      AND recovery_for_activation_id IS NOT NULL
+      AND wait_id IS NULL
+      AND wait_generation IS NULL
+      AND owner_kind = 'work_item')
+  )
+);
+
+INSERT INTO scheduler_activations_v42
+SELECT * FROM scheduler_activations;
+
+DROP TABLE scheduler_activations;
+ALTER TABLE scheduler_activations_v42 RENAME TO scheduler_activations;
+
+CREATE UNIQUE INDEX idx_scheduler_activations_ordinary_admission_fence
+  ON scheduler_activations(
+    agent_id, owner_kind, owner_id, admitted_generation
+  )
+  WHERE admission_kind IN (
+    'scheduling', 'wait_resume', 'lifecycle_external_nudge', 'internal_followup'
+  );
+
+CREATE UNIQUE INDEX idx_scheduler_activations_recovery_admission_fence
+  ON scheduler_activations(
+    agent_id, owner_kind, owner_id, admitted_generation,
+    recovery_for_activation_id
+  )
+  WHERE admission_kind = 'settlement_recovery';
+"#,
+        )?;
+        transaction.execute(
+            "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
+            (
+                migration.version,
+                migration.name,
+                Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            ),
+        )?;
+        transaction.commit()?;
+        Ok(())
+    })();
+    connection.execute_batch("PRAGMA foreign_keys = ON;")?;
+    result
+}
+
 pub(crate) const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 1,
@@ -2449,6 +2576,11 @@ CREATE TABLE IF NOT EXISTS execution_protocol_command_results (
 );
 "#,
     },
+    Migration {
+        version: 42,
+        name: "scheduler_internal_followup_admission",
+        sql: "",
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -2485,6 +2617,9 @@ pub(crate) fn apply_migration(connection: &mut Connection, migration: &Migration
     }
     if migration.name == "scheduler_lifecycle_owners" {
         return migrate_scheduler_lifecycle_owners(connection, migration);
+    }
+    if migration.name == "scheduler_internal_followup_admission" {
+        return migrate_scheduler_internal_followup_admission(connection, migration);
     }
 
     let transaction = connection.transaction()?;
@@ -2852,7 +2987,6 @@ fn migration_execution_source(
         | ActivationCause::OperatorInterjection { message_id }
         | ActivationCause::MessageIngress { message_id }
         | ActivationCause::LifecycleExternalNudge { message_id }
-        | ActivationCause::InternalFollowup { message_id }
             if message_id == &message.id =>
         {
             (
@@ -2863,6 +2997,13 @@ fn migration_execution_source(
                 None,
             )
         }
+        ActivationCause::InternalFollowup { message_id } if message_id == &message.id => (
+            ExecutionSourceIdentity::InternalFollowup {
+                message_id: message.id.clone(),
+            },
+            None,
+            None,
+        ),
         ActivationCause::TaskRejoin {
             task_id,
             message_id,

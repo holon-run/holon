@@ -1145,7 +1145,7 @@ pub(crate) fn canonical_activation_candidate(
     if message.kind == MessageKind::InternalFollowup {
         return Ok(if let Some(work_item_id) = message.work_item_id.clone() {
             Some(CanonicalActivationCandidate::InternalFollowup { work_item_id })
-        } else if runtime_owned_task_followup(message) {
+        } else if runtime_owned_internal_followup(message) {
             Some(CanonicalActivationCandidate::LifecycleExternalNudge {
                 agent_id: message.agent_id.clone(),
             })
@@ -1242,11 +1242,14 @@ pub(crate) fn canonical_activation_candidate(
     Ok(None)
 }
 
-pub(crate) fn runtime_owned_task_followup(message: &MessageEnvelope) -> bool {
+pub(crate) fn runtime_owned_internal_followup(message: &MessageEnvelope) -> bool {
     message.kind == MessageKind::InternalFollowup
         && message.delivery_surface == Some(MessageDeliverySurface::RuntimeSystem)
         && message.admission_context == Some(AdmissionContext::RuntimeOwned)
-        && matches!(message.origin, MessageOrigin::Task { .. })
+        && matches!(
+            message.origin,
+            MessageOrigin::System { .. } | MessageOrigin::Task { .. }
+        )
 }
 
 pub(crate) fn resolve_canonical_activation_scenario(

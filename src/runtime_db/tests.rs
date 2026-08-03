@@ -738,6 +738,96 @@ mod tests {
     }
 
     #[test]
+    fn migration_42_preserves_scheduler_runtime_consistency_boundary() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        {
+            let mut connection = open_connection(&db_path)?;
+            ensure_migration_table(&connection)?;
+            for migration in MIGRATIONS
+                .iter()
+                .filter(|migration| migration.version <= 41)
+            {
+                apply_migration(&mut connection, migration)?;
+            }
+            let ordinary_fence_sql: String = connection.query_row(
+                "SELECT sql
+                 FROM sqlite_master
+                 WHERE type = 'index'
+                   AND name = 'idx_scheduler_activations_ordinary_admission_fence'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert!(
+                !ordinary_fence_sql.contains("internal_followup"),
+                "migration 41 unexpectedly includes InternalFollowup admission"
+            );
+            connection.execute_batch(
+                r#"
+INSERT INTO scheduler_activation_sources (
+  agent_id, activation_id, source_kind, source_identity, payload_json, created_at
+) VALUES (
+  'agent-a', 'activation-a', 'operator_input', 'message-a', '{}',
+  '2026-08-03T00:00:00Z'
+);
+
+INSERT INTO scheduler_activations (
+  agent_id, activation_id, authority_id, owner_kind, owner_id, work_item_id,
+  admitted_generation, admission_kind, recovery_for_activation_id, wait_id,
+  wait_generation, lifecycle_state, idempotency_key, payload_json, created_at,
+  updated_at
+) VALUES (
+  'agent-a', 'activation-a', 'authority-a', 'work_item', 'work-a', 'work-a',
+  1, 'scheduling', NULL, NULL, NULL, 'settled', 'activation-a', '{}',
+  '2026-08-03T00:00:00Z', '2026-08-03T00:00:00Z'
+);
+"#,
+            )?;
+        }
+
+        RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let connection = open_connection(&db_path)?;
+        let preserved: (String, String) = connection.query_row(
+            "SELECT admission_kind, lifecycle_state
+             FROM scheduler_activations
+             WHERE agent_id = 'agent-a' AND activation_id = 'activation-a'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(preserved, ("scheduling".into(), "settled".into()));
+
+        let foreign_key_count: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM pragma_foreign_key_list('scheduler_activations')",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            foreign_key_count, 0,
+            "migration 42 must preserve the runtime-owned scheduler consistency boundary"
+        );
+        let ordinary_fence_sql: String = connection.query_row(
+            "SELECT sql
+             FROM sqlite_master
+             WHERE type = 'index'
+               AND name = 'idx_scheduler_activations_ordinary_admission_fence'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(
+            ordinary_fence_sql.contains("internal_followup"),
+            "migration 42 must include InternalFollowup in the ordinary admission fence"
+        );
+        let foreign_key_violations = connection
+            .prepare("PRAGMA foreign_key_check")?
+            .query_map([], |_| Ok(()))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        assert!(
+            foreign_key_violations.is_empty(),
+            "migration 42 introduced foreign key violations"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn scheduler_rollout_schema_rejects_authoritative_rollback_target() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
@@ -1781,6 +1871,153 @@ INSERT INTO scheduler_scenario_authorities (
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
         assert_eq!(source, ("operator_input".into(), "message-operator".into()));
+        Ok(())
+    }
+
+    #[test]
+    fn canonical_internal_followup_is_message_unique_and_generation_fenced() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let agent_id = "agent-a";
+        let admission = |activation_id: &str,
+                         authority_id: &str,
+                         message_id: &str,
+                         expected_dispatch_revision| {
+            ProtocolCommand::AdmitActivation(AdmitActivationCommand {
+                authority_id: authority_id.into(),
+                activation: AgentActivation {
+                    id: activation_id.into(),
+                    agent_id: agent_id.into(),
+                    state: ActivationLifecycleState::Admitted,
+                    cause: ActivationCause::InternalFollowup {
+                        message_id: message_id.into(),
+                    },
+                    binding: ActivationBinding::Lifecycle {
+                        agent_id: agent_id.into(),
+                    },
+                    priority: ActivationPriority::Normal,
+                    preemption: PreemptionPolicy::AllowOperatorInterjection,
+                    source_revision: Some(1),
+                    idempotency_key: format!("internal-followup:{activation_id}"),
+                    provenance: ActivationProvenance {
+                        origin: ActivationOrigin::System,
+                        trust: ActivationTrust::RuntimeInstruction,
+                        source_id: message_id.into(),
+                        correlation_id: None,
+                        causation_id: None,
+                    },
+                },
+                expected_scheduling_generation: 1,
+                expected_dispatch_revision,
+            })
+        };
+        let first_message_id = "message-internal-followup-a";
+        let first_admission = admission(
+            "activation-internal-followup-a",
+            "authority-internal-followup-a",
+            first_message_id,
+            0,
+        );
+        let first_settlement = ProtocolCommand::SettleActivation(SettleActivationCommand {
+            settlement: ActivationSettlement {
+                id: "settlement-internal-followup-a".into(),
+                activation_id: "activation-internal-followup-a".into(),
+                turn_terminal: None,
+                disposition: ActivationDisposition::WorkContinues,
+                agent_dispatch: AgentDispatchDisposition::Open,
+                operator_delivery: None,
+                evidence: Vec::new(),
+                created_at: "2026-08-03T00:00:00Z".into(),
+            },
+        });
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        db.transitions()
+            .initialize_scheduler_protocol_partition(agent_id, &scheduler_protocol_snapshot(1))?;
+        db.transitions()
+            .commit_scheduler_protocol_command_unchecked_for_test(
+                agent_id,
+                &first_admission,
+                None,
+            )?;
+        db.transitions()
+            .commit_scheduler_protocol_command_unchecked_for_test(
+                agent_id,
+                &first_settlement,
+                None,
+            )?;
+        drop(db);
+
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let snapshot = reopened
+            .transitions()
+            .load_scheduler_protocol_snapshot(agent_id)?;
+        assert_eq!(
+            snapshot.admitted_generations,
+            BTreeSet::from(["lifecycle:agent-a:1".into()])
+        );
+        let second_message_id = "message-internal-followup-b";
+        let second_admission = admission(
+            "activation-internal-followup-b",
+            "authority-internal-followup-b",
+            second_message_id,
+            snapshot.dispatch_revision,
+        );
+        let duplicate = reopened
+            .transitions()
+            .commit_scheduler_protocol_command_unchecked_for_test(
+                agent_id,
+                &second_admission,
+                None,
+            )?;
+        assert_eq!(duplicate.result.decision, Decision::Rejected);
+        assert_eq!(
+            duplicate.result.diagnostics,
+            ["scheduling_generation_already_admitted"]
+        );
+        drop(reopened);
+
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let snapshot = reopened
+            .transitions()
+            .load_scheduler_protocol_snapshot(agent_id)?;
+        assert_eq!(
+            snapshot.admitted_generations,
+            BTreeSet::from(["lifecycle:agent-a:1".into()])
+        );
+        let sources = reopened
+            .connection()?
+            .prepare(
+                "SELECT source_kind, source_identity
+                 FROM scheduler_activation_sources
+                 WHERE agent_id = ?1
+                 ORDER BY source_identity",
+            )?
+            .query_map([agent_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        assert_eq!(
+            sources,
+            vec![("internal_followup".into(), first_message_id.into())]
+        );
+
+        let error = reopened
+            .connection()?
+            .execute(
+                "INSERT INTO scheduler_activation_sources (
+                   agent_id,
+                   activation_id,
+                   source_kind,
+                   source_identity,
+                   payload_json,
+                   created_at
+                 ) VALUES (?1, 'activation-duplicate', 'internal_followup', ?2, '{}', ?3)",
+                (agent_id, first_message_id, Utc::now().to_rfc3339()),
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.sqlite_error_code(),
+            Some(ErrorCode::ConstraintViolation)
+        );
         Ok(())
     }
 
@@ -5053,7 +5290,7 @@ CREATE TABLE working_memory_deltas (
         let first = RuntimeDbLock::lock(&lock_path)?;
         let output = Command::new(std::env::current_exe()?)
             .arg("--exact")
-            .arg("runtime_db::tests::runtime_db_lock_rejects_second_nonblocking_holder")
+            .arg("runtime_db::tests::tests::runtime_db_lock_rejects_second_nonblocking_holder")
             .arg("--nocapture")
             .env("HOLON_RUNTIME_DB_LOCK_CHILD_PATH", &lock_path)
             .output()?;

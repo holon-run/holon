@@ -61,15 +61,26 @@ Each case asserts three layers:
 
 | Layer | Trigger | Tiers | Timeout | Blocking |
 |---|---|---|---|---|
-| PR optional | `e2e-scheduler` label | Tier-1 subset | 20 min | no (`continue-on-error`) |
+| PR required | every scheduler/runtime Docker-relevant PR | deterministic Tier-1: multi-WorkItem, external wait, operator wait; legacy + canonical | 20 min | yes (`Scheduler E2E Required`) |
+| PR live optional | `e2e-scheduler` label | real-provider Tier-1 subset; legacy + canonical | 20 min | no (`continue-on-error`) |
 | Nightly | schedule | Tier-1 all + Tier-2 all | 60 min (job) / 15 min (suite `--timeout 900`) | creates issue on failure |
 | Release | release pipeline | Tier-1 + Tier-2 + Tier-3 | 90 min | yes |
 
-### Approved Decisions
+The required profile uses the dependency-free OpenAI Responses stub in
+`tests/e2e/docker/openai_stub/`. It produces `scheduler-coverage-report.json`
+from an explicit required coverage set; omitted cases therefore fail even when
+the selected matrix is internally symmetric. Real-provider runs remain the
+interoperability gate for provider behavior that a scripted transport cannot
+prove.
 
-- **CI Provider**: single low-cost model via env var; multi-provider matrix
-  only in release pipeline (max 2 providers).
-- **PR blocking**: `continue-on-error: true`; nightly is the regression gate.
+### Current Decisions
+
+- **Required CI provider**: local deterministic OpenAI Responses stub, with no
+  provider secret or PR label.
+- **Live CI provider**: single low-cost model via env var; multi-provider
+  matrix only in release pipeline (max 2 providers).
+- **PR blocking**: the deterministic profile is required; the live provider
+  job remains optional and `continue-on-error`.
 - **Phase order**: Phase 1 (infrastructure) → 2 (Tier-1) → 3 (Tier-2) → 4
   (Tier-3); within Phase 2, crash recovery and provider failure are highest
   priority.

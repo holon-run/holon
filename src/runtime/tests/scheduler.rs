@@ -1401,6 +1401,35 @@ fn runtime_owned_unbound_child_followup_is_lifecycle_nudge() {
 }
 
 #[test]
+fn runtime_owned_unbound_system_followup_is_lifecycle_nudge() {
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::InternalFollowup,
+        MessageOrigin::System {
+            subsystem: "first_run_intro".into(),
+        },
+        AuthorityClass::ExternalEvidence,
+        Priority::Next,
+        MessageBody::Text {
+            text: "introduce the runtime".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+
+    assert_eq!(
+        scheduler::canonical_activation_candidate(&message, None, None).unwrap(),
+        Some(
+            scheduler::CanonicalActivationCandidate::LifecycleExternalNudge {
+                agent_id: "default".into(),
+            }
+        )
+    );
+}
+
+#[test]
 fn runtime_owned_unbound_child_evidence_is_lifecycle_nudge() {
     let message = MessageEnvelope::new(
         "child",

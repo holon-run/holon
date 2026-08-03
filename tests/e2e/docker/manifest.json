@@ -2,6 +2,19 @@
   "version": 2,
   "scheduler_fixture_corpus_revision": "scheduler-release-acceptance-v1",
   "profiles": {
+    "scheduler-required": {
+      "provider_mode": "stub",
+      "case_ids": [
+        "scheduler-multi-workitem-scheduling",
+        "scheduler-external-wait-resume",
+        "scheduler-operator-wait-resume"
+      ],
+      "required_coverage_ids": [
+        "scheduler-multi-workitem-scheduling",
+        "scheduler-external-wait-resume",
+        "scheduler-operator-wait-resume"
+      ]
+    },
     "scheduler-acceptance": {
       "provider_mode": "live",
       "required_coverage_ids": [
@@ -188,6 +201,7 @@
     {
       "id": "scheduler-multi-workitem-scheduling",
       "coverage_ids": ["scheduler-multi-workitem-scheduling"],
+      "stub_scenario": "scheduler-multi",
       "tier": "extended",
       "tags": ["scheduler", "workitem", "multi", "priority", "e2e-tier-1"],
       "timeout_seconds": 600,
@@ -217,6 +231,7 @@
     {
       "id": "scheduler-external-wait-resume",
       "coverage_ids": ["scheduler-external-wait-resume"],
+      "stub_scenario": "scheduler-external",
       "tier": "extended",
       "tags": ["scheduler", "workitem", "external", "wait", "resume", "e2e-tier-1"],
       "timeout_seconds": 600,
@@ -244,6 +259,7 @@
     {
       "id": "scheduler-operator-wait-resume",
       "coverage_ids": ["scheduler-operator-wait-resume"],
+      "stub_scenario": "scheduler-operator",
       "tier": "extended",
       "tags": ["scheduler", "workitem", "operator", "wait", "resume", "e2e-tier-1"],
       "timeout_seconds": 600,

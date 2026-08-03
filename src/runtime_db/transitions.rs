@@ -1074,6 +1074,18 @@ fn validate_queue_operation(command: &QueueTransitionCommand) -> Result<()> {
                 },
             }
         ) | (
+            QueueOperation::Settle,
+            QueueMutation::CompareAndSet {
+                expected: QueueEntryRecord {
+                    status: QueueEntryStatus::Queued | QueueEntryStatus::Interrupted,
+                    ..
+                },
+                record: QueueEntryRecord {
+                    status: QueueEntryStatus::Dropped,
+                    ..
+                },
+            }
+        ) | (
             QueueOperation::RepairDrop,
             QueueMutation::CompareAndSet {
                 expected: QueueEntryRecord {

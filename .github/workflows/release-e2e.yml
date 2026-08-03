@@ -121,6 +121,7 @@ jobs:
             --image-digest "${CANDIDATE_IMAGE}"
             --skip-build
             --scheduler-matrix
+            --profile scheduler-acceptance
             --env-file "${HOLON_E2E_DOCKER_ENV_FILE}"
           )
           while IFS= read -r case_id; do
@@ -195,14 +196,26 @@ jobs:
               raise SystemExit(f"Release E2E did not pass: {summary['status']}")
           scheduler_report_path = summaries[-1].parent / "scheduler-acceptance-report.json"
           scheduler_report = json.loads(scheduler_report_path.read_text())
+          coverage_report_path = summaries[-1].parent / "scheduler-coverage-report.json"
+          coverage_report = json.loads(coverage_report_path.read_text())
           if scheduler_report["status"] != "pass":
               raise SystemExit(
                   f"Scheduler acceptance did not pass: {scheduler_report['status']}"
+              )
+          if coverage_report["status"] != "pass":
+              raise SystemExit(
+                  f"Scheduler coverage did not pass: {coverage_report['status']}"
               )
           if scheduler_report["git_sha"] != os.environ["CANDIDATE_SHA"]:
               raise SystemExit("Scheduler acceptance Git SHA does not match candidate")
           if scheduler_report["image_digest"] != summary["image_digest"]:
               raise SystemExit("Scheduler acceptance image digest does not match summary")
+          if coverage_report["git_sha"] != os.environ["CANDIDATE_SHA"]:
+              raise SystemExit("Scheduler coverage Git SHA does not match candidate")
+          if coverage_report["image_digest"] != summary["image_digest"]:
+              raise SystemExit("Scheduler coverage image digest does not match summary")
+          if coverage_report["profile"] != "scheduler-acceptance":
+              raise SystemExit("Scheduler coverage profile is not scheduler-acceptance")
           attestation = {
               "schema_version": 1,
               "release_tag": os.environ["RELEASE_TAG"],
@@ -215,8 +228,10 @@ jobs:
               "image": summary["image"],
               "image_digest": summary["image_digest"],
               "scheduler_acceptance": scheduler_report,
+              "scheduler_coverage": coverage_report,
               "summary_path": str(summaries[-1]),
               "scheduler_acceptance_path": str(scheduler_report_path),
+              "scheduler_coverage_path": str(coverage_report_path),
           }
           Path("target/release-e2e-attestation").mkdir(parents=True, exist_ok=True)
           Path("target/release-e2e-attestation/release-e2e-attestation.json").write_text(

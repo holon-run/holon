@@ -78,6 +78,9 @@ pub enum ExecutionSourceIdentity {
     QueueMessage {
         message_id: String,
     },
+    InternalFollowup {
+        message_id: String,
+    },
     TaskResult {
         task_id: String,
         result_message_id: String,
@@ -370,9 +373,10 @@ fn validate_source_binding(
     use ExecutionBinding::*;
     use ExecutionSourceIdentity::*;
     let allowed = match (&source.identity, binding) {
-        (QueueMessage { .. }, Conversation { .. } | WorkItem { .. } | AgentLifecycle { .. }) => {
-            true
-        }
+        (
+            QueueMessage { .. } | InternalFollowup { .. },
+            Conversation { .. } | WorkItem { .. } | AgentLifecycle { .. },
+        ) => true,
         (TaskResult { .. }, Conversation { .. } | WorkItem { .. } | Command) => true,
         (ChildResult { .. }, Conversation { .. } | WorkItem { .. } | Command) => true,
         (TriggeredWait { .. }, Conversation { .. } | WorkItem { .. } | AgentLifecycle { .. }) => {
@@ -420,9 +424,10 @@ fn validate_rejoin_fence(fence: Option<&RejoinFence>) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_provenance(provenance: &ExecutionProvenance) -> Result<(), String> {
+fn validate_provenance(attempt: &ExecutionAttempt) -> Result<(), String> {
     use ExecutionOrigin::*;
     use ExecutionTrust::*;
+    let provenance = &attempt.provenance;
     let valid = match provenance.origin {
         Operator => provenance.trust == OperatorInstruction,
         Channel | Webhook => matches!(provenance.trust, IntegrationSignal | ExternalEvidence),
@@ -433,7 +438,19 @@ fn validate_provenance(provenance: &ExecutionProvenance) -> Result<(), String> {
         Timer | System => matches!(provenance.trust, RuntimeInstruction | IntegrationSignal),
         Task | RuntimeRecovery => provenance.trust == RuntimeInstruction,
     };
-    if !valid {
+    let runtime_owned_followup = matches!(
+        (
+            &attempt.source.identity,
+            &attempt.binding,
+            provenance.origin
+        ),
+        (
+            ExecutionSourceIdentity::InternalFollowup { .. },
+            ExecutionBinding::WorkItem { .. } | ExecutionBinding::AgentLifecycle { .. },
+            System | Task
+        )
+    );
+    if !valid && !runtime_owned_followup {
         return Err("execution provenance origin and trust are incompatible".into());
     }
     Ok(())
@@ -446,7 +463,7 @@ pub fn admit_execution(
     assert_invariants(state)?;
     let attempt = &command.attempt;
     validate_source_binding(&attempt.source, &attempt.binding, &attempt.admitted_fences)?;
-    validate_provenance(&attempt.provenance)?;
+    validate_provenance(attempt)?;
 
     if attempt.agent_id != state.agent_id {
         return Err("attempt agent does not match execution partition".into());
