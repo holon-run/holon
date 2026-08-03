@@ -2431,7 +2431,7 @@ export interface components {
                 agent_id: string;
                 blocked_by?: string | null;
                 /** @enum {string} */
-                candidate_class: "current_runnable" | "triggered_blocked" | "queued_runnable" | "waiting_for_operator" | "yielded" | "blocked" | "completed_recent";
+                candidate_class: "current_runnable" | "triggered_blocked" | "queued_runnable" | "waiting_for_operator" | "yielded" | "blocked" | "completing" | "completed_recent";
                 /** Format: date-time */
                 created_at: string;
                 current_todo?: {
@@ -2440,7 +2440,7 @@ export interface components {
                     text: string;
                 } | null;
                 /** @enum {string} */
-                focus: "current" | "queued" | "yielded" | "blocked" | "completed";
+                focus: "current" | "queued" | "yielded" | "blocked" | "completing" | "completed";
                 id: string;
                 is_current: boolean;
                 is_runnable: boolean;
@@ -2448,9 +2448,9 @@ export interface components {
                 /** @enum {string} */
                 plan_status: "draft" | "ready" | "needs_input";
                 /** @enum {string} */
-                readiness: "runnable" | "yielded" | "waiting_for_operator" | "blocked" | "completed";
+                readiness: "runnable" | "yielded" | "waiting_for_operator" | "blocked" | "completing" | "completed";
                 /** @enum {string} */
-                reason_code: "completed" | "continuation_yielded" | "active_task_wait" | "active_operator_wait" | "active_timer_wait" | "active_external_wait" | "active_system_wait" | "manual_blocker" | "plan_needs_input" | "runnable";
+                reason_code: "completing" | "completed" | "continuation_yielded" | "active_task_wait" | "active_operator_wait" | "active_timer_wait" | "active_external_wait" | "active_system_wait" | "manual_blocker" | "plan_needs_input" | "runnable";
                 /** Format: date-time */
                 recheck_at?: string | null;
                 result_brief_id?: string | null;
@@ -2458,9 +2458,9 @@ export interface components {
                 /** Format: uint64 */
                 revision: number;
                 /** @enum {string} */
-                scheduling_state: "runnable" | "yielded_to_work_item" | "waiting_operator" | "waiting_task" | "waiting_external" | "waiting_timer" | "waiting_system" | "blocked" | "completed";
+                scheduling_state: "runnable" | "yielded_to_work_item" | "waiting_operator" | "waiting_task" | "waiting_external" | "waiting_timer" | "waiting_system" | "blocked" | "completing" | "completed";
                 /** @enum {string} */
-                state: "open" | "completed";
+                state: "open" | "completing" | "completed";
                 turn_id?: string | null;
                 /** Format: date-time */
                 updated_at: string;
@@ -2592,6 +2592,7 @@ export interface components {
         CompleteWorkItemRequest: {
             /** @enum {string|null} */
             authority_class?: "operator_instruction" | "runtime_instruction" | "integration_signal" | "external_evidence" | null;
+            report_text: string;
         };
         /** @description Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize. */
         ControlPromptRequest: {
@@ -3008,7 +3009,7 @@ export interface components {
                  */
                 revision: number;
                 /** @enum {string} */
-                state: "open" | "completed";
+                state: "open" | "completing" | "completed";
                 todo_list?: {
                     /** @enum {string} */
                     state: "pending" | "in_progress" | "completed";
@@ -3091,7 +3092,7 @@ export interface components {
                  */
                 revision: number;
                 /** @enum {string} */
-                state: "open" | "completed";
+                state: "open" | "completing" | "completed";
                 todo_list?: {
                     /** @enum {string} */
                     state: "pending" | "in_progress" | "completed";
@@ -3123,10 +3124,10 @@ export interface components {
                 cancelled_wait_condition_ids?: string[];
                 current_focus_mode: string;
                 /** @enum {string} */
-                current_readiness: "runnable" | "yielded" | "waiting_for_operator" | "blocked" | "completed";
+                current_readiness: "runnable" | "yielded" | "waiting_for_operator" | "blocked" | "completing" | "completed";
                 current_work_item_id: string;
                 /** @enum {string|null} */
-                previous_readiness?: "runnable" | "yielded" | "waiting_for_operator" | "blocked" | "completed" | null;
+                previous_readiness?: "runnable" | "yielded" | "waiting_for_operator" | "blocked" | "completing" | "completed" | null;
                 previous_work_item_id?: string | null;
                 reason?: string | null;
                 switch_kind: string;
@@ -3524,7 +3525,7 @@ export interface components {
             agent_id: string;
             blocked_by?: string | null;
             /** @enum {string} */
-            candidate_class: "current_runnable" | "triggered_blocked" | "queued_runnable" | "waiting_for_operator" | "yielded" | "blocked" | "completed_recent";
+            candidate_class: "current_runnable" | "triggered_blocked" | "queued_runnable" | "waiting_for_operator" | "yielded" | "blocked" | "completing" | "completed_recent";
             /** Format: date-time */
             created_at: string;
             current_todo?: {
@@ -3533,7 +3534,7 @@ export interface components {
                 text: string;
             } | null;
             /** @enum {string} */
-            focus: "current" | "queued" | "yielded" | "blocked" | "completed";
+            focus: "current" | "queued" | "yielded" | "blocked" | "completing" | "completed";
             id: string;
             is_current: boolean;
             is_runnable: boolean;
@@ -3541,9 +3542,9 @@ export interface components {
             /** @enum {string} */
             plan_status: "draft" | "ready" | "needs_input";
             /** @enum {string} */
-            readiness: "runnable" | "yielded" | "waiting_for_operator" | "blocked" | "completed";
+            readiness: "runnable" | "yielded" | "waiting_for_operator" | "blocked" | "completing" | "completed";
             /** @enum {string} */
-            reason_code: "completed" | "continuation_yielded" | "active_task_wait" | "active_operator_wait" | "active_timer_wait" | "active_external_wait" | "active_system_wait" | "manual_blocker" | "plan_needs_input" | "runnable";
+            reason_code: "completing" | "completed" | "continuation_yielded" | "active_task_wait" | "active_operator_wait" | "active_timer_wait" | "active_external_wait" | "active_system_wait" | "manual_blocker" | "plan_needs_input" | "runnable";
             /** Format: date-time */
             recheck_at?: string | null;
             result_brief_id?: string | null;
@@ -3551,9 +3552,9 @@ export interface components {
             /** Format: uint64 */
             revision: number;
             /** @enum {string} */
-            scheduling_state: "runnable" | "yielded_to_work_item" | "waiting_operator" | "waiting_task" | "waiting_external" | "waiting_timer" | "waiting_system" | "blocked" | "completed";
+            scheduling_state: "runnable" | "yielded_to_work_item" | "waiting_operator" | "waiting_task" | "waiting_external" | "waiting_timer" | "waiting_system" | "blocked" | "completing" | "completed";
             /** @enum {string} */
-            state: "open" | "completed";
+            state: "open" | "completing" | "completed";
             turn_id?: string | null;
             /** Format: date-time */
             updated_at: string;
@@ -4220,7 +4221,7 @@ export interface components {
              */
             revision: number;
             /** @enum {string} */
-            state: "open" | "completed";
+            state: "open" | "completing" | "completed";
             todo_list?: {
                 /** @enum {string} */
                 state: "pending" | "in_progress" | "completed";
