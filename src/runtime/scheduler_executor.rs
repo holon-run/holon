@@ -1759,6 +1759,9 @@ fn canonical_activation_id_for_attempt(
     let Some(snapshot) = snapshot else {
         return base;
     };
+    // Admissions are an append-only identity ledger: settlement changes the
+    // activation state but never removes its admission. Counting matching
+    // admissions therefore remains monotonic across persistence reloads.
     let matching_attempts = snapshot
         .activation_admissions
         .values()

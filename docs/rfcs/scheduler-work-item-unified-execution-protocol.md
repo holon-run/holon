@@ -182,7 +182,7 @@ owner-specific outcome:
 
 ```text
 ConversationOutcome =
-  Replied | Wait(wait) | Interrupted(reason) | Failed(policy)
+  Replied | Wait(wait) | Paused(reason) | Interrupted(reason) | Failed(policy)
 
 WorkItemOutcome =
   Continue | Wait(wait) | Complete(completion) | Pause(reason)

@@ -1049,8 +1049,8 @@ fn execution_protocol_settlement_command(
                 (
                     ExecutionBinding::Conversation { .. } | ExecutionBinding::AgentLifecycle { .. },
                     ActivationDisposition::WorkPaused { reason },
-                ) => ExecutionOutcome::Conversation(ConversationOutcome::Failed {
-                    policy: reason.clone(),
+                ) => ExecutionOutcome::Conversation(ConversationOutcome::Paused {
+                    reason: reason.clone(),
                 }),
                 (
                     ExecutionBinding::Conversation { .. } | ExecutionBinding::AgentLifecycle { .. },

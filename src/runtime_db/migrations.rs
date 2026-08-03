@@ -2449,11 +2449,6 @@ CREATE TABLE IF NOT EXISTS execution_protocol_command_results (
 );
 "#,
     },
-    Migration {
-        version: 42,
-        name: "execution_protocol_authority_fences",
-        sql: "",
-    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

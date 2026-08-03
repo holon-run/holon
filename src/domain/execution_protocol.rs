@@ -251,6 +251,7 @@ pub enum ExecutionOutcome {
 pub enum ConversationOutcome {
     Replied,
     Wait { wait: WaitReference },
+    Paused { reason: String },
     Interrupted { reason: String },
     Failed { policy: String },
 }
