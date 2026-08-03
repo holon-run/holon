@@ -239,8 +239,8 @@ pub(crate) fn upsert_agent_state_tx(tx: &Transaction<'_>, record: &AgentState) -
     tx.execute(
         "INSERT INTO agent_states (
             agent_id, status, turn_index, current_run_id, current_work_item_id,
-            active_workspace_id, updated_at, payload_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            active_workspace_id, updated_at, payload_json, control_revision
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1)
          ON CONFLICT(agent_id) DO UPDATE SET
             status = excluded.status,
             turn_index = excluded.turn_index,
@@ -248,7 +248,8 @@ pub(crate) fn upsert_agent_state_tx(tx: &Transaction<'_>, record: &AgentState) -
             current_work_item_id = excluded.current_work_item_id,
             active_workspace_id = excluded.active_workspace_id,
             updated_at = excluded.updated_at,
-            payload_json = excluded.payload_json
+            payload_json = excluded.payload_json,
+            control_revision = agent_states.control_revision + 1
          WHERE excluded.turn_index >= agent_states.turn_index",
         params![
             record.id,

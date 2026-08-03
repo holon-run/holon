@@ -1,6 +1,6 @@
 use super::{scheduler, *};
 use crate::types::{
-    ExecutionAdmissionProvenance, WaitConditionKind, WaitConditionStatus, WakeSource,
+    BriefKind, ExecutionAdmissionProvenance, WaitConditionKind, WaitConditionStatus, WakeSource,
     WorkItemRecord, WorkItemState,
 };
 use sha2::{Digest, Sha256};
@@ -387,6 +387,8 @@ impl RuntimeHandle {
         }
         self.persist_task_transition(&task, "task_result_received")
             .await?;
+        let parent_turn_already_delivered =
+            task_result_parent_turn_already_delivered(&self.inner.storage, &task)?;
 
         let task_status_label = match task.status {
             TaskStatus::Completed => "completed",
@@ -397,7 +399,8 @@ impl RuntimeHandle {
             TaskStatus::Running => "running",
             TaskStatus::Queued => "queued",
         };
-        let emit_result_brief = should_emit_task_result_brief(&task);
+        let emit_result_brief =
+            should_emit_task_result_brief(&task) && !parent_turn_already_delivered;
         let result_text = match &message.body {
             MessageBody::Text { text } => {
                 format!("Task {} {}: {}", task.id, task_status_label, text)
@@ -409,7 +412,7 @@ impl RuntimeHandle {
                 format!("Task {} {}: {}", task.id, task_status_label, text)
             }
         };
-        if model_reentry {
+        if model_reentry && !parent_turn_already_delivered {
             if emit_result_brief {
                 let brief = brief::make_task_result(&message.agent_id, &task.id, &result_text);
                 self.persist_brief(&brief).await?;
@@ -434,11 +437,21 @@ impl RuntimeHandle {
                 )
                 .await?;
             return Ok(Some(transition));
-        } else {
+        } else if !model_reentry {
             if emit_result_brief {
                 let brief = brief::make_result(&message.agent_id, message, result_text);
                 self.persist_brief(&brief).await?;
             }
+        } else {
+            self.inner.storage.append_event(&AuditEvent::legacy(
+                "stale_task_result_rejoin_suppressed",
+                serde_json::json!({
+                    "agent_id": message.agent_id,
+                    "task_id": task.id,
+                    "parent_turn_id": task_parent_turn_id(&task),
+                    "reason": "parent_turn_already_delivered",
+                }),
+            ))?;
         }
         Ok(None)
     }
@@ -478,6 +491,33 @@ fn stable_terminal_task_event_id(event_kind: &str, task: &TaskRecord) -> String 
 
 fn should_emit_task_result_brief(task: &TaskRecord) -> bool {
     task.kind != TaskKind::CommandTask
+}
+
+fn task_parent_turn_id(task: &TaskRecord) -> Option<&str> {
+    task.detail
+        .as_ref()
+        .and_then(|detail| detail.get("parent_turn_id"))
+        .and_then(serde_json::Value::as_str)
+}
+
+fn task_result_parent_turn_already_delivered(
+    storage: &AppStorage,
+    task: &TaskRecord,
+) -> Result<bool> {
+    let Some(parent_turn_id) = task_parent_turn_id(task) else {
+        return Ok(false);
+    };
+    let Some(parent_turn) = storage
+        .read_recent_turns(usize::MAX)?
+        .into_iter()
+        .find(|turn| turn.turn_id == parent_turn_id)
+    else {
+        return Ok(false);
+    };
+    Ok(storage
+        .read_briefs_by_ids(&parent_turn.produced_brief_ids)?
+        .iter()
+        .any(|brief| brief.kind == BriefKind::Result))
 }
 
 #[cfg(test)]
@@ -872,6 +912,45 @@ mod tests {
         }));
         let transcript = runtime.storage().read_recent_transcript(10).unwrap();
         assert!(transcript.is_empty());
+    }
+
+    #[tokio::test]
+    async fn delivered_parent_turn_suppresses_stale_task_result_reentry_and_brief() {
+        let runtime = runtime();
+        let mut delivered = BriefRecord::new(
+            "default",
+            BriefKind::Result,
+            "Original operator answer.",
+            Some("operator-message".into()),
+            None,
+        );
+        delivered.turn_id = Some("turn-parent".into());
+        runtime.storage().append_brief(&delivered).unwrap();
+        let mut parent_turn = TurnRecord::new("default", "turn-parent", 1);
+        parent_turn.produced_brief_ids = vec![delivered.id.clone()];
+        runtime.storage().append_turn(&parent_turn).unwrap();
+
+        let mut stale = task("task-1", TaskStatus::Completed, false);
+        stale.detail = Some(json!({"parent_turn_id": "turn-parent"}));
+        runtime
+            .reduce_task_result_message(&task_result_message("task-1"), stale, true, None)
+            .await
+            .unwrap();
+
+        let briefs = runtime.storage().read_recent_briefs(10).unwrap();
+        assert_eq!(briefs, vec![delivered]);
+        assert!(runtime
+            .recent_events(20)
+            .await
+            .unwrap()
+            .iter()
+            .any(|event| event.kind == "stale_task_result_rejoin_suppressed"));
+        assert!(runtime
+            .agent_state()
+            .await
+            .unwrap()
+            .last_turn_terminal
+            .is_none());
     }
 
     #[tokio::test]

@@ -2,6 +2,10 @@
 
 // Phase 2 keeps this additive persistence seam dormant until production shadow
 // wiring begins; repository tests exercise it without granting scheduler authority.
+#[cfg(test)]
+mod execution_protocol_fixture_repository;
+mod execution_protocol_repository;
+pub(crate) use execution_protocol_repository::{authority_fences_tx, persist_state_tx};
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod scheduler_protocol_repository;
 
@@ -192,6 +196,18 @@ pub(crate) struct QueueTransitionCommand {
     pub notify_scheduler: bool,
     pub fault: Option<TransitionFaultPoint>,
     pub brief_evidence: Vec<BriefRecord>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ExecutionProtocolTransition {
+    pub bootstrap: Option<crate::domain::execution_protocol::ExecutionProtocolState>,
+    pub commands: Vec<crate::domain::execution_protocol::ExecutionProtocolCommand>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ExecutionAuthorityFences {
+    pub agent_control_revision: u64,
+    pub host_registry_revision: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -466,6 +482,14 @@ impl RuntimeTransitionRepository<'_> {
     }
 
     pub fn commit_queue(&self, command: &QueueTransitionCommand) -> Result<TransitionCommit> {
+        self.commit_queue_with_execution_protocol(command, &ExecutionProtocolTransition::default())
+    }
+
+    pub fn commit_queue_with_execution_protocol(
+        &self,
+        command: &QueueTransitionCommand,
+        execution_protocol: &ExecutionProtocolTransition,
+    ) -> Result<TransitionCommit> {
         self.db.transaction(|tx| {
             validate_queue_operation(command)?;
             validate_queue_mutation_tx(tx, &command.mutation)?;
@@ -500,6 +524,13 @@ impl RuntimeTransitionRepository<'_> {
                 &command.agent_id,
                 command.scheduler_protocol_bootstrap.as_ref(),
                 &command.scheduler_protocol_commands,
+                &execution_protocol.commands,
+            )?;
+            let execution_protocol = execution_protocol_repository::validate_execution_commands_tx(
+                tx,
+                &command.agent_id,
+                execution_protocol.bootstrap.as_ref(),
+                &execution_protocol.commands,
             )?;
             inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
             let mutation_applied = match &command.mutation {
@@ -526,7 +557,13 @@ impl RuntimeTransitionRepository<'_> {
             let protocol_applied = scheduler_protocol
                 .as_ref()
                 .is_some_and(|prepared| prepared.has_writes());
-            let applied = mutation_applied || agent_state_applied || protocol_applied;
+            let execution_protocol_applied = execution_protocol
+                .as_ref()
+                .is_some_and(|prepared| prepared.has_writes());
+            let applied = mutation_applied
+                || agent_state_applied
+                || protocol_applied
+                || execution_protocol_applied;
             if !applied {
                 return Ok(TransitionCommit::default());
             }
@@ -535,6 +572,7 @@ impl RuntimeTransitionRepository<'_> {
                 &command.agent_id,
                 scheduler_protocol,
             )?;
+            execution_protocol_repository::persist_execution_commands_tx(tx, execution_protocol)?;
             for message in &command.message_evidence {
                 append_message_tx(tx, message)?;
             }
@@ -1072,8 +1110,15 @@ fn inject_fault(
 mod tests {
     use super::*;
     use crate::{
+        domain::execution_protocol::{
+            AdmitExecution, AdmittedFences, ExecutionAttempt, ExecutionAttemptState,
+            ExecutionBinding, ExecutionOrigin, ExecutionPriority, ExecutionProtocolCommand,
+            ExecutionProtocolState, ExecutionProvenance, ExecutionSource, ExecutionSourceIdentity,
+            ExecutionTrust, WorkItemExecutionRecord, WorkItemExecutionState,
+        },
         runtime_db::{RuntimeIndexChange, RuntimeIndexOperation},
         types::{
+            AgentIdentityRecord, AgentKind, AgentOwnership, AgentProfilePreset, AgentVisibility,
             Priority, QueueEntryStatus, TaskKind, TaskStatus, WaitConditionKind,
             WaitConditionStatus, WakeSource, WorkItemContinuationState, WorkItemState,
         },
@@ -1146,6 +1191,65 @@ mod tests {
             summary: Some("transition task".into()),
             detail: None,
             recovery: None,
+        }
+    }
+
+    fn execution_admission(
+        message_id: &str,
+        attempt_id: &str,
+        work_item_id: &str,
+    ) -> ExecutionProtocolTransition {
+        let mut bootstrap = ExecutionProtocolState::empty("agent-a");
+        bootstrap.work_items.insert(
+            work_item_id.into(),
+            WorkItemExecutionRecord {
+                source_revision: 1,
+                state: WorkItemExecutionState::Runnable {
+                    generation: 1,
+                    recovery_ref: None,
+                },
+            },
+        );
+        ExecutionProtocolTransition {
+            bootstrap: Some(bootstrap),
+            commands: vec![ExecutionProtocolCommand::Admit(Box::new(AdmitExecution {
+                attempt: ExecutionAttempt {
+                    attempt_id: attempt_id.into(),
+                    agent_id: "agent-a".into(),
+                    source_message_id: Some(message_id.into()),
+                    source: ExecutionSource {
+                        identity: ExecutionSourceIdentity::QueueMessage {
+                            message_id: message_id.into(),
+                        },
+                        generation: 1,
+                    },
+                    binding: ExecutionBinding::WorkItem {
+                        work_item_id: work_item_id.into(),
+                    },
+                    provenance: ExecutionProvenance {
+                        origin: ExecutionOrigin::System,
+                        trust: ExecutionTrust::RuntimeInstruction,
+                        priority: ExecutionPriority::Normal,
+                        correlation_id: None,
+                        causation_id: None,
+                    },
+                    admitted_fences: AdmittedFences {
+                        source_revision: 1,
+                        work_item_source_revision: Some(1),
+                        work_item_generation: Some(1),
+                        rejoin: None,
+                        agent_control_revision: 1,
+                        host_registry_revision: 1,
+                    },
+                    state: ExecutionAttemptState::Open,
+                    run_id: None,
+                    turn_id: None,
+                    recovery_of_attempt_id: None,
+                    terminal_outcome_id: None,
+                    admitted_at: "2026-08-01T00:00:00Z".into(),
+                    terminal_at: None,
+                },
+            }))],
         }
     }
 
@@ -1479,6 +1583,132 @@ mod tests {
             assert!(db.transcript_entries().all(Some("agent-a"))?.is_empty());
             assert!(db.audit_events().recent(Some("agent-a"), 10)?.is_empty());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn queue_claim_and_execution_admission_roll_back_together() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        let now = Utc::now();
+        let queued = QueueEntryRecord {
+            message_id: "message-execution-fault".into(),
+            agent_id: "agent-a".into(),
+            priority: Priority::Normal,
+            status: QueueEntryStatus::Queued,
+            created_at: now,
+            updated_at: now,
+        };
+        db.queue_entries().upsert(&queued)?;
+        let mut claimed = queued.clone();
+        claimed.status = QueueEntryStatus::Dequeued;
+        claimed.updated_at += chrono::Duration::seconds(1);
+
+        db.transitions()
+            .commit_queue_with_execution_protocol(
+                &QueueTransitionCommand {
+                    agent_id: "agent-a".into(),
+                    operation: QueueOperation::Claim,
+                    mutation: QueueMutation::Consume(claimed),
+                    scheduler_claim_work_item: None,
+                    scheduler_protocol_bootstrap: None,
+                    scheduler_protocol_commands: Vec::new(),
+                    agent_state: None,
+                    message_evidence: Vec::new(),
+                    transcript_entries: Vec::new(),
+                    turn_record: None,
+                    audit_events: Vec::new(),
+                    notify_scheduler: false,
+                    fault: Some(TransitionFaultPoint::AfterCanonicalWrites),
+                    brief_evidence: Vec::new(),
+                },
+                &execution_admission(
+                    &queued.message_id,
+                    "attempt-execution-fault",
+                    "work-execution-fault",
+                ),
+            )
+            .unwrap_err();
+
+        assert_eq!(db.queue_entries().latest_all()?, vec![queued]);
+        let connection = db.connection()?;
+        let partitions: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM execution_protocol_partitions",
+            [],
+            |row| row.get(0),
+        )?;
+        let attempts: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM execution_protocol_attempts",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(partitions, 0);
+        assert_eq!(attempts, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn execution_admission_command_is_idempotent_across_queue_commits() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        db.agent_states().upsert(&AgentState::new("agent-a"))?;
+        db.agent_identities().upsert(&AgentIdentityRecord::new(
+            "agent-a",
+            AgentKind::Named,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        ))?;
+        let transition =
+            execution_admission("message-execution", "attempt-execution", "work-execution");
+        for message_id in ["queue-write-1", "queue-write-2"] {
+            let now = Utc::now();
+            let commit = db.transitions().commit_queue_with_execution_protocol(
+                &QueueTransitionCommand {
+                    agent_id: "agent-a".into(),
+                    operation: QueueOperation::Admit,
+                    mutation: QueueMutation::Upsert(QueueEntryRecord {
+                        message_id: message_id.into(),
+                        agent_id: "agent-a".into(),
+                        priority: Priority::Normal,
+                        status: QueueEntryStatus::Queued,
+                        created_at: now,
+                        updated_at: now,
+                    }),
+                    scheduler_claim_work_item: None,
+                    scheduler_protocol_bootstrap: None,
+                    scheduler_protocol_commands: Vec::new(),
+                    agent_state: None,
+                    message_evidence: Vec::new(),
+                    transcript_entries: Vec::new(),
+                    turn_record: None,
+                    audit_events: Vec::new(),
+                    notify_scheduler: false,
+                    fault: None,
+                    brief_evidence: Vec::new(),
+                },
+                &transition,
+            )?;
+            assert!(commit.applied);
+        }
+
+        let connection = db.connection()?;
+        let attempts: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM execution_protocol_attempts
+             WHERE agent_id = 'agent-a' AND attempt_id = 'attempt-execution'",
+            [],
+            |row| row.get(0),
+        )?;
+        let command_results: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM execution_protocol_command_results
+             WHERE agent_id = 'agent-a'
+               AND command_kind = 'admit_execution'
+               AND command_identity = 'attempt-execution'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(attempts, 1);
+        assert_eq!(command_results, 1);
         Ok(())
     }
 

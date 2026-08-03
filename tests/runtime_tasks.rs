@@ -3,11 +3,21 @@ mod runtime_tasks;
 
 mod support;
 
+use tokio::sync::Semaphore;
+
+const MAX_CONCURRENT_RUNTIME_TESTS: usize = 4;
+static RUNTIME_TEST_PERMITS: Semaphore = Semaphore::const_new(MAX_CONCURRENT_RUNTIME_TESTS);
+
 macro_rules! runtime_async_tests {
     ($($name:ident),* $(,)?) => {
         $(
             #[tokio::test]
             async fn $name() -> anyhow::Result<()> {
+                // Each fixture starts a full runtime with background workers.
+                // Bound suite-local concurrency so fixed protocol timeouts do
+                // not become host-load dependent when the harness runs all
+                // integration tests in parallel.
+                let _permit = RUNTIME_TEST_PERMITS.acquire().await?;
                 runtime_tasks::$name().await
             }
         )*

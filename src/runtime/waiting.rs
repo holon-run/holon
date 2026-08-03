@@ -999,7 +999,11 @@ impl RuntimeHandle {
         else {
             return Ok(None);
         };
-        let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+        let Some(activation_id) =
+            scheduler_executor::canonical_open_activation_id(&snapshot, &message.id)
+        else {
+            return Ok(None);
+        };
         let Some(admission) = snapshot.activation_admissions.get(&activation_id) else {
             return Ok(None);
         };

@@ -60,6 +60,15 @@ pub(crate) struct RetiredSchedulerRolloutMetadata {
     pub command_result_count: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SchedulerAuthorityInventoryRecord {
+    pub storage: &'static str,
+    pub role: &'static str,
+    pub canonical_reader: bool,
+    pub target: &'static str,
+    pub row_count: u64,
+}
+
 pub(super) struct PreparedProtocolCommands {
     snapshot: Snapshot,
     initialized_partition: bool,
@@ -188,6 +197,7 @@ pub(super) fn validate_protocol_commands_tx(
     agent_id: &str,
     bootstrap: Option<&Snapshot>,
     commands: &[ProtocolCommand],
+    execution_commands: &[crate::domain::execution_protocol::ExecutionProtocolCommand],
 ) -> Result<Option<PreparedProtocolCommands>> {
     if commands.is_empty() {
         return Ok(None);
@@ -227,7 +237,7 @@ pub(super) fn validate_protocol_commands_tx(
             continue;
         }
         if let ProtocolCommand::AdoptLegacyWorkState(command) = command {
-            validate_legacy_adoption_source_tx(tx, agent_id, command)?;
+            validate_legacy_adoption_source_tx(tx, agent_id, command, execution_commands)?;
         }
         if let ProtocolCommand::AdoptActivationWorkState(command) = command {
             validate_activation_adoption_source_tx(tx, agent_id, command)?;
@@ -418,6 +428,174 @@ impl RuntimeTransitionRepository<'_> {
         })
     }
 
+    pub(crate) fn inspect_scheduler_authority_inventory(
+        &self,
+    ) -> Result<Vec<SchedulerAuthorityInventoryRecord>> {
+        const INVENTORY: &[(&str, &str, bool, &str)] = &[
+            (
+                "queue_entries",
+                "authority",
+                true,
+                "retain as queue source authority",
+            ),
+            (
+                "work_items",
+                "authority",
+                true,
+                "absorb WorkItem execution state",
+            ),
+            (
+                "wait_conditions",
+                "authority",
+                true,
+                "retain as the only wait authority",
+            ),
+            (
+                "tasks",
+                "authority",
+                true,
+                "retain as task lifecycle authority",
+            ),
+            (
+                "scheduler_activations",
+                "authority_and_evidence",
+                true,
+                "replace control reads with execution-attempt evidence",
+            ),
+            (
+                "scheduler_activation_settlements",
+                "evidence",
+                true,
+                "retain as immutable attempt outcome",
+            ),
+            (
+                "scheduler_agent_slots",
+                "authority",
+                true,
+                "remove after open attempt owns the lane",
+            ),
+            (
+                "scheduler_agent_dispatch",
+                "authority",
+                true,
+                "remove after runtime waits own waiting",
+            ),
+            (
+                "scheduler_agent_focus",
+                "projection",
+                true,
+                "replace with durable WorkItem focus",
+            ),
+            (
+                "scheduler_work_demands",
+                "authority",
+                true,
+                "replace with WorkItem execution state",
+            ),
+            (
+                "scheduler_waits",
+                "authority",
+                true,
+                "replace with runtime wait conditions",
+            ),
+            (
+                "scheduler_wait_generations",
+                "authority",
+                true,
+                "replace with runtime wait generations",
+            ),
+            (
+                "scheduler_missing_settlements",
+                "recovery_authority",
+                true,
+                "downgrade to diagnostic evidence, then remove",
+            ),
+            (
+                "scheduler_activation_authorities",
+                "compatibility",
+                false,
+                "remove with compatibility schema",
+            ),
+            (
+                "scheduler_activation_sources",
+                "evidence",
+                false,
+                "retain or merge into attempt evidence",
+            ),
+            (
+                "scheduler_activation_inputs",
+                "evidence",
+                true,
+                "retain as interjection evidence",
+            ),
+            (
+                "scheduler_continuation_admissions",
+                "evidence",
+                true,
+                "retain as immutable handoff evidence",
+            ),
+            (
+                "scheduler_yield_continuations",
+                "authority",
+                true,
+                "replace with continuation lifecycle authority",
+            ),
+            (
+                "scheduler_protocol_command_results",
+                "evidence",
+                true,
+                "retain for idempotent command results",
+            ),
+            (
+                "scheduler_protocol_command_conflict_attempts",
+                "evidence",
+                false,
+                "retain as immutable conflict evidence",
+            ),
+            (
+                "scheduler_protocol_migrations",
+                "compatibility",
+                false,
+                "retain through the compatibility window",
+            ),
+            (
+                "scheduler_protocol_config",
+                "compatibility",
+                false,
+                "remove; engine selection is startup-only",
+            ),
+            ("scheduler_rollout_preflights", "dead", false, "remove"),
+            ("scheduler_rollout_manifests", "dead", false, "remove"),
+            ("scheduler_scenario_authorities", "dead", false, "remove"),
+            ("scheduler_scenario_hard_blockers", "dead", false, "remove"),
+            ("scheduler_shadow_comparisons", "dead", false, "remove"),
+            (
+                "scheduler_semantic_shadow_decisions",
+                "dead",
+                false,
+                "remove",
+            ),
+        ];
+        let connection = self.db.connection()?;
+        INVENTORY
+            .iter()
+            .map(|(storage, role, canonical_reader, target)| {
+                let count: i64 = connection.query_row(
+                    &format!("SELECT COUNT(*) FROM {storage}"),
+                    [],
+                    |row| row.get(0),
+                )?;
+                Ok(SchedulerAuthorityInventoryRecord {
+                    storage,
+                    role,
+                    canonical_reader: *canonical_reader,
+                    target,
+                    row_count: to_u64(count, "scheduler authority inventory row count")?,
+                })
+            })
+            .collect()
+    }
+
     pub(crate) fn legacy_scheduler_adoption_candidates(
         &self,
         agent_id: &str,
@@ -441,6 +619,7 @@ impl RuntimeTransitionRepository<'_> {
                     | ProtocolCommand::AdoptActivationWorkState(_)
                     | ProtocolCommand::RegisterWorkDemand(_)
                     | ProtocolCommand::SettleActivation(_)
+                    | ProtocolCommand::RecoverInterruptedActivation(_)
                     | ProtocolCommand::RecordMissingSettlement(_) => {}
                     ProtocolCommand::AdmitActivation(command)
                         if matches!(
@@ -453,7 +632,7 @@ impl RuntimeTransitionRepository<'_> {
             let bootstrap = (!scheduler_protocol_partition_exists_tx(tx, agent_id)?)
                 .then(canonical_empty_snapshot);
             let prepared =
-                validate_protocol_commands_tx(tx, agent_id, bootstrap.as_ref(), commands)?;
+                validate_protocol_commands_tx(tx, agent_id, bootstrap.as_ref(), commands, &[])?;
             let changed = prepared
                 .as_ref()
                 .is_some_and(PreparedProtocolCommands::has_writes);
@@ -532,7 +711,7 @@ impl RuntimeTransitionRepository<'_> {
 
             let snapshot = load_snapshot_tx(tx, agent_id)?;
             if let ProtocolCommand::AdoptLegacyWorkState(command) = command {
-                validate_legacy_adoption_source_tx(tx, agent_id, command)?;
+                validate_legacy_adoption_source_tx(tx, agent_id, command, &[])?;
             }
             if let ProtocolCommand::AdoptActivationWorkState(command) = command {
                 validate_activation_adoption_source_tx(tx, agent_id, command)?;
@@ -724,7 +903,7 @@ fn legacy_scheduler_adoption_candidate_tx(
                     wait_id: wait.id.clone(),
                     generation,
                     owner_work_item_id: work_item.id.clone(),
-                    source_updated_at: wait.updated_at.to_rfc3339(),
+                    source_updated_at: crate::runtime_db::repositories::timestamp(wait.updated_at),
                 }),
             )
         }
@@ -806,6 +985,23 @@ fn legacy_scheduler_adoption_candidate_tx(
             }
         }
     }
+    if let ProtocolCommand::AdoptLegacyWorkState(adoption) = &command {
+        if adoption.replace_completed_focus.is_none()
+            && scheduler_protocol_partition_exists_tx(tx, &work_item.agent_id)?
+        {
+            let snapshot = load_snapshot_tx(tx, &work_item.agent_id)?;
+            if scheduler_protocol::reduce_command(&snapshot, &command)
+                .outcome
+                .decision
+                == Decision::DuplicateIgnored
+            {
+                return Ok(ineligible_legacy_adoption(
+                    work_item,
+                    "legacy_work_state_already_canonical",
+                ));
+            }
+        }
+    }
     Ok(LegacySchedulerAdoptionCandidate {
         agent_id: work_item.agent_id.clone(),
         work_item_id: work_item.id.clone(),
@@ -880,6 +1076,7 @@ fn validate_legacy_adoption_source_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
     command: &AdoptLegacyWorkStateCommand,
+    execution_commands: &[crate::domain::execution_protocol::ExecutionProtocolCommand],
 ) -> Result<()> {
     let work_item = tx
         .query_row(
@@ -894,20 +1091,122 @@ fn validate_legacy_adoption_source_tx(
         .ok_or_else(|| LegacySchedulerAdoptionRejected {
             reason: "source_work_item_missing_or_closed".into(),
         })?;
+    if execution_authority_matches_adoption_tx(tx, agent_id, command, execution_commands)? {
+        return Ok(());
+    }
     let candidate = legacy_scheduler_adoption_candidate_tx(tx, &work_item)?;
-    if !candidate.eligible
-        || candidate.command.as_ref()
-            != Some(&ProtocolCommand::AdoptLegacyWorkState(command.clone()))
-    {
+    let source_matches = candidate.command.as_ref().is_some_and(|candidate| {
+        let ProtocolCommand::AdoptLegacyWorkState(candidate) = candidate else {
+            return false;
+        };
+        legacy_adoption_source_matches(candidate, command)
+    });
+    if !candidate.eligible || !source_matches {
+        let source_difference = candidate.command.as_ref().map_or_else(
+            || "candidate_command_missing".to_string(),
+            |candidate| {
+                let ProtocolCommand::AdoptLegacyWorkState(candidate) = candidate else {
+                    return "candidate_command_kind_changed".to_string();
+                };
+                format!(
+                    "revision={:?},demand={:?},wait={:?},focus={:?},reserve_dispatch={:?}",
+                    (
+                        candidate.source_work_item_revision,
+                        command.source_work_item_revision
+                    ),
+                    (candidate.demand.clone(), command.demand.clone()),
+                    (candidate.wait.clone(), command.wait.clone()),
+                    (candidate.focus, command.focus),
+                    (candidate.reserve_dispatch, command.reserve_dispatch),
+                )
+            },
+        );
         return Err(LegacySchedulerAdoptionRejected {
             reason: format!(
-                "source_changed:{}:{}:{}",
-                agent_id, command.work_item_id, candidate.reason
+                "source_changed:{}:{}:{}:{}",
+                agent_id, command.work_item_id, candidate.reason, source_difference
             ),
         }
         .into());
     }
     Ok(())
+}
+
+fn execution_authority_matches_adoption_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    command: &AdoptLegacyWorkStateCommand,
+    execution_commands: &[crate::domain::execution_protocol::ExecutionProtocolCommand],
+) -> Result<bool> {
+    let persisted = tx
+        .query_row(
+            "SELECT payload_json
+             FROM execution_protocol_work_items
+             WHERE agent_id = ?1 AND work_item_id = ?2",
+            [agent_id, command.work_item_id.as_str()],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|payload| {
+            serde_json::from_str::<crate::domain::execution_protocol::WorkItemExecutionRecord>(
+                &payload,
+            )
+        })
+        .transpose()?;
+    let pending = execution_commands.iter().find_map(|pending| {
+        let crate::domain::execution_protocol::ExecutionProtocolCommand::RegisterWorkItem(pending) =
+            pending
+        else {
+            return None;
+        };
+        (pending.work_item_id == command.work_item_id).then_some(&pending.record)
+    });
+    let Some(record) = persisted.as_ref().or(pending) else {
+        return Ok(false);
+    };
+    if record.source_revision != command.source_work_item_revision
+        || record.source_revision != command.demand.metadata_revision
+        || record.state.generation() != command.demand.scheduling_generation
+    {
+        return Ok(false);
+    }
+    let matches = match (&record.state, &command.demand.status, &command.wait) {
+        (
+            crate::domain::execution_protocol::WorkItemExecutionState::Runnable { .. },
+            WorkStatus::Runnable,
+            None,
+        ) => true,
+        (
+            crate::domain::execution_protocol::WorkItemExecutionState::Waiting { generation, wait },
+            WorkStatus::Waiting { wait_id },
+            Some(compatibility_wait),
+        ) => {
+            generation == &compatibility_wait.generation
+                && wait.wait_id == *wait_id
+                && wait.wait_id == compatibility_wait.wait_id
+                && wait.generation == compatibility_wait.generation
+                && compatibility_wait.owner_work_item_id == command.work_item_id
+        }
+        _ => false,
+    };
+    Ok(matches)
+}
+
+fn legacy_adoption_source_matches(
+    candidate: &AdoptLegacyWorkStateCommand,
+    command: &AdoptLegacyWorkStateCommand,
+) -> bool {
+    candidate.work_item_id == command.work_item_id
+        && candidate.source_work_item_revision == command.source_work_item_revision
+        && candidate.demand == command.demand
+        && candidate.wait == command.wait
+        && (!command.focus || candidate.focus)
+        && (!command.reserve_dispatch || candidate.reserve_dispatch)
+        && if command.focus {
+            candidate.replace_completed_focus == command.replace_completed_focus
+        } else {
+            command.replace_completed_focus.is_none()
+        }
 }
 
 fn validate_activation_adoption_source_tx(
@@ -1072,6 +1371,10 @@ fn command_identity(command: &ProtocolCommand) -> Result<(&'static str, String)>
         ProtocolCommand::SettleActivation(command) => {
             ("settle_activation", command.settlement.id.clone())
         }
+        ProtocolCommand::RecoverInterruptedActivation(command) => (
+            "recover_interrupted_activation",
+            command.settlement.id.clone(),
+        ),
         ProtocolCommand::RecordMissingSettlement(record) => {
             ("record_missing_settlement", record.id.clone())
         }
@@ -1156,6 +1459,10 @@ fn command_fact_references(command: &ProtocolCommand) -> Vec<String> {
             format!("activation_settlement:{}", command.settlement.id),
             format!("activation:{}", command.settlement.activation_id),
         ],
+        ProtocolCommand::RecoverInterruptedActivation(command) => vec![
+            format!("activation_settlement:{}", command.settlement.id),
+            format!("activation:{}", command.settlement.activation_id),
+        ],
         ProtocolCommand::RecordMissingSettlement(record) => vec![
             format!("missing_settlement:{}", record.id),
             format!("activation:{}", record.activation_id),
@@ -1178,6 +1485,7 @@ fn validate_command_agent(agent_id: &str, command: &ProtocolCommand) -> Result<(
         | ProtocolCommand::AdoptActivationWorkState(_) => None,
         ProtocolCommand::AdmitActivation(command) => Some(&command.activation.agent_id),
         ProtocolCommand::SettleActivation(_)
+        | ProtocolCommand::RecoverInterruptedActivation(_)
         | ProtocolCommand::RecordMissingSettlement(_)
         | ProtocolCommand::TriggerWait(_)
         | ProtocolCommand::AttachActivationInput(_) => None,
@@ -1832,6 +2140,10 @@ fn persist_agent_snapshot_tx(
             ],
         )?;
     }
+    tx.execute(
+        "DELETE FROM scheduler_missing_settlements WHERE agent_id = ?1",
+        [agent_id],
+    )?;
     for (missing_id, missing) in &snapshot.missing_settlements {
         tx.execute(
             "INSERT INTO scheduler_missing_settlements (
@@ -2214,6 +2526,7 @@ fn activation_state_token(state: &ActivationState) -> &'static str {
     match state {
         ActivationState::Running => "running",
         ActivationState::Settled => "settled",
+        ActivationState::Interrupted => "interrupted",
         ActivationState::SettlementMissing => "settlement_missing",
     }
 }
@@ -2594,7 +2907,8 @@ fn load_activations(
         ) = row?;
         let state = match lifecycle_state.as_str() {
             "admitted" | "running" => ActivationState::Running,
-            "settled" | "interrupted" | "cancelled" => ActivationState::Settled,
+            "settled" | "cancelled" => ActivationState::Settled,
+            "interrupted" => ActivationState::Interrupted,
             "settlement_missing" => ActivationState::SettlementMissing,
             _ => bail!("activation {activation_id} has invalid lifecycle state"),
         };
@@ -2705,6 +3019,55 @@ mod tests {
         assert_eq!(v2_schema, LEGACY_ADOPTION_REPLACEMENT_SCHEMA_VERSION);
         assert_ne!(v1_hash, v2_hash);
         Ok(())
+    }
+
+    #[test]
+    fn legacy_adoption_source_match_allows_conservative_projection_side_effects() {
+        let ProtocolCommand::AdoptLegacyWorkState(mut candidate) =
+            legacy_adoption_command(Some(ReplaceCompletedFocusProof {
+                work_item_id: "work-old".into(),
+                source_work_item_revision: 5,
+                expected_metadata_revision: 4,
+                expected_scheduling_generation: 4,
+            }))
+        else {
+            unreachable!("fixture is a legacy adoption command");
+        };
+        candidate.focus = true;
+        candidate.reserve_dispatch = true;
+        candidate.wait = Some(LegacyWaitAdoption {
+            wait_id: "wait-a".into(),
+            generation: 3,
+            owner_work_item_id: "work-a".into(),
+            source_updated_at: "2026-08-01T00:00:00Z".into(),
+        });
+        candidate.demand.status = WorkStatus::Waiting {
+            wait_id: "wait-a".into(),
+        };
+
+        let mut projection_only = candidate.clone();
+        projection_only.focus = false;
+        projection_only.reserve_dispatch = false;
+        projection_only.replace_completed_focus = None;
+
+        assert!(legacy_adoption_source_matches(&candidate, &projection_only));
+    }
+
+    #[test]
+    fn legacy_adoption_source_match_rejects_source_drift_and_side_effect_elevation() {
+        let ProtocolCommand::AdoptLegacyWorkState(mut candidate) = legacy_adoption_command(None)
+        else {
+            unreachable!("fixture is a legacy adoption command");
+        };
+
+        let mut drifted = candidate.clone();
+        drifted.source_work_item_revision += 1;
+        assert!(!legacy_adoption_source_matches(&candidate, &drifted));
+
+        candidate.focus = false;
+        let mut elevated = candidate.clone();
+        elevated.focus = true;
+        assert!(!legacy_adoption_source_matches(&candidate, &elevated));
     }
 
     #[test]

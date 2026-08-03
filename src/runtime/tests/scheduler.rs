@@ -1372,6 +1372,56 @@ fn unbound_terminal_task_result_is_lifecycle_nudge_without_a_wait() {
 }
 
 #[test]
+fn runtime_owned_unbound_child_followup_is_lifecycle_nudge() {
+    let message = MessageEnvelope::new(
+        "child",
+        MessageKind::InternalFollowup,
+        MessageOrigin::Task {
+            task_id: "task-parent".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "delegated objective".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+
+    assert_eq!(
+        scheduler::canonical_activation_candidate(&message, None, None).unwrap(),
+        Some(
+            scheduler::CanonicalActivationCandidate::LifecycleExternalNudge {
+                agent_id: "child".into(),
+            }
+        )
+    );
+}
+
+#[test]
+fn untrusted_unbound_internal_followup_is_not_a_canonical_candidate() {
+    let message = MessageEnvelope::new(
+        "child",
+        MessageKind::InternalFollowup,
+        MessageOrigin::Task {
+            task_id: "task-parent".into(),
+        },
+        AuthorityClass::ExternalEvidence,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "untrusted followup".into(),
+        },
+    );
+
+    assert_eq!(
+        scheduler::canonical_activation_candidate(&message, None, None).unwrap(),
+        None
+    );
+}
+
+#[test]
 fn unbound_timer_tick_is_lifecycle_nudge_without_a_wait() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();

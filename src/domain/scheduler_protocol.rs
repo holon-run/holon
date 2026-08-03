@@ -262,6 +262,7 @@ pub struct ActivationRecord {
 pub enum ActivationState {
     Running,
     Settled,
+    Interrupted,
     SettlementMissing,
 }
 
@@ -706,6 +707,11 @@ pub struct SettleActivationCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecoverInterruptedActivationCommand {
+    pub settlement: ActivationSettlement,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegisterWorkDemandCommand {
     pub work_item_id: String,
     pub demand: WorkDemand,
@@ -899,6 +905,7 @@ pub enum ProtocolCommand {
     AdoptActivationWorkState(AdoptActivationWorkStateCommand),
     AdmitActivation(AdmitActivationCommand),
     SettleActivation(SettleActivationCommand),
+    RecoverInterruptedActivation(RecoverInterruptedActivationCommand),
     RecordMissingSettlement(MissingSettlementRecord),
     TriggerWait(TriggerWaitCommand),
     AttachActivationInput(AttachActivationInputCommand),
@@ -1013,6 +1020,9 @@ pub enum Settlement {
     Complete {
         continuation: Option<Continuation>,
     },
+    Interrupted {
+        reason: String,
+    },
     Missing,
 }
 
@@ -1039,6 +1049,9 @@ impl Serialize for Settlement {
             Complete {
                 continuation: &'a Option<Continuation>,
             },
+            Interrupted {
+                reason: &'a str,
+            },
             Missing,
         }
 
@@ -1058,6 +1071,7 @@ impl Serialize for Settlement {
                 mode: *mode,
             },
             Self::Complete { continuation } => Wire::Complete { continuation },
+            Self::Interrupted { reason } => Wire::Interrupted { reason },
             Self::Missing => Wire::Missing,
         };
         wire.serialize(serializer)
@@ -1087,6 +1101,9 @@ impl<'de> Deserialize<'de> for Settlement {
             Complete {
                 #[serde(default)]
                 continuation: Option<Continuation>,
+            },
+            Interrupted {
+                reason: String,
             },
             Missing,
         }
@@ -1119,6 +1136,7 @@ impl<'de> Deserialize<'de> for Settlement {
                 "wait settlement requires exactly one of wait or legacy wait_id",
             )),
             Wire::Complete { continuation } => Ok(Self::Complete { continuation }),
+            Wire::Interrupted { reason } => Ok(Self::Interrupted { reason }),
             Wire::Missing => Ok(Self::Missing),
         }
     }
@@ -1389,6 +1407,12 @@ pub fn migrate_legacy_event(
                     },
                     AgentDispatchDisposition::Open,
                 ),
+                Settlement::Interrupted { reason } => (
+                    ActivationDisposition::Interrupted {
+                        reason: reason.clone(),
+                    },
+                    AgentDispatchDisposition::Open,
+                ),
                 Settlement::Missing => unreachable!("handled above"),
             };
             let completion = matches!(disposition, ActivationDisposition::WorkCompleted { .. });
@@ -1489,6 +1513,9 @@ pub fn reduce_command(snapshot: &Snapshot, command: &ProtocolCommand) -> Protoco
     }
     if let ProtocolCommand::AdoptActivationWorkState(command) = command {
         return adopt_activation_work_state(snapshot, command);
+    }
+    if let ProtocolCommand::RecoverInterruptedActivation(command) = command {
+        return recover_interrupted_activation(snapshot, command);
     }
     let event = match lower_command(snapshot, command) {
         Ok(event) => event,
@@ -1622,23 +1649,17 @@ fn replay_or_conflict(
                                 },
                             })
                     });
-                return Some(
-                    if existing == &command.demand
-                        && wait_matches
-                        && focus_matches
-                        && dispatch_matches
-                    {
-                        duplicate_command(snapshot, "legacy_work_state_already_adopted")
-                    } else {
-                        rejected_command(
-                            snapshot,
-                            command_conflict(
-                                ProtocolConflictKind::IdentityConflict,
-                                "legacy_work_state_adoption_conflict",
-                            ),
-                        )
-                    },
-                );
+                if existing == &command.demand && wait_matches && focus_matches && dispatch_matches
+                {
+                    return Some(duplicate_command(
+                        snapshot,
+                        "legacy_work_state_already_adopted",
+                    ));
+                }
+                // The source WorkItem revision is authoritative.  A same-revision
+                // mismatch is compatibility projection drift, not an identity
+                // conflict, so let the reducer refresh the legacy row.
+                return None;
             }
         }
         ProtocolCommand::AdoptActivationWorkState(command) => {
@@ -1754,6 +1775,34 @@ fn replay_or_conflict(
                         command_conflict(
                             ProtocolConflictKind::IdentityConflict,
                             "settlement_id_command_conflict",
+                        ),
+                    )
+                });
+            }
+            if snapshot
+                .settlements
+                .values()
+                .any(|existing| existing.activation_id == command.settlement.activation_id)
+            {
+                return Some(rejected_command(
+                    snapshot,
+                    command_conflict(
+                        ProtocolConflictKind::StateConflict,
+                        "activation_terminal_settlement_already_recorded",
+                    ),
+                ));
+            }
+        }
+        ProtocolCommand::RecoverInterruptedActivation(command) => {
+            if let Some(existing) = snapshot.settlements.get(&command.settlement.id) {
+                return Some(if existing == &command.settlement {
+                    duplicate_command(snapshot, "interruption_recovery_already_applied")
+                } else {
+                    rejected_command(
+                        snapshot,
+                        command_conflict(
+                            ProtocolConflictKind::IdentityConflict,
+                            "interruption_recovery_id_command_conflict",
                         ),
                     )
                 });
@@ -1892,6 +1941,9 @@ fn lower_command(
                     .map_err(reducer_conflict)?;
             }
             Ok(event)
+        }
+        ProtocolCommand::RecoverInterruptedActivation(_) => {
+            unreachable!("interruption recovery is reduced directly")
         }
         ProtocolCommand::RecordMissingSettlement(record) => {
             if !snapshot
@@ -2200,15 +2252,31 @@ fn adopt_legacy_work_state(
         })
         .into_iter()
         .collect::<Vec<_>>();
-    let arm = command.wait.as_ref().map(|wait| LaneWaitArm {
-        wait: WaitIdentity {
-            id: wait.wait_id.clone(),
-            generation: wait.generation,
-        },
-        owner: SchedulerOwner::WorkItem {
-            work_item_id: wait.owner_work_item_id.clone(),
-        },
+    let target_wait_already_armed = command.wait.as_ref().is_some_and(|target| {
+        snapshot.waits.get(&target.wait_id).is_some_and(|wait| {
+            wait.current_generation == target.generation
+                && wait
+                    .generations
+                    .get(&target.generation)
+                    .is_some_and(|generation| {
+                        generation.owner.work_item_id() == Some(target.owner_work_item_id.as_str())
+                            && matches!(generation.state, WaitState::Active | WaitState::Triggered)
+                    })
+        })
     });
+    let arm = command
+        .wait
+        .as_ref()
+        .filter(|_| !target_wait_already_armed)
+        .map(|wait| LaneWaitArm {
+            wait: WaitIdentity {
+                id: wait.wait_id.clone(),
+                generation: wait.generation,
+            },
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: wait.owner_work_item_id.clone(),
+            },
+        });
     let target_dispatch = if let Some(arm) = &arm {
         if command.reserve_dispatch || source_dispatch_wait.is_some() {
             AgentDispatchState::Awaiting {
@@ -3004,11 +3072,25 @@ fn lower_activation_settlement(
                 "yield_continuation_identity_required",
             ));
         }
+        (ActivationDisposition::Interrupted { reason }, AgentDispatchDisposition::Open)
+            if !reason.is_empty() =>
+        {
+            Settlement::Interrupted {
+                reason: reason.clone(),
+            }
+        }
+        (ActivationDisposition::Interrupted { .. }, AgentDispatchDisposition::Open) => {
+            return Err(command_conflict(
+                ProtocolConflictKind::InvalidCommand,
+                "interruption_reason_required",
+            ));
+        }
         (ActivationDisposition::WorkWaits { .. }, AgentDispatchDisposition::Awaiting { .. })
         | (
             ActivationDisposition::WorkContinues
             | ActivationDisposition::WorkCompleted { .. }
-            | ActivationDisposition::WorkYielded { .. },
+            | ActivationDisposition::WorkYielded { .. }
+            | ActivationDisposition::Interrupted { .. },
             AgentDispatchDisposition::Awaiting { .. },
         ) => {
             return Err(command_conflict(
@@ -3333,6 +3415,7 @@ fn admit(
         let diagnostic = match existing.state {
             ActivationState::Running => "activation_already_running",
             ActivationState::Settled => "activation_already_settled",
+            ActivationState::Interrupted => "activation_already_interrupted",
             ActivationState::SettlementMissing => "activation_settlement_missing",
         };
         return rejected(snapshot, diagnostic);
@@ -3359,15 +3442,6 @@ fn admit(
     if snapshot.dispatch_revision != expected_dispatch_revision {
         return rejected(snapshot, "stale_dispatch_revision");
     }
-    if !matches!(cause, AdmissionCause::SettlementRecovery { .. })
-        && snapshot
-            .work
-            .values()
-            .any(|work| matches!(work.status, WorkStatus::NeedsSettlement { .. }))
-    {
-        return rejected(snapshot, "settlement_recovery_pending");
-    }
-
     let mut next = snapshot.clone();
     let mut transitions = Vec::new();
     let mut recovery_for = None;
@@ -3693,6 +3767,133 @@ fn settle(snapshot: &Snapshot, activation_id: &str, settlement: &Settlement) -> 
     }
 }
 
+fn recover_interrupted_activation(
+    snapshot: &Snapshot,
+    command: &RecoverInterruptedActivationCommand,
+) -> ProtocolCommandOutcome {
+    let settlement = &command.settlement;
+    let invalid = settlement.id.is_empty()
+        || settlement.activation_id.is_empty()
+        || settlement.created_at.is_empty()
+        || settlement.turn_terminal.is_some()
+        || settlement.operator_delivery.is_some()
+        || settlement.agent_dispatch != AgentDispatchDisposition::Open
+        || !matches!(
+            &settlement.disposition,
+            ActivationDisposition::Interrupted { reason } if !reason.is_empty()
+        );
+    if invalid {
+        return rejected_command(
+            snapshot,
+            command_conflict(
+                ProtocolConflictKind::InvalidCommand,
+                "interruption_recovery_shape_invalid",
+            ),
+        );
+    }
+    let Some(activation) = snapshot.activations.get(&settlement.activation_id) else {
+        return rejected_command(
+            snapshot,
+            command_conflict(
+                ProtocolConflictKind::NotFound,
+                "interruption_recovery_activation_missing",
+            ),
+        );
+    };
+    if activation.state != ActivationState::SettlementMissing || activation.recovery_for.is_some() {
+        return rejected_command(
+            snapshot,
+            command_conflict(
+                ProtocolConflictKind::StateConflict,
+                "interruption_recovery_activation_not_pending",
+            ),
+        );
+    }
+    let Some(work_item_id) = activation.owner.work_item_id() else {
+        return rejected_command(
+            snapshot,
+            command_conflict(
+                ProtocolConflictKind::BindingConflict,
+                "interruption_recovery_requires_work_item_owner",
+            ),
+        );
+    };
+    let Some(work) = snapshot.work.get(work_item_id) else {
+        return rejected_command(
+            snapshot,
+            command_conflict(
+                ProtocolConflictKind::NotFound,
+                "interruption_recovery_work_item_missing",
+            ),
+        );
+    };
+    if work.status
+        != (WorkStatus::NeedsSettlement {
+            activation_id: settlement.activation_id.clone(),
+        })
+    {
+        return rejected_command(
+            snapshot,
+            command_conflict(
+                ProtocolConflictKind::StateConflict,
+                "interruption_recovery_work_item_not_pending",
+            ),
+        );
+    }
+    let Some(missing_id) = snapshot
+        .missing_settlements
+        .iter()
+        .find_map(|(id, record)| {
+            (record.activation_id == settlement.activation_id).then(|| id.clone())
+        })
+    else {
+        return rejected_command(
+            snapshot,
+            command_conflict(
+                ProtocolConflictKind::NotFound,
+                "interruption_recovery_missing_record_absent",
+            ),
+        );
+    };
+
+    let mut next = snapshot.clone();
+    next.activations
+        .get_mut(&settlement.activation_id)
+        .expect("validated activation exists")
+        .state = ActivationState::Interrupted;
+    let next_work = next
+        .work
+        .get_mut(work_item_id)
+        .expect("validated WorkItem exists");
+    next_work.scheduling_generation = next_work
+        .scheduling_generation
+        .checked_add(1)
+        .expect("WorkItem recovery generation overflow");
+    next_work.status = WorkStatus::Runnable;
+    next.missing_settlements.remove(&missing_id);
+    next.settlements
+        .insert(settlement.id.clone(), settlement.clone());
+
+    ProtocolCommandOutcome {
+        outcome: Outcome {
+            decision: Decision::Settled,
+            transitions: vec![
+                format!(
+                    "activation:{}:settlement_missing->interrupted",
+                    settlement.activation_id
+                ),
+                format!(
+                    "work:{work_item_id}:interruption_recovery:generation:{}",
+                    next_work.scheduling_generation
+                ),
+            ],
+            diagnostics: Vec::new(),
+            snapshot: next,
+        },
+        conflict: None,
+    }
+}
+
 fn settle_work_item(
     snapshot: &Snapshot,
     activation_id: &str,
@@ -3857,7 +4058,7 @@ fn settle_work_item(
     ];
 
     match settlement {
-        Settlement::Continue | Settlement::Yield => {
+        Settlement::Continue | Settlement::Yield | Settlement::Interrupted { .. } => {
             let mut demand = current_work.clone();
             demand.scheduling_generation = next_generation;
             demand.status = WorkStatus::Runnable;
@@ -3882,7 +4083,12 @@ fn settle_work_item(
             ) {
                 return rejected(snapshot, code);
             }
-            transitions.push(format!("work:{work_item_id}:runnable"));
+            transitions.push(match settlement {
+                Settlement::Interrupted { reason } => {
+                    format!("work:{work_item_id}:interrupted_recovery:{reason}")
+                }
+                _ => format!("work:{work_item_id}:runnable"),
+            });
         }
         Settlement::TargetedYield { continuation } => {
             let mut demand = current_work.clone();
@@ -4084,7 +4290,11 @@ fn settle_work_item(
     next.activations
         .get_mut(running_activation_id)
         .expect("running activation exists")
-        .state = ActivationState::Settled;
+        .state = if matches!(settlement, Settlement::Interrupted { .. }) {
+        ActivationState::Interrupted
+    } else {
+        ActivationState::Settled
+    };
     if let Some(missing_activation_id) = recovery_for {
         next.activations
             .get_mut(missing_activation_id)
@@ -4161,7 +4371,10 @@ fn settle_lifecycle(
     let mut next = snapshot.clone();
     let mut transitions = vec![format!("activation:{activation_id}:settled")];
     match settlement {
-        Settlement::Continue | Settlement::Yield | Settlement::Complete { continuation: None } => {
+        Settlement::Continue
+        | Settlement::Yield
+        | Settlement::Complete { continuation: None }
+        | Settlement::Interrupted { .. } => {
             if !lifecycle_nudge {
                 let resolutions = current_lane_resolution(
                     snapshot,
@@ -4278,7 +4491,11 @@ fn settle_lifecycle(
     next.activations
         .get_mut(activation_id)
         .expect("running activation exists")
-        .state = ActivationState::Settled;
+        .state = if matches!(settlement, Settlement::Interrupted { .. }) {
+        ActivationState::Interrupted
+    } else {
+        ActivationState::Settled
+    };
     Outcome {
         decision: Decision::Settled,
         transitions,
@@ -4600,8 +4817,13 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
         else {
             unreachable!("activation settlement lowers to settlement event");
         };
+        let expected_activation_state = if matches!(lowered, Settlement::Interrupted { .. }) {
+            ActivationState::Interrupted
+        } else {
+            ActivationState::Settled
+        };
         if settlement_id != &settlement.id
-            || activation.state != ActivationState::Settled
+            || activation.state != expected_activation_state
             || !snapshot
                 .activation_admissions
                 .contains_key(&settlement.activation_id)
@@ -4617,7 +4839,8 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
             match lowered {
                 Settlement::Continue
                 | Settlement::Yield
-                | Settlement::Complete { continuation: None } => {}
+                | Settlement::Complete { continuation: None }
+                | Settlement::Interrupted { .. } => {}
                 Settlement::Wait {
                     wait,
                     mode: _,
@@ -4670,7 +4893,7 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
         let projects_current_work_state =
             work.scheduling_generation == settlement_generation && !has_successor_activation;
         match lowered {
-            Settlement::Continue | Settlement::Yield => {
+            Settlement::Continue | Settlement::Yield | Settlement::Interrupted { .. } => {
                 if projects_current_work_state && work.status != WorkStatus::Runnable {
                     return Err(
                         "canonical runnable settlement disagrees with authoritative work state"
@@ -4853,6 +5076,11 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
             ActivationState::Running => {
                 return Err("running activation has a canonical missing-settlement record".into());
             }
+            ActivationState::Interrupted => {
+                return Err(
+                    "interrupted activation cannot have a missing-settlement record".into(),
+                );
+            }
             ActivationState::SettlementMissing => {
                 if work.is_none() {
                     if activation.recovery_for.is_some() {
@@ -4910,7 +5138,9 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
         let terminal_record_count = terminal_records.get(activation_id).copied().unwrap_or(0);
         let expected_terminal_record_count = match activation.state {
             ActivationState::Running => 0,
-            ActivationState::Settled | ActivationState::SettlementMissing => 1,
+            ActivationState::Settled
+            | ActivationState::Interrupted
+            | ActivationState::SettlementMissing => 1,
         };
         if terminal_record_count != expected_terminal_record_count {
             return Err(
@@ -5042,7 +5272,7 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
                     return Err("running activation does not own the slot".into());
                 }
             }
-            ActivationState::Settled => {
+            ActivationState::Settled | ActivationState::Interrupted => {
                 if matches!(
                     snapshot.slot,
                     ActivationSlot::Running {
@@ -5050,7 +5280,7 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
                         ..
                     } if slot_activation_id == activation_id
                 ) {
-                    return Err("settled activation still owns the slot".into());
+                    return Err("terminal activation still owns the slot".into());
                 }
             }
             ActivationState::SettlementMissing => {

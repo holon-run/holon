@@ -265,6 +265,12 @@ fn apply_event(snapshot: &Snapshot, event: &Event) -> model::Outcome {
                     },
                     AgentDispatchDisposition::Open,
                 ),
+                Settlement::Interrupted { reason } => (
+                    ActivationDisposition::Interrupted {
+                        reason: reason.clone(),
+                    },
+                    AgentDispatchDisposition::Open,
+                ),
                 Settlement::Missing => unreachable!(),
             };
             let completion = matches!(disposition, ActivationDisposition::WorkCompleted { .. });
@@ -1511,7 +1517,7 @@ fn settlement_recovery_rejects_a_current_revision_with_an_awaiting_reservation()
 }
 
 #[test]
-fn pending_settlement_recovery_blocks_ordinary_work_admission() {
+fn pending_settlement_recovery_isolated_to_affected_work_item() {
     let admitted = apply_event(
         &minimal_snapshot(5),
         &Event::Admit {
@@ -1557,9 +1563,20 @@ fn pending_settlement_recovery_blocks_ordinary_work_admission() {
             cause: AdmissionCause::Scheduling,
         },
     );
-    assert_eq!(ordinary.decision, Decision::Rejected);
-    assert_eq!(ordinary.diagnostics, ["settlement_recovery_pending"]);
-    assert_eq!(ordinary.snapshot, snapshot);
+    assert_eq!(ordinary.decision, Decision::Admitted);
+    assert!(matches!(
+        ordinary.snapshot.slot,
+        ActivationSlot::Running {
+            ref activation_id,
+            ..
+        } if activation_id == "a-w2"
+    ));
+    assert_eq!(
+        ordinary.snapshot.work["w1"].status,
+        WorkStatus::NeedsSettlement {
+            activation_id: "a-missing".into(),
+        }
+    );
 }
 
 #[test]
@@ -2952,10 +2969,7 @@ fn reducer_rejections_have_explicit_stable_conflict_kinds() {
         rejected.conflict.expect("typed conflict").kind,
         ProtocolConflictKind::StateConflict
     );
-    assert_eq!(
-        rejected.outcome.diagnostics,
-        ["settlement_recovery_pending"]
-    );
+    assert_eq!(rejected.outcome.diagnostics, ["work_item_not_runnable"]);
 }
 
 #[test]

@@ -87,6 +87,63 @@ fn child_agent_task_detail(workspace_mode: ChildAgentWorkspaceMode) -> serde_jso
     })
 }
 
+const REJOIN_OBLIGATION_ID_DETAIL: &str = "rejoin_obligation_id";
+const REJOIN_GENERATION_DETAIL: &str = "rejoin_generation";
+const PARENT_TURN_ID_DETAIL: &str = "parent_turn_id";
+
+fn copy_task_rejoin_contract(task: &TaskRecord, detail: &mut serde_json::Value) {
+    let Some(target) = detail.as_object_mut() else {
+        return;
+    };
+    let Some(source) = task.detail.as_ref().and_then(serde_json::Value::as_object) else {
+        return;
+    };
+    for key in [
+        REJOIN_OBLIGATION_ID_DETAIL,
+        REJOIN_GENERATION_DETAIL,
+        PARENT_TURN_ID_DETAIL,
+    ] {
+        if let Some(value) = source.get(key) {
+            target.entry(key).or_insert_with(|| value.clone());
+        }
+    }
+}
+
+pub(super) fn task_rejoin_fence(
+    task: &TaskRecord,
+) -> Result<crate::domain::execution_protocol::RejoinFence> {
+    let detail = task
+        .detail
+        .as_ref()
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| anyhow!("task rejoin contract is missing task detail"))?;
+    let obligation_id = detail
+        .get(REJOIN_OBLIGATION_ID_DETAIL)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow!("task rejoin contract is missing obligation identity"))?;
+    if obligation_id != task.id {
+        return Err(anyhow!(
+            "task rejoin obligation identity does not match task identity"
+        ));
+    }
+    let generation = detail
+        .get(REJOIN_GENERATION_DETAIL)
+        .and_then(serde_json::Value::as_u64)
+        .filter(|generation| *generation > 0)
+        .ok_or_else(|| anyhow!("task rejoin contract is missing generation"))?;
+    let parent_turn_id = detail
+        .get(PARENT_TURN_ID_DETAIL)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow!("task rejoin contract is missing parent turn identity"))?;
+    Ok(crate::domain::execution_protocol::RejoinFence {
+        obligation_id: obligation_id.to_string(),
+        generation,
+        parent_turn_id: parent_turn_id.to_string(),
+    })
+}
+
 fn spawn_agent_task_label(initial_message: &str) -> String {
     let collapsed = initial_message
         .split_whitespace()
@@ -161,13 +218,15 @@ fn task_with_result_message(
     mut detail: Option<serde_json::Value>,
     result_message: &MessageEnvelope,
 ) -> TaskRecord {
-    if let (Some(detail), Some(parent_turn_id)) = (detail.as_mut(), result_message.turn_id.as_ref())
     {
-        if let Some(detail) = detail.as_object_mut() {
-            detail.insert(
-                "parent_turn_id".to_string(),
-                serde_json::json!(parent_turn_id),
-            );
+        let detail = detail.get_or_insert_with(|| serde_json::json!({}));
+        copy_task_rejoin_contract(task, detail);
+        if let (Some(detail), Some(parent_turn_id)) =
+            (detail.as_object_mut(), result_message.turn_id.as_ref())
+        {
+            detail
+                .entry(PARENT_TURN_ID_DETAIL)
+                .or_insert_with(|| serde_json::json!(parent_turn_id));
         }
     }
     let mut terminal_task = task_with_status(task, status, detail);
@@ -180,6 +239,38 @@ pub(super) fn restart_task_result_message_id(task_id: &str) -> String {
 }
 
 impl RuntimeHandle {
+    pub(super) async fn task_creation_detail(
+        &self,
+        task_id: &str,
+        mut detail: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let parent_turn_id = self.agent_state().await?.current_turn_id;
+        let detail = detail
+            .as_object_mut()
+            .ok_or_else(|| anyhow!("task detail must be a JSON object"))?;
+        detail.insert(
+            REJOIN_OBLIGATION_ID_DETAIL.into(),
+            serde_json::json!(task_id),
+        );
+        detail.insert(REJOIN_GENERATION_DETAIL.into(), serde_json::json!(1));
+        if let Some(parent_turn_id) = parent_turn_id {
+            detail.insert(
+                PARENT_TURN_ID_DETAIL.into(),
+                serde_json::json!(parent_turn_id),
+            );
+        }
+        Ok(serde_json::Value::Object(detail.clone()))
+    }
+
+    pub(super) fn task_detail_preserving_rejoin_contract(
+        &self,
+        task: &TaskRecord,
+        mut detail: serde_json::Value,
+    ) -> serde_json::Value {
+        copy_task_rejoin_contract(task, &mut detail);
+        detail
+    }
+
     pub(super) async fn task_work_item_binding(&self) -> Option<String> {
         let guard = self.inner.agent.lock().await;
         guard
@@ -251,8 +342,12 @@ impl RuntimeHandle {
             authority_class: authority_class.clone(),
             workspace_mode,
         };
+        let task_id = crate::ids::task_id();
+        let detail = self
+            .task_creation_detail(&task_id, child_agent_task_detail(workspace_mode))
+            .await?;
         let task = TaskRecord {
-            id: crate::ids::task_id(),
+            id: task_id,
             agent_id: agent_id.clone(),
             kind: TaskKind::ChildAgentTask,
             status: TaskStatus::Queued,
@@ -261,7 +356,7 @@ impl RuntimeHandle {
             parent_message_id: None,
             work_item_id,
             summary: Some(summary.clone()),
-            detail: Some(child_agent_task_detail(workspace_mode)),
+            detail: Some(detail),
             recovery: Some(recovery),
         };
         self.apply_task_transition(task_state_reducer::TaskTransition::new(
@@ -485,7 +580,10 @@ impl RuntimeHandle {
 
                 let queued_task = TaskRecord {
                     updated_at: Utc::now(),
-                    detail: Some(spawned.task_detail.clone()),
+                    detail: Some(self.task_detail_preserving_rejoin_contract(
+                        &task,
+                        spawned.task_detail.clone(),
+                    )),
                     ..task.clone()
                 };
                 self.apply_task_transition(task_state_reducer::TaskTransition::new(
@@ -726,8 +824,12 @@ impl RuntimeHandle {
             authority_class: authority_class.clone(),
             workspace_mode,
         };
+        let task_id = crate::ids::task_id();
+        let detail = self
+            .task_creation_detail(&task_id, child_agent_task_detail(workspace_mode))
+            .await?;
         let task = TaskRecord {
-            id: crate::ids::task_id(),
+            id: task_id,
             agent_id: agent_id.clone(),
             kind: TaskKind::ChildAgentTask,
             status: TaskStatus::Queued,
@@ -736,7 +838,7 @@ impl RuntimeHandle {
             parent_message_id: None,
             work_item_id,
             summary: Some(summary.clone()),
-            detail: Some(child_agent_task_detail(workspace_mode)),
+            detail: Some(detail),
             recovery: Some(recovery),
         };
         self.apply_task_transition(task_state_reducer::TaskTransition::new(
@@ -1087,8 +1189,12 @@ impl RuntimeHandle {
             authority_class: authority_class.clone(),
             workspace_mode,
         };
+        let task_id = crate::ids::task_id();
+        let detail = self
+            .task_creation_detail(&task_id, child_agent_task_detail(workspace_mode))
+            .await?;
         let task = TaskRecord {
-            id: crate::ids::task_id(),
+            id: task_id,
             agent_id,
             kind: TaskKind::ChildAgentTask,
             status: TaskStatus::Queued,
@@ -1097,7 +1203,7 @@ impl RuntimeHandle {
             parent_message_id: None,
             work_item_id,
             summary: Some(summary),
-            detail: Some(child_agent_task_detail(workspace_mode)),
+            detail: Some(detail),
             recovery: Some(recovery),
         };
         self.apply_task_transition(task_state_reducer::TaskTransition::new(

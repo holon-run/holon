@@ -238,6 +238,42 @@ impl RuntimeHandle {
         )
     }
 
+    #[cfg(test)]
+    pub(crate) fn new_with_clock_and_scheduler_engine(
+        agent_id: impl Into<String>,
+        data_dir: PathBuf,
+        initial_workspace: impl Into<InitialWorkspaceBinding>,
+        callback_base_url: String,
+        provider: Arc<dyn AgentProvider>,
+        default_agent_id: String,
+        context_config: ContextConfig,
+        scheduler_engine: crate::config::SchedulerEngineMode,
+        clock: Arc<dyn Clock>,
+    ) -> Result<Self> {
+        let base_context_config = context_config.clone();
+        Self::new_internal(
+            agent_id,
+            data_dir,
+            initial_workspace,
+            callback_base_url,
+            provider,
+            default_agent_id,
+            base_context_config,
+            context_config,
+            RuntimeModelCatalog::default(),
+            Vec::new(),
+            crate::tool::helpers::DEFAULT_TOOL_OUTPUT_TOKENS,
+            crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS,
+            crate::web::WebConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            scheduler_engine,
+            clock,
+        )
+    }
+
     pub(crate) fn new_static_with_host_bridge(
         agent_id: impl Into<String>,
         data_dir: PathBuf,
@@ -868,6 +904,20 @@ fn prepare_runtime_storage(
         )?,
     };
     let storage = AppStorage::new_for_agent(data_dir, agent_id.clone(), runtime_db.clone())?;
+    #[cfg(test)]
+    if runtime_db.agent_identities().latest(&agent_id)?.is_none() {
+        runtime_db
+            .agent_identities()
+            .upsert(&crate::types::AgentIdentityRecord::new(
+                agent_id.clone(),
+                crate::types::AgentKind::Default,
+                crate::types::AgentVisibility::Public,
+                crate::types::AgentOwnership::SelfOwned,
+                crate::types::AgentProfilePreset::PublicNamed,
+                None,
+                None,
+            ))?;
+    }
     let initial_workspace = initial_workspace.into();
     let initial_workspace_entry = match &initial_workspace {
         InitialWorkspaceBinding::Entry(entry) => Some(entry.clone()),

@@ -187,9 +187,15 @@ async fn malformed_task_message_does_not_exit_runtime_loop() {
         .await
         .unwrap();
 
-    let runtime_task = tokio::spawn(runtime.clone().run());
+    let mut runtime_task = tokio::spawn(runtime.clone().run());
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
     loop {
+        if runtime_task.is_finished() {
+            panic!(
+                "runtime exited while processing malformed task result: {:?}",
+                (&mut runtime_task).await
+            );
+        }
         let briefs = runtime.storage().read_recent_briefs(10).unwrap();
         if briefs
             .iter()

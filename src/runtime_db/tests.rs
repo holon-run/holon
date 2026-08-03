@@ -423,6 +423,112 @@ mod tests {
         })
     }
 
+    fn prepare_pre_execution_protocol_claim(
+        db: &RuntimeDb,
+        agent_id: &str,
+        work_item_id: &str,
+        message_id: &str,
+        activation_id: &str,
+    ) -> Result<()> {
+        db.agent_states().upsert(&AgentState::new(agent_id))?;
+        db.agent_identities().upsert(&agent_identity(agent_id, 0))?;
+
+        let mut work = WorkItemRecord::new(agent_id, "migration claim", WorkItemState::Open);
+        work.id = work_item_id.into();
+        db.work_items().insert_new(&work)?;
+
+        let mut message = MessageEnvelope::new(
+            agent_id,
+            crate::types::MessageKind::OperatorPrompt,
+            crate::types::MessageOrigin::Operator { actor_id: None },
+            crate::types::AuthorityClass::OperatorInstruction,
+            crate::types::Priority::Normal,
+            crate::types::MessageBody::Text {
+                text: "resume after upgrade".into(),
+            },
+        );
+        message.id = message_id.into();
+        let message = db.messages().append_with_index_changes(&message, &[])?;
+
+        let queued = QueueEntryRecord {
+            message_id: message.id.clone(),
+            agent_id: agent_id.into(),
+            priority: message.priority.clone(),
+            status: QueueEntryStatus::Queued,
+            created_at: message.created_at,
+            updated_at: message.created_at,
+        };
+        db.queue_entries().upsert(&queued)?;
+        let mut dequeued = queued;
+        dequeued.status = QueueEntryStatus::Dequeued;
+        dequeued.updated_at = Utc::now();
+        assert!(db.queue_entries().try_claim_queued_message(&dequeued)?);
+
+        let scheduling_generation = 1;
+        let mut snapshot = scheduler_protocol_snapshot(scheduling_generation);
+        snapshot.focus = Some(work_item_id.into());
+        snapshot.work = BTreeMap::from([(
+            work_item_id.into(),
+            WorkDemand {
+                metadata_revision: work.revision,
+                scheduling_generation,
+                status: WorkStatus::Runnable,
+                capabilities: Default::default(),
+                locks: Default::default(),
+                locality: "runtime".into(),
+                cost_class: "default".into(),
+            },
+        )]);
+        db.transitions()
+            .initialize_scheduler_protocol_partition(agent_id, &snapshot)?;
+        let admission = ProtocolCommand::AdmitActivation(AdmitActivationCommand {
+            authority_id: format!("authority-{activation_id}"),
+            activation: AgentActivation {
+                id: activation_id.into(),
+                agent_id: agent_id.into(),
+                state: ActivationLifecycleState::Admitted,
+                cause: ActivationCause::OperatorInput {
+                    message_id: message.id.clone(),
+                    resume: None,
+                },
+                binding: ActivationBinding::WorkItem {
+                    work_item_id: work_item_id.into(),
+                },
+                priority: ActivationPriority::Normal,
+                preemption: PreemptionPolicy::AllowOperatorInterjection,
+                source_revision: message.message_seq,
+                idempotency_key: format!("operator-message:{}", message.id),
+                provenance: ActivationProvenance {
+                    origin: ActivationOrigin::Operator,
+                    trust: ActivationTrust::OperatorInstruction,
+                    source_id: message.id,
+                    correlation_id: None,
+                    causation_id: None,
+                },
+            },
+            expected_scheduling_generation: scheduling_generation,
+            expected_dispatch_revision: 0,
+        });
+        db.transitions()
+            .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &admission, None)?;
+        Ok(())
+    }
+
+    fn downgrade_before_execution_protocol(db_path: &std::path::Path) -> Result<()> {
+        let connection = open_connection(db_path)?;
+        connection.execute_batch(
+            "DELETE FROM schema_migrations WHERE version >= 41;
+             DROP TABLE execution_protocol_command_results;
+             DROP TABLE execution_protocol_outcomes;
+             DROP INDEX execution_protocol_one_open_attempt;
+             DROP TABLE execution_protocol_attempts;
+             DROP TABLE execution_protocol_work_items;
+             DROP TABLE execution_protocol_partitions;
+             ALTER TABLE agent_states DROP COLUMN control_revision;",
+        )?;
+        Ok(())
+    }
+
     fn scheduler_protocol_completion_command(
         settlement_id: &str,
         continuation: Option<Continuation>,
@@ -2281,6 +2387,81 @@ INSERT INTO storage_domains (
             current_schema_version(&connection)?,
             max_known_migration_version()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn execution_protocol_migration_backfills_active_canonical_claim() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        prepare_pre_execution_protocol_claim(
+            &db,
+            "agent-a",
+            "work-a",
+            "message-a",
+            "activation-a",
+        )?;
+        drop(db);
+        downgrade_before_execution_protocol(&db_path)?;
+
+        let migrated = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let state = migrated
+            .transitions()
+            .load_execution_protocol_state_if_initialized("agent-a")?
+            .expect("migrated execution protocol state");
+        let attempt = state.attempts.get("activation-a").expect("open attempt");
+        assert_eq!(
+            attempt.state,
+            crate::domain::execution_protocol::ExecutionAttemptState::Open
+        );
+        assert_eq!(attempt.source_message_id.as_deref(), Some("message-a"));
+        assert_eq!(
+            attempt.binding,
+            crate::domain::execution_protocol::ExecutionBinding::WorkItem {
+                work_item_id: "work-a".into(),
+            }
+        );
+        assert_eq!(attempt.admitted_fences.source_revision, 1);
+        assert_eq!(attempt.admitted_fences.work_item_source_revision, Some(1));
+        assert_eq!(attempt.admitted_fences.work_item_generation, Some(1));
+        assert_eq!(attempt.admitted_fences.agent_control_revision, 1);
+        assert_eq!(attempt.admitted_fences.host_registry_revision, 1);
+        assert_eq!(
+            state
+                .open_attempt()
+                .map(|attempt| attempt.attempt_id.as_str()),
+            Some("activation-a")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn execution_protocol_migration_fails_closed_when_claim_evidence_is_missing() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        prepare_pre_execution_protocol_claim(
+            &db,
+            "agent-a",
+            "work-a",
+            "message-a",
+            "activation-a",
+        )?;
+        drop(db);
+        downgrade_before_execution_protocol(&db_path)?;
+        open_connection(&db_path)?
+            .execute("DELETE FROM messages WHERE message_id = 'message-a'", [])?;
+
+        let error = RuntimeDb::open_and_migrate(&db_path, &lock_path)
+            .expect_err("migration must reject an unreconstructable active claim");
+        assert!(
+            error
+                .to_string()
+                .contains("requires exactly one message evidence row"),
+            "{error:#}"
+        );
+        let connection = open_connection(&db_path)?;
+        assert_eq!(current_schema_version(&connection)?, 40);
+        assert!(!table_exists(&connection, "execution_protocol_attempts")?);
         Ok(())
     }
 

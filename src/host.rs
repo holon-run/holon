@@ -2312,7 +2312,7 @@ impl RuntimeHost {
             crate::types::MessageOrigin::Task {
                 task_id: task.id.clone(),
             },
-            authority_class,
+            AuthorityClass::RuntimeInstruction,
             crate::types::Priority::Normal,
             crate::types::MessageBody::Text { text: prompt },
         )
@@ -2327,6 +2327,7 @@ impl RuntimeHost {
             "parent_agent_id": parent_state.id,
             "child_agent_id": child_identity.agent_id,
             "parent_supervised": true,
+            "delegated_authority_class": authority_class,
         }));
         child_runtime.enqueue(message).await?;
 
@@ -2896,7 +2897,7 @@ impl RuntimeHostBridge {
             crate::types::MessageOrigin::Task {
                 task_id: task_id.to_string(),
             },
-            authority_class,
+            AuthorityClass::RuntimeInstruction,
             crate::types::Priority::Normal,
             crate::types::MessageBody::Text {
                 text: input.to_string(),
@@ -2911,6 +2912,7 @@ impl RuntimeHostBridge {
             "parent_agent_id": parent_agent_id,
             "child_agent_id": child_agent_id,
             "followup_via": "task_input",
+            "delegated_authority_class": authority_class,
         }));
         runtime.enqueue(message).await.map(|_| true)
     }
@@ -3055,6 +3057,16 @@ mod tests {
         let home = tempdir().unwrap();
         write_test_model_config(home.path());
         let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        let host =
+            RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
+        (home, host)
+    }
+
+    fn canonical_test_host() -> (tempfile::TempDir, RuntimeHost) {
+        let home = tempdir().unwrap();
+        write_test_model_config(home.path());
+        let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        config.scheduler_engine = crate::config::SchedulerEngineMode::Canonical;
         let host =
             RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
         (home, host)
@@ -5305,7 +5317,7 @@ mod tests {
 
     #[tokio::test]
     async fn runtime_loop_failure_preserves_canonical_claim_and_reconciles_on_next_host_access() {
-        let (_home, host) = test_host();
+        let (_home, host) = canonical_test_host();
         let agent_id = host.config().default_agent_id.clone();
         let runtime = host.default_runtime().await.unwrap();
         runtime.inject_runtime_loop_failure_after_next_claim();
@@ -5383,7 +5395,7 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|entry| {
-                    entry.message_id == message.id && entry.status == QueueEntryStatus::Aborted
+                    entry.message_id == message.id && entry.status == QueueEntryStatus::Interrupted
                 });
             let recovery_recorded = rebuilt
                 .storage()
@@ -5393,7 +5405,8 @@ mod tests {
                 .any(|event| {
                     event.kind == "scheduler_bootstrap_claim_recovered"
                         && event.data["message_id"].as_str() == Some(message.id.as_str())
-                        && event.data["recovery_outcome"].as_str() == Some("settlement_missing")
+                        && event.data["recovery_outcome"].as_str()
+                            == Some("attempt_interrupted_for_reentry")
                 });
             if queue_reconciled && recovery_recorded {
                 break;

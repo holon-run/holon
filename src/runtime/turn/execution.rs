@@ -56,7 +56,7 @@ use super::{
 use super::{truncate_preview, CHECKPOINT_RESUME_PROMPT};
 use crate::runtime::{
     combine_text_history, is_max_output_stop_reason, message_dispatch::message_text, scheduler,
-    scheduler_executor, CurrentRunAborted, RuntimeHandle,
+    CurrentRunAborted, RuntimeHandle,
 };
 
 enum OperatorInterjectionPlan {
@@ -592,13 +592,6 @@ impl RuntimeHandle {
                 ));
             }
         };
-        if activation_id
-            != scheduler_executor::canonical_activation_id(&execution_binding.source_message_id)
-        {
-            return Err(anyhow::anyhow!(
-                "operator interjection activation disagrees with the source message"
-            ));
-        }
         let snapshot = self
             .inner
             .runtime_db
@@ -610,6 +603,17 @@ impl RuntimeHandle {
         let activation = snapshot.activations.get(activation_id).ok_or_else(|| {
             anyhow::anyhow!("operator interjection references an unknown canonical activation")
         })?;
+        if snapshot
+            .activation_admissions
+            .get(activation_id)
+            .is_none_or(|admission| {
+                admission.activation.provenance.source_id != execution_binding.source_message_id
+            })
+        {
+            return Err(anyhow::anyhow!(
+                "operator interjection activation disagrees with the source message"
+            ));
+        }
         match &activation.owner {
             crate::domain::scheduler_protocol::SchedulerOwner::WorkItem { work_item_id }
                 if execution_binding.work_item_id.as_deref() == Some(work_item_id.as_str()) => {}
@@ -1516,6 +1520,7 @@ impl TurnExecution<'_> {
                 .filter(|text| !text.is_empty())
                 .collect::<Vec<_>>()
                 .join("\n\n");
+            let current_round_has_assistant_text = !combined_text.is_empty();
             if round_purpose == AssistantRoundPurpose::AgentResponse {
                 let aggregated_text = combine_text_history(&truncated_text_history, &text_blocks)
                     .into_iter()
@@ -1694,7 +1699,9 @@ impl TurnExecution<'_> {
             };
             let assistant_round_id = assistant_round_transcript_entry.id.clone();
             runtime.persist_transcript_evidence(&assistant_round_transcript_entry)?;
-            if round_purpose == AssistantRoundPurpose::AgentResponse {
+            if round_purpose == AssistantRoundPurpose::AgentResponse
+                && current_round_has_assistant_text
+            {
                 last_assistant_round_id = Some(assistant_round_id.clone());
             }
             runtime.inner.storage.append_event(&AuditEvent::legacy(
@@ -2373,6 +2380,9 @@ impl TurnExecution<'_> {
             let mut interjections = before_tool_execution_interjections;
             interjections.extend(after_tool_results_interjections);
             let has_operator_interjections = !interjections.is_empty();
+            let terminal_wait_without_text =
+                round_tool_calls.iter().any(|call| call.name == "WaitFor")
+                    && !current_round_has_assistant_text;
             let round_record = TurnRoundRecord {
                 round,
                 estimated_tokens: build_round_estimated_tokens(
@@ -2404,11 +2414,16 @@ impl TurnExecution<'_> {
                 && (!has_operator_interjections || terminal_tool_transition)
                 && !checkpoint_state.operator_delivery_pending()
             {
-                let final_text = last_assistant_message.clone().unwrap_or_default();
+                let terminal_assistant_message = if terminal_wait_without_text {
+                    None
+                } else {
+                    last_assistant_message.clone()
+                };
+                let final_text = terminal_assistant_message.clone().unwrap_or_default();
                 let terminal = runtime
                     .persist_turn_terminal_record(
                         TurnTerminalKind::Completed,
-                        last_assistant_message.clone(),
+                        terminal_assistant_message,
                         turn_started_at.elapsed().as_millis() as u64,
                         Some(&checkpoint_state),
                         persist_terminal,
@@ -2416,7 +2431,9 @@ impl TurnExecution<'_> {
                     .await?;
                 return Ok(AgentLoopOutcome {
                     final_text,
-                    final_text_source_assistant_round_id: last_assistant_round_id.clone(),
+                    final_text_source_assistant_round_id: (!terminal_wait_without_text)
+                        .then(|| last_assistant_round_id.clone())
+                        .flatten(),
                     turn_index: terminal.turn_index,
                     terminal,
                     should_sleep: true,

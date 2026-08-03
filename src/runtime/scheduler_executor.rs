@@ -1,5 +1,6 @@
 use super::message_dispatch::MessageDispatchPlan;
 use super::*;
+use crate::domain::scheduler_protocol::WaitState;
 use crate::types::ExecutionAdmissionProvenance;
 
 pub(super) enum RunLoopPoll {
@@ -17,6 +18,33 @@ impl RunLoopPoll {
             RunLoopPoll::Message(_) => "message",
             RunLoopPoll::Idle => "idle",
         }
+    }
+}
+
+pub(super) fn canonical_execution_origin(
+    message: &MessageEnvelope,
+) -> crate::domain::execution_protocol::ExecutionOrigin {
+    use crate::domain::execution_protocol::ExecutionOrigin;
+    match message.origin {
+        MessageOrigin::Operator { .. } => ExecutionOrigin::Operator,
+        MessageOrigin::Channel { .. } => ExecutionOrigin::Channel,
+        MessageOrigin::Webhook { .. } => ExecutionOrigin::Webhook,
+        MessageOrigin::Callback { .. } => ExecutionOrigin::Callback,
+        MessageOrigin::Timer { .. } => ExecutionOrigin::Timer,
+        MessageOrigin::System { .. } => ExecutionOrigin::System,
+        MessageOrigin::Task { .. } => ExecutionOrigin::Task,
+    }
+}
+
+pub(super) fn canonical_execution_trust(
+    message: &MessageEnvelope,
+) -> crate::domain::execution_protocol::ExecutionTrust {
+    use crate::domain::execution_protocol::ExecutionTrust;
+    match message.authority_class {
+        crate::types::AuthorityClass::OperatorInstruction => ExecutionTrust::OperatorInstruction,
+        crate::types::AuthorityClass::RuntimeInstruction => ExecutionTrust::RuntimeInstruction,
+        crate::types::AuthorityClass::IntegrationSignal => ExecutionTrust::IntegrationSignal,
+        crate::types::AuthorityClass::ExternalEvidence => ExecutionTrust::ExternalEvidence,
     }
 }
 
@@ -76,21 +104,46 @@ pub(super) struct ScheduledMessage {
 }
 
 struct CanonicalClaimPlan {
+    activation_id: String,
     scenario_class: crate::domain::scheduler_protocol::SchedulerScenarioClass,
     execution_owner: crate::domain::scheduler_protocol::SchedulerOwner,
     scheduler_claim_work_item: Option<crate::types::WorkItemRecord>,
     bootstrap: Option<crate::domain::scheduler_protocol::Snapshot>,
     commands: Vec<crate::domain::scheduler_protocol::ProtocolCommand>,
+    execution_protocol: crate::runtime_db::transitions::ExecutionProtocolTransition,
 }
 
 enum CanonicalClaimOutcome {
-    NotApplicable,
+    ReduceOnly,
     Plan(CanonicalClaimPlan),
     RetainQueued {
         scenario_class: crate::domain::scheduler_protocol::SchedulerScenarioClass,
         reason: &'static str,
     },
     HardBlocker(CanonicalClaimHardBlocker),
+}
+
+fn projected_scheduler_dispatch_revision(
+    snapshot: &crate::domain::scheduler_protocol::Snapshot,
+    commands: &[crate::domain::scheduler_protocol::ProtocolCommand],
+) -> Result<u64> {
+    let mut projected = snapshot.clone();
+    for command in commands {
+        let outcome = crate::domain::scheduler_protocol::reduce_command(&projected, command);
+        if outcome.outcome.decision == crate::domain::scheduler_protocol::Decision::Rejected {
+            let diagnostic = outcome
+                .conflict
+                .as_ref()
+                .map(|conflict| conflict.code.as_str())
+                .or_else(|| outcome.outcome.diagnostics.first().map(String::as_str))
+                .unwrap_or("rejected_without_diagnostic");
+            anyhow::bail!(
+                "canonical scheduler claim prefix rejected while projecting dispatch revision: {diagnostic}"
+            );
+        }
+        projected = outcome.outcome.snapshot;
+    }
+    Ok(projected.dispatch_revision)
 }
 
 struct CanonicalClaimHardBlocker {
@@ -410,8 +463,13 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             .read_message_by_id(&candidate.message.id)?
             .ok_or_else(|| anyhow!("claimed message is missing persisted ingress evidence"))?;
         let canonical_claim = if self.runtime.inner.scheduler_engine.is_canonical() {
-            match self.canonical_activation_plan(&projection, &persisted_message, &dispatch_plan) {
-                Ok(CanonicalClaimOutcome::NotApplicable) => None,
+            match self.canonical_activation_plan(
+                &projection,
+                &persisted_message,
+                &dispatch_plan,
+                legacy_decision.model_reentry,
+            ) {
+                Ok(CanonicalClaimOutcome::ReduceOnly) => None,
                 Ok(CanonicalClaimOutcome::Plan(plan)) => Some(plan),
                 Ok(CanonicalClaimOutcome::RetainQueued {
                     scenario_class,
@@ -463,7 +521,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             dispatch_plan.execution_admission_provenance =
                 ExecutionAdmissionProvenance::Canonical {
                     scenario_class: plan.scenario_class,
-                    activation_id: canonical_activation_id(&persisted_message.id),
+                    activation_id: plan.activation_id.clone(),
                 };
         }
         let effective_decision = canonical_claim
@@ -475,10 +533,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 )
                 .message(&persisted_message)
                 .model_reentry(true)
-                .evidence(format!(
-                    "canonical_activation={}",
-                    canonical_activation_id(&persisted_message.id)
-                ));
+                .evidence(format!("canonical_activation={}", plan.activation_id));
                 if let Some(work_item_id) = plan.execution_owner.work_item_id() {
                     decision = decision.work_item_id(work_item_id);
                 }
@@ -539,36 +594,46 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 running_state.pending = guard.queue.len().saturating_sub(1);
                 scheduler::apply_running_projection(&mut running_state, run_id.clone());
                 running_state.last_wake_reason = Some(format!("{:?}", candidate.message.kind));
-                let commit_result = self.runtime.inner.runtime_db.transitions().commit_queue(
-                    &crate::runtime_db::transitions::QueueTransitionCommand {
-                        agent_id: agent_id.clone(),
-                        operation: crate::runtime_db::transitions::QueueOperation::Claim,
-                        mutation: crate::runtime_db::transitions::QueueMutation::Consume(
-                            queue_record.clone(),
-                        ),
-                        scheduler_claim_work_item: canonical_claim
-                            .as_ref()
-                            .and_then(|plan| plan.scheduler_claim_work_item.clone()),
-                        scheduler_protocol_bootstrap: canonical_claim
-                            .as_ref()
-                            .and_then(|plan| plan.bootstrap.clone()),
-                        scheduler_protocol_commands: canonical_claim
-                            .as_ref()
-                            .map(|plan| plan.commands.clone())
-                            .unwrap_or_default(),
-                        agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
-                            expected: Some(Box::new(guard.state.clone())),
-                            record: Box::new(running_state.clone()),
-                        }),
-                        message_evidence: Vec::new(),
-                        transcript_entries: Vec::new(),
-                        turn_record: None,
-                        audit_events: claim_audit_events.clone(),
-                        notify_scheduler: false,
-                        fault: self.runtime.take_transition_fault(),
-                        brief_evidence: Vec::new(),
-                    },
-                );
+                let execution_protocol = canonical_claim
+                    .as_ref()
+                    .map(|plan| plan.execution_protocol.clone())
+                    .unwrap_or_default();
+                let commit_result = self
+                    .runtime
+                    .inner
+                    .runtime_db
+                    .transitions()
+                    .commit_queue_with_execution_protocol(
+                        &crate::runtime_db::transitions::QueueTransitionCommand {
+                            agent_id: agent_id.clone(),
+                            operation: crate::runtime_db::transitions::QueueOperation::Claim,
+                            mutation: crate::runtime_db::transitions::QueueMutation::Consume(
+                                queue_record.clone(),
+                            ),
+                            scheduler_claim_work_item: canonical_claim
+                                .as_ref()
+                                .and_then(|plan| plan.scheduler_claim_work_item.clone()),
+                            scheduler_protocol_bootstrap: canonical_claim
+                                .as_ref()
+                                .and_then(|plan| plan.bootstrap.clone()),
+                            scheduler_protocol_commands: canonical_claim
+                                .as_ref()
+                                .map(|plan| plan.commands.clone())
+                                .unwrap_or_default(),
+                            agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
+                                expected: Some(Box::new(guard.state.clone())),
+                                record: Box::new(running_state.clone()),
+                            }),
+                            message_evidence: Vec::new(),
+                            transcript_entries: Vec::new(),
+                            turn_record: None,
+                            audit_events: claim_audit_events.clone(),
+                            notify_scheduler: false,
+                            fault: self.runtime.take_transition_fault(),
+                            brief_evidence: Vec::new(),
+                        },
+                        &execution_protocol,
+                    );
                 let mut commit = match commit_result {
                     Ok(commit) => commit,
                     Err(error) => {
@@ -601,10 +666,11 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     guard.persist_state(&self.runtime.inner.storage)?;
                     return Ok(RunLoopPoll::Idle);
                 }
-                let message = guard
+                let queued_message = guard
                     .queue
                     .pop_if_next(&candidate.message.id)
                     .expect("queue head was just checked");
+                debug_assert_eq!(queued_message.id, persisted_message.id);
                 guard.state = running_state.clone();
                 guard.last_persisted_state = running_state.clone();
                 guard.current_run_abort = Some(CurrentRunAbortHandle {
@@ -613,7 +679,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     reason: Arc::new(StdMutex::new("operator_aborted".into())),
                 });
                 commit.effects.agent_state = None;
-                break (message, running_state, commit);
+                break (persisted_message.clone(), running_state, commit);
             }
         };
         self.runtime
@@ -633,10 +699,13 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         projection: &scheduler::SchedulerProjection,
         message: &MessageEnvelope,
         dispatch_plan: &MessageDispatchPlan,
+        model_reentry: bool,
     ) -> Result<CanonicalClaimOutcome> {
         let task = match &dispatch_plan.task {
             Ok(task) => task.as_ref(),
-            Err(_) => return Ok(CanonicalClaimOutcome::NotApplicable),
+            Err(_) => {
+                return Ok(CanonicalClaimOutcome::ReduceOnly);
+            }
         };
         let Some(candidate) = scheduler::canonical_activation_candidate(
             message,
@@ -644,19 +713,39 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             task,
         )?
         else {
-            return Ok(CanonicalClaimOutcome::NotApplicable);
+            return Ok(if model_reentry {
+                CanonicalClaimOutcome::RetainQueued {
+                    scenario_class:
+                        crate::domain::scheduler_protocol::SchedulerScenarioClass::ReducerOnlyCandidates,
+                    reason: "canonical_model_reentry_candidate_unclassified",
+                }
+            } else {
+                CanonicalClaimOutcome::ReduceOnly
+            });
         };
         let scenario_class = candidate.scenario_class();
+        if let scheduler::CanonicalActivationCandidate::ExactTaskRejoin { task_id, .. } = &candidate
+        {
+            let durable_task = self.runtime.inner.storage.latest_task_record(task_id)?;
+            if durable_task
+                .as_ref()
+                .and_then(|task| tasks::task_rejoin_fence(task).ok())
+                .is_none()
+            {
+                return Ok(canonical_claim_hard_blocker(
+                    scenario_class,
+                    "canonical_task_rejoin_contract_missing_or_invalid",
+                ));
+            }
+        }
         let Some(mut scenario) =
             scheduler::resolve_canonical_activation_scenario(projection, message, candidate)?
         else {
             return Ok(canonical_claim_hard_blocker(
                 scenario_class,
                 "canonical_activation_scenario_unresolved",
-            )?);
+            ));
         };
-
-        use crate::domain::scheduler_protocol::WorkStatus;
 
         let existing = self
             .runtime
@@ -664,6 +753,12 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             .runtime_db
             .transitions()
             .load_scheduler_protocol_snapshot_if_initialized(&message.agent_id)?;
+        let existing_execution = self
+            .runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized(&message.agent_id)?;
         if scenario.work_item_id().is_none() {
             return self.plan_canonical_lifecycle_activation_claim(
                 message,
@@ -679,31 +774,23 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         } = &mut scenario
         {
             if wait_id.is_none() {
-                let authoritative_wait_id = existing
-                    .as_ref()
-                    .and_then(|snapshot| snapshot.work.get(work_item_id))
-                    .and_then(|demand| match &demand.status {
-                        WorkStatus::Waiting { wait_id } => Some(wait_id),
-                        _ => None,
-                    });
-                if let Some(authoritative_wait_id) = authoritative_wait_id {
-                    let resolved_legacy_wait_matches = self
-                        .runtime
-                        .inner
-                        .storage
-                        .latest_wait_conditions()?
-                        .into_iter()
-                        .any(|condition| {
-                            condition.id == *authoritative_wait_id
-                                && condition.agent_id == message.agent_id
-                                && condition.work_item_id.as_deref() == Some(work_item_id.as_str())
-                                && condition.status == crate::types::WaitConditionStatus::Resolved
-                                && condition.kind == crate::types::WaitConditionKind::Task
-                                && scheduler::message_matches_wait_condition(message, &condition)
-                        });
-                    if resolved_legacy_wait_matches {
-                        *wait_id = Some(authoritative_wait_id.clone());
-                    }
+                let matching_waits = self
+                    .runtime
+                    .inner
+                    .storage
+                    .latest_wait_conditions()?
+                    .into_iter()
+                    .filter(|condition| {
+                        condition.agent_id == message.agent_id
+                            && condition.work_item_id.as_deref() == Some(work_item_id.as_str())
+                            && condition.status == crate::types::WaitConditionStatus::Resolved
+                            && condition.kind == crate::types::WaitConditionKind::Task
+                            && scheduler::message_matches_wait_condition(message, condition)
+                    })
+                    .map(|condition| condition.id)
+                    .collect::<Vec<_>>();
+                if let [authoritative_wait_id] = matching_waits.as_slice() {
+                    *wait_id = Some(authoritative_wait_id.clone());
                 }
             }
         }
@@ -732,7 +819,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 return Ok(canonical_claim_hard_blocker(
                     scenario_class,
                     "canonical_work_item_missing",
-                )?);
+                ));
             }
         };
         let work_queue = self.runtime.inner.storage.work_queue_prompt_projection()?;
@@ -747,7 +834,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 return Ok(canonical_claim_hard_blocker(
                     scenario_class,
                     "canonical_work_item_projection_missing",
-                )?);
+                ));
             }
         };
         if work_item.agent_id != message.agent_id
@@ -756,7 +843,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             return Ok(canonical_claim_hard_blocker(
                 scenario_class,
                 "canonical_work_item_not_open_same_agent",
-            )?);
+            ));
         }
         if matches!(
             scenario,
@@ -766,32 +853,23 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             return Ok(canonical_claim_hard_blocker(
                 scenario_class,
                 "canonical_autonomous_work_item_not_runnable",
-            )?);
+            ));
         }
-        let activation_id = canonical_activation_id(&message.id);
+        let activation_id = canonical_activation_id_for_attempt(existing.as_ref(), &message.id);
 
         use crate::domain::scheduler_protocol::{
             ActivationBinding, ActivationCause, ActivationLifecycleState, ActivationOrigin,
             ActivationPriority, ActivationProvenance, ActivationSlot, ActivationTrust,
-            AdmitActivationCommand, AgentActivation, AgentDispatchState, PreemptionPolicy,
-            ProtocolCommand, RegisterWorkDemandCommand, Snapshot, TriggerWaitCommand,
-            WaitResumeClaim, WorkDemand,
+            AdmitActivationCommand, AdoptLegacyWorkStateCommand, AgentActivation,
+            AgentDispatchState, LegacyWaitAdoption, PreemptionPolicy, ProtocolCommand,
+            RegisterWorkDemandCommand, Snapshot, TriggerWaitCommand, WaitResumeClaim, WaitState,
+            WorkDemand, WorkStatus,
         };
 
         if let Some(snapshot) = existing.as_ref() {
             if let Some(activation) = snapshot.activations.get(&activation_id) {
-                let slot_matches = matches!(
-                    &snapshot.slot,
-                    ActivationSlot::Running {
-                        activation_id: running_activation_id,
-                        owner,
-                        ..
-                    } if running_activation_id == &activation_id
-                        && owner.work_item_id() == Some(work_item_id)
-                );
                 if activation.state == crate::domain::scheduler_protocol::ActivationState::Running
                     && activation.owner.work_item_id() == Some(work_item_id)
-                    && slot_matches
                     && snapshot
                         .activation_admissions
                         .get(&activation_id)
@@ -800,6 +878,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                         })
                 {
                     return Ok(CanonicalClaimOutcome::Plan(CanonicalClaimPlan {
+                        activation_id,
                         scenario_class,
                         execution_owner: activation.owner.clone(),
                         scheduler_claim_work_item: matches!(
@@ -811,23 +890,21 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                         .then_some(work_item),
                         bootstrap: None,
                         commands: Vec::new(),
+                        execution_protocol:
+                            crate::runtime_db::transitions::ExecutionProtocolTransition::default(),
                     }));
                 }
                 return Ok(canonical_claim_hard_blocker(
                     scenario_class,
                     "canonical_activation_replay_conflict",
-                )?);
+                ));
             }
         }
-        let new_demand = || WorkDemand {
-            metadata_revision: work_item.revision.max(1),
-            scheduling_generation: work_item.revision.max(1),
-            status: WorkStatus::Runnable,
-            capabilities: Default::default(),
-            locks: Default::default(),
-            locality: "runtime".into(),
-            cost_class: "default".into(),
-        };
+        let authoritative_work = existing_execution
+            .as_ref()
+            .and_then(|state| state.work_items.get(work_item_id));
+        let scheduling_generation =
+            authoritative_work.map_or(work_item.revision.max(1), |record| record.generation());
         let wait_id = match &scenario {
             scheduler::CanonicalActivationScenario::ExactTaskRejoin { wait_id, .. }
             | scheduler::CanonicalActivationScenario::ExplicitlyBoundOperatorInput {
@@ -843,110 +920,167 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 unreachable!("lifecycle scenario is planned before WorkItem lookup")
             }
         };
-        let (bootstrap, expected_dispatch_revision, scheduling_generation, register) =
-            if let Some(snapshot) = existing.as_ref() {
-                if let Some(demand) = snapshot.work.get(work_item_id) {
-                    if wait_id.is_none() && demand.status != WorkStatus::Runnable {
-                        return Ok(canonical_claim_hard_blocker(
-                            scenario_class,
-                            "canonical_work_demand_not_runnable",
-                        )?);
+        let compatibility_wait = if let Some(wait_id) = wait_id {
+            if let Some(authoritative_work) = authoritative_work {
+                let Some(authoritative_wait) = (match &authoritative_work.state {
+                    crate::domain::execution_protocol::WorkItemExecutionState::Waiting {
+                        generation,
+                        wait,
+                    } if generation == &scheduling_generation && wait.wait_id == wait_id => {
+                        Some(wait)
                     }
-                    (
-                        None,
-                        snapshot.dispatch_revision,
-                        demand.scheduling_generation,
-                        None,
-                    )
-                } else {
-                    if wait_id.is_some() {
-                        return Ok(canonical_claim_hard_blocker(
-                            scenario_class,
-                            "canonical_wait_resume_work_demand_missing",
-                        )?);
-                    }
-                    let demand = new_demand();
-                    (
-                        None,
-                        snapshot.dispatch_revision,
-                        demand.scheduling_generation,
-                        Some(ProtocolCommand::RegisterWorkDemand(
-                            RegisterWorkDemandCommand {
-                                work_item_id: work_item.id.clone(),
-                                demand,
-                            },
-                        )),
-                    )
-                }
-            } else {
-                if wait_id.is_some() {
+                    _ => None,
+                }) else {
                     return Ok(canonical_claim_hard_blocker(
                         scenario_class,
-                        "canonical_wait_resume_partition_uninitialized",
-                    )?);
+                        "canonical_wait_execution_authority_mismatch",
+                    ));
+                };
+                if authoritative_wait.generation != scheduling_generation {
+                    return Ok(canonical_claim_hard_blocker(
+                        scenario_class,
+                        "canonical_wait_generation_authority_mismatch",
+                    ));
                 }
-                let demand = new_demand();
-                (
-                    Some(Snapshot {
-                        slot: ActivationSlot::Idle,
-                        dispatch: AgentDispatchState::Open,
-                        dispatch_revision: 0,
-                        focus: None,
-                        work: Default::default(),
-                        waits: Default::default(),
-                        activations: Default::default(),
-                        activation_admissions: Default::default(),
-                        settlements: Default::default(),
-                        missing_settlements: Default::default(),
-                        admitted_generations: Default::default(),
-                        continuation_admissions: Default::default(),
-                        activation_inputs: Default::default(),
-                    }),
-                    0,
-                    demand.scheduling_generation,
+            }
+            let wait_condition = self
+                .runtime
+                .inner
+                .storage
+                .latest_wait_conditions()?
+                .into_iter()
+                .find(|condition| {
+                    condition.id == wait_id
+                        && condition.agent_id == message.agent_id
+                        && condition.work_item_id.as_deref() == Some(work_item_id)
+                })
+                .ok_or_else(|| anyhow!("canonical wait resume references unknown durable wait"))?;
+            Some(LegacyWaitAdoption {
+                wait_id: wait_id.to_string(),
+                generation: scheduling_generation,
+                owner_work_item_id: work_item_id.to_string(),
+                source_updated_at: crate::runtime_db::repositories::timestamp(
+                    wait_condition.updated_at,
+                ),
+            })
+        } else {
+            None
+        };
+        let demand = WorkDemand {
+            metadata_revision: work_item.revision.max(1),
+            scheduling_generation,
+            status: compatibility_wait
+                .as_ref()
+                .map_or(WorkStatus::Runnable, |wait| WorkStatus::Waiting {
+                    wait_id: wait.wait_id.clone(),
+                }),
+            capabilities: Default::default(),
+            locks: Default::default(),
+            locality: "runtime".into(),
+            cost_class: "default".into(),
+        };
+        let (bootstrap, register) = if let Some(snapshot) = existing.as_ref() {
+            let wait_projection_matches = compatibility_wait.as_ref().is_none_or(|wait| {
+                snapshot
+                    .waits
+                    .get(&wait.wait_id)
+                    .filter(|record| record.current_generation == wait.generation)
+                    .and_then(|record| record.generations.get(&wait.generation))
+                    .is_some_and(|generation| {
+                        generation.owner.work_item_id() == Some(work_item_id)
+                            && generation.state == WaitState::Active
+                    })
+            });
+            match snapshot.work.get(work_item_id) {
+                Some(existing_demand) if existing_demand == &demand && wait_projection_matches => {
+                    (None, None)
+                }
+                Some(_) | None if compatibility_wait.is_some() => (
+                    None,
+                    Some(ProtocolCommand::AdoptLegacyWorkState(
+                        AdoptLegacyWorkStateCommand {
+                            work_item_id: work_item.id.clone(),
+                            source_work_item_revision: work_item.revision.max(1),
+                            demand: demand.clone(),
+                            wait: compatibility_wait.clone(),
+                            focus: false,
+                            reserve_dispatch: false,
+                            replace_completed_focus: None,
+                        },
+                    )),
+                ),
+                Some(_) => (
+                    None,
+                    Some(ProtocolCommand::AdoptLegacyWorkState(
+                        AdoptLegacyWorkStateCommand {
+                            work_item_id: work_item.id.clone(),
+                            source_work_item_revision: work_item.revision.max(1),
+                            demand: demand.clone(),
+                            wait: None,
+                            focus: false,
+                            reserve_dispatch: false,
+                            replace_completed_focus: None,
+                        },
+                    )),
+                ),
+                None => (
+                    None,
                     Some(ProtocolCommand::RegisterWorkDemand(
                         RegisterWorkDemandCommand {
                             work_item_id: work_item.id.clone(),
-                            demand,
+                            demand: demand.clone(),
                         },
                     )),
-                )
-            };
-
-        let resume = if let Some(wait_id) = wait_id {
-            let Some(snapshot) = existing.as_ref() else {
-                return Ok(canonical_claim_hard_blocker(
-                    scenario_class,
-                    "canonical_wait_resume_partition_uninitialized",
-                )?);
-            };
-            let Some(wait) = snapshot.waits.get(wait_id) else {
-                return Ok(canonical_claim_hard_blocker(
-                    scenario_class,
-                    "canonical_wait_missing",
-                )?);
-            };
-            let Some(generation) = wait.generations.get(&wait.current_generation) else {
-                return Ok(canonical_claim_hard_blocker(
-                    scenario_class,
-                    "canonical_wait_generation_missing",
-                )?);
-            };
-            if generation.owner.work_item_id() != Some(work_item_id) {
-                return Ok(canonical_claim_hard_blocker(
-                    scenario_class,
-                    "canonical_wait_owner_mismatch",
-                )?);
+                ),
             }
+        } else {
+            let bootstrap = Snapshot {
+                slot: ActivationSlot::Idle,
+                dispatch: AgentDispatchState::Open,
+                dispatch_revision: 0,
+                focus: None,
+                work: Default::default(),
+                waits: Default::default(),
+                activations: Default::default(),
+                activation_admissions: Default::default(),
+                settlements: Default::default(),
+                missing_settlements: Default::default(),
+                admitted_generations: Default::default(),
+                continuation_admissions: Default::default(),
+                activation_inputs: Default::default(),
+            };
+            let register = compatibility_wait.as_ref().map_or_else(
+                || {
+                    ProtocolCommand::RegisterWorkDemand(RegisterWorkDemandCommand {
+                        work_item_id: work_item.id.clone(),
+                        demand: demand.clone(),
+                    })
+                },
+                |_| {
+                    ProtocolCommand::AdoptLegacyWorkState(AdoptLegacyWorkStateCommand {
+                        work_item_id: work_item.id.clone(),
+                        source_work_item_revision: work_item.revision.max(1),
+                        demand: demand.clone(),
+                        wait: compatibility_wait.clone(),
+                        focus: false,
+                        reserve_dispatch: false,
+                        replace_completed_focus: None,
+                    })
+                },
+            );
+            (Some(bootstrap), Some(register))
+        };
+
+        let resume = if let Some(wait) = compatibility_wait.as_ref() {
             let Some(trigger_generation) = message.message_seq else {
                 return Ok(canonical_claim_hard_blocker(
                     scenario_class,
                     "canonical_trigger_sequence_missing",
-                )?);
+                ));
             };
             Some(WaitResumeClaim {
-                wait_id: wait_id.to_string(),
-                wait_generation: wait.current_generation,
+                wait_id: wait.wait_id.clone(),
+                wait_generation: wait.generation,
                 trigger_id: canonical_wait_trigger_id(message),
                 trigger_generation,
             })
@@ -965,7 +1099,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 },
                 ActivationOrigin::System,
                 ActivationTrust::RuntimeInstruction,
-                format!("work-queue-message:{}", message.id),
+                format!("work-queue-attempt:{activation_id}"),
             ),
             scheduler::CanonicalActivationScenario::InternalFollowup { .. } => (
                 ActivationCause::InternalFollowup {
@@ -976,7 +1110,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 },
                 ActivationOrigin::System,
                 ActivationTrust::RuntimeInstruction,
-                format!("internal-followup:{}", message.id),
+                format!("internal-followup:{activation_id}"),
             ),
             scheduler::CanonicalActivationScenario::ExactTaskRejoin { task_id, .. } => (
                 ActivationCause::TaskRejoin {
@@ -989,7 +1123,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 },
                 ActivationOrigin::Task,
                 ActivationTrust::RuntimeInstruction,
-                format!("task-rejoin:{task_id}"),
+                format!("task-rejoin:{task_id}:{activation_id}"),
             ),
             scheduler::CanonicalActivationScenario::ExactWaitResume { wait_id, .. } => {
                 let resume = resume
@@ -1010,7 +1144,10 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     },
                     canonical_activation_origin(message),
                     canonical_activation_trust(message),
-                    format!("wait-resume:{}:{}", wait_id, resume.wait_generation),
+                    format!(
+                        "wait-resume:{}:{}:{activation_id}",
+                        wait_id, resume.wait_generation
+                    ),
                 )
             }
             scheduler::CanonicalActivationScenario::ExplicitlyBoundOperatorInput { .. } => (
@@ -1023,7 +1160,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 },
                 ActivationOrigin::Operator,
                 ActivationTrust::OperatorInstruction,
-                format!("operator-message:{}", message.id),
+                format!("operator-message:{activation_id}"),
             ),
             scheduler::CanonicalActivationScenario::LifecycleExternalNudge { .. } => {
                 unreachable!("lifecycle scenario is planned before WorkItem lookup")
@@ -1052,26 +1189,39 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 causation_id: message.causation_id.clone(),
             },
         };
-        let authority_id = format!("authority:{activation_id}");
-        let admission = AdmitActivationCommand {
-            authority_id,
-            activation,
-            expected_scheduling_generation: scheduling_generation,
-            expected_dispatch_revision,
-        };
         let mut commands = Vec::with_capacity(4);
         commands.extend(register);
-        if let Some(resume) = resume {
+        if let Some(resume) = resume.as_ref() {
             commands.push(ProtocolCommand::TriggerWait(TriggerWaitCommand {
-                wait_id: resume.wait_id,
+                wait_id: resume.wait_id.clone(),
                 wait_generation: resume.wait_generation,
-                trigger_id: resume.trigger_id,
+                trigger_id: resume.trigger_id.clone(),
                 trigger_generation: resume.trigger_generation,
             }));
         }
-        commands.push(ProtocolCommand::AdmitActivation(admission));
+        let expected_dispatch_revision = projected_scheduler_dispatch_revision(
+            existing
+                .as_ref()
+                .or(bootstrap.as_ref())
+                .expect("canonical claim has existing or bootstrap scheduler state"),
+            &commands,
+        )?;
+        commands.push(ProtocolCommand::AdmitActivation(AdmitActivationCommand {
+            authority_id: format!("authority:{activation_id}"),
+            activation,
+            expected_scheduling_generation: scheduling_generation,
+            expected_dispatch_revision,
+        }));
+        let execution_protocol = self.plan_execution_protocol_claim(
+            message,
+            &scenario,
+            &activation_id,
+            Some((&work_item, scheduling_generation)),
+            resume.as_ref(),
+        )?;
 
         Ok(CanonicalClaimOutcome::Plan(CanonicalClaimPlan {
+            activation_id,
             scenario_class,
             execution_owner: crate::domain::scheduler_protocol::SchedulerOwner::WorkItem {
                 work_item_id: work_item_id.to_string(),
@@ -1084,6 +1234,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             .then_some(work_item),
             bootstrap,
             commands,
+            execution_protocol,
         }))
     }
 
@@ -1104,20 +1255,11 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         let owner = SchedulerOwner::AgentLifecycle {
             agent_id: message.agent_id.clone(),
         };
-        let activation_id = canonical_activation_id(&message.id);
+        let activation_id = canonical_activation_id_for_attempt(existing.as_ref(), &message.id);
         if let Some(snapshot) = existing.as_ref() {
             if let Some(activation) = snapshot.activations.get(&activation_id) {
-                let slot_matches = matches!(
-                    &snapshot.slot,
-                    ActivationSlot::Running {
-                        activation_id: running_activation_id,
-                        owner: running_owner,
-                        ..
-                    } if running_activation_id == &activation_id && running_owner == &owner
-                );
                 if activation.state == crate::domain::scheduler_protocol::ActivationState::Running
                     && activation.owner == owner
-                    && slot_matches
                     && snapshot
                         .activation_admissions
                         .get(&activation_id)
@@ -1126,17 +1268,20 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                         })
                 {
                     return Ok(CanonicalClaimOutcome::Plan(CanonicalClaimPlan {
+                        activation_id,
                         scenario_class,
                         execution_owner: activation.owner.clone(),
                         scheduler_claim_work_item: None,
                         bootstrap: None,
                         commands: Vec::new(),
+                        execution_protocol:
+                            crate::runtime_db::transitions::ExecutionProtocolTransition::default(),
                     }));
                 }
                 return Ok(canonical_claim_hard_blocker(
                     scenario_class,
                     "canonical_activation_replay_conflict",
-                )?);
+                ));
             }
         }
 
@@ -1155,102 +1300,142 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             continuation_admissions: Default::default(),
             activation_inputs: Default::default(),
         });
-        let expected_dispatch_revision = existing
-            .as_ref()
-            .map_or(0, |snapshot| snapshot.dispatch_revision);
-        let (expected_generation, resume, cause, idempotency_key) = match &scenario {
-            scheduler::CanonicalActivationScenario::ExactWaitResume {
-                owner: expected_owner,
-                wait_id,
-            } if expected_owner == &owner => {
-                let Some(snapshot) = existing.as_ref() else {
-                    return Ok(canonical_claim_hard_blocker(
-                        scenario_class,
-                        "canonical_wait_resume_partition_uninitialized",
-                    )?);
-                };
-                let Some(wait) = snapshot.waits.get(wait_id) else {
-                    return Ok(canonical_claim_hard_blocker(
-                        scenario_class,
-                        "canonical_wait_missing",
-                    )?);
-                };
-                let Some(generation) = wait.generations.get(&wait.current_generation) else {
-                    return Ok(canonical_claim_hard_blocker(
-                        scenario_class,
-                        "canonical_wait_generation_missing",
-                    )?);
-                };
-                if generation.owner != owner {
-                    return Ok(canonical_claim_hard_blocker(
-                        scenario_class,
-                        "canonical_wait_owner_mismatch",
-                    )?);
-                }
-                let Some(trigger_generation) = message.message_seq else {
-                    return Ok(canonical_claim_hard_blocker(
-                        scenario_class,
-                        "canonical_trigger_sequence_missing",
-                    )?);
-                };
-                let resume = WaitResumeClaim {
-                    wait_id: wait_id.clone(),
-                    wait_generation: wait.current_generation,
-                    trigger_id: canonical_wait_trigger_id(message),
-                    trigger_generation,
-                };
-                (
-                    wait.current_generation,
-                    Some(resume.clone()),
-                    ActivationCause::WaitResume {
-                        wait_id: wait_id.clone(),
-                        wait_generation: resume.wait_generation,
-                        trigger_id: resume.trigger_id.clone(),
-                        trigger_generation: resume.trigger_generation,
-                    },
-                    format!("wait-resume:{}:{}", wait_id, resume.wait_generation),
-                )
-            }
-            scheduler::CanonicalActivationScenario::LifecycleExternalNudge { agent_id }
-                if agent_id == &message.agent_id =>
-            {
-                let generation = existing.as_ref().map_or(1, |snapshot| {
-                    let activation_generation = snapshot
-                        .activations
-                        .values()
-                        .filter(|activation| activation.owner == owner)
-                        .map(|activation| activation.admitted_generation)
-                        .max()
-                        .unwrap_or(0);
-                    let wait_generation = snapshot
-                        .waits
-                        .values()
-                        .filter(|wait| {
-                            wait.generations
-                                .get(&wait.current_generation)
-                                .is_some_and(|generation| generation.owner == owner)
+        let (expected_generation, scheduler_resume, execution_resume, cause, idempotency_key) =
+            match &scenario {
+                scheduler::CanonicalActivationScenario::ExactWaitResume {
+                    owner: expected_owner,
+                    wait_id,
+                } if expected_owner == &owner => {
+                    self.runtime
+                        .inner
+                        .storage
+                        .latest_wait_conditions()?
+                        .into_iter()
+                        .find(|condition| {
+                            condition.id == *wait_id
+                                && condition.agent_id == message.agent_id
+                                && condition.work_item_id.is_none()
+                                && condition.status == crate::types::WaitConditionStatus::Active
+                                && scheduler::message_matches_wait_condition(message, condition)
                         })
-                        .map(|wait| wait.current_generation)
-                        .max()
-                        .unwrap_or(0);
-                    activation_generation.max(wait_generation).saturating_add(1)
-                });
-                (
-                    generation,
-                    None,
-                    ActivationCause::LifecycleExternalNudge {
-                        message_id: message.id.clone(),
-                    },
-                    format!("lifecycle-message:{}", message.id),
-                )
-            }
-            _ => {
-                return Ok(canonical_claim_hard_blocker(
-                    scenario_class,
-                    "canonical_lifecycle_binding_mismatch",
-                )?)
-            }
-        };
+                        .ok_or_else(|| {
+                            anyhow!("canonical lifecycle wait is not durable and active")
+                        })?;
+                    let Some(trigger_generation) = message.message_seq else {
+                        return Ok(canonical_claim_hard_blocker(
+                            scenario_class,
+                            "canonical_trigger_sequence_missing",
+                        ));
+                    };
+                    let authoritative_wait_generation = message
+                        .source_refs
+                        .get("wait_generation")
+                        .and_then(|generation| generation.parse::<u64>().ok())
+                        .filter(|generation| *generation > 0)
+                        .or_else(|| {
+                            existing
+                                .as_ref()
+                                .and_then(|snapshot| snapshot.waits.get(wait_id))
+                                .map(|wait| wait.current_generation)
+                        })
+                        .unwrap_or(1);
+                    let admission_generation = existing.as_ref().map_or(1, |snapshot| {
+                        snapshot
+                            .activations
+                            .values()
+                            .filter(|activation| activation.owner == owner)
+                            .map(|activation| activation.admitted_generation)
+                            .max()
+                            .unwrap_or(0)
+                            .saturating_add(1)
+                    });
+                    let execution_resume = WaitResumeClaim {
+                        wait_id: wait_id.clone(),
+                        wait_generation: authoritative_wait_generation,
+                        trigger_id: canonical_wait_trigger_id(message),
+                        trigger_generation,
+                    };
+                    let scheduler_resume = existing.as_ref().and_then(|snapshot| {
+                        let wait = snapshot.waits.get(wait_id)?;
+                        let generation = wait.generations.get(&wait.current_generation)?;
+                        (wait.current_generation == authoritative_wait_generation
+                            && generation.owner == owner
+                            && generation.state == WaitState::Active)
+                            .then(|| execution_resume.clone())
+                    });
+                    let (cause, idempotency_key) = scheduler_resume.as_ref().map_or_else(
+                        || {
+                            (
+                                ActivationCause::LifecycleExternalNudge {
+                                    message_id: message.id.clone(),
+                                },
+                                format!("lifecycle-wait-message:{activation_id}"),
+                            )
+                        },
+                        |resume| {
+                            (
+                                ActivationCause::WaitResume {
+                                    wait_id: wait_id.clone(),
+                                    wait_generation: resume.wait_generation,
+                                    trigger_id: resume.trigger_id.clone(),
+                                    trigger_generation: resume.trigger_generation,
+                                },
+                                format!(
+                                    "wait-resume:{}:{}:{activation_id}",
+                                    wait_id, resume.wait_generation
+                                ),
+                            )
+                        },
+                    );
+                    (
+                        admission_generation,
+                        scheduler_resume,
+                        Some(execution_resume),
+                        cause,
+                        idempotency_key,
+                    )
+                }
+                scheduler::CanonicalActivationScenario::LifecycleExternalNudge { agent_id }
+                    if agent_id == &message.agent_id =>
+                {
+                    let generation = existing.as_ref().map_or(1, |snapshot| {
+                        let activation_generation = snapshot
+                            .activations
+                            .values()
+                            .filter(|activation| activation.owner == owner)
+                            .map(|activation| activation.admitted_generation)
+                            .max()
+                            .unwrap_or(0);
+                        let wait_generation = snapshot
+                            .waits
+                            .values()
+                            .filter(|wait| {
+                                wait.generations
+                                    .get(&wait.current_generation)
+                                    .is_some_and(|generation| generation.owner == owner)
+                            })
+                            .map(|wait| wait.current_generation)
+                            .max()
+                            .unwrap_or(0);
+                        activation_generation.max(wait_generation).saturating_add(1)
+                    });
+                    (
+                        generation,
+                        None,
+                        None,
+                        ActivationCause::LifecycleExternalNudge {
+                            message_id: message.id.clone(),
+                        },
+                        format!("lifecycle-message:{activation_id}"),
+                    )
+                }
+                _ => {
+                    return Ok(canonical_claim_hard_blocker(
+                        scenario_class,
+                        "canonical_lifecycle_binding_mismatch",
+                    ))
+                }
+            };
         let activation = AgentActivation {
             id: activation_id.clone(),
             agent_id: message.agent_id.clone(),
@@ -1276,29 +1461,223 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 causation_id: message.causation_id.clone(),
             },
         };
-        let authority_id = format!("authority:{activation_id}");
         let mut commands = Vec::with_capacity(3);
-        if let Some(resume) = resume {
+        if let Some(resume) = scheduler_resume.as_ref() {
             commands.push(ProtocolCommand::TriggerWait(TriggerWaitCommand {
-                wait_id: resume.wait_id,
+                wait_id: resume.wait_id.clone(),
                 wait_generation: resume.wait_generation,
-                trigger_id: resume.trigger_id,
+                trigger_id: resume.trigger_id.clone(),
                 trigger_generation: resume.trigger_generation,
             }));
         }
+        let expected_dispatch_revision = projected_scheduler_dispatch_revision(
+            existing
+                .as_ref()
+                .or(bootstrap.as_ref())
+                .expect("canonical claim has existing or bootstrap scheduler state"),
+            &commands,
+        )?;
         commands.push(ProtocolCommand::AdmitActivation(AdmitActivationCommand {
-            authority_id,
+            authority_id: format!("authority:{activation_id}"),
             activation,
             expected_scheduling_generation: expected_generation,
             expected_dispatch_revision,
         }));
+        let execution_protocol = self.plan_execution_protocol_claim(
+            message,
+            &scenario,
+            &activation_id,
+            None,
+            execution_resume.as_ref(),
+        )?;
         Ok(CanonicalClaimOutcome::Plan(CanonicalClaimPlan {
+            activation_id,
             scenario_class,
             execution_owner: owner,
             scheduler_claim_work_item: None,
             bootstrap,
             commands,
+            execution_protocol,
         }))
+    }
+
+    fn plan_execution_protocol_claim(
+        &self,
+        message: &MessageEnvelope,
+        scenario: &scheduler::CanonicalActivationScenario,
+        attempt_id: &str,
+        work_item: Option<(&crate::types::WorkItemRecord, u64)>,
+        resume: Option<&crate::domain::scheduler_protocol::WaitResumeClaim>,
+    ) -> Result<crate::runtime_db::transitions::ExecutionProtocolTransition> {
+        use crate::domain::execution_protocol::{
+            AdmitExecution, AdmittedFences, ExecutionAttempt, ExecutionAttemptState,
+            ExecutionBinding, ExecutionPriority, ExecutionProtocolCommand, ExecutionProtocolState,
+            ExecutionProvenance, ExecutionSource, ExecutionSourceIdentity,
+            RegisterWorkItemExecution, WorkItemExecutionRecord, WorkItemExecutionState,
+        };
+
+        let existing = self
+            .runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized(&message.agent_id)?;
+        if existing
+            .as_ref()
+            .is_some_and(|state| state.attempts.contains_key(attempt_id))
+        {
+            return Ok(crate::runtime_db::transitions::ExecutionProtocolTransition::default());
+        }
+        let source_revision = message
+            .message_seq
+            .filter(|revision| *revision > 0)
+            .ok_or_else(|| anyhow!("canonical execution admission requires message sequence"))?;
+        let authority_fences = self
+            .runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_authority_fences(&message.agent_id)?;
+        let rejoin = match scenario {
+            scheduler::CanonicalActivationScenario::ExactTaskRejoin { task_id, .. } => {
+                let task = self
+                    .runtime
+                    .inner
+                    .storage
+                    .latest_task_record(task_id)?
+                    .ok_or_else(|| anyhow!("task rejoin requires durable task record"))?;
+                Some(tasks::task_rejoin_fence(&task)?)
+            }
+            _ => None,
+        };
+        let source_identity = match scenario {
+            scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation {
+                work_item_id,
+            } => ExecutionSourceIdentity::WorkItemContinuation {
+                work_item_id: work_item_id.clone(),
+            },
+            scheduler::CanonicalActivationScenario::ExactTaskRejoin { task_id, .. } => {
+                ExecutionSourceIdentity::TaskResult {
+                    task_id: task_id.clone(),
+                    result_message_id: message.id.clone(),
+                }
+            }
+            scheduler::CanonicalActivationScenario::ExactWaitResume { wait_id, .. } => {
+                let resume =
+                    resume.ok_or_else(|| anyhow!("wait resume requires admitted wait claim"))?;
+                ExecutionSourceIdentity::TriggeredWait {
+                    wait_id: wait_id.clone(),
+                    wait_generation: resume.wait_generation,
+                    trigger_id: resume.trigger_id.clone(),
+                    trigger_generation: resume.trigger_generation,
+                }
+            }
+            scheduler::CanonicalActivationScenario::InternalFollowup { .. }
+            | scheduler::CanonicalActivationScenario::ExplicitlyBoundOperatorInput { .. }
+            | scheduler::CanonicalActivationScenario::LifecycleExternalNudge { .. } => {
+                ExecutionSourceIdentity::QueueMessage {
+                    message_id: message.id.clone(),
+                }
+            }
+        };
+        let binding = work_item.map_or_else(
+            || ExecutionBinding::AgentLifecycle {
+                agent_id: message.agent_id.clone(),
+            },
+            |(work_item, _)| ExecutionBinding::WorkItem {
+                work_item_id: work_item.id.clone(),
+            },
+        );
+        let mut commands = Vec::with_capacity(2);
+        let (work_item_source_revision, work_item_generation) =
+            if let Some((work_item, scheduling_generation)) = work_item {
+                let existing_record = existing
+                    .as_ref()
+                    .and_then(|state| state.work_items.get(&work_item.id));
+                if existing_record.is_none() {
+                    let state = if let Some(resume) = resume {
+                        WorkItemExecutionState::Waiting {
+                            generation: scheduling_generation,
+                            wait: crate::domain::execution_protocol::WaitReference {
+                                wait_id: resume.wait_id.clone(),
+                                generation: resume.wait_generation,
+                            },
+                        }
+                    } else {
+                        WorkItemExecutionState::Runnable {
+                            generation: scheduling_generation,
+                            recovery_ref: None,
+                        }
+                    };
+                    commands.push(ExecutionProtocolCommand::RegisterWorkItem(Box::new(
+                        RegisterWorkItemExecution {
+                            work_item_id: work_item.id.clone(),
+                            record: WorkItemExecutionRecord {
+                                source_revision: work_item.revision.max(1),
+                                state,
+                            },
+                        },
+                    )));
+                }
+                (
+                    Some(
+                        existing_record
+                            .map_or(work_item.revision.max(1), |record| record.source_revision),
+                    ),
+                    Some(
+                        existing_record.map_or(scheduling_generation, |record| record.generation()),
+                    ),
+                )
+            } else {
+                (None, None)
+            };
+        commands.push(ExecutionProtocolCommand::Admit(Box::new(AdmitExecution {
+            attempt: ExecutionAttempt {
+                attempt_id: attempt_id.to_owned(),
+                agent_id: message.agent_id.clone(),
+                source_message_id: Some(message.id.clone()),
+                source: ExecutionSource {
+                    identity: source_identity,
+                    generation: source_revision,
+                },
+                binding,
+                provenance: ExecutionProvenance {
+                    origin: canonical_execution_origin(message),
+                    trust: canonical_execution_trust(message),
+                    priority: match message.priority {
+                        Priority::Interject => ExecutionPriority::Interject,
+                        Priority::Next => ExecutionPriority::Next,
+                        Priority::Normal => ExecutionPriority::Normal,
+                        Priority::Background => ExecutionPriority::Background,
+                    },
+                    correlation_id: message.correlation_id.clone(),
+                    causation_id: message.causation_id.clone(),
+                },
+                admitted_fences: AdmittedFences {
+                    source_revision,
+                    work_item_source_revision,
+                    work_item_generation,
+                    rejoin,
+                    agent_control_revision: authority_fences.agent_control_revision,
+                    host_registry_revision: authority_fences.host_registry_revision,
+                },
+                state: ExecutionAttemptState::Open,
+                run_id: None,
+                turn_id: message.turn_id.clone(),
+                recovery_of_attempt_id: None,
+                terminal_outcome_id: None,
+                admitted_at: Utc::now().to_rfc3339(),
+                terminal_at: None,
+            },
+        })));
+        Ok(
+            crate::runtime_db::transitions::ExecutionProtocolTransition {
+                bootstrap: existing
+                    .is_none()
+                    .then(|| ExecutionProtocolState::empty(&message.agent_id)),
+                commands,
+            },
+        )
     }
 
     fn report_canonical_claim_hard_blocker(
@@ -1349,16 +1728,57 @@ pub(super) fn canonical_activation_id(message_id: &str) -> String {
     format!("activation:message:{message_id}")
 }
 
+pub(super) fn canonical_open_activation_id(
+    snapshot: &crate::domain::scheduler_protocol::Snapshot,
+    message_id: &str,
+) -> Option<String> {
+    // Phase 4: derive the open activation from the `activations` authority map
+    // rather than the `slot` mirror.  `assert_invariants` already guarantees
+    // that a Running slot corresponds to exactly one Running activation, so
+    // scanning activations is equivalent and removes the slot reader dependency.
+    snapshot
+        .activations
+        .iter()
+        .filter(|(_, activation)| {
+            activation.state == crate::domain::scheduler_protocol::ActivationState::Running
+        })
+        .find_map(|(activation_id, _)| {
+            snapshot
+                .activation_admissions
+                .get(activation_id)
+                .filter(|admission| admission.activation.provenance.source_id == message_id)
+                .map(|_| activation_id.clone())
+        })
+}
+
+fn canonical_activation_id_for_attempt(
+    snapshot: Option<&crate::domain::scheduler_protocol::Snapshot>,
+    message_id: &str,
+) -> String {
+    let base = canonical_activation_id(message_id);
+    let Some(snapshot) = snapshot else {
+        return base;
+    };
+    let matching_attempts = snapshot
+        .activation_admissions
+        .values()
+        .filter(|admission| admission.activation.provenance.source_id == message_id)
+        .count();
+    if matching_attempts == 0 {
+        base
+    } else {
+        format!("{base}:attempt:{}", matching_attempts + 1)
+    }
+}
+
 fn canonical_claim_hard_blocker(
     scenario_class: crate::domain::scheduler_protocol::SchedulerScenarioClass,
     blocker_code: &'static str,
-) -> Result<CanonicalClaimOutcome> {
-    Ok(CanonicalClaimOutcome::HardBlocker(
-        CanonicalClaimHardBlocker {
-            scenario_class,
-            blocker_code,
-        },
-    ))
+) -> CanonicalClaimOutcome {
+    CanonicalClaimOutcome::HardBlocker(CanonicalClaimHardBlocker {
+        scenario_class,
+        blocker_code,
+    })
 }
 
 pub(super) fn canonical_wait_trigger_id(message: &MessageEnvelope) -> String {
@@ -1488,6 +1908,21 @@ fn canonical_admission_matches_scenario(
             },
         ) => {
             wait_id == expected_wait
+                && agent_id == expected_agent_id
+                && agent_id == &message.agent_id
+        }
+        (
+            ActivationCause::LifecycleExternalNudge { message_id },
+            ActivationBinding::Lifecycle { agent_id },
+            scheduler::CanonicalActivationScenario::ExactWaitResume {
+                owner:
+                    crate::domain::scheduler_protocol::SchedulerOwner::AgentLifecycle {
+                        agent_id: expected_agent_id,
+                    },
+                ..
+            },
+        ) => {
+            message_id == &message.id
                 && agent_id == expected_agent_id
                 && agent_id == &message.agent_id
         }

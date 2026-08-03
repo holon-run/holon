@@ -1723,16 +1723,16 @@ fn current_input_relation(
     latest_operator: Option<&MessageEnvelope>,
 ) -> Option<String> {
     if is_trusted_operator_input(current_message) {
-        return Some(
-            if latest_operator
-                .is_some_and(|operator| same_message_identity(current_message, operator))
-            {
-                "current_input is the latest trusted operator input.".to_string()
-            } else {
-                "current_input is a trusted operator override newer than previous state."
-                    .to_string()
-            },
-        );
+        let boundary = if latest_operator
+            .is_some_and(|operator| same_message_identity(current_message, operator))
+        {
+            "current_input is the latest trusted operator input and the only new operator task for this turn."
+        } else {
+            "current_input is a trusted operator override newer than previous state and the only new operator task for this turn."
+        };
+        return Some(format!(
+            "{boundary} Treat recent_turns as historical/background evidence; do not resume old tasks or waits unless current_input or the current WorkItem explicitly requires it."
+        ));
     }
 
     if latest_operator.is_some() {
@@ -6818,6 +6818,58 @@ mod tests {
     }
 
     #[test]
+    fn build_context_marks_fresh_operator_input_as_the_only_new_task() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
+
+        let prior_operator = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Continue the old database investigation.".to_string(),
+            },
+        );
+        append_turn_for_message(&storage, &prior_operator, "turn-old-topic", 1);
+
+        let current_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Interject,
+            MessageBody::Text {
+                text: "Push the documentation update.".to_string(),
+            },
+        );
+        let session = AgentState::new("default");
+        let built = build_context(
+            &storage,
+            &session,
+            &execution_snapshot_for(&session),
+            &crate::types::SkillsRuntimeView::default(),
+            &current_message,
+            None,
+            &ContextConfig::default(),
+            dir.path(),
+        )
+        .unwrap();
+
+        let anchor = built
+            .sections
+            .iter()
+            .find(|section| section.name == "continuation_anchor")
+            .expect("continuation_anchor section should be present");
+        assert!(anchor.content.contains("the only new operator task"));
+        assert!(anchor.content.contains("historical/background evidence"));
+        assert!(anchor.content.contains(
+            "do not resume old tasks or waits unless current_input or the current WorkItem"
+        ));
+    }
+
+    #[test]
     fn build_context_anchor_uses_operator_input_beyond_recent_window() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
@@ -8018,7 +8070,7 @@ mod tests {
             ..crate::types::SkillsRuntimeView::default()
         };
 
-        let prompt_budget_estimated_tokens = 120;
+        let prompt_budget_estimated_tokens = 256;
         let built = build_context(
             &storage,
             &session,

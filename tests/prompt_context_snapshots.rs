@@ -487,7 +487,7 @@ No focused WorkItem is attached to this turn.
 ## continuation_anchor
 Continuation anchor:
 Latest trusted operator input: current_input.
-Current input relation: current_input is the latest trusted operator input.
+Current input relation: current_input is the latest trusted operator input and the only new operator task for this turn. Treat recent_turns as historical/background evidence; do not resume old tasks or waits unless current_input or the current WorkItem explicitly requires it.
 
 ## recent_turns
 Recent turns:
@@ -756,7 +756,7 @@ Current work item:
 ## continuation_anchor
 Continuation anchor:
 Latest trusted operator input: current_input.
-Current input relation: current_input is the latest trusted operator input.
+Current input relation: current_input is the latest trusted operator input and the only new operator task for this turn. Treat recent_turns as historical/background evidence; do not resume old tasks or waits unless current_input or the current WorkItem explicitly requires it.
 
 ## current_input
 Current input:
@@ -1167,7 +1167,7 @@ Blocked work items:
 ## continuation_anchor
 Continuation anchor:
 Latest trusted operator input: current_input.
-Current input relation: current_input is the latest trusted operator input.
+Current input relation: current_input is the latest trusted operator input and the only new operator task for this turn. Treat recent_turns as historical/background evidence; do not resume old tasks or waits unless current_input or the current WorkItem explicitly requires it.
 
 ## current_input
 Current input:
@@ -1251,7 +1251,7 @@ Current work item:
 ## continuation_anchor
 Continuation anchor:
 Latest trusted operator input: current_input.
-Current input relation: current_input is the latest trusted operator input.
+Current input relation: current_input is the latest trusted operator input and the only new operator task for this turn. Treat recent_turns as historical/background evidence; do not resume old tasks or waits unless current_input or the current WorkItem explicitly requires it.
 
 ## current_input
 Current input:
@@ -1593,7 +1593,7 @@ Current work item:
 ## continuation_anchor
 Continuation anchor:
 Latest trusted operator input: current_input.
-Current input relation: current_input is the latest trusted operator input.
+Current input relation: current_input is the latest trusted operator input and the only new operator task for this turn. Treat recent_turns as historical/background evidence; do not resume old tasks or waits unless current_input or the current WorkItem explicitly requires it.
 
 ## current_input
 Current input:

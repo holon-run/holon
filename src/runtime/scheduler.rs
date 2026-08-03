@@ -1141,10 +1141,18 @@ pub(crate) fn canonical_activation_candidate(
         }));
     }
     if message.kind == MessageKind::InternalFollowup {
-        return Ok(message
-            .work_item_id
-            .clone()
-            .map(|work_item_id| CanonicalActivationCandidate::InternalFollowup { work_item_id }));
+        return Ok(if let Some(work_item_id) = message.work_item_id.clone() {
+            Some(CanonicalActivationCandidate::InternalFollowup { work_item_id })
+        } else if message.delivery_surface == Some(MessageDeliverySurface::RuntimeSystem)
+            && message.admission_context == Some(AdmissionContext::RuntimeOwned)
+            && matches!(message.origin, MessageOrigin::Task { .. })
+        {
+            Some(CanonicalActivationCandidate::LifecycleExternalNudge {
+                agent_id: message.agent_id.clone(),
+            })
+        } else {
+            None
+        });
     }
     if message.kind == MessageKind::TaskResult {
         let MessageOrigin::Task { task_id } = &message.origin else {
@@ -1257,7 +1265,7 @@ pub(crate) fn resolve_canonical_activation_scenario(
         }));
     }
 
-    let matching_waits = match &candidate {
+    let mut matching_waits = match &candidate {
         CanonicalActivationCandidate::ExactWaitResume {
             correlated_wait: Some((wait_id, generation)),
             ..
@@ -1267,7 +1275,7 @@ pub(crate) fn resolve_canonical_activation_scenario(
             .filter(|condition| {
                 condition.id == *wait_id
                     && condition.status == WaitConditionStatus::Active
-                    && projection.canonical_wait_generations.get(wait_id) == Some(generation)
+                    && *generation > 0
                     && condition.work_item_id.as_deref() == candidate.expected_work_item_id()
             })
             .collect(),
@@ -1285,11 +1293,21 @@ pub(crate) fn resolve_canonical_activation_scenario(
             {
                 waits.retain(|wait| wait.work_item_id.is_none());
             }
-            waits.retain(|wait| projection.canonical_wait_generations.contains_key(&wait.id));
             waits
         }
     };
-    if matching_waits.len() > 1 {
+    if matching_waits.len() > 1
+        && matches!(
+            candidate,
+            CanonicalActivationCandidate::ExactTaskRejoin { .. }
+        )
+        && projection.canonical_work_statuses.is_none()
+    {
+        // The durable task rejoin fence is authoritative. Before the canonical
+        // scheduler partition exists, duplicate legacy wait rows are mirrors
+        // and must not make the exact task identity ambiguous.
+        matching_waits.clear();
+    } else if matching_waits.len() > 1 {
         return Err(anyhow::Error::new(AmbiguousCanonicalWaits {
             message_id: message.id.clone(),
             wait_condition_ids: matching_waits.iter().map(|wait| wait.id.clone()).collect(),
@@ -1400,6 +1418,9 @@ fn matching_wait_conditions_for_work_item<'a>(
                         && condition.work_item_id == message.work_item_id
                         && resolved_task_wait_is_current(projection, condition)))
                 && message_matches_wait_condition(message, condition)
+                && (!(message.kind == MessageKind::TaskResult
+                    && condition.kind == WaitConditionKind::Task)
+                    || resolved_task_wait_is_current(projection, condition))
         })
         .collect()
 }

@@ -2,10 +2,22 @@
 
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
+use crate::domain::{
+    execution_protocol::{
+        self, AdmittedFences, ExecutionAttempt, ExecutionAttemptState, ExecutionBinding,
+        ExecutionOrigin, ExecutionPriority, ExecutionProtocolState, ExecutionProvenance,
+        ExecutionSource, ExecutionSourceIdentity, ExecutionTrust, RejoinFence,
+        WorkItemExecutionRecord, WorkItemExecutionState,
+    },
+    scheduler_protocol::{
+        ActivationBinding, ActivationCause, ActivationOrigin, ActivationPriority, ActivationTrust,
+        AdmitActivationCommand, SchedulerOwner, WorkDemand,
+    },
+};
 use crate::runtime_db::evidence::content_hash;
-use crate::types::{AgentState, WaitConditionRecord, WorkItemRecord};
+use crate::types::{AgentState, MessageEnvelope, TaskRecord, WaitConditionRecord, WorkItemRecord};
 
 pub struct Migration {
     pub version: i64,
@@ -2373,6 +2385,75 @@ INSERT OR IGNORE INTO scheduler_rollout_retirement (
 );
 "#,
     },
+    Migration {
+        version: 41,
+        name: "execution_protocol_authority",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS execution_protocol_partitions (
+  agent_id TEXT PRIMARY KEY,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS execution_protocol_work_items (
+  agent_id TEXT NOT NULL,
+  work_item_id TEXT NOT NULL,
+  source_revision INTEGER NOT NULL CHECK (source_revision > 0),
+  generation INTEGER NOT NULL CHECK (generation >= 0),
+  lifecycle_state TEXT NOT NULL CHECK (
+    lifecycle_state IN (
+      'runnable', 'in_flight', 'waiting', 'paused', 'needs_repair', 'terminal'
+    )
+  ),
+  payload_json TEXT NOT NULL,
+  PRIMARY KEY (agent_id, work_item_id)
+);
+
+CREATE TABLE IF NOT EXISTS execution_protocol_attempts (
+  agent_id TEXT NOT NULL,
+  attempt_id TEXT NOT NULL,
+  lifecycle_state TEXT NOT NULL CHECK (
+    lifecycle_state IN ('open', 'settled', 'interrupted', 'protocol_violation')
+  ),
+  source_identity_json TEXT NOT NULL,
+  source_generation INTEGER NOT NULL CHECK (source_generation > 0),
+  recovery_of_attempt_id TEXT,
+  terminal_outcome_id TEXT,
+  payload_json TEXT NOT NULL,
+  PRIMARY KEY (agent_id, attempt_id),
+  UNIQUE (agent_id, terminal_outcome_id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS execution_protocol_one_open_attempt
+  ON execution_protocol_attempts(agent_id)
+  WHERE lifecycle_state = 'open';
+
+CREATE TABLE IF NOT EXISTS execution_protocol_outcomes (
+  agent_id TEXT NOT NULL,
+  outcome_id TEXT NOT NULL,
+  attempt_id TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  PRIMARY KEY (agent_id, outcome_id),
+  UNIQUE (agent_id, attempt_id),
+  FOREIGN KEY (agent_id, attempt_id)
+    REFERENCES execution_protocol_attempts(agent_id, attempt_id)
+);
+
+CREATE TABLE IF NOT EXISTS execution_protocol_command_results (
+  agent_id TEXT NOT NULL,
+  command_kind TEXT NOT NULL,
+  command_identity TEXT NOT NULL,
+  payload_hash TEXT NOT NULL,
+  references_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, command_kind, command_identity)
+);
+"#,
+    },
+    Migration {
+        version: 42,
+        name: "execution_protocol_authority_fences",
+        sql: "",
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -2419,7 +2500,13 @@ pub(crate) fn apply_migration(connection: &mut Connection, migration: &Migration
         preflight_work_item_focus(&transaction)?;
         migrate_work_item_focus(&transaction)?;
     }
+    if migration.name == "execution_protocol_authority" {
+        ensure_execution_protocol_authority_columns(&transaction)?;
+    }
     transaction.execute_batch(migration.sql)?;
+    if migration.name == "execution_protocol_authority" {
+        backfill_execution_protocol_authority(&transaction)?;
+    }
     if migration.name == "drop_work_item_readiness" {
         drop_work_item_readiness(&transaction)?;
     }
@@ -2439,6 +2526,540 @@ pub(crate) fn apply_migration(connection: &mut Connection, migration: &Migration
     )?;
     transaction.commit()?;
     Ok(())
+}
+
+fn ensure_execution_protocol_authority_columns(connection: &Connection) -> Result<()> {
+    if !table_exists_internal(connection, "agent_states")? {
+        return Ok(());
+    }
+    let columns = connection
+        .prepare("PRAGMA table_info(agent_states)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    if !columns.iter().any(|column| column == "control_revision") {
+        connection.execute_batch(
+            "ALTER TABLE agent_states
+               ADD COLUMN control_revision INTEGER NOT NULL DEFAULT 1
+               CHECK (control_revision > 0);",
+        )?;
+    }
+    Ok(())
+}
+
+fn backfill_execution_protocol_authority(transaction: &Transaction<'_>) -> Result<()> {
+    if !table_exists_internal(transaction, "queue_entries")? {
+        return Ok(());
+    }
+    let claims = {
+        let mut statement = transaction.prepare(
+            "SELECT agent_id, message_id
+             FROM queue_entries
+             WHERE status = 'dequeued'
+             ORDER BY agent_id, message_id",
+        )?;
+        let agents = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        agents
+    };
+    let mut imported_agents = std::collections::BTreeSet::new();
+
+    for (agent_id, message_id) in claims {
+        let active_admissions = {
+            let mut statement = transaction.prepare(
+                "SELECT activation_id, owner_kind, owner_id, work_item_id,
+                        admitted_generation, payload_json, created_at
+                 FROM scheduler_activations
+                 WHERE agent_id = ?1
+                   AND lifecycle_state IN ('admitted', 'running')
+                 ORDER BY activation_id",
+            )?;
+            let activations = statement
+                .query_map([&agent_id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                    ))
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            activations
+        };
+        let mut matching = active_admissions
+            .into_iter()
+            .map(
+                |(
+                    activation_id,
+                    owner_kind,
+                    owner_id,
+                    work_item_id,
+                    admitted_generation,
+                    payload,
+                    created_at,
+                )| {
+                    let admission = serde_json::from_str::<AdmitActivationCommand>(&payload)?;
+                    Ok::<_, serde_json::Error>(
+                        (admission.activation.provenance.source_id == message_id).then_some((
+                            activation_id,
+                            owner_kind,
+                            owner_id,
+                            work_item_id,
+                            admitted_generation,
+                            admission,
+                            created_at,
+                        )),
+                    )
+                },
+            )
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .context("decoding active canonical activation admission")?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        if matching.is_empty() {
+            continue;
+        }
+        if matching.len() != 1 {
+            bail!(
+                "execution protocol migration found multiple active canonical activations for \
+                 dequeued message {agent_id}:{message_id}"
+            );
+        }
+        if !imported_agents.insert(agent_id.clone()) {
+            bail!(
+                "execution protocol migration found multiple active dequeued claims for agent \
+                 {agent_id}"
+            );
+        }
+        let (
+            activation_id,
+            owner_kind,
+            owner_id,
+            work_item_id,
+            admitted_generation,
+            admission,
+            admitted_at,
+        ) = matching.pop().expect("one matching admission");
+        let message = load_migration_message(transaction, &agent_id, &message_id)?;
+        let state = execution_protocol_state_from_canonical_claim(
+            transaction,
+            &agent_id,
+            &activation_id,
+            &owner_kind,
+            &owner_id,
+            work_item_id.as_deref(),
+            admitted_generation,
+            &admission,
+            &message,
+            admitted_at,
+        )?;
+        execution_protocol::assert_invariants(&state).map_err(|error| {
+            anyhow::anyhow!("invalid migrated execution protocol state: {error}")
+        })?;
+        crate::runtime_db::transitions::persist_state_tx(transaction, &state)?;
+    }
+    Ok(())
+}
+
+fn load_migration_message(
+    transaction: &Transaction<'_>,
+    agent_id: &str,
+    message_id: &str,
+) -> Result<MessageEnvelope> {
+    let rows = {
+        let mut statement = transaction.prepare(
+            "SELECT message_seq, payload_json
+             FROM messages
+             WHERE agent_id = ?1 AND message_id = ?2
+             ORDER BY evidence_id",
+        )?;
+        let rows = statement
+            .query_map(params![agent_id, message_id], |row| {
+                Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        rows
+    };
+    if rows.len() != 1 {
+        bail!(
+            "execution protocol migration requires exactly one message evidence row for \
+             {agent_id}:{message_id}, found {}",
+            rows.len()
+        );
+    }
+    let (stored_sequence, payload) = rows.into_iter().next().expect("one message row");
+    let stored_sequence = stored_sequence
+        .and_then(|value| u64::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "execution protocol migration requires a positive message sequence for \
+                 {agent_id}:{message_id}"
+            )
+        })?;
+    let message: MessageEnvelope =
+        serde_json::from_str(&payload).context("decoding migration message evidence")?;
+    if message.id != message_id
+        || message.agent_id != agent_id
+        || message.message_seq != Some(stored_sequence)
+    {
+        bail!(
+            "execution protocol migration message evidence identity or sequence mismatch for \
+             {agent_id}:{message_id}"
+        );
+    }
+    Ok(message)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execution_protocol_state_from_canonical_claim(
+    transaction: &Transaction<'_>,
+    agent_id: &str,
+    activation_id: &str,
+    owner_kind: &str,
+    owner_id: &str,
+    work_item_id: Option<&str>,
+    admitted_generation: i64,
+    admission: &AdmitActivationCommand,
+    message: &MessageEnvelope,
+    admitted_at: String,
+) -> Result<ExecutionProtocolState> {
+    if admission.activation.id != activation_id
+        || admission.activation.agent_id != agent_id
+        || admission.activation.provenance.source_id != message.id
+    {
+        bail!("execution protocol migration canonical activation identity mismatch");
+    }
+    let admitted_generation = u64::try_from(admitted_generation)
+        .context("execution protocol migration admitted generation is negative")?;
+    if admitted_generation == 0 || admission.expected_scheduling_generation != admitted_generation {
+        bail!("execution protocol migration canonical admitted generation is invalid");
+    }
+    let authority_fences =
+        crate::runtime_db::transitions::authority_fences_tx(transaction, agent_id)?;
+    let source_revision = message
+        .message_seq
+        .filter(|revision| *revision > 0)
+        .ok_or_else(|| anyhow::anyhow!("execution protocol migration requires message sequence"))?;
+    let (source_identity, rejoin, recovery_of_attempt_id) =
+        migration_execution_source(transaction, admission, message)?;
+    let mut state = ExecutionProtocolState::empty(agent_id);
+    let (binding, work_item_source_revision, work_item_generation) = match owner_kind {
+        "work_item" if work_item_id == Some(owner_id) => {
+            let work_item_id = work_item_id.expect("validated WorkItem owner");
+            validate_migration_work_item_binding(admission, work_item_id)?;
+            let demand_payload = transaction
+                .query_row(
+                    "SELECT payload_json
+                     FROM scheduler_work_demands
+                     WHERE agent_id = ?1 AND work_item_id = ?2",
+                    params![agent_id, work_item_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "execution protocol migration WorkItem demand is missing for \
+                         {agent_id}:{work_item_id}"
+                    )
+                })?;
+            let demand: WorkDemand = serde_json::from_str(&demand_payload)
+                .context("decoding migration WorkItem demand")?;
+            if demand.metadata_revision == 0 || demand.scheduling_generation != admitted_generation
+            {
+                bail!(
+                    "execution protocol migration WorkItem demand fence mismatch for \
+                     {agent_id}:{work_item_id}"
+                );
+            }
+            state.work_items.insert(
+                work_item_id.to_string(),
+                WorkItemExecutionRecord {
+                    source_revision: demand.metadata_revision,
+                    state: WorkItemExecutionState::InFlight {
+                        generation: admitted_generation,
+                        attempt_id: activation_id.to_string(),
+                    },
+                },
+            );
+            (
+                ExecutionBinding::WorkItem {
+                    work_item_id: work_item_id.to_string(),
+                },
+                Some(demand.metadata_revision),
+                Some(admitted_generation),
+            )
+        }
+        "agent_lifecycle" if owner_id == agent_id && work_item_id.is_none() => {
+            validate_migration_lifecycle_binding(admission, agent_id)?;
+            (
+                ExecutionBinding::AgentLifecycle {
+                    agent_id: agent_id.to_string(),
+                },
+                None,
+                None,
+            )
+        }
+        _ => bail!(
+            "execution protocol migration invalid canonical owner \
+             {owner_kind}:{owner_id} for agent {agent_id}"
+        ),
+    };
+    let attempt = ExecutionAttempt {
+        attempt_id: activation_id.to_string(),
+        agent_id: agent_id.to_string(),
+        source_message_id: Some(message.id.clone()),
+        source: ExecutionSource {
+            identity: source_identity,
+            generation: source_revision,
+        },
+        binding,
+        provenance: ExecutionProvenance {
+            origin: migration_execution_origin(admission.activation.provenance.origin),
+            trust: migration_execution_trust(admission.activation.provenance.trust),
+            priority: migration_execution_priority(admission.activation.priority),
+            correlation_id: message.correlation_id.clone(),
+            causation_id: message.causation_id.clone(),
+        },
+        admitted_fences: AdmittedFences {
+            source_revision,
+            work_item_source_revision,
+            work_item_generation,
+            rejoin,
+            agent_control_revision: authority_fences.agent_control_revision,
+            host_registry_revision: authority_fences.host_registry_revision,
+        },
+        state: ExecutionAttemptState::Open,
+        run_id: None,
+        turn_id: message.turn_id.clone(),
+        recovery_of_attempt_id,
+        terminal_outcome_id: None,
+        admitted_at,
+        terminal_at: None,
+    };
+    state.attempts.insert(activation_id.to_string(), attempt);
+    Ok(state)
+}
+
+fn migration_execution_source(
+    transaction: &Transaction<'_>,
+    admission: &AdmitActivationCommand,
+    message: &MessageEnvelope,
+) -> Result<(ExecutionSourceIdentity, Option<RejoinFence>, Option<String>)> {
+    let result = match &admission.activation.cause {
+        ActivationCause::OperatorInput { message_id, .. }
+        | ActivationCause::OperatorInterjection { message_id }
+        | ActivationCause::MessageIngress { message_id }
+        | ActivationCause::LifecycleExternalNudge { message_id }
+        | ActivationCause::InternalFollowup { message_id }
+            if message_id == &message.id =>
+        {
+            (
+                ExecutionSourceIdentity::QueueMessage {
+                    message_id: message.id.clone(),
+                },
+                None,
+                None,
+            )
+        }
+        ActivationCause::TaskRejoin {
+            task_id,
+            message_id,
+            ..
+        } if message_id == &message.id => {
+            let payload = transaction
+                .query_row(
+                    "SELECT payload_json FROM tasks WHERE task_id = ?1 AND owner_agent_id = ?2",
+                    params![task_id, message.agent_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "execution protocol migration task rejoin source is missing: {task_id}"
+                    )
+                })?;
+            let task: TaskRecord =
+                serde_json::from_str(&payload).context("decoding migration task rejoin source")?;
+            let fence = migration_task_rejoin_fence(&task)?;
+            (
+                ExecutionSourceIdentity::TaskResult {
+                    task_id: task_id.clone(),
+                    result_message_id: message.id.clone(),
+                },
+                Some(fence),
+                None,
+            )
+        }
+        ActivationCause::WaitResume {
+            wait_id,
+            wait_generation,
+            trigger_id,
+            trigger_generation,
+        } => (
+            ExecutionSourceIdentity::TriggeredWait {
+                wait_id: wait_id.clone(),
+                wait_generation: *wait_generation,
+                trigger_id: trigger_id.clone(),
+                trigger_generation: *trigger_generation,
+            },
+            None,
+            None,
+        ),
+        ActivationCause::WorkItemRunnable { work_item_id, .. }
+        | ActivationCause::WorkItemRecheck { work_item_id, .. } => (
+            ExecutionSourceIdentity::WorkItemContinuation {
+                work_item_id: work_item_id.clone(),
+            },
+            None,
+            None,
+        ),
+        ActivationCause::SettlementRecovery { activation_id } => (
+            ExecutionSourceIdentity::WorkItemContinuation {
+                work_item_id: migration_binding_work_item_id(&admission.activation.binding)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "execution protocol migration settlement recovery lacks WorkItem"
+                        )
+                    })?
+                    .to_string(),
+            },
+            None,
+            Some(activation_id.clone()),
+        ),
+        ActivationCause::RuntimeRecovery { .. } => {
+            bail!("execution protocol migration cannot losslessly import runtime recovery")
+        }
+        _ => bail!("execution protocol migration activation cause does not match message evidence"),
+    };
+    Ok(result)
+}
+
+fn migration_binding_work_item_id(binding: &ActivationBinding) -> Option<&str> {
+    match binding {
+        ActivationBinding::WorkItem { work_item_id }
+        | ActivationBinding::WaitOwner {
+            owner: SchedulerOwner::WorkItem { work_item_id },
+            ..
+        } => Some(work_item_id),
+        ActivationBinding::Unbound
+        | ActivationBinding::WaitOwner { .. }
+        | ActivationBinding::Interaction { .. }
+        | ActivationBinding::Lifecycle { .. } => None,
+    }
+}
+
+fn migration_task_rejoin_fence(task: &TaskRecord) -> Result<RejoinFence> {
+    let detail = task
+        .detail
+        .as_ref()
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| anyhow::anyhow!("migration task rejoin contract is missing detail"))?;
+    let obligation_id = detail
+        .get("rejoin_obligation_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| *value == task.id)
+        .ok_or_else(|| anyhow::anyhow!("migration task rejoin obligation is invalid"))?;
+    let generation = detail
+        .get("rejoin_generation")
+        .and_then(serde_json::Value::as_u64)
+        .filter(|value| *value > 0)
+        .ok_or_else(|| anyhow::anyhow!("migration task rejoin generation is invalid"))?;
+    let parent_turn_id = detail
+        .get("parent_turn_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("migration task rejoin parent turn is invalid"))?;
+    Ok(RejoinFence {
+        obligation_id: obligation_id.to_string(),
+        generation,
+        parent_turn_id: parent_turn_id.to_string(),
+    })
+}
+
+fn validate_migration_work_item_binding(
+    admission: &AdmitActivationCommand,
+    work_item_id: &str,
+) -> Result<()> {
+    let valid = matches!(
+        &admission.activation.binding,
+        ActivationBinding::WorkItem {
+            work_item_id: bound
+        } if bound == work_item_id
+    ) || matches!(
+        &admission.activation.binding,
+        ActivationBinding::WaitOwner {
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: bound
+            },
+            ..
+        } if bound == work_item_id
+    );
+    if !valid {
+        bail!("execution protocol migration WorkItem binding mismatch");
+    }
+    Ok(())
+}
+
+fn validate_migration_lifecycle_binding(
+    admission: &AdmitActivationCommand,
+    agent_id: &str,
+) -> Result<()> {
+    let valid = matches!(
+        &admission.activation.binding,
+        ActivationBinding::Lifecycle {
+            agent_id: bound
+        } if bound == agent_id
+    ) || matches!(
+        &admission.activation.binding,
+        ActivationBinding::WaitOwner {
+            owner: SchedulerOwner::AgentLifecycle {
+                agent_id: bound
+            },
+            ..
+        } if bound == agent_id
+    );
+    if !valid {
+        bail!("execution protocol migration lifecycle binding mismatch");
+    }
+    Ok(())
+}
+
+fn migration_execution_origin(origin: ActivationOrigin) -> ExecutionOrigin {
+    match origin {
+        ActivationOrigin::Operator => ExecutionOrigin::Operator,
+        ActivationOrigin::Channel => ExecutionOrigin::Channel,
+        ActivationOrigin::Webhook => ExecutionOrigin::Webhook,
+        ActivationOrigin::Callback => ExecutionOrigin::Callback,
+        ActivationOrigin::Timer => ExecutionOrigin::Timer,
+        ActivationOrigin::System => ExecutionOrigin::System,
+        ActivationOrigin::Task => ExecutionOrigin::Task,
+        ActivationOrigin::RuntimeRecovery => ExecutionOrigin::RuntimeRecovery,
+    }
+}
+
+fn migration_execution_trust(trust: ActivationTrust) -> ExecutionTrust {
+    match trust {
+        ActivationTrust::OperatorInstruction => ExecutionTrust::OperatorInstruction,
+        ActivationTrust::RuntimeInstruction => ExecutionTrust::RuntimeInstruction,
+        ActivationTrust::IntegrationSignal => ExecutionTrust::IntegrationSignal,
+        ActivationTrust::ExternalEvidence => ExecutionTrust::ExternalEvidence,
+    }
+}
+
+fn migration_execution_priority(priority: ActivationPriority) -> ExecutionPriority {
+    match priority {
+        ActivationPriority::Background => ExecutionPriority::Background,
+        ActivationPriority::Normal => ExecutionPriority::Normal,
+        ActivationPriority::Next => ExecutionPriority::Next,
+        ActivationPriority::Interject => ExecutionPriority::Interject,
+    }
 }
 
 fn migrate_runtime_retention_created_at_indexes(connection: &Connection) -> Result<()> {

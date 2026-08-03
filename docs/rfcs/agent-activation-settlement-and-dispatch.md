@@ -56,6 +56,14 @@ fault-injection, and divergence gates pass.
 > historical `scheduler_activation_authorities` table remains only as a
 > compatibility row derived from the admission while the existing schema
 > foreign key is retained.
+>
+> **Control-state model superseded:** The activation/settlement protocol's
+> provenance, fencing, deterministic transition, atomic commit, immutable
+> evidence, and process-global cutover boundaries remain accepted. Its
+> long-term use of activation slot, dispatch reservation, WorkDemand,
+> scheduler wait mirrors, and missing-settlement recovery as joint future
+> eligibility authority is superseded by
+> [Scheduler–WorkItem Unified Execution Protocol](./scheduler-work-item-unified-execution-protocol.md).
 
 ## Status And Relationship To Existing RFCs
 

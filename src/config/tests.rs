@@ -637,6 +637,33 @@ fn scheduler_engine_precedence_is_env_then_config_then_canonical() {
 }
 
 #[test]
+fn runtime_config_reload_preserves_startup_scheduler_engine() {
+    let home = tempdir().unwrap();
+    std::fs::write(
+        home.path().join("config.json"),
+        r#"{
+          "model":{"default":"openai/gpt-5.4"},
+          "runtime":{"scheduler":"legacy"}
+        }"#,
+    )
+    .unwrap();
+    let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+    assert_eq!(config.scheduler_engine, SchedulerEngineMode::Legacy);
+
+    std::fs::write(
+        home.path().join("config.json"),
+        r#"{
+          "model":{"default":"openai/gpt-5.4"},
+          "runtime":{"scheduler":"canonical"}
+        }"#,
+    )
+    .unwrap();
+    let reloaded = config.reload_runtime_config().unwrap();
+
+    assert_eq!(reloaded.scheduler_engine, SchedulerEngineMode::Legacy);
+}
+
+#[test]
 fn app_config_rejects_invalid_scheduler_env() {
     let home = tempdir().unwrap();
     std::fs::write(

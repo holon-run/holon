@@ -575,6 +575,7 @@ impl RuntimeHandle {
             None,
             false,
         );
+        let detail = self.task_creation_detail(&task_id, detail).await?;
         let diagnostics = self.command_cost_diagnostics_for(&resolved.spec);
         let work_item_id = self.task_work_item_binding().await;
         let task = TaskRecord {
@@ -856,13 +857,16 @@ impl RuntimeHandle {
                 parent_message_id: None,
                 work_item_id: task_record.work_item_id.clone(),
                 summary: task_record.summary.clone(),
-                detail: Some(command_task_detail(
-                    resolved,
-                    promoted_from_exec_command,
-                    captured,
-                    None,
-                    None,
-                    false,
+                detail: Some(self.task_detail_preserving_rejoin_contract(
+                    task_record,
+                    command_task_detail(
+                        resolved,
+                        promoted_from_exec_command,
+                        captured,
+                        None,
+                        None,
+                        false,
+                    ),
                 )),
                 recovery: task_record.recovery.clone(),
             };
@@ -952,7 +956,7 @@ impl RuntimeHandle {
             parent_message_id: parent_message_id.map(ToString::to_string),
             work_item_id: task_record.work_item_id.clone(),
             summary: task_record.summary.clone(),
-            detail: Some(detail),
+            detail: Some(self.task_detail_preserving_rejoin_contract(task_record, detail)),
             recovery: task_record.recovery.clone(),
         };
         self.apply_task_transition_silent(task_state_reducer::TaskTransition::new(

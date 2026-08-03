@@ -3,7 +3,7 @@ use crate::types::{AdmissionContext, MessageDeliverySurface, MessageEnvelope, Qu
 
 #[tokio::test]
 async fn legacy_work_queue_settlement_does_not_require_scheduler_partition() {
-    let harness = LifecycleHarness::new();
+    let harness = LifecycleHarness::legacy();
     let message = harness
         .runtime()
         .enqueue(
@@ -54,7 +54,7 @@ async fn legacy_work_queue_settlement_does_not_require_scheduler_partition() {
 #[tokio::test]
 async fn queue_runtime_path_rolls_back_each_pre_commit_fault() {
     for fault in PRE_COMMIT_FAULTS {
-        let harness = LifecycleHarness::new();
+        let harness = LifecycleHarness::legacy();
         let now = Utc::now();
         let queued = QueueEntryRecord {
             message_id: "message-fault-contract".into(),
@@ -112,7 +112,7 @@ async fn queue_runtime_path_rolls_back_each_pre_commit_fault() {
 #[tokio::test]
 async fn queue_post_commit_fault_keeps_terminal_settlement_after_restart() {
     for (fault, expected_effect) in POST_COMMIT_FAULTS {
-        let mut harness = LifecycleHarness::new();
+        let mut harness = LifecycleHarness::legacy();
         let now = harness.now();
         let queued = QueueEntryRecord {
             message_id: format!("message-post-commit-{expected_effect}"),

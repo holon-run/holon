@@ -24,6 +24,7 @@ implementation and tests.
 - [Agent Profile Model](./agent-profile-model.md)
 - [Runtime Scheduler Contract](./runtime-scheduler-contract.md)
 - [Scheduler Cutover Simplification](./scheduler-cutover-simplification.md)
+- [Scheduler–WorkItem Unified Execution Protocol](./scheduler-work-item-unified-execution-protocol.md)
 - [Agent Activation, Settlement, and Dispatch](./agent-activation-settlement-and-dispatch.md)
 - [Result Closure](./result-closure.md)
 - [Continuation Trigger](./continuation-trigger.md)
