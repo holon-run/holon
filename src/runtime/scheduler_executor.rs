@@ -1454,8 +1454,8 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             source_revision: None,
             idempotency_key,
             provenance: ActivationProvenance {
-                origin: canonical_activation_origin(message),
-                trust: canonical_activation_trust(message),
+                origin: canonical_activation_origin_for_scenario(message, &scenario),
+                trust: canonical_activation_trust_for_scenario(message, &scenario),
                 source_id: message.id.clone(),
                 correlation_id: message.correlation_id.clone(),
                 causation_id: message.causation_id.clone(),
@@ -1642,8 +1642,8 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 },
                 binding,
                 provenance: ExecutionProvenance {
-                    origin: canonical_execution_origin(message),
-                    trust: canonical_execution_trust(message),
+                    origin: canonical_execution_origin_for_scenario(message, scenario),
+                    trust: canonical_execution_trust_for_scenario(message, scenario),
                     priority: match message.priority {
                         Priority::Interject => ExecutionPriority::Interject,
                         Priority::Next => ExecutionPriority::Next,
@@ -1832,6 +1832,98 @@ fn canonical_activation_trust(
     }
 }
 
+fn canonical_activation_origin_for_scenario(
+    message: &MessageEnvelope,
+    scenario: &scheduler::CanonicalActivationScenario,
+) -> crate::domain::scheduler_protocol::ActivationOrigin {
+    use crate::domain::scheduler_protocol::ActivationOrigin;
+    match scenario {
+        scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation { .. }
+        | scheduler::CanonicalActivationScenario::InternalFollowup { .. } => {
+            ActivationOrigin::System
+        }
+        scheduler::CanonicalActivationScenario::ExactTaskRejoin { .. } => ActivationOrigin::Task,
+        scheduler::CanonicalActivationScenario::ExplicitlyBoundOperatorInput { .. } => {
+            ActivationOrigin::Operator
+        }
+        scheduler::CanonicalActivationScenario::LifecycleExternalNudge { .. }
+            if scheduler::runtime_owned_task_followup(message) =>
+        {
+            ActivationOrigin::Task
+        }
+        scheduler::CanonicalActivationScenario::ExactWaitResume { .. }
+        | scheduler::CanonicalActivationScenario::LifecycleExternalNudge { .. } => {
+            canonical_activation_origin(message)
+        }
+    }
+}
+
+fn canonical_activation_trust_for_scenario(
+    message: &MessageEnvelope,
+    scenario: &scheduler::CanonicalActivationScenario,
+) -> crate::domain::scheduler_protocol::ActivationTrust {
+    use crate::domain::scheduler_protocol::ActivationTrust;
+    match scenario {
+        scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation { .. }
+        | scheduler::CanonicalActivationScenario::InternalFollowup { .. }
+        | scheduler::CanonicalActivationScenario::ExactTaskRejoin { .. } => {
+            ActivationTrust::RuntimeInstruction
+        }
+        scheduler::CanonicalActivationScenario::ExplicitlyBoundOperatorInput { .. } => {
+            ActivationTrust::OperatorInstruction
+        }
+        scheduler::CanonicalActivationScenario::LifecycleExternalNudge { .. }
+            if scheduler::runtime_owned_task_followup(message) =>
+        {
+            ActivationTrust::RuntimeInstruction
+        }
+        scheduler::CanonicalActivationScenario::ExactWaitResume { .. }
+        | scheduler::CanonicalActivationScenario::LifecycleExternalNudge { .. } => {
+            canonical_activation_trust(message)
+        }
+    }
+}
+
+fn canonical_execution_origin_for_scenario(
+    message: &MessageEnvelope,
+    scenario: &scheduler::CanonicalActivationScenario,
+) -> crate::domain::execution_protocol::ExecutionOrigin {
+    use crate::domain::execution_protocol::ExecutionOrigin;
+    match canonical_activation_origin_for_scenario(message, scenario) {
+        crate::domain::scheduler_protocol::ActivationOrigin::Operator => ExecutionOrigin::Operator,
+        crate::domain::scheduler_protocol::ActivationOrigin::Channel => ExecutionOrigin::Channel,
+        crate::domain::scheduler_protocol::ActivationOrigin::Webhook => ExecutionOrigin::Webhook,
+        crate::domain::scheduler_protocol::ActivationOrigin::Callback => ExecutionOrigin::Callback,
+        crate::domain::scheduler_protocol::ActivationOrigin::Timer => ExecutionOrigin::Timer,
+        crate::domain::scheduler_protocol::ActivationOrigin::System => ExecutionOrigin::System,
+        crate::domain::scheduler_protocol::ActivationOrigin::Task => ExecutionOrigin::Task,
+        crate::domain::scheduler_protocol::ActivationOrigin::RuntimeRecovery => {
+            ExecutionOrigin::RuntimeRecovery
+        }
+    }
+}
+
+fn canonical_execution_trust_for_scenario(
+    message: &MessageEnvelope,
+    scenario: &scheduler::CanonicalActivationScenario,
+) -> crate::domain::execution_protocol::ExecutionTrust {
+    use crate::domain::execution_protocol::ExecutionTrust;
+    match canonical_activation_trust_for_scenario(message, scenario) {
+        crate::domain::scheduler_protocol::ActivationTrust::OperatorInstruction => {
+            ExecutionTrust::OperatorInstruction
+        }
+        crate::domain::scheduler_protocol::ActivationTrust::RuntimeInstruction => {
+            ExecutionTrust::RuntimeInstruction
+        }
+        crate::domain::scheduler_protocol::ActivationTrust::IntegrationSignal => {
+            ExecutionTrust::IntegrationSignal
+        }
+        crate::domain::scheduler_protocol::ActivationTrust::ExternalEvidence => {
+            ExecutionTrust::ExternalEvidence
+        }
+    }
+}
+
 fn canonical_admission_matches_scenario(
     admission: &crate::domain::scheduler_protocol::AdmitActivationCommand,
     message: &MessageEnvelope,
@@ -1841,8 +1933,9 @@ fn canonical_admission_matches_scenario(
     let activation = &admission.activation;
     if activation.agent_id != message.agent_id
         || activation.provenance.source_id != message.id
-        || activation.provenance.origin != canonical_activation_origin(message)
-        || activation.provenance.trust != canonical_activation_trust(message)
+        || activation.provenance.origin
+            != canonical_activation_origin_for_scenario(message, scenario)
+        || activation.provenance.trust != canonical_activation_trust_for_scenario(message, scenario)
     {
         return false;
     }

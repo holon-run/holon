@@ -87,20 +87,6 @@ fn init_git_repo(path: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn wait_until_async<F, Fut>(predicate: F) -> Result<()>
-where
-    F: Fn() -> Fut,
-    Fut: std::future::Future<Output = Result<bool>>,
-{
-    for _ in 0..60 {
-        if predicate().await? {
-            return Ok(());
-        }
-        sleep(Duration::from_millis(100)).await;
-    }
-    Err(anyhow::anyhow!("timed out waiting for condition"))
-}
-
 async fn attach_default_workspace(host: &RuntimeHost) -> Result<()> {
     let runtime = host.default_runtime().await?;
     let workspace = host.ensure_workspace_entry(host.config().workspace_dir.clone())?;
@@ -253,16 +239,78 @@ async fn wt204_parallel_worktree_workflow_demo_is_reviewable_end_to_end() -> Res
         worktree_paths.insert(task.id.clone(), worktree_path);
     }
 
-    wait_until_async(|| async {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
         let records = runtime.latest_task_records().await?;
         let all_completed = tasks.iter().all(|task| {
             records
                 .iter()
                 .any(|record| record.id == task.id && record.status == TaskStatus::Completed)
         });
-        Ok(all_completed)
-    })
-    .await?;
+        if all_completed {
+            break;
+        }
+        if Instant::now() >= deadline {
+            let task_states = tasks
+                .iter()
+                .map(|task| {
+                    let status = records
+                        .iter()
+                        .find(|record| record.id == task.id)
+                        .map(|record| format!("{:?}", record.status))
+                        .unwrap_or_else(|| "missing".into());
+                    format!("{}={}", task.id, status)
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let mut child_states = Vec::new();
+            for record in records
+                .iter()
+                .filter(|record| tasks.iter().any(|task| task.id == record.id))
+            {
+                let Some(child_agent_id) = record
+                    .detail
+                    .as_ref()
+                    .and_then(|detail| detail.get("child_agent_id"))
+                    .and_then(|value| value.as_str())
+                else {
+                    continue;
+                };
+                let child = host.get_or_create_agent(child_agent_id).await?;
+                let state = child.agent_state().await?;
+                let closure = child.current_closure().await?;
+                let child_events = child
+                    .storage()
+                    .read_recent_events(12)?
+                    .into_iter()
+                    .map(|event| format!("{}={}", event.kind, event.data))
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                child_states.push(format!(
+                    "{}(turn={}, pending={}, run={:?}, current_work_item={:?}, closure={:?}, events=[{}])",
+                    child_agent_id,
+                    state.turn_index,
+                    state.pending,
+                    state.current_run_id,
+                    state.current_work_item_id,
+                    closure,
+                    child_events
+                ));
+            }
+            let recent_events = runtime
+                .storage()
+                .read_recent_events(20)?
+                .into_iter()
+                .map(|event| event.kind)
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(anyhow::anyhow!(
+                "timed out waiting for worktree tasks to complete ({task_states}); child states: {}; recent events: {recent_events}",
+                child_states.join(", ")
+            ));
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
 
     let summary = runtime.summarize_worktree_tasks().await?;
     assert!(summary.contains("Worktree Task Summary"));

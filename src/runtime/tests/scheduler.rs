@@ -1401,6 +1401,35 @@ fn runtime_owned_unbound_child_followup_is_lifecycle_nudge() {
 }
 
 #[test]
+fn runtime_owned_unbound_child_evidence_is_lifecycle_nudge() {
+    let message = MessageEnvelope::new(
+        "child",
+        MessageKind::InternalFollowup,
+        MessageOrigin::Task {
+            task_id: "task-parent".into(),
+        },
+        AuthorityClass::ExternalEvidence,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "delegated evidence".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+
+    assert_eq!(
+        scheduler::canonical_activation_candidate(&message, None, None).unwrap(),
+        Some(
+            scheduler::CanonicalActivationCandidate::LifecycleExternalNudge {
+                agent_id: "child".into(),
+            }
+        )
+    );
+}
+
+#[test]
 fn untrusted_unbound_internal_followup_is_not_a_canonical_candidate() {
     let message = MessageEnvelope::new(
         "child",
