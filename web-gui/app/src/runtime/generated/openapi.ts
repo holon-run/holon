@@ -896,7 +896,7 @@ export interface paths {
         put?: never;
         /**
          * Apply scheduler repair
-         * @description Dry-run or apply one OCC-guarded scheduler repair operation and emit an audit event for committed changes.
+         * @description Dry-run or apply one OCC-guarded scheduler repair operation. Non-dry-run requests create and verify a SQLite backup before committing and emit an audit event.
          */
         post: operations["applySchedulerRepair"];
         delete?: never;
@@ -3221,6 +3221,8 @@ export interface components {
                 };
                 /** Format: uint32 */
                 runtime_max_output_tokens: number;
+                /** @enum {string} */
+                scheduler: "legacy" | "canonical";
                 unknown_model_fallback_configured: boolean;
                 vision_default?: string | null;
                 web_search: {
@@ -3329,6 +3331,8 @@ export interface components {
                 };
                 /** Format: uint32 */
                 runtime_max_output_tokens: number;
+                /** @enum {string} */
+                scheduler: "legacy" | "canonical";
                 unknown_model_fallback_configured: boolean;
                 vision_default?: string | null;
                 web_search: {
@@ -3436,6 +3440,7 @@ export interface components {
         SchedulerRepairResult: {
             after: unknown;
             agent_id: string;
+            backup_path?: string | null;
             before: unknown;
             changed: boolean;
             dry_run: boolean;
