@@ -486,6 +486,8 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                         reason,
                     )
                     .await?;
+                    // Terminalization notifies the scheduler, so the next poll can
+                    // advance past the rejected queue head in the same session.
                     return Ok(RunLoopPoll::Idle);
                 }
                 Ok(CanonicalClaimOutcome::RetainQueued {

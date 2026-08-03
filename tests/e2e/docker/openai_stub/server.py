@@ -9,6 +9,7 @@ from typing import Any
 CALLBACK_CAPABILITY_PATTERN = re.compile(
     r"(/api/callbacks/(?:wake|enqueue)/)[A-Za-z0-9_-]+"
 )
+SCENARIOS = ("scheduler-multi", "scheduler-external", "scheduler-operator")
 
 def redact_evidence(value: Any) -> Any:
     if isinstance(value, dict):
@@ -224,7 +225,7 @@ def make_handler(scenario: Scenario, log: Path) -> type[BaseHTTPRequestHandler]:
     return Handler
 
 def main() -> None:
-    parser = argparse.ArgumentParser(); parser.add_argument("--listen", default="0.0.0.0"); parser.add_argument("--port", type=int, default=8080); parser.add_argument("--scenario", required=True); parser.add_argument("--request-log", type=Path, default=Path("/data/stub-requests.jsonl")); args = parser.parse_args()
+    parser = argparse.ArgumentParser(); parser.add_argument("--listen", default="0.0.0.0"); parser.add_argument("--port", type=int, default=8080); parser.add_argument("--scenario", required=True, choices=SCENARIOS); parser.add_argument("--request-log", type=Path, default=Path("/data/stub-requests.jsonl")); args = parser.parse_args()
     scenario = Scenario(args.scenario)
     ThreadingHTTPServer((args.listen, args.port), make_handler(scenario, args.request_log)).serve_forever()
 

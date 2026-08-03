@@ -438,6 +438,8 @@ fn validate_provenance(attempt: &ExecutionAttempt) -> Result<(), String> {
         Timer | System => matches!(provenance.trust, RuntimeInstruction | IntegrationSignal),
         Task | RuntimeRecovery => provenance.trust == RuntimeInstruction,
     };
+    // InternalFollowup identities are runtime-only: the scheduler constructs them
+    // from persisted ingress evidence while preserving, never upgrading, trust.
     let runtime_owned_followup = matches!(
         (
             &attempt.source.identity,
