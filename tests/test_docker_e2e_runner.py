@@ -463,6 +463,67 @@ class DockerE2ERunnerTests(unittest.TestCase):
         self.assertEqual(response["output"][0]["name"], "GetWorkspaceState")
         self.assertEqual(scenario.phase, 8)
 
+    def test_openai_stub_operator_wait_uses_operator_input_wake(self) -> None:
+        scenario = stub.Scenario("scheduler-operator")
+        scenario.phase = 2
+        scenario.work_ids = ["work_0123456789abcde"]
+
+        status, response = scenario.consume({"input": []})
+
+        self.assertEqual(status, 200)
+        call = response["output"][0]
+        self.assertEqual(call["name"], "WaitFor")
+        self.assertEqual(json.loads(call["arguments"])["wake"], "operator_input")
+
+    def test_openai_stub_task_wait_closes_creation_turn(self) -> None:
+        scenario = stub.Scenario("scheduler-task-wait")
+        scenario.phase = 1
+        scenario.work_ids = ["work_0123456789abcde"]
+        scenario.markers = {"task_result": "SCHEDULER-TASK-RESULT-abcd"}
+
+        status, response = scenario.consume({"input": []})
+
+        self.assertEqual(status, 200)
+        self.assertEqual(response["output"][0]["type"], "message")
+        self.assertEqual(scenario.phase, 2)
+
+        status, response = scenario.consume({"input": []})
+
+        self.assertEqual(status, 200)
+        self.assertEqual(response["output"][0]["name"], "ExecCommand")
+
+    def test_openai_stub_concurrent_callback_starts_a_resume_tools(self) -> None:
+        scenario = stub.Scenario("scheduler-concurrent")
+        scenario.phase = 6
+        scenario.work_ids = [
+            "work_0123456789abcde",
+            "work_fedcba987654321",
+        ]
+        scenario.markers = {"concurrent_a": "SCHEDULER-CONCURRENT-A-abcd"}
+        callback = {
+            "input": [
+                {
+                    "type": "message",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": (
+                                "## current_input\nCurrent input:\n"
+                                "- [system][trigger:system_tick] "
+                                "SCHEDULER-CONCURRENT-A-abcd"
+                            ),
+                        }
+                    ],
+                }
+            ]
+        }
+
+        status, response = scenario.consume(callback)
+
+        self.assertEqual(status, 200)
+        self.assertEqual(response["output"][0]["name"], "GetWorkItem")
+        self.assertEqual(scenario.phase, 8)
+
     def test_openai_stub_registers_every_required_scenario(self) -> None:
         profile = runner.resolve_profile(self.manifest, "scheduler-required")
         selected = runner.select_cases(
@@ -500,7 +561,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 "UpdateWorkItem", "CompleteWorkItem",
             ],
             "scheduler-concurrent": [
-                "CreateWorkItem", "PickWorkItem", "WaitFor", "CreateWorkItem",
+                "CreateWorkItem", "PickWorkItem", "WaitFor",
                 "ListWorkItems", "UpdateWorkItem", "CompleteWorkItem",
                 "GetWorkItem", "UpdateWorkItem", "CompleteWorkItem",
             ],
@@ -573,7 +634,17 @@ class DockerE2ERunnerTests(unittest.TestCase):
             scenario = stub.Scenario(name)
             actual = []
             for _ in range(scenario.expected_phase()):
-                status, value = scenario.consume(request)
+                phase_request = request
+                if name == "scheduler-concurrent" and scenario.phase == 6:
+                    phase_request = {
+                        "input": [
+                            {
+                                "type": "function_call_output",
+                                "output": "{}",
+                            }
+                        ]
+                    }
+                status, value = scenario.consume(phase_request)
                 self.assertEqual(status, 200, name)
                 actual.extend(
                     item["name"]
@@ -1649,6 +1720,60 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 callback_external_trigger_id="trigger-target",
             )
 
+    def test_canonical_wait_terminal_requires_callback_evidence(self) -> None:
+        harness = type(
+            "CanonicalHarness",
+            (),
+            {"canonical_scheduler_enabled": True},
+        )()
+        snapshot = {
+            "wait_conditions": [
+                {
+                    "wait_condition_id": "wait-1",
+                    "work_item_id": "work-1",
+                    "kind": "external",
+                    "status": "resolved",
+                }
+            ],
+            "audit_events": [],
+        }
+
+        with self.assertRaisesRegex(
+            AssertionError,
+            "lacked callback trigger evidence",
+        ):
+            runner.require_scheduler_wait_terminal(
+                harness,
+                snapshot,
+                work_item_id="work-1",
+                wait_kind="external",
+                require_callback_trigger=True,
+                callback_external_trigger_id="trigger-target",
+            )
+
+        snapshot["audit_events"] = [
+            {
+                "kind": "callback_delivered",
+                "data_json": json.dumps(
+                    {
+                        "data": {
+                            "disposition": "triggered",
+                            "external_trigger_id": "trigger-target",
+                        }
+                    }
+                ),
+            }
+        ]
+        waits = runner.require_scheduler_wait_terminal(
+            harness,
+            snapshot,
+            work_item_id="work-1",
+            wait_kind="external",
+            require_callback_trigger=True,
+            callback_external_trigger_id="trigger-target",
+        )
+        self.assertEqual(waits[0]["status"], "resolved")
+
     def test_canonical_activation_oracle_distinguishes_lifecycle_and_work_item(self) -> None:
         harness = type(
             "CanonicalHarness",
@@ -1710,14 +1835,14 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 lifecycle_message_ids={"message-create"},
             )
 
-    def test_compaction_oracle_requires_actual_compacted_rounds(self) -> None:
+    def test_compaction_oracle_requires_actual_compaction_evidence(self) -> None:
         event = {
             "kind": "turn_local_compaction_applied",
             "data_json": json.dumps(
                 {"data": {"compacted_rounds": 2, "exact_tail_rounds": 1}}
             ),
         }
-        events = runner.require_turn_local_compaction(
+        events = runner.require_compaction_evidence(
             {"audit_events": [event]},
             label="test",
         )
@@ -1726,13 +1851,25 @@ class DockerE2ERunnerTests(unittest.TestCase):
         event["data_json"] = json.dumps(
             {"data": {"compacted_rounds": 0, "exact_tail_rounds": 3}}
         )
+        context_event = {
+            "kind": "provider_round_completed",
+            "data_json": json.dumps({"data": {"compression_epoch": 1}}),
+        }
+        events = runner.require_compaction_evidence(
+            {"audit_events": [event, context_event]},
+            label="test",
+            previous_compression_epoch=0,
+        )
+        self.assertEqual(events[0]["compression_epoch"], 1)
+
         with self.assertRaisesRegex(
             AssertionError,
-            "compaction stimulus did not produce compacted rounds",
+            "compaction stimulus did not produce compaction evidence",
         ):
-            runner.require_turn_local_compaction(
-                {"audit_events": [event]},
+            runner.require_compaction_evidence(
+                {"audit_events": [event, context_event]},
                 label="test",
+                previous_compression_epoch=1,
             )
 
     def test_wait_work_item_fails_fast_on_duplicate_objective_marker(self) -> None:

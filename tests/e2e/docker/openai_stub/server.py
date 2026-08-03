@@ -160,9 +160,10 @@ class Scenario:
                 return self.provider_retry()
             if self.name in {"scheduler-external", "scheduler-operator"}:
                 kind = self.name.removeprefix("scheduler-")
-                return self.wait(kind, kind, kind)
+                wake = "operator_input" if kind == "operator" else kind
+                return self.wait(kind, kind, wake)
             if self.name == "scheduler-concurrent":
-                return self.interject("concurrent", "external")
+                return self.concurrent()
             if self.name == "scheduler-interject":
                 return self.interject("interject", "operator_input")
             if self.name == "scheduler-compaction":
@@ -265,10 +266,16 @@ class Scenario:
                     ],
                 },
             )
+        if self.phase == 1:
+            self.phase += 1
+            return 200, response(
+                [text_item("Created deterministic task-wait WorkItem.")],
+                "resp_task_wait_created",
+            )
         if not self.work_ids:
             return 409, {"error": {"type": "missing_work_item_id", "message": str(self.phase)}}
         wid = self.work_ids[0]
-        if self.phase == 1:
+        if self.phase == 2:
             marker = self.markers.get("task_result", "SCHEDULER-TASK-RESULT")
             return self.call(
                 "ExecCommand",
@@ -278,7 +285,7 @@ class Scenario:
                     "max_output_tokens": 100,
                 },
             )
-        if self.phase == 2:
+        if self.phase == 3:
             if not self.task_ids:
                 return 409, {"error": {"type": "missing_task_id", "message": str(self.phase)}}
             return self.call(
@@ -289,12 +296,12 @@ class Scenario:
                     "reason": "deterministic task completion",
                 },
             )
-        if self.phase in {3, 5}:
+        if self.phase in {4, 6}:
             return self.call(
                 "GetWorkItem",
                 {"work_item_id": wid, "include_todo_list": True},
             )
-        if self.phase == 4:
+        if self.phase == 5:
             return self.call(
                 "WaitFor",
                 {
@@ -303,7 +310,7 @@ class Scenario:
                     "reason": "deterministic external completion",
                 },
             )
-        if self.phase == 6:
+        if self.phase == 7:
             return self.call(
                 "UpdateWorkItem",
                 {
@@ -314,7 +321,7 @@ class Scenario:
                     ],
                 },
             )
-        if self.phase == 7:
+        if self.phase == 8:
             return self.call(
                 "CompleteWorkItem",
                 {"work_item_id": wid},
@@ -337,6 +344,95 @@ class Scenario:
                 {"work_item_id": wid},
                 self.markers.get(
                     "provider_complete", "SCHEDULER-PROVIDER-RETRY-COMPLETE"
+                ),
+            )
+        return 409, {"error": {"type": "transcript_exhausted", "message": str(self.phase)}}
+
+    def concurrent(self) -> tuple[int, dict[str, Any]]:
+        if self.phase == 0:
+            return self.call(
+                "CreateWorkItem",
+                {
+                    "objective": self.markers.get("concurrent_a", "concurrent-a"),
+                    "plan_status": "ready",
+                    "todo_list": [
+                        {"text": "concurrent-wait", "state": "pending"},
+                        {"text": "concurrent-complete", "state": "pending"},
+                    ],
+                },
+            )
+        if not self.work_ids:
+            return 409, {"error": {"type": "missing_work_item_id", "message": str(self.phase)}}
+        if self.phase == 1:
+            return self.call("PickWorkItem", {"work_item_id": self.work_ids[0]})
+        if self.phase == 2:
+            return self.call(
+                "WaitFor",
+                {
+                    "wake": "external",
+                    "resource": self.markers.get(
+                        "callback", "docker-e2e:deterministic"
+                    ),
+                    "reason": "deterministic concurrent wait",
+                },
+            )
+        if len(self.work_ids) < 2:
+            return 409, {"error": {"type": "missing_work_item_id", "message": str(self.phase)}}
+        if self.phase == 3:
+            return self.call(
+                "ListWorkItems",
+                {"filter": "current", "include_todo_list": True},
+            )
+        if self.phase == 4:
+            return self.call(
+                "UpdateWorkItem",
+                {
+                    "work_item_id": self.work_ids[1],
+                    "todo_list": [
+                        {"text": "concurrent-b-seed", "state": "completed"},
+                        {"text": "concurrent-b-complete", "state": "completed"},
+                    ],
+                },
+            )
+        if self.phase == 5:
+            return self.call(
+                "CompleteWorkItem",
+                {"work_item_id": self.work_ids[1]},
+                self.markers.get(
+                    "concurrent_complete_b", "concurrent-complete-b"
+                ),
+            )
+        if self.phase == 6:
+            marker = self.markers.get("concurrent_a", "SCHEDULER-CONCURRENT-A")
+            if "[trigger:" not in self.current_input_text or marker not in self.current_input_text:
+                self.phase += 1
+                return 200, response(
+                    [text_item("Completed deterministic concurrent WorkItem B.")],
+                    "resp_concurrent_b_complete",
+                )
+            self.phase += 1
+        if self.phase == 7:
+            return self.call(
+                "GetWorkItem",
+                {"work_item_id": self.work_ids[0], "include_todo_list": True},
+            )
+        if self.phase == 8:
+            return self.call(
+                "UpdateWorkItem",
+                {
+                    "work_item_id": self.work_ids[0],
+                    "todo_list": [
+                        {"text": "concurrent-wait", "state": "completed"},
+                        {"text": "concurrent-complete", "state": "completed"},
+                    ],
+                },
+            )
+        if self.phase == 9:
+            return self.call(
+                "CompleteWorkItem",
+                {"work_item_id": self.work_ids[0]},
+                self.markers.get(
+                    "concurrent_complete_a", "concurrent-complete-a"
                 ),
             )
         return 409, {"error": {"type": "transcript_exhausted", "message": str(self.phase)}}
@@ -656,12 +752,12 @@ class Scenario:
 
     def expected_phase(self) -> int:
         return {
-            "scheduler-task-wait": 9,
+            "scheduler-task-wait": 10,
             "scheduler-provider-retry": 3,
             "scheduler-multi": 12,
             "scheduler-external": 7,
             "scheduler-operator": 7,
-            "scheduler-concurrent": 13,
+            "scheduler-concurrent": 11,
             "scheduler-interject": 13,
             "scheduler-compaction": 7,
             "scheduler-worktree": 12,

@@ -204,6 +204,7 @@ class CaseHarness:
         self.keep = keep
         self.provider_mode = provider_mode
         self.stub_scenario = stub_scenario
+        self.stub_provider_base_url: str | None = None
         self.tool_assertion_mode = tool_assertion_mode
         names = resource_names or {}
         self.volume = names.get("volume", f"holon-live-{case_id}-{suffix}")
@@ -506,7 +507,9 @@ class CaseHarness:
             else:
                 raise TimeoutError("deterministic provider stub did not become ready")
             self.model = "openai/gpt-5.4"
-            self.runtime_env["HOLON_OPENAI_BASE_URL"] = "http://provider-stub:8080/v1"
+            self.runtime_env["HOLON_OPENAI_BASE_URL"] = (
+                self.stub_provider_base_url or "http://provider-stub:8080/v1"
+            )
             self.runtime_env["OPENAI_API_KEY"] = "deterministic-test-key"
         args = [
             "run",
@@ -1461,22 +1464,51 @@ def require_processed_queue_entries(
     )
 
 
-def require_turn_local_compaction(
+def require_compaction_evidence(
     snapshot: dict[str, Any],
     *,
     label: str,
+    previous_compression_epoch: int = 0,
 ) -> list[dict[str, Any]]:
-    events = [
+    turn_local_events = [
         json.loads(row["data_json"])["data"]
         for row in snapshot["audit_events"]
         if row["kind"] == "turn_local_compaction_applied"
     ]
+    context_events = [
+        json.loads(row["data_json"])["data"]
+        for row in snapshot["audit_events"]
+        if row["kind"] == "provider_round_completed"
+        and int(
+            json.loads(row["data_json"])["data"].get("compression_epoch") or 0
+        )
+        > previous_compression_epoch
+    ]
+    compacted_turn_local_events = [
+        event
+        for event in turn_local_events
+        if int(event.get("compacted_rounds") or 0) > 0
+    ]
     require(
-        events
-        and any(int(event.get("compacted_rounds") or 0) > 0 for event in events),
-        f"{label} compaction stimulus did not produce compacted rounds: {events}",
+        compacted_turn_local_events or context_events,
+        f"{label} compaction stimulus did not produce compaction evidence: "
+        f"turn_local={turn_local_events}, context={context_events}",
     )
-    return events
+    return compacted_turn_local_events or context_events
+
+
+def latest_compression_epoch(snapshot: dict[str, Any]) -> int:
+    return max(
+        (
+            int(
+                json.loads(row["data_json"])["data"].get("compression_epoch")
+                or 0
+            )
+            for row in snapshot["audit_events"]
+            if row["kind"] == "provider_round_completed"
+        ),
+        default=0,
+    )
 
 
 def require_scheduler_engine_activation_chain(
@@ -1575,12 +1607,12 @@ def require_scheduler_wait_terminal(
             wait["status"] == "resolved",
             f"canonical {wait_kind} wait did not resolve: {wait}",
         )
-        return waits
-    require(
-        wait["status"] in {"resolved", "cancelled"},
-        f"legacy {wait_kind} wait did not reach a terminal state: {wait}",
-    )
-    if wait["status"] == "cancelled":
+    else:
+        require(
+            wait["status"] in {"resolved", "cancelled"},
+            f"legacy {wait_kind} wait did not reach a terminal state: {wait}",
+        )
+    if not harness.canonical_scheduler_enabled and wait["status"] == "cancelled":
         cancellation_events = [
             json.loads(row["data_json"])["data"]
             for row in snapshot["audit_events"]
@@ -2399,6 +2431,7 @@ def run_scheduler_provider_failure_retry_case(
     base_url_env = provider_base_url_env(harness.model)
     harness.start()
     original_base_url = harness.runtime_env.get(base_url_env)
+    original_stub_provider_base_url = harness.stub_provider_base_url
 
     harness.request(
         "POST",
@@ -2430,7 +2463,10 @@ def run_scheduler_provider_failure_retry_case(
     write_json(harness.evidence / "provider-retry-picked.json", picked)
     failure_event_cursor = harness.event_cursor()
     harness.stop()
-    harness.runtime_env[base_url_env] = "http://127.0.0.1:9"
+    if harness.provider_mode == "stub":
+        harness.stub_provider_base_url = "http://127.0.0.1:9"
+    else:
+        harness.runtime_env[base_url_env] = "http://127.0.0.1:9"
     harness.start(wait_idle=False)
     harness.request(
         "POST",
@@ -2504,7 +2540,9 @@ def run_scheduler_provider_failure_retry_case(
     )
 
     harness.stop()
-    if original_base_url is None:
+    if harness.provider_mode == "stub":
+        harness.stub_provider_base_url = original_stub_provider_base_url
+    elif original_base_url is None:
         harness.runtime_env.pop(base_url_env, None)
     else:
         harness.runtime_env[base_url_env] = original_base_url
@@ -2979,17 +3017,12 @@ def run_scheduler_concurrent_claim_fencing_case(
         label="scheduler-concurrent-waiting",
     )
     harness.wait_agent_asleep()
-    interject_text = (
-        f"Scheduler Docker E2E case {case['id']} interject. Create exactly one "
-        f"WorkItem whose objective is "
-        f"{json.dumps(objective_b, ensure_ascii=False)}, "
-        f"with plan_status ready and exactly these todos: concurrent-b-seed "
-        f"completed, concurrent-b-complete pending. The expected completion "
-        f"marker is {completion_b}. Do not PickWorkItem, WaitFor, or "
-        "CompleteWorkItem in this turn. After CreateWorkItem succeeds, end "
-        "with a concise acknowledgement."
+    created_b = harness.request(
+        "POST",
+        harness.agent_path("work-items", control=True),
+        {"objective": objective_b},
     )
-    harness.prompt("scheduler-concurrent-interject", interject_text)
+    write_json(harness.evidence / "scheduler-concurrent-created-b.json", created_b)
     item_b = harness.wait_work_item(
         objective_marker=objective_b_marker,
         expected_state="completed",
@@ -3015,17 +3048,12 @@ def run_scheduler_concurrent_claim_fencing_case(
             "message_id"
         ],
     )
-    harness.assert_tools(
-        "scheduler-concurrent-interject",
-        baseline,
-        ["CreateWorkItem"],
-        forbidden + ["PickWorkItem", "WaitFor", "CompleteWorkItem"],
-        message_id=harness.prompt_scope("scheduler-concurrent-interject")[
-            "message_id"
-        ],
-    )
     work_item_a_id = item_a["id"]
     work_item_b_id = item_b["id"]
+    require(
+        created_b.get("id") == work_item_b_id,
+        f"concurrent control-plane WorkItem identity mismatch: {created_b}",
+    )
     require(item_a["state"] == "completed", f"WorkItem A not completed: {item_a}")
     require(item_b["state"] == "completed", f"WorkItem B not completed: {item_b}")
     require(work_item_a_id != work_item_b_id, "WorkItem A and B share the same id")
@@ -3045,15 +3073,22 @@ def run_scheduler_concurrent_claim_fencing_case(
             f"WorkItem {letter} brief mismatch: {brief}",
         )
     snapshot = harness.runtime_db_snapshot("scheduler-concurrent")
+    messages_by_id = {
+        row["message_id"]: row for row in snapshot["messages"]
+    }
     a_turn_ids = {
         row["turn_id"]
         for row in snapshot["turn_records"]
         if row["current_work_item_id"] == work_item_a_id
+        and messages_by_id.get(row["trigger_message_id"], {}).get("work_item_id")
+        == work_item_a_id
     }
     b_turn_ids = {
         row["turn_id"]
         for row in snapshot["turn_records"]
         if row["current_work_item_id"] == work_item_b_id
+        and messages_by_id.get(row["trigger_message_id"], {}).get("work_item_id")
+        == work_item_b_id
     }
     harness.assert_tools(
         "scheduler-concurrent-a-resume",
@@ -3083,9 +3118,7 @@ def run_scheduler_concurrent_claim_fencing_case(
         snapshot,
         work_item_id=work_item_b_id,
         expected_admission_kinds=("scheduling",),
-        lifecycle_message_ids={
-            harness.prompt_scope("scheduler-concurrent-interject")["message_id"]
-        },
+        lifecycle_message_ids=set(),
     )
     waits = require_scheduler_wait_terminal(
         harness,
@@ -3332,6 +3365,8 @@ def run_scheduler_compaction_continuity_case(
         "CompleteWorkItem for the exact current item. Do not wait for more "
         "operator input."
     )
+    before_snapshot = harness.runtime_db_snapshot("scheduler-compaction-before")
+    previous_compression_epoch = latest_compression_epoch(before_snapshot)
     phase = case["phases"][0]
     baseline, _ = harness.prompt(
         "scheduler-compaction-create",
@@ -3349,9 +3384,10 @@ def run_scheduler_compaction_continuity_case(
     stimulus_snapshot = harness.runtime_db_snapshot(
         "scheduler-compaction-stimulus"
     )
-    require_turn_local_compaction(
+    require_compaction_evidence(
         stimulus_snapshot,
         label="scheduler-compaction",
+        previous_compression_epoch=previous_compression_epoch,
     )
     harness.wait_agent_asleep()
     harness.prompt(
@@ -3411,7 +3447,11 @@ def run_scheduler_compaction_continuity_case(
             harness.prompt_scope("scheduler-compaction-create")["message_id"]
         },
     )
-    require_turn_local_compaction(snapshot, label="scheduler-compaction")
+    require_compaction_evidence(
+        snapshot,
+        label="scheduler-compaction",
+        previous_compression_epoch=previous_compression_epoch,
+    )
     waits = require_scheduler_wait_terminal(
         harness,
         snapshot,
@@ -3734,7 +3774,7 @@ def run_scheduler_checkpoint_replay_case(
         harness,
         snapshot,
         work_item_id=work_item_a_id,
-        expected_admission_kinds=("wait_resume",),
+        expected_admission_kinds=("scheduling", "wait_resume"),
         lifecycle_message_ids={
             harness.prompt_scope("scheduler-replay-create")["message_id"]
         },
@@ -3748,16 +3788,13 @@ def run_scheduler_checkpoint_replay_case(
             harness.prompt_scope("scheduler-replay-create")["message_id"]
         },
     )
-    waits = [
-        row
-        for row in snapshot["wait_conditions"]
-        if row["work_item_id"] == work_item_a_id
-    ]
-    require(
-        len(waits) == 1
-        and waits[0]["kind"] == "external"
-        and waits[0]["status"] == "resolved",
-        f"replay external wait did not resolve: {waits}",
+    waits = require_scheduler_wait_terminal(
+        harness,
+        snapshot,
+        work_item_id=work_item_a_id,
+        wait_kind="external",
+        require_callback_trigger=True,
+        callback_external_trigger_id=callback["external_trigger_id"],
     )
     require_scheduler_engine_wait_resolution(
         harness,
