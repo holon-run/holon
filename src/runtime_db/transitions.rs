@@ -525,7 +525,48 @@ impl RuntimeTransitionRepository<'_> {
                 command.scheduler_protocol_bootstrap.as_ref(),
                 &command.scheduler_protocol_commands,
                 &execution_protocol.commands,
-            )?;
+            );
+            let scheduler_protocol = match scheduler_protocol {
+                Ok(prepared) => prepared,
+                Err(error)
+                    if matches!(
+                        command.operation,
+                        QueueOperation::Claim | QueueOperation::Interject
+                    ) && scheduler_protocol_repository::scheduler_protocol_retryable_conflict(
+                        &error,
+                    )
+                    .is_some() =>
+                {
+                    let conflict =
+                        scheduler_protocol_repository::scheduler_protocol_retryable_conflict(&error)
+                            .expect("guard checked scheduler claim contention");
+                    let event = AuditEvent::legacy(
+                        "scheduler_claim_contended",
+                        serde_json::json!({
+                            "agent_id": command.agent_id,
+                            "conflict_kind": conflict.kind,
+                            "conflict_code": conflict.code,
+                            "queue_operation": format!("{:?}", command.operation).to_lowercase(),
+                            "queue_disposition": "retained_queued",
+                        }),
+                    );
+                    let mut commit = finish_transition_tx(
+                        tx,
+                        true,
+                        &command.agent_id,
+                        &[event],
+                        &[],
+                        command.fault,
+                        PostCommitEffects {
+                            notify_scheduler: command.notify_scheduler,
+                            ..PostCommitEffects::default()
+                        },
+                    )?;
+                    commit.scheduler_authority_blocked = true;
+                    return Ok(commit);
+                }
+                Err(error) => return Err(error),
+            };
             let execution_protocol = execution_protocol_repository::validate_execution_commands_tx(
                 tx,
                 &command.agent_id,

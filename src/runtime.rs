@@ -1822,6 +1822,16 @@ pub fn apply_scheduler_recovery_plan(
     agent_id: &str,
     report: &SchedulerRecoveryReport,
 ) -> Result<(usize, Option<std::path::PathBuf>)> {
+    apply_scheduler_recovery_plan_with_hook(storage, runtime_db, agent_id, report, |_| Ok(()))
+}
+
+fn apply_scheduler_recovery_plan_with_hook(
+    storage: &AppStorage,
+    runtime_db: &RuntimeDb,
+    agent_id: &str,
+    report: &SchedulerRecoveryReport,
+    mut before_legacy_adoption_commit: impl FnMut(&str) -> Result<()>,
+) -> Result<(usize, Option<std::path::PathBuf>)> {
     let legacy_adoptions = report
         .legacy_adoptions
         .iter()
@@ -1860,15 +1870,21 @@ pub fn apply_scheduler_recovery_plan(
             record_legacy_adoption_rejection(storage, agent_id, &candidate.work_item_id, reason)?;
             continue;
         }
+        before_legacy_adoption_commit(&candidate.work_item_id)?;
         match runtime_db
             .transitions()
             .commit_scheduler_recovery_plan(agent_id, std::slice::from_ref(command))
         {
-            Ok(changed) => applied |= changed,
-            Err(error) => {
-                let Some(reason) = isolated_legacy_adoption_rejection(&error) else {
-                    return Err(error);
-                };
+            Ok(
+                crate::runtime_db::transitions::scheduler_protocol_repository::SchedulerRecoveryCommitOutcome::Applied(
+                    changed,
+                ),
+            ) => applied |= changed,
+            Ok(
+                crate::runtime_db::transitions::scheduler_protocol_repository::SchedulerRecoveryCommitOutcome::Rejected {
+                    reason,
+                },
+            ) => {
                 record_legacy_adoption_rejection(
                     storage,
                     agent_id,
@@ -1876,12 +1892,25 @@ pub fn apply_scheduler_recovery_plan(
                     reason,
                 )?;
             }
+            Err(error) => return Err(error),
         }
     }
     if !settlement_recovery.is_empty() {
-        applied |= runtime_db
+        match runtime_db
             .transitions()
-            .commit_scheduler_recovery_plan(agent_id, settlement_recovery)?;
+            .commit_scheduler_recovery_plan(agent_id, settlement_recovery)?
+        {
+            crate::runtime_db::transitions::scheduler_protocol_repository::SchedulerRecoveryCommitOutcome::Applied(
+                changed,
+            ) => applied |= changed,
+            crate::runtime_db::transitions::scheduler_protocol_repository::SchedulerRecoveryCommitOutcome::Rejected {
+                reason,
+            } => {
+                return Err(anyhow!(
+                    "scheduler settlement recovery unexpectedly rejected: {reason}"
+                ));
+            }
+        }
     }
     Ok((usize::from(applied), Some(backup_path)))
 }
@@ -1945,23 +1974,6 @@ fn record_legacy_adoption_rejection(
         None,
         vec![reason],
     )?)
-}
-
-fn isolated_legacy_adoption_rejection(error: &anyhow::Error) -> Option<String> {
-    error.chain().find_map(|source| {
-        source
-            .downcast_ref::<
-                crate::runtime_db::transitions::scheduler_protocol_repository::LegacySchedulerAdoptionRejected,
-            >()
-            .map(|error| error.reason.clone())
-            .or_else(|| {
-                source
-                    .downcast_ref::<
-                        crate::runtime_db::transitions::scheduler_protocol_repository::SchedulerProtocolReducerRejected,
-                    >()
-                    .map(|error| error.reason.clone())
-            })
-    })
 }
 
 fn runtime_error_queue_settlement(

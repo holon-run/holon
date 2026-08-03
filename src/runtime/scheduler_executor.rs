@@ -841,6 +841,14 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 ));
             }
         };
+        if work_item.state == crate::types::WorkItemState::Completed
+            && matches!(
+                scenario,
+                scheduler::CanonicalActivationScenario::ExactTaskRejoin { .. }
+            )
+        {
+            return Ok(CanonicalClaimOutcome::ReduceOnly);
+        }
         let work_queue = self.runtime.inner.storage.work_queue_prompt_projection()?;
         let work_projection = work_queue
             .items

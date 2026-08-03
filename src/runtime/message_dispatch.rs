@@ -39,9 +39,21 @@ impl RuntimeHandle {
         } else {
             None
         };
+        let message_work_item_id = match message.work_item_id.as_deref() {
+            Some(work_item_id)
+                if self
+                    .inner
+                    .storage
+                    .latest_work_item(work_item_id)?
+                    .is_some_and(|work_item| work_item.state == WorkItemState::Completed) =>
+            {
+                None
+            }
+            work_item_id => work_item_id,
+        };
         let continuation_work_item_id = matching_wait_work_item_id
             .as_deref()
-            .or(message.work_item_id.as_deref())
+            .or(message_work_item_id)
             .or(scheduler_state.current_turn_work_item_id.as_deref())
             .or(scheduler_state.current_work_item_id.as_deref());
         let continuation_resolution = continuation_trigger.as_ref().map(|trigger| {

@@ -155,6 +155,7 @@ impl StdError for LegacySchedulerAdoptionRejected {}
 #[derive(Debug)]
 pub(crate) struct SchedulerProtocolReducerRejected {
     pub reason: String,
+    pub conflict: Option<ProtocolConflict>,
 }
 
 impl fmt::Display for SchedulerProtocolReducerRejected {
@@ -164,6 +165,39 @@ impl fmt::Display for SchedulerProtocolReducerRejected {
 }
 
 impl StdError for SchedulerProtocolReducerRejected {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SchedulerRecoveryCommitOutcome {
+    Applied(bool),
+    Rejected { reason: String },
+}
+
+pub(crate) fn scheduler_protocol_retryable_conflict(
+    error: &anyhow::Error,
+) -> Option<ProtocolConflict> {
+    error.chain().find_map(|source| {
+        source
+            .downcast_ref::<SchedulerProtocolReducerRejected>()
+            .and_then(|error| error.conflict.as_ref())
+            .filter(|conflict| {
+                matches!(
+                    conflict.code.as_str(),
+                    "activation_already_running"
+                        | "activation_already_settled"
+                        | "activation_slot_not_idle"
+                        | "agent_lane_reserved"
+                        | "agent_lane_reserved_by_other_owner"
+                        | "agent_lane_reserved_for_other_wait"
+                        | "scheduling_generation_already_admitted"
+                        | "stale_dispatch_revision"
+                        | "stale_scheduling_generation"
+                        | "stale_wait_generation"
+                        | "wait_not_triggered"
+                )
+            })
+            .cloned()
+    })
+}
 
 #[derive(Debug, Serialize)]
 struct SnapshotFence<'a> {
@@ -248,17 +282,19 @@ pub(super) fn validate_protocol_commands_tx(
         scheduler_protocol::assert_invariants(&outcome.outcome.snapshot).map_err(|error| {
             SchedulerProtocolReducerRejected {
                 reason: format!("scheduler protocol reducer produced invalid state: {error}"),
+                conflict: None,
             }
         })?;
         if outcome.outcome.decision == Decision::Rejected {
-            let code = outcome
-                .conflict
+            let conflict = outcome.conflict.clone();
+            let code = conflict
                 .as_ref()
                 .map(|conflict| conflict.code.as_str())
                 .or_else(|| outcome.outcome.diagnostics.first().map(String::as_str))
                 .unwrap_or("rejected_without_diagnostic");
             return Err(SchedulerProtocolReducerRejected {
                 reason: format!("canonical scheduler command {command_kind} rejected: {code}"),
+                conflict,
             }
             .into());
         }
@@ -608,9 +644,9 @@ impl RuntimeTransitionRepository<'_> {
         &self,
         agent_id: &str,
         commands: &[ProtocolCommand],
-    ) -> Result<bool> {
+    ) -> Result<SchedulerRecoveryCommitOutcome> {
         if commands.is_empty() {
-            return Ok(false);
+            return Ok(SchedulerRecoveryCommitOutcome::Applied(false));
         }
         self.db.transaction(|tx| {
             for command in commands {
@@ -631,13 +667,35 @@ impl RuntimeTransitionRepository<'_> {
             }
             let bootstrap = (!scheduler_protocol_partition_exists_tx(tx, agent_id)?)
                 .then(canonical_empty_snapshot);
-            let prepared =
-                validate_protocol_commands_tx(tx, agent_id, bootstrap.as_ref(), commands, &[])?;
+            let prepared = match validate_protocol_commands_tx(
+                tx,
+                agent_id,
+                bootstrap.as_ref(),
+                commands,
+                &[],
+            ) {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    if let Some(reason) = error.chain().find_map(|source| {
+                        source
+                            .downcast_ref::<LegacySchedulerAdoptionRejected>()
+                            .map(|error| error.reason.clone())
+                    }) {
+                        return Ok(SchedulerRecoveryCommitOutcome::Rejected { reason });
+                    }
+                    if scheduler_protocol_retryable_conflict(&error).is_some() {
+                        return Ok(SchedulerRecoveryCommitOutcome::Rejected {
+                            reason: error.to_string(),
+                        });
+                    }
+                    return Err(error);
+                }
+            };
             let changed = prepared
                 .as_ref()
                 .is_some_and(PreparedProtocolCommands::has_writes);
             persist_protocol_commands_tx(tx, agent_id, prepared)?;
-            Ok(changed)
+            Ok(SchedulerRecoveryCommitOutcome::Applied(changed))
         })
     }
 
@@ -720,6 +778,7 @@ impl RuntimeTransitionRepository<'_> {
             scheduler_protocol::assert_invariants(&outcome.outcome.snapshot).map_err(|error| {
                 SchedulerProtocolReducerRejected {
                     reason: format!("scheduler protocol reducer produced invalid state: {error}"),
+                    conflict: None,
                 }
             })?;
             inject_fault(fault, TransitionFaultPoint::AfterValidation)?;

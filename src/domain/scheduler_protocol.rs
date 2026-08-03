@@ -3189,6 +3189,7 @@ fn reducer_conflict(code: &str) -> ProtocolConflict {
         | "wait_owner_mismatch"
         | "missing_settlement_owner_mismatch"
         | "agent_lane_reserved"
+        | "agent_lane_reserved_by_other_owner"
         | "agent_lane_reserved_for_other_wait"
         | "wait_id_owner_mismatch"
         | "wait_id_consumed_by_other_activation"

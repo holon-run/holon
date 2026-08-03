@@ -1015,6 +1015,381 @@ async fn legacy_recovery_isolates_a_stale_candidate_and_keeps_other_work_availab
 }
 
 #[tokio::test]
+async fn legacy_recovery_commit_returns_typed_rejection_when_source_changes_after_report() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item(
+            "legacy recovery commit race".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let report =
+        scheduler_recovery_report(&runtime.inner.storage, &runtime.inner.runtime_db, "default")
+            .unwrap();
+    let command = report
+        .legacy_adoptions
+        .iter()
+        .find(|candidate| candidate.work_item_id == work_item.id)
+        .and_then(|candidate| candidate.proposed_command.clone())
+        .expect("eligible legacy adoption command");
+
+    runtime
+        .update_work_item_fields(
+            work_item.id.clone(),
+            Some("legacy recovery source changed".into()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let outcome = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .commit_scheduler_recovery_plan("default", &[command])
+        .unwrap();
+    let crate::runtime_db::transitions::scheduler_protocol_repository::SchedulerRecoveryCommitOutcome::Rejected {
+        reason,
+    } = outcome
+    else {
+        panic!("stale recovery source should return a typed rejection");
+    };
+    assert!(reason.contains("source_changed"));
+    assert!(runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot_if_initialized("default")
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn legacy_recovery_commit_race_is_diagnostic_and_fresh_retry_converges() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item(
+            "legacy recovery commit race converges".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let stale_report =
+        scheduler_recovery_report(&runtime.inner.storage, &runtime.inner.runtime_db, "default")
+            .unwrap();
+    let runtime_for_hook = runtime.clone();
+    let (applied, _) = apply_scheduler_recovery_plan_with_hook(
+        &runtime.inner.storage,
+        &runtime.inner.runtime_db,
+        "default",
+        &stale_report,
+        move |candidate_work_item_id| {
+            let existing = runtime_for_hook
+                .storage()
+                .latest_work_item(candidate_work_item_id)?
+                .expect("race source WorkItem");
+            let mut changed = existing.clone();
+            changed.objective = "legacy recovery source changed at commit".into();
+            changed.revision += 1;
+            changed.updated_at = Utc::now();
+            runtime_for_hook
+                .inner
+                .runtime_db
+                .work_items()
+                .update_expected(&changed, existing.revision)?;
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(applied, 0);
+    assert!(runtime
+        .storage()
+        .read_recent_events(usize::MAX)
+        .unwrap()
+        .iter()
+        .any(|event| {
+            event.kind == "scheduler_diagnostic"
+                && event.data["reason"] == "legacy_adoption_rejected"
+                && event.data["work_item_id"] == work_item.id
+        }));
+
+    let fresh_report =
+        scheduler_recovery_report(&runtime.inner.storage, &runtime.inner.runtime_db, "default")
+            .unwrap();
+    assert_eq!(
+        apply_scheduler_recovery_plan(
+            &runtime.inner.storage,
+            &runtime.inner.runtime_db,
+            "default",
+            &fresh_report,
+        )
+        .unwrap()
+        .0,
+        1
+    );
+    assert!(runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap()
+        .work
+        .contains_key(&work_item.id));
+}
+
+#[tokio::test]
+async fn canonical_claim_contention_retains_queue_head_without_failing_poll() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item(
+            "canonical claim contention".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    runtime.pick_work_item(work_item.id.clone()).await.unwrap();
+    runtime
+        .register_wait_for(
+            "default",
+            Some(work_item.id.clone()),
+            WaitForWakeKind::External,
+            Some("github:holon-run/holon#claim-contention".into()),
+            "hold the WorkItem lane".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let wait = runtime
+        .storage()
+        .latest_wait_conditions()
+        .unwrap()
+        .into_iter()
+        .find(|condition| condition.work_item_id.as_deref() == Some(work_item.id.as_str()))
+        .expect("active WorkItem wait");
+    let waiting = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .expect("waiting WorkItem");
+    runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .initialize_scheduler_protocol_partition(
+            "default",
+            &canonical_waiting_snapshot(&waiting, &wait.id, waiting.revision),
+        )
+        .unwrap();
+    let reserved = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    assert!(matches!(
+        reserved.dispatch,
+        AgentDispatchState::Awaiting { ref wait }
+            if reserved.waits[&wait.id].generations[&wait.generation].owner
+                == SchedulerOwner::WorkItem {
+                    work_item_id: work_item.id.clone(),
+                }
+    ));
+
+    let message = runtime
+        .enqueue(
+            MessageEnvelope::new(
+                "default",
+                MessageKind::InternalFollowup,
+                MessageOrigin::System {
+                    subsystem: "claim-contention".into(),
+                },
+                AuthorityClass::RuntimeInstruction,
+                Priority::Next,
+                MessageBody::Text {
+                    text: "lifecycle nudge while another owner holds the lane".into(),
+                },
+            )
+            .with_admission(
+                MessageDeliverySurface::RuntimeSystem,
+                AdmissionContext::RuntimeOwned,
+            ),
+        )
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Idle
+    ));
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest_all()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == message.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Queued)
+    );
+    assert!(runtime
+        .storage()
+        .read_recent_events(usize::MAX)
+        .unwrap()
+        .iter()
+        .any(|event| {
+            event.kind == "scheduler_claim_contended"
+                && event.data["conflict_code"] == "agent_lane_reserved_by_other_owner"
+                && event.data["queue_disposition"] == "retained_queued"
+        }));
+}
+
+#[tokio::test]
+async fn late_terminal_task_result_for_completed_work_item_settles_without_model_reentry() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let provider = Arc::new(CountingProvider {
+        calls: Mutex::new(0),
+        reply: "unused",
+    });
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider.clone(),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item(
+            "completed parent with late child result".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    runtime.pick_work_item(work_item.id.clone()).await.unwrap();
+    append_completed_rejoin_task(
+        &runtime,
+        "task-late-child-result",
+        &work_item.id,
+        "turn-parent-completed",
+    );
+    runtime
+        .complete_work_item(work_item.id.clone(), Vec::new())
+        .await
+        .unwrap();
+    let mut result = task_result_message("task-late-child-result").with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    result.metadata = Some(serde_json::json!({
+        "task_id": "task-late-child-result",
+        "task_kind": "child_agent_task",
+        "task_status": "completed",
+        "task_result_id": "result-late-child",
+        "work_item_id": work_item.id,
+    }));
+    let result = runtime.enqueue(result).await.unwrap();
+    let mut runner = tokio::spawn(runtime.clone().run());
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        if runner.is_finished() {
+            panic!(
+                "runtime exited while settling late terminal task result: {:?}",
+                (&mut runner).await
+            );
+        }
+        let processed = runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest_all()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == result.id)
+            .is_some_and(|entry| entry.status == QueueEntryStatus::Processed);
+        if processed {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
+            panic!("late task result did not settle: {events:#?}");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    runner.abort();
+
+    assert_eq!(provider.call_count().await, 0);
+    let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "task_result_received" && event.data["task_id"] == "task-late-child-result"
+    }));
+    assert!(!events.iter().any(|event| {
+        event.kind == "scheduler_authority_hard_blocker" && event.data["message_id"] == result.id
+    }));
+}
+
+#[tokio::test]
 async fn bootstrap_diagnostics_report_cross_model_scheduler_invariant_failures() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
@@ -3112,12 +3487,17 @@ async fn lifecycle_wait_handoff_to_work_item_wait_is_atomic_idempotent_and_resta
         .await
         .unwrap();
     assert!(replay_commands.is_empty());
-    assert!(!runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .commit_scheduler_recovery_plan("default", &replay_commands)
-        .unwrap());
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .commit_scheduler_recovery_plan("default", &replay_commands)
+            .unwrap(),
+        crate::runtime_db::transitions::scheduler_protocol_repository::SchedulerRecoveryCommitOutcome::Applied(
+            false
+        )
+    );
 
     drop(runtime);
     let reopened = RuntimeHandle::new(
