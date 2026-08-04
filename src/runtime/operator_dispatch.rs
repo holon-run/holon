@@ -34,12 +34,12 @@ impl RuntimeHandle {
         loop_control: LoopControlOptions,
     ) -> Result<TurnTerminalTransition> {
         let result = Box::pin(self.process_interactive_message_deferred(
-                message,
-                continuation_resolution,
-                execution_admission_provenance,
-                loop_control,
-            ))
-            .await;
+            message,
+            continuation_resolution,
+            execution_admission_provenance,
+            loop_control,
+        ))
+        .await;
         let cleanup = self.reconfigure_provider_for_turn(None).await;
         match (result, cleanup) {
             (Ok(transition), Ok(())) => Ok(transition),
