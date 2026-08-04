@@ -3042,6 +3042,40 @@ fn generate_image_selection_auto_uses_turn_chain() {
 }
 
 #[test]
+fn generate_image_selection_uses_current_turn_fallback_model() {
+    let mut fixture = test_app_config("openai/gpt-image-2", &["openai/recovery-image"]);
+    let recovery_model = ModelRef::parse("openai/recovery-image").unwrap();
+    let recovery_override = ModelRuntimeOverride {
+        capabilities: Some(ModelCapabilityOverride {
+            image_generation: Some(true),
+            ..ModelCapabilityOverride::default()
+        }),
+        ..ModelRuntimeOverride::default()
+    };
+    fixture
+        .config
+        .validated_model_overrides
+        .insert(recovery_model.clone(), recovery_override.clone());
+    fixture
+        .config
+        .stored_config
+        .models
+        .catalog
+        .insert(recovery_model.as_string(), recovery_override);
+    let catalog = RuntimeModelCatalog::from_config(&fixture.config);
+
+    let selected = catalog
+        .select_generate_image_model(
+            &ContextConfig::default(),
+            None,
+            Some(&route_ref("openai/recovery-image")),
+        )
+        .unwrap();
+
+    assert_eq!(selected.as_string(), "openai@default/recovery-image");
+}
+
+#[test]
 fn generate_image_selection_uses_explicit_image_generation_model() {
     let mut fixture = test_app_config("openai@default/gpt-image-2", &[]);
     fixture.config.image_generation_model = Some(route_ref("openai-codex@default/gpt-5.5"));
