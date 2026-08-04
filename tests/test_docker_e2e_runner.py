@@ -623,8 +623,9 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 "GetWorkItem", "UpdateWorkItem", "CompleteWorkItem",
             ],
             "scheduler-compaction": [
-                "CreateWorkItem", "PickWorkItem", "ExecCommand", "WaitFor", "GetWorkItem",
-                "UpdateWorkItem", "CompleteWorkItem",
+                "CreateWorkItem", "PickWorkItem", "ExecCommand", "ExecCommand",
+                "ExecCommand", "WaitFor", "GetWorkItem", "UpdateWorkItem",
+                "CompleteWorkItem",
             ],
             "scheduler-worktree": [
                 "CreateWorkItem", "PickWorkItem", "GetWorkspaceState",
@@ -1383,9 +1384,9 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 provider_mode="stub",
                 stub_scenario="scheduler-compaction",
                 model_runtime_override={
-                    "prompt_budget_estimated_tokens": 40_000,
-                    "compaction_trigger_estimated_tokens": 35_000,
-                    "compaction_keep_recent_estimated_tokens": 4_000,
+                    "prompt_budget_estimated_tokens": 80_000,
+                    "compaction_trigger_estimated_tokens": 70_000,
+                    "compaction_keep_recent_estimated_tokens": 8_000,
                 },
             )
             commands: list[tuple[str, ...]] = []
@@ -1538,9 +1539,9 @@ class DockerE2ERunnerTests(unittest.TestCase):
         self.assertEqual(
             compaction["model_runtime_override"],
             {
-                "prompt_budget_estimated_tokens": 40000,
-                "compaction_trigger_estimated_tokens": 35000,
-                "compaction_keep_recent_estimated_tokens": 4000,
+                "prompt_budget_estimated_tokens": 80000,
+                "compaction_trigger_estimated_tokens": 70000,
+                "compaction_keep_recent_estimated_tokens": 8000,
             },
         )
 

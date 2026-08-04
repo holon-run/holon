@@ -459,19 +459,19 @@ class Scenario:
         wid = self.work_ids[0]
         if self.phase == 1:
             return self.call("PickWorkItem", {"work_item_id": wid})
-        if self.phase == 2:
+        if self.phase in {2, 3, 4}:
             return self.call(
                 "ExecCommand",
                 {
                     "cmd": (
                         "i=0; while [ \"$i\" -lt 16000 ]; do "
-                        "printf 'compaction-payload-%04d\\n' \"$i\"; "
+                        f"printf 'compaction-payload-{self.phase}-%04d\\n' \"$i\"; "
                         "i=$((i+1)); done"
                     ),
                     "max_output_tokens": 64000,
                 },
             )
-        if self.phase == 3:
+        if self.phase == 5:
             return self.call(
                 "WaitFor",
                 {
@@ -479,12 +479,12 @@ class Scenario:
                     "reason": "deterministic compaction wait",
                 },
             )
-        if self.phase == 4:
+        if self.phase == 6:
             return self.call(
                 "GetWorkItem",
                 {"work_item_id": wid, "include_todo_list": True},
             )
-        if self.phase == 5:
+        if self.phase == 7:
             return self.call(
                 "UpdateWorkItem",
                 {
@@ -495,7 +495,7 @@ class Scenario:
                     ],
                 },
             )
-        if self.phase == 6:
+        if self.phase == 8:
             return self.call(
                 "CompleteWorkItem",
                 {"work_item_id": wid},
@@ -829,7 +829,7 @@ class Scenario:
             "scheduler-operator": 7,
             "scheduler-concurrent": 11,
             "scheduler-interject": 13,
-            "scheduler-compaction": 8,
+            "scheduler-compaction": 10,
             "scheduler-worktree": 12,
             "scheduler-spawn": 7,
             "scheduler-checkpoint": 13,

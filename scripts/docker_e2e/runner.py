@@ -2469,11 +2469,23 @@ def run_scheduler_task_wait_resume_case(
         harness,
         snapshot,
         work_item_id=work_item_id,
-        expected_admission_kinds=("scheduling", "task_rejoin", "wait_resume"),
+        expected_admission_kinds=("scheduling", "wait_resume", "wait_resume"),
         lifecycle_message_ids={
             harness.prompt_scope("scheduler-task-wait-seed")["message_id"]
         },
     )
+    if harness.canonical_scheduler_enabled:
+        activation_causes = [
+            json.loads(row["payload_json"])["activation"]["cause"]["kind"]
+            for row in snapshot["scheduler_activations"]
+            if row["work_item_id"] == work_item_id
+        ]
+        require(
+            sorted(activation_causes)
+            == ["task_rejoin", "wait_resume", "work_item_runnable"],
+            "canonical task/wait activation causes did not preserve scheduling, "
+            f"task-rejoin, and external-resume provenance: {activation_causes}",
+        )
     waits = [
         row
         for row in snapshot["wait_conditions"]
