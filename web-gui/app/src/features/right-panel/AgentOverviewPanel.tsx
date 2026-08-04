@@ -114,6 +114,11 @@ export function AgentOverviewPanel({
   const [pendingAction, setPendingAction] = useState<AgentControlAction | "delete" | null>(null);
   const workItems = agent.workItems ?? (agent.currentWork ? [agent.currentWork] : []);
   const currentWorkItems = workItems.filter((item) => item.current);
+  // Stop and Start are inverse lifecycle transitions: only show the one that
+  // applies to the current state. Delete is always available.
+  const normalizedLifecycle = (agent.lifecycle ?? "").trim().toLowerCase().replace(/[_\s]+/g, "-");
+  const normalizedPosture = (agent.posture ?? "").trim().toLowerCase().replace(/[_\s]+/g, "-");
+  const isStopped = normalizedLifecycle === "stopped" || normalizedLifecycle === "archived" || normalizedPosture === "stopped" || normalizedPosture === "archived";
   const openWorkItems = workItems.filter((item) => !item.current && item.state !== "completed");
   const completedWorkItems = workItems.filter((item) => item.state === "completed");
   const currentWorkLabel = currentWorkItems[0]?.objective ?? agent.currentWork?.objective ?? t("rightPanel.noCurrentWork");
@@ -183,7 +188,7 @@ export function AgentOverviewPanel({
             ) : (
               <>
                 <div className="lifecycle-buttons">
-                  {onControlAgent ? (
+                  {onControlAgent && !isStopped ? (
                     <button
                       type="button"
                       className="lifecycle-btn lifecycle-stop"
@@ -194,7 +199,7 @@ export function AgentOverviewPanel({
                       {t("agent.stop")}
                     </button>
                   ) : null}
-                  {onControlAgent ? (
+                  {onControlAgent && isStopped ? (
                     <button
                       type="button"
                       className="lifecycle-btn lifecycle-start"
