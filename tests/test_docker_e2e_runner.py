@@ -231,6 +231,8 @@ class DockerE2ERunnerTests(unittest.TestCase):
         self.assertIn("Unable to detect scheduler code changes", nightly)
         self.assertIn("comparison.data.truncation === true", nightly)
         self.assertIn("files.length >= 300", nightly)
+        self.assertIn("HOLON_E2E_PROVIDER_CONFIG_FILE:", nightly)
+        self.assertNotIn("HOLON_E2E_CONFIG_FILE:", nightly)
 
     def test_scheduler_required_profile_selects_all_stub_cases(self) -> None:
         profile = runner.resolve_profile(self.manifest, "scheduler-required")
