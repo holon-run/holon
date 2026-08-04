@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 import copy
+import os
 import subprocess
 import tempfile
 import unittest
@@ -90,6 +91,36 @@ class DockerE2ERunnerTests(unittest.TestCase):
             path.write_text("[]")
             with self.assertRaisesRegex(AssertionError, "JSON object"):
                 runner.load_runtime_config(path)
+
+    def test_provider_file_paths_accept_new_names_before_legacy_aliases(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "HOLON_E2E_PROVIDER_ENV_FILE": "provider.env",
+                "HOLON_E2E_DOCKER_ENV_FILE": "legacy.env",
+                "HOLON_E2E_PROVIDER_CONFIG_FILE": "provider.json",
+                "HOLON_E2E_CONFIG_FILE": "legacy.json",
+            },
+            clear=True,
+        ):
+            env_file, config_file = runner.provider_file_paths(None, None)
+
+        self.assertEqual(env_file, Path("provider.env").resolve())
+        self.assertEqual(config_file, Path("provider.json").resolve())
+
+    def test_provider_file_paths_keep_legacy_aliases(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "HOLON_E2E_DOCKER_ENV_FILE": "legacy.env",
+                "HOLON_E2E_CONFIG_FILE": "legacy.json",
+            },
+            clear=True,
+        ):
+            env_file, config_file = runner.provider_file_paths(None, None)
+
+        self.assertEqual(env_file, Path("legacy.env").resolve())
+        self.assertEqual(config_file, Path("legacy.json").resolve())
 
     def test_work_queue_message_evidence_extracts_retry_identity(self) -> None:
         snapshot = {

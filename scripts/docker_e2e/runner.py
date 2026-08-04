@@ -116,6 +116,25 @@ def first_env(*names: str, default: str = "") -> str:
     return default
 
 
+def provider_file_paths(
+    env_file: Path | None,
+    config_file: Path | None,
+) -> tuple[Path | None, Path | None]:
+    env_file_value = env_file or first_env(
+        "HOLON_E2E_PROVIDER_ENV_FILE",
+        "HOLON_E2E_DOCKER_ENV_FILE",
+        "HOLON_LIVE_DOCKER_ENV_FILE",
+    )
+    config_file_value = config_file or first_env(
+        "HOLON_E2E_PROVIDER_CONFIG_FILE",
+        "HOLON_E2E_CONFIG_FILE",
+    )
+    return (
+        Path(env_file_value).resolve() if env_file_value else None,
+        Path(config_file_value).resolve() if config_file_value else None,
+    )
+
+
 def env_flag(*names: str) -> bool:
     return first_env(*names).lower() in {"1", "true", "yes", "on"}
 
@@ -4711,18 +4730,13 @@ def main(argv: list[str] | None = None) -> int:
         "HOLON_E2E_CREDENTIAL_ENVS", "HOLON_LIVE_CREDENTIAL_ENVS"
     )
     credential_envs = [name.strip() for name in raw_names.split(",") if name.strip()]
-    env_file_value = args.env_file or first_env(
-        "HOLON_E2E_DOCKER_ENV_FILE", "HOLON_LIVE_DOCKER_ENV_FILE"
-    )
-    env_file = Path(env_file_value).resolve() if env_file_value else None
-    config_file_value = args.config_file or first_env("HOLON_E2E_CONFIG_FILE")
-    config_file = Path(config_file_value).resolve() if config_file_value else None
+    env_file, config_file = provider_file_paths(args.env_file, args.config_file)
     runtime_config = load_runtime_config(config_file)
     if requires_model and not credential_envs and env_file is None:
         inferred = inferred_credential_env(model)
         require(
             inferred is not None,
-            "set HOLON_E2E_CREDENTIAL_ENVS or HOLON_E2E_DOCKER_ENV_FILE "
+            "set HOLON_E2E_CREDENTIAL_ENVS or HOLON_E2E_PROVIDER_ENV_FILE "
             f"for model {model}",
         )
         credential_envs = [inferred]

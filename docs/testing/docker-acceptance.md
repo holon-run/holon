@@ -75,16 +75,18 @@ OPENROUTER_API_KEY='...' \
 make docker-e2e
 ```
 
-Alternatively, set `HOLON_E2E_DOCKER_ENV_FILE` or pass `--env-file` to an
+Alternatively, set `HOLON_E2E_PROVIDER_ENV_FILE` or pass `--env-file` to an
 untracked Docker env file with mode `0600`. The runner records only the
 credential variable names and whether a file was used. It never records the
-file path or values. Existing `HOLON_LIVE_*` variables remain accepted during
-the compatibility period.
+file path or values. The legacy `HOLON_E2E_DOCKER_ENV_FILE` and existing
+`HOLON_LIVE_*` variables remain accepted during the compatibility period.
 
-Pass `--config-file` or set `HOLON_E2E_CONFIG_FILE` to seed a non-secret Holon
-`config.json` into each case volume. Keep credentials in the env file rather
-than the config file. The protected CI, nightly, and release workflows expose
-the same split through repository configuration:
+Pass `--config-file` or set `HOLON_E2E_PROVIDER_CONFIG_FILE` to seed a
+non-secret Holon `config.json` into each case volume. The legacy
+`HOLON_E2E_CONFIG_FILE` remains accepted during the compatibility period. Keep
+credentials in the env file rather than the config file. The protected CI,
+nightly, and release workflows expose the same split through repository
+configuration:
 
 - `HOLON_E2E_SCHEDULER_MODEL`: model route; defaults to the same
   `dashscope-token-plan/qwen-3.7` route used by `holon-trigger`.
