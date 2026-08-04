@@ -9,6 +9,7 @@ use super::support::*;
 use super::*;
 use crate::config::{ModelRef, ProviderId};
 use crate::model_catalog::ModelRuntimeOverride;
+use crate::provider::retry::{classify_provider_error, ProviderFailureKind, RetryDisposition};
 use crate::provider::transports::set_stream_idle_timeout_override_for_tests;
 use crate::provider::{
     ContinuationScopeId, ProviderNativeWebSearchKind, ProviderNativeWebSearchRequest,
@@ -114,6 +115,78 @@ fn openai_text_response_with_provider_metadata(response_id: &str, text: &str) ->
             }]
         }]
     })
+}
+
+#[test]
+fn openai_responses_classifies_empty_output_as_retryable_with_usage() {
+    let error = parse_openai_response(json!({
+        "id": "resp_empty",
+        "status": "completed",
+        "usage": { "input_tokens": 4, "output_tokens": 893 },
+        "output": []
+    }))
+    .expect_err("empty output should fail");
+
+    let classification = classify_provider_error(&error);
+    assert_eq!(classification.kind, ProviderFailureKind::EmptyResponse);
+    assert_eq!(classification.disposition, RetryDisposition::Retryable);
+    assert_eq!(
+        crate::provider::provider_error_token_usage(&error)
+            .map(|usage| (usage.input_tokens, usage.output_tokens)),
+        Some((4, 893))
+    );
+}
+
+#[test]
+fn openai_responses_classifies_empty_message_content_as_retryable() {
+    let error = parse_openai_response(json!({
+        "id": "resp_empty_message",
+        "status": "completed",
+        "usage": { "input_tokens": 4, "output_tokens": 0 },
+        "output": [{
+            "type": "message",
+            "role": "assistant",
+            "content": []
+        }]
+    }))
+    .expect_err("empty message content should fail");
+
+    let classification = classify_provider_error(&error);
+    assert_eq!(classification.kind, ProviderFailureKind::EmptyResponse);
+    assert_eq!(classification.disposition, RetryDisposition::Retryable);
+}
+
+#[test]
+fn openai_responses_keeps_nonempty_unsupported_items_fail_fast() {
+    let error = parse_openai_response(json!({
+        "id": "resp_unsupported",
+        "status": "completed",
+        "usage": { "input_tokens": 4, "output_tokens": 1 },
+        "output": [{ "type": "unsupported_provider_item" }]
+    }))
+    .expect_err("unsupported wire item should fail");
+
+    let classification = classify_provider_error(&error);
+    assert_eq!(classification.kind, ProviderFailureKind::InvalidResponse);
+    assert_eq!(classification.disposition, RetryDisposition::FailFast);
+}
+
+#[test]
+fn openai_responses_keeps_malformed_message_content_fail_fast() {
+    let error = parse_openai_response(json!({
+        "id": "resp_malformed_message",
+        "status": "completed",
+        "usage": { "input_tokens": 4, "output_tokens": 0 },
+        "output": [{
+            "type": "message",
+            "role": "assistant"
+        }]
+    }))
+    .expect_err("message without content should fail");
+
+    let classification = classify_provider_error(&error);
+    assert_eq!(classification.kind, ProviderFailureKind::InvalidResponse);
+    assert_eq!(classification.disposition, RetryDisposition::FailFast);
 }
 
 fn set_remote_compaction_trigger(config: &mut crate::config::AppConfig, model_ref: &str) {

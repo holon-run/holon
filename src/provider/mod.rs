@@ -4,7 +4,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::{prompt::PromptStability, tool::ToolError, tool::ToolSpec, types::TokenUsage};
+use crate::{
+    config::ModelRouteRef, prompt::PromptStability, tool::ToolError, tool::ToolSpec,
+    types::TokenUsage,
+};
 
 mod catalog;
 mod diagnostics;
@@ -460,6 +463,13 @@ pub struct ToolResultBlock {
 pub trait AgentProvider: Send + Sync {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse>;
 
+    fn select_model_lineage(
+        &self,
+        _model_ref: &ModelRouteRef,
+    ) -> Option<std::sync::Arc<dyn AgentProvider>> {
+        None
+    }
+
     async fn generate_image(
         &self,
         _request: ProviderGenerateImageRequest,
@@ -700,6 +710,13 @@ pub fn provider_error_code(error: &anyhow::Error) -> Option<&str> {
         .chain()
         .find_map(|source| source.downcast_ref::<retry::ProviderTransportError>())
         .and_then(|error| error.code.as_deref())
+}
+
+pub(crate) fn provider_error_token_usage(error: &anyhow::Error) -> Option<&TokenUsage> {
+    error
+        .chain()
+        .find_map(|source| source.downcast_ref::<retry::ProviderTransportError>())
+        .and_then(|error| error.token_usage.as_ref())
 }
 
 pub fn provider_error_is_context_length_exceeded(error: &anyhow::Error) -> bool {

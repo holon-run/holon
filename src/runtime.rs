@@ -77,7 +77,7 @@ use crate::{
     agent_template::discover_agent_templates_catalog,
     agents_md::load_agents_md,
     brief,
-    config::RuntimeModelCatalog,
+    config::{ModelRouteRef, RuntimeModelCatalog},
     context::{sync_agent_message_count, ContextConfig},
     host::RuntimeHostBridge,
     ingress::WakeDisposition,
@@ -126,7 +126,7 @@ use crate::{
         SkillActivationSource, SkillActivationState, SkillCatalogEntry, SkillLoadReason,
         SkillsRuntimeView, TaskKind, TaskLifecycleAuditEvent, TaskRecord, TaskRecoverySpec,
         TaskStatus, TimerRecord, TimerStatus, ToolExecutionRecord, TranscriptEntry,
-        TranscriptEntryKind, TurnRecord, ViewImageObservation, WaitingReason,
+        TranscriptEntryKind, TurnRecord, TurnTerminalKind, ViewImageObservation, WaitingReason,
         WorkItemExecutionBinding, WorkItemLifecycleAuditEvent, WorkspaceEntry,
         AGENT_HOME_WORKSPACE_ID,
     },
@@ -224,10 +224,7 @@ pub(crate) fn agent_model_state_for_catalog(
         .and_then(|_| state.last_active_model.clone())
         .unwrap_or_else(|| effective_model.clone());
     let fallback_active = active_model != effective_model;
-    let effective_chain = model_catalog.provider_chain_for_turn(
-        state.model_override.as_ref(),
-        state.pending_fallback_model.as_ref(),
-    );
+    let effective_chain = model_catalog.provider_chain(state.model_override.as_ref());
     let resolved_policy =
         model_catalog.resolved_model_policy(base_context_config, state.model_override.as_ref());
     AgentModelState {
@@ -269,7 +266,9 @@ struct RuntimeInner {
     runtime_db: RuntimeDb,
     scheduler_engine: crate::config::SchedulerEngineMode,
     clock: Arc<dyn clock::Clock>,
+    base_provider: Arc<dyn AgentProvider>,
     provider: RwLock<Arc<dyn AgentProvider>>,
+    turn_fallback_model: RwLock<Option<ModelRouteRef>>,
     context_config: RwLock<ContextConfig>,
     config_snapshot: ArcSwap<ConfigSnapshot>,
     builtin_web_search_probe_cache:
@@ -3739,6 +3738,150 @@ impl RuntimeHandle {
         unreachable!("settlement OCC retry loop always returns or errors")
     }
 
+    async fn maybe_supersede_queued_provider_recovery(
+        &self,
+        superseding_message: &MessageEnvelope,
+        terminal_transition: Option<&turn::TurnTerminalTransition>,
+    ) -> Result<usize> {
+        let Some(turn_record) = terminal_transition.map(|transition| &transition.turn_record)
+        else {
+            return Ok(0);
+        };
+        if turn_record
+            .terminal
+            .as_ref()
+            .is_none_or(|terminal| terminal.kind != TurnTerminalKind::Completed)
+        {
+            return Ok(0);
+        }
+        let made_progress = !turn_record.produced_brief_ids.is_empty()
+            || !turn_record.tool_execution_ids.is_empty()
+            || !turn_record.completed_work_item_ids.is_empty()
+            || !turn_record.waiting_condition_ids.is_empty();
+        if !made_progress {
+            return Ok(0);
+        }
+
+        let turns = self
+            .inner
+            .runtime_db
+            .turn_records()
+            .recent_for_agent(&superseding_message.agent_id, usize::MAX)?;
+        let queued = self
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest_all()?
+            .into_iter()
+            .filter(|entry| {
+                entry.agent_id == superseding_message.agent_id
+                    && entry.status == QueueEntryStatus::Queued
+                    && entry.message_id != superseding_message.id
+            })
+            .collect::<Vec<_>>();
+        let mut superseded = 0;
+
+        for expected in queued {
+            let Some(recovery_message) = self
+                .inner
+                .storage
+                .read_message_by_id(&expected.message_id)?
+            else {
+                continue;
+            };
+            let Ok(selection) = turn::TurnModelSelection::from_message(&recovery_message) else {
+                continue;
+            };
+            let Some(recovery) = selection.recovery else {
+                continue;
+            };
+            if recovery_message.work_item_id != turn_record.current_work_item_id {
+                continue;
+            }
+            let source_is_earlier = turns.iter().any(|turn| {
+                turn.turn_id == recovery.source_turn_id && turn.turn_index < turn_record.turn_index
+            });
+            if !source_is_earlier {
+                continue;
+            }
+
+            let mut dropped = expected.clone();
+            dropped.status = QueueEntryStatus::Dropped;
+            dropped.updated_at = self.now();
+            let mut guard = self.inner.agent.lock().await;
+            if guard
+                .queue
+                .peek_next_matching(|message| message.id == recovery_message.id)
+                .is_none()
+            {
+                continue;
+            }
+            let mut next_state = guard.state.clone();
+            next_state.pending = guard.queue.len().saturating_sub(1);
+            let mut commit = self.inner.runtime_db.transitions().commit_queue(
+                &crate::runtime_db::transitions::QueueTransitionCommand {
+                    agent_id: recovery_message.agent_id.clone(),
+                    operation: crate::runtime_db::transitions::QueueOperation::Settle,
+                    mutation: crate::runtime_db::transitions::QueueMutation::CompareAndSet {
+                        expected,
+                        record: dropped,
+                    },
+                    scheduler_claim_work_item: None,
+                    scheduler_protocol_bootstrap: None,
+                    scheduler_protocol_commands: Vec::new(),
+                    agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
+                        expected: Some(Box::new(guard.last_persisted_state.clone())),
+                        record: Box::new(next_state.clone()),
+                    }),
+                    message_evidence: Vec::new(),
+                    transcript_entries: Vec::new(),
+                    turn_record: None,
+                    audit_events: vec![
+                        AuditEvent::legacy(
+                            "recovery_superseded",
+                            serde_json::json!({
+                                "agent_id": recovery_message.agent_id,
+                                "recovery_message_id": recovery_message.id,
+                                "fallback_model_ref": recovery.fallback_model_ref,
+                                "source_turn_id": recovery.source_turn_id,
+                                "source_message_id": recovery.source_message_id,
+                                "superseding_message_id": superseding_message.id,
+                                "superseding_turn_id": turn_record.turn_id,
+                                "work_item_id": turn_record.current_work_item_id,
+                            }),
+                        ),
+                        AuditEvent::legacy(
+                            "queue_entry_settled",
+                            serde_json::json!({
+                                "message_id": recovery_message.id,
+                                "message_kind": recovery_message.kind,
+                                "status": QueueEntryStatus::Dropped,
+                                "reason": "provider_recovery_superseded",
+                            }),
+                        ),
+                    ],
+                    notify_scheduler: true,
+                    fault: self.take_transition_fault(),
+                    brief_evidence: Vec::new(),
+                },
+            )?;
+            if !commit.applied {
+                continue;
+            }
+            let _ = guard
+                .queue
+                .pop_next_matching(|message| message.id == recovery_message.id);
+            guard.state = next_state.clone();
+            guard.last_persisted_state = next_state;
+            commit.effects.agent_state = None;
+            drop(guard);
+            self.apply_transition_commit(commit).await;
+            superseded += 1;
+        }
+
+        Ok(superseded)
+    }
+
     async fn canonical_queue_settlement_commands(
         &self,
         record: &QueueEntryRecord,
@@ -4006,16 +4149,6 @@ impl RuntimeHandle {
                         let guard = self.inner.agent.lock().await;
                         let mut state = guard.state.clone();
                         if !matches!(state.status, AgentStatus::Stopped) {
-                            if state.pending_fallback_model.is_some() {
-                                let has_fallback = provider_attempt_timeline(&err)
-                                    .and_then(|timeline| {
-                                        timeline.pending_fallback_model_ref.as_deref()
-                                    })
-                                    .is_some();
-                                if !has_fallback {
-                                    state.pending_fallback_model = None;
-                                }
-                            }
                             scheduler::apply_idle_projection(&mut state, &self.inner.storage)?;
                         }
                         if let Some(artifacts) = failure_artifacts.as_ref() {
@@ -4083,6 +4216,11 @@ impl RuntimeHandle {
                         }),
                     )],
                     true,
+                    terminal_transition.as_ref(),
+                )
+                .await?;
+                self.maybe_supersede_queued_provider_recovery(
+                    &message,
                     terminal_transition.as_ref(),
                 )
                 .await?;

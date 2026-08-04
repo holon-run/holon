@@ -904,7 +904,6 @@ impl RuntimeHandle {
         let mut next_state = self.agent_state().await?;
         next_state.model_override = Some(model_override.clone());
         next_state.model_override_reasoning_effort = reasoning_effort.clone();
-        next_state.pending_fallback_model = None;
         let turn_in_progress = next_state.current_run_id.is_some();
         if !turn_in_progress {
             self.reconfigure_provider_for_state(&next_state).await?;
@@ -915,7 +914,6 @@ impl RuntimeHandle {
             let mut guard = self.inner.agent.lock().await;
             guard.state.model_override = Some(model_override);
             guard.state.model_override_reasoning_effort = reasoning_effort;
-            guard.state.pending_fallback_model = None;
             guard.persist_state(&self.inner.storage)?;
         }
         self.append_audit_event(
@@ -937,7 +935,6 @@ impl RuntimeHandle {
         let mut next_state = self.agent_state().await?;
         next_state.model_override = None;
         next_state.model_override_reasoning_effort = None;
-        next_state.pending_fallback_model = None;
         let turn_in_progress = next_state.current_run_id.is_some();
         if !turn_in_progress {
             self.reconfigure_provider_for_state(&next_state).await?;
@@ -948,7 +945,6 @@ impl RuntimeHandle {
             let mut guard = self.inner.agent.lock().await;
             guard.state.model_override = None;
             guard.state.model_override_reasoning_effort = None;
-            guard.state.pending_fallback_model = None;
             guard.persist_state(&self.inner.storage)?;
         }
         self.append_audit_event(

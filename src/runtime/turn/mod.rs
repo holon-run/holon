@@ -17,9 +17,10 @@ mod tool_summary;
 mod tests;
 
 use anyhow::Result;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::config::ModelRouteRef;
 use crate::provider::{ModelBlock, ToolResultBlock};
 use crate::tool::{spec::ToolResultEnvelope, ToolCall};
 use crate::types::{
@@ -53,6 +54,28 @@ pub(crate) struct TurnTerminalTransition {
 
 pub(crate) struct LoopControlOptions {
     pub(super) max_tool_rounds: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) struct ProviderRecoveryDirective {
+    pub(super) fallback_model_ref: ModelRouteRef,
+    pub(super) source_turn_id: String,
+    pub(super) source_message_id: String,
+    pub(super) source_terminal_kind: TurnTerminalKind,
+    pub(super) source_round: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TurnModelSelection {
+    pub(super) recovery: Option<ProviderRecoveryDirective>,
+}
+
+impl TurnModelSelection {
+    pub(super) fn fallback_model(&self) -> Option<&ModelRouteRef> {
+        self.recovery
+            .as_ref()
+            .map(|directive| &directive.fallback_model_ref)
+    }
 }
 
 #[derive(Debug, Clone)]

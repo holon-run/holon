@@ -1942,10 +1942,7 @@ impl RuntimeHost {
         let config = self.config();
         let model_catalog = RuntimeModelCatalog::from_config(&config);
         let model_ref = model_catalog
-            .provider_chain_for_turn(
-                state.model_override.as_ref(),
-                state.pending_fallback_model.as_ref(),
-            )
+            .provider_chain(state.model_override.as_ref())
             .into_iter()
             .next()
             .unwrap_or_else(|| {

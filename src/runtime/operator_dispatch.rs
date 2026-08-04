@@ -1,4 +1,6 @@
 use super::*;
+use crate::config::ModelRouteRef;
+use crate::runtime::turn::TurnModelSelection;
 use crate::runtime::turn::TurnTerminalTransition;
 use crate::tool::{ApplyPatchSurface, ToolSpec};
 use crate::types::ExecutionAdmissionProvenance;
@@ -12,7 +14,7 @@ impl RuntimeHandle {
         loop_control: LoopControlOptions,
     ) -> Result<()> {
         let terminal_transition = self
-            .process_interactive_message_deferred(
+            .process_interactive_message_deferred_with_cleanup(
                 message,
                 continuation_resolution,
                 self.legacy_execution_admission_provenance(message, continuation_resolution, None)?,
@@ -22,6 +24,32 @@ impl RuntimeHandle {
         self.persist_terminal_transition(&terminal_transition)
             .await?;
         Ok(())
+    }
+
+    pub(super) async fn process_interactive_message_deferred_with_cleanup(
+        &self,
+        message: &MessageEnvelope,
+        continuation_resolution: Option<&ContinuationResolution>,
+        execution_admission_provenance: ExecutionAdmissionProvenance,
+        loop_control: LoopControlOptions,
+    ) -> Result<TurnTerminalTransition> {
+        let result = self
+            .process_interactive_message_deferred(
+                message,
+                continuation_resolution,
+                execution_admission_provenance,
+                loop_control,
+            )
+            .await;
+        let cleanup = self.reconfigure_provider_for_turn(None).await;
+        match (result, cleanup) {
+            (Ok(transition), Ok(())) => Ok(transition),
+            (Ok(_), Err(error)) => Err(error.context("failed to clear turn-local model selection")),
+            (Err(error), Ok(())) => Err(error),
+            (Err(error), Err(cleanup_error)) => Err(error.context(format!(
+                "also failed to clear turn-local model selection: {cleanup_error}"
+            ))),
+        }
     }
 
     pub(super) async fn process_interactive_message_deferred(
@@ -40,6 +68,32 @@ impl RuntimeHandle {
             execution_admission_provenance,
         )
         .await?;
+        let model_selection = TurnModelSelection::from_message(message)?;
+        self.reconfigure_provider_for_turn(model_selection.fallback_model())
+            .await?;
+        if let Some(recovery) = model_selection.recovery.as_ref() {
+            let (turn_id, run_id) = {
+                let guard = self.inner.agent.lock().await;
+                (
+                    guard.state.current_turn_id.clone(),
+                    guard.state.current_run_id.clone(),
+                )
+            };
+            self.inner.storage.append_event(&AuditEvent::legacy(
+                "recovery_turn_started",
+                serde_json::json!({
+                    "agent_id": message.agent_id,
+                    "message_id": message.id,
+                    "turn_id": turn_id,
+                    "run_id": run_id,
+                    "fallback_model_ref": recovery.fallback_model_ref,
+                    "source_turn_id": recovery.source_turn_id,
+                    "source_message_id": recovery.source_message_id,
+                    "source_terminal_kind": recovery.source_terminal_kind,
+                    "source_round": recovery.source_round,
+                }),
+            ))?;
+        }
         self.record_incoming_transcript_entry(message)?;
         self.inner
             .storage
@@ -64,8 +118,9 @@ impl RuntimeHandle {
             }
             let state = guard.state.clone();
             drop(guard);
-            let (provider, available_tools, apply_patch_surface, _, _) =
-                self.provider_tool_selection(&identity).await?;
+            let (provider, available_tools, apply_patch_surface, _, _) = self
+                .provider_tool_selection_for_turn(&identity, model_selection.fallback_model())
+                .await?;
             let prompt_tools = provider.prompt_tool_specs(&available_tools);
             let workspace = self.workspace_view_from_state(&state)?;
             let execution = self.execution_snapshot_for_view(
@@ -119,6 +174,7 @@ impl RuntimeHandle {
                 &message.agent_id,
                 message.authority_class.clone(),
                 built,
+                model_selection,
                 loop_control,
             )
             .await?;
@@ -358,6 +414,20 @@ impl RuntimeHandle {
         Option<ProviderNativeWebSearchRequest>,
         BuiltinWebSearchSelectionDiagnostics,
     )> {
+        self.provider_tool_selection_for_turn(identity, None).await
+    }
+
+    pub(super) async fn provider_tool_selection_for_turn(
+        &self,
+        identity: &AgentIdentityView,
+        fallback_model: Option<&ModelRouteRef>,
+    ) -> Result<(
+        Arc<dyn AgentProvider>,
+        Vec<ToolSpec>,
+        ApplyPatchSurface,
+        Option<ProviderNativeWebSearchRequest>,
+        BuiltinWebSearchSelectionDiagnostics,
+    )> {
         let provider = self.current_provider().await;
         let web_config = self.web_config();
         let native_search_provider = web_config.native_search_provider();
@@ -406,7 +476,7 @@ impl RuntimeHandle {
         let native_web_search = native_web_search_selection.request;
         let apply_patch_surface = {
             let guard = self.inner.agent.lock().await;
-            self.apply_patch_surface_for_state(&guard.state)
+            self.apply_patch_surface_for_turn(&guard.state, fallback_model)
         };
         let available_tools = filter_native_web_search_tools(
             self.filtered_tool_specs_for_apply_patch_surface(identity, apply_patch_surface)?,

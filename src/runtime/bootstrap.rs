@@ -410,10 +410,9 @@ impl RuntimeHandle {
         }
 
         if let Some(reconfig) = config_snapshot.provider_reconfig.as_ref() {
-            let chain = config_snapshot.model_catalog.provider_chain_for_turn(
-                state.model_override.as_ref(),
-                state.pending_fallback_model.as_ref(),
-            );
+            let chain = config_snapshot
+                .model_catalog
+                .provider_chain(state.model_override.as_ref());
             let mut provider_config = reconfig.config.clone();
             provider_config.runtime_max_output_tokens = config_snapshot
                 .model_catalog
@@ -432,6 +431,7 @@ impl RuntimeHandle {
         } else {
             context_config.clone()
         };
+        let base_provider = provider.clone();
 
         let runtime = Self {
             inner: Arc::new(RuntimeInner {
@@ -448,7 +448,9 @@ impl RuntimeHandle {
                 runtime_db,
                 scheduler_engine,
                 clock,
+                base_provider,
                 provider: RwLock::new(provider),
+                turn_fallback_model: RwLock::new(None),
                 config_snapshot: ArcSwap::from(config_snapshot),
                 context_config: RwLock::new(resolved_context_config),
                 builtin_web_search_probe_cache: Mutex::new(HashMap::new()),
@@ -480,8 +482,33 @@ impl RuntimeHandle {
     }
 
     pub(crate) fn model_state_for(&self, state: &AgentState) -> crate::types::AgentModelState {
+        self.model_state_for_turn(state, None)
+    }
+
+    pub(crate) fn model_state_for_turn(
+        &self,
+        state: &AgentState,
+        fallback_model: Option<&ModelRouteRef>,
+    ) -> crate::types::AgentModelState {
         let snap = self.inner.config_snapshot.load();
-        super::agent_model_state_for_catalog(&snap.model_catalog, &snap.base_context_config, state)
+        let mut selected_state = state.clone();
+        selected_state.pending_fallback_model = None;
+        let mut model_state = super::agent_model_state_for_catalog(
+            &snap.model_catalog,
+            &snap.base_context_config,
+            &selected_state,
+        );
+        if let Some(fallback_model) = fallback_model {
+            model_state.active_model = Some(fallback_model.clone());
+            model_state.fallback_active = model_state.effective_model != *fallback_model;
+            model_state.effective_fallback_models = snap
+                .model_catalog
+                .provider_chain_for_turn(state.model_override.as_ref(), Some(fallback_model))
+                .into_iter()
+                .skip(1)
+                .collect();
+        }
+        model_state
     }
 
     pub(crate) async fn current_apply_patch_surface(&self) -> ApplyPatchSurface {
@@ -499,37 +526,55 @@ impl RuntimeHandle {
     }
 
     pub(crate) fn apply_patch_surface_for_state(&self, state: &AgentState) -> ApplyPatchSurface {
+        self.apply_patch_surface_for_turn(state, None)
+    }
+
+    pub(crate) fn apply_patch_surface_for_turn(
+        &self,
+        state: &AgentState,
+        fallback_model: Option<&ModelRouteRef>,
+    ) -> ApplyPatchSurface {
         let route_ref = self
-            .selected_model_ref_for_state(state)
+            .selected_model_ref_for_state(state, fallback_model)
             .unwrap_or_else(|| self.model_state_for(state).effective_model);
         ApplyPatchSurface::for_model_ref(&route_ref.model_ref().as_string())
     }
 
-    fn selected_model_ref_for_state(&self, state: &AgentState) -> Option<ModelRouteRef> {
+    fn selected_model_ref_for_state(
+        &self,
+        state: &AgentState,
+        fallback_model: Option<&ModelRouteRef>,
+    ) -> Option<ModelRouteRef> {
         let snap = self.inner.config_snapshot.load();
         snap.model_catalog
-            .provider_chain_for_turn(
-                state.model_override.as_ref(),
-                state.pending_fallback_model.as_ref(),
-            )
+            .provider_chain_for_turn(state.model_override.as_ref(), fallback_model)
             .into_iter()
             .next()
     }
 
     pub(crate) async fn reconfigure_provider_for_state(&self, state: &AgentState) -> Result<()> {
+        self.reconfigure_provider_for_state_and_fallback(state, None)
+            .await
+    }
+
+    async fn reconfigure_provider_for_state_and_fallback(
+        &self,
+        state: &AgentState,
+        fallback_model: Option<&ModelRouteRef>,
+    ) -> Result<()> {
         let snap = self.inner.config_snapshot.load();
         let Some(reconfig) = snap.provider_reconfig.as_ref() else {
             return Err(anyhow!(
                 "agent model override is unavailable for runtimes without host-managed provider configuration"
             ));
         };
-        let chain = snap.model_catalog.provider_chain_for_turn(
-            state.model_override.as_ref(),
-            state.pending_fallback_model.as_ref(),
-        );
-        let resolved_context_config = snap
+        let chain = snap
             .model_catalog
-            .resolved_context_config(&snap.base_context_config, state.model_override.as_ref());
+            .provider_chain_for_turn(state.model_override.as_ref(), fallback_model);
+        let resolved_context_config = snap.model_catalog.resolved_context_config(
+            &snap.base_context_config,
+            fallback_model.or(state.model_override.as_ref()),
+        );
         let mut provider_config = reconfig.config.clone();
         if let (Some(primary), Some(reasoning_effort)) = (
             chain.first(),
@@ -549,16 +594,42 @@ impl RuntimeHandle {
         Ok(())
     }
 
-    pub(crate) async fn reconfigure_provider_for_current_state(&self) -> Result<()> {
+    pub(crate) async fn reconfigure_provider_for_turn(
+        &self,
+        fallback_model: Option<&ModelRouteRef>,
+    ) -> Result<()> {
         let snap = self.inner.config_snapshot.load();
         if snap.provider_reconfig.is_none() {
+            match fallback_model {
+                Some(fallback_model) => {
+                    let provider = self
+                        .inner
+                        .base_provider
+                        .select_model_lineage(fallback_model)
+                        .ok_or_else(|| {
+                            anyhow!(
+                                "static provider cannot select recovery model lineage {}",
+                                fallback_model.as_string()
+                            )
+                        })?;
+                    *self.inner.provider.write().await = provider;
+                }
+                None if self.inner.turn_fallback_model.read().await.is_some() => {
+                    *self.inner.provider.write().await = self.inner.base_provider.clone();
+                }
+                None => {}
+            }
+            *self.inner.turn_fallback_model.write().await = fallback_model.cloned();
             return Ok(());
         }
         let state = {
             let guard = self.inner.agent.lock().await;
             guard.state.clone()
         };
-        self.reconfigure_provider_for_state(&state).await
+        self.reconfigure_provider_for_state_and_fallback(&state, fallback_model)
+            .await?;
+        *self.inner.turn_fallback_model.write().await = fallback_model.cloned();
+        Ok(())
     }
 
     /// Hot-reload config-derived runtime fields from a new `AppConfig`.
@@ -594,11 +665,12 @@ impl RuntimeHandle {
         &self,
     ) -> Result<crate::types::ViewImageVisionSelection> {
         let state = self.agent_state().await?;
+        let fallback_model = self.inner.turn_fallback_model.read().await.clone();
         let snap = self.inner.config_snapshot.load();
         Ok(snap.model_catalog.select_view_image_vision_model(
             &snap.base_context_config,
             state.model_override.as_ref(),
-            state.pending_fallback_model.as_ref(),
+            fallback_model.as_ref(),
         ))
     }
 
@@ -697,13 +769,14 @@ impl RuntimeHandle {
         request: ProviderGenerateImageRequest,
     ) -> Result<ProviderGenerateImageResponse> {
         let state = self.agent_state().await?;
+        let fallback_model = self.inner.turn_fallback_model.read().await.clone();
         let snap = self.inner.config_snapshot.load();
         let route = snap
             .model_catalog
             .select_generate_image_route(
                 &snap.base_context_config,
                 state.model_override.as_ref(),
-                state.pending_fallback_model.as_ref(),
+                fallback_model.as_ref(),
             )
             .ok_or_else(|| anyhow!("no configured model supports image_generation"))?;
         let reconfig = snap.provider_reconfig.as_ref().ok_or_else(|| {
@@ -1067,6 +1140,16 @@ fn prepare_runtime_storage(
         .retain(|skill| matches!(skill.activation_state, SkillActivationState::SessionActive));
     for skill in &mut state.active_skills {
         skill.activation_source = SkillActivationSource::Restored;
+    }
+    if let Some(legacy_fallback) = state.pending_fallback_model.take() {
+        storage.append_event(&AuditEvent::legacy(
+            "legacy_pending_fallback_discarded",
+            serde_json::json!({
+                "agent_id": agent_id,
+                "fallback_model_ref": legacy_fallback,
+                "reason": "fallback_selection_is_message_bound",
+            }),
+        ))?;
     }
     state.pending = queue.len();
     state.total_message_count = storage.count_messages().unwrap_or_default();

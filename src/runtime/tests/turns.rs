@@ -1452,14 +1452,7 @@ async fn provider_failure_before_output_defers_fallback_to_next_turn() {
 
     assert_eq!(outcome.terminal_kind, TurnTerminalKind::DeferredToFallback);
     let state = runtime.agent_state().await.unwrap();
-    assert_eq!(
-        state
-            .pending_fallback_model
-            .as_ref()
-            .map(|model| model.as_string())
-            .as_deref(),
-        Some("anthropic@default/claude-sonnet-4-6")
-    );
+    assert!(state.pending_fallback_model.is_none());
     assert_eq!(
         state.last_turn_terminal.as_ref().map(|record| record.kind),
         Some(TurnTerminalKind::DeferredToFallback)
@@ -1474,6 +1467,21 @@ async fn provider_failure_before_output_defers_fallback_to_next_turn() {
         queued.authority_class,
         AuthorityClass::RuntimeInstruction
     ));
+    assert_eq!(
+        queued
+            .metadata
+            .as_ref()
+            .and_then(|metadata| { metadata["provider_recovery"]["fallback_model_ref"].as_str() }),
+        Some("anthropic@default/claude-sonnet-4-6")
+    );
+    assert_eq!(
+        crate::runtime::turn::TurnModelSelection::from_message(&queued)
+            .unwrap()
+            .fallback_model()
+            .map(|model| model.as_string())
+            .as_deref(),
+        Some("anthropic@default/claude-sonnet-4-6")
+    );
 
     let events = wait_for_audit_events(
         &runtime,
@@ -1485,9 +1493,7 @@ async fn provider_failure_before_output_defers_fallback_to_next_turn() {
                 && events
                     .iter()
                     .any(|event| event.kind == "deferred_to_fallback")
-                && events
-                    .iter()
-                    .any(|event| event.kind == "recovery_turn_started")
+                && events.iter().any(|event| event.kind == "recovery_enqueued")
         },
         "provider failure fallback events",
     )
@@ -1509,9 +1515,286 @@ async fn provider_failure_before_output_defers_fallback_to_next_turn() {
     assert!(deferred.data["operator_message"]
         .as_str()
         .is_some_and(|message| message.contains("Queued fallback turn")));
-    assert!(events
+    assert!(events.iter().any(|event| event.kind == "recovery_enqueued"));
+    assert!(!events
         .iter()
         .any(|event| event.kind == "recovery_turn_started"));
+}
+
+#[test]
+fn provider_recovery_directive_requires_runtime_owned_recovery_provenance() {
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator { actor_id: None },
+        AuthorityClass::OperatorInstruction,
+        Priority::Next,
+        MessageBody::Text {
+            text: "try to select a model".into(),
+        },
+    );
+    message.metadata = Some(serde_json::json!({
+        "provider_recovery": {
+            "fallback_model_ref": "anthropic/claude-sonnet-4-6",
+            "source_turn_id": "turn-source",
+            "source_message_id": "message-source",
+            "source_terminal_kind": "deferred_to_fallback",
+            "source_round": 1
+        }
+    }));
+
+    let selection = crate::runtime::turn::TurnModelSelection::from_message(&message).unwrap();
+    assert!(selection.fallback_model().is_none());
+}
+
+async fn assert_successful_same_owner_turn_supersedes_queued_provider_recovery(
+    mut superseding: MessageEnvelope,
+) {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let mut source_turn = TurnRecord::new("default", "turn-source", 1);
+    source_turn.current_work_item_id = Some("work-1".into());
+    runtime.storage().append_turn(&source_turn).unwrap();
+
+    let mut recovery = MessageEnvelope::new(
+        "default",
+        MessageKind::InternalFollowup,
+        MessageOrigin::System {
+            subsystem: "model_lineage_recovery".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Next,
+        MessageBody::Text {
+            text: "continue recovery".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        crate::types::AdmissionContext::RuntimeOwned,
+    );
+    recovery.work_item_id = Some("work-1".into());
+    recovery.metadata = Some(serde_json::json!({
+        "provider_recovery": {
+            "fallback_model_ref": "anthropic/claude-sonnet-4-6",
+            "source_turn_id": "turn-source",
+            "source_message_id": "message-source",
+            "source_terminal_kind": "deferred_to_fallback",
+            "source_round": 1
+        }
+    }));
+    let recovery = runtime.enqueue(recovery).await.unwrap();
+
+    superseding.turn_id = Some("turn-success".into());
+    let mut transition = terminal_transition(&superseding, Some("work-1"));
+    transition.terminal.turn_index = 2;
+    transition.turn_record.turn_index = 2;
+    transition.turn_record.produced_brief_ids = vec!["brief-success".into()];
+
+    assert_eq!(
+        runtime
+            .maybe_supersede_queued_provider_recovery(&superseding, Some(&transition))
+            .await
+            .unwrap(),
+        1
+    );
+    let queue_entry = runtime
+        .inner
+        .runtime_db
+        .queue_entries()
+        .latest_all()
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.message_id == recovery.id)
+        .expect("recovery queue entry");
+    assert_eq!(queue_entry.status, QueueEntryStatus::Dropped);
+    assert!(runtime
+        .inner
+        .agent
+        .lock()
+        .await
+        .queue
+        .peek_next_matching(|message| message.id == recovery.id)
+        .is_none());
+    assert!(runtime
+        .storage()
+        .read_recent_events(20)
+        .unwrap()
+        .iter()
+        .any(|event| event.kind == "recovery_superseded"));
+}
+
+#[tokio::test]
+async fn successful_ordinary_turn_supersedes_queued_provider_recovery() {
+    assert_successful_same_owner_turn_supersedes_queued_provider_recovery(MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator { actor_id: None },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "continue successfully".into(),
+        },
+    ))
+    .await;
+}
+
+#[tokio::test]
+async fn successful_recovery_turn_supersedes_older_queued_provider_recovery() {
+    let mut superseding = MessageEnvelope::new(
+        "default",
+        MessageKind::InternalFollowup,
+        MessageOrigin::System {
+            subsystem: "model_lineage_recovery".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Next,
+        MessageBody::Text {
+            text: "continue newer recovery".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        crate::types::AdmissionContext::RuntimeOwned,
+    );
+    superseding.metadata = Some(serde_json::json!({
+        "provider_recovery": {
+            "fallback_model_ref": "openai/gpt-5.4",
+            "source_turn_id": "turn-newer-source",
+            "source_message_id": "message-newer-source",
+            "source_terminal_kind": "deferred_to_fallback",
+            "source_round": 1
+        }
+    }));
+    assert_successful_same_owner_turn_supersedes_queued_provider_recovery(superseding).await;
+}
+
+#[tokio::test]
+async fn view_image_selection_uses_current_turn_fallback_model() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    *runtime.inner.turn_fallback_model.write().await = Some(
+        crate::config::ModelRouteRef::parse_compatible("anthropic/claude-sonnet-4-6").unwrap(),
+    );
+
+    let selection = runtime.current_view_image_vision_selection().await.unwrap();
+    assert_eq!(selection.primary_provider.as_deref(), Some("anthropic"));
+    assert_eq!(
+        selection.primary_model.as_deref(),
+        Some("claude-sonnet-4-6")
+    );
+}
+
+#[tokio::test]
+async fn bootstrap_discards_legacy_fallback_slot_but_preserves_typed_recovery() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let recovery_id = {
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(StubProvider::new("unused")),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        {
+            let mut guard = runtime.inner.agent.lock().await;
+            guard.state.pending_fallback_model = Some(
+                crate::config::ModelRouteRef::parse_compatible("anthropic/claude-sonnet-4-6")
+                    .unwrap(),
+            );
+            guard.persist_state(&runtime.inner.storage).unwrap();
+        }
+        let mut recovery = MessageEnvelope::new(
+            "default",
+            MessageKind::InternalFollowup,
+            MessageOrigin::System {
+                subsystem: "model_lineage_recovery".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Next,
+            MessageBody::Text {
+                text: "continue recovery".into(),
+            },
+        )
+        .with_admission(
+            MessageDeliverySurface::RuntimeSystem,
+            crate::types::AdmissionContext::RuntimeOwned,
+        );
+        recovery.metadata = Some(serde_json::json!({
+            "provider_recovery": {
+                "fallback_model_ref": "anthropic/claude-sonnet-4-6",
+                "source_turn_id": "turn-source",
+                "source_message_id": "message-source",
+                "source_terminal_kind": "deferred_to_fallback",
+                "source_round": 1
+            }
+        }));
+        runtime.enqueue(recovery).await.unwrap().id
+    };
+
+    let reopened = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    assert!(reopened
+        .agent_state()
+        .await
+        .unwrap()
+        .pending_fallback_model
+        .is_none());
+    let recovery = reopened
+        .inner
+        .agent
+        .lock()
+        .await
+        .queue
+        .peek_next_matching(|message| message.id == recovery_id)
+        .cloned()
+        .expect("typed recovery should survive bootstrap");
+    assert_eq!(
+        crate::runtime::turn::TurnModelSelection::from_message(&recovery)
+            .unwrap()
+            .fallback_model()
+            .map(|model| model.as_string())
+            .as_deref(),
+        Some("anthropic@default/claude-sonnet-4-6")
+    );
+    assert!(reopened
+        .storage()
+        .read_recent_events(20)
+        .unwrap()
+        .iter()
+        .any(|event| event.kind == "legacy_pending_fallback_discarded"));
 }
 
 #[tokio::test]

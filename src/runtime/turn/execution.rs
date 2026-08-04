@@ -50,7 +50,8 @@ use super::reminders::{
 };
 use super::{
     append_follow_up_user_texts, render_operator_interjection_text, AgentLoopOutcome,
-    LoopControlOptions, TurnRoundRecord, MAX_OUTPUT_RECOVERY_ATTEMPTS, ROUND_TEXT_PREVIEW_LIMIT,
+    LoopControlOptions, ProviderRecoveryDirective, TurnModelSelection, TurnRoundRecord,
+    MAX_OUTPUT_RECOVERY_ATTEMPTS, ROUND_TEXT_PREVIEW_LIMIT,
     WORK_ITEM_STALE_REMINDER_COOLDOWN_ROUNDS,
 };
 use super::{truncate_preview, CHECKPOINT_RESUME_PROMPT};
@@ -65,6 +66,36 @@ enum OperatorInterjectionPlan {
         scenario_class: Option<crate::domain::scheduler_protocol::SchedulerScenarioClass>,
         effective_mode: crate::domain::scheduler_protocol::ScenarioMode,
     },
+}
+
+impl TurnModelSelection {
+    pub(crate) fn from_message(message: &MessageEnvelope) -> Result<Self> {
+        let trusted_recovery = message.kind == MessageKind::InternalFollowup
+            && message.authority_class == AuthorityClass::RuntimeInstruction
+            && message.delivery_surface == Some(MessageDeliverySurface::RuntimeSystem)
+            && message.admission_context == Some(AdmissionContext::RuntimeOwned)
+            && matches!(
+                &message.origin,
+                MessageOrigin::System { subsystem } if subsystem == "model_lineage_recovery"
+            );
+        if !trusted_recovery {
+            return Ok(Self::default());
+        }
+        let directive = message
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("provider_recovery"))
+            .ok_or_else(|| {
+                anyhow::anyhow!("model lineage recovery message is missing its directive")
+            })
+            .and_then(|value| {
+                serde_json::from_value::<ProviderRecoveryDirective>(value.clone())
+                    .map_err(anyhow::Error::from)
+            })?;
+        Ok(Self {
+            recovery: Some(directive),
+        })
+    }
 }
 
 impl RuntimeHandle {
@@ -184,11 +215,6 @@ impl RuntimeHandle {
         } else {
             TurnTerminalKind::DeferredToFallback
         };
-        {
-            let mut guard = self.inner.agent.lock().await;
-            guard.state.pending_fallback_model = Some(fallback_model.clone());
-            guard.persist_state(&self.inner.storage)?;
-        }
         let error_text = error.to_string();
         let provider_failure_text = provider_lineage_failure_text(&error_text);
         let operator_message = provider_lineage_operator_message(
@@ -268,15 +294,35 @@ impl RuntimeHandle {
                 .or_else(|| guard.state.current_turn_work_item_id.clone())
                 .or_else(|| guard.state.current_work_item_id.clone())
         };
+        let source_message_id = {
+            let guard = self.inner.agent.lock().await;
+            guard
+                .state
+                .current_execution_binding
+                .as_ref()
+                .map(|binding| binding.source_message_id.clone())
+                .unwrap_or_else(|| terminal.turn_id.clone())
+        };
+        message.causation_id = Some(source_message_id.clone());
+        message
+            .source_refs
+            .insert("source_turn_id".into(), terminal.turn_id.clone());
+        message
+            .source_refs
+            .insert("source_message_id".into(), source_message_id.clone());
         message.metadata = Some(serde_json::json!({
-            "fallback_model_ref": fallback_ref,
-            "source_terminal_kind": terminal_kind,
-            "source_round": round,
+            "provider_recovery": ProviderRecoveryDirective {
+                fallback_model_ref: fallback_model,
+                source_turn_id: terminal.turn_id.clone(),
+                source_message_id,
+                source_terminal_kind: terminal_kind,
+                source_round: round,
+            },
             "side_effect_boundary_crossed": side_effect_boundary_crossed,
         }));
         let queued = self.enqueue(message).await?;
         self.inner.storage.append_event(&AuditEvent::legacy(
-            "recovery_turn_started",
+            "recovery_enqueued",
             serde_json::json!({
                 "agent_id": agent_id,
                 "message_id": queued.id,
@@ -713,11 +759,13 @@ impl RuntimeHandle {
         effective_prompt: EffectivePrompt,
         loop_control: LoopControlOptions,
     ) -> Result<AgentLoopOutcome> {
+        self.reconfigure_provider_for_turn(None).await?;
         TurnExecution {
             runtime: self,
             agent_id,
             authority_class,
             effective_prompt,
+            model_selection: TurnModelSelection::default(),
             loop_control,
             persist_terminal: true,
         }
@@ -730,6 +778,7 @@ impl RuntimeHandle {
         agent_id: &str,
         authority_class: AuthorityClass,
         effective_prompt: EffectivePrompt,
+        model_selection: TurnModelSelection,
         loop_control: LoopControlOptions,
     ) -> Result<AgentLoopOutcome> {
         TurnExecution {
@@ -737,6 +786,7 @@ impl RuntimeHandle {
             agent_id,
             authority_class,
             effective_prompt,
+            model_selection,
             loop_control,
             persist_terminal: false,
         }
@@ -863,6 +913,7 @@ pub(super) struct TurnExecution<'a> {
     pub(super) agent_id: &'a str,
     pub(super) authority_class: AuthorityClass,
     pub(super) effective_prompt: EffectivePrompt,
+    pub(super) model_selection: TurnModelSelection,
     pub(super) loop_control: LoopControlOptions,
     pub(super) persist_terminal: bool,
 }
@@ -874,6 +925,7 @@ impl TurnExecution<'_> {
             agent_id,
             authority_class,
             mut effective_prompt,
+            model_selection,
             loop_control,
             persist_terminal,
         } = self;
@@ -892,15 +944,13 @@ impl TurnExecution<'_> {
             let guard = runtime.inner.agent.lock().await;
             checkpoint_state_from_last_terminal(guard.state.last_turn_terminal.as_ref())
         };
-        let (turn_model_override, turn_pending_fallback_model, turn_model_state) = {
+        let (turn_model_override, turn_model_state) = {
             let guard = runtime.inner.agent.lock().await;
             (
                 guard.state.model_override.clone(),
-                guard.state.pending_fallback_model.clone(),
-                runtime.model_state_for(&guard.state),
+                runtime.model_state_for_turn(&guard.state, model_selection.fallback_model()),
             )
         };
-        runtime.reconfigure_provider_for_current_state().await?;
         let identity = runtime.agent_identity_view().await?;
         let (
             provider,
@@ -908,7 +958,9 @@ impl TurnExecution<'_> {
             _apply_patch_surface,
             native_web_search,
             builtin_web_search_selection,
-        ) = runtime.provider_tool_selection(&identity).await?;
+        ) = runtime
+            .provider_tool_selection_for_turn(&identity, model_selection.fallback_model())
+            .await?;
         let allowed_tool_names = available_tools
             .iter()
             .map(|tool| tool.name.clone())
@@ -918,12 +970,12 @@ impl TurnExecution<'_> {
             serde_json::json!({
                 "agent_id": agent_id,
                 "model_override": turn_model_override,
-                "pending_fallback_model": turn_pending_fallback_model,
+                "recovery_fallback_model": model_selection.fallback_model(),
                 "model": turn_model_state,
                 "builtin_web_search_selection": builtin_web_search_selection,
             }),
         ))?;
-        if let Some(pending) = turn_pending_fallback_model.as_ref() {
+        if let Some(pending) = model_selection.fallback_model() {
             runtime.inner.storage.append_event(&AuditEvent::legacy(
                 "pending_model_promoted",
                 serde_json::json!({
@@ -1060,13 +1112,6 @@ impl TurnExecution<'_> {
                             .await?
                         {
                             return Ok(outcome);
-                        }
-                        {
-                            let mut guard = runtime.inner.agent.lock().await;
-                            if guard.state.pending_fallback_model.is_some() {
-                                guard.state.pending_fallback_model = None;
-                                guard.persist_state(&runtime.inner.storage)?;
-                            }
                         }
                         runtime
                             .persist_turn_terminal_record(
@@ -1410,13 +1455,6 @@ impl TurnExecution<'_> {
                         {
                             return Ok(outcome);
                         }
-                        {
-                            let mut guard = runtime.inner.agent.lock().await;
-                            if guard.state.pending_fallback_model.is_some() {
-                                guard.state.pending_fallback_model = None;
-                                guard.persist_state(&runtime.inner.storage)?;
-                            }
-                        }
                         runtime
                             .persist_turn_terminal_record(
                                 TurnTerminalKind::Aborted,
@@ -1446,7 +1484,6 @@ impl TurnExecution<'_> {
                 ));
                 guard.state.last_requested_model = model_attempt_state.requested_model.clone();
                 guard.state.last_active_model = model_attempt_state.active_model.clone();
-                guard.state.pending_fallback_model = None;
                 guard.persist_state(&runtime.inner.storage)?;
                 (
                     guard.state.turn_index,

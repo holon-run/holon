@@ -157,10 +157,18 @@ This covers retryable failures such as:
 - rate limits
 - transient transport failures
 - provider service failures
+- completed provider responses that contain no wire content/output items
 
 Retry must not advance to a different model lineage inside the same turn.
 Cross-lineage fallback is a scheduling decision for the next turn, not a
 continuation of the current turn.
+
+A response is `empty_response + retryable` only when the wire response
+successfully completes but contains no content/output items. A non-empty wire
+response whose items are unknown or unsupported remains
+`invalid_response + fail_fast`. Token usage reported by an empty response is
+failure evidence and is included in the provider attempt timeline; it does not
+change the classification.
 
 ### 5.3 Cross-Lineage Fallback Defers To The Next Turn
 
@@ -234,6 +242,31 @@ and surface the failure to the operator instead of creating an infinite recovery
 loop. Holon must also prevent fallback loops where each new turn retries the
 same failed primary model instead of promoting the next candidate.
 
+### 5.6 Recovery Selection Is Message-Bound
+
+The fallback route is carried by a typed directive on the runtime-owned recovery
+message. It is accepted only when all provenance fields identify a runtime
+instruction emitted by the `model_lineage_recovery` subsystem. Operator,
+external, task, or ordinary internal metadata cannot select a fallback model.
+
+The claimed message is resolved once into a turn-local selection snapshot before
+the provider, context policy, tool surface, and prompt are built. Those surfaces
+all use the same snapshot. `AgentState.pending_fallback_model` remains readable
+for state-schema compatibility, but it is not a model-routing source and new
+execution paths do not write it.
+
+Recovery audit lifecycle is explicit:
+
+- `recovery_enqueued` means the recovery message and queue entry are durable.
+- `recovery_turn_started` is emitted only after that exact message is claimed
+  and its turn/run binding exists.
+- `recovery_superseded` means a still-queued recovery was atomically dropped
+  because a later successful turn for the same owner produced accepted
+  continuation progress.
+
+An unrelated, failed, empty, or no-op turn does not supersede recovery. A
+recovery that is already dequeued is never cancelled by this reconciliation.
+
 ## 6. Provider State Rules
 
 ### 6.1 Continuation State Is Lineage-Scoped
@@ -283,7 +316,9 @@ The runtime should make lineage reset explicit so diagnostics can say:
 - `pending_model_promoted`
 - `lineage_retry_exhausted`
 - `deferred_to_fallback`
+- `recovery_enqueued`
 - `recovery_turn_started`
+- `recovery_superseded`
 
 instead of only reporting a low-level request-shape mismatch.
 
@@ -363,14 +398,20 @@ first-class identity and reset reason.
    next-turn fallback/recovery.
 5. Add terminal kinds for retry exhaustion that distinguish
    `deferred_to_fallback` from `provider_failed_needs_recovery`.
-6. Add bounded recovery/fallback-turn enqueueing with loop prevention.
+6. Add bounded recovery/fallback-turn enqueueing with loop prevention and bind
+   the fallback route to the recovery message identity.
 7. Reset provider continuation explicitly when pending model or fallback
    selection is promoted at the next turn.
-8. Add tests for:
+8. Reconcile legacy `pending_fallback_model` state at bootstrap by discarding
+   the global slot; a durable typed recovery message, when present, remains the
+   only authoritative fallback selection.
+9. Add tests for:
    - retry stays on the same lineage inside a turn
    - pre-output cross-lineage fallback terminates the turn and queues a new one
    - post-output cross-lineage fallback terminates as recovery
    - recovery turn starts as a new turn
+   - ordinary queued messages cannot consume a recovery fallback
+   - enqueue, actual start, and supersession are distinct audit transitions
    - encrypted remote compaction is not replayed across lineage change
    - user model switch does not affect an already-running turn
 

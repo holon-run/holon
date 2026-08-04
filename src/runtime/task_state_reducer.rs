@@ -427,7 +427,7 @@ impl RuntimeHandle {
                 guard.persist_state(&self.inner.storage)?;
             }
             let transition = self
-                .process_interactive_message_deferred(
+                .process_interactive_message_deferred_with_cleanup(
                     message,
                     continuation_resolution,
                     execution_admission_provenance,

@@ -348,13 +348,24 @@ pub(in super::super) fn parse_openai_response_with_transport_state(
         .iter()
         .map(canonicalize_openai_provider_item)
         .collect::<Vec<_>>();
+    let usage = response.get("usage").and_then(Value::as_object);
+    let input_tokens = usage
+        .and_then(|usage| usage.get("input_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let output_tokens = usage
+        .and_then(|usage| usage.get("output_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
     let mut blocks = Vec::new();
+    let mut saw_nonempty_wire_item = false;
 
     for item in output {
         match item.get("type").and_then(Value::as_str) {
             Some("message") => {
                 if let Some(content) = item.get("content").and_then(Value::as_array) {
                     for content_item in content {
+                        saw_nonempty_wire_item = true;
                         match content_item.get("type").and_then(Value::as_str) {
                             Some("output_text") | Some("text") | Some("input_text") => {
                                 if let Some(text) = content_item.get("text").and_then(Value::as_str)
@@ -367,9 +378,12 @@ pub(in super::super) fn parse_openai_response_with_transport_state(
                             _ => {}
                         }
                     }
+                } else {
+                    saw_nonempty_wire_item = true;
                 }
             }
             Some("function_call") => {
+                saw_nonempty_wire_item = true;
                 let id = item
                     .get("call_id")
                     .or_else(|| item.get("id"))
@@ -395,6 +409,7 @@ pub(in super::super) fn parse_openai_response_with_transport_state(
                 });
             }
             Some("custom_tool_call") => {
+                saw_nonempty_wire_item = true;
                 let id = item
                     .get("call_id")
                     .or_else(|| item.get("id"))
@@ -424,18 +439,24 @@ pub(in super::super) fn parse_openai_response_with_transport_state(
                     kind: ModelToolCallKind::Custom,
                 });
             }
-            _ => {}
+            _ => saw_nonempty_wire_item = true,
         }
     }
 
     if blocks.is_empty() {
+        if !saw_nonempty_wire_item {
+            return Err(empty_response_error(
+                "empty OpenAI-style response",
+                "response contained no output/content items",
+                crate::types::TokenUsage::new(input_tokens, output_tokens),
+            ));
+        }
         return Err(invalid_response_error(
             "OpenAI-style response contained no supported content blocks",
             "empty supported block set",
         ));
     }
 
-    let usage = response.get("usage").and_then(Value::as_object);
     let cache_usage = usage.map(|usage| ProviderCacheUsage {
         read_input_tokens: usage
             .get("input_tokens_details")
@@ -472,14 +493,8 @@ pub(in super::super) fn parse_openai_response_with_transport_state(
                         .and_then(Value::as_str)
                         .map(str::to_string)
                 }),
-            input_tokens: usage
-                .and_then(|usage| usage.get("input_tokens"))
-                .and_then(Value::as_u64)
-                .unwrap_or(0),
-            output_tokens: usage
-                .and_then(|usage| usage.get("output_tokens"))
-                .and_then(Value::as_u64)
-                .unwrap_or(0),
+            input_tokens,
+            output_tokens,
             cache_usage,
             provider_message_id: response_id.clone(),
             provider_request_id: None,

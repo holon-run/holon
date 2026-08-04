@@ -9,6 +9,7 @@ use tokio::time::Duration;
 use super::{
     http_trace::ProviderHttpTraceRequest, ProviderTransportDiagnostics, ReqwestTransportDiagnostics,
 };
+use crate::types::TokenUsage;
 
 pub(crate) const PROVIDER_MAX_RETRIES: usize = 2;
 const PROVIDER_RETRY_BASE_BACKOFF_MS: u64 = 200;
@@ -20,6 +21,7 @@ pub(crate) enum ProviderFailureKind {
     Connection,
     RateLimited,
     ServerError,
+    EmptyResponse,
     AuthError,
     ContractError,
     InvalidResponse,
@@ -47,6 +49,7 @@ pub(crate) struct ProviderTransportError {
     pub code: Option<String>,
     pub status: Option<u16>,
     pub diagnostics: Option<ProviderTransportDiagnostics>,
+    pub token_usage: Option<TokenUsage>,
     message: String,
 }
 
@@ -57,6 +60,7 @@ impl ProviderFailureKind {
             Self::Connection => "connection",
             Self::RateLimited => "rate_limited",
             Self::ServerError => "server_error",
+            Self::EmptyResponse => "empty_response",
             Self::AuthError => "auth_error",
             Self::ContractError => "contract_error",
             Self::InvalidResponse => "invalid_response",
@@ -85,6 +89,7 @@ pub(crate) fn provider_retry_policy_json() -> Value {
             ProviderFailureKind::Connection.as_str(),
             ProviderFailureKind::RateLimited.as_str(),
             ProviderFailureKind::ServerError.as_str(),
+            ProviderFailureKind::EmptyResponse.as_str(),
         ],
         "fail_fast_failure_kinds": [
             ProviderFailureKind::AuthError.as_str(),
@@ -123,11 +128,12 @@ pub(crate) fn provider_transport_error(
     provider_transport_error_with_code(classification, None, status, diagnostics, message)
 }
 
-pub(crate) fn provider_transport_error_with_code(
+fn provider_transport_error_with_evidence(
     classification: ProviderFailureClassification,
     code: Option<&str>,
     status: Option<u16>,
     diagnostics: Option<ProviderTransportDiagnostics>,
+    token_usage: Option<TokenUsage>,
     message: impl Into<String>,
 ) -> anyhow::Error {
     ProviderTransportError {
@@ -135,9 +141,20 @@ pub(crate) fn provider_transport_error_with_code(
         code: code.map(ToString::to_string),
         status,
         diagnostics,
+        token_usage,
         message: message.into(),
     }
     .into()
+}
+
+pub(crate) fn provider_transport_error_with_code(
+    classification: ProviderFailureClassification,
+    code: Option<&str>,
+    status: Option<u16>,
+    diagnostics: Option<ProviderTransportDiagnostics>,
+    message: impl Into<String>,
+) -> anyhow::Error {
+    provider_transport_error_with_evidence(classification, code, status, diagnostics, None, message)
 }
 
 pub(crate) fn classify_reqwest_transport_error_with_trace(
@@ -351,6 +368,57 @@ pub(crate) fn invalid_response_error_with_trace(
             http_trace: trace.and_then(|trace| trace.diagnostics(None)),
             source_chain: vec![error.clone()],
         }),
+        format!("{context}: {error}"),
+    )
+}
+
+pub(crate) fn empty_response_error(
+    context: &str,
+    error: impl std::fmt::Display,
+    token_usage: TokenUsage,
+) -> anyhow::Error {
+    provider_transport_error_with_evidence(
+        ProviderFailureClassification {
+            kind: ProviderFailureKind::EmptyResponse,
+            disposition: RetryDisposition::Retryable,
+        },
+        None,
+        None,
+        None,
+        Some(token_usage),
+        format!("{context}: {error}"),
+    )
+}
+
+pub(crate) fn empty_response_error_with_trace(
+    context: &str,
+    stage: &str,
+    provider: &str,
+    model_ref: Option<&str>,
+    url: Option<&str>,
+    error: impl std::fmt::Display,
+    trace: Option<&ProviderHttpTraceRequest>,
+    token_usage: TokenUsage,
+) -> anyhow::Error {
+    let error = error.to_string();
+    provider_transport_error_with_evidence(
+        ProviderFailureClassification {
+            kind: ProviderFailureKind::EmptyResponse,
+            disposition: RetryDisposition::Retryable,
+        },
+        None,
+        None,
+        Some(ProviderTransportDiagnostics {
+            stage: stage.to_string(),
+            provider: Some(provider.to_string()),
+            model_ref: model_ref.map(ToString::to_string),
+            url: url.map(sanitize_transport_url),
+            status: None,
+            reqwest: None,
+            http_trace: trace.and_then(|trace| trace.diagnostics(None)),
+            source_chain: vec![error.clone()],
+        }),
+        Some(token_usage),
         format!("{context}: {error}"),
     )
 }

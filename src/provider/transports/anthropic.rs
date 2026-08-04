@@ -31,7 +31,7 @@ use crate::{
 use super::{build_http_client, request_send_timeout, response_body_timeout, stream_idle_timeout};
 use crate::provider::retry::{
     classify_reqwest_transport_error_with_trace, classify_status_error_with_trace,
-    invalid_response_error_with_trace, provider_transport_error,
+    empty_response_error_with_trace, invalid_response_error_with_trace, provider_transport_error,
     timeout_transport_error_with_trace, ProviderFailureClassification, ProviderFailureKind,
     RetryDisposition,
 };
@@ -607,6 +607,18 @@ fn anthropic_messages_response_to_turn_response(
         read_input_tokens: usage.cache_read_input_tokens.unwrap_or(0),
         creation_input_tokens: usage.cache_creation_input_tokens.unwrap_or(0),
     });
+    if parsed.content.is_empty() {
+        return Err(empty_response_error_with_trace(
+            "empty Anthropic response",
+            "response_protocol",
+            "anthropic",
+            Some(model_ref),
+            Some(url),
+            "Anthropic response contained no content blocks",
+            trace,
+            crate::types::TokenUsage::new(input_tokens, output_tokens),
+        ));
+    }
     let tools_available = !request.tools.is_empty();
     for (block_index, block) in parsed.content.iter().enumerate() {
         warn_unsupported_anthropic_response_block(
@@ -2908,6 +2920,93 @@ mod tests {
             response.content[1].input.as_ref(),
             Some(&json!({ "cmd": "echo ok" }))
         );
+    }
+
+    #[test]
+    fn anthropic_empty_completed_stream_is_retryable_and_preserves_usage() {
+        let stream = concat!(
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{\"content\":[],\"stop_reason\":null,\"usage\":{\"input_tokens\":3}}}\n\n",
+            "event: message_delta\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":893}}\n\n",
+            "event: message_stop\n",
+            "data: {\"type\":\"message_stop\"}\n\n",
+        );
+        let events = SseParser::default()
+            .push(stream.as_bytes())
+            .expect("stream should parse");
+        let mut accumulator = AnthropicStreamAccumulator::default();
+        for event in events {
+            accumulator
+                .apply(event, "anthropic/claude-test", "https://example.test", None)
+                .expect("event should accumulate");
+        }
+        let parsed = accumulator
+            .finish("anthropic/claude-test", "https://example.test", None)
+            .expect("stream should finish");
+        let request = ProviderTurnRequest::plain("system", Vec::new(), Vec::new());
+        let error = anthropic_messages_response_to_turn_response(
+            parsed,
+            None,
+            &request,
+            &[],
+            None,
+            &json!({}),
+            "anthropic",
+            "claude-test",
+            AnthropicCacheStrategy::MessagesNative,
+            &[],
+            "anthropic/claude-test",
+            "https://example.test",
+            None,
+        )
+        .expect_err("empty completed stream should fail");
+
+        let classification = crate::provider::retry::classify_provider_error(&error);
+        assert_eq!(classification.kind, ProviderFailureKind::EmptyResponse);
+        assert_eq!(classification.disposition, RetryDisposition::Retryable);
+        assert_eq!(
+            crate::provider::provider_error_token_usage(&error)
+                .map(|usage| (usage.input_tokens, usage.output_tokens)),
+            Some((3, 893))
+        );
+    }
+
+    #[test]
+    fn anthropic_nonempty_unsupported_block_remains_fail_fast() {
+        let parsed = MessagesResponse {
+            content: vec![ApiResponseBlock {
+                kind: "unsupported_provider_block".into(),
+                ..Default::default()
+            }],
+            usage: Some(ApiUsage {
+                input_tokens: Some(3),
+                output_tokens: Some(1),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let request = ProviderTurnRequest::plain("system", Vec::new(), Vec::new());
+        let error = anthropic_messages_response_to_turn_response(
+            parsed,
+            None,
+            &request,
+            &[],
+            None,
+            &json!({}),
+            "anthropic",
+            "claude-test",
+            AnthropicCacheStrategy::MessagesNative,
+            &[],
+            "anthropic/claude-test",
+            "https://example.test",
+            None,
+        )
+        .expect_err("unsupported block should fail");
+
+        let classification = crate::provider::retry::classify_provider_error(&error);
+        assert_eq!(classification.kind, ProviderFailureKind::InvalidResponse);
+        assert_eq!(classification.disposition, RetryDisposition::FailFast);
     }
 
     #[test]

@@ -184,7 +184,7 @@ impl RuntimeHandle {
                         guard.persist_state(&self.inner.storage)?;
                     }
                     terminal_transition = Some(
-                        self.process_interactive_message_deferred(
+                        self.process_interactive_message_deferred_with_cleanup(
                             &message,
                             continuation_resolution.as_ref(),
                             execution_admission_provenance.clone(),

@@ -7,7 +7,7 @@ use tracing::warn;
 use super::{
     aggregate_attempt_token_usage,
     catalog::ProviderCandidate,
-    provider_transport_diagnostics, provider_turn_error,
+    provider_error_token_usage, provider_transport_diagnostics, provider_turn_error,
     retry::{
         classify_provider_error, format_provider_failure, provider_max_attempts,
         provider_retry_backoff, RetryDisposition,
@@ -583,7 +583,7 @@ impl AgentProvider for FallbackProvider {
                             outcome: ProviderAttemptOutcome::Retrying,
                             advanced_to_fallback: false,
                             backoff_ms: Some(backoff.as_millis() as u64),
-                            token_usage: None,
+                            token_usage: provider_error_token_usage(&error).cloned(),
                             transport_diagnostics: provider_transport_diagnostics(&error).cloned(),
                         });
                         warn!(
@@ -618,7 +618,7 @@ impl AgentProvider for FallbackProvider {
                         },
                         advanced_to_fallback: has_fallback,
                         backoff_ms: None,
-                        token_usage: None,
+                        token_usage: provider_error_token_usage(&error).cloned(),
                         transport_diagnostics: provider_transport_diagnostics(&error).cloned(),
                     });
                     last_error = Some(error);
@@ -655,6 +655,20 @@ impl AgentProvider for FallbackProvider {
             },
             source,
         ))
+    }
+
+    fn select_model_lineage(
+        &self,
+        model_ref: &ModelRouteRef,
+    ) -> Option<std::sync::Arc<dyn AgentProvider>> {
+        let model_ref = model_ref.as_string();
+        let index = self
+            .candidates
+            .iter()
+            .position(|candidate| candidate.model_ref == model_ref)?;
+        Some(std::sync::Arc::new(Self {
+            candidates: self.candidates[index..].to_vec(),
+        }))
     }
 
     #[cfg(test)]

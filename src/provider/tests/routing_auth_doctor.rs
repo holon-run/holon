@@ -1016,6 +1016,83 @@ async fn openai_provider_retries_transient_server_errors() {
 }
 
 #[tokio::test]
+async fn openai_provider_retries_empty_responses_and_preserves_failure_usage() {
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let server_attempts = attempts.clone();
+    let base_url = spawn_test_server(Router::new().route(
+        "/responses",
+        post(move || {
+            let attempts = server_attempts.clone();
+            async move {
+                if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Json(json!({
+                        "id": "resp_empty",
+                        "status": "completed",
+                        "usage": { "input_tokens": 4, "output_tokens": 893 },
+                        "output": []
+                    }))
+                } else {
+                    Json(json!({
+                        "id": "resp_ok",
+                        "status": "completed",
+                        "usage": { "input_tokens": 2, "output_tokens": 1 },
+                        "output": [{
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{ "type": "output_text", "text": "retry ok" }]
+                        }]
+                    }))
+                }
+            }
+        }),
+    ))
+    .await;
+
+    let mut fixture = test_config("openai/gpt-5.4", &[], Some("openai-key"), None, false);
+    fixture
+        .config
+        .providers
+        .get_mut(&ProviderId::openai())
+        .unwrap()
+        .base_url = base_url;
+    let provider = build_provider_from_config(&fixture.config).unwrap();
+
+    let (response, diagnostics) = provider
+        .complete_turn_with_diagnostics(provider_turn_request())
+        .await
+        .expect("empty response should retry and recover");
+
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    assert!(matches!(
+        &response.blocks[0],
+        ModelBlock::Text { text } if text == "retry ok"
+    ));
+    let timeline = diagnostics.expect("missing attempt timeline");
+    assert_eq!(
+        timeline.attempts[0].failure_kind.as_deref(),
+        Some("empty_response")
+    );
+    assert_eq!(
+        timeline.attempts[0].disposition.as_deref(),
+        Some("retryable")
+    );
+    assert_eq!(
+        timeline.attempts[0]
+            .token_usage
+            .as_ref()
+            .map(|usage| (usage.input_tokens, usage.output_tokens)),
+        Some((4, 893))
+    );
+    assert_eq!(
+        timeline
+            .aggregated_token_usage
+            .as_ref()
+            .map(|usage| (usage.input_tokens, usage.output_tokens)),
+        Some((6, 894))
+    );
+}
+
+#[tokio::test]
 async fn openai_provider_fails_fast_on_contract_errors() {
     let attempts = Arc::new(AtomicUsize::new(0));
     let server_attempts = attempts.clone();
@@ -1485,6 +1562,26 @@ fn build_provider_from_config_preserves_order_of_unique_models() {
             "openai@default/gpt-5.4",
             "openai-codex@default/gpt-5.4"
         ]
+    );
+}
+
+#[test]
+fn fallback_provider_selects_requested_recovery_lineage() {
+    let fixture = test_config(
+        "anthropic/claude-sonnet-4-6",
+        &["openai/gpt-5.4", "openai-codex/gpt-5.4"],
+        Some("openai-key"),
+        Some("anthropic-token"),
+        true,
+    );
+    let provider = build_provider_from_config(&fixture.config).unwrap();
+    let recovery = provider
+        .select_model_lineage(&route_ref("openai/gpt-5.4"))
+        .expect("fallback provider should select the requested lineage");
+
+    assert_eq!(
+        recovery.configured_model_refs(),
+        vec!["openai@default/gpt-5.4", "openai-codex@default/gpt-5.4"]
     );
 }
 
