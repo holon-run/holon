@@ -2949,6 +2949,10 @@ def run_scheduler_external_wait_resume_case(
         and completion_marker in (result_brief.get("text") or ""),
         f"external wait completion brief mismatch: {result_brief}",
     )
+    # CompleteWorkItem persists the completed WorkItem before the canonical
+    # scheduler records the enclosing activation settlement. Wait for the
+    # resume turn to fully drain before inspecting activation lineage.
+    harness.wait_queue_drained()
     snapshot = harness.runtime_db_snapshot("scheduler-external")
     resume_turn_ids = {
         row["turn_id"]

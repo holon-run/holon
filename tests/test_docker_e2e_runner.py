@@ -2,6 +2,7 @@
 
 import importlib.util
 import io
+import inspect
 import json
 import copy
 import os
@@ -2012,6 +2013,13 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 expected_admission_kinds=("wait_resume",),
                 lifecycle_message_ids={"message-create"},
             )
+
+    def test_external_wait_resume_drains_queue_before_runtime_snapshot(self) -> None:
+        source = inspect.getsource(runner.run_scheduler_external_wait_resume_case)
+        self.assertLess(
+            source.index("harness.wait_queue_drained()"),
+            source.index('harness.runtime_db_snapshot("scheduler-external")'),
+        )
 
     def test_compaction_oracle_requires_actual_compaction_evidence(self) -> None:
         event = {
