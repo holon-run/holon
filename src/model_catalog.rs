@@ -2292,6 +2292,12 @@ mod tests {
             .get(&ModelRef::parse("dashscope/qwen3.8-max-preview").unwrap())
             .is_some());
         assert!(catalog
+            .get(&ModelRef::parse("dashscope/qwen3.8-max").unwrap())
+            .is_some());
+        assert!(catalog
+            .get(&ModelRef::parse("dashscope/deepseek-v4-flash-0731").unwrap())
+            .is_some());
+        assert!(catalog
             .get(&ModelRef::parse("dashscope/MiniMax-M2.5").unwrap())
             .is_some());
         assert!(catalog
@@ -2323,6 +2329,8 @@ mod tests {
         let expected = [
             ("qwen3.5-plus", 1_000_000, true, true),
             ("qwen3.8-max-preview", 1_000_000, true, true),
+            ("qwen3.8-max", 1_000_000, true, true),
+            ("deepseek-v4-flash-0731", 1_000_000, true, false),
             ("qwen3-coder-next", 262_144, true, false),
             ("qwen3-coder-plus", 1_000_000, true, false),
             ("glm-5", 202_752, true, false),
@@ -2997,6 +3005,8 @@ mod tests {
         for route_ref in [
             "dashscope@token-plan/qwen3.7-max",
             "dashscope@token-plan/qwen3.8-max-preview",
+            "dashscope@token-plan/qwen3.8-max",
+            "dashscope@token-plan/deepseek-v4-flash-0731",
             "dashscope@token-plan/kimi-k2.7-code",
             "dashscope@token-plan/glm-5.2",
             "dashscope@token-plan/MiniMax-M2.5",
