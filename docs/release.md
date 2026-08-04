@@ -7,7 +7,7 @@ passed for the exact tag commit and intended release tag. That workflow builds
 one candidate image after protected-environment approval, records its immutable
 digest, runs the production image smoke test, executes the real-LLM core suite
 against that exact digest, and uploads a machine-readable attestation. The
-default model route is `deepseek/deepseek-v4-flash`.
+default model route is `dashscope-token-plan/qwen-3.7`.
 
 ## Versioning
 
