@@ -70,6 +70,27 @@ class DockerE2ERunnerTests(unittest.TestCase):
             "ANTHROPIC_BASE_URL",
         )
 
+    def test_runtime_config_merges_model_override_without_mutating_source(self) -> None:
+        source = {"providers": {"custom": {"base_url": "https://example.invalid"}}}
+        merged = runner.merged_runtime_config(
+            source,
+            "custom/model",
+            {"max_output_tokens": 4096},
+        )
+
+        self.assertEqual(
+            merged["models"]["catalog"]["custom/model"]["max_output_tokens"],
+            4096,
+        )
+        self.assertNotIn("models", source)
+
+    def test_load_runtime_config_requires_json_object(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            path.write_text("[]")
+            with self.assertRaisesRegex(AssertionError, "JSON object"):
+                runner.load_runtime_config(path)
+
     def test_work_queue_message_evidence_extracts_retry_identity(self) -> None:
         snapshot = {
             "messages": [
@@ -192,7 +213,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
 
         self.assertLess(
             nightly.index("Run deterministic scheduler matrix"),
-            nightly.index("Prepare provider environment"),
+            nightly.index("Prepare provider configuration"),
         )
         self.assertIn("if: steps.provider-env.outcome == 'success'", nightly)
         self.assertIn("continue-on-error: true", nightly)
@@ -200,8 +221,13 @@ class DockerE2ERunnerTests(unittest.TestCase):
             self.assertIn("scheduler-live-canary-report.json", workflow)
             self.assertIn("behavioral_variances", workflow)
             self.assertIn("tool_counts", workflow)
+            self.assertIn("HOLON_E2E_SCHEDULER_CREDENTIAL", workflow)
+            self.assertIn("HOLON_E2E_SCHEDULER_CONFIG_JSON", workflow)
+            self.assertIn("--config-file", workflow)
         self.assertIn("name: scheduler-live-canary", ci)
         self.assertIn("name: scheduler-e2e-nightly", nightly)
+        self.assertIn("Detect scheduler code changes", nightly)
+        self.assertIn("needs.changes.outputs.should-run == 'true'", nightly)
 
     def test_scheduler_required_profile_selects_all_stub_cases(self) -> None:
         profile = runner.resolve_profile(self.manifest, "scheduler-required")

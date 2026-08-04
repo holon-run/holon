@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -139,6 +140,30 @@ def normalize_model_route(model: str) -> str:
     return f"{provider}/{name}"
 
 
+def load_runtime_config(path: Path | None) -> dict[str, Any]:
+    if path is None:
+        return {}
+    require(path.is_file(), f"config file does not exist: {path}")
+    value = json.loads(path.read_text())
+    require(isinstance(value, dict), "config file must contain a JSON object")
+    return value
+
+
+def merged_runtime_config(
+    config: dict[str, Any],
+    model: str,
+    model_runtime_override: dict[str, int] | None,
+) -> dict[str, Any]:
+    merged = copy.deepcopy(config)
+    if model_runtime_override:
+        models = merged.setdefault("models", {})
+        require(isinstance(models, dict), "config models must be a JSON object")
+        catalog = models.setdefault("catalog", {})
+        require(isinstance(catalog, dict), "config models.catalog must be a JSON object")
+        catalog[model] = dict(model_runtime_override)
+    return merged
+
+
 def provider_base_url_env(model: str) -> str:
     route = model.split("/", 1)[0]
     provider, separator, endpoint = route.partition("@")
@@ -177,6 +202,7 @@ class CaseHarness:
         evidence_root: Path,
         timeout_seconds: int,
         keep: bool,
+        runtime_config: dict[str, Any] | None = None,
         provider_mode: str = "live",
         stub_scenario: str | None = None,
         model_runtime_override: dict[str, int] | None = None,
@@ -194,6 +220,7 @@ class CaseHarness:
         )
         self.credential_envs = credential_envs if requires_model else []
         self.env_file = env_file if requires_model else None
+        self.runtime_config = copy.deepcopy(runtime_config or {})
         self.runtime_env = dict(runtime_env)
         if not requires_model:
             self.runtime_env.setdefault(
@@ -514,14 +541,15 @@ class CaseHarness:
                 self.stub_provider_base_url or "http://provider-stub:8080/v1"
             )
             self.runtime_env["OPENAI_API_KEY"] = "deterministic-test-key"
-        if self.model_runtime_override and not self._model_runtime_override_seeded:
-            config = {
-                "models": {
-                    "catalog": {
-                        self.model: self.model_runtime_override,
-                    }
-                }
-            }
+        if (
+            (self.runtime_config or self.model_runtime_override)
+            and not self._model_runtime_override_seeded
+        ):
+            config = merged_runtime_config(
+                self.runtime_config,
+                self.model,
+                self.model_runtime_override,
+            )
             self.docker(
                 "run",
                 "--rm",
@@ -4634,6 +4662,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--profile")
     parser.add_argument("--env-file", type=Path)
+    parser.add_argument("--config-file", type=Path)
     parser.add_argument("--skip-build", action="store_true")
     parser.add_argument("--evidence-dir", type=Path)
     parser.add_argument("--keep-on-failure", action="store_true")
@@ -4686,6 +4715,9 @@ def main(argv: list[str] | None = None) -> int:
         "HOLON_E2E_DOCKER_ENV_FILE", "HOLON_LIVE_DOCKER_ENV_FILE"
     )
     env_file = Path(env_file_value).resolve() if env_file_value else None
+    config_file_value = args.config_file or first_env("HOLON_E2E_CONFIG_FILE")
+    config_file = Path(config_file_value).resolve() if config_file_value else None
+    runtime_config = load_runtime_config(config_file)
     if requires_model and not credential_envs and env_file is None:
         inferred = inferred_credential_env(model)
         require(
@@ -4745,6 +4777,7 @@ def main(argv: list[str] | None = None) -> int:
         "cases": [case["id"] for case in selected],
         "credential_env_names": credential_envs,
         "env_file_used": env_file is not None,
+        "config_file_used": config_file is not None,
         "manifest_sha256": hashlib.sha256(args.manifest.read_bytes()).hexdigest(),
         "scheduler_matrix": args.scheduler_matrix,
         "profile": args.profile,
@@ -4800,6 +4833,7 @@ def main(argv: list[str] | None = None) -> int:
             requires_model=case.get("requires_model", True),
             credential_envs=credential_envs,
             env_file=env_file,
+            runtime_config=runtime_config,
             runtime_env=runtime_env,
             evidence_root=evidence_root,
             timeout_seconds=(

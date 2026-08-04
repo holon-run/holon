@@ -9,20 +9,108 @@ on:
       model:
         description: Real model route for E2E.
         required: false
-        default: deepseek/deepseek-v4-flash
 
 permissions:
+  actions: read
   contents: read
   issues: write
 
 jobs:
+  changes:
+    name: Detect scheduler code changes
+    runs-on: ubuntu-latest
+    outputs:
+      should-run: ${{ steps.detect.outputs.should-run }}
+    steps:
+      - name: Compare with previous scheduled run
+        id: detect
+        uses: actions/github-script@v7
+        with:
+          script: |
+            if (context.eventName !== "schedule") {
+              core.setOutput("should-run", "true");
+              core.summary.addRaw("Manual dispatch: running scheduler E2E.\n");
+              await core.summary.write();
+              return;
+            }
+            const runs = await github.paginate(
+              github.rest.actions.listWorkflowRuns,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: "e2e-scheduler-nightly.yml",
+                event: "schedule",
+                per_page: 100,
+              }
+            );
+            const previous = runs.find(
+              run => run.id !== context.runId && run.status === "completed"
+            );
+            if (!previous) {
+              core.setOutput("should-run", "true");
+              core.summary.addRaw("No previous scheduled run: running scheduler E2E.\n");
+              await core.summary.write();
+              return;
+            }
+            if (previous.head_sha === context.sha) {
+              core.setOutput("should-run", "false");
+              core.summary.addRaw(
+                `No commits since scheduled run ${previous.id}; skipping scheduler E2E.\n`
+              );
+              await core.summary.write();
+              return;
+            }
+            const comparison = await github.rest.repos.compareCommitsWithBasehead({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              basehead: `${previous.head_sha}...${context.sha}`,
+              per_page: 100,
+            });
+            const files = comparison.data.files || [];
+            const exact = new Set([
+              ".dockerignore",
+              "Cargo.toml",
+              "Cargo.lock",
+              "Dockerfile",
+              "Makefile",
+              "build.rs",
+              "scripts/docker-e2e.py",
+              ".github/workflows/e2e-scheduler-nightly.yml",
+              ".github/workflows/release-e2e.yml",
+            ]);
+            const prefixes = [
+              "src/",
+              "tests/",
+              "agent_templates/",
+              "builtin_templates/",
+              "scripts/docker_e2e/",
+            ];
+            const changed = files.filter(
+              file => exact.has(file.filename)
+                || prefixes.some(prefix => file.filename.startsWith(prefix))
+            );
+            const shouldRun = files.length >= 300 || changed.length > 0;
+            core.setOutput("should-run", shouldRun ? "true" : "false");
+            core.summary.addRaw(
+              shouldRun
+                ? `Scheduler-relevant changes found since run ${previous.id}; running E2E.\n`
+                : `Only non-code changes found since run ${previous.id}; skipping E2E.\n`
+            );
+            await core.summary.write();
+
   nightly:
     name: Scheduler E2E Nightly
+    needs: changes
+    if: needs.changes.outputs.should-run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
-      HOLON_E2E_MODEL: ${{ inputs.model || 'deepseek/deepseek-v4-flash' }}
+      HOLON_E2E_MODEL: ${{ inputs.model || vars.HOLON_E2E_SCHEDULER_MODEL || 'dashscope-token-plan/qwen-3.7' }}
+      HOLON_E2E_CREDENTIAL_ENV: ${{ vars.HOLON_E2E_SCHEDULER_CREDENTIAL_ENV || 'DASHSCOPE_TOKEN_PLAN_API_KEY' }}
+      HOLON_E2E_CREDENTIAL: ${{ secrets.HOLON_E2E_SCHEDULER_CREDENTIAL || secrets.DASHSCOPE_TOKEN_PLAN_API_KEY || secrets.DEEPSEEK_API_KEY }}
+      HOLON_E2E_CONFIG_JSON: ${{ vars.HOLON_E2E_SCHEDULER_CONFIG_JSON }}
       HOLON_E2E_DOCKER_ENV_FILE: /tmp/holon-e2e.env
+      HOLON_E2E_CONFIG_FILE: /tmp/holon-e2e-config.json
     steps:
       - uses: actions/checkout@v4
 
@@ -50,17 +138,23 @@ jobs:
             --timeout 120 \
             --evidence-dir target/docker-e2e/scheduler-required
 
-      - name: Prepare provider environment
+      - name: Prepare provider configuration
         id: provider-env
         continue-on-error: true
-        env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
           set -euo pipefail
-          test -n "${DEEPSEEK_API_KEY}"
+          test -n "${HOLON_E2E_CREDENTIAL}"
+          [[ "${HOLON_E2E_CREDENTIAL_ENV}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]
           umask 077
-          printf 'DEEPSEEK_API_KEY=%s\n' "${DEEPSEEK_API_KEY}" > "${HOLON_E2E_DOCKER_ENV_FILE}"
+          printf '%s=%s\n' \
+            "${HOLON_E2E_CREDENTIAL_ENV}" \
+            "${HOLON_E2E_CREDENTIAL}" > "${HOLON_E2E_DOCKER_ENV_FILE}"
           chmod 0600 "${HOLON_E2E_DOCKER_ENV_FILE}"
+          if [ -n "${HOLON_E2E_CONFIG_JSON}" ]; then
+            printf '%s' "${HOLON_E2E_CONFIG_JSON}" > "${HOLON_E2E_CONFIG_FILE}"
+            python3 -m json.tool "${HOLON_E2E_CONFIG_FILE}" >/dev/null
+            chmod 0600 "${HOLON_E2E_CONFIG_FILE}"
+          fi
 
       - name: Run scheduler live canary
         id: live-canary
@@ -68,14 +162,19 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
-          python3 scripts/docker-e2e.py \
-            --image holon:nightly \
-            --skip-build \
-            --profile scheduler-live-canary \
-            --scheduler-matrix \
-            --env-file "${HOLON_E2E_DOCKER_ENV_FILE}" \
-            --timeout 120 \
+          args=(
+            --image holon:nightly
+            --skip-build
+            --profile scheduler-live-canary
+            --scheduler-matrix
+            --env-file "${HOLON_E2E_DOCKER_ENV_FILE}"
+            --timeout 120
             --evidence-dir target/docker-e2e/scheduler-live-canary
+          )
+          if [ -s "${HOLON_E2E_CONFIG_FILE}" ]; then
+            args+=(--config-file "${HOLON_E2E_CONFIG_FILE}")
+          fi
+          python3 scripts/docker-e2e.py "${args[@]}"
 
       - name: Publish run summary
         if: always()
@@ -145,6 +244,6 @@ jobs:
               await github.rest.issues.create(issueParams);
             }
 
-      - name: Remove provider environment
+      - name: Remove provider configuration
         if: always()
-        run: rm -f "${HOLON_E2E_DOCKER_ENV_FILE}"
+        run: rm -f "${HOLON_E2E_DOCKER_ENV_FILE}" "${HOLON_E2E_CONFIG_FILE}"
