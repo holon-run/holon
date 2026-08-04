@@ -263,8 +263,16 @@ class DockerE2ERunnerTests(unittest.TestCase):
         self.assertIn("Unable to detect scheduler code changes", nightly)
         self.assertIn("comparison.data.truncation === true", nightly)
         self.assertIn("files.length >= 300", nightly)
+        self.assertIn("Require dispatched live canary success", nightly)
+        self.assertIn('test "${LIVE_CANARY_OUTCOME}" = success', nightly)
         self.assertIn("HOLON_E2E_PROVIDER_CONFIG_FILE:", nightly)
         self.assertNotIn("HOLON_E2E_CONFIG_FILE:", nightly)
+        for workflow in (ci, nightly, release):
+            live_step = workflow.split(
+                "      - name: Run scheduler live canary\n", 1
+            )[1].split("      - name:", 1)[0]
+            self.assertNotIn("HOLON_E2E_PROVIDER_CONFIG_FILE", live_step)
+            self.assertIn("config_file=/tmp/holon-e2e-config.json", live_step)
         nightly_job_env = nightly.split("  nightly:\n", 1)[1].split(
             "    steps:\n", 1
         )[0]

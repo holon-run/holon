@@ -126,9 +126,9 @@ jobs:
         env:
           HOLON_E2E_PREVIOUS_IMAGE: ${{ inputs.previous_image }}
           HOLON_E2E_PROVIDER_ENV_FILE: /tmp/holon-e2e.env
-          HOLON_E2E_PROVIDER_CONFIG_FILE: /tmp/holon-e2e-config.json
         run: |
           set -euo pipefail
+          config_file=/tmp/holon-e2e-config.json
           args=(
             --image-digest "${CANDIDATE_IMAGE}"
             --skip-build
@@ -136,8 +136,8 @@ jobs:
             --env-file "${HOLON_E2E_PROVIDER_ENV_FILE}"
             --evidence-dir target/docker-e2e/release-core
           )
-          if [ -s "${HOLON_E2E_PROVIDER_CONFIG_FILE}" ]; then
-            args+=(--config-file "${HOLON_E2E_PROVIDER_CONFIG_FILE}")
+          if [ -s "${config_file}" ]; then
+            args+=(--config-file "${config_file}")
           fi
           if [ -n "${HOLON_E2E_PREVIOUS_IMAGE}" ]; then
             args+=(--previous-image "${HOLON_E2E_PREVIOUS_IMAGE}")
@@ -159,9 +159,9 @@ jobs:
         continue-on-error: true
         env:
           HOLON_E2E_PROVIDER_ENV_FILE: /tmp/holon-e2e.env
-          HOLON_E2E_PROVIDER_CONFIG_FILE: /tmp/holon-e2e-config.json
         run: |
           set -euo pipefail
+          config_file=/tmp/holon-e2e-config.json
           args=(
             --image-digest "${CANDIDATE_IMAGE}"
             --skip-build
@@ -171,8 +171,8 @@ jobs:
             --timeout 120
             --evidence-dir target/docker-e2e/scheduler-live-canary
           )
-          if [ -s "${HOLON_E2E_PROVIDER_CONFIG_FILE}" ]; then
-            args+=(--config-file "${HOLON_E2E_PROVIDER_CONFIG_FILE}")
+          if [ -s "${config_file}" ]; then
+            args+=(--config-file "${config_file}")
           fi
           python3 scripts/docker-e2e.py "${args[@]}"
 

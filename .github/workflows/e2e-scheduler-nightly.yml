@@ -176,9 +176,9 @@ jobs:
         continue-on-error: true
         env:
           HOLON_E2E_PROVIDER_ENV_FILE: /tmp/holon-e2e.env
-          HOLON_E2E_PROVIDER_CONFIG_FILE: /tmp/holon-e2e-config.json
         run: |
           set -euo pipefail
+          config_file=/tmp/holon-e2e-config.json
           args=(
             --image holon:nightly
             --skip-build
@@ -188,8 +188,8 @@ jobs:
             --timeout 120
             --evidence-dir target/docker-e2e/scheduler-live-canary
           )
-          if [ -s "${HOLON_E2E_PROVIDER_CONFIG_FILE}" ]; then
-            args+=(--config-file "${HOLON_E2E_PROVIDER_CONFIG_FILE}")
+          if [ -s "${config_file}" ]; then
+            args+=(--config-file "${config_file}")
           fi
           python3 scripts/docker-e2e.py "${args[@]}"
 
@@ -230,6 +230,15 @@ jobs:
               ])
           Path(os.environ["GITHUB_STEP_SUMMARY"]).write_text("\n".join(lines) + "\n")
           PY
+
+      - name: Require dispatched live canary success
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          PROVIDER_ENV_OUTCOME: ${{ steps.provider-env.outcome }}
+          LIVE_CANARY_OUTCOME: ${{ steps.live-canary.outcome }}
+        run: |
+          test "${PROVIDER_ENV_OUTCOME}" = success
+          test "${LIVE_CANARY_OUTCOME}" = success
 
       - name: Upload scheduler evidence
         if: always()

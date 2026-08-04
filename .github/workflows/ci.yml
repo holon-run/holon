@@ -262,8 +262,6 @@ jobs:
       HOLON_E2E_CREDENTIAL_ENV: ${{ vars.HOLON_E2E_SCHEDULER_CREDENTIAL_ENV || 'DASHSCOPE_TOKEN_PLAN_API_KEY' }}
       HOLON_E2E_CREDENTIAL: ${{ secrets.HOLON_E2E_SCHEDULER_CREDENTIAL || secrets.DASHSCOPE_TOKEN_PLAN_API_KEY || secrets.DEEPSEEK_API_KEY }}
       HOLON_E2E_CONFIG_JSON: ${{ vars.HOLON_E2E_SCHEDULER_CONFIG_JSON }}
-      HOLON_E2E_PROVIDER_ENV_FILE: /tmp/holon-e2e.env
-      HOLON_E2E_PROVIDER_CONFIG_FILE: /tmp/holon-e2e-config.json
     steps:
       - uses: actions/checkout@v4
 
@@ -281,6 +279,9 @@ jobs:
           cache-to: type=gha,mode=max,scope=holon-docker
 
       - name: Prepare provider configuration
+        env:
+          HOLON_E2E_PROVIDER_ENV_FILE: /tmp/holon-e2e.env
+          HOLON_E2E_PROVIDER_CONFIG_FILE: /tmp/holon-e2e-config.json
         run: |
           set -euo pipefail
           test -n "${HOLON_E2E_CREDENTIAL}"
@@ -297,8 +298,11 @@ jobs:
           fi
 
       - name: Run scheduler live canary
+        env:
+          HOLON_E2E_PROVIDER_ENV_FILE: /tmp/holon-e2e.env
         run: |
           set -euo pipefail
+          config_file=/tmp/holon-e2e-config.json
           args=(
             --image holon:e2e
             --skip-build
@@ -308,8 +312,8 @@ jobs:
             --timeout 120
             --evidence-dir target/docker-e2e/scheduler-live-canary
           )
-          if [ -s "${HOLON_E2E_PROVIDER_CONFIG_FILE}" ]; then
-            args+=(--config-file "${HOLON_E2E_PROVIDER_CONFIG_FILE}")
+          if [ -s "${config_file}" ]; then
+            args+=(--config-file "${config_file}")
           fi
           python3 scripts/docker-e2e.py "${args[@]}"
 
@@ -347,6 +351,9 @@ jobs:
 
       - name: Remove provider configuration
         if: always()
+        env:
+          HOLON_E2E_PROVIDER_ENV_FILE: /tmp/holon-e2e.env
+          HOLON_E2E_PROVIDER_CONFIG_FILE: /tmp/holon-e2e-config.json
         run: rm -f "${HOLON_E2E_PROVIDER_ENV_FILE}" "${HOLON_E2E_PROVIDER_CONFIG_FILE}"
 
   scheduler-e2e-required:
