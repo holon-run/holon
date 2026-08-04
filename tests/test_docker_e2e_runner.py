@@ -265,6 +265,15 @@ class DockerE2ERunnerTests(unittest.TestCase):
         self.assertIn("files.length >= 300", nightly)
         self.assertIn("HOLON_E2E_PROVIDER_CONFIG_FILE:", nightly)
         self.assertNotIn("HOLON_E2E_CONFIG_FILE:", nightly)
+        nightly_job_env = nightly.split("  nightly:\n", 1)[1].split(
+            "    steps:\n", 1
+        )[0]
+        release_job_env = release.split("  core:\n", 1)[1].split(
+            "    steps:\n", 1
+        )[0]
+        for job_env in (nightly_job_env, release_job_env):
+            self.assertNotIn("HOLON_E2E_PROVIDER_ENV_FILE", job_env)
+            self.assertNotIn("HOLON_E2E_PROVIDER_CONFIG_FILE", job_env)
 
     def test_scheduler_required_profile_selects_all_stub_cases(self) -> None:
         profile = runner.resolve_profile(self.manifest, "scheduler-required")

@@ -85,8 +85,6 @@ jobs:
       HOLON_E2E_CREDENTIAL_ENV: ${{ vars.HOLON_E2E_SCHEDULER_CREDENTIAL_ENV || 'DASHSCOPE_TOKEN_PLAN_API_KEY' }}
       HOLON_E2E_CREDENTIAL: ${{ secrets.HOLON_E2E_SCHEDULER_CREDENTIAL || secrets.DASHSCOPE_TOKEN_PLAN_API_KEY || secrets.DEEPSEEK_API_KEY }}
       HOLON_E2E_CONFIG_JSON: ${{ vars.HOLON_E2E_SCHEDULER_CONFIG_JSON }}
-      HOLON_E2E_PROVIDER_ENV_FILE: /tmp/holon-e2e.env
-      HOLON_E2E_PROVIDER_CONFIG_FILE: /tmp/holon-e2e-config.json
     steps:
       - uses: actions/checkout@v4
         with:
@@ -100,6 +98,9 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Prepare protected provider configuration
+        env:
+          HOLON_E2E_PROVIDER_ENV_FILE: /tmp/holon-e2e.env
+          HOLON_E2E_PROVIDER_CONFIG_FILE: /tmp/holon-e2e-config.json
         run: |
           set -euo pipefail
           test -n "${HOLON_E2E_CREDENTIAL}"
@@ -124,6 +125,8 @@ jobs:
       - name: Run release core E2E
         env:
           HOLON_E2E_PREVIOUS_IMAGE: ${{ inputs.previous_image }}
+          HOLON_E2E_PROVIDER_ENV_FILE: /tmp/holon-e2e.env
+          HOLON_E2E_PROVIDER_CONFIG_FILE: /tmp/holon-e2e-config.json
         run: |
           set -euo pipefail
           args=(
@@ -154,6 +157,9 @@ jobs:
 
       - name: Run scheduler live canary
         continue-on-error: true
+        env:
+          HOLON_E2E_PROVIDER_ENV_FILE: /tmp/holon-e2e.env
+          HOLON_E2E_PROVIDER_CONFIG_FILE: /tmp/holon-e2e-config.json
         run: |
           set -euo pipefail
           args=(
@@ -362,4 +368,7 @@ jobs:
 
       - name: Remove provider configuration
         if: always()
+        env:
+          HOLON_E2E_PROVIDER_ENV_FILE: /tmp/holon-e2e.env
+          HOLON_E2E_PROVIDER_CONFIG_FILE: /tmp/holon-e2e-config.json
         run: rm -f "${HOLON_E2E_PROVIDER_ENV_FILE}" "${HOLON_E2E_PROVIDER_CONFIG_FILE}"
