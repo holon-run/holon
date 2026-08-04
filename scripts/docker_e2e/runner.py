@@ -2486,18 +2486,21 @@ def run_scheduler_task_wait_resume_case(
             "canonical task/wait activation causes did not preserve scheduling, "
             f"task-rejoin, and external-resume provenance: {activation_causes}",
         )
-    waits = [
-        row
-        for row in snapshot["wait_conditions"]
-        if row["work_item_id"] == work_item_id
-    ]
-    require(
-        len(waits) == 2
-        and {row["kind"] for row in waits} == {"task", "external"}
-        and {row["kind"]: row["status"] for row in waits}
-        == {"task": "resolved", "external": "cancelled"},
-        f"task/external waits did not reach terminal states: {waits}",
+    task_waits = require_scheduler_wait_terminal(
+        harness,
+        snapshot,
+        work_item_id=work_item_id,
+        wait_kind="task",
     )
+    external_waits = require_scheduler_wait_terminal(
+        harness,
+        snapshot,
+        work_item_id=work_item_id,
+        wait_kind="external",
+        require_callback_trigger=True,
+        callback_external_trigger_id=callback["external_trigger_id"],
+    )
+    waits = task_waits + external_waits
     require_scheduler_engine_wait_resolution(
         harness,
         snapshot,
@@ -3518,10 +3521,26 @@ def run_scheduler_compaction_continuity_case(
         for row in snapshot["turn_records"]
         if row["current_work_item_id"] == work_item_id
     }
+    stimulus_turn_ids = {
+        row["turn_id"]
+        for row in snapshot["turn_records"]
+        if row["turn_id"] not in resume_turn_ids
+    }
+    harness.assert_tools(
+        "scheduler-compaction-stimulus",
+        baseline,
+        ["ExecCommand"],
+        forbidden,
+        turn_ids=stimulus_turn_ids,
+    )
     harness.assert_tools(
         "scheduler-compaction-resume",
         baseline,
-        [name for name in required if name not in {"CreateWorkItem", "PickWorkItem", "WaitFor"}],
+        [
+            name
+            for name in required
+            if name in {"GetWorkItem", "UpdateWorkItem", "CompleteWorkItem"}
+        ],
         forbidden + ["CreateWorkItem", "PickWorkItem", "WaitFor"],
         turn_ids=resume_turn_ids,
     )
