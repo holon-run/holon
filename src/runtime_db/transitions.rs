@@ -536,14 +536,13 @@ impl RuntimeTransitionRepository<'_> {
                     if matches!(
                         command.operation,
                         QueueOperation::Claim | QueueOperation::Interject
-                    ) && scheduler_protocol_repository::scheduler_protocol_retryable_conflict(
-                        &error,
-                    )
-                    .is_some() =>
+                    ) =>
                 {
-                    let conflict =
-                        scheduler_protocol_repository::scheduler_protocol_retryable_conflict(&error)
-                            .expect("guard checked scheduler claim contention");
+                    let Some(conflict) =
+                        scheduler_protocol_repository::scheduler_protocol_claim_contention(&error)
+                    else {
+                        return Err(error);
+                    };
                     let event = AuditEvent::legacy(
                         "scheduler_claim_contended",
                         serde_json::json!({
@@ -1254,6 +1253,9 @@ mod tests {
             ExecutionBinding, ExecutionOrigin, ExecutionPriority, ExecutionProtocolCommand,
             ExecutionProtocolState, ExecutionProvenance, ExecutionSource, ExecutionSourceIdentity,
             ExecutionTrust, WorkItemExecutionRecord, WorkItemExecutionState,
+        },
+        domain::scheduler_protocol::{
+            ActivationSlot, AgentDispatchState, ProtocolCommand, Snapshot,
         },
         runtime_db::{RuntimeIndexChange, RuntimeIndexOperation},
         types::{
@@ -2000,6 +2002,90 @@ mod tests {
             .transitions()
             .load_scheduler_protocol_snapshot_if_initialized("agent-a")?
             .is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn queue_claim_retains_head_when_legacy_adoption_source_changes() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        let work_item = work_item("work-stale-adoption");
+        db.work_items().insert_new(&work_item)?;
+        let adoption = db
+            .transitions()
+            .legacy_scheduler_adoption_candidates("agent-a")?
+            .into_iter()
+            .find(|candidate| candidate.work_item_id == work_item.id)
+            .and_then(|candidate| candidate.command)
+            .expect("eligible legacy adoption command");
+        let mut changed = work_item.clone();
+        changed.revision += 1;
+        changed.updated_at += chrono::Duration::seconds(1);
+        assert!(db
+            .work_items()
+            .update_expected(&changed, work_item.revision)?);
+
+        let now = Utc::now();
+        let queued = QueueEntryRecord {
+            message_id: "message-stale-adoption".into(),
+            agent_id: "agent-a".into(),
+            priority: Priority::Next,
+            status: QueueEntryStatus::Queued,
+            created_at: now,
+            updated_at: now,
+        };
+        db.queue_entries().upsert(&queued)?;
+        let mut claimed = queued.clone();
+        claimed.status = QueueEntryStatus::Dequeued;
+        claimed.updated_at += chrono::Duration::seconds(1);
+        let bootstrap = Snapshot {
+            slot: ActivationSlot::Idle,
+            dispatch: AgentDispatchState::Open,
+            dispatch_revision: 0,
+            focus: None,
+            work: Default::default(),
+            waits: Default::default(),
+            activations: Default::default(),
+            activation_admissions: Default::default(),
+            settlements: Default::default(),
+            missing_settlements: Default::default(),
+            admitted_generations: Default::default(),
+            continuation_admissions: Default::default(),
+            activation_inputs: Default::default(),
+        };
+
+        let commit = db.transitions().commit_queue(&QueueTransitionCommand {
+            agent_id: "agent-a".into(),
+            operation: QueueOperation::Claim,
+            mutation: QueueMutation::Consume(claimed),
+            scheduler_claim_work_item: None,
+            scheduler_protocol_bootstrap: Some(bootstrap),
+            scheduler_protocol_commands: vec![adoption.clone()],
+            agent_state: None,
+            message_evidence: Vec::new(),
+            transcript_entries: Vec::new(),
+            turn_record: None,
+            audit_events: Vec::new(),
+            notify_scheduler: true,
+            fault: None,
+            brief_evidence: Vec::new(),
+        })?;
+
+        assert!(commit.scheduler_authority_blocked);
+        assert_eq!(db.queue_entries().latest_all()?, vec![queued]);
+        assert!(db
+            .audit_events()
+            .recent(Some("agent-a"), 10)?
+            .iter()
+            .any(|event| {
+                event.kind == "scheduler_claim_contended"
+                    && event.data["conflict_code"] == "legacy_adoption_source_changed"
+                    && event.data["queue_disposition"] == "retained_queued"
+            }));
+        assert!(db
+            .transitions()
+            .load_scheduler_protocol_snapshot_if_initialized("agent-a")?
+            .is_none());
+        assert!(matches!(adoption, ProtocolCommand::AdoptLegacyWorkState(_)));
         Ok(())
     }
 

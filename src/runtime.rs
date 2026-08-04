@@ -717,7 +717,7 @@ fn canonical_queue_settlement_commands_from_facts(
                     },
                     source_lifecycle_wait,
                     focus,
-                    reserve_dispatch: focus,
+                    reserve_dispatch: false,
                 },
             ));
         }

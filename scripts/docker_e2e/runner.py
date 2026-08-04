@@ -2321,6 +2321,23 @@ def work_queue_message_evidence(
     return evidence
 
 
+def recovered_retry_ticks(
+    failed_ticks: list[dict[str, Any]],
+    recovered_ticks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    failed_keys = {
+        tick["idempotency_key"]
+        for tick in failed_ticks
+        if tick["status"] in {"aborted", "interrupted"}
+    }
+    return [
+        tick
+        for tick in recovered_ticks
+        if tick["status"] == "processed"
+        and tick["idempotency_key"] in failed_keys
+    ]
+
+
 def run_scheduler_task_wait_resume_case(
     harness: CaseHarness, case: dict[str, Any]
 ) -> None:
@@ -2343,6 +2360,7 @@ def run_scheduler_task_wait_resume_case(
         f"{completion_marker} immediately followed by CompleteWorkItem for the "
         "exact current item. Do not create another WorkItem."
     )
+    callback = harness.reset_callback("scheduler-task-wait-callback")
     phase = case["phases"][0]
     baseline, _ = harness.prompt(
         "scheduler-task-wait-seed",
@@ -2366,7 +2384,7 @@ def run_scheduler_task_wait_resume_case(
         external_waiting["id"] == task_waiting["id"],
         "task-result rejoin changed WorkItem identity",
     )
-    callback = harness.reset_callback("scheduler-task-wait-callback")
+    harness.wait_agent_asleep()
     harness.fire_callback(
         "scheduler-task-wait-wake",
         callback["trigger_url"],
@@ -2633,12 +2651,12 @@ def run_scheduler_provider_failure_retry_case(
         work_item_id=work_item_id,
         reason="continue_active",
     )
-    processed_ticks = [
-        tick for tick in recovered_ticks if tick["status"] == "processed"
-    ]
+    processed_ticks = recovered_retry_ticks(failed_ticks, recovered_ticks)
     require(
-        len(recovered_ticks) > len(failed_ticks) and processed_ticks,
-        f"provider recovery did not process a retry tick: {recovered_ticks}",
+        processed_ticks,
+        "provider recovery did not process a stable-idempotency retry after "
+        f"an aborted/interrupted attempt: failed={failed_ticks}, "
+        f"recovered={recovered_ticks}",
     )
     require(
         {tick["idempotency_key"] for tick in recovered_ticks} == failed_keys,

@@ -199,6 +199,22 @@ pub(crate) fn scheduler_protocol_retryable_conflict(
     })
 }
 
+pub(crate) fn scheduler_protocol_claim_contention(
+    error: &anyhow::Error,
+) -> Option<ProtocolConflict> {
+    scheduler_protocol_retryable_conflict(error).or_else(|| {
+        error.chain().find_map(|source| {
+            source
+                .downcast_ref::<LegacySchedulerAdoptionRejected>()
+                .filter(|error| error.reason.starts_with("source_changed:"))
+                .map(|_| ProtocolConflict {
+                    kind: ProtocolConflictKind::StateConflict,
+                    code: "legacy_adoption_source_changed".into(),
+                })
+        })
+    })
+}
+
 #[derive(Debug, Serialize)]
 struct SnapshotFence<'a> {
     slot: &'a ActivationSlot,
@@ -3147,6 +3163,26 @@ mod tests {
         let mut elevated = candidate.clone();
         elevated.focus = true;
         assert!(!legacy_adoption_source_matches(&candidate, &elevated));
+    }
+
+    #[test]
+    fn legacy_adoption_source_change_is_retryable_claim_contention() {
+        let error = anyhow::Error::new(LegacySchedulerAdoptionRejected {
+            reason: "source_changed:agent-a:work-a".into(),
+        });
+
+        assert_eq!(
+            scheduler_protocol_claim_contention(&error),
+            Some(ProtocolConflict {
+                kind: ProtocolConflictKind::StateConflict,
+                code: "legacy_adoption_source_changed".into(),
+            })
+        );
+
+        let missing = anyhow::Error::new(LegacySchedulerAdoptionRejected {
+            reason: "source_work_item_missing_or_closed".into(),
+        });
+        assert_eq!(scheduler_protocol_claim_contention(&missing), None);
     }
 
     #[test]

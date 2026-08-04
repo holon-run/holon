@@ -123,6 +123,52 @@ class DockerE2ERunnerTests(unittest.TestCase):
             ],
         )
 
+    def test_recovered_retry_ticks_accepts_existing_interrupted_tick(self) -> None:
+        key = "work_queue:continue_active:work-1:1"
+        failed = [
+            {
+                "message_id": "message-1",
+                "idempotency_key": key,
+                "status": "aborted",
+            },
+            {
+                "message_id": "message-2",
+                "idempotency_key": key,
+                "status": "interrupted",
+            },
+        ]
+        recovered = [
+            failed[0],
+            {
+                "message_id": "message-2",
+                "idempotency_key": key,
+                "status": "processed",
+            },
+        ]
+
+        self.assertEqual(
+            runner.recovered_retry_ticks(failed, recovered),
+            [recovered[1]],
+        )
+
+    def test_recovered_retry_ticks_rejects_changed_idempotency(self) -> None:
+        failed = [
+            {
+                "message_id": "message-1",
+                "idempotency_key": "work_queue:continue_active:work-1:1",
+                "status": "aborted",
+            }
+        ]
+        recovered = [
+            {
+                "message_id": "message-2",
+                "idempotency_key": "work_queue:continue_active:work-1:2",
+                "status": "processed",
+            }
+        ]
+
+        self.assertEqual(runner.recovered_retry_ticks(failed, recovered), [])
+
     def test_manifest_rejects_unregistered_case(self) -> None:
         invalid = json.loads(json.dumps(self.manifest))
         invalid["cases"][0]["id"] = "not-implemented"
@@ -1337,8 +1383,8 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 provider_mode="stub",
                 stub_scenario="scheduler-compaction",
                 model_runtime_override={
-                    "prompt_budget_estimated_tokens": 80_000,
-                    "compaction_trigger_estimated_tokens": 70_000,
+                    "prompt_budget_estimated_tokens": 40_000,
+                    "compaction_trigger_estimated_tokens": 35_000,
                     "compaction_keep_recent_estimated_tokens": 4_000,
                 },
             )
@@ -1492,8 +1538,8 @@ class DockerE2ERunnerTests(unittest.TestCase):
         self.assertEqual(
             compaction["model_runtime_override"],
             {
-                "prompt_budget_estimated_tokens": 80000,
-                "compaction_trigger_estimated_tokens": 70000,
+                "prompt_budget_estimated_tokens": 40000,
+                "compaction_trigger_estimated_tokens": 35000,
                 "compaction_keep_recent_estimated_tokens": 4000,
             },
         )

@@ -858,10 +858,12 @@ wait and the turn creates a WorkItem wait, `AdoptActivationWorkStateCommand`
 may carry the exact source wait identity and expected dispatch revision. The
 same transaction must verify that the reservation belongs to the source
 lifecycle owner, settle the activation, resolve the source wait exactly once,
-and install the target WorkItem demand, wait, focus, and dispatch reservation.
-A stale revision or foreign reservation fails closed. After the adoption is
-recorded, settlement replay reuses the stored command result and must not
-reconstruct a different payload from the post-handoff dispatch state.
+and install the target WorkItem demand, wait, and focus while reopening
+dispatch for unrelated runnable WorkItems. The target wait remains fenced by
+its exact owner and generation; it does not reserve the agent lane. A stale
+revision or foreign reservation fails closed. After the adoption is recorded,
+settlement replay reuses the stored command result and must not reconstruct a
+different payload from the post-handoff dispatch state.
 
 Bootstrap reconciliation has the same atomicity requirement when
 `AdoptLegacyWorkStateCommand` refreshes the WorkItem that owns the exact current

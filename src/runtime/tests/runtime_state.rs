@@ -1301,6 +1301,126 @@ async fn canonical_claim_contention_retains_queue_head_without_failing_poll() {
 }
 
 #[tokio::test]
+async fn canonical_work_item_wait_keeps_other_runnable_work_schedulable() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let waiting_work = runtime
+        .create_work_item(
+            "waiting work should not reserve the agent lane".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    runtime
+        .pick_work_item(waiting_work.id.clone())
+        .await
+        .unwrap();
+    runtime
+        .register_wait_for(
+            "default",
+            Some(waiting_work.id.clone()),
+            WaitForWakeKind::External,
+            Some("github:holon-run/holon#work-item-wait".into()),
+            "wait while another WorkItem runs".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let wait = runtime
+        .storage()
+        .latest_wait_conditions()
+        .unwrap()
+        .into_iter()
+        .find(|condition| condition.work_item_id.as_deref() == Some(waiting_work.id.as_str()))
+        .expect("active WorkItem wait");
+    let waiting_work = runtime
+        .latest_work_item(&waiting_work.id)
+        .await
+        .unwrap()
+        .expect("waiting WorkItem");
+    let runnable_work = runtime
+        .create_work_item(
+            "independent runnable work".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let mut snapshot = canonical_waiting_snapshot(&waiting_work, &wait.id, waiting_work.revision);
+    snapshot.dispatch = AgentDispatchState::Open;
+    snapshot.dispatch_revision = 0;
+    runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .initialize_scheduler_protocol_partition("default", &snapshot)
+        .unwrap();
+
+    assert!(runtime.maybe_emit_pending_system_tick(None).await.unwrap());
+    let tick = runtime
+        .storage()
+        .read_recent_messages(10)
+        .unwrap()
+        .into_iter()
+        .find(|message| {
+            matches!(
+                (&message.kind, &message.origin),
+                (MessageKind::SystemTick, MessageOrigin::System { subsystem })
+                    if subsystem == "work_queue"
+            ) && message.work_item_id.as_deref() == Some(runnable_work.id.as_str())
+        })
+        .expect("runnable WorkItem should receive a work queue tick");
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Message(_)
+    ));
+
+    let claimed = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    assert!(matches!(
+        claimed.slot,
+        ActivationSlot::Running {
+            owner: SchedulerOwner::WorkItem { ref work_item_id },
+            ..
+        } if work_item_id == &runnable_work.id
+    ));
+    assert_eq!(
+        claimed.work[&waiting_work.id].status,
+        WorkStatus::Waiting {
+            wait_id: wait.id.clone(),
+        }
+    );
+    assert_eq!(claimed.dispatch, AgentDispatchState::Open);
+    assert_eq!(
+        tick.work_item_id.as_deref(),
+        Some(runnable_work.id.as_str())
+    );
+}
+
+#[tokio::test]
 async fn late_terminal_task_result_for_completed_work_item_settles_without_model_reentry() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
@@ -3315,6 +3435,7 @@ async fn lifecycle_settlement_adopts_wait_without_work_item_turn_binding() {
             work_item_id: work_item.id.clone(),
         }
     );
+    assert_eq!(settled.dispatch, AgentDispatchState::Open);
     assert!(settled
         .settlements
         .contains_key(&canonical_settlement_id(&message.id)));
@@ -3470,15 +3591,7 @@ async fn lifecycle_wait_handoff_to_work_item_wait_is_atomic_idempotent_and_resta
             work_item_id: work_item.id.clone(),
         }
     );
-    assert_eq!(
-        settled.dispatch,
-        AgentDispatchState::Awaiting {
-            wait: WaitIdentity {
-                id: work_wait.condition.id.clone(),
-                generation: work_generation,
-            },
-        }
-    );
+    assert_eq!(settled.dispatch, AgentDispatchState::Open);
     assert_eq!(settled.focus.as_deref(), Some(work_item.id.as_str()));
     assert!(settled.missing_settlements.is_empty());
 
@@ -3513,12 +3626,38 @@ async fn lifecycle_wait_handoff_to_work_item_wait_is_atomic_idempotent_and_resta
         context_config(),
     )
     .unwrap();
-    append_completed_rejoin_task(
-        &reopened,
-        "task-lifecycle-handoff",
-        &work_item.id,
-        "turn-lifecycle-wait-handoff",
-    );
+    let terminal_task = TaskRecord {
+        id: "task-lifecycle-handoff".into(),
+        agent_id: "default".into(),
+        kind: TaskKind::CommandTask,
+        status: TaskStatus::Completed,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        parent_message_id: None,
+        work_item_id: Some(work_item.id.clone()),
+        summary: Some("task-lifecycle-handoff completed".into()),
+        detail: Some(serde_json::json!({
+            "rejoin_obligation_id": "task-lifecycle-handoff",
+            "rejoin_generation": 1,
+            "parent_turn_id": "turn-lifecycle-wait-handoff",
+        })),
+        recovery: None,
+    };
+    reopened
+        .persist_task_transition(&terminal_task, "task_completed")
+        .await
+        .unwrap();
+    assert!(reopened
+        .storage()
+        .active_wait_conditions_for_work_item("default", &work_item.id)
+        .unwrap()
+        .is_empty());
+    let resolved_work_item = reopened
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .expect("task result should retain the WorkItem");
+    assert!(resolved_work_item.revision > work_generation);
     let mut rejoin = task_result_message("task-lifecycle-handoff").with_admission(
         MessageDeliverySurface::TaskRejoin,
         AdmissionContext::RuntimeOwned,
@@ -3546,23 +3685,177 @@ async fn lifecycle_wait_handoff_to_work_item_wait_is_atomic_idempotent_and_resta
         .transitions()
         .load_scheduler_protocol_snapshot("default")
         .unwrap();
+    let rejoin_generation = resolved_work_item.revision;
     assert!(matches!(
         rejoined.slot,
         ActivationSlot::Running {
             owner: SchedulerOwner::WorkItem { ref work_item_id },
             admitted_generation,
             ..
-        } if work_item_id == &work_item.id && admitted_generation == work_generation
+        } if work_item_id == &work_item.id && admitted_generation == rejoin_generation
     ));
     assert_eq!(
-        rejoined.waits[&work_wait.condition.id].generations[&work_generation].state,
+        rejoined.waits[&work_wait.condition.id].generations[&rejoin_generation].state,
         WaitState::Consumed
     );
     assert_eq!(
-        rejoined.waits[&work_wait.condition.id].generations[&work_generation]
+        rejoined.waits[&work_wait.condition.id].generations[&rejoin_generation]
             .consuming_activation_id
             .as_deref(),
         Some(scheduler_executor::canonical_activation_id(&rejoin.id).as_str())
+    );
+}
+
+#[tokio::test]
+async fn exact_task_rejoin_prefers_canonical_wait_when_legacy_revision_advanced() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item(
+            "task rejoin with stale legacy projection".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    runtime.pick_work_item(work_item.id.clone()).await.unwrap();
+    let registration = runtime
+        .register_wait_for(
+            "default",
+            Some(work_item.id.clone()),
+            WaitForWakeKind::TaskResult,
+            Some("task-stale-legacy-rejoin".into()),
+            "waiting for stale legacy rejoin task".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let waiting_work = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .expect("waiting WorkItem");
+    let wait_generation = waiting_work.revision;
+    runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .initialize_scheduler_protocol_partition(
+            "default",
+            &canonical_waiting_snapshot(&waiting_work, &registration.condition.id, wait_generation),
+        )
+        .unwrap();
+    let mut execution = crate::domain::execution_protocol::ExecutionProtocolState::empty("default");
+    execution.work_items.insert(
+        work_item.id.clone(),
+        crate::domain::execution_protocol::WorkItemExecutionRecord {
+            source_revision: work_item.revision.max(1),
+            state: crate::domain::execution_protocol::WorkItemExecutionState::Waiting {
+                generation: wait_generation,
+                wait: crate::domain::execution_protocol::WaitReference {
+                    wait_id: registration.condition.id.clone(),
+                    generation: wait_generation,
+                },
+            },
+        },
+    );
+    runtime
+        .inner
+        .runtime_db
+        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
+        .unwrap();
+
+    let terminal_task = TaskRecord {
+        id: "task-stale-legacy-rejoin".into(),
+        agent_id: "default".into(),
+        kind: TaskKind::CommandTask,
+        status: TaskStatus::Completed,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        parent_message_id: None,
+        work_item_id: Some(work_item.id.clone()),
+        summary: Some("task-stale-legacy-rejoin completed".into()),
+        detail: Some(serde_json::json!({
+            "rejoin_obligation_id": "task-stale-legacy-rejoin",
+            "rejoin_generation": 1,
+            "parent_turn_id": "turn-stale-legacy-parent",
+        })),
+        recovery: None,
+    };
+    runtime
+        .persist_task_transition(&terminal_task, "task_completed")
+        .await
+        .unwrap();
+    let resolved_work = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .expect("resolved WorkItem");
+    assert!(resolved_work.revision > wait_generation);
+
+    let mut rejoin = task_result_message("task-stale-legacy-rejoin").with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    rejoin.work_item_id = Some(work_item.id.clone());
+    rejoin.metadata = Some(serde_json::json!({
+        "task_id": "task-stale-legacy-rejoin",
+        "task_kind": "command_task",
+        "task_status": "completed",
+        "task_result_id": "result-stale-legacy-rejoin",
+        "work_item_id": work_item.id,
+    }));
+    rejoin.turn_id = Some("turn-stale-legacy-rejoin".into());
+    let rejoin = runtime.enqueue(rejoin).await.unwrap();
+
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    assert!(matches!(poll, scheduler_executor::RunLoopPoll::Message(_)));
+    let claimed = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    assert!(matches!(
+        claimed.slot,
+        ActivationSlot::Running {
+            owner: SchedulerOwner::WorkItem { ref work_item_id },
+            admitted_generation,
+            ..
+        } if work_item_id == &work_item.id && admitted_generation == wait_generation
+    ));
+    assert_eq!(
+        claimed.waits[&registration.condition.id].generations[&wait_generation].state,
+        WaitState::Consumed
+    );
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest_all()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == rejoin.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Dequeued)
     );
 }
 

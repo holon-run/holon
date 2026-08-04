@@ -1018,8 +1018,34 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                             && generation.state == WaitState::Active
                     })
             });
+            let authoritative_wait_matches = compatibility_wait.as_ref().is_some_and(|wait| {
+                authoritative_work.is_some_and(|record| {
+                    matches!(
+                        &record.state,
+                        crate::domain::execution_protocol::WorkItemExecutionState::Waiting {
+                            generation,
+                            wait: authoritative_wait,
+                        } if *generation == wait.generation
+                            && authoritative_wait.wait_id == wait.wait_id
+                            && authoritative_wait.generation == wait.generation
+                    )
+                })
+            });
             match snapshot.work.get(work_item_id) {
                 Some(existing_demand) if existing_demand == &demand && wait_projection_matches => {
+                    (None, None)
+                }
+                Some(existing_demand)
+                    if authoritative_wait_matches
+                        && wait_projection_matches
+                        && existing_demand.scheduling_generation
+                            == demand.scheduling_generation
+                        && existing_demand.status == demand.status =>
+                {
+                    // Task/external resolution advances the legacy WorkItem revision before the
+                    // queued resume is claimed. The canonical scheduler and execution protocol
+                    // still own the active wait generation, so claim that authority directly
+                    // instead of trying to re-adopt the now-runnable legacy projection.
                     (None, None)
                 }
                 Some(_) | None if compatibility_wait.is_some() => (
