@@ -60,13 +60,26 @@ jobs:
               await core.summary.write();
               return;
             }
-            const comparison = await github.rest.repos.compareCommitsWithBasehead({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              basehead: `${previous.head_sha}...${context.sha}`,
-              per_page: 100,
-            });
+            let comparison;
+            try {
+              comparison = await github.rest.repos.compareCommitsWithBasehead({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                basehead: `${previous.head_sha}...${context.sha}`,
+                per_page: 100,
+              });
+            } catch (error) {
+              core.warning(`Unable to compare commits: ${error.message}`);
+              core.setOutput("should-run", "true");
+              core.summary.addRaw(
+                `Unable to compare with scheduled run ${previous.id}; running E2E.\n`
+              );
+              await core.summary.write();
+              return;
+            }
             const files = comparison.data.files || [];
+            const truncated =
+              comparison.data.truncation === true || files.length >= 100;
             const exact = new Set([
               ".dockerignore",
               "Cargo.toml",
@@ -89,10 +102,12 @@ jobs:
               file => exact.has(file.filename)
                 || prefixes.some(prefix => file.filename.startsWith(prefix))
             );
-            const shouldRun = files.length >= 300 || changed.length > 0;
+            const shouldRun = truncated || changed.length > 0;
             core.setOutput("should-run", shouldRun ? "true" : "false");
             core.summary.addRaw(
-              shouldRun
+              truncated
+                ? `Commit comparison since run ${previous.id} was truncated; running E2E.\n`
+                : shouldRun
                 ? `Scheduler-relevant changes found since run ${previous.id}; running E2E.\n`
                 : `Only non-code changes found since run ${previous.id}; skipping E2E.\n`
             );
