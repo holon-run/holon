@@ -136,11 +136,10 @@ impl RuntimeHandle {
         let Some(condition) = self
             .inner
             .storage
-            .latest_wait_conditions()?
+            .raw_unresolved_wait_conditions_for_agent(&message.agent_id)?
             .into_iter()
             .find(|condition| {
-                condition.agent_id == message.agent_id
-                    && condition.status == WaitConditionStatus::Triggered
+                condition.status == WaitConditionStatus::Triggered
                     && condition.trigger_message_id() == Some(message.id.as_str())
             })
         else {
@@ -1408,16 +1407,7 @@ impl RuntimeHandle {
         let unresolved_conditions = self
             .inner
             .storage
-            .latest_wait_conditions()?
-            .into_iter()
-            .filter(|condition| {
-                condition.agent_id == agent_id
-                    && matches!(
-                        condition.status,
-                        WaitConditionStatus::Active | WaitConditionStatus::Triggered
-                    )
-            })
-            .collect::<Vec<_>>();
+            .raw_unresolved_wait_conditions_for_agent(&agent_id)?;
         if unresolved_conditions.is_empty() {
             return Ok(());
         }
