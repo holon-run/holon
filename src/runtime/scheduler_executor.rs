@@ -759,12 +759,41 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         else {
             return Ok(false);
         };
-        let Some(crate::domain::execution_protocol::WorkItemExecutionState::Waiting {
-            wait, ..
-        }) = execution
-            .work_items
-            .get(work_item_id)
-            .map(|record| &record.state)
+        let Some(work) = execution.work_items.get(work_item_id) else {
+            // Once the unified partition exists, an exact task rejoin can only
+            // resume a WorkItem owned by that partition. Pre-cutover task
+            // results may still reference a legacy scheduler Waiting mirror,
+            // but they are only provably orphaned when no exact durable task
+            // wait remains for the same WorkItem.
+            let exact_wait_exists = self
+                .runtime
+                .inner
+                .storage
+                .latest_wait_conditions()?
+                .into_iter()
+                .any(|condition| {
+                    condition.agent_id == message.agent_id
+                        && condition.work_item_id.as_deref() == Some(work_item_id.as_str())
+                        && matches!(
+                            condition.status,
+                            crate::types::WaitConditionStatus::Active
+                                | crate::types::WaitConditionStatus::Triggered
+                                | crate::types::WaitConditionStatus::Resolved
+                        )
+                        && condition.kind == crate::types::WaitConditionKind::Task
+                        && condition.wake_sources.iter().any(|source| {
+                            matches!(
+                                source,
+                                crate::types::WakeSource::TaskResult {
+                                    task_id: expected_task_id,
+                                } if expected_task_id == task_id
+                            )
+                        })
+                });
+            return Ok(!exact_wait_exists);
+        };
+        let crate::domain::execution_protocol::WorkItemExecutionState::Waiting { wait, .. } =
+            &work.state
         else {
             return Ok(false);
         };

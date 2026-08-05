@@ -3705,6 +3705,273 @@ async fn stale_exact_task_rejoin_is_dropped_without_blocking_next_message() {
 }
 
 #[tokio::test]
+async fn pre_cutover_task_rejoin_without_execution_owner_is_dropped() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item(
+            "pre-cutover task result owner".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    runtime.pick_work_item(work_item.id.clone()).await.unwrap();
+    append_running_rejoin_task(&runtime, "task-pre-cutover", &work_item.id);
+    let registration = runtime
+        .register_wait_for(
+            "default",
+            Some(work_item.id.clone()),
+            WaitForWakeKind::TaskResult,
+            Some("task-pre-cutover".into()),
+            "legacy task wait".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let waiting_work = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .expect("waiting WorkItem");
+    runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .initialize_scheduler_protocol_partition(
+            "default",
+            &canonical_waiting_snapshot(
+                &waiting_work,
+                &registration.condition.id,
+                waiting_work.revision,
+            ),
+        )
+        .unwrap();
+    append_completed_rejoin_task(
+        &runtime,
+        "task-pre-cutover",
+        &work_item.id,
+        "turn-pre-cutover-parent",
+    );
+    let completing = runtime
+        .complete_work_item(work_item.id.clone(), Vec::new())
+        .await
+        .unwrap();
+    assert_eq!(completing.state, WorkItemState::Completing);
+    runtime
+        .inner
+        .runtime_db
+        .transaction(|tx| {
+            crate::runtime_db::transitions::persist_state_tx(
+                tx,
+                &crate::domain::execution_protocol::ExecutionProtocolState::empty("default"),
+            )
+        })
+        .unwrap();
+
+    let mut stale = task_result_message("task-pre-cutover").with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    stale.work_item_id = Some(work_item.id.clone());
+    stale.metadata = Some(serde_json::json!({
+        "task_id": "task-pre-cutover",
+        "task_kind": "command_task",
+        "task_status": "completed",
+        "task_result_id": "result-pre-cutover",
+        "work_item_id": work_item.id,
+    }));
+    stale.turn_id = Some("turn-pre-cutover".into());
+    let stale = runtime.enqueue(stale).await.unwrap();
+    let valid = runtime
+        .enqueue(trusted_operator_prompt(
+            None,
+            "continue after pre-cutover task result",
+        ))
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Idle
+    ));
+    assert_eq!(
+        runtime
+            .storage()
+            .latest_queue_entries()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == stale.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Dropped)
+    );
+    assert!(runtime
+        .storage()
+        .read_recent_events(usize::MAX)
+        .unwrap()
+        .iter()
+        .any(|event| {
+            event.kind == "scheduler_authority_input_rejected"
+                && event.data["message_id"] == stale.id
+                && event.data["reason"] == "canonical_task_rejoin_stale"
+                && event.data["queue_disposition"] == "dropped"
+        }));
+
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("valid message behind pre-cutover task result should be claimed");
+    };
+    assert_eq!(scheduled.message.id, valid.id);
+}
+
+#[tokio::test]
+async fn task_rejoin_without_execution_owner_but_with_exact_wait_is_not_orphaned() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item(
+            "pre-cutover exact task wait".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    runtime.pick_work_item(work_item.id.clone()).await.unwrap();
+    append_running_rejoin_task(&runtime, "task-pre-cutover-current", &work_item.id);
+    let registration = runtime
+        .register_wait_for(
+            "default",
+            Some(work_item.id.clone()),
+            WaitForWakeKind::TaskResult,
+            Some("task-pre-cutover-current".into()),
+            "current exact task wait".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let waiting_work = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .expect("waiting WorkItem");
+    runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .initialize_scheduler_protocol_partition(
+            "default",
+            &canonical_waiting_snapshot(
+                &waiting_work,
+                &registration.condition.id,
+                waiting_work.revision,
+            ),
+        )
+        .unwrap();
+    runtime
+        .inner
+        .runtime_db
+        .transaction(|tx| {
+            crate::runtime_db::transitions::persist_state_tx(
+                tx,
+                &crate::domain::execution_protocol::ExecutionProtocolState::empty("default"),
+            )
+        })
+        .unwrap();
+    append_completed_rejoin_task(
+        &runtime,
+        "task-pre-cutover-current",
+        &work_item.id,
+        "turn-pre-cutover-current-parent",
+    );
+
+    let mut result = task_result_message("task-pre-cutover-current").with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    result.work_item_id = Some(work_item.id.clone());
+    result.metadata = Some(serde_json::json!({
+        "task_id": "task-pre-cutover-current",
+        "task_kind": "command_task",
+        "task_status": "completed",
+        "task_result_id": "result-pre-cutover-current",
+        "work_item_id": work_item.id,
+    }));
+    let result = runtime.enqueue(result).await.unwrap();
+
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Idle
+    ));
+    assert_eq!(
+        runtime
+            .storage()
+            .latest_queue_entries()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == result.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Dropped)
+    );
+    assert!(runtime
+        .storage()
+        .read_recent_events(usize::MAX)
+        .unwrap()
+        .iter()
+        .any(|event| {
+            event.kind == "scheduler_authority_input_rejected"
+                && event.data["message_id"] == result.id
+                && event.data["reason"] == "canonical_wait_execution_authority_missing"
+        }));
+    assert!(!runtime
+        .storage()
+        .read_recent_events(usize::MAX)
+        .unwrap()
+        .iter()
+        .any(|event| {
+            event.kind == "scheduler_authority_input_rejected"
+                && event.data["message_id"] == result.id
+                && event.data["reason"] == "canonical_task_rejoin_stale"
+        }));
+}
+
+#[tokio::test]
 async fn exact_task_rejoin_claim_is_atomic_and_restart_safe() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
