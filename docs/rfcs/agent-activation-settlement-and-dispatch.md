@@ -1127,6 +1127,19 @@ read-only and reports the same ordered recovery plan, typed evidence,
 conflicts, holds, and stable command identities that the apply path would use.
 No debug path may repair protocol state through direct SQL.
 
+Recovery also compares canonical lane ownership with authoritative WorkItem and
+wait lifecycle facts. A completed or missing WorkItem that still owns canonical
+focus or dispatch is terminalized by a fenced reducer command, and the exact
+reserved wait is resolved before the lane reopens. The command does not rebuild
+old continuations or reinterpret an unbound message as a wait resume.
+
+`scheduler-recovery --apply` creates and verifies a full SQLite backup by
+default. An operator may explicitly select `--no-backup` only with `--apply`;
+this changes only the backup policy, not daemon-stop locking, source
+revalidation, reducer fences, command-result evidence, or recovery semantics.
+Human and JSON output plus recovery audit evidence record the selected backup
+policy and whether a backup was created.
+
 Compatibility adoption is isolated per legacy WorkItem. Each candidate is
 revalidated and committed in deterministic order. A stale source, typed
 protocol rejection, or invalid candidate poststate rolls back and diagnoses
@@ -1549,6 +1562,14 @@ demand, missing or mismatched wait generation, unresolved canonical
 scenario, or incompatible WorkItem state cannot silently fall back to a
 legacy model turn and cannot return an ordinary pre-claim error that leaves a
 hot retry loop.
+
+An external input carrying an exact wait correlation is terminally dropped only
+when durable authority proves that wait generation is obsolete, inactive, or
+no longer the WorkItem execution generation. The runtime never downgrades that
+payload to an unbound lifecycle nudge. A later valid queue entry may then
+advance normally. Ambiguous authority and transient claim conflicts retain the
+entry but wait for an authority notification or bounded retry interval instead
+of self-notifying a hot loop.
 
 The runtime reports a fenced scenario hard blocker before queue claim. That
 transaction records the stable blocker code and rolls the scenario back to

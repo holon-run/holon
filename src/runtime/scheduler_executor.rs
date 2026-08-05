@@ -8,6 +8,7 @@ pub(super) enum RunLoopPoll {
     Stopped(AgentState, usize),
     Message(ScheduledMessage),
     Idle,
+    AuthorityBlocked,
 }
 
 impl RunLoopPoll {
@@ -17,6 +18,7 @@ impl RunLoopPoll {
             RunLoopPoll::Stopped(_, _) => "stopped",
             RunLoopPoll::Message(_) => "message",
             RunLoopPoll::Idle => "idle",
+            RunLoopPoll::AuthorityBlocked => "authority_blocked",
         }
     }
 }
@@ -507,12 +509,11 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                                 "queue_disposition": "retained_queued",
                             }),
                         ))?;
-                    self.runtime.inner.notify.notify_one();
-                    return Ok(RunLoopPoll::Idle);
+                    return Ok(RunLoopPoll::AuthorityBlocked);
                 }
                 Ok(CanonicalClaimOutcome::HardBlocker(blocker)) => {
                     self.report_canonical_claim_hard_blocker(&persisted_message, blocker)?;
-                    return Ok(RunLoopPoll::Idle);
+                    return Ok(RunLoopPoll::AuthorityBlocked);
                 }
                 Err(error) => {
                     if let Some(ambiguous) =
@@ -528,7 +529,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                             &candidate.prior_state,
                             candidate.queue_len,
                         )?;
-                        return Ok(RunLoopPoll::Idle);
+                        return Ok(RunLoopPoll::AuthorityBlocked);
                     }
                     return Err(error);
                 }
@@ -677,7 +678,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     commit.effects.agent_state = None;
                     drop(guard);
                     self.runtime.apply_transition_commit(commit).await;
-                    return Ok(RunLoopPoll::Idle);
+                    return Ok(RunLoopPoll::AuthorityBlocked);
                 }
                 if !commit.applied {
                     let _ = guard.queue.pop_if_next(&candidate.message.id);
@@ -713,6 +714,78 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         }))
     }
 
+    fn provably_stale_correlated_wait(
+        &self,
+        candidate: &scheduler::CanonicalActivationCandidate,
+        message: &MessageEnvelope,
+    ) -> Result<bool> {
+        let scheduler::CanonicalActivationCandidate::ExactWaitResume {
+            expected_work_item_id,
+            correlated_wait: Some((wait_id, generation)),
+        } = candidate
+        else {
+            return Ok(false);
+        };
+        let durable_wait = self
+            .runtime
+            .inner
+            .storage
+            .latest_wait_conditions()?
+            .into_iter()
+            .find(|condition| {
+                condition.id == *wait_id
+                    && condition.agent_id == message.agent_id
+                    && condition.work_item_id.as_deref() == expected_work_item_id.as_deref()
+            });
+        if durable_wait
+            .as_ref()
+            .is_none_or(|condition| condition.status != crate::types::WaitConditionStatus::Active)
+        {
+            return Ok(true);
+        }
+        if let Some(snapshot) = self
+            .runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_scheduler_protocol_snapshot_if_initialized(&message.agent_id)?
+        {
+            if snapshot.waits.get(wait_id).is_some_and(|wait| {
+                wait.current_generation != *generation
+                    || wait
+                        .generations
+                        .get(generation)
+                        .is_none_or(|generation| generation.state == WaitState::Resolved)
+            }) {
+                return Ok(true);
+            }
+        }
+        if let Some(work_item_id) = expected_work_item_id {
+            if let Some(execution) = self
+                .runtime
+                .inner
+                .runtime_db
+                .transitions()
+                .load_execution_protocol_state_if_initialized(&message.agent_id)?
+            {
+                if execution.work_items.get(work_item_id).is_some_and(|work| {
+                    !matches!(
+                        &work.state,
+                        crate::domain::execution_protocol::WorkItemExecutionState::Waiting {
+                            generation: current_generation,
+                            wait,
+                        } if current_generation == generation
+                            && wait.wait_id == *wait_id
+                            && wait.generation == *generation
+                    )
+                }) {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
     fn canonical_activation_plan(
         &self,
         projection: &scheduler::SchedulerProjection,
@@ -743,6 +816,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             });
         };
         let scenario_class = candidate.scenario_class();
+        let stale_correlated_wait = self.provably_stale_correlated_wait(&candidate, message)?;
         if let scheduler::CanonicalActivationCandidate::ExactTaskRejoin { task_id, .. } = &candidate
         {
             let durable_task = self.runtime.inner.storage.latest_task_record(task_id)?;
@@ -760,6 +834,12 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         let Some(mut scenario) =
             scheduler::resolve_canonical_activation_scenario(projection, message, candidate)?
         else {
+            if stale_correlated_wait {
+                return Ok(CanonicalClaimOutcome::RejectQueued {
+                    scenario_class,
+                    reason: "canonical_correlated_wait_stale",
+                });
+            }
             return Ok(canonical_claim_hard_blocker(
                 scenario_class,
                 "canonical_activation_scenario_unresolved",
@@ -1308,6 +1388,23 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         let owner = SchedulerOwner::AgentLifecycle {
             agent_id: message.agent_id.clone(),
         };
+        let mut projected_existing = existing.clone();
+        let mut authority_repair_commands = Vec::new();
+        if let Some(snapshot) = projected_existing.as_ref() {
+            if let Some(command) = canonical_authority_convergence_command(
+                &self.runtime.inner.storage,
+                snapshot,
+                &message.agent_id,
+            )? {
+                let outcome = crate::domain::scheduler_protocol::reduce_command(snapshot, &command);
+                if outcome.outcome.decision
+                    == crate::domain::scheduler_protocol::Decision::AuthorityConverged
+                {
+                    projected_existing = Some(outcome.outcome.snapshot);
+                    authority_repair_commands.push(command);
+                }
+            }
+        }
         let activation_id = canonical_activation_id_for_attempt(existing.as_ref(), &message.id);
         if let Some(snapshot) = existing.as_ref() {
             if let Some(activation) = snapshot.activations.get(&activation_id) {
@@ -1386,13 +1483,13 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                         .and_then(|generation| generation.parse::<u64>().ok())
                         .filter(|generation| *generation > 0)
                         .or_else(|| {
-                            existing
+                            projected_existing
                                 .as_ref()
                                 .and_then(|snapshot| snapshot.waits.get(wait_id))
                                 .map(|wait| wait.current_generation)
                         })
                         .unwrap_or(1);
-                    let admission_generation = existing.as_ref().map_or(1, |snapshot| {
+                    let admission_generation = projected_existing.as_ref().map_or(1, |snapshot| {
                         snapshot
                             .activations
                             .values()
@@ -1408,7 +1505,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                         trigger_id: canonical_wait_trigger_id(message),
                         trigger_generation,
                     };
-                    let scheduler_resume = existing.as_ref().and_then(|snapshot| {
+                    let scheduler_resume = projected_existing.as_ref().and_then(|snapshot| {
                         let wait = snapshot.waits.get(wait_id)?;
                         let generation = wait.generations.get(&wait.current_generation)?;
                         (wait.current_generation == authoritative_wait_generation
@@ -1451,7 +1548,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 scheduler::CanonicalActivationScenario::LifecycleExternalNudge { agent_id }
                     if agent_id == &message.agent_id =>
                 {
-                    let generation = existing.as_ref().map_or(1, |snapshot| {
+                    let generation = projected_existing.as_ref().map_or(1, |snapshot| {
                         let activation_generation = snapshot
                             .activations
                             .values()
@@ -1521,7 +1618,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 causation_id: message.causation_id.clone(),
             },
         };
-        let mut commands = Vec::with_capacity(3);
+        let mut commands = authority_repair_commands;
         if let Some(resume) = scheduler_resume.as_ref() {
             commands.push(ProtocolCommand::TriggerWait(TriggerWaitCommand {
                 wait_id: resume.wait_id.clone(),
@@ -1876,7 +1973,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     "queue_disposition": "retained_queued",
                 }),
             ))?;
-        self.runtime.inner.notify.notify_one();
         Ok(())
     }
 

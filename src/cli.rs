@@ -584,6 +584,8 @@ pub enum DebugCommands {
         json: bool,
         #[arg(long)]
         apply: bool,
+        #[arg(long, requires = "apply")]
+        no_backup: bool,
     },
     #[command(hide = true)]
     SchedulerRecoveryFixture {

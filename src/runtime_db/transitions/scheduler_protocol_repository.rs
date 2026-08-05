@@ -1,6 +1,6 @@
 use crate::types::{
-    WaitConditionRecord, WorkItemContinuationFrame, WorkItemPlanStatus, WorkItemRecord,
-    WorkItemSchedulingState,
+    WaitConditionRecord, WaitConditionStatus, WorkItemContinuationFrame, WorkItemPlanStatus,
+    WorkItemRecord, WorkItemSchedulingState, WorkItemState,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -18,10 +18,11 @@ use super::{inject_fault, RuntimeTransitionRepository, TransitionFaultPoint};
 use crate::domain::scheduler_protocol::{
     self, ActivationCause, ActivationInputAttachment, ActivationRecord, ActivationSlot,
     ActivationState, AdmitActivationCommand, AdoptActivationWorkStateCommand,
-    AdoptLegacyWorkStateCommand, AgentActivation, AgentDispatchState, ContinuationAdmissionRecord,
-    Decision, LegacyWaitAdoption, MissingSettlementRecord, ProtocolCommand, ProtocolConflict,
-    ProtocolConflictKind, ReplaceCompletedFocusProof, SchedulerOwner, Snapshot,
-    WaitGenerationRecord, WaitIdentity, WaitRecord, WaitState, WaitTrigger, WorkDemand, WorkStatus,
+    AdoptLegacyWorkStateCommand, AgentActivation, AgentDispatchState, AuthoritativeWaitState,
+    AuthoritativeWorkState, ContinuationAdmissionRecord, Decision, LegacyWaitAdoption,
+    MissingSettlementRecord, ProtocolCommand, ProtocolConflict, ProtocolConflictKind,
+    ReplaceCompletedFocusProof, SchedulerOwner, Snapshot, WaitGenerationRecord, WaitIdentity,
+    WaitRecord, WaitState, WaitTrigger, WorkDemand, WorkStatus,
 };
 
 const CANONICAL_COMMAND_SCHEMA_VERSION: i64 = 1;
@@ -291,6 +292,9 @@ pub(super) fn validate_protocol_commands_tx(
         }
         if let ProtocolCommand::AdoptActivationWorkState(command) = command {
             validate_activation_adoption_source_tx(tx, agent_id, command)?;
+        }
+        if let ProtocolCommand::ConvergeAuthority(command) = command {
+            validate_authority_convergence_source_tx(tx, agent_id, command)?;
         }
 
         let pre_state_fence = snapshot_fence(&snapshot)?;
@@ -672,7 +676,8 @@ impl RuntimeTransitionRepository<'_> {
                     | ProtocolCommand::RegisterWorkDemand(_)
                     | ProtocolCommand::SettleActivation(_)
                     | ProtocolCommand::RecoverInterruptedActivation(_)
-                    | ProtocolCommand::RecordMissingSettlement(_) => {}
+                    | ProtocolCommand::RecordMissingSettlement(_)
+                    | ProtocolCommand::ConvergeAuthority(_) => {}
                     ProtocolCommand::AdmitActivation(command)
                         if matches!(
                             command.activation.cause,
@@ -1374,6 +1379,85 @@ fn validate_activation_adoption_source_tx(
     Ok(())
 }
 
+fn validate_authority_convergence_source_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    command: &crate::domain::scheduler_protocol::ConvergeAuthorityCommand,
+) -> Result<()> {
+    if let Some(work) = &command.work {
+        let current = tx
+            .query_row(
+                "SELECT payload_json FROM work_items
+                 WHERE work_item_id = ?1 AND agent_id = ?2",
+                [work.work_item_id.as_str(), agent_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|payload| crate::runtime_db::repositories::decode_work_item_payload(&payload))
+            .transpose()?;
+        let matches = match (&work.authoritative_state, current.as_ref()) {
+            (AuthoritativeWorkState::Missing, None) => true,
+            (AuthoritativeWorkState::Completed { source_revision }, Some(current)) => {
+                current.state == WorkItemState::Completed
+                    && current.revision == *source_revision
+                    && current.agent_id == agent_id
+            }
+            _ => false,
+        };
+        if !matches {
+            bail!(
+                "scheduler authority convergence WorkItem source changed for {}:{}",
+                agent_id,
+                work.work_item_id
+            );
+        }
+    }
+    if let Some(wait) = &command.wait {
+        let current = tx
+            .query_row(
+                "SELECT payload_json FROM wait_conditions
+                 WHERE wait_condition_id = ?1 AND agent_id = ?2",
+                [wait.wait_id.as_str(), agent_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|payload| crate::runtime_db::repositories::decode_wait_condition_payload(&payload))
+            .transpose()?;
+        let matches = match (&wait.authoritative_state, current.as_ref()) {
+            (AuthoritativeWaitState::Missing, None) => true,
+            (AuthoritativeWaitState::Resolved { source_updated_at }, Some(current)) => {
+                current.status == WaitConditionStatus::Resolved
+                    && crate::runtime_db::repositories::timestamp(current.updated_at)
+                        == *source_updated_at
+            }
+            (AuthoritativeWaitState::Cancelled { source_updated_at }, Some(current)) => {
+                current.status == WaitConditionStatus::Cancelled
+                    && crate::runtime_db::repositories::timestamp(current.updated_at)
+                        == *source_updated_at
+            }
+            (AuthoritativeWaitState::Expired { source_updated_at }, Some(current)) => {
+                current.status == WaitConditionStatus::Expired
+                    && crate::runtime_db::repositories::timestamp(current.updated_at)
+                        == *source_updated_at
+            }
+            _ => false,
+        };
+        if !matches
+            || current.as_ref().is_some_and(|current| {
+                current.agent_id != agent_id
+                    || current.work_item_id.as_deref() != wait.expected_owner.work_item_id()
+            })
+        {
+            bail!(
+                "scheduler authority convergence wait source changed for {}:{}",
+                agent_id,
+                wait.wait_id
+            );
+        }
+    }
+    Ok(())
+}
+
 fn decision_fact_references(decision: &Decision, references: Vec<String>) -> Vec<String> {
     if *decision == Decision::Rejected {
         Vec::new()
@@ -1459,6 +1543,9 @@ fn command_identity(command: &ProtocolCommand) -> Result<(&'static str, String)>
         ),
         ProtocolCommand::AttachActivationInput(command) => {
             ("attach_activation_input", command.attachment.id.clone())
+        }
+        ProtocolCommand::ConvergeAuthority(command) => {
+            ("converge_authority", command.recovery_id.clone())
         }
     })
 }
@@ -1550,6 +1637,19 @@ fn command_fact_references(command: &ProtocolCommand) -> Vec<String> {
             format!("activation:{}", command.attachment.activation_id),
             format!("activation_input:{}", command.attachment.id),
         ],
+        ProtocolCommand::ConvergeAuthority(command) => {
+            let mut references = vec![format!("scheduler_recovery:{}", command.recovery_id)];
+            if let Some(work) = &command.work {
+                references.push(format!("work:{}", work.work_item_id));
+            }
+            if let Some(wait) = &command.wait {
+                references.push(format!(
+                    "wait:{}:generation:{}",
+                    wait.wait_id, wait.wait_generation
+                ));
+            }
+            references
+        }
     }
 }
 
@@ -1563,7 +1663,8 @@ fn validate_command_agent(agent_id: &str, command: &ProtocolCommand) -> Result<(
         | ProtocolCommand::RecoverInterruptedActivation(_)
         | ProtocolCommand::RecordMissingSettlement(_)
         | ProtocolCommand::TriggerWait(_)
-        | ProtocolCommand::AttachActivationInput(_) => None,
+        | ProtocolCommand::AttachActivationInput(_)
+        | ProtocolCommand::ConvergeAuthority(_) => None,
     };
     if command_agent_id.is_some_and(|command_agent_id| command_agent_id != agent_id) {
         bail!("scheduler protocol command crosses agent partition {agent_id}");

@@ -1274,7 +1274,7 @@ async fn canonical_claim_contention_retains_queue_head_without_failing_poll() {
             .poll()
             .await
             .unwrap(),
-        scheduler_executor::RunLoopPoll::Idle
+        scheduler_executor::RunLoopPoll::AuthorityBlocked
     ));
     assert_eq!(
         runtime
@@ -3959,7 +3959,7 @@ async fn exact_task_rejoin_claim_is_atomic_and_restart_safe() {
             .poll()
             .await
             .unwrap(),
-        scheduler_executor::RunLoopPoll::Idle
+        scheduler_executor::RunLoopPoll::AuthorityBlocked
     ));
     assert_eq!(
         runtime
@@ -4793,7 +4793,7 @@ async fn authoritative_explicit_operator_wait_ambiguity_remains_queued() {
                 .poll()
                 .await
                 .unwrap(),
-            scheduler_executor::RunLoopPoll::Idle
+            scheduler_executor::RunLoopPoll::AuthorityBlocked
         ));
     }
     assert_eq!(
@@ -4865,7 +4865,7 @@ async fn authoritative_explicit_operator_missing_target_remains_queued_without_r
             .poll()
             .await
             .unwrap(),
-        scheduler_executor::RunLoopPoll::Idle
+        scheduler_executor::RunLoopPoll::AuthorityBlocked
     ));
     assert_eq!(
         runtime
@@ -8529,6 +8529,387 @@ async fn canonical_unclassified_model_reentry_is_dropped_without_blocking_next_m
         panic!("valid message behind dropped poison head should be claimed after restart");
     };
     assert_eq!(scheduled.message.id, valid.id);
+}
+
+#[tokio::test]
+async fn canonical_stale_correlated_wait_is_dropped_without_blocking_next_message() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item(
+            "stale correlated wait".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    runtime.pick_work_item(work_item.id.clone()).await.unwrap();
+    let registration = runtime
+        .register_wait_for(
+            "default",
+            Some(work_item.id.clone()),
+            WaitForWakeKind::External,
+            Some("github:holon-run/holon#stale-wait".into()),
+            "old wait".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let waiting = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let current_generation = waiting.revision;
+    let old_generation = current_generation
+        .checked_sub(1)
+        .filter(|generation| *generation > 0)
+        .expect("wait fixture must have an older generation");
+    let mut canonical =
+        canonical_waiting_snapshot(&waiting, &registration.condition.id, current_generation);
+    canonical
+        .waits
+        .get_mut(&registration.condition.id)
+        .unwrap()
+        .generations
+        .insert(
+            old_generation,
+            WaitGenerationRecord {
+                owner: SchedulerOwner::WorkItem {
+                    work_item_id: work_item.id.clone(),
+                },
+                state: WaitState::Resolved,
+                trigger: None,
+                consuming_activation_id: None,
+            },
+        );
+    runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .initialize_scheduler_protocol_partition("default", &canonical)
+        .unwrap();
+
+    let correlated_message = |text: &str, generation: u64, priority: Priority| {
+        let mut message = MessageEnvelope::new(
+            "default",
+            MessageKind::WebhookEvent,
+            MessageOrigin::Webhook {
+                source: "github".into(),
+                event_type: Some("pull_request".into()),
+            },
+            AuthorityClass::IntegrationSignal,
+            priority,
+            MessageBody::Text { text: text.into() },
+        )
+        .with_admission(
+            MessageDeliverySurface::HttpCallbackWake,
+            AdmissionContext::ExternalTriggerCapability,
+        );
+        message.work_item_id = Some(work_item.id.clone());
+        message
+            .source_refs
+            .insert("wait_id".into(), registration.condition.id.clone());
+        message
+            .source_refs
+            .insert("wait_generation".into(), generation.to_string());
+        message
+    };
+    let stale = correlated_message("stale webhook", old_generation, Priority::Next);
+    let stale = runtime.enqueue(stale).await.unwrap();
+    let valid = runtime
+        .enqueue(correlated_message(
+            "current webhook",
+            current_generation,
+            Priority::Normal,
+        ))
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Idle
+    ));
+    assert_eq!(
+        runtime
+            .storage()
+            .latest_queue_entries()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == stale.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Dropped)
+    );
+    let scheduled = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = scheduled else {
+        panic!("message behind stale exact-wait head should be admitted");
+    };
+    assert_eq!(scheduled.message.id, valid.id);
+}
+
+#[tokio::test]
+async fn scheduler_recovery_converges_completed_work_item_lane_reservation() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let completed = WorkItemRecord::new(
+        "default",
+        "completed stale reservation",
+        WorkItemState::Completed,
+    );
+    runtime.storage().append_work_item(&completed).unwrap();
+    let wait = WaitConditionRecord {
+        id: "wait-completed-stale".into(),
+        agent_id: "default".into(),
+        work_item_id: Some(completed.id.clone()),
+        status: WaitConditionStatus::Cancelled,
+        kind: WaitConditionKind::External,
+        source: None,
+        subject_ref: None,
+        waiting_for: "stale".into(),
+        wake_sources: vec![WakeSource::ExternalIngress {
+            external_trigger_id: None,
+        }],
+        continuation: None,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        expires_at: None,
+        resolved_at: None,
+        cancelled_at: Some(Utc::now()),
+        turn_id: None,
+    };
+    runtime.storage().append_wait_condition(&wait).unwrap();
+    runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .initialize_scheduler_protocol_partition(
+            "default",
+            &canonical_waiting_snapshot(&completed, &wait.id, completed.revision),
+        )
+        .unwrap();
+
+    let report =
+        scheduler_recovery_report(&runtime.inner.storage, &runtime.inner.runtime_db, "default")
+            .unwrap();
+    assert!(report.candidates.iter().any(|candidate| {
+        candidate.kind == SchedulerRecoveryCandidateKind::AuthorityDrift
+            && candidate.eligible
+            && candidate.work_item_id.as_deref() == Some(completed.id.as_str())
+    }));
+    let (changed, backup) = apply_scheduler_recovery_plan_with_backup_policy(
+        &runtime.inner.storage,
+        &runtime.inner.runtime_db,
+        "default",
+        &report,
+        SchedulerRecoveryBackupPolicy::SkipApproved,
+    )
+    .unwrap();
+    assert_eq!(changed, 1);
+    assert!(backup.is_none());
+    let repaired = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    assert_eq!(repaired.dispatch, AgentDispatchState::Open);
+    assert_eq!(repaired.focus, None);
+    assert_eq!(repaired.work[&completed.id].status, WorkStatus::Terminal);
+    assert_eq!(
+        repaired.waits[&wait.id].generations[&completed.revision].state,
+        WaitState::Resolved
+    );
+    let after =
+        scheduler_recovery_report(&runtime.inner.storage, &runtime.inner.runtime_db, "default")
+            .unwrap();
+    assert!(!after
+        .candidates
+        .iter()
+        .any(|candidate| candidate.kind == SchedulerRecoveryCandidateKind::AuthorityDrift));
+}
+
+#[tokio::test]
+async fn scheduler_recovery_converges_completed_focus_without_lane_reservation() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let completed = WorkItemRecord::new(
+        "default",
+        "completed focus without lane",
+        WorkItemState::Completed,
+    );
+    runtime.storage().append_work_item(&completed).unwrap();
+    let mut snapshot = canonical_waiting_snapshot(&completed, "unused-wait", completed.revision);
+    snapshot.dispatch = AgentDispatchState::Open;
+    snapshot.waits.clear();
+    snapshot.work.get_mut(&completed.id).unwrap().status = WorkStatus::Runnable;
+    runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .initialize_scheduler_protocol_partition("default", &snapshot)
+        .unwrap();
+
+    let report =
+        scheduler_recovery_report(&runtime.inner.storage, &runtime.inner.runtime_db, "default")
+            .unwrap();
+    assert!(report.candidates.iter().any(|candidate| {
+        candidate.kind == SchedulerRecoveryCandidateKind::AuthorityDrift
+            && candidate.work_item_id.as_deref() == Some(completed.id.as_str())
+    }));
+    apply_scheduler_recovery_plan_with_backup_policy(
+        &runtime.inner.storage,
+        &runtime.inner.runtime_db,
+        "default",
+        &report,
+        SchedulerRecoveryBackupPolicy::SkipApproved,
+    )
+    .unwrap();
+    let repaired = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    assert_eq!(repaired.focus, None);
+    assert_eq!(repaired.dispatch, AgentDispatchState::Open);
+    assert_eq!(repaired.work[&completed.id].status, WorkStatus::Terminal);
+}
+
+#[tokio::test]
+async fn lifecycle_ingress_converges_completed_work_item_lane_before_claim() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let completed = WorkItemRecord::new(
+        "default",
+        "completed lane before operator ingress",
+        WorkItemState::Completed,
+    );
+    runtime.storage().append_work_item(&completed).unwrap();
+    let wait = WaitConditionRecord {
+        id: "wait-completed-live".into(),
+        agent_id: "default".into(),
+        work_item_id: Some(completed.id.clone()),
+        status: WaitConditionStatus::Cancelled,
+        kind: WaitConditionKind::External,
+        source: None,
+        subject_ref: None,
+        waiting_for: "stale".into(),
+        wake_sources: vec![WakeSource::ExternalIngress {
+            external_trigger_id: None,
+        }],
+        continuation: None,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        expires_at: None,
+        resolved_at: None,
+        cancelled_at: Some(Utc::now()),
+        turn_id: None,
+    };
+    runtime.storage().append_wait_condition(&wait).unwrap();
+    runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .initialize_scheduler_protocol_partition(
+            "default",
+            &canonical_waiting_snapshot(&completed, &wait.id, completed.revision),
+        )
+        .unwrap();
+
+    let message = runtime
+        .enqueue(trusted_operator_prompt(
+            None,
+            "operator ingress after stale completion",
+        ))
+        .await
+        .unwrap();
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("operator ingress should repair the stale lane before claim");
+    };
+    assert_eq!(scheduled.message.id, message.id);
+    let repaired = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    assert!(matches!(
+        repaired.slot,
+        ActivationSlot::Running {
+            owner: SchedulerOwner::AgentLifecycle { ref agent_id },
+            ..
+        } if agent_id == "default"
+    ));
+    assert_eq!(repaired.dispatch, AgentDispatchState::Open);
+    assert_eq!(repaired.focus, None);
+    assert_eq!(repaired.work[&completed.id].status, WorkStatus::Terminal);
+    assert_eq!(
+        repaired.waits[&wait.id].generations[&completed.revision].state,
+        WaitState::Resolved
+    );
 }
 
 #[tokio::test]

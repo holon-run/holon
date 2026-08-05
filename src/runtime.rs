@@ -126,9 +126,9 @@ use crate::{
         SkillActivationSource, SkillActivationState, SkillCatalogEntry, SkillLoadReason,
         SkillsRuntimeView, TaskKind, TaskLifecycleAuditEvent, TaskRecord, TaskRecoverySpec,
         TaskStatus, TimerRecord, TimerStatus, ToolExecutionRecord, TranscriptEntry,
-        TranscriptEntryKind, TurnRecord, TurnTerminalKind, ViewImageObservation, WaitingReason,
-        WorkItemExecutionBinding, WorkItemLifecycleAuditEvent, WorkspaceEntry,
-        AGENT_HOME_WORKSPACE_ID,
+        TranscriptEntryKind, TurnRecord, TurnTerminalKind, ViewImageObservation,
+        WaitConditionStatus, WaitingReason, WorkItemExecutionBinding, WorkItemLifecycleAuditEvent,
+        WorkItemState, WorkspaceEntry, AGENT_HOME_WORKSPACE_ID,
     },
     web::{WebConfig, WebProviderKind},
 };
@@ -1341,6 +1341,7 @@ pub struct SchedulerRecoveryCandidate {
 pub enum SchedulerRecoveryCandidateKind {
     NeedsSettlement,
     LegacyDequeued,
+    AuthorityDrift,
 }
 
 fn canonical_settlement_recovery_commands(
@@ -1407,6 +1408,135 @@ fn canonical_settlement_recovery_commands(
         }
         _ => Vec::new(),
     }
+}
+
+fn canonical_authority_convergence_command(
+    storage: &AppStorage,
+    snapshot: &crate::domain::scheduler_protocol::Snapshot,
+    agent_id: &str,
+) -> Result<Option<crate::domain::scheduler_protocol::ProtocolCommand>> {
+    use crate::domain::scheduler_protocol::{
+        AgentDispatchState, AuthoritativeWaitState, AuthoritativeWorkState,
+        AuthorityWaitConvergence, AuthorityWorkConvergence, ConvergeAuthorityCommand,
+        ProtocolCommand, SchedulerOwner, WaitState,
+    };
+
+    let dispatch_wait = match &snapshot.dispatch {
+        AgentDispatchState::Open => None,
+        AgentDispatchState::Awaiting { wait } => {
+            let Some(wait_record) = snapshot.waits.get(&wait.id) else {
+                return Ok(None);
+            };
+            let Some(generation) = wait_record.generations.get(&wait.generation) else {
+                return Ok(None);
+            };
+            matches!(generation.state, WaitState::Active | WaitState::Triggered)
+                .then_some((wait, generation))
+        }
+    };
+    let candidate_work_item_id = dispatch_wait
+        .as_ref()
+        .and_then(|(_, generation)| generation.owner.work_item_id())
+        .or(snapshot.focus.as_deref());
+    let work = if let Some(work_item_id) = candidate_work_item_id {
+        let Some(demand) = snapshot.work.get(work_item_id) else {
+            return Ok(None);
+        };
+        match storage.latest_work_item(work_item_id)? {
+            Some(work_item)
+                if work_item.agent_id == agent_id
+                    && work_item.state == WorkItemState::Completed =>
+            {
+                Some(AuthorityWorkConvergence {
+                    work_item_id: work_item_id.to_string(),
+                    expected_metadata_revision: demand.metadata_revision,
+                    expected_scheduling_generation: demand.scheduling_generation,
+                    authoritative_state: AuthoritativeWorkState::Completed {
+                        source_revision: work_item.revision,
+                    },
+                })
+            }
+            None => Some(AuthorityWorkConvergence {
+                work_item_id: work_item_id.to_string(),
+                expected_metadata_revision: demand.metadata_revision,
+                expected_scheduling_generation: demand.scheduling_generation,
+                authoritative_state: AuthoritativeWorkState::Missing,
+            }),
+            _ => None,
+        }
+    } else {
+        None
+    };
+
+    let wait = if let Some((wait, generation)) = dispatch_wait {
+        let wait_authority = storage
+            .latest_wait_conditions()?
+            .into_iter()
+            .find(|condition| condition.id == wait.id && condition.agent_id == agent_id);
+        let wait_repair = match wait_authority {
+            None => Some(AuthorityWaitConvergence {
+                wait_id: wait.id.clone(),
+                wait_generation: wait.generation,
+                expected_owner: generation.owner.clone(),
+                expected_state: generation.state.clone(),
+                authoritative_state: AuthoritativeWaitState::Missing,
+            }),
+            Some(condition) if condition.status != WaitConditionStatus::Active => {
+                let source_updated_at =
+                    crate::runtime_db::repositories::timestamp(condition.updated_at);
+                let authoritative_state = match condition.status {
+                    WaitConditionStatus::Resolved => {
+                        AuthoritativeWaitState::Resolved { source_updated_at }
+                    }
+                    WaitConditionStatus::Cancelled => {
+                        AuthoritativeWaitState::Cancelled { source_updated_at }
+                    }
+                    WaitConditionStatus::Expired => {
+                        AuthoritativeWaitState::Expired { source_updated_at }
+                    }
+                    WaitConditionStatus::Active => unreachable!(),
+                };
+                Some(AuthorityWaitConvergence {
+                    wait_id: wait.id.clone(),
+                    wait_generation: wait.generation,
+                    expected_owner: generation.owner.clone(),
+                    expected_state: generation.state.clone(),
+                    authoritative_state,
+                })
+            }
+            Some(_) => None,
+        };
+        match (&generation.owner, work.as_ref(), wait_repair) {
+            (SchedulerOwner::AgentLifecycle { .. }, _, wait) => wait,
+            (SchedulerOwner::WorkItem { .. }, Some(_), _) => None,
+            (SchedulerOwner::WorkItem { .. }, None, _) => None,
+        }
+    } else {
+        None
+    };
+    if work.is_none() && wait.is_none() {
+        return Ok(None);
+    }
+    let work_identity = work
+        .as_ref()
+        .map(|work| work.work_item_id.as_str())
+        .unwrap_or("lifecycle");
+    let generation_identity = work
+        .as_ref()
+        .map(|work| work.expected_scheduling_generation)
+        .or_else(|| wait.as_ref().map(|wait| wait.wait_generation))
+        .unwrap_or(0);
+    Ok(Some(ProtocolCommand::ConvergeAuthority(
+        ConvergeAuthorityCommand {
+            recovery_id: format!(
+                "authority-convergence:{agent_id}:{work_identity}:{}:{}",
+                generation_identity, snapshot.dispatch_revision
+            ),
+            expected_dispatch_revision: snapshot.dispatch_revision,
+            work,
+            wait,
+        },
+    )))
 }
 
 pub fn scheduler_recovery_report(
@@ -1479,6 +1609,40 @@ pub fn scheduler_recovery_report(
         .work_item_continuations()
         .active_for_agent(agent_id)?;
     let mut candidates = Vec::new();
+    if let Some(command) = canonical_authority_convergence_command(storage, &snapshot, agent_id)? {
+        let crate::domain::scheduler_protocol::ProtocolCommand::ConvergeAuthority(repair) =
+            &command
+        else {
+            unreachable!("authority convergence helper returns its typed command");
+        };
+        let message_id = format!("scheduler-recovery:{}", repair.recovery_id);
+        candidates.push(SchedulerRecoveryCandidate {
+            kind: SchedulerRecoveryCandidateKind::AuthorityDrift,
+            message_id: message_id.clone(),
+            activation_id: message_id,
+            work_item_id: repair.work.as_ref().map(|work| work.work_item_id.clone()),
+            queue_status: QueueEntryStatus::Processed,
+            terminal_turn_id: None,
+            eligible: true,
+            reason: "canonical_authority_drift".into(),
+            target_queue_status: None,
+            evidence: vec![
+                format!("dispatch_revision:{}", repair.expected_dispatch_revision),
+                repair
+                    .work
+                    .as_ref()
+                    .map(|work| format!("stale_work_item:{}", work.work_item_id))
+                    .or_else(|| {
+                        repair
+                            .wait
+                            .as_ref()
+                            .map(|wait| format!("stale_wait:{}", wait.wait_id))
+                    })
+                    .unwrap_or_else(|| "stale_authority".into()),
+            ],
+            proposed_commands: vec![command],
+        });
+    }
     // Phase 5: execution attempts are the recovery authority. The scheduler
     // snapshot remains only as the compatibility command target.
     for attempt in execution_state
@@ -1822,14 +1986,85 @@ pub fn apply_scheduler_recovery_plan(
     agent_id: &str,
     report: &SchedulerRecoveryReport,
 ) -> Result<(usize, Option<std::path::PathBuf>)> {
-    apply_scheduler_recovery_plan_with_hook(storage, runtime_db, agent_id, report, |_| Ok(()))
+    apply_scheduler_recovery_plan_with_options(
+        storage,
+        runtime_db,
+        agent_id,
+        report,
+        SchedulerRecoveryBackupPolicy::Required,
+        true,
+        |_| Ok(()),
+    )
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SchedulerRecoveryBackupPolicy {
+    Required,
+    SkipApproved,
+}
+
+pub fn apply_scheduler_recovery_plan_with_backup_policy(
+    storage: &AppStorage,
+    runtime_db: &RuntimeDb,
+    agent_id: &str,
+    report: &SchedulerRecoveryReport,
+    backup_policy: SchedulerRecoveryBackupPolicy,
+) -> Result<(usize, Option<std::path::PathBuf>)> {
+    apply_scheduler_recovery_plan_with_options(
+        storage,
+        runtime_db,
+        agent_id,
+        report,
+        backup_policy,
+        true,
+        |_| Ok(()),
+    )
+}
+
+fn apply_automatic_scheduler_recovery_plan(
+    storage: &AppStorage,
+    runtime_db: &RuntimeDb,
+    agent_id: &str,
+    report: &SchedulerRecoveryReport,
+) -> Result<(usize, Option<std::path::PathBuf>)> {
+    apply_scheduler_recovery_plan_with_options(
+        storage,
+        runtime_db,
+        agent_id,
+        report,
+        SchedulerRecoveryBackupPolicy::Required,
+        false,
+        |_| Ok(()),
+    )
+}
+
+#[cfg(test)]
 fn apply_scheduler_recovery_plan_with_hook(
     storage: &AppStorage,
     runtime_db: &RuntimeDb,
     agent_id: &str,
     report: &SchedulerRecoveryReport,
+    mut before_legacy_adoption_commit: impl FnMut(&str) -> Result<()>,
+) -> Result<(usize, Option<std::path::PathBuf>)> {
+    apply_scheduler_recovery_plan_with_options(
+        storage,
+        runtime_db,
+        agent_id,
+        report,
+        SchedulerRecoveryBackupPolicy::Required,
+        true,
+        &mut before_legacy_adoption_commit,
+    )
+}
+
+fn apply_scheduler_recovery_plan_with_options(
+    storage: &AppStorage,
+    runtime_db: &RuntimeDb,
+    agent_id: &str,
+    report: &SchedulerRecoveryReport,
+    backup_policy: SchedulerRecoveryBackupPolicy,
+    include_authority_repair: bool,
     mut before_legacy_adoption_commit: impl FnMut(&str) -> Result<()>,
 ) -> Result<(usize, Option<std::path::PathBuf>)> {
     let legacy_adoptions = report
@@ -1851,7 +2086,20 @@ fn apply_scheduler_recovery_plan_with_hook(
         })
         .map(|candidate| candidate.proposed_commands.as_slice())
         .unwrap_or_default();
-    if legacy_adoptions.is_empty() && settlement_recovery.is_empty() {
+    let authority_recovery = report
+        .candidates
+        .iter()
+        .filter(|candidate| {
+            include_authority_repair
+                && candidate.kind == SchedulerRecoveryCandidateKind::AuthorityDrift
+                && candidate.eligible
+        })
+        .flat_map(|candidate| candidate.proposed_commands.iter().cloned())
+        .collect::<Vec<_>>();
+    if legacy_adoptions.is_empty()
+        && settlement_recovery.is_empty()
+        && authority_recovery.is_empty()
+    {
         return Ok((0, None));
     }
     if let Some(snapshot) = runtime_db
@@ -1861,8 +2109,30 @@ fn apply_scheduler_recovery_plan_with_hook(
         crate::domain::scheduler_protocol::assert_invariants(&snapshot)
             .map_err(|error| anyhow!("invalid canonical scheduler recovery prestate: {error}"))?;
     }
-    let backup_path = runtime_db.create_verified_backup("scheduler-recovery")?;
+    let backup_path = match backup_policy {
+        SchedulerRecoveryBackupPolicy::Required => {
+            Some(runtime_db.create_verified_backup("scheduler-recovery")?)
+        }
+        SchedulerRecoveryBackupPolicy::SkipApproved => None,
+    };
     let mut applied = false;
+    if !authority_recovery.is_empty() {
+        match runtime_db
+            .transitions()
+            .commit_scheduler_recovery_plan(agent_id, &authority_recovery)?
+        {
+            crate::runtime_db::transitions::scheduler_protocol_repository::SchedulerRecoveryCommitOutcome::Applied(
+                changed,
+            ) => applied |= changed,
+            crate::runtime_db::transitions::scheduler_protocol_repository::SchedulerRecoveryCommitOutcome::Rejected {
+                reason,
+            } => {
+                return Err(anyhow!(
+                    "scheduler authority convergence unexpectedly rejected: {reason}"
+                ));
+            }
+        }
+    }
     for (candidate, command) in legacy_adoptions {
         if let Some(reason) =
             preflight_legacy_adoption(runtime_db, agent_id, &candidate.work_item_id, command)?
@@ -1912,7 +2182,18 @@ fn apply_scheduler_recovery_plan_with_hook(
             }
         }
     }
-    Ok((usize::from(applied), Some(backup_path)))
+    storage.append_event(&AuditEvent::legacy(
+        "scheduler_recovery_applied",
+        serde_json::json!({
+            "agent_id": agent_id,
+            "changed": applied,
+            "backup_policy": backup_policy,
+            "backup_created": backup_path.is_some(),
+            "backup_path": backup_path,
+            "authority_repair_included": include_authority_repair,
+        }),
+    ))?;
+    Ok((usize::from(applied), backup_path))
 }
 
 fn preflight_legacy_adoption(
@@ -3926,7 +4207,7 @@ impl RuntimeHandle {
         if self.inner.scheduler_engine.is_canonical() {
             let recovery =
                 scheduler_recovery_report(&self.inner.storage, &self.inner.runtime_db, &agent_id)?;
-            apply_scheduler_recovery_plan(
+            apply_automatic_scheduler_recovery_plan(
                 &self.inner.storage,
                 &self.inner.runtime_db,
                 &agent_id,
@@ -3968,6 +4249,14 @@ impl RuntimeHandle {
                     return Ok(());
                 }
                 scheduler_executor::RunLoopPoll::Message(scheduled) => scheduled,
+                scheduler_executor::RunLoopPoll::AuthorityBlocked => {
+                    let retry_at = self.now() + chrono::Duration::seconds(30);
+                    tokio::select! {
+                        _ = self.inner.notify.notified() => {}
+                        _ = self.inner.clock.sleep_until(retry_at) => {}
+                    }
+                    continue;
+                }
                 scheduler_executor::RunLoopPoll::Idle => {
                     let notified = self.inner.notify.notified();
                     tokio::pin!(notified);

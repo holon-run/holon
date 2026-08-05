@@ -898,6 +898,49 @@ pub struct AttachActivationInputCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum AuthoritativeWorkState {
+    Missing,
+    Completed { source_revision: u64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorityWorkConvergence {
+    pub work_item_id: String,
+    pub expected_metadata_revision: u64,
+    pub expected_scheduling_generation: u64,
+    pub authoritative_state: AuthoritativeWorkState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum AuthoritativeWaitState {
+    Missing,
+    Resolved { source_updated_at: String },
+    Cancelled { source_updated_at: String },
+    Expired { source_updated_at: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorityWaitConvergence {
+    pub wait_id: String,
+    pub wait_generation: u64,
+    pub expected_owner: SchedulerOwner,
+    pub expected_state: WaitState,
+    pub authoritative_state: AuthoritativeWaitState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConvergeAuthorityCommand {
+    pub recovery_id: String,
+    pub expected_dispatch_revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work: Option<AuthorityWorkConvergence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait: Option<AuthorityWaitConvergence>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProtocolCommand {
     RegisterWorkDemand(RegisterWorkDemandCommand),
@@ -909,6 +952,7 @@ pub enum ProtocolCommand {
     RecordMissingSettlement(MissingSettlementRecord),
     TriggerWait(TriggerWaitCommand),
     AttachActivationInput(AttachActivationInputCommand),
+    ConvergeAuthority(ConvergeAuthorityCommand),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1180,6 +1224,7 @@ pub struct Outcome {
 pub enum Decision {
     WorkDemandRegistered,
     LegacyWorkStateAdopted,
+    AuthorityConverged,
     Admitted,
     Settled,
     WaitTriggered,
@@ -1516,6 +1561,9 @@ pub fn reduce_command(snapshot: &Snapshot, command: &ProtocolCommand) -> Protoco
     }
     if let ProtocolCommand::RecoverInterruptedActivation(command) = command {
         return recover_interrupted_activation(snapshot, command);
+    }
+    if let ProtocolCommand::ConvergeAuthority(command) = command {
+        return converge_authority(snapshot, command);
     }
     let event = match lower_command(snapshot, command) {
         Ok(event) => event,
@@ -1878,8 +1926,191 @@ fn replay_or_conflict(
                 ));
             }
         }
+        ProtocolCommand::ConvergeAuthority(_) => {}
     }
     None
+}
+
+fn converge_authority(
+    snapshot: &Snapshot,
+    command: &ConvergeAuthorityCommand,
+) -> ProtocolCommandOutcome {
+    if command.recovery_id.is_empty()
+        || (command.work.is_none() && command.wait.is_none())
+        || command.expected_dispatch_revision != snapshot.dispatch_revision
+    {
+        return rejected_command(
+            snapshot,
+            command_conflict(
+                ProtocolConflictKind::StaleRevision,
+                "authority_convergence_fence_mismatch",
+            ),
+        );
+    }
+    let mut next = snapshot.clone();
+    let mut transitions = Vec::new();
+    let mut repaired_wait = command.wait.as_ref().map(|repair| {
+        (
+            repair.wait_id.clone(),
+            repair.wait_generation,
+            repair.expected_owner.clone(),
+        )
+    });
+
+    if let Some(work) = &command.work {
+        let Some(demand) = next.work.get_mut(&work.work_item_id) else {
+            return rejected_command(
+                snapshot,
+                command_conflict(
+                    ProtocolConflictKind::NotFound,
+                    "authority_convergence_work_missing",
+                ),
+            );
+        };
+        if demand.metadata_revision != work.expected_metadata_revision
+            || demand.scheduling_generation != work.expected_scheduling_generation
+            || matches!(demand.status, WorkStatus::NeedsSettlement { .. })
+            || matches!(
+                next.slot,
+                ActivationSlot::Running {
+                    owner: SchedulerOwner::WorkItem { ref work_item_id },
+                    ..
+                } if work_item_id == &work.work_item_id
+            )
+        {
+            return rejected_command(
+                snapshot,
+                command_conflict(
+                    ProtocolConflictKind::StateConflict,
+                    "authority_convergence_work_fence_mismatch",
+                ),
+            );
+        }
+        if let WorkStatus::Waiting { wait_id } = &demand.status {
+            let Some(wait) = next.waits.get(wait_id) else {
+                return rejected_command(
+                    snapshot,
+                    command_conflict(
+                        ProtocolConflictKind::NotFound,
+                        "authority_convergence_wait_missing",
+                    ),
+                );
+            };
+            let Some(generation) = wait.generations.get(&wait.current_generation) else {
+                return rejected_command(
+                    snapshot,
+                    command_conflict(
+                        ProtocolConflictKind::NotFound,
+                        "authority_convergence_wait_generation_missing",
+                    ),
+                );
+            };
+            let expected_owner = SchedulerOwner::WorkItem {
+                work_item_id: work.work_item_id.clone(),
+            };
+            if generation.owner != expected_owner
+                || !matches!(generation.state, WaitState::Active | WaitState::Triggered)
+            {
+                return rejected_command(
+                    snapshot,
+                    command_conflict(
+                        ProtocolConflictKind::BindingConflict,
+                        "authority_convergence_wait_owner_mismatch",
+                    ),
+                );
+            }
+            repaired_wait
+                .get_or_insert_with(|| (wait_id.clone(), wait.current_generation, expected_owner));
+        }
+        demand.scheduling_generation = demand.scheduling_generation.saturating_add(1);
+        demand.status = WorkStatus::Terminal;
+        if next.focus.as_deref() == Some(work.work_item_id.as_str()) {
+            next.focus = None;
+        }
+        transitions.push(format!(
+            "work:{}:authority_converged:terminal",
+            work.work_item_id
+        ));
+    }
+
+    if let Some((wait_id, wait_generation, expected_owner)) = repaired_wait {
+        let Some(wait) = next.waits.get_mut(&wait_id) else {
+            return rejected_command(
+                snapshot,
+                command_conflict(
+                    ProtocolConflictKind::NotFound,
+                    "authority_convergence_wait_missing",
+                ),
+            );
+        };
+        if wait.current_generation != wait_generation {
+            return rejected_command(
+                snapshot,
+                command_conflict(
+                    ProtocolConflictKind::StaleGeneration,
+                    "authority_convergence_wait_generation_mismatch",
+                ),
+            );
+        }
+        let Some(generation) = wait.generations.get_mut(&wait_generation) else {
+            return rejected_command(
+                snapshot,
+                command_conflict(
+                    ProtocolConflictKind::NotFound,
+                    "authority_convergence_wait_generation_missing",
+                ),
+            );
+        };
+        if generation.owner != expected_owner
+            || !matches!(generation.state, WaitState::Active | WaitState::Triggered)
+            || command.wait.as_ref().is_some_and(|repair| {
+                repair.expected_state != generation.state
+                    || repair.wait_id != wait_id
+                    || repair.wait_generation != wait_generation
+                    || repair.expected_owner != expected_owner
+            })
+        {
+            return rejected_command(
+                snapshot,
+                command_conflict(
+                    ProtocolConflictKind::BindingConflict,
+                    "authority_convergence_wait_fence_mismatch",
+                ),
+            );
+        }
+        generation.state = WaitState::Resolved;
+        generation.trigger = None;
+        generation.consuming_activation_id = None;
+        if matches!(
+            next.dispatch,
+            AgentDispatchState::Awaiting { ref wait }
+                if wait.id == wait_id && wait.generation == wait_generation
+        ) {
+            set_dispatch_state(&mut next, AgentDispatchState::Open);
+        }
+        transitions.push(format!(
+            "wait:{wait_id}:generation:{wait_generation}:authority_converged:resolved"
+        ));
+    }
+
+    if assert_invariants(&next).is_err() {
+        return rejected_command(
+            snapshot,
+            command_conflict(
+                ProtocolConflictKind::StateConflict,
+                "authority_convergence_invalid_poststate",
+            ),
+        );
+    }
+    ProtocolCommandOutcome {
+        outcome: Outcome {
+            decision: Decision::AuthorityConverged,
+            transitions,
+            diagnostics: Vec::new(),
+            snapshot: next,
+        },
+        conflict: None,
+    }
 }
 
 fn duplicate_command(snapshot: &Snapshot, diagnostic: &str) -> ProtocolCommandOutcome {
@@ -1908,8 +2139,9 @@ fn lower_command(
     match command {
         ProtocolCommand::RegisterWorkDemand(_)
         | ProtocolCommand::AdoptLegacyWorkState(_)
-        | ProtocolCommand::AdoptActivationWorkState(_) => {
-            unreachable!("work demand mutations are reduced directly")
+        | ProtocolCommand::AdoptActivationWorkState(_)
+        | ProtocolCommand::ConvergeAuthority(_) => {
+            unreachable!("direct protocol mutations are reduced directly")
         }
         ProtocolCommand::AdmitActivation(command) => lower_admit_activation(command),
         ProtocolCommand::SettleActivation(command) => {

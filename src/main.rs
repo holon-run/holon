@@ -1486,7 +1486,13 @@ mod tests {
             "--json",
         ]);
         let Commands::Debug {
-            command: DebugCommands::SchedulerRecovery { agent, json, apply },
+            command:
+                DebugCommands::SchedulerRecovery {
+                    agent,
+                    json,
+                    apply,
+                    no_backup,
+                },
         } = cli.command
         else {
             panic!("expected debug scheduler-recovery command");
@@ -1494,6 +1500,33 @@ mod tests {
         assert_eq!(agent.as_deref(), Some("pm"));
         assert!(json);
         assert!(!apply);
+        assert!(!no_backup);
+    }
+
+    #[test]
+    fn debug_scheduler_recovery_no_backup_requires_apply() {
+        assert!(
+            Cli::try_parse_from(["holon", "debug", "scheduler-recovery", "--no-backup",]).is_err()
+        );
+
+        let cli = Cli::parse_from([
+            "holon",
+            "debug",
+            "scheduler-recovery",
+            "--apply",
+            "--no-backup",
+        ]);
+        let Commands::Debug {
+            command:
+                DebugCommands::SchedulerRecovery {
+                    apply, no_backup, ..
+                },
+        } = cli.command
+        else {
+            panic!("expected debug scheduler-recovery command");
+        };
+        assert!(apply);
+        assert!(no_backup);
     }
 
     #[test]
@@ -2323,9 +2356,12 @@ async fn handle_debug_command(config: AppConfig, command: DebugCommands) -> Resu
         DebugCommands::SchedulerFixture { agent, output } => {
             export_scheduler_fixture(&config, agent, &output)
         }
-        DebugCommands::SchedulerRecovery { agent, json, apply } => {
-            print_scheduler_recovery_report(&config, agent, json, apply)
-        }
+        DebugCommands::SchedulerRecovery {
+            agent,
+            json,
+            apply,
+            no_backup,
+        } => print_scheduler_recovery_report(&config, agent, json, apply, no_backup),
         DebugCommands::SchedulerRecoveryFixture {
             agent,
             objective,
@@ -2395,6 +2431,7 @@ fn print_scheduler_recovery_report(
     agent: Option<String>,
     json: bool,
     apply: bool,
+    no_backup: bool,
 ) -> Result<()> {
     let agent_id = agent.unwrap_or_else(|| config.default_agent_id.clone());
     let host = RuntimeHost::new(config.clone())?;
@@ -2405,20 +2442,31 @@ fn print_scheduler_recovery_report(
     if apply {
         let _maintenance_lock = RuntimeDbLock::try_lock(config.runtime_db_maintenance_lock_path())
             .context("scheduler recovery apply requires holon serve to be stopped")?;
-        apply_result = Some(holon::runtime::apply_scheduler_recovery_plan(
-            &storage,
-            host.runtime_db(),
-            &agent_id,
-            &report,
-        )?);
+        let backup_policy = if no_backup {
+            holon::runtime::SchedulerRecoveryBackupPolicy::SkipApproved
+        } else {
+            holon::runtime::SchedulerRecoveryBackupPolicy::Required
+        };
+        apply_result = Some((
+            holon::runtime::apply_scheduler_recovery_plan_with_backup_policy(
+                &storage,
+                host.runtime_db(),
+                &agent_id,
+                &report,
+                backup_policy,
+            )?,
+            backup_policy,
+        ));
         report = holon::runtime::scheduler_recovery_report(&storage, host.runtime_db(), &agent_id)?;
     }
     if json {
         return print_json(&serde_json::json!({
             "report": report,
-            "apply": apply_result.map(|(changed, backup_path)| serde_json::json!({
+            "apply": apply_result.map(|((changed, backup_path), backup_policy)| serde_json::json!({
                 "changed": changed,
                 "backup_path": backup_path,
+                "backup_policy": backup_policy,
+                "backup_created": backup_path.is_some(),
             })),
         }));
     }
@@ -2435,10 +2483,13 @@ fn print_scheduler_recovery_report(
             .retired_rollout_metadata
             .stale_authoritative_scenario_count,
     );
-    if let Some((changed, backup_path)) = apply_result {
+    if let Some(((changed, backup_path), backup_policy)) = apply_result {
         println!(
-            "- applied recovery changes={} backup={}",
+            "- applied recovery changes={} backup_policy={} backup={}",
             changed,
+            serde_json::to_value(backup_policy)?
+                .as_str()
+                .unwrap_or("unknown"),
             backup_path
                 .map(|path| path.display().to_string())
                 .unwrap_or_else(|| "not-created".into())

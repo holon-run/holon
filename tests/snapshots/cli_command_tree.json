@@ -873,6 +873,16 @@
           "false"
         ],
         "required": false
+      },
+      {
+        "long": "no-backup",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
       }
     ],
     "aliases": []
