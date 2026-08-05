@@ -1780,19 +1780,19 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 {"scheduler-tick"},
             )
 
-    def test_canonical_wait_resolution_rejects_consuming_activation(self) -> None:
+    def test_canonical_wait_resolution_requires_exact_resolved_owner(self) -> None:
         harness = type(
             "CanonicalHarness",
             (),
-            {"canonical_scheduler_enabled": True},
+            {"canonical_scheduler_enabled": True, "agent_id": "default"},
         )()
         canonical_wait = {
-            "wait_id": "wait-1",
-            "owner_work_item_id": "work-1",
-            "lifecycle_state": "resolved",
-            "consuming_activation_id": None,
+            "wait_condition_id": "wait-1",
+            "agent_id": "default",
+            "work_item_id": "work-1",
+            "status": "resolved",
         }
-        snapshot = {"scheduler_wait_generations": [canonical_wait]}
+        snapshot = {"wait_conditions": [canonical_wait]}
         runner.require_scheduler_engine_wait_resolution(
             harness,
             snapshot,
@@ -1800,7 +1800,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
             wait_ids={"wait-1"},
         )
 
-        canonical_wait["consuming_activation_id"] = "activation-unexpected"
+        canonical_wait["work_item_id"] = "work-unexpected"
         with self.assertRaisesRegex(
             AssertionError, "canonical waits did not resolve exactly once"
         ):
@@ -1980,33 +1980,66 @@ class DockerE2ERunnerTests(unittest.TestCase):
             },
         )()
         snapshot = {
-            "scheduler_activations": [
+            "execution_protocol_attempts": [
                 {
                     "agent_id": "default",
-                    "activation_id": "activation:message:message-create",
-                    "work_item_id": None,
-                    "admission_kind": "lifecycle_external_nudge",
+                    "attempt_id": "attempt-lifecycle",
                     "lifecycle_state": "settled",
+                    "terminal_outcome_id": "outcome-lifecycle",
+                    "payload_json": json.dumps(
+                        {
+                            "attempt_id": "attempt-lifecycle",
+                            "source_message_id": "message-create",
+                            "source": {
+                                "identity": {
+                                    "kind": "queue_message",
+                                    "message_id": "message-create",
+                                }
+                            },
+                            "binding": {
+                                "kind": "agent_lifecycle",
+                                "agent_id": "default",
+                            },
+                        }
+                    ),
                 },
                 {
                     "agent_id": "default",
-                    "activation_id": "activation:message:message-resume",
-                    "work_item_id": "work-1",
-                    "admission_kind": "wait_resume",
+                    "attempt_id": "attempt-resume",
                     "lifecycle_state": "settled",
+                    "terminal_outcome_id": "outcome-resume",
+                    "payload_json": json.dumps(
+                        {
+                            "attempt_id": "attempt-resume",
+                            "source_message_id": "message-resume",
+                            "source": {
+                                "identity": {
+                                    "kind": "triggered_wait",
+                                    "wait_id": "wait-1",
+                                    "trigger_message_id": "message-resume",
+                                }
+                            },
+                            "binding": {
+                                "kind": "work_item",
+                                "work_item_id": "work-1",
+                            },
+                        }
+                    ),
                 },
             ],
-            "scheduler_activation_settlements": [
-                {"activation_id": "activation:message:message-create"},
-                {"activation_id": "activation:message:message-resume"},
-            ],
-            "scheduler_missing_settlements": [],
-            "scheduler_agent_slots": [
+            "execution_protocol_outcomes": [
                 {
                     "agent_id": "default",
-                    "slot_kind": "idle",
-                    "activation_id": None,
-                }
+                    "outcome_id": "outcome-lifecycle",
+                    "payload_json": json.dumps(
+                        {"attempt_id": "attempt-lifecycle"}
+                    ),
+                },
+                {
+                    "agent_id": "default",
+                    "outcome_id": "outcome-resume",
+                    "payload_json": json.dumps({"attempt_id": "attempt-resume"}),
+                },
             ],
         }
 
@@ -2014,20 +2047,26 @@ class DockerE2ERunnerTests(unittest.TestCase):
             harness,
             snapshot,
             work_item_id="work-1",
-            expected_admission_kinds=("wait_resume",),
+            expected_source_kinds=("triggered_wait",),
             lifecycle_message_ids={"message-create"},
         )
 
-        snapshot["scheduler_activations"][0]["work_item_id"] = "work-1"
+        lifecycle = json.loads(
+            snapshot["execution_protocol_attempts"][0]["payload_json"]
+        )
+        lifecycle["binding"] = {"kind": "work_item", "work_item_id": "work-1"}
+        snapshot["execution_protocol_attempts"][0]["payload_json"] = json.dumps(
+            lifecycle
+        )
         with self.assertRaisesRegex(
             AssertionError,
-            "lifecycle activations did not settle without claiming a WorkItem",
+            "lifecycle attempts did not settle without claiming a WorkItem",
         ):
             runner.require_scheduler_engine_activation_chain(
                 harness,
                 snapshot,
                 work_item_id="work-1",
-                expected_admission_kinds=("wait_resume",),
+                expected_source_kinds=("triggered_wait",),
                 lifecycle_message_ids={"message-create"},
             )
 
@@ -2074,40 +2113,72 @@ class DockerE2ERunnerTests(unittest.TestCase):
             )
 
     def test_checkpoint_restart_lineage_binds_wait_generation(self) -> None:
+        def attempt(
+            attempt_id: str,
+            message_id: str,
+            generation: int,
+            identity: dict[str, object],
+        ) -> dict[str, object]:
+            return {
+                "attempt_id": attempt_id,
+                "source_message_id": message_id,
+                "source": {"identity": identity},
+                "binding": {"kind": "work_item", "work_item_id": "work-1"},
+                "admitted_fences": {"work_item_generation": generation},
+            }
+
         before_restart_snapshot = {
-            "scheduler_activations": [
+            "execution_protocol_attempts": [
                 {
-                    "activation_id": "activation:schedule",
-                    "work_item_id": "work-1",
-                    "admitted_generation": 1,
-                    "admission_kind": "scheduling",
-                    "idempotency_key": "work-queue-attempt:activation:schedule",
+                    "payload_json": json.dumps(
+                        attempt(
+                            "attempt-schedule",
+                            "message-schedule",
+                            1,
+                            {
+                                "kind": "work_item_continuation",
+                                "work_item_id": "work-1",
+                            },
+                        )
+                    ),
                 }
             ]
         }
         snapshot = {
-            "scheduler_activations": [
+            "execution_protocol_attempts": [
                 {
-                    "activation_id": "activation:schedule",
-                    "work_item_id": "work-1",
-                    "admitted_generation": 1,
-                    "admission_kind": "scheduling",
-                    "idempotency_key": "work-queue-attempt:activation:schedule",
+                    "payload_json": json.dumps(
+                        attempt(
+                            "attempt-schedule",
+                            "message-schedule",
+                            1,
+                            {
+                                "kind": "work_item_continuation",
+                                "work_item_id": "work-1",
+                            },
+                        )
+                    ),
                 },
                 {
-                    "activation_id": "activation:resume",
-                    "work_item_id": "work-1",
-                    "admitted_generation": 2,
-                    "admission_kind": "wait_resume",
-                    "idempotency_key": "wait-resume:wait-1:2:activation:resume",
+                    "payload_json": json.dumps(
+                        attempt(
+                            "attempt-resume",
+                            "message-resume",
+                            2,
+                            {
+                                "kind": "triggered_wait",
+                                "wait_id": "wait-1",
+                                "trigger_message_id": "message-resume",
+                            },
+                        )
+                    ),
                 },
             ],
-            "scheduler_wait_generations": [
+            "wait_conditions": [
                 {
-                    "wait_id": "wait-1",
-                    "owner_work_item_id": "work-1",
-                    "generation": 2,
-                    "lifecycle_state": "resolved",
+                    "wait_condition_id": "wait-1",
+                    "work_item_id": "work-1",
+                    "status": "resolved",
                 }
             ],
         }
@@ -2119,12 +2190,16 @@ class DockerE2ERunnerTests(unittest.TestCase):
             wait_id="wait-1",
         )
 
-        snapshot["scheduler_activations"][1]["idempotency_key"] = (
-            "wait-resume:other-wait:2:activation:resume"
+        resume = json.loads(
+            snapshot["execution_protocol_attempts"][1]["payload_json"]
+        )
+        resume["source"]["identity"]["wait_id"] = "other-wait"
+        snapshot["execution_protocol_attempts"][1]["payload_json"] = json.dumps(
+            resume
         )
         with self.assertRaisesRegex(
             AssertionError,
-            "wait-resume activation mismatch",
+            "wait-resume attempt mismatch",
         ):
             runner.require_checkpoint_restart_activation_lineage(
                 before_restart_snapshot,

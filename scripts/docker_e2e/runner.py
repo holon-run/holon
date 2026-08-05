@@ -1465,8 +1465,28 @@ class CaseHarness:
                 "wait_conditions": sqlite_rows(
                     connection,
                     "SELECT wait_condition_id, agent_id, work_item_id, status, kind, "
-                    "subject_ref, waiting_for, last_turn_id, payload_json "
+                    "subject_ref, waiting_for, last_turn_id, trigger_message_id, "
+                    "payload_json "
                     "FROM wait_conditions ORDER BY created_at",
+                ),
+                "execution_protocol_attempts": sqlite_rows(
+                    connection,
+                    "SELECT agent_id, attempt_id, lifecycle_state, terminal_outcome_id, "
+                    "payload_json FROM execution_protocol_attempts "
+                    "ORDER BY agent_id, attempt_id",
+                ),
+                "execution_protocol_work_items": sqlite_rows(
+                    connection,
+                    "SELECT agent_id, work_item_id, source_revision, generation, "
+                    "lifecycle_state, payload_json "
+                    "FROM execution_protocol_work_items "
+                    "ORDER BY agent_id, work_item_id",
+                ),
+                "execution_protocol_outcomes": sqlite_rows(
+                    connection,
+                    "SELECT agent_id, outcome_id, attempt_id, payload_json "
+                    "FROM execution_protocol_outcomes "
+                    "ORDER BY agent_id, outcome_id",
                 ),
                 "scheduler_work_demands": sqlite_rows(
                     connection,
@@ -1559,15 +1579,15 @@ def require_scheduler_engine_activation_chain(
     snapshot: dict[str, Any],
     *,
     work_item_id: str,
-    expected_admission_kinds: tuple[str, ...],
+    expected_source_kinds: tuple[str, ...],
     lifecycle_message_ids: set[str] | None = None,
 ) -> None:
     if harness.canonical_scheduler_enabled:
-        require_scheduler_activation_chain(
+        require_execution_attempt_chain(
             snapshot,
             agent_id=harness.agent_id,
             work_item_id=work_item_id,
-            expected_admission_kinds=expected_admission_kinds,
+            expected_source_kinds=expected_source_kinds,
             lifecycle_message_ids=lifecycle_message_ids or set(),
         )
         return
@@ -1607,19 +1627,28 @@ def require_scheduler_engine_wait_resolution(
     work_item_id: str,
     wait_ids: set[str],
 ) -> None:
+    if harness.canonical_scheduler_enabled:
+        waits = [
+            row
+            for row in snapshot["wait_conditions"]
+            if row["wait_condition_id"] in wait_ids
+        ]
+        require(
+            len(waits) == len(wait_ids)
+            and all(
+                row["agent_id"] == harness.agent_id
+                and row["work_item_id"] == work_item_id
+                and row["status"] == "resolved"
+                for row in waits
+            ),
+            f"canonical waits did not resolve exactly once: {waits}",
+        )
+        return
     canonical_waits = [
         row
         for row in snapshot["scheduler_wait_generations"]
         if row["wait_id"] in wait_ids or row["owner_work_item_id"] == work_item_id
     ]
-    if harness.canonical_scheduler_enabled:
-        require(
-            len(canonical_waits) == len(wait_ids)
-            and all(row["lifecycle_state"] == "resolved" for row in canonical_waits)
-            and all(row["consuming_activation_id"] is None for row in canonical_waits),
-            f"canonical waits did not resolve exactly once: {canonical_waits}",
-        )
-        return
     require(
         not canonical_waits,
         f"legacy scheduler wrote canonical wait generations: {canonical_waits}",
@@ -1697,76 +1726,116 @@ def require_scheduler_wait_terminal(
     return waits
 
 
-def require_scheduler_activation_chain(
+def execution_attempt(row: dict[str, Any]) -> dict[str, Any]:
+    return json.loads(row["payload_json"])
+
+
+def execution_outcome(row: dict[str, Any]) -> dict[str, Any]:
+    return json.loads(row["payload_json"])
+
+
+def execution_binding_work_item(attempt: dict[str, Any]) -> str | None:
+    binding = attempt.get("binding", {})
+    if binding.get("kind") == "work_item":
+        return binding.get("work_item_id")
+    return None
+
+
+def require_execution_work_items_terminal(
+    snapshot: dict[str, Any],
+    *,
+    agent_id: str,
+    work_item_ids: set[str],
+    label: str,
+) -> None:
+    records = [
+        row
+        for row in snapshot["execution_protocol_work_items"]
+        if row["agent_id"] == agent_id and row["work_item_id"] in work_item_ids
+    ]
+    require(
+        len(records) == len(work_item_ids)
+        and all(row["lifecycle_state"] == "terminal" for row in records),
+        f"{label} execution WorkItems did not converge: {records}",
+    )
+
+
+def require_execution_attempt_chain(
     snapshot: dict[str, Any],
     *,
     agent_id: str,
     work_item_id: str,
-    expected_admission_kinds: tuple[str, ...],
+    expected_source_kinds: tuple[str, ...],
     lifecycle_message_ids: set[str],
 ) -> list[dict[str, Any]]:
-    work_item_activations = [
-        row
-        for row in snapshot["scheduler_activations"]
-        if row["work_item_id"] == work_item_id
+    attempts = [
+        (row, execution_attempt(row))
+        for row in snapshot["execution_protocol_attempts"]
+        if row["agent_id"] == agent_id
     ]
-    lifecycle_activation_ids = {
-        f"activation:message:{message_id}" for message_id in lifecycle_message_ids
-    }
-    lifecycle_activations = [
-        row
-        for row in snapshot["scheduler_activations"]
-        if row["activation_id"] in lifecycle_activation_ids
+    work_item_attempts = [
+        (row, attempt)
+        for row, attempt in attempts
+        if execution_binding_work_item(attempt) == work_item_id
+    ]
+    lifecycle_attempts = [
+        (row, attempt)
+        for row, attempt in attempts
+        if attempt.get("source_message_id") in lifecycle_message_ids
+        and attempt.get("binding")
+        == {"kind": "agent_lifecycle", "agent_id": agent_id}
     ]
     require(
-        len(lifecycle_activations) == len(lifecycle_activation_ids)
-        and all(
-            row["work_item_id"] is None
-            and row["lifecycle_state"] == "settled"
-            for row in lifecycle_activations
-        ),
-        "canonical lifecycle activations did not settle without claiming a "
-        f"WorkItem: {lifecycle_activations}",
-    )
-    require(
-        sorted(row["admission_kind"] for row in work_item_activations)
-        == sorted(expected_admission_kinds)
+        len(lifecycle_attempts) == len(lifecycle_message_ids)
         and all(
             row["lifecycle_state"] == "settled"
-            for row in work_item_activations
+            and row["terminal_outcome_id"] is not None
+            for row, _ in lifecycle_attempts
         ),
-        "canonical WorkItem activation lineage did not match the expected "
-        f"admission kinds {expected_admission_kinds}: {work_item_activations}",
+        "canonical lifecycle attempts did not settle without claiming a "
+        f"WorkItem: {[attempt for _, attempt in lifecycle_attempts]}",
     )
-    activations = work_item_activations + lifecycle_activations
-    activation_ids = {row["activation_id"] for row in activations}
-    settlements = [
-        row
-        for row in snapshot["scheduler_activation_settlements"]
-        if row["activation_id"] in activation_ids
-    ]
     require(
-        len(settlements) == len(activations),
-        f"canonical settlements are missing or duplicated: {settlements}",
+        sorted(
+            attempt.get("source", {}).get("identity", {}).get("kind")
+            for _, attempt in work_item_attempts
+        )
+        == sorted(expected_source_kinds)
+        and all(
+            row["lifecycle_state"] == "settled"
+            and row["terminal_outcome_id"] is not None
+            for row, _ in work_item_attempts
+        ),
+        "canonical WorkItem attempt lineage did not match the expected "
+        f"source kinds {expected_source_kinds}: "
+        f"{[attempt for _, attempt in work_item_attempts]}",
+    )
+    terminal_attempts = work_item_attempts + lifecycle_attempts
+    outcome_by_id = {
+        row["outcome_id"]: execution_outcome(row)
+        for row in snapshot["execution_protocol_outcomes"]
+        if row["agent_id"] == agent_id
+    }
+    require(
+        all(
+            row["terminal_outcome_id"] in outcome_by_id
+            and outcome_by_id[row["terminal_outcome_id"]]["attempt_id"]
+            == row["attempt_id"]
+            for row, _ in terminal_attempts
+        ),
+        "canonical execution outcomes are missing or mismatched: "
+        f"attempts={[attempt for _, attempt in terminal_attempts]}, "
+        f"outcomes={outcome_by_id}",
     )
     require(
         not [
             row
-            for row in snapshot["scheduler_missing_settlements"]
-            if row["activation_id"] in activation_ids
+            for row in snapshot["execution_protocol_attempts"]
+            if row["agent_id"] == agent_id and row["lifecycle_state"] == "open"
         ],
-        "canonical activation chain retained missing settlement evidence",
+        "canonical execution lane retained an open attempt",
     )
-    slots = [
-        row for row in snapshot["scheduler_agent_slots"] if row["agent_id"] == agent_id
-    ]
-    require(
-        len(slots) == 1
-        and slots[0]["slot_kind"] == "idle"
-        and slots[0]["activation_id"] is None,
-        f"canonical activation slot was not released: {slots}",
-    )
-    return activations
+    return [attempt for _, attempt in terminal_attempts]
 
 
 def require_checkpoint_restart_activation_lineage(
@@ -1776,60 +1845,57 @@ def require_checkpoint_restart_activation_lineage(
     work_item_id: str,
     wait_id: str,
 ) -> None:
-    before_restart_activations = [
-        row
-        for row in before_restart_snapshot["scheduler_activations"]
-        if row["work_item_id"] == work_item_id
+    before_restart_attempts = [
+        execution_attempt(row)
+        for row in before_restart_snapshot["execution_protocol_attempts"]
+        if execution_binding_work_item(execution_attempt(row)) == work_item_id
     ]
     require(
-        len(before_restart_activations) == 1
-        and before_restart_activations[0]["admitted_generation"] == 1
-        and before_restart_activations[0]["admission_kind"] == "scheduling"
-        and str(before_restart_activations[0]["idempotency_key"]).startswith(
-            "work-queue-attempt:"
-        ),
+        len(before_restart_attempts) == 1
+        and before_restart_attempts[0]["source"]["identity"]["kind"]
+        == "work_item_continuation"
+        and before_restart_attempts[0]["admitted_fences"]["work_item_generation"] == 1,
         "checkpoint replay restart boundary did not preserve exactly the initial "
-        f"scheduling activation: {before_restart_activations}",
+        f"scheduling attempt: {before_restart_attempts}",
     )
-    activations = sorted(
+    attempts = sorted(
         (
-            row
-            for row in snapshot["scheduler_activations"]
-            if row["work_item_id"] == work_item_id
+            execution_attempt(row)
+            for row in snapshot["execution_protocol_attempts"]
+            if execution_binding_work_item(execution_attempt(row)) == work_item_id
         ),
-        key=lambda row: row["admitted_generation"],
+        key=lambda attempt: attempt["admitted_fences"]["work_item_generation"],
     )
     require(
-        len(activations) == 2,
-        f"checkpoint replay expected exactly two WorkItem activations: {activations}",
+        len(attempts) == 2,
+        f"checkpoint replay expected exactly two WorkItem attempts: {attempts}",
     )
-    scheduling, wait_resume = activations
+    scheduling, wait_resume = attempts
     require(
-        scheduling["admitted_generation"] == 1
-        and scheduling["admission_kind"] == "scheduling"
-        and str(scheduling["idempotency_key"]).startswith("work-queue-attempt:"),
-        f"checkpoint replay initial scheduling activation mismatch: {scheduling}",
-    )
-    expected_wait_resume_key = (
-        f"wait-resume:{wait_id}:2:{wait_resume['activation_id']}"
+        scheduling["admitted_fences"]["work_item_generation"] == 1
+        and scheduling["source"]["identity"]["kind"] == "work_item_continuation",
+        f"checkpoint replay initial scheduling attempt mismatch: {scheduling}",
     )
     require(
-        wait_resume["admitted_generation"] == 2
-        and wait_resume["admission_kind"] == "wait_resume"
-        and wait_resume["idempotency_key"] == expected_wait_resume_key,
-        f"checkpoint replay wait-resume activation mismatch: {wait_resume}",
+        wait_resume["admitted_fences"]["work_item_generation"] == 2
+        and wait_resume["source"]["identity"]
+        == {
+            "kind": "triggered_wait",
+            "wait_id": wait_id,
+            "trigger_message_id": wait_resume["source_message_id"],
+        },
+        f"checkpoint replay wait-resume attempt mismatch: {wait_resume}",
     )
-    wait_generations = [
+    waits = [
         row
-        for row in snapshot["scheduler_wait_generations"]
-        if row["wait_id"] == wait_id
+        for row in snapshot["wait_conditions"]
+        if row["wait_condition_id"] == wait_id
     ]
     require(
-        len(wait_generations) == 1
-        and wait_generations[0]["owner_work_item_id"] == work_item_id
-        and wait_generations[0]["generation"] == 2
-        and wait_generations[0]["lifecycle_state"] == "resolved",
-        f"checkpoint replay wait generation mismatch: {wait_generations}",
+        len(waits) == 1
+        and waits[0]["work_item_id"] == work_item_id
+        and waits[0]["status"] == "resolved",
+        f"checkpoint replay wait identity mismatch: {waits}",
     )
 
 
@@ -1855,64 +1921,39 @@ def require_lifecycle_wait_adoption(
         f"adopted wait source turn is missing or duplicated: {source_turns}",
     )
     source_message_id = source_turns[0]["trigger_message_id"]
-    activation_id = f"activation:message:{source_message_id}"
-    activations = [
-        row
-        for row in snapshot["scheduler_activations"]
-        if row["agent_id"] == agent_id and row["activation_id"] == activation_id
-    ]
-    require(
-        len(activations) == 1
-        and activations[0]["work_item_id"] is None
-        and activations[0]["lifecycle_state"] == "settled"
-        and activations[0]["admitted_generation"] > 0,
-        f"lifecycle adoption source activation is invalid: {activations}",
-    )
-    settlements = [
-        row
-        for row in snapshot["scheduler_activation_settlements"]
-        if row["agent_id"] == agent_id and row["activation_id"] == activation_id
-    ]
-    settlement = json.loads(settlements[0]["payload_json"]) if len(settlements) == 1 else {}
-    require(
-        len(settlements) == 1
-        and settlement.get("turn_terminal") == source_turn_id
-        and settlement.get("disposition") == {"kind": "work_continues"}
-        and settlement.get("agent_dispatch") == {"kind": "open"}
-        and settlement.get("operator_delivery") is None,
-        f"lifecycle adoption source did not settle WorkContinues: {settlements}",
-    )
-    adoption_rows = [
-        row
-        for row in snapshot["scheduler_protocol_command_results"]
+    attempts = [
+        (row, execution_attempt(row))
+        for row in snapshot["execution_protocol_attempts"]
         if row["agent_id"] == agent_id
-        and row["command_kind"] == "adopt_activation_work_state"
-        and row["command_identity"] == f"{activation_id}:{work_item_id}"
+        and execution_attempt(row).get("source_message_id") == source_message_id
     ]
     require(
-        len(adoption_rows) == 1
-        and adoption_rows[0]["decision"] == "legacy_work_state_adopted"
-        and adoption_rows[0]["conflict_kind"] is None
-        and adoption_rows[0]["conflict_code"] is None,
-        f"lifecycle wait adoption command is missing or conflicted: {adoption_rows}",
+        len(attempts) == 1
+        and attempts[0][0]["lifecycle_state"] == "settled"
+        and attempts[0][1].get("binding")
+        == {"kind": "agent_lifecycle", "agent_id": agent_id},
+        f"lifecycle handoff source attempt is invalid: {attempts}",
     )
-    post_state = json.loads(adoption_rows[0]["post_state_fence_json"])
-    adopted_work = post_state.get("work", {}).get(work_item_id, {})
-    adopted_generation = adopted_work.get("scheduling_generation")
-    references = json.loads(adoption_rows[0]["result_references_json"])
+    terminal_outcome_id = attempts[0][0]["terminal_outcome_id"]
+    outcomes = [
+        row
+        for row in snapshot["execution_protocol_outcomes"]
+        if row["agent_id"] == agent_id and row["outcome_id"] == terminal_outcome_id
+    ]
+    outcome = execution_outcome(outcomes[0]) if len(outcomes) == 1 else {}
     require(
-        isinstance(adopted_generation, int)
-        and adopted_generation > 0
-        and adopted_work.get("metadata_revision") == adopted_generation
-        and adopted_work.get("status")
-        == {"kind": "waiting", "wait_id": wait["wait_condition_id"]}
-        and set(references)
+        len(outcomes) == 1
+        and outcome.get("attempt_id") == attempts[0][0]["attempt_id"]
+        and outcome.get("outcome")
         == {
-            f"activation:{activation_id}",
-            f"work:{work_item_id}",
-            f"wait:{wait['wait_condition_id']}:generation:{adopted_generation}",
+            "owner": "conversation",
+            "outcome": {
+                "kind": "handoff_to_work_item_wait",
+                "work_item_id": work_item_id,
+                "wait": {"wait_id": wait["wait_condition_id"]},
+            },
         },
-        f"lifecycle adoption did not preserve wait ownership/generation: {adoption_rows}",
+        f"lifecycle wait handoff outcome is missing or mismatched: {outcomes}",
     )
 
 
@@ -2516,22 +2557,22 @@ def run_scheduler_task_wait_resume_case(
         harness,
         snapshot,
         work_item_id=work_item_id,
-        expected_admission_kinds=("scheduling", "wait_resume", "wait_resume"),
+        expected_source_kinds=("work_item_continuation", "task_result", "triggered_wait"),
         lifecycle_message_ids={
             harness.prompt_scope("scheduler-task-wait-seed")["message_id"]
         },
     )
     if harness.canonical_scheduler_enabled:
         activation_causes = [
-            json.loads(row["payload_json"])["activation"]["cause"]["kind"]
-            for row in snapshot["scheduler_activations"]
-            if row["work_item_id"] == work_item_id
+            execution_attempt(row)["source"]["identity"]["kind"]
+            for row in snapshot["execution_protocol_attempts"]
+            if execution_binding_work_item(execution_attempt(row)) == work_item_id
         ]
         require(
             sorted(activation_causes)
-            == ["task_rejoin", "wait_resume", "work_item_runnable"],
-            "canonical task/wait activation causes did not preserve scheduling, "
-            f"task-rejoin, and external-resume provenance: {activation_causes}",
+            == ["task_result", "triggered_wait", "work_item_continuation"],
+            "canonical task/wait execution sources did not preserve scheduling, "
+            f"task-result, and external-resume provenance: {activation_causes}",
         )
     task_waits = require_scheduler_wait_terminal(
         harness,
@@ -2854,21 +2895,17 @@ def run_scheduler_multi_workitem_case(
             harness,
             snapshot,
             work_item_id=wid,
-            expected_admission_kinds=("scheduling",),
+            expected_source_kinds=("work_item_continuation",),
             lifecycle_message_ids={
                 harness.prompt_scope("scheduler-multi-create")["message_id"]
             },
         )
     if harness.canonical_scheduler_enabled:
-        demands = [
-            row
-            for row in snapshot["scheduler_work_demands"]
-            if row["work_item_id"] in (work_item_a_id, work_item_b_id)
-        ]
-        require(
-            len(demands) == 2
-            and all(d["status"] == "terminal" for d in demands),
-            f"multi-WorkItem demands did not converge: {demands}",
+        require_execution_work_items_terminal(
+            snapshot,
+            agent_id=harness.agent_id,
+            work_item_ids={work_item_a_id, work_item_b_id},
+            label="multi-WorkItem",
         )
     harness.restart()
     restarted_items = harness.work_items("scheduler-multi-after-restart")
@@ -2970,7 +3007,7 @@ def run_scheduler_external_wait_resume_case(
         harness,
         snapshot,
         work_item_id=work_item_id,
-        expected_admission_kinds=("wait_resume",),
+        expected_source_kinds=("triggered_wait",),
         lifecycle_message_ids={
             harness.prompt_scope("scheduler-external-wait")["message_id"]
         },
@@ -3090,7 +3127,7 @@ def run_scheduler_operator_wait_resume_case(
         harness,
         snapshot,
         work_item_id=work_item_id,
-        expected_admission_kinds=("wait_resume",),
+        expected_source_kinds=("triggered_wait",),
         lifecycle_message_ids={
             harness.prompt_scope("scheduler-operator-wait")["message_id"]
         },
@@ -3252,7 +3289,7 @@ def run_scheduler_concurrent_claim_fencing_case(
         harness,
         snapshot,
         work_item_id=work_item_a_id,
-        expected_admission_kinds=("wait_resume",),
+        expected_source_kinds=("triggered_wait",),
         lifecycle_message_ids={
             harness.prompt_scope("scheduler-concurrent-create")["message_id"]
         },
@@ -3261,7 +3298,7 @@ def run_scheduler_concurrent_claim_fencing_case(
         harness,
         snapshot,
         work_item_id=work_item_b_id,
-        expected_admission_kinds=("scheduling",),
+        expected_source_kinds=("work_item_continuation",),
         lifecycle_message_ids=set(),
     )
     waits = require_scheduler_wait_terminal(
@@ -3279,15 +3316,11 @@ def run_scheduler_concurrent_claim_fencing_case(
         wait_ids={wait["wait_condition_id"] for wait in waits},
     )
     if harness.canonical_scheduler_enabled:
-        demands = [
-            row
-            for row in snapshot["scheduler_work_demands"]
-            if row["work_item_id"] in (work_item_a_id, work_item_b_id)
-        ]
-        require(
-            len(demands) == 2
-            and all(d["status"] == "terminal" for d in demands),
-            f"concurrent demands did not converge: {demands}",
+        require_execution_work_items_terminal(
+            snapshot,
+            agent_id=harness.agent_id,
+            work_item_ids={work_item_a_id, work_item_b_id},
+            label="concurrent",
         )
     harness.restart()
     restarted_items = harness.work_items("scheduler-concurrent-after-restart")
@@ -3441,7 +3474,7 @@ def run_scheduler_operator_interject_during_wait_case(
         harness,
         snapshot,
         work_item_id=work_item_a_id,
-        expected_admission_kinds=("wait_resume",),
+        expected_source_kinds=("triggered_wait",),
         lifecycle_message_ids={
             harness.prompt_scope("scheduler-interject-create")["message_id"]
         },
@@ -3450,7 +3483,7 @@ def run_scheduler_operator_interject_during_wait_case(
         harness,
         snapshot,
         work_item_id=work_item_b_id,
-        expected_admission_kinds=("scheduling",),
+        expected_source_kinds=("work_item_continuation",),
         lifecycle_message_ids={
             harness.prompt_scope("scheduler-interject-b-create")["message_id"]
         },
@@ -3468,15 +3501,11 @@ def run_scheduler_operator_interject_during_wait_case(
         wait_ids={wait["wait_condition_id"] for wait in waits},
     )
     if harness.canonical_scheduler_enabled:
-        demands = [
-            row
-            for row in snapshot["scheduler_work_demands"]
-            if row["work_item_id"] in (work_item_a_id, work_item_b_id)
-        ]
-        require(
-            len(demands) == 2
-            and all(d["status"] == "terminal" for d in demands),
-            f"interject demands did not converge: {demands}",
+        require_execution_work_items_terminal(
+            snapshot,
+            agent_id=harness.agent_id,
+            work_item_ids={work_item_a_id, work_item_b_id},
+            label="interject",
         )
     harness.restart()
     restarted_items = harness.work_items("scheduler-interject-after-restart")
@@ -3599,7 +3628,7 @@ def run_scheduler_compaction_continuity_case(
         harness,
         snapshot,
         work_item_id=work_item_id,
-        expected_admission_kinds=("wait_resume",),
+        expected_source_kinds=("triggered_wait",),
         lifecycle_message_ids={
             harness.prompt_scope("scheduler-compaction-create")["message_id"]
         },
@@ -3714,7 +3743,7 @@ def run_scheduler_worktree_isolation_case(
         harness,
         snapshot,
         work_item_id=work_item_id,
-        expected_admission_kinds=(),
+        expected_source_kinds=(),
         lifecycle_message_ids={
             harness.prompt_scope("scheduler-worktree-lifecycle")["message_id"]
         },
@@ -3804,7 +3833,7 @@ def run_scheduler_spawn_agent_supervision_case(
         harness,
         snapshot,
         work_item_id=work_item_id,
-        expected_admission_kinds=(),
+        expected_source_kinds=(),
         lifecycle_message_ids={
             harness.prompt_scope("scheduler-spawn-and-complete")["message_id"]
         },
@@ -3933,7 +3962,7 @@ def run_scheduler_checkpoint_replay_case(
         harness,
         snapshot,
         work_item_id=work_item_a_id,
-        expected_admission_kinds=("scheduling", "wait_resume"),
+        expected_source_kinds=("work_item_continuation", "triggered_wait"),
         lifecycle_message_ids={
             harness.prompt_scope("scheduler-replay-create")["message_id"]
         },
@@ -3942,7 +3971,7 @@ def run_scheduler_checkpoint_replay_case(
         harness,
         snapshot,
         work_item_id=work_item_b_id,
-        expected_admission_kinds=("scheduling",),
+        expected_source_kinds=("work_item_continuation",),
         lifecycle_message_ids={
             harness.prompt_scope("scheduler-replay-create")["message_id"]
         },
@@ -3968,15 +3997,11 @@ def run_scheduler_checkpoint_replay_case(
             work_item_id=work_item_a_id,
             wait_id=waits[0]["wait_condition_id"],
         )
-        demands = [
-            row
-            for row in snapshot["scheduler_work_demands"]
-            if row["work_item_id"] in (work_item_a_id, work_item_b_id)
-        ]
-        require(
-            len(demands) == 2
-            and all(d["status"] == "terminal" for d in demands),
-            f"replay demands did not converge: {demands}",
+        require_execution_work_items_terminal(
+            snapshot,
+            agent_id=harness.agent_id,
+            work_item_ids={work_item_a_id, work_item_b_id},
+            label="replay",
         )
 
 
