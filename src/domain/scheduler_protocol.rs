@@ -2067,7 +2067,6 @@ fn converge_authority(
                 repair.expected_state != generation.state
                     || repair.wait_id != wait_id
                     || repair.wait_generation != wait_generation
-                    || repair.expected_owner != expected_owner
             })
         {
             return rejected_command(

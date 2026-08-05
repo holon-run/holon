@@ -139,6 +139,7 @@ use subagent::sanitize_subagent_result;
 use turn::LoopControlOptions;
 
 pub(crate) const ENQUEUE_AGENT_STATE_MAX_ATTEMPTS: usize = 3;
+const AUTHORITY_BLOCKED_RETRY_SECONDS: i64 = 30;
 
 #[derive(Debug, Clone)]
 pub(super) struct WorkItemCompletionReportPromotion {
@@ -4250,7 +4251,8 @@ impl RuntimeHandle {
                 }
                 scheduler_executor::RunLoopPoll::Message(scheduled) => scheduled,
                 scheduler_executor::RunLoopPoll::AuthorityBlocked => {
-                    let retry_at = self.now() + chrono::Duration::seconds(30);
+                    let retry_at =
+                        self.now() + chrono::Duration::seconds(AUTHORITY_BLOCKED_RETRY_SECONDS);
                     tokio::select! {
                         _ = self.inner.notify.notified() => {}
                         _ = self.inner.clock.sleep_until(retry_at) => {}
