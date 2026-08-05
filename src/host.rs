@@ -3055,6 +3055,11 @@ mod tests {
 
     use crate::{
         config::{provider_registry_for_tests, ControlAuthMode, ModelRouteRef},
+        domain::execution_protocol::{
+            AdmittedFences, ExecutionAttempt, ExecutionAttemptState, ExecutionBinding,
+            ExecutionOrigin, ExecutionPriority, ExecutionProvenance, ExecutionSource,
+            ExecutionSourceIdentity, ExecutionTrust,
+        },
         provider::{AgentProvider, ProviderTurnRequest, ProviderTurnResponse, StubProvider},
         runtime::RuntimeHandle,
         runtime_db::RuntimeDb,
@@ -4709,6 +4714,8 @@ mod tests {
                 resolved_at: None,
                 cancelled_at: None,
                 turn_id: None,
+                trigger_message_id: None,
+                triggered_at: None,
             })
             .unwrap();
 
@@ -4815,6 +4822,8 @@ mod tests {
                 resolved_at: None,
                 cancelled_at: None,
                 turn_id: None,
+                trigger_message_id: None,
+                triggered_at: None,
             })
             .unwrap();
 
@@ -5944,11 +5953,73 @@ mod tests {
             .append_queue_entry(&make_queue_entry(&msg_a, QueueEntryStatus::Dequeued))
             .unwrap();
 
-        // Has scheduler activation: should NOT be recovered
+        // Has unified execution attempt: should NOT be recovered.
         let msg_b = make_message("msg-activated");
         storage.append_message(&msg_b).unwrap();
         storage
             .append_queue_entry(&make_queue_entry(&msg_b, QueueEntryStatus::Dequeued))
+            .unwrap();
+        let attempt = ExecutionAttempt {
+            attempt_id: format!("activation:message:{}", msg_b.id),
+            agent_id: agent_id.clone(),
+            source_message_id: Some(msg_b.id.clone()),
+            source: ExecutionSource {
+                identity: ExecutionSourceIdentity::QueueMessage {
+                    message_id: msg_b.id.clone(),
+                },
+                generation: 1,
+            },
+            binding: ExecutionBinding::AgentLifecycle {
+                agent_id: agent_id.clone(),
+            },
+            provenance: ExecutionProvenance {
+                origin: ExecutionOrigin::Operator,
+                trust: ExecutionTrust::OperatorInstruction,
+                priority: ExecutionPriority::Normal,
+                correlation_id: None,
+                causation_id: None,
+            },
+            admitted_fences: AdmittedFences {
+                source_revision: 1,
+                work_item_source_revision: None,
+                work_item_generation: None,
+                rejoin: None,
+                agent_control_revision: 1,
+                host_registry_revision: 1,
+            },
+            state: ExecutionAttemptState::Open,
+            run_id: None,
+            turn_id: None,
+            recovery_of_attempt_id: None,
+            terminal_outcome_id: None,
+            admitted_at: Utc::now().to_rfc3339(),
+            terminal_at: None,
+        };
+        runtime_db
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO execution_protocol_attempts (
+                       agent_id, attempt_id, lifecycle_state,
+                       source_identity_json, source_generation,
+                       recovery_of_attempt_id, terminal_outcome_id, payload_json
+                     ) VALUES (?1, ?2, 'open', ?3, ?4, NULL, NULL, ?5)",
+                    rusqlite::params![
+                        &agent_id,
+                        &attempt.attempt_id,
+                        serde_json::to_string(&attempt.source.identity)?,
+                        attempt.source.generation as i64,
+                        serde_json::to_string(&attempt)?,
+                    ],
+                )?;
+                Ok(())
+            })
+            .expect("insert execution attempt");
+
+        // A legacy activation without a unified attempt no longer protects a claim.
+        let msg_legacy = make_message("msg-legacy-activation");
+        storage.append_message(&msg_legacy).unwrap();
+        storage
+            .append_queue_entry(&make_queue_entry(&msg_legacy, QueueEntryStatus::Dequeued))
             .unwrap();
         runtime_db
             .transaction(|tx| {
@@ -5961,14 +6032,14 @@ mod tests {
                      VALUES (?, ?, '', 'work_item', 'test-work', 'test-work', 0, 'scheduling', NULL, NULL, NULL, 'running', '', '{}', ?, ?)",
                     rusqlite::params![
                         &agent_id,
-                        format!("activation:message:{}", msg_b.id),
+                        format!("activation:message:{}", msg_legacy.id),
                         Utc::now().timestamp_millis(),
                         Utc::now().timestamp_millis(),
                     ],
                 )?;
                 Ok(())
             })
-            .expect("insert activation");
+            .expect("insert legacy activation");
 
         // Has terminal turn: should NOT be recovered
         let msg_c = make_message("msg-terminal");
@@ -5998,7 +6069,7 @@ mod tests {
         let entries = storage.latest_queue_entries().unwrap();
         for entry in &entries {
             match entry.message_id.as_str() {
-                "msg-orphaned" => assert_eq!(
+                "msg-orphaned" | "msg-legacy-activation" => assert_eq!(
                     entry.status,
                     QueueEntryStatus::Interrupted,
                     "orphaned should be recovered"

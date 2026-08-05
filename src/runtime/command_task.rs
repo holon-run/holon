@@ -668,6 +668,7 @@ impl RuntimeHandle {
                             true,
                         ),
                         None,
+                        None,
                     )
                     .await;
                 runtime
@@ -796,6 +797,7 @@ impl RuntimeHandle {
             terminal.status.clone(),
             detail.clone(),
             Some(&result_message.id),
+            Some(&result_message),
         )
         .await?;
         let enqueue_result = self.enqueue(result_message).await;
@@ -945,6 +947,7 @@ impl RuntimeHandle {
         status: TaskStatus,
         detail: serde_json::Value,
         parent_message_id: Option<&str>,
+        message_evidence: Option<&MessageEnvelope>,
     ) -> Result<()> {
         let fallback = TaskRecord {
             id: task_record.id.clone(),
@@ -959,11 +962,12 @@ impl RuntimeHandle {
             detail: Some(self.task_detail_preserving_rejoin_contract(task_record, detail)),
             recovery: task_record.recovery.clone(),
         };
-        self.apply_task_transition_silent(task_state_reducer::TaskTransition::new(
-            &fallback,
-            "command_task_terminal_persisted",
-        ))
-        .await?;
+        let mut transition =
+            task_state_reducer::TaskTransition::new(&fallback, "command_task_terminal_persisted");
+        if let Some(message_evidence) = message_evidence {
+            transition = transition.with_message_evidence(message_evidence);
+        }
+        self.apply_task_transition_silent(transition).await?;
         Ok(())
     }
 

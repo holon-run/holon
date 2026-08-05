@@ -61,7 +61,7 @@ use crate::runtime::{
 };
 
 enum OperatorInterjectionPlan {
-    Attach(Vec<crate::domain::scheduler_protocol::ProtocolCommand>),
+    Admit,
     LegacyTurnDeferred {
         scenario_class: Option<crate::domain::scheduler_protocol::SchedulerScenarioClass>,
         effective_mode: crate::domain::scheduler_protocol::ScenarioMode,
@@ -432,14 +432,14 @@ impl RuntimeHandle {
                         break 'outer;
                     };
                     let expected_state = guard.state.clone();
-                    let protocol_commands = match self.operator_interjection_protocol_commands(
+                    match self.operator_interjection_plan(
                         agent_id,
                         &expected_state,
                         &message,
                         round,
                         boundary_str,
                     )? {
-                        OperatorInterjectionPlan::Attach(commands) => commands,
+                        OperatorInterjectionPlan::Admit => {}
                         OperatorInterjectionPlan::LegacyTurnDeferred {
                             scenario_class,
                             effective_mode,
@@ -456,7 +456,7 @@ impl RuntimeHandle {
                             )?;
                             break 'outer;
                         }
-                    };
+                    }
                     let mut committed_state = expected_state.clone();
                     committed_state.pending = guard.queue.len().saturating_sub(1);
                     let text = render_operator_interjection_text(&message);
@@ -512,7 +512,7 @@ impl RuntimeHandle {
                             ),
                             scheduler_claim_work_item: None,
                             scheduler_protocol_bootstrap: None,
-                            scheduler_protocol_commands: protocol_commands,
+                            scheduler_protocol_commands: Vec::new(),
                             agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
                                 expected: Some(Box::new(expected_state)),
                                 record: Box::new(committed_state.clone()),
@@ -531,9 +531,7 @@ impl RuntimeHandle {
                         Err(error) => {
                             let can_retry = attempt + 1
                                 < crate::runtime::ENQUEUE_AGENT_STATE_MAX_ATTEMPTS
-                                && crate::runtime::retryable_enqueue_agent_state_conflict(
-                                    &error, agent_id,
-                                );
+                                && crate::runtime::retryable_enqueue_conflict(&error, agent_id);
                             if !can_retry {
                                 return Err(error);
                             }
@@ -571,7 +569,7 @@ impl RuntimeHandle {
         Ok(follow_up_texts)
     }
 
-    fn operator_interjection_protocol_commands(
+    fn operator_interjection_plan(
         &self,
         agent_id: &str,
         expected_state: &crate::types::AgentState,
@@ -579,10 +577,7 @@ impl RuntimeHandle {
         round: usize,
         boundary: &str,
     ) -> Result<OperatorInterjectionPlan> {
-        use crate::domain::scheduler_protocol::{
-            ActivationInputAttachment, ActivationOrigin, ActivationProvenance, ActivationTrust,
-            AttachActivationInputCommand, ProtocolCommand, ScenarioMode,
-        };
+        use crate::domain::scheduler_protocol::ScenarioMode;
         use crate::types::ExecutionAdmissionProvenance;
 
         let execution_binding = expected_state
@@ -638,65 +633,42 @@ impl RuntimeHandle {
                 ));
             }
         };
-        let snapshot = self
+        let execution = self
             .inner
             .runtime_db
             .transitions()
-            .load_scheduler_protocol_snapshot_if_initialized(agent_id)?
+            .load_execution_protocol_state_if_initialized(agent_id)?
             .ok_or_else(|| {
-                anyhow::anyhow!("operator interjection requires an initialized protocol partition")
+                anyhow::anyhow!("operator interjection requires unified execution authority")
             })?;
-        let activation = snapshot.activations.get(activation_id).ok_or_else(|| {
-            anyhow::anyhow!("operator interjection references an unknown canonical activation")
+        let attempt = execution.attempts.get(activation_id).ok_or_else(|| {
+            anyhow::anyhow!("operator interjection references an unknown execution attempt")
         })?;
-        if snapshot
-            .activation_admissions
-            .get(activation_id)
-            .is_none_or(|admission| {
-                admission.activation.provenance.source_id != execution_binding.source_message_id
-            })
+        if attempt.state != crate::domain::execution_protocol::ExecutionAttemptState::Open
+            || attempt.source_message_id.as_deref()
+                != Some(execution_binding.source_message_id.as_str())
         {
             return Err(anyhow::anyhow!(
-                "operator interjection activation disagrees with the source message"
+                "operator interjection attempt disagrees with the current source message"
             ));
         }
-        match &activation.owner {
-            crate::domain::scheduler_protocol::SchedulerOwner::WorkItem { work_item_id }
+        match &attempt.binding {
+            crate::domain::execution_protocol::ExecutionBinding::WorkItem { work_item_id }
                 if execution_binding.work_item_id.as_deref() == Some(work_item_id.as_str()) => {}
-            crate::domain::scheduler_protocol::SchedulerOwner::AgentLifecycle {
+            crate::domain::execution_protocol::ExecutionBinding::AgentLifecycle {
                 agent_id: owner_agent_id,
             } if owner_agent_id == agent_id && execution_binding.work_item_id.is_none() => {}
+            crate::domain::execution_protocol::ExecutionBinding::Conversation { .. }
+                if execution_binding.work_item_id.is_none() => {}
             _ => {
                 return Err(anyhow::anyhow!(
-                    "operator interjection execution binding disagrees with activation owner"
+                    "operator interjection execution binding disagrees with attempt owner"
                 ));
             }
         }
 
-        Ok(OperatorInterjectionPlan::Attach(vec![
-            ProtocolCommand::AttachActivationInput(AttachActivationInputCommand {
-                attachment: ActivationInputAttachment {
-                    id: format!("activation-input:{}", message.id),
-                    activation_id: activation_id.to_string(),
-                    owner: activation.owner.clone(),
-                    expected_admitted_generation: activation.admitted_generation,
-                    expected_dispatch_revision: snapshot.dispatch_revision,
-                    message_id: message.id.clone(),
-                    turn_id: execution_binding.turn_id.clone(),
-                    boundary: boundary.to_string(),
-                    round: u64::try_from(round)
-                        .map_err(|_| anyhow::anyhow!("operator interjection round exceeds u64"))?,
-                    provenance: ActivationProvenance {
-                        origin: ActivationOrigin::Operator,
-                        trust: ActivationTrust::OperatorInstruction,
-                        source_id: message.id.clone(),
-                        correlation_id: message.correlation_id.clone(),
-                        causation_id: message.causation_id.clone(),
-                    },
-                    created_at: message.created_at.to_rfc3339(),
-                },
-            }),
-        ]))
+        let _ = (message, round, boundary);
+        Ok(OperatorInterjectionPlan::Admit)
     }
 
     fn record_deferred_operator_interjection(

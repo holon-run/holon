@@ -76,6 +76,10 @@ pub mod test_support {
 mod tests {
     use super::*;
     use crate::{
+        domain::execution_protocol::{
+            ExecutionAttempt, ExecutionSourceIdentity, WaitReference, WorkItemExecutionRecord,
+            WorkItemExecutionState,
+        },
         domain::scheduler_protocol::{
             self, ActivationBinding, ActivationCause, ActivationDisposition,
             ActivationInputAttachment, ActivationLifecycleState, ActivationOrigin,
@@ -3987,6 +3991,8 @@ CREATE TABLE working_memory_deltas (
             resolved_at: Some(now + chrono::Duration::seconds(1)),
             cancelled_at: None,
             turn_id: Some("turn-1".into()),
+            trigger_message_id: None,
+            triggered_at: None,
         };
         db.wait_conditions().upsert(&terminal)?;
         let persisted_terminal = db.wait_conditions().latest_all()?;
@@ -4025,6 +4031,341 @@ CREATE TABLE working_memory_deltas (
     }
 
     #[test]
+    fn wait_owner_uniqueness_migration_cancels_older_unresolved_rows() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        {
+            let connection = db.connection()?;
+            connection.execute_batch(
+                "DROP INDEX wait_conditions_unresolved_agent_owner;
+                 DROP INDEX wait_conditions_unresolved_work_item_owner;
+                 DELETE FROM schema_migrations WHERE version = 44;",
+            )?;
+        }
+        let now = Utc::now();
+        let older = WaitConditionRecord {
+            id: "wait-owner-older".into(),
+            agent_id: "agent-a".into(),
+            work_item_id: Some("work-owner".into()),
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::Operator,
+            source: Some("test".into()),
+            subject_ref: None,
+            waiting_for: "older wait".into(),
+            wake_sources: Vec::new(),
+            continuation: None,
+            created_at: now,
+            updated_at: now,
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: None,
+            trigger_message_id: None,
+            triggered_at: None,
+        };
+        let mut newer = older.clone();
+        newer.id = "wait-owner-newer".into();
+        newer.status = WaitConditionStatus::Triggered;
+        newer.waiting_for = "newer wait".into();
+        newer.created_at = now + chrono::Duration::seconds(1);
+        newer.updated_at = newer.created_at;
+        newer.trigger_message_id = Some("message-owner-newer".into());
+        newer.triggered_at = Some(newer.created_at);
+        db.wait_conditions().upsert(&older)?;
+        db.wait_conditions().upsert(&newer)?;
+
+        let migration = MIGRATIONS
+            .iter()
+            .find(|migration| migration.version == 44)
+            .expect("migration 44");
+        let mut connection = db.connection()?;
+        apply_migration(&mut connection, migration)?;
+
+        let waits = db.wait_conditions().latest_all()?;
+        assert_eq!(
+            waits
+                .iter()
+                .find(|wait| wait.id == older.id)
+                .map(|wait| &wait.status),
+            Some(&WaitConditionStatus::Cancelled)
+        );
+        assert_eq!(
+            waits
+                .iter()
+                .find(|wait| wait.id == newer.id)
+                .map(|wait| &wait.status),
+            Some(&WaitConditionStatus::Triggered)
+        );
+        let mut duplicate = older;
+        duplicate.id = "wait-owner-duplicate".into();
+        duplicate.created_at = now + chrono::Duration::seconds(2);
+        duplicate.updated_at = duplicate.created_at;
+        assert!(db.wait_conditions().upsert(&duplicate).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn wait_protocol_cutover_cancels_history_and_releases_exact_work_item_authority() -> Result<()>
+    {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        {
+            let connection = db.connection()?;
+            connection.execute("DELETE FROM schema_migrations WHERE version = 45", [])?;
+        }
+
+        let now = Utc::now();
+        let mut owned = WorkItemRecord::new("agent-a", "owned wait", WorkItemState::Open);
+        owned.id = "work-cutover-owned".into();
+        owned.blocked_by = Some("owned blocker".into());
+        owned.updated_at = now;
+        db.work_items().insert_new(&owned)?;
+
+        let mut original_changed =
+            WorkItemRecord::new("agent-a", "changed wait", WorkItemState::Open);
+        original_changed.id = "work-cutover-changed".into();
+        original_changed.blocked_by = Some("older blocker".into());
+        original_changed.updated_at = now;
+        db.work_items().insert_new(&original_changed)?;
+        let mut changed = original_changed.clone();
+        changed.id = "work-cutover-changed".into();
+        changed.revision = 2;
+        changed.blocked_by = Some("newer blocker".into());
+        changed.updated_at = now + chrono::Duration::seconds(1);
+        db.work_items()
+            .update_expected(&changed, original_changed.revision)?;
+
+        let owned_wait = WaitConditionRecord {
+            id: "wait-cutover-owned".into(),
+            agent_id: "agent-a".into(),
+            work_item_id: Some(owned.id.clone()),
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::Operator,
+            source: Some("WaitFor".into()),
+            subject_ref: None,
+            waiting_for: "owned blocker".into(),
+            wake_sources: Vec::new(),
+            continuation: None,
+            created_at: now,
+            updated_at: now,
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: Some("turn-cutover-owned".into()),
+            trigger_message_id: None,
+            triggered_at: None,
+        };
+        let changed_wait = WaitConditionRecord {
+            id: "wait-cutover-changed".into(),
+            agent_id: "agent-a".into(),
+            work_item_id: Some(changed.id.clone()),
+            waiting_for: "older blocker".into(),
+            turn_id: Some("turn-cutover-changed".into()),
+            ..owned_wait.clone()
+        };
+        let agent_wait = WaitConditionRecord {
+            id: "wait-cutover-agent".into(),
+            agent_id: "agent-b".into(),
+            work_item_id: None,
+            waiting_for: "lifecycle wait".into(),
+            turn_id: Some("turn-cutover-agent".into()),
+            ..owned_wait.clone()
+        };
+        db.wait_conditions().upsert(&owned_wait)?;
+        db.wait_conditions().upsert(&changed_wait)?;
+        db.wait_conditions().upsert(&agent_wait)?;
+
+        let owned_execution = WorkItemExecutionRecord {
+            source_revision: owned.revision,
+            state: WorkItemExecutionState::Waiting {
+                generation: 4,
+                wait: WaitReference {
+                    wait_id: owned_wait.id.clone(),
+                },
+            },
+        };
+        let changed_execution = WorkItemExecutionRecord {
+            source_revision: 2,
+            state: WorkItemExecutionState::Waiting {
+                generation: 7,
+                wait: WaitReference {
+                    wait_id: "wait-cutover-stale-history".into(),
+                },
+            },
+        };
+        {
+            let connection = db.connection()?;
+            let legacy_attempt = serde_json::json!({
+                "attempt_id": "activation:message:message-cutover-trigger",
+                "agent_id": "agent-a",
+                "source_message_id": "message-cutover-trigger",
+                "source": {
+                    "identity": {
+                        "kind": "triggered_wait",
+                        "wait_id": "wait-cutover-history",
+                        "wait_generation": 9,
+                        "trigger_id": "external-trigger-history",
+                        "trigger_generation": 12
+                    },
+                    "generation": 12
+                },
+                "binding": {
+                    "kind": "work_item",
+                    "work_item_id": owned.id
+                },
+                "provenance": {
+                    "origin": "system",
+                    "trust": "runtime_instruction",
+                    "priority": "next",
+                    "correlation_id": null,
+                    "causation_id": null
+                },
+                "admitted_fences": {
+                    "source_revision": 12,
+                    "work_item_source_revision": owned.revision,
+                    "work_item_generation": 4,
+                    "rejoin": null,
+                    "agent_control_revision": 1,
+                    "host_registry_revision": 1
+                },
+                "state": "settled",
+                "run_id": null,
+                "turn_id": "turn-cutover-history",
+                "recovery_of_attempt_id": null,
+                "terminal_outcome_id": null,
+                "admitted_at": "2026-08-01T00:00:00Z",
+                "terminal_at": "2026-08-01T00:01:00Z"
+            });
+            connection.execute(
+                "INSERT INTO execution_protocol_attempts (
+                   agent_id, attempt_id, lifecycle_state,
+                   source_identity_json, source_generation,
+                   recovery_of_attempt_id, terminal_outcome_id, payload_json
+                 ) VALUES (?1, ?2, 'settled', ?3, 12, NULL, NULL, ?4)",
+                params![
+                    "agent-a",
+                    "activation:message:message-cutover-trigger",
+                    serde_json::to_string(&legacy_attempt["source"]["identity"])?,
+                    serde_json::to_string(&legacy_attempt)?,
+                ],
+            )?;
+            connection.execute(
+                "INSERT INTO execution_protocol_work_items (
+                   agent_id, work_item_id, source_revision, generation,
+                   lifecycle_state, payload_json
+                 ) VALUES (?1, ?2, ?3, ?4, 'waiting', ?5)",
+                params![
+                    "agent-a",
+                    owned.id,
+                    owned_execution.source_revision as i64,
+                    owned_execution.generation() as i64,
+                    serde_json::to_string(&owned_execution)?,
+                ],
+            )?;
+            connection.execute(
+                "INSERT INTO execution_protocol_work_items (
+                   agent_id, work_item_id, source_revision, generation,
+                   lifecycle_state, payload_json
+                 ) VALUES (?1, ?2, ?3, ?4, 'waiting', ?5)",
+                params![
+                    "agent-a",
+                    changed.id,
+                    changed_execution.source_revision as i64,
+                    changed_execution.generation() as i64,
+                    serde_json::to_string(&changed_execution)?,
+                ],
+            )?;
+        }
+
+        let migration = MIGRATIONS
+            .iter()
+            .find(|migration| migration.version == 45)
+            .expect("migration 45");
+        let mut connection = db.connection()?;
+        apply_migration(&mut connection, migration)?;
+
+        let waits = db.wait_conditions().latest_all()?;
+        for wait_id in [&owned_wait.id, &changed_wait.id, &agent_wait.id] {
+            let wait = waits
+                .iter()
+                .find(|wait| wait.id == *wait_id)
+                .expect("cutover wait");
+            assert_eq!(wait.status, WaitConditionStatus::Cancelled);
+            assert_eq!(
+                wait.continuation
+                    .as_ref()
+                    .and_then(|value| value.get("cancel_reason"))
+                    .and_then(serde_json::Value::as_str),
+                Some("protocol_cutover")
+            );
+        }
+
+        let persisted_owned = db.work_items().latest(&owned.id)?.expect("owned WorkItem");
+        assert_eq!(persisted_owned.blocked_by, None);
+        assert_eq!(persisted_owned.revision, owned.revision + 1);
+        let persisted_changed = db
+            .work_items()
+            .latest(&changed.id)?
+            .expect("changed WorkItem");
+        assert_eq!(
+            persisted_changed.blocked_by.as_deref(),
+            Some("newer blocker")
+        );
+        assert_eq!(persisted_changed.revision, changed.revision);
+
+        let load_execution = |work_item_id: &str| -> Result<WorkItemExecutionRecord> {
+            let payload = connection.query_row(
+                "SELECT payload_json
+                 FROM execution_protocol_work_items
+                 WHERE agent_id = 'agent-a' AND work_item_id = ?1",
+                [work_item_id],
+                |row| row.get::<_, String>(0),
+            )?;
+            Ok(serde_json::from_str(&payload)?)
+        };
+        let owned_execution = load_execution(&owned.id)?;
+        assert_eq!(owned_execution.source_revision, persisted_owned.revision);
+        assert_eq!(
+            owned_execution.state,
+            WorkItemExecutionState::Runnable {
+                generation: 5,
+                recovery_ref: Some("protocol_cutover".into()),
+            }
+        );
+        let changed_execution = load_execution(&changed.id)?;
+        assert_eq!(
+            changed_execution.source_revision,
+            persisted_changed.revision
+        );
+        assert_eq!(
+            changed_execution.state,
+            WorkItemExecutionState::Runnable {
+                generation: 8,
+                recovery_ref: Some("protocol_cutover".into()),
+            }
+        );
+        let normalized_attempt_payload = connection.query_row(
+            "SELECT payload_json
+             FROM execution_protocol_attempts
+             WHERE agent_id = 'agent-a'
+               AND attempt_id = 'activation:message:message-cutover-trigger'",
+            [],
+            |row| row.get::<_, String>(0),
+        )?;
+        let normalized_attempt: ExecutionAttempt =
+            serde_json::from_str(&normalized_attempt_payload)?;
+        assert_eq!(
+            normalized_attempt.source.identity,
+            ExecutionSourceIdentity::TriggeredWait {
+                wait_id: "wait-cutover-history".into(),
+                trigger_message_id: "message-cutover-trigger".into(),
+            }
+        );
+        assert_eq!(current_schema_version(&connection)?, 45);
+        Ok(())
+    }
+
+    #[test]
     fn queue_and_wait_terminal_state_survive_restart_and_second_db_handle() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let first = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
@@ -4055,6 +4396,8 @@ CREATE TABLE working_memory_deltas (
             resolved_at: None,
             cancelled_at: None,
             turn_id: None,
+            trigger_message_id: None,
+            triggered_at: None,
         };
         first.queue_entries().upsert(&queue_terminal)?;
         first.wait_conditions().upsert(&wait_terminal)?;
@@ -4131,6 +4474,8 @@ CREATE TABLE working_memory_deltas (
             resolved_at: None,
             cancelled_at: Some(now),
             turn_id: None,
+            trigger_message_id: None,
+            triggered_at: None,
         };
         let mut wait_late = wait_terminal.clone();
         wait_late.status = WaitConditionStatus::Active;

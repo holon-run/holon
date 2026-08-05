@@ -131,6 +131,8 @@ fn append_active_external_wait_condition(
             resolved_at: None,
             cancelled_at: None,
             turn_id: None,
+            trigger_message_id: None,
+            triggered_at: None,
         })
         .unwrap();
 }
@@ -159,6 +161,8 @@ fn append_operator_wait_condition(
             resolved_at: None,
             cancelled_at: None,
             turn_id: None,
+            trigger_message_id: None,
+            triggered_at: None,
         })
         .unwrap();
 }
@@ -787,6 +791,8 @@ fn idle_boundary_decision_waits_for_non_current_work_item_wait() {
             resolved_at: None,
             cancelled_at: None,
             turn_id: None,
+            trigger_message_id: None,
+            triggered_at: None,
         })
         .unwrap();
 
@@ -1040,6 +1046,8 @@ fn scheduling_advisories_detect_weak_external_wait_and_unrecoverable_blocker() {
             cancelled_at: None,
 
             turn_id: None,
+            trigger_message_id: None,
+            triggered_at: None,
         })
         .unwrap();
 
@@ -1116,6 +1124,8 @@ fn scheduling_advisories_do_not_warn_for_common_legal_waits() {
             cancelled_at: None,
 
             turn_id: None,
+            trigger_message_id: None,
+            triggered_at: None,
         })
         .unwrap();
 
@@ -1162,6 +1172,8 @@ fn scheduling_advisory_append_dedupes_interleaved_recent_events() {
             cancelled_at: None,
 
             turn_id: None,
+            trigger_message_id: None,
+            triggered_at: None,
         })
         .unwrap();
     let appended = scheduler::append_scheduling_advisories(&storage, &agent, 0).unwrap();
@@ -1276,6 +1288,8 @@ fn append_task_wait_condition(
             resolved_at: None,
             cancelled_at: None,
             turn_id: None,
+            trigger_message_id: None,
+            triggered_at: None,
         })
         .unwrap();
 }
@@ -1570,15 +1584,15 @@ fn correlated_wait_resume_requires_the_exact_expected_owner() {
     for candidate in [
         scheduler::CanonicalActivationCandidate::ExactWaitResume {
             expected_work_item_id: Some("work-b".into()),
-            correlated_wait: Some(("wait-work".into(), 7)),
+            correlated_wait: Some("wait-work".into()),
         },
         scheduler::CanonicalActivationCandidate::ExactWaitResume {
             expected_work_item_id: None,
-            correlated_wait: Some(("wait-work".into(), 7)),
+            correlated_wait: Some("wait-work".into()),
         },
         scheduler::CanonicalActivationCandidate::ExactWaitResume {
             expected_work_item_id: Some("work-a".into()),
-            correlated_wait: Some(("wait-lifecycle".into(), 8)),
+            correlated_wait: Some("wait-lifecycle".into()),
         },
     ] {
         assert_eq!(
@@ -1594,7 +1608,7 @@ fn correlated_wait_resume_requires_the_exact_expected_owner() {
             &message,
             scheduler::CanonicalActivationCandidate::ExactWaitResume {
                 expected_work_item_id: Some("work-a".into()),
-                correlated_wait: Some(("wait-work".into(), 7)),
+                correlated_wait: Some("wait-work".into()),
             },
         )
         .unwrap(),
@@ -1611,7 +1625,7 @@ fn correlated_wait_resume_requires_the_exact_expected_owner() {
             &message,
             scheduler::CanonicalActivationCandidate::ExactWaitResume {
                 expected_work_item_id: None,
-                correlated_wait: Some(("wait-lifecycle".into(), 8)),
+                correlated_wait: Some("wait-lifecycle".into()),
             },
         )
         .unwrap(),
@@ -1628,11 +1642,16 @@ fn correlated_wait_resume_requires_the_exact_expected_owner() {
             &message,
             scheduler::CanonicalActivationCandidate::ExactWaitResume {
                 expected_work_item_id: Some("work-a".into()),
-                correlated_wait: Some(("wait-work".into(), 6)),
+                correlated_wait: Some("wait-work".into()),
             },
         )
         .unwrap(),
-        None
+        Some(scheduler::CanonicalActivationScenario::ExactWaitResume {
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "work-a".into(),
+            },
+            wait_id: "wait-work".into(),
+        })
     );
 }
 
@@ -1772,6 +1791,8 @@ fn timer_tick_only_matches_the_wait_for_the_same_timer() {
         resolved_at: None,
         cancelled_at: None,
         turn_id: None,
+        trigger_message_id: None,
+        triggered_at: None,
     };
     let mut other = matching.clone();
     other.id = "wait-other".into();
@@ -1995,6 +2016,8 @@ fn setup_waiting_operator_work_item(
             resolved_at: None,
             cancelled_at: None,
             turn_id: None,
+            trigger_message_id: None,
+            triggered_at: None,
         })
         .unwrap();
 }

@@ -7,11 +7,13 @@ use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 
 use crate::domain::execution_protocol::{
-    self, ExecutionProtocolCommand, ExecutionProtocolState, ExecutionTransition,
-    WorkItemExecutionState,
+    self, ExecutionOutcomeRecord, ExecutionProtocolCommand, ExecutionProtocolState,
+    ExecutionTransition, WorkItemExecutionState,
 };
 use crate::{
-    runtime_db::transitions::{ExecutionAuthorityFences, RuntimeTransitionRepository},
+    runtime_db::transitions::{
+        ExecutionAuthorityFences, RuntimeTransitionRepository, WorkItemMutation,
+    },
     types::{AgentIdentityRecord, AgentRegistryStatus, AgentStatus},
 };
 
@@ -39,6 +41,8 @@ pub(super) fn validate_execution_commands_tx(
     agent_id: &str,
     bootstrap: Option<&ExecutionProtocolState>,
     commands: &[ExecutionProtocolCommand],
+    work_item_mutations: &[WorkItemMutation],
+    wait_conditions: &[crate::types::WaitConditionRecord],
 ) -> Result<Option<PreparedExecutionProtocolCommands>> {
     if commands.is_empty() {
         return Ok(None);
@@ -75,6 +79,12 @@ pub(super) fn validate_execution_commands_tx(
         }
         if let ExecutionProtocolCommand::Admit(command) = command {
             validate_admission_authority_tx(tx, agent_id, &command.attempt.admitted_fences)?;
+        }
+        if let ExecutionProtocolCommand::AdvanceWorkItemSourceRevision(command) = command {
+            validate_work_item_source_revision_advance(command, work_item_mutations)?;
+        }
+        if let ExecutionProtocolCommand::SetWorkItemWaiting(command) = command {
+            validate_set_work_item_waiting(command, work_item_mutations, wait_conditions)?;
         }
         let transition = reduce(&state, command)
             .map_err(|error| anyhow!("execution protocol command rejected: {error}"))?;
@@ -129,6 +139,12 @@ fn reduce(
         ExecutionProtocolCommand::RegisterWorkItem(command) => {
             execution_protocol::register_work_item_execution(state, command)
         }
+        ExecutionProtocolCommand::AdvanceWorkItemSourceRevision(command) => {
+            execution_protocol::advance_work_item_source_revision(state, command)
+        }
+        ExecutionProtocolCommand::SetWorkItemWaiting(command) => {
+            execution_protocol::set_work_item_waiting(state, command)
+        }
         ExecutionProtocolCommand::Admit(command) => {
             execution_protocol::admit_execution(state, command)
         }
@@ -146,6 +162,12 @@ fn command_identity(command: &ExecutionProtocolCommand) -> (&'static str, &str) 
         ExecutionProtocolCommand::RegisterWorkItem(command) => {
             ("register_work_item_execution", &command.work_item_id)
         }
+        ExecutionProtocolCommand::AdvanceWorkItemSourceRevision(command) => {
+            ("advance_work_item_source_revision", &command.command_id)
+        }
+        ExecutionProtocolCommand::SetWorkItemWaiting(command) => {
+            ("set_work_item_waiting", &command.command_id)
+        }
         ExecutionProtocolCommand::Admit(command) => {
             ("admit_execution", &command.attempt.attempt_id)
         }
@@ -156,6 +178,59 @@ fn command_identity(command: &ExecutionProtocolCommand) -> (&'static str, &str) 
             ("interrupt_execution", &command.outcome_id)
         }
     }
+}
+
+fn validate_set_work_item_waiting(
+    command: &execution_protocol::SetWorkItemWaiting,
+    mutations: &[WorkItemMutation],
+    wait_conditions: &[crate::types::WaitConditionRecord],
+) -> Result<()> {
+    let Some(record) = mutations.iter().find_map(|mutation| match mutation {
+        WorkItemMutation::Update { record, .. }
+            if record.id == command.work_item_id
+                && record.revision == command.record.source_revision =>
+        {
+            Some(record)
+        }
+        _ => None,
+    }) else {
+        bail!("WorkItem waiting transition requires an atomic WorkItem update");
+    };
+    let execution_protocol::WorkItemExecutionState::Waiting { wait, .. } = &command.record.state
+    else {
+        bail!("WorkItem waiting transition record is not Waiting");
+    };
+    if record.agent_id.is_empty()
+        || !wait_conditions.iter().any(|condition| {
+            condition.id == wait.wait_id
+                && condition.agent_id == record.agent_id
+                && condition.work_item_id.as_deref() == Some(record.id.as_str())
+                && condition.status == crate::types::WaitConditionStatus::Active
+        })
+    {
+        bail!("WorkItem waiting transition does not match its atomic wait condition");
+    }
+    Ok(())
+}
+
+fn validate_work_item_source_revision_advance(
+    command: &execution_protocol::AdvanceWorkItemSourceRevision,
+    mutations: &[WorkItemMutation],
+) -> Result<()> {
+    let Some(record) = mutations.iter().find_map(|mutation| match mutation {
+        WorkItemMutation::Update { record, .. }
+            if record.id == command.work_item_id && record.revision == command.source_revision =>
+        {
+            Some(record)
+        }
+        _ => None,
+    }) else {
+        bail!("WorkItem source revision advance requires an atomic WorkItem update");
+    };
+    if record.agent_id.is_empty() {
+        bail!("WorkItem source revision advance does not match its atomic WorkItem update");
+    }
+    Ok(())
 }
 
 fn partition_exists_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<bool> {
@@ -357,7 +432,7 @@ pub(crate) fn persist_state_tx(tx: &Transaction<'_>, state: &ExecutionProtocolSt
             )
             .optional()?;
         if let Some(existing) = existing {
-            if existing != payload {
+            if !stored_outcome_matches(&existing, outcome)? {
                 bail!(
                     "execution outcome identity conflict for {}",
                     outcome.outcome_id
@@ -378,6 +453,12 @@ pub(crate) fn persist_state_tx(tx: &Transaction<'_>, state: &ExecutionProtocolSt
         )?;
     }
     Ok(())
+}
+
+fn stored_outcome_matches(existing: &str, outcome: &ExecutionOutcomeRecord) -> Result<bool> {
+    let existing: ExecutionOutcomeRecord = serde_json::from_str(existing)
+        .with_context(|| format!("decoding stored execution outcome {}", outcome.outcome_id))?;
+    Ok(existing == *outcome)
 }
 
 pub(super) fn load_state_tx(
@@ -453,4 +534,44 @@ fn work_item_state_token(state: &WorkItemExecutionState) -> &'static str {
 
 fn to_i64(value: u64) -> Result<i64> {
     i64::try_from(value).context("execution protocol generation exceeds SQLite INTEGER")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::execution_protocol::{ExecutionOutcome, WaitReference, WorkItemOutcome};
+
+    fn wait_outcome(wait_id: &str) -> ExecutionOutcomeRecord {
+        ExecutionOutcomeRecord {
+            outcome_id: "outcome-1".into(),
+            attempt_id: "attempt-1".into(),
+            outcome: ExecutionOutcome::WorkItem(WorkItemOutcome::Wait {
+                wait: WaitReference {
+                    wait_id: wait_id.into(),
+                },
+            }),
+            created_at: "2026-08-05T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn stored_outcome_identity_ignores_removed_wait_generation_field() {
+        let existing = serde_json::json!({
+            "outcome_id": "outcome-1",
+            "attempt_id": "attempt-1",
+            "outcome": {
+                "owner": "work_item",
+                "outcome": {
+                    "kind": "wait",
+                    "wait": {
+                        "wait_id": "wait-1",
+                        "generation": 7
+                    }
+                }
+            },
+            "created_at": "2026-08-05T00:00:00Z"
+        });
+        assert!(stored_outcome_matches(&existing.to_string(), &wait_outcome("wait-1")).unwrap());
+        assert!(!stored_outcome_matches(&existing.to_string(), &wait_outcome("wait-2")).unwrap());
+    }
 }

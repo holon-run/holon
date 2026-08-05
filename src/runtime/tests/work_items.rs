@@ -1,6 +1,5 @@
 use super::super::*;
 use super::support::*;
-use crate::domain::scheduler_protocol::WaitState;
 use crate::types::{
     CompletionReportState, WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WakeSource,
     WorkItemContinuationState, WorkItemPlanStatus, WorkItemReadiness, WorkItemSchedulingState,
@@ -448,6 +447,8 @@ async fn work_queue_projection_derives_scheduling_state_per_work_item() {
             resolved_at: None,
             cancelled_at: None,
             turn_id: None,
+            trigger_message_id: None,
+            triggered_at: None,
         })
         .unwrap();
     runtime
@@ -611,6 +612,8 @@ async fn work_item_query_tools_return_current_open_done_views() {
             cancelled_at: None,
 
             turn_id: None,
+            trigger_message_id: None,
+            triggered_at: None,
         })
         .unwrap();
 
@@ -976,6 +979,8 @@ async fn work_item_query_tools_return_readiness_views() {
             cancelled_at: None,
 
             turn_id: None,
+            trigger_message_id: None,
+            triggered_at: None,
         })
         .unwrap();
 
@@ -3697,6 +3702,8 @@ async fn agent_scoped_wake_hint_binds_unique_wildcard_external_wait() {
             resolved_at: None,
             cancelled_at: None,
             turn_id: None,
+            trigger_message_id: None,
+            triggered_at: None,
         })
         .unwrap();
     let capability = runtime
@@ -3779,6 +3786,8 @@ async fn agent_scoped_wake_hint_does_not_bind_ambiguous_wildcard_external_waits(
                 resolved_at: None,
                 cancelled_at: None,
                 turn_id: None,
+                trigger_message_id: None,
+                triggered_at: None,
             })
             .unwrap();
     }
@@ -4002,23 +4011,14 @@ async fn external_wake_records_wait_reconciliation_and_resolves_wait() {
         .inner
         .runtime_db
         .transitions()
-        .load_scheduler_protocol_snapshot("default")
-        .unwrap();
-    let canonical_wait = settled
-        .waits
-        .get(&wait_condition_id)
-        .expect("settlement should create the canonical external wait");
-    let canonical_generation = canonical_wait.current_generation;
-    assert_eq!(
-        canonical_wait.generations[&canonical_generation]
-            .owner
-            .work_item_id(),
-        Some(work.id.as_str())
-    );
-    assert_eq!(
-        canonical_wait.generations[&canonical_generation].state,
-        WaitState::Active
-    );
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .expect("settlement should preserve unified execution authority");
+    assert!(matches!(
+        &settled.work_items[&work.id].state,
+        crate::domain::execution_protocol::WorkItemExecutionState::Waiting { wait, .. }
+            if wait.wait_id == wait_condition_id
+    ));
     let local_wait = runtime
         .storage()
         .latest_wait_conditions()
@@ -4046,7 +4046,7 @@ async fn external_wake_records_wait_reconciliation_and_resolves_wait() {
             .exact_external_wait_correlation(Some(&trigger_id))
             .await
             .unwrap(),
-        Some((wait_condition_id.clone(), canonical_generation)),
+        Some(wait_condition_id.clone()),
         "callback ingress should resolve one exact active canonical wait"
     );
 
@@ -4095,10 +4095,9 @@ async fn external_wake_records_wait_reconciliation_and_resolves_wait() {
     assert_eq!(scheduled.message.id, tick.id);
 
     let mut mismatched = scheduled.message.clone();
-    mismatched.source_refs.insert(
-        "wait_generation".into(),
-        canonical_generation.saturating_add(1).to_string(),
-    );
+    mismatched
+        .source_refs
+        .insert("wait_generation".into(), u64::MAX.to_string());
     runtime
         .record_wait_reconciliation_signals(&mismatched)
         .await
@@ -4108,9 +4107,8 @@ async fn external_wake_records_wait_reconciliation_and_resolves_wait() {
             .storage()
             .active_wait_conditions_for_work_item("default", &work.id)
             .unwrap()
-            .iter()
-            .any(|condition| condition.id == wait_condition_id),
-        "mismatched canonical generation must not resolve the external wait"
+            .is_empty(),
+        "legacy generation must not veto an exact unified wait identity"
     );
 
     runtime
@@ -4125,23 +4123,17 @@ async fn external_wake_records_wait_reconciliation_and_resolves_wait() {
         .unwrap();
 
     let events = runtime.storage().read_recent_events(100).unwrap();
-    let signal = events
-        .iter()
-        .find(|event| {
-            event.kind == "wait_reconciliation_requested"
-                && event.data["wait_condition_id"] == wait_condition_id
-        })
-        .expect("external wake should request wait reconciliation");
-    assert_eq!(
-        signal.data["wake_source"].as_str(),
-        Some("external_ingress")
+    assert!(
+        events.iter().any(|event| {
+            event.kind == "wait_conditions_resolved"
+                && event.data["message_id"] == tick.id
+                && event.data["reason"] == "execution_admission"
+                && event.data["wait_condition_ids"]
+                    .as_array()
+                    .is_some_and(|ids| ids.iter().any(|id| id == &wait_condition_id))
+        }),
+        "external wake admission should atomically resolve the exact wait"
     );
-    assert_eq!(signal.data["work_item_id"].as_str(), Some(work.id.as_str()));
-    assert_eq!(
-        signal.data["subject_ref"].as_str(),
-        Some(trigger_id.as_str())
-    );
-    assert_eq!(signal.data["waiting_for"].as_str(), Some("checks complete"));
 
     let active = runtime
         .storage()
@@ -4647,6 +4639,8 @@ async fn current_external_wait_does_not_suppress_queued_runnable_work_item() {
             resolved_at: None,
             cancelled_at: None,
             turn_id: None,
+            trigger_message_id: None,
+            triggered_at: None,
         })
         .unwrap();
     let mut agent = AgentState::new("default");

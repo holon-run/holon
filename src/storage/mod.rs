@@ -1086,6 +1086,16 @@ impl AppStorage {
         Ok(records)
     }
 
+    /// Returns unresolved wait conditions without the live-scope filter.
+    pub fn raw_unresolved_wait_conditions_for_agent(
+        &self,
+        agent_id: &str,
+    ) -> Result<Vec<WaitConditionRecord>> {
+        self.runtime_db
+            .wait_conditions()
+            .unresolved_for_agent(agent_id)
+    }
+
     pub fn latest_wait_conditions(&self) -> Result<Vec<WaitConditionRecord>> {
         let runtime_db = self.runtime_db.clone();
         return runtime_db.wait_conditions().latest_all();
@@ -1611,6 +1621,8 @@ mod tests {
             resolved_at: None,
             cancelled_at: None,
             turn_id: None,
+            trigger_message_id: None,
+            triggered_at: None,
         };
         let queue_entry = QueueEntryRecord {
             message_id: "msg-1".into(),
@@ -1640,9 +1652,11 @@ mod tests {
 
         let mut later_wait_condition = wait_condition.clone();
         later_wait_condition.id = "wait-2".into();
+        later_wait_condition.work_item_id = Some("work-2".into());
         later_wait_condition.updated_at = now + chrono::Duration::seconds(1);
         let mut latest_wait_condition = wait_condition.clone();
         latest_wait_condition.id = "wait-3".into();
+        latest_wait_condition.work_item_id = Some("work-3".into());
         latest_wait_condition.updated_at = now + chrono::Duration::seconds(2);
         storage
             .append_wait_condition(&later_wait_condition)
@@ -1787,6 +1801,8 @@ mod tests {
             resolved_at: None,
             cancelled_at: None,
             turn_id: None,
+            trigger_message_id: None,
+            triggered_at: None,
         };
         let queue_entry = QueueEntryRecord {
             message_id: "message-db-only".into(),
@@ -2041,6 +2057,8 @@ mod tests {
             resolved_at: None,
             cancelled_at: None,
             turn_id: None,
+            trigger_message_id: None,
+            triggered_at: None,
         };
         let episode_for = |agent_id: &str, id: &str| ContextEpisodeRecord {
             id: id.into(),
@@ -3219,6 +3237,8 @@ mod tests {
                 resolved_at: None,
                 cancelled_at: None,
                 turn_id: None,
+                trigger_message_id: None,
+                triggered_at: None,
             })
             .unwrap();
         storage
@@ -3241,6 +3261,8 @@ mod tests {
                 resolved_at: None,
                 cancelled_at: None,
                 turn_id: None,
+                trigger_message_id: None,
+                triggered_at: None,
             })
             .unwrap();
 
@@ -3308,6 +3330,8 @@ mod tests {
                 resolved_at: None,
                 cancelled_at: None,
                 turn_id: None,
+                trigger_message_id: None,
+                triggered_at: None,
             })
             .unwrap();
 
@@ -3360,6 +3384,8 @@ mod tests {
                 cancelled_at: None,
 
                 turn_id: None,
+                trigger_message_id: None,
+                triggered_at: None,
             },
             WaitConditionRecord {
                 id: "recoverable".into(),
@@ -3386,6 +3412,8 @@ mod tests {
                 cancelled_at: None,
 
                 turn_id: None,
+                trigger_message_id: None,
+                triggered_at: None,
             },
             WaitConditionRecord {
                 id: "explicit".into(),
@@ -3409,6 +3437,8 @@ mod tests {
                 cancelled_at: None,
 
                 turn_id: None,
+                trigger_message_id: None,
+                triggered_at: None,
             },
         ] {
             storage.append_wait_condition(&record).unwrap();
@@ -3518,6 +3548,8 @@ mod tests {
                 cancelled_at: None,
 
                 turn_id: None,
+                trigger_message_id: None,
+                triggered_at: None,
             })
             .unwrap();
         storage
@@ -3541,6 +3573,8 @@ mod tests {
                 cancelled_at: None,
 
                 turn_id: None,
+                trigger_message_id: None,
+                triggered_at: None,
             })
             .unwrap();
         storage
@@ -3562,6 +3596,8 @@ mod tests {
                 cancelled_at: None,
 
                 turn_id: None,
+                trigger_message_id: None,
+                triggered_at: None,
             })
             .unwrap();
         storage
@@ -3585,6 +3621,8 @@ mod tests {
                 cancelled_at: None,
 
                 turn_id: None,
+                trigger_message_id: None,
+                triggered_at: None,
             })
             .unwrap();
         storage
@@ -3606,6 +3644,8 @@ mod tests {
                 cancelled_at: None,
 
                 turn_id: None,
+                trigger_message_id: None,
+                triggered_at: None,
             })
             .unwrap();
 
@@ -3751,6 +3791,8 @@ mod tests {
                 cancelled_at: None,
 
                 turn_id: None,
+                trigger_message_id: None,
+                triggered_at: None,
             })
             .unwrap();
         assert_eq!(
@@ -3792,6 +3834,8 @@ mod tests {
                 cancelled_at: None,
 
                 turn_id: None,
+                trigger_message_id: None,
+                triggered_at: None,
             })
             .unwrap();
         let task_projection = storage.agent_posture_projection(&agent).unwrap();
@@ -3874,6 +3918,8 @@ mod tests {
                         cancelled_at: None,
 
                         turn_id: None,
+                        trigger_message_id: None,
+                        triggered_at: None,
                     })
                     .unwrap();
             };
@@ -4524,6 +4570,8 @@ mod tests {
                 resolved_at: None,
                 cancelled_at: None,
                 turn_id: None,
+                trigger_message_id: None,
+                triggered_at: None,
             })
             .unwrap();
         storage

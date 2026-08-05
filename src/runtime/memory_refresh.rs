@@ -656,14 +656,11 @@ impl RuntimeHandle {
         message.work_item_id = work_item_id;
         message.correlation_id = correlation_id;
         message.causation_id = causation_id;
-        if let Some((wait_id, wait_generation)) = self
+        if let Some(wait_id) = self
             .exact_external_wait_correlation(pending.external_trigger_id.as_deref())
             .await?
         {
             message.source_refs.insert("wait_id".into(), wait_id);
-            message
-                .source_refs
-                .insert("wait_generation".into(), wait_generation.to_string());
         }
         self.inner.storage.append_event(&AuditEvent::legacy(
             "system_tick_emitted",
@@ -836,7 +833,7 @@ impl RuntimeHandle {
                     Ok(commit) => commit,
                     Err(error) => {
                         let can_retry = attempt + 1 < super::ENQUEUE_AGENT_STATE_MAX_ATTEMPTS
-                            && super::retryable_enqueue_agent_state_conflict(&error, &agent_id);
+                            && super::retryable_enqueue_conflict(&error, &agent_id);
                         if !can_retry {
                             return Err(error);
                         }

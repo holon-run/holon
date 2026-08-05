@@ -1264,7 +1264,6 @@ fn execution_authority_matches_adoption_tx(
             generation == &compatibility_wait.generation
                 && wait.wait_id == *wait_id
                 && wait.wait_id == compatibility_wait.wait_id
-                && wait.generation == compatibility_wait.generation
                 && compatibility_wait.owner_work_item_id == command.work_item_id
         }
         _ => false,

@@ -481,7 +481,6 @@ fn adopt_legacy_to_execution_state(
                 generation,
                 wait: WaitReference {
                     wait_id: wait_id.unwrap_or_default(),
-                    generation,
                 },
             },
             "needs_settlement" => WorkItemExecutionState::InFlight {
@@ -579,9 +578,7 @@ fn adopt_legacy_to_execution_state(
                     } else {
                         ExecutionSourceIdentity::TriggeredWait {
                             wait_id: format!("adopted:{activation_id}"),
-                            wait_generation: generation,
-                            trigger_id: format!("adopted:{activation_id}"),
-                            trigger_generation: generation,
+                            trigger_message_id: format!("adopted:{activation_id}"),
                         }
                     },
                     generation,

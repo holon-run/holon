@@ -495,6 +495,8 @@ mod tests {
             resolved_at: None,
             cancelled_at: None,
             turn_id: None,
+            trigger_message_id: None,
+            triggered_at: None,
         }
     }
 

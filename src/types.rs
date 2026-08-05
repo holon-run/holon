@@ -2249,6 +2249,7 @@ fn default_external_trigger_scope() -> ExternalTriggerScope {
 #[serde(rename_all = "snake_case")]
 pub enum WaitConditionStatus {
     Active,
+    Triggered,
     Resolved,
     Cancelled,
     Expired,
@@ -2316,9 +2317,28 @@ pub struct WaitConditionRecord {
     pub cancelled_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub triggered_at: Option<DateTime<Utc>>,
 }
 
 impl WaitConditionRecord {
+    pub fn trigger_message_id(&self) -> Option<&str> {
+        self.trigger_message_id.as_deref()
+    }
+
+    pub fn triggered_at(&self) -> Option<DateTime<Utc>> {
+        self.triggered_at
+    }
+
+    pub fn mark_triggered(&mut self, message_id: &str, triggered_at: DateTime<Utc>) {
+        self.trigger_message_id = Some(message_id.to_string());
+        self.triggered_at = Some(triggered_at);
+        self.status = WaitConditionStatus::Triggered;
+        self.updated_at = triggered_at;
+    }
+
     pub fn external_recoverability(&self) -> Option<ExternalWaitRecoverability> {
         if self.kind != WaitConditionKind::External || self.status != WaitConditionStatus::Active {
             return None;

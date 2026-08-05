@@ -62,11 +62,21 @@ fn task_status_phase(status: &TaskStatus) -> u8 {
 pub(super) struct TaskTransition<'a> {
     pub(super) task: &'a TaskRecord,
     pub(super) event_kind: &'static str,
+    pub(super) message_evidence: Option<&'a MessageEnvelope>,
 }
 
 impl<'a> TaskTransition<'a> {
     pub(super) fn new(task: &'a TaskRecord, event_kind: &'static str) -> Self {
-        Self { task, event_kind }
+        Self {
+            task,
+            event_kind,
+            message_evidence: None,
+        }
+    }
+
+    pub(super) fn with_message_evidence(mut self, message: &'a MessageEnvelope) -> Self {
+        self.message_evidence = Some(message);
+        self
     }
 }
 
@@ -276,6 +286,15 @@ impl RuntimeHandle {
                 expected: Some(Box::new(expected_state)),
                 record: Box::new(state),
             });
+        let message_evidence = transition
+            .message_evidence
+            .map(|message| {
+                let mut message = message.clone();
+                message.normalize_admission_fields();
+                message
+            })
+            .into_iter()
+            .collect();
         let commit = self.inner.runtime_db.transitions().commit_task(
             &crate::runtime_db::transitions::TaskTransitionCommand {
                 agent_id,
@@ -283,6 +302,7 @@ impl RuntimeHandle {
                 work_items,
                 wait_conditions,
                 agent_state,
+                message_evidence,
                 audit_events,
                 index_changes,
                 notify_scheduler: false,
@@ -339,6 +359,18 @@ impl RuntimeHandle {
     ) -> Result<()> {
         self.apply_task_transition(TaskTransition::new(task, event_kind))
             .await
+    }
+
+    pub(super) async fn persist_task_transition_with_message(
+        &self,
+        task: &TaskRecord,
+        event_kind: &'static str,
+        message: &MessageEnvelope,
+    ) -> Result<()> {
+        self.apply_task_transition(
+            TaskTransition::new(task, event_kind).with_message_evidence(message),
+        )
+        .await
     }
 
     pub(super) async fn reduce_task_status_message(&self, task: TaskRecord) -> Result<()> {

@@ -1,8 +1,8 @@
 //! Scheduler / WorkItem unified execution aggregate.
 //!
-//! This is the additive Phase 2 model. Production scheduling still uses
-//! `scheduler_protocol`; this module defines the smaller authority boundary
-//! that the canonical reader will adopt in a later cutover.
+//! Canonical production scheduling uses this aggregate as the sole execution
+//! authority. The older `scheduler_protocol` remains only for the explicitly
+//! selected legacy engine and read-only compatibility diagnostics.
 
 use std::collections::BTreeMap;
 
@@ -14,6 +14,14 @@ pub struct ExecutionProtocolState {
     pub attempts: BTreeMap<String, ExecutionAttempt>,
     pub work_items: BTreeMap<String, WorkItemExecutionRecord>,
     pub outcomes: BTreeMap<String, ExecutionOutcomeRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetWorkItemWaiting {
+    pub command_id: String,
+    pub work_item_id: String,
+    pub expected: Option<WorkItemExecutionRecord>,
+    pub record: WorkItemExecutionRecord,
 }
 
 impl ExecutionProtocolState {
@@ -92,9 +100,7 @@ pub enum ExecutionSourceIdentity {
     },
     TriggeredWait {
         wait_id: String,
-        wait_generation: u64,
-        trigger_id: String,
-        trigger_generation: u64,
+        trigger_message_id: String,
     },
     WorkItemContinuation {
         work_item_id: String,
@@ -238,7 +244,6 @@ impl WorkItemExecutionState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WaitReference {
     pub wait_id: String,
-    pub generation: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -253,10 +258,22 @@ pub enum ExecutionOutcome {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ConversationOutcome {
     Replied,
-    Wait { wait: WaitReference },
-    Paused { reason: String },
-    Interrupted { reason: String },
-    Failed { policy: String },
+    Wait {
+        wait: WaitReference,
+    },
+    HandoffToWorkItemWait {
+        work_item_id: String,
+        wait: WaitReference,
+    },
+    Paused {
+        reason: String,
+    },
+    Interrupted {
+        reason: String,
+    },
+    Failed {
+        policy: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -305,6 +322,14 @@ pub struct RegisterWorkItemExecution {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdvanceWorkItemSourceRevision {
+    pub command_id: String,
+    pub work_item_id: String,
+    pub expected_source_revision: u64,
+    pub source_revision: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InterruptExecution {
     pub attempt_id: String,
     pub outcome_id: String,
@@ -316,6 +341,8 @@ pub struct InterruptExecution {
 #[serde(tag = "command", content = "payload", rename_all = "snake_case")]
 pub enum ExecutionProtocolCommand {
     RegisterWorkItem(Box<RegisterWorkItemExecution>),
+    AdvanceWorkItemSourceRevision(AdvanceWorkItemSourceRevision),
+    SetWorkItemWaiting(Box<SetWorkItemWaiting>),
     Admit(Box<AdmitExecution>),
     Settle(SettleExecution),
     Interrupt(InterruptExecution),
@@ -325,6 +352,73 @@ pub enum ExecutionProtocolCommand {
 pub struct ExecutionTransition {
     pub state: ExecutionProtocolState,
     pub references: Vec<String>,
+}
+
+pub fn set_work_item_waiting(
+    state: &ExecutionProtocolState,
+    command: &SetWorkItemWaiting,
+) -> Result<ExecutionTransition, String> {
+    assert_invariants(state)?;
+    if command.command_id.is_empty()
+        || command.work_item_id.is_empty()
+        || command.record.source_revision == 0
+        || command.record.generation() == 0
+        || !matches!(command.record.state, WorkItemExecutionState::Waiting { .. })
+    {
+        return Err("WorkItem waiting transition requires identity and Waiting state".into());
+    }
+    if state.work_items.get(&command.work_item_id) != command.expected.as_ref() {
+        return Err("WorkItem waiting transition fence is stale".into());
+    }
+    if command.expected.as_ref().is_some_and(|record| {
+        matches!(
+            record.state,
+            WorkItemExecutionState::InFlight { .. } | WorkItemExecutionState::Terminal { .. }
+        ) || command.record.generation() <= record.generation()
+    }) {
+        return Err("WorkItem is not eligible for lifecycle wait handoff".into());
+    }
+    let mut next = state.clone();
+    next.work_items
+        .insert(command.work_item_id.clone(), command.record.clone());
+    assert_invariants(&next)?;
+    Ok(ExecutionTransition {
+        state: next,
+        references: vec![format!("work_item:{}", command.work_item_id)],
+    })
+}
+
+pub fn advance_work_item_source_revision(
+    state: &ExecutionProtocolState,
+    command: &AdvanceWorkItemSourceRevision,
+) -> Result<ExecutionTransition, String> {
+    assert_invariants(state)?;
+    if command.command_id.is_empty()
+        || command.work_item_id.is_empty()
+        || command.expected_source_revision == 0
+        || command.source_revision <= command.expected_source_revision
+    {
+        return Err(
+            "WorkItem source revision advance requires identity and a monotonic revision".into(),
+        );
+    }
+    let mut next = state.clone();
+    let record = next
+        .work_items
+        .get_mut(&command.work_item_id)
+        .ok_or_else(|| "WorkItem source revision advance requires registered state".to_string())?;
+    if record.source_revision != command.expected_source_revision {
+        return Err("WorkItem source revision advance fence is stale".into());
+    }
+    if matches!(record.state, WorkItemExecutionState::InFlight { .. }) {
+        return Err("WorkItem source revision cannot advance while InFlight".into());
+    }
+    record.source_revision = command.source_revision;
+    assert_invariants(&next)?;
+    Ok(ExecutionTransition {
+        state: next,
+        references: vec![format!("work_item:{}", command.work_item_id)],
+    })
 }
 
 pub fn register_work_item_execution(
@@ -926,16 +1020,13 @@ mod tests {
                 generation: 1,
                 wait: WaitReference {
                     wait_id: "wait-1".into(),
-                    generation: 1,
                 },
             }),
         );
         let mut wait_attempt = attempt("attempt-1", None);
         wait_attempt.source.identity = ExecutionSourceIdentity::TriggeredWait {
             wait_id: "wait-1".into(),
-            wait_generation: 1,
-            trigger_id: "trigger-1".into(),
-            trigger_generation: 1,
+            trigger_message_id: "trigger-1".into(),
         };
         let admitted = admit_execution(
             &state,

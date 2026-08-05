@@ -5008,6 +5008,7 @@
                 "status": {
                   "enum": [
                     "active",
+                    "triggered",
                     "resolved",
                     "cancelled",
                     "expired"
@@ -5015,6 +5016,19 @@
                   "type": "string"
                 },
                 "subject_ref": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "trigger_message_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "triggered_at": {
+                  "format": "date-time",
                   "type": [
                     "string",
                     "null"
@@ -5220,6 +5234,7 @@
                   "expected_status": {
                     "enum": [
                       "active",
+                      "triggered",
                       "resolved",
                       "cancelled",
                       "expired"

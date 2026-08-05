@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{
-    runtime::{RuntimeHandle, WaitForScope, WaitForWakeKind},
+    runtime::{RuntimeHandle, WaitForRegistrationOutcome, WaitForScope, WaitForWakeKind},
     tool::{
         helpers::{invalid_tool_input, parse_tool_args, validate_non_empty},
         spec::typed_spec,
@@ -106,7 +106,7 @@ pub(crate) async fn execute(
             })
     });
     let registration = runtime
-        .register_wait_for(
+        .register_wait_for_outcome(
             agent_id,
             work_item_id.clone(),
             args.wake.into(),
@@ -115,6 +115,43 @@ pub(crate) async fn execute(
             args.recheck_after_ms,
         )
         .await?;
+    let registration = match registration {
+        WaitForRegistrationOutcome::TaskResultQueued {
+            task_id,
+            result_message_id,
+        } => {
+            let mut result = ToolResult::success(
+                NAME,
+                json!({
+                    "disposition": "task_result_queued",
+                    "task_id": task_id,
+                    "result_message_id": result_message_id,
+                }),
+                Some(format!(
+                    "task result already completed; queued exact result message {result_message_id}"
+                )),
+            );
+            result.terminal_transition = true;
+            return Ok(result);
+        }
+        WaitForRegistrationOutcome::TaskResultAlreadyConsumed {
+            task_id,
+            result_message_id,
+        } => {
+            return Ok(ToolResult::success(
+                NAME,
+                json!({
+                    "disposition": "task_result_already_consumed",
+                    "task_id": task_id,
+                    "result_message_id": result_message_id,
+                }),
+                Some(format!(
+                    "task result was already consumed: {result_message_id}"
+                )),
+            ));
+        }
+        WaitForRegistrationOutcome::Registered { registration } => registration,
+    };
     let updated_context = query_context(runtime).await?;
     let work_item = match registration.work_item {
         Some(record) => {

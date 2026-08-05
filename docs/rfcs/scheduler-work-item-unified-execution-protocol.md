@@ -29,6 +29,15 @@ The earlier RFC's provenance, fencing, deterministic transition, idempotency,
 atomicity, immutable evidence, and process-global cutover requirements remain
 accepted.
 
+## Implementation Status
+
+As of 2026-08-05, canonical admission, turn binding, terminal settlement,
+operator interjection, exact wait reconciliation, and startup recovery read
+only the unified execution protocol and their owning business ledgers.
+Historical scheduler control tables remain available to the explicitly
+selected legacy engine and to explicit recovery diagnostics during the
+observation period; they do not grant or settle canonical execution.
+
 ## Motivation
 
 The scheduler was introduced to replace case-by-case coordination among
@@ -54,7 +63,7 @@ behavior. It is a smaller canonical kernel with one authority per question.
 | Is an input queued, claimed, or terminal? | queue/message state | attempt source, Turn, audit |
 | Is the agent executing? | one open `ExecutionAttempt` | agent status, historical slot |
 | Is a WorkItem runnable, waiting, paused, or terminal? | `WorkItemExecutionState` | plan, todo, focus, WorkDemand |
-| What can resume a wait? | `WaitCondition` identity, owner, generation, state | dispatch, closure reason |
+| What can resume a wait? | `WaitCondition` identity, owner, source, state | dispatch, closure reason |
 | Is a task active or terminal? | task ledger | message presence, agent posture |
 | May the host admit execution? | host runtime registry phase | loaded-runtime observation |
 | May the agent administratively accept work? | agent control | focus, waits, settlement history |
@@ -92,7 +101,7 @@ WorkItem, queue, wait, or task lifecycle.
 ```text
 Runnable(g)
 InFlight(g, attempt_id)
-Waiting(g, wait_id, wait_generation)
+Waiting(g, wait_id)
 Paused(g, reason)
 NeedsRepair(g, repair_id)
 Terminal(g, completion)
@@ -106,7 +115,7 @@ Waiting(g, exact triggered wait) -> InFlight(g, attempt)
 
 InFlight(g, attempt) -> Runnable(g + 1)
 InFlight(g, attempt) -> Runnable(g + 1, recovery_ref)
-InFlight(g, attempt) -> Waiting(g + 1, wait)
+InFlight(g, attempt) -> Waiting(g + 1, wait_id)
 InFlight(g, attempt) -> Paused(g + 1, reason)
 InFlight(g, attempt) -> NeedsRepair(g + 1, repair)
 InFlight(g, attempt) -> Terminal(g + 1, completion)
@@ -122,10 +131,32 @@ transaction, but it does not grant eligibility.
 
 ### WaitCondition
 
-The runtime wait record is the sole wait authority. Admission consumes one
-exact triggered generation. Settlement may create or rearm one exact
-generation. A scheduler-specific wait mirror or dispatch reservation must not
-participate in admission.
+The runtime wait record is the sole wait authority. Every `WaitFor` creates a
+new globally unique `wait_id`; that identity is the wait incarnation token.
+Rearming cancels the prior unresolved wait and creates a different `wait_id`.
+WorkItem record revision, WorkItem execution generation, message sequence, and
+task generation keep their own meanings and are never reused as wait identity.
+
+The wait state machine is:
+
+```text
+Active
+  -> Triggered(trigger_message_id)
+  -> Resolved(consuming_attempt_id)
+
+Active | Triggered
+  -> Cancelled | Expired
+```
+
+Ingress performs `Active -> Triggered` and enqueues the exact trigger message
+in one transaction. Admission performs `Triggered -> Resolved` while opening
+the consuming attempt. Duplicate, cancelled, expired, unknown, or legacy wait
+correlations are typed terminal no-ops. A scheduler-specific wait mirror,
+generation, or dispatch reservation must not participate in admission.
+
+Each agent-lifecycle owner and each WorkItem owner has at most one unresolved
+wait (`Active` or `Triggered`). This is enforced by database uniqueness, not
+only by runtime scans.
 
 ### Candidate
 
@@ -143,7 +174,7 @@ execution.
 | external contentful input | interaction or verified WorkItem binding | conversation or compatible WorkItem outcome | exact claim to terminal/quarantined |
 | task result | exact live rejoin, unbound reduce-only, or stale | compatible outcome or `ReduceOnly` | consume exact result; stale does not reenter model |
 | child result | exact caller continuation or unbound notification | caller outcome or `ReduceOnly` | consume exact result/continuation |
-| triggered wait | exact wait owner | owner-compatible outcome | consume exact wait generation |
+| triggered wait | exact wait owner | owner-compatible outcome | consume exact `wait_id` and trigger message |
 | WorkItem continuation | exact runnable generation | WorkItem outcome | `Runnable -> InFlight` |
 | targeted yield/continuation | exact continuation frame | target-compatible outcome | consume exact continuation |
 | internal contentful follow-up | declared interaction or WorkItem binding | binding-compatible outcome | exact claim to terminal |
@@ -204,8 +235,25 @@ One transaction:
 
 Terminal tools such as `WaitFor`, `CompleteWorkItem`, execution-bound
 `PickWorkItem`, and explicit pause/fail/yield lower directly to settlement.
-A terminal tool returns success only after the transaction commits and then
-ends the provider/tool loop.
+The provider/tool loop may prepare a terminal intent, but it must not publish a
+successful terminal tool result until the transaction containing the source
+queue terminal state, Turn terminal record, attempt outcome, owner state, and
+wait/continuation mutations commits. A terminal tool returns success only
+after that commit and then ends the provider/tool loop.
+
+`WaitFor(task_result)` reads the task and rejoin authority inside the same
+transaction:
+
+- if the task is non-terminal, create a new Active wait and settle to Waiting;
+- if the task is terminal with an unconsumed result obligation, do not create a
+  wait; settle to Continue/Runnable and ensure the exact result message is
+  queued idempotently;
+- if the terminal result obligation was already consumed, return a typed
+  stale/already-consumed result without sleeping;
+- if the task is unknown or belongs to another owner, reject validation without
+  mutating wait or execution state.
+
+Task-result-before-wait is therefore a normal transition, not recovery.
 
 A WorkItem-bound provider turn that ends without a WorkItem outcome closes the
 attempt as `ProtocolViolation` and normally returns the WorkItem to
@@ -278,13 +326,21 @@ writes audit evidence in the same transaction.
 A normal typed conflict must not cause an unbounded queue-head retry, agent
 restart loop, or lane reservation leak.
 
+The run loop may terminalize a bounded number of provably stale or reduce-only
+queue heads in one poll and continue to the next candidate. Wake-only timer,
+callback, system, or legacy wait-trigger envelopes with no exact current
+`wait_id` are dropped. Trusted operator input remains trusted operator input
+even when historical wait correlation is absent or stale. Contentful external
+input keeps its original ingress trust but loses stale correlation; a
+wait-trigger-only envelope is dropped as a whole.
+
 ## Persistence And Compatibility
 
 The runtime database remains the transactional store. The target normalized
 facts are:
 
 - WorkItem execution state;
-- runtime wait conditions and generations;
+- runtime wait conditions and exact trigger relationships;
 - queue claims and terminal status;
 - tasks and rejoin obligations;
 - execution attempts and immutable outcomes;
@@ -301,18 +357,32 @@ partial primary state.
 The process chooses `legacy` or `canonical` once at startup. There is no
 scenario, agent, conflict, or claim-time fallback between engines.
 
+The canonical cutover does not semantically migrate historical unresolved
+waits. A protocol-version migration cancels every pre-cutover unresolved wait
+with reason `protocol_cutover`. It clears a WorkItem blocker only when the
+blocker is still provably owned by that exact `WaitFor`; otherwise it preserves
+the newer blocker rather than guessing. Legacy wake envelopes are subsequently
+dropped by normal stale-source reduction. Task results are judged only by the
+task/rejoin ledger, never by a legacy wait generation. The same migration may
+normalize historical terminal execution payloads to the current structural
+shape, but only from identity already present on the attempt itself; this does
+not revive, rebind, or trigger any historical wait.
+
 ## Migration
 
 1. characterize current behavior and production incident traces; publish this
    authority matrix and state algebra;
-2. build the new aggregate and commands on isolated fixtures and copied
-   databases without changing the production canonical reader;
+2. build exact wait identity/state and terminal business commands on isolated
+   fixtures and copied databases without changing the production canonical
+   reader;
 3. complete candidate, admission, settlement, interruption, handoff, and
    persistence-equivalence coverage;
-4. switch canonical admission, settlement, and recovery together in one
-   cutover;
-5. remove compatibility readers and writes, split global invariants into
-   aggregate and transaction-boundary invariants, then remove dead schema;
+4. switch canonical admission, settlement, restart, and recovery together in
+   one cutover; do not operate two production authorities in shadow;
+5. retain old control tables only as read-only diagnostic evidence for one
+   observation period, then remove compatibility readers and writes, split
+   global invariants into aggregate and transaction-boundary invariants, and
+   remove dead schema;
 6. run required scheduler CI, crash/restart, soak, incident replay, upgrade,
    repair, and rollback drills;
 7. publish a canonical-default compatibility release retaining the
@@ -331,6 +401,10 @@ Legacy removal is not authorized by this RFC's implementation alone.
 - recovery of open attempts without automatic tool replay;
 - candidate/binding/outcome/source-transition matrix;
 - duplicate and out-of-order generation matrix;
+- duplicate, stale, and out-of-order exact wait trigger matrix;
+- task terminal before, during, and after `WaitFor(task_result)`;
+- WorkItem metadata revision changes that do not change execution generation;
+- bounded stale queue-head reduction followed by operator input;
 - stale task result with no live rejoin obligation;
 - wait and final-delivery consistency;
 - host shutdown/admission linearization;
@@ -340,8 +414,8 @@ Legacy removal is not authorized by this RFC's implementation alone.
 - compatibility database upgrade, diagnosis, repair, and rollback.
 
 Acceptance requires both safety and simplification: one open attempt per
-agent, one WorkItem generation per admission, one wait authority, atomic
-terminal delivery, no persisted candidate or terminal intent, and no
+agent, one WorkItem generation per admission, one unresolved wait per owner,
+atomic terminal delivery, no persisted candidate or terminal intent, and no
 slot/dispatch/WorkDemand/missing-settlement authority in the canonical reader.
 
 ## Non-goals

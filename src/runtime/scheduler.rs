@@ -65,7 +65,7 @@ pub(crate) enum CanonicalActivationCandidate {
     },
     ExactWaitResume {
         expected_work_item_id: Option<String>,
-        correlated_wait: Option<(String, u64)>,
+        correlated_wait: Option<String>,
     },
     LifecycleExternalNudge {
         agent_id: String,
@@ -301,6 +301,7 @@ impl SchedulerProjection {
             .filter(|condition| condition.agent_id == snapshot.id)
             .filter(|condition| {
                 condition.status == WaitConditionStatus::Active
+                    || condition.status == WaitConditionStatus::Triggered
                     || (condition.status == WaitConditionStatus::Resolved
                         && condition.kind == WaitConditionKind::Task)
             })
@@ -1276,17 +1277,16 @@ pub(crate) fn resolve_canonical_activation_scenario(
 
     let mut matching_waits = match &candidate {
         CanonicalActivationCandidate::ExactWaitResume {
-            correlated_wait: Some((wait_id, generation)),
+            correlated_wait: Some(wait_id),
             ..
         } => projection
             .activation_waits
             .iter()
             .filter(|condition| {
                 condition.id == *wait_id
-                    && condition.status == WaitConditionStatus::Active
-                    && *generation > 0
-                    && (projection.canonical_work_statuses.is_none()
-                        || projection.canonical_wait_generations.get(wait_id) == Some(generation))
+                    && (condition.status == WaitConditionStatus::Active
+                        || (condition.status == WaitConditionStatus::Triggered
+                            && condition.trigger_message_id() == Some(message.id.as_str())))
                     && condition.work_item_id.as_deref() == candidate.expected_work_item_id()
             })
             .collect(),
@@ -1379,7 +1379,7 @@ pub(crate) fn resolve_canonical_activation_scenario(
     }))
 }
 
-fn authoritative_wait_correlation(message: &MessageEnvelope) -> Option<(String, u64)> {
+fn authoritative_wait_correlation(message: &MessageEnvelope) -> Option<String> {
     let trusted = matches!(
         (message.delivery_surface, message.admission_context),
         (
@@ -1399,9 +1399,7 @@ fn authoritative_wait_correlation(message: &MessageEnvelope) -> Option<(String, 
     if !trusted {
         return None;
     }
-    let wait_id = message.source_refs.get("wait_id")?.clone();
-    let generation = message.source_refs.get("wait_generation")?.parse().ok()?;
-    Some((wait_id, generation))
+    message.source_refs.get("wait_id").cloned()
 }
 
 fn matching_wait_conditions<'a>(
@@ -1423,6 +1421,8 @@ fn matching_wait_conditions_for_work_item<'a>(
             expected_work_item_id
                 .is_none_or(|work_item_id| condition.work_item_id.as_deref() == Some(work_item_id))
                 && (condition.status == WaitConditionStatus::Active
+                    || (condition.status == WaitConditionStatus::Triggered
+                        && condition.trigger_message_id() == Some(message.id.as_str()))
                     || (message.kind == MessageKind::TaskResult
                         && condition.status == WaitConditionStatus::Resolved
                         && condition.kind == WaitConditionKind::Task

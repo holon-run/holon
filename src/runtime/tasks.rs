@@ -450,7 +450,11 @@ impl RuntimeHandle {
             let terminal_task =
                 task_with_result_message(&task_record, status, Some(task_detail), &result_message);
             if let Err(error) = runtime
-                .persist_task_status_direct(&terminal_task, "task_status_updated")
+                .persist_task_transition_with_message(
+                    &terminal_task,
+                    "task_status_updated",
+                    &result_message,
+                )
                 .await
             {
                 tracing::warn!(
@@ -959,7 +963,11 @@ impl RuntimeHandle {
             let terminal_task =
                 task_with_result_message(&task_record, status, Some(task_detail), &result_message);
             if let Err(error) = runtime
-                .persist_task_status_direct(&terminal_task, "task_status_updated")
+                .persist_task_transition_with_message(
+                    &terminal_task,
+                    "task_status_updated",
+                    &result_message,
+                )
                 .await
             {
                 tracing::warn!(
@@ -1099,7 +1107,11 @@ impl RuntimeHandle {
                         &result_message,
                     );
                     if let Err(error) = runtime
-                        .persist_task_status_direct(&failed_task, "task_status_updated")
+                        .persist_task_transition_with_message(
+                            &failed_task,
+                            "task_status_updated",
+                            &result_message,
+                        )
                         .await
                     {
                         tracing::warn!(
@@ -1412,7 +1424,11 @@ impl RuntimeHandle {
         let terminal_task =
             task_with_result_message(&task_record, status, Some(task_detail), &result_message);
         if let Err(error) = self
-            .persist_task_status_direct(&terminal_task, "task_status_updated")
+            .persist_task_transition_with_message(
+                &terminal_task,
+                "task_status_updated",
+                &result_message,
+            )
             .await
         {
             tracing::warn!(

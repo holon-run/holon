@@ -1,8 +1,8 @@
 use super::super::*;
 use super::support::*;
 use crate::domain::scheduler_protocol::{
-    ActivationCause, ActivationSlot, AgentDispatchState, SchedulerOwner, Snapshot,
-    WaitGenerationRecord, WaitIdentity, WaitRecord, WaitState, WorkDemand, WorkStatus,
+    ActivationSlot, AgentDispatchState, SchedulerOwner, Snapshot, WaitGenerationRecord,
+    WaitIdentity, WaitRecord, WaitState, WorkDemand, WorkStatus,
 };
 use crate::types::{
     ActiveSkillRecord, AuthorityClass, BriefKind, BriefRecord, CompletionReportState,
@@ -123,8 +123,9 @@ fn task_wait_condition_for_work_item(task_id: &str, work_item_id: &str) -> WaitC
         expires_at: None,
         resolved_at: None,
         cancelled_at: None,
-
         turn_id: None,
+        trigger_message_id: None,
+        triggered_at: None,
     }
 }
 
@@ -168,6 +169,97 @@ fn append_completed_rejoin_task(
             })),
             recovery: None,
         })
+        .unwrap();
+}
+
+fn append_running_rejoin_task(runtime: &RuntimeHandle, task_id: &str, work_item_id: &str) {
+    runtime
+        .storage()
+        .append_task(&TaskRecord {
+            id: task_id.into(),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Running,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_message_id: None,
+            work_item_id: Some(work_item_id.into()),
+            summary: Some(format!("{task_id} running")),
+            detail: None,
+            recovery: None,
+        })
+        .unwrap();
+}
+
+fn persist_waiting_work_execution(
+    runtime: &RuntimeHandle,
+    work_item: &WorkItemRecord,
+    wait_id: &str,
+) {
+    let generation = work_item.revision.max(1);
+    let mut execution = crate::domain::execution_protocol::ExecutionProtocolState::empty("default");
+    execution.work_items.insert(
+        work_item.id.clone(),
+        crate::domain::execution_protocol::WorkItemExecutionRecord {
+            source_revision: generation,
+            state: crate::domain::execution_protocol::WorkItemExecutionState::Waiting {
+                generation,
+                wait: crate::domain::execution_protocol::WaitReference {
+                    wait_id: wait_id.into(),
+                },
+            },
+        },
+    );
+    runtime
+        .inner
+        .runtime_db
+        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
+        .unwrap();
+}
+
+fn persist_execution_transition_only(
+    runtime: &RuntimeHandle,
+    transition: crate::runtime_db::transitions::ExecutionProtocolTransition,
+) {
+    use crate::domain::execution_protocol::ExecutionProtocolCommand;
+
+    let mut state = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .expect("execution transition requires initialized authority");
+    for command in transition.commands {
+        state = match command {
+            ExecutionProtocolCommand::RegisterWorkItem(command) => {
+                crate::domain::execution_protocol::register_work_item_execution(&state, &command)
+            }
+            ExecutionProtocolCommand::AdvanceWorkItemSourceRevision(command) => {
+                crate::domain::execution_protocol::advance_work_item_source_revision(
+                    &state, &command,
+                )
+            }
+            ExecutionProtocolCommand::SetWorkItemWaiting(command) => {
+                crate::domain::execution_protocol::set_work_item_waiting(&state, &command)
+            }
+            ExecutionProtocolCommand::Admit(command) => {
+                crate::domain::execution_protocol::admit_execution(&state, &command)
+            }
+            ExecutionProtocolCommand::Settle(command) => {
+                crate::domain::execution_protocol::settle_execution(&state, &command)
+            }
+            ExecutionProtocolCommand::Interrupt(command) => {
+                crate::domain::execution_protocol::interrupt_execution(&state, &command)
+            }
+        }
+        .expect("test execution transition should be valid")
+        .state;
+    }
+    runtime
+        .inner
+        .runtime_db
+        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &state))
         .unwrap();
 }
 
@@ -1174,7 +1266,7 @@ async fn legacy_recovery_commit_race_is_diagnostic_and_fresh_retry_converges() {
 }
 
 #[tokio::test]
-async fn canonical_claim_contention_retains_queue_head_without_failing_poll() {
+async fn legacy_scheduler_wait_does_not_block_unified_lifecycle_claim() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -1269,13 +1361,14 @@ async fn canonical_claim_contention_retains_queue_head_without_failing_poll() {
         .await
         .unwrap();
 
-    assert!(matches!(
-        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-            .poll()
-            .await
-            .unwrap(),
-        scheduler_executor::RunLoopPoll::AuthorityBlocked
-    ));
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("legacy scheduler wait must not block unified lifecycle claim");
+    };
+    assert_eq!(scheduled.message.id, message.id);
     assert_eq!(
         runtime
             .inner
@@ -1286,17 +1379,17 @@ async fn canonical_claim_contention_retains_queue_head_without_failing_poll() {
             .into_iter()
             .find(|entry| entry.message_id == message.id)
             .map(|entry| entry.status),
-        Some(QueueEntryStatus::Queued)
+        Some(QueueEntryStatus::Dequeued)
     );
     assert!(runtime
         .storage()
         .read_recent_events(usize::MAX)
         .unwrap()
         .iter()
-        .any(|event| {
-            event.kind == "scheduler_claim_contended"
+        .all(|event| {
+            !(event.kind == "scheduler_claim_contended"
                 && event.data["conflict_code"] == "agent_lane_reserved_by_other_owner"
-                && event.data["queue_disposition"] == "retained_queued"
+                && event.data["queue_disposition"] == "retained_queued")
         }));
 }
 
@@ -1362,14 +1455,23 @@ async fn canonical_work_item_wait_keeps_other_runnable_work_schedulable() {
         )
         .await
         .unwrap();
-    let mut snapshot = canonical_waiting_snapshot(&waiting_work, &wait.id, waiting_work.revision);
-    snapshot.dispatch = AgentDispatchState::Open;
-    snapshot.dispatch_revision = 0;
+    let mut execution = crate::domain::execution_protocol::ExecutionProtocolState::empty("default");
+    execution.work_items.insert(
+        waiting_work.id.clone(),
+        crate::domain::execution_protocol::WorkItemExecutionRecord {
+            source_revision: waiting_work.revision,
+            state: crate::domain::execution_protocol::WorkItemExecutionState::Waiting {
+                generation: waiting_work.revision,
+                wait: crate::domain::execution_protocol::WaitReference {
+                    wait_id: wait.id.clone(),
+                },
+            },
+        },
+    );
     runtime
         .inner
         .runtime_db
-        .transitions()
-        .initialize_scheduler_protocol_partition("default", &snapshot)
+        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
         .unwrap();
 
     assert!(runtime.maybe_emit_pending_system_tick(None).await.unwrap());
@@ -1398,22 +1500,31 @@ async fn canonical_work_item_wait_keeps_other_runnable_work_schedulable() {
         .inner
         .runtime_db
         .transitions()
-        .load_scheduler_protocol_snapshot("default")
+        .load_execution_protocol_state_if_initialized("default")
         .unwrap();
+    let claimed = claimed.expect("claim should initialize execution authority");
+    let activation_id = scheduler_executor::canonical_activation_id(&tick.id);
     assert!(matches!(
-        claimed.slot,
-        ActivationSlot::Running {
-            owner: SchedulerOwner::WorkItem { ref work_item_id },
-            ..
+        claimed.attempts[&activation_id].binding,
+        crate::domain::execution_protocol::ExecutionBinding::WorkItem {
+            ref work_item_id
         } if work_item_id == &runnable_work.id
     ));
-    assert_eq!(
-        claimed.work[&waiting_work.id].status,
-        WorkStatus::Waiting {
-            wait_id: wait.id.clone(),
-        }
-    );
-    assert_eq!(claimed.dispatch, AgentDispatchState::Open);
+    let expected_wait_id = wait.id.clone();
+    assert!(matches!(
+        claimed.work_items[&waiting_work.id].state,
+        crate::domain::execution_protocol::WorkItemExecutionState::Waiting {
+            ref wait,
+            ..
+        } if wait.wait_id == expected_wait_id
+    ));
+    assert!(matches!(
+        claimed.work_items[&runnable_work.id].state,
+        crate::domain::execution_protocol::WorkItemExecutionState::InFlight {
+            ref attempt_id,
+            ..
+        } if attempt_id == &activation_id
+    ));
     assert_eq!(
         tick.work_item_id.as_deref(),
         Some(runnable_work.id.as_str())
@@ -1510,94 +1621,6 @@ async fn late_terminal_task_result_for_completed_work_item_settles_without_model
 }
 
 #[tokio::test]
-async fn bootstrap_diagnostics_report_cross_model_scheduler_invariant_failures() {
-    let dir = tempdir().unwrap();
-    let workspace = tempdir().unwrap();
-    let runtime = RuntimeHandle::new(
-        "default",
-        dir.path().to_path_buf(),
-        workspace.path().to_path_buf(),
-        "http://127.0.0.1:7878".into(),
-        Arc::new(CountingProvider {
-            calls: Mutex::new(0),
-            reply: "unused",
-        }),
-        "default".into(),
-        context_config(),
-    )
-    .unwrap();
-    let work_item = runtime
-        .create_work_item("diagnose stuck activation".into(), None, None, Vec::new())
-        .await
-        .unwrap();
-    let mut message = MessageEnvelope::new(
-        "default",
-        MessageKind::SystemTick,
-        MessageOrigin::System {
-            subsystem: "work_queue".into(),
-        },
-        AuthorityClass::RuntimeInstruction,
-        Priority::Normal,
-        MessageBody::Text {
-            text: "claim and leave unsettled".into(),
-        },
-    );
-    message.work_item_id = Some(work_item.id.clone());
-    let message = runtime.enqueue(message).await.unwrap();
-    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-        .poll()
-        .await
-        .unwrap();
-    assert!(matches!(poll, scheduler_executor::RunLoopPoll::Message(_)));
-    finish_claimed_test_run(&runtime).await;
-
-    let mut completed = runtime
-        .inner
-        .runtime_db
-        .work_items()
-        .latest(&work_item.id)
-        .unwrap()
-        .unwrap();
-    let expected_revision = completed.revision;
-    completed.revision += 1;
-    completed.state = WorkItemState::Completed;
-    completed.updated_at = Utc::now();
-    assert!(runtime
-        .inner
-        .runtime_db
-        .work_items()
-        .update_expected(&completed, expected_revision)
-        .unwrap());
-
-    let mut turn = crate::types::TurnRecord::new("default", "turn-stuck", 1);
-    turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&message));
-    turn.terminal = Some(crate::types::TurnTerminalSummary {
-        kind: crate::types::TurnTerminalKind::Completed,
-        reason: None,
-        completed_at: Utc::now(),
-        duration_ms: 1,
-    });
-    runtime.storage().append_turn(&turn).unwrap();
-
-    runtime
-        .record_scheduler_bootstrap_diagnostics()
-        .await
-        .unwrap();
-
-    let reasons = runtime
-        .storage()
-        .read_recent_events(64)
-        .unwrap()
-        .into_iter()
-        .filter(|event| event.kind == "scheduler_diagnostic")
-        .filter_map(|event| event.data["reason"].as_str().map(ToString::to_string))
-        .collect::<std::collections::BTreeSet<_>>();
-    assert!(reasons.contains("running_activation_without_active_run"));
-    assert!(reasons.contains("completed_work_item_has_running_activation"));
-    assert!(reasons.contains("terminal_turn_has_dequeued_queue"));
-}
-
-#[tokio::test]
 async fn bootstrap_recovery_interrupts_open_attempt_and_releases_message_for_reentry() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
@@ -1648,30 +1671,17 @@ async fn bootstrap_recovery_interrupts_open_attempt_and_releases_message_for_ree
         .inner
         .runtime_db
         .transitions()
-        .load_scheduler_protocol_snapshot("default")
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
         .unwrap();
-    let report =
-        scheduler_recovery_report(&runtime.inner.storage, &runtime.inner.runtime_db, "default")
-            .unwrap();
-    assert_eq!(report.candidates.len(), 1);
-    assert!(report.candidates[0].eligible);
-    assert_eq!(report.candidates[0].reason, "terminal_turn_missing");
-    assert!(matches!(
-        report.candidates[0].proposed_commands.as_slice(),
-        [crate::domain::scheduler_protocol::ProtocolCommand::SettleActivation(command)]
-            if matches!(
-                command.settlement.disposition,
-                crate::domain::scheduler_protocol::ActivationDisposition::Interrupted { .. }
-            )
-    ));
     assert_eq!(
         runtime
             .inner
             .runtime_db
             .transitions()
-            .load_scheduler_protocol_snapshot("default")
+            .load_execution_protocol_state_if_initialized("default")
             .unwrap(),
-        claimed
+        Some(claimed.clone())
     );
     assert_eq!(
         runtime
@@ -1696,28 +1706,6 @@ async fn bootstrap_recovery_interrupts_open_attempt_and_releases_message_for_ree
     );
 
     let activation_id = scheduler_executor::canonical_activation_id(&message.id);
-    let snapshot = runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .load_scheduler_protocol_snapshot("default")
-        .unwrap();
-    assert_eq!(snapshot.slot, ActivationSlot::Idle);
-    assert_eq!(
-        snapshot
-            .activations
-            .get(&activation_id)
-            .map(|activation| activation.state.clone()),
-        Some(crate::domain::scheduler_protocol::ActivationState::Interrupted)
-    );
-    assert_eq!(
-        snapshot
-            .work
-            .get(&work_item.id)
-            .map(|demand| &demand.status),
-        Some(&WorkStatus::Runnable)
-    );
-    assert_eq!(snapshot.work[&work_item.id].scheduling_generation, 2);
     let execution = runtime
         .inner
         .runtime_db
@@ -1890,172 +1878,10 @@ async fn bootstrap_recovery_uses_execution_attempt_without_scheduler_compatibili
         .outcome,
         crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
             crate::domain::execution_protocol::WorkItemOutcome::Interrupted {
-                reason: "scheduler_compatibility_projection_missing".into(),
+                reason: "runtime_interrupted".into(),
             },
         )
     );
-}
-
-#[tokio::test]
-async fn settlement_recovery_repairs_processed_cross_work_item_pick_as_targeted_yield() {
-    let dir = tempdir().unwrap();
-    let workspace = tempdir().unwrap();
-    let runtime = RuntimeHandle::new(
-        "default",
-        dir.path().to_path_buf(),
-        workspace.path().to_path_buf(),
-        "http://127.0.0.1:7878".into(),
-        Arc::new(CountingProvider {
-            calls: Mutex::new(0),
-            reply: "unused",
-        }),
-        "default".into(),
-        context_config(),
-    )
-    .unwrap();
-    let caller = runtime
-        .create_work_item("yield caller".into(), None, None, Vec::new())
-        .await
-        .unwrap();
-    let target = runtime
-        .create_work_item("yield target".into(), None, None, Vec::new())
-        .await
-        .unwrap();
-    runtime.pick_work_item(caller.id.clone()).await.unwrap();
-    let mut message = MessageEnvelope::new(
-        "default",
-        MessageKind::SystemTick,
-        MessageOrigin::System {
-            subsystem: "work_queue".into(),
-        },
-        AuthorityClass::RuntimeInstruction,
-        Priority::Normal,
-        MessageBody::Text {
-            text: "yield caller activation".into(),
-        },
-    );
-    message.work_item_id = Some(caller.id.clone());
-    message.turn_id = Some("turn-targeted-yield-recovery".into());
-    let message = runtime.enqueue(message).await.unwrap();
-    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-        .poll()
-        .await
-        .unwrap();
-    assert!(matches!(poll, scheduler_executor::RunLoopPoll::Message(_)));
-    runtime
-        .begin_interactive_turn(Some(&message), None, None)
-        .await
-        .unwrap();
-    let picked = runtime
-        .pick_work_item_with_reason(target.id.clone(), None)
-        .await
-        .unwrap();
-    assert!(picked.transition.terminal_transition);
-    let continuation_id = picked
-        .continuation_created
-        .expect("cross-work-item pick creates continuation")
-        .frame_id;
-    finish_claimed_test_run(&runtime).await;
-
-    let terminal = terminal_transition(&message, Some(&caller.id));
-    runtime
-        .storage()
-        .append_turn(&terminal.turn_record)
-        .unwrap();
-    let processed = QueueEntryRecord {
-        message_id: message.id.clone(),
-        agent_id: message.agent_id.clone(),
-        priority: message.priority.clone(),
-        status: QueueEntryStatus::Processed,
-        created_at: message.created_at,
-        updated_at: Utc::now(),
-    };
-    let scheduler_protocol_commands = runtime
-        .canonical_queue_settlement_commands(&processed, Some(&terminal.turn_record))
-        .await
-        .unwrap();
-    let settlement = scheduler_protocol_commands
-        .iter()
-        .find_map(|command| match command {
-            crate::domain::scheduler_protocol::ProtocolCommand::SettleActivation(command) => {
-                Some(&command.settlement)
-            }
-            _ => None,
-        })
-        .expect("processed cross-work-item pick should produce a settlement");
-    assert!(matches!(
-        &settlement.disposition,
-        crate::domain::scheduler_protocol::ActivationDisposition::WorkYielded {
-            target_work_item_id: Some(target_work_item_id),
-            continuation_id: Some(settlement_continuation_id),
-            expected_target_generation: Some(_),
-        } if target_work_item_id == &target.id
-            && settlement_continuation_id == &continuation_id
-    ));
-    let execution_protocol = execution_protocol_settlement_transition(
-        &runtime.inner.runtime_db,
-        &message.agent_id,
-        &scheduler_protocol_commands,
-    )
-    .unwrap();
-    runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .commit_queue_with_execution_protocol(
-            &crate::runtime_db::transitions::QueueTransitionCommand {
-                agent_id: message.agent_id.clone(),
-                operation: crate::runtime_db::transitions::QueueOperation::Settle,
-                mutation: crate::runtime_db::transitions::QueueMutation::Upsert(processed),
-                scheduler_claim_work_item: None,
-                scheduler_protocol_bootstrap: None,
-                scheduler_protocol_commands,
-                agent_state: None,
-                message_evidence: Vec::new(),
-                transcript_entries: Vec::new(),
-                turn_record: None,
-                audit_events: Vec::new(),
-                notify_scheduler: false,
-                fault: None,
-                brief_evidence: Vec::new(),
-            },
-            &execution_protocol,
-        )
-        .unwrap();
-
-    let activation_id = scheduler_executor::canonical_activation_id(&message.id);
-    let settled = runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .load_scheduler_protocol_snapshot("default")
-        .unwrap();
-    let WorkStatus::Yielded { continuation } = &settled.work[&caller.id].status else {
-        panic!("caller should be atomically settled as canonically yielded");
-    };
-    assert_eq!(continuation.continuation_id, continuation_id);
-    assert_eq!(continuation.source_work_item_id, caller.id);
-    assert_eq!(continuation.target_work_item_id, target.id);
-    assert_eq!(settled.work[&target.id].status, WorkStatus::Runnable);
-    assert_eq!(
-        settled.activations[&activation_id].state,
-        crate::domain::scheduler_protocol::ActivationState::Settled
-    );
-    let report =
-        scheduler_recovery_report(&runtime.inner.storage, &runtime.inner.runtime_db, "default")
-            .unwrap();
-    assert!(!report
-        .candidates
-        .iter()
-        .any(|candidate| candidate.kind == SchedulerRecoveryCandidateKind::NeedsSettlement));
-    let (applied, _) = apply_scheduler_recovery_plan(
-        &runtime.inner.storage,
-        &runtime.inner.runtime_db,
-        "default",
-        &report,
-    )
-    .unwrap();
-    assert_eq!(applied, 0, "unexpected recovery candidates: {report:#?}");
 }
 
 #[tokio::test]
@@ -2111,21 +1937,6 @@ async fn bootstrap_recovery_settles_dequeued_activation_from_terminal_turn() {
         .append_turn(&terminal.turn_record)
         .unwrap();
 
-    let report =
-        scheduler_recovery_report(&runtime.inner.storage, &runtime.inner.runtime_db, "default")
-            .unwrap();
-    assert_eq!(report.candidates.len(), 1);
-    assert!(report.candidates[0].eligible);
-    assert_eq!(report.candidates[0].reason, "terminal_turn_settlement");
-    assert_eq!(
-        report.candidates[0].target_queue_status,
-        Some(QueueEntryStatus::Processed)
-    );
-    assert!(matches!(
-        report.candidates[0].proposed_commands.as_slice(),
-        [crate::domain::scheduler_protocol::ProtocolCommand::SettleActivation(_)]
-    ));
-
     assert_eq!(
         runtime.recover_scheduler_bootstrap_claims().await.unwrap(),
         1
@@ -2136,25 +1947,24 @@ async fn bootstrap_recovery_settles_dequeued_activation_from_terminal_turn() {
     );
 
     let activation_id = scheduler_executor::canonical_activation_id(&message.id);
-    let snapshot = runtime
+    let execution = runtime
         .inner
         .runtime_db
         .transitions()
-        .load_scheduler_protocol_snapshot("default")
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
         .unwrap();
-    assert_eq!(snapshot.slot, ActivationSlot::Idle);
+    let attempt = &execution.attempts[&activation_id];
     assert_eq!(
-        snapshot
-            .activations
-            .get(&activation_id)
-            .map(|activation| activation.state.clone()),
-        Some(crate::domain::scheduler_protocol::ActivationState::Settled)
+        attempt.state,
+        crate::domain::execution_protocol::ExecutionAttemptState::Settled
     );
-    assert!(snapshot
-        .settlements
-        .contains_key(&canonical_settlement_id(&message.id)));
-    // Phase 4: missing-settlement recovery is replaced by Interrupted settlement.
-    assert!(snapshot.missing_settlements.is_empty());
+    assert!(matches!(
+        &execution.outcomes[attempt.terminal_outcome_id.as_deref().unwrap()].outcome,
+        crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
+            crate::domain::execution_protocol::WorkItemOutcome::Continue
+        )
+    ));
     assert_eq!(
         runtime
             .inner
@@ -2170,9 +1980,9 @@ async fn bootstrap_recovery_settles_dequeued_activation_from_terminal_turn() {
 }
 
 #[tokio::test]
-async fn bootstrap_restart_repairs_legacy_queue_after_canonical_settlement() {
+async fn bootstrap_restart_reconciles_dequeued_queue_after_unified_settlement() {
     let mut harness = LifecycleHarness::new();
-    let (message_id, activation_id, settled_snapshot) = {
+    let (message_id, activation_id, settled_execution) = {
         let runtime = harness.runtime();
         let work_item = runtime
             .create_work_item(
@@ -2211,26 +2021,37 @@ async fn bootstrap_restart_repairs_legacy_queue_after_canonical_settlement() {
             .storage()
             .append_turn(&terminal.turn_record)
             .unwrap();
-        let report =
-            scheduler_recovery_report(&runtime.inner.storage, &runtime.inner.runtime_db, "default")
-                .unwrap();
-        let command = report.candidates[0].proposed_commands[0].clone();
-        runtime
-            .inner
-            .runtime_db
-            .transitions()
-            .commit_scheduler_protocol_command_unchecked_for_test("default", &command, None)
-            .unwrap();
         let activation_id = scheduler_executor::canonical_activation_id(&message.id);
-        let snapshot = runtime
+        let mut processed = runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest_all()
+            .unwrap();
+        let mut processed = processed
+            .drain(..)
+            .find(|entry| entry.message_id == message.id)
+            .expect("claimed queue entry");
+        processed.status = QueueEntryStatus::Processed;
+        processed.updated_at = runtime.now();
+        let execution_transition = execution_protocol_settlement_transition_from_facts(
+            &runtime.inner.storage,
+            &runtime.inner.runtime_db,
+            &processed,
+            Some(&terminal.turn_record),
+        )
+        .unwrap();
+        persist_execution_transition_only(runtime, execution_transition);
+        let settled_execution = runtime
             .inner
             .runtime_db
             .transitions()
-            .load_scheduler_protocol_snapshot("default")
-            .unwrap();
+            .load_execution_protocol_state_if_initialized("default")
+            .unwrap()
+            .expect("unified settlement should remain authoritative");
         assert_eq!(
-            snapshot.activations[&activation_id].state,
-            crate::domain::scheduler_protocol::ActivationState::Settled
+            settled_execution.attempts[&activation_id].state,
+            crate::domain::execution_protocol::ExecutionAttemptState::Settled
         );
         assert_eq!(
             runtime
@@ -2244,7 +2065,7 @@ async fn bootstrap_restart_repairs_legacy_queue_after_canonical_settlement() {
                 .map(|entry| entry.status),
             Some(QueueEntryStatus::Dequeued)
         );
-        (message.id, activation_id, snapshot)
+        (message.id, activation_id, settled_execution)
     };
 
     harness.restart();
@@ -2262,9 +2083,9 @@ async fn bootstrap_restart_repairs_legacy_queue_after_canonical_settlement() {
             .inner
             .runtime_db
             .transitions()
-            .load_scheduler_protocol_snapshot("default")
+            .load_execution_protocol_state_if_initialized("default")
             .unwrap(),
-        settled_snapshot
+        Some(settled_execution)
     );
     assert_eq!(
         runtime
@@ -2292,7 +2113,7 @@ async fn bootstrap_restart_repairs_legacy_queue_after_canonical_settlement() {
     assert_eq!(recovery_event.data["activation_id"], activation_id);
     assert_eq!(
         recovery_event.data["recovery_outcome"],
-        "settled_from_terminal_turn"
+        "legacy_queue_reconciled_from_execution_settlement"
     );
     assert_eq!(
         recovery_event.data["provenance"],
@@ -2397,17 +2218,6 @@ async fn bootstrap_recovery_settles_completed_work_item_from_bound_terminal_evid
         .append_turn(&terminal.turn_record)
         .unwrap();
 
-    let report =
-        scheduler_recovery_report(&runtime.inner.storage, &runtime.inner.runtime_db, "default")
-            .unwrap();
-    assert_eq!(report.candidates.len(), 1);
-    assert!(report.candidates[0].eligible);
-    assert_eq!(report.candidates[0].reason, "terminal_turn_settlement");
-    assert!(matches!(
-        report.candidates[0].proposed_commands.as_slice(),
-        [crate::domain::scheduler_protocol::ProtocolCommand::SettleActivation(_)]
-    ));
-
     assert_eq!(
         runtime.recover_scheduler_bootstrap_claims().await.unwrap(),
         1
@@ -2417,32 +2227,24 @@ async fn bootstrap_recovery_settles_completed_work_item_from_bound_terminal_evid
         0
     );
 
-    let snapshot = runtime
+    let execution = runtime
         .inner
         .runtime_db
         .transitions()
-        .load_scheduler_protocol_snapshot("default")
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
         .unwrap();
-    assert_eq!(snapshot.slot, ActivationSlot::Idle);
+    let attempt = &execution.attempts[&activation_id];
     assert_eq!(
-        snapshot
-            .activations
-            .get(&activation_id)
-            .map(|activation| activation.state.clone()),
-        Some(crate::domain::scheduler_protocol::ActivationState::Settled)
+        attempt.state,
+        crate::domain::execution_protocol::ExecutionAttemptState::Settled
     );
-    let settlement = snapshot
-        .settlements
-        .get(&canonical_settlement_id(&message.id))
-        .expect("completed activation settlement");
-    assert_eq!(
-        settlement.operator_delivery.as_deref(),
-        Some(result_brief_id.as_str())
-    );
-    assert!(settlement
-        .evidence
-        .iter()
-        .any(|evidence| evidence == &format!("turn:{}", terminal.terminal.turn_id)));
+    assert!(matches!(
+        &execution.outcomes[attempt.terminal_outcome_id.as_deref().unwrap()].outcome,
+        crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
+            crate::domain::execution_protocol::WorkItemOutcome::Complete { completion }
+        ) if completion == &result_brief_id
+    ));
     assert_eq!(
         runtime
             .inner
@@ -2455,188 +2257,6 @@ async fn bootstrap_recovery_settles_completed_work_item_from_bound_terminal_evid
             .map(|entry| entry.status),
         Some(QueueEntryStatus::Processed)
     );
-}
-
-#[tokio::test]
-async fn stale_bootstrap_recovery_command_cannot_settle_successor_generation() {
-    let dir = tempdir().unwrap();
-    let workspace = tempdir().unwrap();
-    let runtime = RuntimeHandle::new(
-        "default",
-        dir.path().to_path_buf(),
-        workspace.path().to_path_buf(),
-        "http://127.0.0.1:7878".into(),
-        Arc::new(CountingProvider {
-            calls: Mutex::new(0),
-            reply: "unused",
-        }),
-        "default".into(),
-        context_config(),
-    )
-    .unwrap();
-    let work_item = runtime
-        .create_work_item(
-            "fence stale bootstrap recovery".into(),
-            None,
-            None,
-            Vec::new(),
-        )
-        .await
-        .unwrap();
-    let mut first_message = MessageEnvelope::new(
-        "default",
-        MessageKind::SystemTick,
-        MessageOrigin::System {
-            subsystem: "work_queue".into(),
-        },
-        AuthorityClass::RuntimeInstruction,
-        Priority::Normal,
-        MessageBody::Text {
-            text: "first claimed generation".into(),
-        },
-    );
-    first_message.work_item_id = Some(work_item.id.clone());
-    first_message.turn_id = Some("turn-bootstrap-stale-first".into());
-    let first_message = runtime.enqueue(first_message).await.unwrap();
-    assert!(matches!(
-        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-            .poll()
-            .await
-            .unwrap(),
-        scheduler_executor::RunLoopPoll::Message(_)
-    ));
-    finish_claimed_test_run(&runtime).await;
-    let terminal = terminal_transition(&first_message, Some(&work_item.id));
-    runtime
-        .storage()
-        .append_turn(&terminal.turn_record)
-        .unwrap();
-    let report =
-        scheduler_recovery_report(&runtime.inner.storage, &runtime.inner.runtime_db, "default")
-            .unwrap();
-    let mut stale_command = report.candidates[0].proposed_commands[0].clone();
-    let crate::domain::scheduler_protocol::ProtocolCommand::SettleActivation(command) =
-        &mut stale_command
-    else {
-        panic!("terminal recovery should propose settlement");
-    };
-    command.settlement.id = "settlement:stale-bootstrap-proposal".into();
-
-    let claimed = runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .load_scheduler_protocol_snapshot("default")
-        .unwrap();
-    assert_eq!(
-        runtime.recover_scheduler_bootstrap_claims().await.unwrap(),
-        1
-    );
-    let mut successor_message = MessageEnvelope::new(
-        "default",
-        MessageKind::SystemTick,
-        MessageOrigin::System {
-            subsystem: "work_queue".into(),
-        },
-        AuthorityClass::RuntimeInstruction,
-        Priority::Normal,
-        MessageBody::Text {
-            text: "successor claimed generation".into(),
-        },
-    );
-    successor_message.work_item_id = Some(work_item.id.clone());
-    let successor_message = runtime.enqueue(successor_message).await.unwrap();
-    assert!(matches!(
-        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-            .poll()
-            .await
-            .unwrap(),
-        scheduler_executor::RunLoopPoll::Message(_)
-    ));
-    finish_claimed_test_run(&runtime).await;
-    let before = runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .load_scheduler_protocol_snapshot("default")
-        .unwrap();
-    assert_eq!(
-        before.work[&work_item.id].scheduling_generation,
-        claimed.work[&work_item.id].scheduling_generation + 1
-    );
-
-    let expected_entry = runtime
-        .inner
-        .runtime_db
-        .queue_entries()
-        .latest_all()
-        .unwrap()
-        .into_iter()
-        .find(|entry| entry.message_id == successor_message.id)
-        .unwrap();
-    let mut processed_entry = expected_entry.clone();
-    processed_entry.status = QueueEntryStatus::Processed;
-    processed_entry.updated_at = runtime.now();
-    let error = runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .commit_queue(&crate::runtime_db::transitions::QueueTransitionCommand {
-            agent_id: "default".into(),
-            operation: crate::runtime_db::transitions::QueueOperation::Settle,
-            mutation: crate::runtime_db::transitions::QueueMutation::CompareAndSet {
-                expected: expected_entry,
-                record: processed_entry,
-            },
-            scheduler_claim_work_item: None,
-            scheduler_protocol_bootstrap: None,
-            scheduler_protocol_commands: vec![stale_command],
-            agent_state: None,
-            message_evidence: Vec::new(),
-            transcript_entries: Vec::new(),
-            turn_record: None,
-            audit_events: vec![AuditEvent::legacy(
-                "stale_bootstrap_recovery_attempt",
-                serde_json::json!({"message_id": first_message.id}),
-            )],
-            notify_scheduler: true,
-            fault: None,
-            brief_evidence: Vec::new(),
-        })
-        .unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("activation_terminal_settlement_already_recorded"),
-        "unexpected stale recovery error: {error:#}"
-    );
-    assert_eq!(
-        runtime
-            .inner
-            .runtime_db
-            .transitions()
-            .load_scheduler_protocol_snapshot("default")
-            .unwrap(),
-        before
-    );
-    assert_eq!(
-        runtime
-            .inner
-            .runtime_db
-            .queue_entries()
-            .latest_all()
-            .unwrap()
-            .into_iter()
-            .find(|entry| entry.message_id == successor_message.id)
-            .map(|entry| entry.status),
-        Some(QueueEntryStatus::Dequeued)
-    );
-    assert!(runtime
-        .storage()
-        .read_recent_events(64)
-        .unwrap()
-        .iter()
-        .all(|event| event.kind != "stale_bootstrap_recovery_attempt"));
 }
 
 #[tokio::test]
@@ -2700,8 +2320,9 @@ async fn bootstrap_recovery_fault_rolls_back_queue_canonical_and_audit() {
                 .inner
                 .runtime_db
                 .transitions()
-                .load_scheduler_protocol_snapshot("default")
-                .unwrap();
+                .load_execution_protocol_state_if_initialized("default")
+                .unwrap()
+                .expect("claim should initialize execution authority");
 
             runtime.inject_next_transition_fault(fault);
             let error = runtime
@@ -2714,9 +2335,9 @@ async fn bootstrap_recovery_fault_rolls_back_queue_canonical_and_audit() {
                     .inner
                     .runtime_db
                     .transitions()
-                    .load_scheduler_protocol_snapshot("default")
+                    .load_execution_protocol_state_if_initialized("default")
                     .unwrap(),
-                claimed
+                Some(claimed.clone())
             );
             assert_eq!(
                 runtime
@@ -2747,6 +2368,38 @@ async fn bootstrap_recovery_fault_rolls_back_queue_canonical_and_audit() {
             assert_eq!(
                 runtime.recover_scheduler_bootstrap_claims().await.unwrap(),
                 0
+            );
+            let recovered = runtime
+                .inner
+                .runtime_db
+                .transitions()
+                .load_execution_protocol_state_if_initialized("default")
+                .unwrap()
+                .expect("recovery should preserve execution authority");
+            let attempt_id = scheduler_executor::canonical_activation_id(&message.id);
+            assert_eq!(
+                recovered.attempts[&attempt_id].state,
+                if terminal_evidence {
+                    crate::domain::execution_protocol::ExecutionAttemptState::Settled
+                } else {
+                    crate::domain::execution_protocol::ExecutionAttemptState::Interrupted
+                }
+            );
+            assert_eq!(
+                runtime
+                    .inner
+                    .runtime_db
+                    .queue_entries()
+                    .latest_all()
+                    .unwrap()
+                    .into_iter()
+                    .find(|entry| entry.message_id == message.id)
+                    .map(|entry| entry.status),
+                Some(if terminal_evidence {
+                    QueueEntryStatus::Processed
+                } else {
+                    QueueEntryStatus::Interrupted
+                })
             );
         }
     }
@@ -2861,7 +2514,7 @@ async fn legacy_engine_claim_and_settlement_do_not_write_canonical_protocol() {
 }
 
 #[tokio::test]
-async fn legacy_engine_startup_rejects_running_canonical_activation() {
+async fn legacy_engine_startup_rejects_open_unified_execution_attempt() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let provider = Arc::new(CountingProvider {
@@ -2920,7 +2573,7 @@ async fn legacy_engine_startup_rejects_running_canonical_activation() {
     let error = legacy.run().await.unwrap_err();
     assert!(error
         .to_string()
-        .contains("non-terminal canonical activations remain"));
+        .contains("open unified execution attempts remain"));
 }
 
 #[tokio::test]
@@ -2975,20 +2628,20 @@ async fn production_protocol_claim_and_settlement_release_the_canonical_slot() {
         .inner
         .runtime_db
         .transitions()
-        .load_scheduler_protocol_snapshot("default")
-        .unwrap();
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .expect("claim should initialize execution authority");
     assert_eq!(
-        claimed.slot,
-        ActivationSlot::Running {
-            activation_id: activation_id.clone(),
-            owner: SchedulerOwner::WorkItem {
-                work_item_id: work_item.id.clone(),
-            },
-            admitted_generation: work_item.revision,
-            recovery_for: None,
-        }
+        claimed.attempts[&activation_id].state,
+        crate::domain::execution_protocol::ExecutionAttemptState::Open
     );
-    assert!(claimed.activations.contains_key(&activation_id));
+    assert!(matches!(
+        claimed.work_items[&work_item.id].state,
+        crate::domain::execution_protocol::WorkItemExecutionState::InFlight {
+            ref attempt_id,
+            ..
+        } if attempt_id == &activation_id
+    ));
 
     finish_claimed_test_run(&runtime).await;
     let terminal = terminal_transition(&message, Some(&work_item.id));
@@ -3019,32 +2672,11 @@ async fn production_protocol_claim_and_settlement_release_the_canonical_slot() {
         .inner
         .runtime_db
         .transitions()
-        .load_scheduler_protocol_snapshot("default")
-        .unwrap();
-    assert_eq!(settled.slot, ActivationSlot::Idle);
-    assert_eq!(
-        settled.work.get(&work_item.id).map(|demand| &demand.status),
-        Some(&WorkStatus::Runnable)
-    );
-    assert_eq!(
-        settled
-            .work
-            .get(&work_item.id)
-            .map(|demand| demand.scheduling_generation),
-        Some(work_item.revision + 1)
-    );
-    assert!(settled
-        .settlements
-        .contains_key(&canonical_settlement_id(&message.id)));
-    let execution = runtime
-        .inner
-        .runtime_db
-        .transitions()
         .load_execution_protocol_state_if_initialized("default")
         .unwrap()
-        .expect("canonical settlement should preserve the execution partition");
-    let outcome_id = format!("outcome:{}", canonical_settlement_id(&message.id));
-    let attempt = &execution.attempts[&activation_id];
+        .expect("settlement should preserve execution authority");
+    let outcome_id = format!("outcome:message:{}", message.id);
+    let attempt = &settled.attempts[&activation_id];
     assert_eq!(
         attempt.state,
         crate::domain::execution_protocol::ExecutionAttemptState::Settled
@@ -3054,17 +2686,17 @@ async fn production_protocol_claim_and_settlement_release_the_canonical_slot() {
         Some(outcome_id.as_str())
     );
     assert_eq!(
-        execution.outcomes[&outcome_id].outcome,
+        settled.outcomes[&outcome_id].outcome,
         crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
             crate::domain::execution_protocol::WorkItemOutcome::Continue,
         )
     );
     assert_eq!(
-        execution.work_items[&work_item.id].source_revision,
+        settled.work_items[&work_item.id].source_revision,
         work_item.revision
     );
     assert_eq!(
-        execution.work_items[&work_item.id].state,
+        settled.work_items[&work_item.id].state,
         crate::domain::execution_protocol::WorkItemExecutionState::Runnable {
             generation: work_item.revision + 1,
             recovery_ref: None,
@@ -3104,7 +2736,7 @@ async fn production_protocol_claim_and_settlement_release_the_canonical_slot() {
             .transitions()
             .load_execution_protocol_state_if_initialized("default")
             .unwrap(),
-        Some(execution)
+        Some(settled)
     );
 }
 
@@ -3156,6 +2788,7 @@ async fn production_protocol_wait_settlement_creates_rejoinable_wait_generation(
         scheduler_executor::RunLoopPoll::Message(_)
     ));
 
+    append_running_rejoin_task(&runtime, "task-rejoin", &work_item.id);
     let registration = runtime
         .register_wait_for(
             "default",
@@ -3186,32 +2819,30 @@ async fn production_protocol_wait_settlement_creates_rejoinable_wait_generation(
         .await
         .unwrap();
 
+    let first_attempt_id = scheduler_executor::canonical_activation_id(&message.id);
     let settled = runtime
         .inner
         .runtime_db
         .transitions()
-        .load_scheduler_protocol_snapshot("default")
-        .unwrap();
-    let wait_generation = work_item.revision + 1;
-    assert_eq!(settled.slot, ActivationSlot::Idle);
-    assert_eq!(settled.dispatch, AgentDispatchState::Open);
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .expect("WaitFor should preserve execution authority");
+    let first_attempt = &settled.attempts[&first_attempt_id];
     assert_eq!(
-        settled.work.get(&work_item.id).map(|demand| &demand.status),
-        Some(&WorkStatus::Waiting {
-            wait_id: registration.condition.id.clone(),
-        })
+        first_attempt.state,
+        crate::domain::execution_protocol::ExecutionAttemptState::Settled
     );
-    assert_eq!(
-        settled
-            .waits
-            .get(&registration.condition.id)
-            .map(|wait| wait.current_generation),
-        Some(wait_generation)
-    );
-    assert!(settled
-        .settlements
-        .contains_key(&canonical_settlement_id(&message.id)));
-    assert!(settled.missing_settlements.is_empty());
+    assert!(matches!(
+        &settled.outcomes[first_attempt.terminal_outcome_id.as_deref().unwrap()].outcome,
+        crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
+            crate::domain::execution_protocol::WorkItemOutcome::Wait { wait }
+        ) if wait.wait_id == registration.condition.id
+    ));
+    assert!(matches!(
+        &settled.work_items[&work_item.id].state,
+        crate::domain::execution_protocol::WorkItemExecutionState::Waiting { wait, .. }
+            if wait.wait_id == registration.condition.id
+    ));
 
     append_completed_rejoin_task(
         &runtime,
@@ -3240,28 +2871,37 @@ async fn production_protocol_wait_settlement_creates_rejoinable_wait_generation(
             .unwrap(),
         scheduler_executor::RunLoopPoll::Message(_)
     ));
+    let rejoin_attempt_id = scheduler_executor::canonical_activation_id(&rejoin.id);
     let rejoined = runtime
         .inner
         .runtime_db
         .transitions()
-        .load_scheduler_protocol_snapshot("default")
-        .unwrap();
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .expect("task rejoin should preserve execution authority");
     assert!(matches!(
-        rejoined.slot,
-        ActivationSlot::Running {
-            owner: SchedulerOwner::WorkItem { ref work_item_id },
-            admitted_generation,
+        &rejoined.attempts[&rejoin_attempt_id].source.identity,
+        crate::domain::execution_protocol::ExecutionSourceIdentity::TaskResult {
+            task_id,
+            result_message_id,
+        } if task_id == "task-rejoin" && result_message_id == &rejoin.id
+    ));
+    assert!(matches!(
+        &rejoined.work_items[&work_item.id].state,
+        crate::domain::execution_protocol::WorkItemExecutionState::InFlight {
+            attempt_id,
             ..
-        } if work_item_id == &work_item.id && admitted_generation == wait_generation
+        } if attempt_id == &rejoin_attempt_id
     ));
     assert_eq!(
-        rejoined.waits[&registration.condition.id].generations[&wait_generation].state,
-        WaitState::Consumed
-    );
-    assert_eq!(
-        rejoined.waits[&registration.condition.id].generations[&wait_generation]
-            .consuming_activation_id,
-        Some(scheduler_executor::canonical_activation_id(&rejoin.id))
+        runtime
+            .storage()
+            .latest_wait_conditions()
+            .unwrap()
+            .into_iter()
+            .find(|wait| wait.id == registration.condition.id)
+            .map(|wait| wait.status),
+        Some(WaitConditionStatus::Resolved)
     );
 
     let external_wait = runtime
@@ -3298,38 +2938,39 @@ async fn production_protocol_wait_settlement_creates_rejoinable_wait_generation(
         .inner
         .runtime_db
         .transitions()
-        .load_scheduler_protocol_snapshot("default")
-        .unwrap();
-    let external_wait_generation = wait_generation + 1;
-    assert_eq!(settled_rejoin.slot, ActivationSlot::Idle);
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .expect("second WaitFor should preserve execution authority");
+    let rejoin_attempt = &settled_rejoin.attempts[&rejoin_attempt_id];
     assert_eq!(
-        settled_rejoin
-            .work
-            .get(&work_item.id)
-            .map(|demand| &demand.status),
-        Some(&WorkStatus::Waiting {
-            wait_id: external_wait.condition.id.clone(),
-        })
+        rejoin_attempt.state,
+        crate::domain::execution_protocol::ExecutionAttemptState::Settled
     );
+    assert!(matches!(
+        &settled_rejoin.outcomes
+            [rejoin_attempt.terminal_outcome_id.as_deref().unwrap()]
+            .outcome,
+        crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
+            crate::domain::execution_protocol::WorkItemOutcome::Wait { wait }
+        ) if wait.wait_id == external_wait.condition.id
+    ));
+    assert!(matches!(
+        &settled_rejoin.work_items[&work_item.id].state,
+        crate::domain::execution_protocol::WorkItemExecutionState::Waiting { wait, .. }
+            if wait.wait_id == external_wait.condition.id
+    ));
     assert_eq!(
-        settled_rejoin
-            .waits
-            .get(&external_wait.condition.id)
-            .map(|wait| wait.current_generation),
-        Some(external_wait_generation)
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest_all()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == rejoin.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Processed)
     );
-    assert_eq!(
-        settled_rejoin.waits[&registration.condition.id].generations[&wait_generation].state,
-        WaitState::Resolved
-    );
-    assert_eq!(
-        settled_rejoin.waits[&registration.condition.id].generations[&wait_generation]
-            .consuming_activation_id,
-        None
-    );
-    assert!(settled_rejoin
-        .settlements
-        .contains_key(&canonical_settlement_id(&rejoin.id)));
 }
 
 #[tokio::test]
@@ -3420,26 +3061,33 @@ async fn lifecycle_settlement_adopts_wait_without_work_item_turn_binding() {
         .inner
         .runtime_db
         .transitions()
-        .load_scheduler_protocol_snapshot("default")
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
         .unwrap();
-    assert_eq!(settled.slot, ActivationSlot::Idle);
+    let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+    let attempt = &settled.attempts[&activation_id];
     assert_eq!(
-        settled.work.get(&work_item.id).map(|demand| &demand.status),
-        Some(&WorkStatus::Waiting {
-            wait_id: registration.condition.id.clone(),
-        })
+        attempt.state,
+        crate::domain::execution_protocol::ExecutionAttemptState::Settled
     );
+    assert!(matches!(
+        &settled.outcomes[attempt.terminal_outcome_id.as_deref().unwrap()].outcome,
+        crate::domain::execution_protocol::ExecutionOutcome::Conversation(
+            crate::domain::execution_protocol::ConversationOutcome::HandoffToWorkItemWait {
+                work_item_id,
+                wait,
+            }
+        ) if work_item_id == &work_item.id && wait.wait_id == registration.condition.id
+    ));
+    assert!(matches!(
+        &settled.work_items[&work_item.id].state,
+        crate::domain::execution_protocol::WorkItemExecutionState::Waiting { wait, .. }
+            if wait.wait_id == registration.condition.id
+    ));
     assert_eq!(
-        settled.waits[&registration.condition.id].generations[&updated_work_item.revision].owner,
-        SchedulerOwner::WorkItem {
-            work_item_id: work_item.id.clone(),
-        }
+        settled.work_items[&work_item.id].source_revision,
+        updated_work_item.revision
     );
-    assert_eq!(settled.dispatch, AgentDispatchState::Open);
-    assert!(settled
-        .settlements
-        .contains_key(&canonical_settlement_id(&message.id)));
-    assert!(settled.missing_settlements.is_empty());
     assert_eq!(
         runtime
             .inner
@@ -3511,14 +3159,26 @@ async fn lifecycle_wait_handoff_to_work_item_wait_is_atomic_idempotent_and_resta
         .inner
         .runtime_db
         .transitions()
-        .load_scheduler_protocol_snapshot("default")
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
         .unwrap();
     assert!(matches!(
-        &admitted.activation_admissions[&activation_id]
-            .activation
-            .cause,
-        ActivationCause::LifecycleExternalNudge { message_id }
-            if message_id == &message.id
+        &admitted.attempts[&activation_id],
+        crate::domain::execution_protocol::ExecutionAttempt {
+            binding: crate::domain::execution_protocol::ExecutionBinding::AgentLifecycle {
+                agent_id
+            },
+            source:
+                crate::domain::execution_protocol::ExecutionSource {
+                    identity:
+                        crate::domain::execution_protocol::ExecutionSourceIdentity::QueueMessage {
+                            message_id
+                        },
+                    ..
+                },
+            state: crate::domain::execution_protocol::ExecutionAttemptState::Open,
+            ..
+        } if agent_id == "default" && message_id == &message.id
     ));
 
     runtime
@@ -3535,6 +3195,7 @@ async fn lifecycle_wait_handoff_to_work_item_wait_is_atomic_idempotent_and_resta
         .await
         .unwrap();
     runtime.pick_work_item(work_item.id.clone()).await.unwrap();
+    append_running_rejoin_task(&runtime, "task-lifecycle-handoff", &work_item.id);
     let work_wait = runtime
         .register_wait_for(
             "default",
@@ -3571,45 +3232,42 @@ async fn lifecycle_wait_handoff_to_work_item_wait_is_atomic_idempotent_and_resta
         .inner
         .runtime_db
         .transitions()
-        .load_scheduler_protocol_snapshot("default")
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
         .unwrap();
-    let work_generation = updated_work_item.revision;
-    assert_eq!(settled.slot, ActivationSlot::Idle);
+    let work_generation = settled.work_items[&work_item.id].state.generation();
+    let attempt = &settled.attempts[&activation_id];
     assert_eq!(
-        settled.waits[&lifecycle_wait.condition.id].generations[&lifecycle_generation].state,
-        WaitState::Resolved
+        attempt.state,
+        crate::domain::execution_protocol::ExecutionAttemptState::Settled
     );
+    assert!(matches!(
+        &settled.outcomes[attempt.terminal_outcome_id.as_deref().unwrap()].outcome,
+        crate::domain::execution_protocol::ExecutionOutcome::Conversation(
+            crate::domain::execution_protocol::ConversationOutcome::HandoffToWorkItemWait {
+                work_item_id,
+                wait,
+            }
+        ) if work_item_id == &work_item.id && wait.wait_id == work_wait.condition.id
+    ));
+    assert!(matches!(
+        &settled.work_items[&work_item.id].state,
+        crate::domain::execution_protocol::WorkItemExecutionState::Waiting { wait, .. }
+            if wait.wait_id == work_wait.condition.id
+    ));
     assert_eq!(
-        settled.work[&work_item.id].status,
-        WorkStatus::Waiting {
-            wait_id: work_wait.condition.id.clone(),
-        }
+        settled.work_items[&work_item.id].source_revision,
+        updated_work_item.revision
     );
-    assert_eq!(
-        settled.waits[&work_wait.condition.id].generations[&work_generation].owner,
-        SchedulerOwner::WorkItem {
-            work_item_id: work_item.id.clone(),
-        }
-    );
-    assert_eq!(settled.dispatch, AgentDispatchState::Open);
-    assert_eq!(settled.focus.as_deref(), Some(work_item.id.as_str()));
-    assert!(settled.missing_settlements.is_empty());
-
-    let replay_commands = runtime
-        .canonical_queue_settlement_commands(&processed, Some(&terminal.turn_record))
-        .await
-        .unwrap();
-    assert!(replay_commands.is_empty());
     assert_eq!(
         runtime
-            .inner
-            .runtime_db
-            .transitions()
-            .commit_scheduler_recovery_plan("default", &replay_commands)
-            .unwrap(),
-        crate::runtime_db::transitions::scheduler_protocol_repository::SchedulerRecoveryCommitOutcome::Applied(
-            false
-        )
+            .storage()
+            .raw_unresolved_wait_conditions_for_agent("default")
+            .unwrap()
+            .into_iter()
+            .find(|condition| condition.id == lifecycle_wait.condition.id)
+            .map(|condition| condition.status),
+        Some(WaitConditionStatus::Active)
     );
 
     drop(runtime);
@@ -3683,26 +3341,47 @@ async fn lifecycle_wait_handoff_to_work_item_wait_is_atomic_idempotent_and_resta
         .inner
         .runtime_db
         .transitions()
-        .load_scheduler_protocol_snapshot("default")
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
         .unwrap();
-    let rejoin_generation = resolved_work_item.revision;
+    let rejoin_activation_id = scheduler_executor::canonical_activation_id(&rejoin.id);
     assert!(matches!(
-        rejoined.slot,
-        ActivationSlot::Running {
-            owner: SchedulerOwner::WorkItem { ref work_item_id },
-            admitted_generation,
+        &rejoined.attempts[&rejoin_activation_id],
+        crate::domain::execution_protocol::ExecutionAttempt {
+            binding: crate::domain::execution_protocol::ExecutionBinding::WorkItem {
+                work_item_id
+            },
+            source:
+                crate::domain::execution_protocol::ExecutionSource {
+                    identity:
+                        crate::domain::execution_protocol::ExecutionSourceIdentity::TaskResult {
+                            task_id,
+                            result_message_id,
+                        },
+                    ..
+                },
+            state: crate::domain::execution_protocol::ExecutionAttemptState::Open,
             ..
-        } if work_item_id == &work_item.id && admitted_generation == rejoin_generation
+        } if work_item_id == &work_item.id
+            && task_id == "task-lifecycle-handoff"
+            && result_message_id == &rejoin.id
+    ));
+    assert!(matches!(
+        &rejoined.work_items[&work_item.id].state,
+        crate::domain::execution_protocol::WorkItemExecutionState::InFlight {
+            generation,
+            attempt_id,
+        } if *generation == work_generation && attempt_id == &rejoin_activation_id
     ));
     assert_eq!(
-        rejoined.waits[&work_wait.condition.id].generations[&rejoin_generation].state,
-        WaitState::Consumed
-    );
-    assert_eq!(
-        rejoined.waits[&work_wait.condition.id].generations[&rejoin_generation]
-            .consuming_activation_id
-            .as_deref(),
-        Some(scheduler_executor::canonical_activation_id(&rejoin.id).as_str())
+        reopened
+            .storage()
+            .latest_wait_conditions()
+            .unwrap()
+            .into_iter()
+            .find(|condition| condition.id == work_wait.condition.id)
+            .map(|condition| condition.status),
+        Some(WaitConditionStatus::Resolved)
     );
 }
 
@@ -3733,6 +3412,7 @@ async fn exact_task_rejoin_prefers_canonical_wait_when_legacy_revision_advanced(
         .await
         .unwrap();
     runtime.pick_work_item(work_item.id.clone()).await.unwrap();
+    append_running_rejoin_task(&runtime, "task-stale-legacy-rejoin", &work_item.id);
     let registration = runtime
         .register_wait_for(
             "default",
@@ -3768,7 +3448,6 @@ async fn exact_task_rejoin_prefers_canonical_wait_when_legacy_revision_advanced(
                 generation: wait_generation,
                 wait: crate::domain::execution_protocol::WaitReference {
                     wait_id: registration.condition.id.clone(),
-                    generation: wait_generation,
                 },
             },
         },
@@ -3831,19 +3510,32 @@ async fn exact_task_rejoin_prefers_canonical_wait_when_legacy_revision_advanced(
         .inner
         .runtime_db
         .transitions()
-        .load_scheduler_protocol_snapshot("default")
-        .unwrap();
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .expect("task rejoin should preserve execution authority");
+    let attempt_id = scheduler_executor::canonical_activation_id(&rejoin.id);
     assert!(matches!(
-        claimed.slot,
-        ActivationSlot::Running {
-            owner: SchedulerOwner::WorkItem { ref work_item_id },
-            admitted_generation,
-            ..
-        } if work_item_id == &work_item.id && admitted_generation == wait_generation
+        claimed.attempts[&attempt_id].binding,
+        crate::domain::execution_protocol::ExecutionBinding::WorkItem {
+            ref work_item_id
+        } if work_item_id == &work_item.id
+    ));
+    assert!(matches!(
+        claimed.attempts[&attempt_id].source.identity,
+        crate::domain::execution_protocol::ExecutionSourceIdentity::TaskResult {
+            ref task_id,
+            ref result_message_id,
+        } if task_id == "task-stale-legacy-rejoin" && result_message_id == &rejoin.id
     ));
     assert_eq!(
-        claimed.waits[&registration.condition.id].generations[&wait_generation].state,
-        WaitState::Consumed
+        runtime
+            .storage()
+            .latest_wait_conditions()
+            .unwrap()
+            .into_iter()
+            .find(|wait| wait.id == registration.condition.id)
+            .map(|wait| wait.status),
+        Some(WaitConditionStatus::Resolved)
     );
     assert_eq!(
         runtime
@@ -3857,6 +3549,159 @@ async fn exact_task_rejoin_prefers_canonical_wait_when_legacy_revision_advanced(
             .map(|entry| entry.status),
         Some(QueueEntryStatus::Dequeued)
     );
+}
+
+#[tokio::test]
+async fn stale_exact_task_rejoin_is_dropped_without_blocking_next_message() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item(
+            "drop stale task rejoin queue head".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    runtime.pick_work_item(work_item.id.clone()).await.unwrap();
+    append_running_rejoin_task(&runtime, "task-current-rejoin", &work_item.id);
+    let registration = runtime
+        .register_wait_for(
+            "default",
+            Some(work_item.id.clone()),
+            WaitForWakeKind::TaskResult,
+            Some("task-current-rejoin".into()),
+            "waiting for current task".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let waiting_work = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .expect("waiting WorkItem");
+    let wait_generation = waiting_work.revision;
+    runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .initialize_scheduler_protocol_partition(
+            "default",
+            &canonical_waiting_snapshot(&waiting_work, &registration.condition.id, wait_generation),
+        )
+        .unwrap();
+    let mut execution = crate::domain::execution_protocol::ExecutionProtocolState::empty("default");
+    execution.work_items.insert(
+        work_item.id.clone(),
+        crate::domain::execution_protocol::WorkItemExecutionRecord {
+            source_revision: work_item.revision.max(1),
+            state: crate::domain::execution_protocol::WorkItemExecutionState::Waiting {
+                generation: wait_generation,
+                wait: crate::domain::execution_protocol::WaitReference {
+                    wait_id: registration.condition.id.clone(),
+                },
+            },
+        },
+    );
+    runtime
+        .inner
+        .runtime_db
+        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
+        .unwrap();
+    append_completed_rejoin_task(
+        &runtime,
+        "task-stale-rejoin",
+        &work_item.id,
+        "turn-stale-rejoin-parent",
+    );
+    append_completed_rejoin_task(
+        &runtime,
+        "task-current-rejoin",
+        &work_item.id,
+        "turn-current-rejoin-parent",
+    );
+
+    let mut stale = task_result_message("task-stale-rejoin").with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    stale.work_item_id = Some(work_item.id.clone());
+    stale.metadata = Some(serde_json::json!({
+        "task_id": "task-stale-rejoin",
+        "task_kind": "command_task",
+        "task_status": "completed",
+        "task_result_id": "result-stale-rejoin",
+        "work_item_id": work_item.id,
+    }));
+    stale.turn_id = Some("turn-stale-rejoin".into());
+    let stale = runtime.enqueue(stale).await.unwrap();
+    let mut valid = task_result_message("task-current-rejoin").with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    valid.work_item_id = Some(work_item.id.clone());
+    valid.metadata = Some(serde_json::json!({
+        "task_id": "task-current-rejoin",
+        "task_kind": "command_task",
+        "task_status": "completed",
+        "task_result_id": "result-current-rejoin",
+        "work_item_id": work_item.id,
+    }));
+    valid.turn_id = Some("turn-current-rejoin".into());
+    let valid = runtime.enqueue(valid).await.unwrap();
+
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Idle
+    ));
+    assert_eq!(
+        runtime
+            .storage()
+            .latest_queue_entries()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == stale.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Dropped)
+    );
+    assert!(runtime
+        .storage()
+        .read_recent_events(usize::MAX)
+        .unwrap()
+        .iter()
+        .any(|event| {
+            event.kind == "scheduler_authority_input_rejected"
+                && event.data["message_id"] == stale.id
+                && event.data["reason"] == "canonical_task_rejoin_stale"
+                && event.data["queue_disposition"] == "dropped"
+        }));
+
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("valid message behind stale task result should be claimed");
+    };
+    assert_eq!(scheduled.message.id, valid.id);
 }
 
 #[tokio::test]
@@ -3881,6 +3726,7 @@ async fn exact_task_rejoin_claim_is_atomic_and_restart_safe() {
         .await
         .unwrap();
     runtime.pick_work_item(work_item.id.clone()).await.unwrap();
+    append_running_rejoin_task(&runtime, "task-rejoin", &work_item.id);
     let registration = runtime
         .register_wait_for(
             "default",
@@ -3897,40 +3743,8 @@ async fn exact_task_rejoin_claim_is_atomic_and_restart_safe() {
         .await
         .unwrap()
         .unwrap();
-    let wait_generation = work_item.revision;
-    let initial_seed =
-        canonical_waiting_snapshot(&work_item, &registration.condition.id, wait_generation);
-    runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .initialize_scheduler_protocol_partition("default", &initial_seed)
-        .unwrap();
-    let initial = runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .load_scheduler_protocol_snapshot("default")
-        .unwrap();
-    runtime
-        .persist_task_transition(
-            &TaskRecord {
-                id: "task-rejoin".into(),
-                agent_id: "default".into(),
-                kind: TaskKind::CommandTask,
-                status: TaskStatus::Running,
-                created_at: Utc::now(),
-                updated_at: Utc::now(),
-                parent_message_id: None,
-                work_item_id: Some(work_item.id.clone()),
-                summary: Some("task-rejoin".into()),
-                detail: None,
-                recovery: None,
-            },
-            "task_completed",
-        )
-        .await
-        .unwrap();
+    persist_waiting_work_execution(&runtime, &work_item, &registration.condition.id);
+    append_completed_rejoin_task(&runtime, "task-rejoin", &work_item.id, "turn-task-parent");
     assert_eq!(
         runtime
             .storage()
@@ -3953,79 +3767,18 @@ async fn exact_task_rejoin_claim_is_atomic_and_restart_safe() {
         "work_item_id": work_item.id,
     }));
     let message = runtime.enqueue(message).await.unwrap();
-
-    assert!(matches!(
-        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-            .poll()
-            .await
-            .unwrap(),
-        scheduler_executor::RunLoopPoll::AuthorityBlocked
-    ));
-    assert_eq!(
-        runtime
-            .inner
-            .runtime_db
-            .queue_entries()
-            .latest_all()
-            .unwrap()
-            .into_iter()
-            .find(|entry| entry.message_id == message.id)
-            .map(|entry| entry.status),
-        Some(QueueEntryStatus::Queued)
-    );
-    assert!(runtime
-        .storage()
-        .read_recent_events(32)
-        .unwrap()
-        .iter()
-        .any(|event| {
-            event.kind == "scheduler_authority_hard_blocker"
-                && event.data["blocker_code"] == "canonical_task_rejoin_contract_missing_or_invalid"
-        }));
-
-    let mut durable_task = runtime
-        .storage()
-        .latest_task_record("task-rejoin")
-        .unwrap()
-        .unwrap();
-    durable_task.updated_at = Utc::now();
-    durable_task.detail = Some(serde_json::json!({
-        "rejoin_obligation_id": "task-rejoin",
-        "rejoin_generation": 1,
-        "parent_turn_id": "turn-task-parent"
-    }));
-    durable_task.status = TaskStatus::Completed;
-    runtime
-        .persist_task_transition(&durable_task, "task_completed")
-        .await
-        .unwrap();
-    assert!(runtime
-        .storage()
-        .active_wait_conditions_for_work_item("default", &work_item.id)
-        .unwrap()
-        .is_empty());
-    assert_eq!(
-        runtime
-            .storage()
-            .latest_wait_conditions()
-            .unwrap()
-            .into_iter()
-            .find(|condition| condition.id == registration.condition.id)
-            .map(|condition| condition.status),
-        Some(WaitConditionStatus::Resolved)
-    );
-    let work_item = runtime
-        .latest_work_item(&work_item.id)
-        .await
-        .unwrap()
-        .unwrap();
-    let claim_wait_generation = work_item.revision;
     let state_before_claim = runtime.agent_state().await.unwrap();
+    let execution_before_claim = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .expect("waiting execution authority");
 
     runtime.inject_next_transition_fault(
         crate::runtime_db::transitions::TransitionFaultPoint::AfterCanonicalWrites,
     );
-
     let error = match scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
         .poll()
         .await
@@ -4040,9 +3793,9 @@ async fn exact_task_rejoin_claim_is_atomic_and_restart_safe() {
             .inner
             .runtime_db
             .transitions()
-            .load_scheduler_protocol_snapshot("default")
+            .load_execution_protocol_state_if_initialized("default")
             .unwrap(),
-        initial
+        Some(execution_before_claim)
     );
     assert_eq!(
         runtime
@@ -4056,13 +3809,16 @@ async fn exact_task_rejoin_claim_is_atomic_and_restart_safe() {
             .map(|entry| entry.status),
         Some(QueueEntryStatus::Queued)
     );
-    assert!(runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .load_execution_protocol_state_if_initialized("default")
-        .unwrap()
-        .is_none());
+    assert_eq!(
+        runtime
+            .storage()
+            .latest_wait_conditions()
+            .unwrap()
+            .into_iter()
+            .find(|condition| condition.id == registration.condition.id)
+            .map(|condition| condition.status),
+        Some(WaitConditionStatus::Triggered)
+    );
 
     let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
         .poll()
@@ -4073,52 +3829,13 @@ async fn exact_task_rejoin_claim_is_atomic_and_restart_safe() {
     };
     assert_eq!(scheduled.message.id, message.id);
     let activation_id = scheduler_executor::canonical_activation_id(&message.id);
-    let claimed = runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .load_scheduler_protocol_snapshot("default")
-        .unwrap();
-    assert_eq!(
-        claimed.slot,
-        ActivationSlot::Running {
-            activation_id: activation_id.clone(),
-            owner: SchedulerOwner::WorkItem {
-                work_item_id: work_item.id.clone(),
-            },
-            admitted_generation: work_item.revision,
-            recovery_for: None,
-        }
-    );
-    assert_eq!(
-        claimed.waits[&registration.condition.id].generations[&claim_wait_generation].state,
-        WaitState::Consumed
-    );
-    assert_eq!(
-        claimed.waits[&registration.condition.id].generations[&claim_wait_generation]
-            .consuming_activation_id
-            .as_deref(),
-        Some(activation_id.as_str())
-    );
-    let admission = &claimed.activation_admissions[&activation_id].activation;
-    assert!(matches!(
-        &admission.cause,
-        ActivationCause::TaskRejoin {
-            task_id,
-            message_id,
-            resume: Some(resume),
-        } if task_id == "task-rejoin"
-            && message_id == &message.id
-            && resume.wait_id == registration.condition.id
-            && resume.wait_generation == claim_wait_generation
-    ));
     let execution = runtime
         .inner
         .runtime_db
         .transitions()
         .load_execution_protocol_state_if_initialized("default")
         .unwrap()
-        .expect("canonical claim should initialize execution protocol");
+        .expect("canonical claim should preserve execution protocol");
     let attempt = &execution.attempts[&activation_id];
     assert_eq!(
         attempt.source.identity,
@@ -4128,25 +3845,10 @@ async fn exact_task_rejoin_claim_is_atomic_and_restart_safe() {
         }
     );
     assert_eq!(
-        attempt.source.generation,
-        scheduled
-            .message
-            .message_seq
-            .expect("claimed message should carry its durable sequence")
-    );
-    assert_eq!(
         attempt.binding,
         crate::domain::execution_protocol::ExecutionBinding::WorkItem {
             work_item_id: work_item.id.clone(),
         }
-    );
-    assert_eq!(
-        attempt.admitted_fences.work_item_source_revision,
-        Some(work_item.revision)
-    );
-    assert_eq!(
-        attempt.admitted_fences.work_item_generation,
-        Some(work_item.revision)
     );
     assert_eq!(
         attempt.admitted_fences.rejoin,
@@ -4156,13 +3858,22 @@ async fn exact_task_rejoin_claim_is_atomic_and_restart_safe() {
             parent_turn_id: "turn-task-parent".into(),
         })
     );
+    assert!(matches!(
+        execution.work_items[&work_item.id].state,
+        crate::domain::execution_protocol::WorkItemExecutionState::InFlight {
+            ref attempt_id,
+            ..
+        } if attempt_id == &activation_id
+    ));
     assert_eq!(
-        execution.work_items[&work_item.id].source_revision,
-        work_item.revision
-    );
-    assert_eq!(
-        execution.work_items[&work_item.id].generation(),
-        work_item.revision
+        runtime
+            .storage()
+            .latest_wait_conditions()
+            .unwrap()
+            .into_iter()
+            .find(|condition| condition.id == registration.condition.id)
+            .map(|condition| condition.status),
+        Some(WaitConditionStatus::Resolved)
     );
     assert_eq!(
         runtime
@@ -4191,13 +3902,6 @@ async fn exact_task_rejoin_claim_is_atomic_and_restart_safe() {
         context_config(),
     )
     .unwrap();
-    let restarted = reopened
-        .inner
-        .runtime_db
-        .transitions()
-        .load_scheduler_protocol_snapshot("default")
-        .unwrap();
-    assert_eq!(restarted, claimed);
     assert_eq!(
         reopened
             .inner
@@ -4315,21 +4019,6 @@ async fn restarted_interrupted_unbound_operator_prompt_does_not_block_resent_pro
     assert_eq!(scheduled.message.id, first.id);
     finish_claimed_test_run(runtime).await;
 
-    let work_item = runtime
-        .create_work_item("operator wait".into(), None, None, Vec::new())
-        .await
-        .unwrap();
-    runtime
-        .register_wait_for(
-            "default",
-            Some(work_item.id),
-            WaitForWakeKind::OperatorInput,
-            None,
-            "waiting on work item".into(),
-            None,
-        )
-        .await
-        .unwrap();
     runtime
         .register_wait_for(
             "default",
@@ -4378,7 +4067,7 @@ async fn restarted_interrupted_unbound_operator_prompt_does_not_block_resent_pro
         .into_iter()
         .find(|entry| entry.message_id == first.id)
         .map(|entry| entry.status);
-    assert_eq!(recovered_first_status, Some(QueueEntryStatus::Interrupted));
+    assert_eq!(recovered_first_status, Some(QueueEntryStatus::Aborted));
     let second = runtime
         .enqueue(trusted_operator_prompt(None, "resent operator prompt"))
         .await
@@ -4468,44 +4157,28 @@ async fn authoritative_explicit_operator_binding_ignores_unrelated_waits() {
         .await
         .unwrap()
         .unwrap();
-    let mut initial =
-        canonical_waiting_snapshot(&target, &target_wait.condition.id, target.revision);
-    initial.work.insert(
-        unrelated.id.clone(),
-        WorkDemand {
-            metadata_revision: unrelated.revision,
-            scheduling_generation: unrelated.revision,
-            status: WorkStatus::Waiting {
-                wait_id: unrelated_wait.condition.id.clone(),
-            },
-            capabilities: Default::default(),
-            locks: Default::default(),
-            locality: "runtime".into(),
-            cost_class: "default".into(),
-        },
-    );
-    initial.waits.insert(
-        unrelated_wait.condition.id.clone(),
-        WaitRecord {
-            current_generation: unrelated.revision,
-            generations: std::collections::BTreeMap::from([(
-                unrelated.revision,
-                WaitGenerationRecord {
-                    owner: SchedulerOwner::WorkItem {
-                        work_item_id: unrelated.id,
+    let mut execution = crate::domain::execution_protocol::ExecutionProtocolState::empty("default");
+    for (work_item, wait_id) in [
+        (&target, &target_wait.condition.id),
+        (&unrelated, &unrelated_wait.condition.id),
+    ] {
+        execution.work_items.insert(
+            work_item.id.clone(),
+            crate::domain::execution_protocol::WorkItemExecutionRecord {
+                source_revision: work_item.revision,
+                state: crate::domain::execution_protocol::WorkItemExecutionState::Waiting {
+                    generation: work_item.revision,
+                    wait: crate::domain::execution_protocol::WaitReference {
+                        wait_id: wait_id.clone(),
                     },
-                    state: WaitState::Active,
-                    trigger: None,
-                    consuming_activation_id: None,
                 },
-            )]),
-        },
-    );
+            },
+        );
+    }
     runtime
         .inner
         .runtime_db
-        .transitions()
-        .initialize_scheduler_protocol_partition("default", &initial)
+        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
         .unwrap();
     let message = runtime
         .enqueue(trusted_operator_prompt(
@@ -4549,30 +4222,21 @@ async fn authoritative_explicit_operator_binding_ignores_unrelated_waits() {
         Some(target.id.as_str())
     );
     let activation_id = scheduler_executor::canonical_activation_id(&message.id);
-    let snapshot = runtime
+    let execution = runtime
         .inner
         .runtime_db
         .transitions()
-        .load_scheduler_protocol_snapshot("default")
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
         .unwrap();
-    let admission = &snapshot.activation_admissions[&activation_id].activation;
+    let attempt = &execution.attempts[&activation_id];
     assert!(matches!(
-        &admission.cause,
-        ActivationCause::OperatorInput {
-            message_id,
-            resume: Some(resume),
-        } if message_id == &message.id && resume.wait_id == target_wait.condition.id
+        &attempt.source.identity,
+        crate::domain::execution_protocol::ExecutionSourceIdentity::TriggeredWait {
+            wait_id,
+            trigger_message_id,
+        } if trigger_message_id == &message.id && wait_id == &target_wait.condition.id
     ));
-    let target_generation = snapshot.waits[&target_wait.condition.id].current_generation;
-    assert_eq!(
-        snapshot.waits[&target_wait.condition.id].generations[&target_generation].state,
-        WaitState::Consumed
-    );
-    let unrelated_generation = snapshot.waits[&unrelated_wait.condition.id].current_generation;
-    assert_eq!(
-        snapshot.waits[&unrelated_wait.condition.id].generations[&unrelated_generation].state,
-        WaitState::Active
-    );
     runtime
         .record_wait_reconciliation_signals(&message)
         .await
@@ -4682,157 +4346,13 @@ async fn canonical_processed_settlement_without_terminal_turn_fails_closed() {
             .inner
             .runtime_db
             .transitions()
-            .load_scheduler_protocol_snapshot("default")
+            .load_execution_protocol_state_if_initialized("default")
             .unwrap()
-            .activations[&activation_id]
+            .unwrap()
+            .attempts[&activation_id]
             .state,
-        crate::domain::scheduler_protocol::ActivationState::Running
+        crate::domain::execution_protocol::ExecutionAttemptState::Open
     );
-}
-
-#[tokio::test]
-async fn authoritative_explicit_operator_wait_ambiguity_remains_queued() {
-    let dir = tempdir().unwrap();
-    let workspace = tempdir().unwrap();
-    let runtime = RuntimeHandle::new(
-        "default",
-        dir.path().to_path_buf(),
-        workspace.path().to_path_buf(),
-        "http://127.0.0.1:7878".into(),
-        Arc::new(CountingProvider {
-            calls: Mutex::new(0),
-            reply: "unused",
-        }),
-        "default".into(),
-        context_config(),
-    )
-    .unwrap();
-    let work_item = runtime
-        .create_work_item("ambiguous operator wait".into(), None, None, Vec::new())
-        .await
-        .unwrap();
-    let registration = runtime
-        .register_wait_for(
-            "default",
-            Some(work_item.id.clone()),
-            WaitForWakeKind::OperatorInput,
-            None,
-            "waiting for operator".into(),
-            None,
-        )
-        .await
-        .unwrap();
-    let mut duplicate = registration.condition.clone();
-    duplicate.id = format!("{}-duplicate", registration.condition.id);
-    runtime.storage().append_wait_condition(&duplicate).unwrap();
-    let wait_generation = 1;
-    let wait_record = |owner| WaitRecord {
-        current_generation: wait_generation,
-        generations: std::collections::BTreeMap::from([(
-            wait_generation,
-            WaitGenerationRecord {
-                owner,
-                state: WaitState::Active,
-                trigger: None,
-                consuming_activation_id: None,
-            },
-        )]),
-    };
-    runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .initialize_scheduler_protocol_partition(
-            "default",
-            &Snapshot {
-                slot: ActivationSlot::Idle,
-                dispatch: AgentDispatchState::Awaiting {
-                    wait: WaitIdentity {
-                        id: registration.condition.id.clone(),
-                        generation: wait_generation,
-                    },
-                },
-                dispatch_revision: 1,
-                focus: None,
-                work: Default::default(),
-                waits: std::collections::BTreeMap::from([
-                    (
-                        registration.condition.id.clone(),
-                        wait_record(SchedulerOwner::AgentLifecycle {
-                            agent_id: "default".into(),
-                        }),
-                    ),
-                    (
-                        duplicate.id.clone(),
-                        wait_record(SchedulerOwner::AgentLifecycle {
-                            agent_id: "default".into(),
-                        }),
-                    ),
-                ]),
-                activations: Default::default(),
-                activation_admissions: Default::default(),
-                settlements: Default::default(),
-                missing_settlements: Default::default(),
-                admitted_generations: Default::default(),
-                continuation_admissions: Default::default(),
-                activation_inputs: Default::default(),
-            },
-        )
-        .unwrap();
-    let message = runtime
-        .enqueue(trusted_operator_prompt(
-            Some(&work_item.id),
-            "ambiguous explicit operator input",
-        ))
-        .await
-        .unwrap();
-
-    for _ in 0..2 {
-        assert!(matches!(
-            scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-                .poll()
-                .await
-                .unwrap(),
-            scheduler_executor::RunLoopPoll::AuthorityBlocked
-        ));
-    }
-    assert_eq!(
-        runtime
-            .inner
-            .runtime_db
-            .queue_entries()
-            .latest_all()
-            .unwrap()
-            .into_iter()
-            .find(|entry| entry.message_id == message.id)
-            .map(|entry| entry.status),
-        Some(QueueEntryStatus::Queued)
-    );
-    let advisories = runtime
-        .storage()
-        .read_recent_events(usize::MAX)
-        .unwrap()
-        .into_iter()
-        .filter(|event| {
-            event.kind == "scheduling_advisory"
-                && event.data["kind"] == "ambiguous_canonical_wait_binding"
-                && event.data["evidence"].as_array().is_some_and(|evidence| {
-                    evidence
-                        .iter()
-                        .any(|item| item == &format!("message_id={}", message.id))
-                })
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(advisories.len(), 1);
-    assert!(advisories[0].data["evidence"]
-        .as_array()
-        .is_some_and(|evidence| {
-            evidence.iter().any(|item| {
-                item.as_str().is_some_and(|item| {
-                    item.contains(&registration.condition.id) && item.contains(&duplicate.id)
-                })
-            })
-        }));
 }
 
 #[tokio::test]
@@ -4953,16 +4473,20 @@ async fn authoritative_completion_terminalizes_canonical_work_and_binds_report()
     let runner = tokio::spawn(runtime.clone().run());
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
-            let snapshot = runtime
+            let execution = runtime
                 .inner
                 .runtime_db
                 .transitions()
-                .load_scheduler_protocol_snapshot_if_initialized("default")
+                .load_execution_protocol_state_if_initialized("default")
                 .unwrap();
-            if snapshot.as_ref().is_some_and(|snapshot| {
-                snapshot
-                    .settlements
-                    .contains_key(&canonical_settlement_id(&message.id))
+            if execution.as_ref().is_some_and(|execution| {
+                execution
+                    .attempts
+                    .get(&activation_id)
+                    .is_some_and(|attempt| {
+                        attempt.state
+                            == crate::domain::execution_protocol::ExecutionAttemptState::Settled
+                    })
             }) {
                 break;
             }
@@ -4983,25 +4507,36 @@ async fn authoritative_completion_terminalizes_canonical_work_and_binds_report()
         .result_brief_id
         .as_deref()
         .expect("completion report should bind");
-    let snapshot = runtime
+    let execution = runtime
         .inner
         .runtime_db
         .transitions()
-        .load_scheduler_protocol_snapshot("default")
-        .unwrap();
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .expect("completion should preserve execution authority");
     assert_eq!(
-        snapshot.activations[&activation_id].state,
-        crate::domain::scheduler_protocol::ActivationState::Settled
+        execution.attempts[&activation_id].state,
+        crate::domain::execution_protocol::ExecutionAttemptState::Settled
     );
-    assert_eq!(snapshot.work[&work_item.id].status, WorkStatus::Terminal);
+    assert!(matches!(
+        execution.work_items[&work_item.id].state,
+        crate::domain::execution_protocol::WorkItemExecutionState::Terminal {
+            ref completion,
+            ..
+        } if completion == result_brief_id
+    ));
+    let outcome_id = execution.attempts[&activation_id]
+        .terminal_outcome_id
+        .as_deref()
+        .expect("completion attempt should reference outcome");
     assert_eq!(
-        snapshot.settlements[&canonical_settlement_id(&message.id)]
-            .operator_delivery
-            .as_deref(),
-        Some(result_brief_id)
+        execution.outcomes[outcome_id].outcome,
+        crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
+            crate::domain::execution_protocol::WorkItemOutcome::Complete {
+                completion: result_brief_id.to_string(),
+            },
+        )
     );
-    // Phase 4: missing-settlement recovery is replaced by Interrupted settlement.
-    assert!(snapshot.missing_settlements.is_empty());
 }
 
 #[tokio::test]
@@ -5026,6 +4561,7 @@ async fn task_rejoin_ignores_legacy_wait_duplicate_missing_from_canonical_snapsh
         .await
         .unwrap();
     runtime.pick_work_item(work_item.id.clone()).await.unwrap();
+    append_running_rejoin_task(&runtime, "task-ambiguous", &work_item.id);
     let registration = runtime
         .register_wait_for(
             "default",
@@ -5037,8 +4573,34 @@ async fn task_rejoin_ignores_legacy_wait_duplicate_missing_from_canonical_snapsh
         )
         .await
         .unwrap();
+    let waiting_work = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .expect("waiting WorkItem");
+    let mut execution = crate::domain::execution_protocol::ExecutionProtocolState::empty("default");
+    execution.work_items.insert(
+        work_item.id.clone(),
+        crate::domain::execution_protocol::WorkItemExecutionRecord {
+            source_revision: waiting_work.revision,
+            state: crate::domain::execution_protocol::WorkItemExecutionState::Waiting {
+                generation: waiting_work.revision,
+                wait: crate::domain::execution_protocol::WaitReference {
+                    wait_id: registration.condition.id.clone(),
+                },
+            },
+        },
+    );
+    runtime
+        .inner
+        .runtime_db
+        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
+        .unwrap();
     let mut duplicate_wait = registration.condition.clone();
     duplicate_wait.id = "wait-task-ambiguous-duplicate".into();
+    duplicate_wait.status = WaitConditionStatus::Cancelled;
+    duplicate_wait.cancelled_at = Some(Utc::now());
+    duplicate_wait.updated_at = Utc::now();
     runtime
         .storage()
         .append_wait_condition(&duplicate_wait)
@@ -5150,7 +4712,8 @@ async fn terminal_settlement_fault_rolls_back_all_facts_and_retry_is_idempotent(
             .inner
             .runtime_db
             .transitions()
-            .load_scheduler_protocol_snapshot("default")
+            .load_execution_protocol_state_if_initialized("default")
+            .unwrap()
             .unwrap();
         finish_claimed_test_run(&runtime).await;
 
@@ -5180,9 +4743,9 @@ async fn terminal_settlement_fault_rolls_back_all_facts_and_retry_is_idempotent(
                 .inner
                 .runtime_db
                 .transitions()
-                .load_scheduler_protocol_snapshot("default")
+                .load_execution_protocol_state_if_initialized("default")
                 .unwrap(),
-            claimed
+            Some(claimed)
         );
         assert_eq!(
             runtime
@@ -5253,12 +4816,14 @@ async fn terminal_settlement_fault_rolls_back_all_facts_and_retry_is_idempotent(
             .inner
             .runtime_db
             .transitions()
-            .load_scheduler_protocol_snapshot("default")
+            .load_execution_protocol_state_if_initialized("default")
+            .unwrap()
             .unwrap();
-        assert_eq!(settled.slot, ActivationSlot::Idle);
-        assert!(settled
-            .settlements
-            .contains_key(&canonical_settlement_id(&message.id)));
+        let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+        assert_eq!(
+            settled.attempts[&activation_id].state,
+            crate::domain::execution_protocol::ExecutionAttemptState::Settled
+        );
         assert_eq!(
             runtime
                 .inner
@@ -5362,16 +4927,18 @@ async fn terminal_settlement_survives_post_commit_effect_faults() {
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].effect, expected_effect);
 
-        let snapshot = runtime
+        let execution = runtime
             .inner
             .runtime_db
             .transitions()
-            .load_scheduler_protocol_snapshot("default")
+            .load_execution_protocol_state_if_initialized("default")
+            .unwrap()
             .unwrap();
-        assert_eq!(snapshot.slot, ActivationSlot::Idle);
-        assert!(snapshot
-            .settlements
-            .contains_key(&canonical_settlement_id(&message.id)));
+        let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+        assert_eq!(
+            execution.attempts[&activation_id].state,
+            crate::domain::execution_protocol::ExecutionAttemptState::Settled
+        );
         assert_eq!(
             runtime
                 .inner
@@ -5456,7 +5023,8 @@ async fn runtime_failure_terminal_fault_rolls_back_queue_canonical_and_failure_e
         .inner
         .runtime_db
         .transitions()
-        .load_scheduler_protocol_snapshot("default")
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
         .unwrap();
     runtime.inject_next_transition_fault(
         crate::runtime_db::transitions::TransitionFaultPoint::AfterAuditWrites,
@@ -5474,7 +5042,8 @@ async fn runtime_failure_terminal_fault_rolls_back_queue_canonical_and_failure_e
             .inner
             .runtime_db
             .transitions()
-            .load_scheduler_protocol_snapshot("default")
+            .load_execution_protocol_state_if_initialized("default")
+            .unwrap()
             .unwrap(),
         claimed
     );
@@ -5584,7 +5153,8 @@ async fn interrupted_terminal_fault_rolls_back_queue_canonical_and_turn_facts() 
         .inner
         .runtime_db
         .transitions()
-        .load_scheduler_protocol_snapshot("default")
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
         .unwrap();
     let run_id = runtime
         .agent_state()
@@ -5614,7 +5184,8 @@ async fn interrupted_terminal_fault_rolls_back_queue_canonical_and_turn_facts() 
             .inner
             .runtime_db
             .transitions()
-            .load_scheduler_protocol_snapshot("default")
+            .load_execution_protocol_state_if_initialized("default")
+            .unwrap()
             .unwrap(),
         claimed
     );
@@ -5696,41 +5267,6 @@ async fn completed_production_settlement_uses_exact_bound_result_brief() {
         )
         .await
         .unwrap();
-    let scheduling_generation = work_item.revision.saturating_sub(1);
-    runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .initialize_scheduler_protocol_partition(
-            "default",
-            &Snapshot {
-                slot: ActivationSlot::Idle,
-                dispatch: AgentDispatchState::Open,
-                dispatch_revision: 0,
-                focus: None,
-                work: std::collections::BTreeMap::from([(
-                    work_item.id.clone(),
-                    WorkDemand {
-                        metadata_revision: work_item.revision,
-                        scheduling_generation,
-                        status: WorkStatus::Runnable,
-                        capabilities: Default::default(),
-                        locks: Default::default(),
-                        locality: "runtime".into(),
-                        cost_class: "default".into(),
-                    },
-                )]),
-                waits: Default::default(),
-                activations: Default::default(),
-                activation_admissions: Default::default(),
-                settlements: Default::default(),
-                missing_settlements: Default::default(),
-                admitted_generations: Default::default(),
-                continuation_admissions: Default::default(),
-                activation_inputs: Default::default(),
-            },
-        )
-        .unwrap();
     let mut message = MessageEnvelope::new(
         "default",
         MessageKind::SystemTick,
@@ -5757,13 +5293,6 @@ async fn completed_production_settlement_uses_exact_bound_result_brief() {
         .unwrap();
     assert!(matches!(poll, scheduler_executor::RunLoopPoll::Message(_)));
     let activation_id = scheduler_executor::canonical_activation_id(&message.id);
-    let claimed = runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .load_scheduler_protocol_snapshot("default")
-        .unwrap();
-    let activation = &claimed.activations[&activation_id];
     let execution = runtime
         .inner
         .runtime_db
@@ -5771,16 +5300,14 @@ async fn completed_production_settlement_uses_exact_bound_result_brief() {
         .load_execution_protocol_state_if_initialized("default")
         .unwrap()
         .expect("production claim should initialize the execution partition");
+    let attempt = &execution.attempts[&activation_id];
     assert_eq!(
-        activation.admitted_generation,
-        execution.work_items[&work_item.id].generation()
-    );
-    assert_ne!(activation.admitted_generation, scheduling_generation);
-    assert_eq!(
-        claimed.activation_admissions[&activation_id]
-            .activation
-            .source_revision,
+        attempt.admitted_fences.work_item_source_revision,
         Some(work_item.revision)
+    );
+    assert_eq!(
+        attempt.admitted_fences.work_item_generation,
+        Some(execution.work_items[&work_item.id].generation())
     );
 
     runtime
@@ -5881,20 +5408,16 @@ async fn completed_production_settlement_uses_exact_bound_result_brief() {
         .inner
         .runtime_db
         .transitions()
-        .load_scheduler_protocol_snapshot("default")
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
         .unwrap();
-    let settlement = settled
-        .settlements
-        .get(&canonical_settlement_id(&message.id))
-        .expect("completed activation should have an exact settlement");
-    assert_eq!(
-        settlement.operator_delivery.as_deref(),
-        Some(result_brief_id.as_str())
-    );
-    assert_ne!(
-        settlement.operator_delivery.as_deref(),
-        Some(decoy.id.as_str())
-    );
+    let attempt = &settled.attempts[&activation_id];
+    assert!(matches!(
+        &settled.outcomes[attempt.terminal_outcome_id.as_deref().unwrap()].outcome,
+        crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
+            crate::domain::execution_protocol::WorkItemOutcome::Complete { completion }
+        ) if completion == &result_brief_id && completion != &decoy.id
+    ));
 }
 
 #[tokio::test]
@@ -5949,6 +5472,7 @@ async fn completed_wait_resume_settlement_accepts_exact_reconciliation_revision(
             .unwrap(),
         scheduler_executor::RunLoopPoll::Message(_)
     ));
+    append_running_rejoin_task(&runtime, "task-complete-after-wait", &work_item.id);
     let registration = runtime
         .register_wait_for(
             "default",
@@ -6012,18 +5536,30 @@ async fn completed_wait_resume_settlement_accepts_exact_reconciliation_revision(
         .inner
         .runtime_db
         .transitions()
-        .load_scheduler_protocol_snapshot("default")
-        .unwrap();
-    let source_revision = claimed.activation_admissions[&activation_id]
-        .activation
-        .source_revision
-        .expect("wait resume source revision");
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .expect("wait resume should preserve execution authority");
+    let attempt = &claimed.attempts[&activation_id];
+    let source_revision = attempt
+        .admitted_fences
+        .work_item_source_revision
+        .expect("wait resume WorkItem source revision");
+    assert!(matches!(
+        &attempt.source.identity,
+        crate::domain::execution_protocol::ExecutionSourceIdentity::TaskResult {
+            task_id,
+            result_message_id,
+        } if task_id == "task-complete-after-wait" && result_message_id == &resume.id
+    ));
     assert_eq!(
-        claimed.waits[&registration.condition.id].generations
-            [&claimed.waits[&registration.condition.id].current_generation]
-            .consuming_activation_id
-            .as_deref(),
-        Some(activation_id.as_str())
+        runtime
+            .storage()
+            .latest_wait_conditions()
+            .unwrap()
+            .into_iter()
+            .find(|wait| wait.id == registration.condition.id)
+            .map(|wait| wait.status),
+        Some(WaitConditionStatus::Resolved)
     );
 
     runtime
@@ -6052,7 +5588,7 @@ async fn completed_wait_resume_settlement_accepts_exact_reconciliation_revision(
             .as_ref()
             .expect("completion intent")
             .expected_work_revision,
-        source_revision + 1
+        source_revision
     );
     let completed = runtime
         .promote_work_item_completion_report(
@@ -6092,15 +5628,20 @@ async fn completed_wait_resume_settlement_accepts_exact_reconciliation_revision(
         .inner
         .runtime_db
         .transitions()
-        .load_scheduler_protocol_snapshot("default")
-        .unwrap();
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .expect("completion should preserve execution authority");
+    let attempt = &settled.attempts[&activation_id];
     assert_eq!(
-        settled.settlements[&canonical_settlement_id(&resume.id)]
-            .operator_delivery
-            .as_deref(),
-        Some(result_brief_id.as_str())
+        attempt.state,
+        crate::domain::execution_protocol::ExecutionAttemptState::Settled
     );
-    assert!(settled.missing_settlements.is_empty());
+    assert!(matches!(
+        &settled.outcomes[attempt.terminal_outcome_id.as_deref().unwrap()].outcome,
+        crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
+            crate::domain::execution_protocol::WorkItemOutcome::Complete { completion }
+        ) if completion == &result_brief_id
+    ));
 }
 
 #[tokio::test]
@@ -6226,30 +5767,25 @@ async fn completed_production_settlement_interrupts_mismatched_completion_execut
         .await
         .unwrap());
 
-    let snapshot = runtime
+    let execution = runtime
         .inner
         .runtime_db
         .transitions()
-        .load_scheduler_protocol_snapshot("default")
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
         .unwrap();
     let activation_id = scheduler_executor::canonical_activation_id(&message.id);
-    assert_eq!(snapshot.slot, ActivationSlot::Idle);
-    // Phase 4: missing-settlement replaced by Interrupted settlement.
-    assert!(snapshot
-        .settlements
-        .values()
-        .any(|s| s.activation_id == activation_id
-            && matches!(
-                s.disposition,
-                crate::domain::scheduler_protocol::ActivationDisposition::Interrupted { .. }
-            )));
+    let attempt = &execution.attempts[&activation_id];
     assert_eq!(
-        snapshot
-            .activations
-            .get(&activation_id)
-            .map(|activation| activation.state.clone()),
-        Some(crate::domain::scheduler_protocol::ActivationState::Interrupted)
+        attempt.state,
+        crate::domain::execution_protocol::ExecutionAttemptState::Interrupted
     );
+    assert!(matches!(
+        &execution.outcomes[attempt.terminal_outcome_id.as_deref().unwrap()].outcome,
+        crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
+            crate::domain::execution_protocol::WorkItemOutcome::Interrupted { .. }
+        )
+    ));
     assert_eq!(
         runtime
             .inner
@@ -6344,39 +5880,23 @@ async fn completed_production_settlement_interrupts_without_result_report() {
         .unwrap());
 
     let activation_id = scheduler_executor::canonical_activation_id(&message.id);
-    let snapshot = runtime
+    let execution = runtime
         .inner
         .runtime_db
         .transitions()
-        .load_scheduler_protocol_snapshot("default")
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
         .unwrap();
-    assert_eq!(snapshot.slot, ActivationSlot::Idle);
-    // Phase 4: missing-settlement replaced by Interrupted settlement.
-    assert!(snapshot
-        .settlements
-        .values()
-        .any(|s| s.activation_id == activation_id
-            && matches!(
-                s.disposition,
-                crate::domain::scheduler_protocol::ActivationDisposition::Interrupted { .. }
-            )));
+    let attempt = &execution.attempts[&activation_id];
     assert_eq!(
-        snapshot
-            .activations
-            .get(&activation_id)
-            .map(|activation| activation.state.clone()),
-        Some(crate::domain::scheduler_protocol::ActivationState::Interrupted)
-    );
-    assert_eq!(
-        snapshot
-            .work
-            .get(&work_item.id)
-            .map(|demand| &demand.status),
-        Some(&WorkStatus::Runnable)
+        attempt.state,
+        crate::domain::execution_protocol::ExecutionAttemptState::Interrupted
     );
     assert!(matches!(
-        snapshot.settlements[&canonical_settlement_id(&message.id)].disposition,
-        crate::domain::scheduler_protocol::ActivationDisposition::Interrupted { .. }
+        &execution.outcomes[attempt.terminal_outcome_id.as_deref().unwrap()].outcome,
+        crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
+            crate::domain::execution_protocol::WorkItemOutcome::Interrupted { .. }
+        )
     ));
 }
 
@@ -6427,12 +5947,7 @@ async fn production_protocol_settlement_fault_rolls_back_queue_and_protocol_fact
             .await
             .unwrap();
         assert!(matches!(poll, scheduler_executor::RunLoopPoll::Message(_)));
-        let claimed = runtime
-            .inner
-            .runtime_db
-            .transitions()
-            .load_scheduler_protocol_snapshot("default")
-            .unwrap();
+
         let claimed_execution = runtime
             .inner
             .runtime_db
@@ -6467,15 +5982,6 @@ async fn production_protocol_settlement_fault_rolls_back_queue_and_protocol_fact
             "unexpected error for {fault:?}: {error:#}"
         );
 
-        assert_eq!(
-            runtime
-                .inner
-                .runtime_db
-                .transitions()
-                .load_scheduler_protocol_snapshot("default")
-                .unwrap(),
-            claimed
-        );
         assert_eq!(
             runtime
                 .inner
@@ -7161,6 +6667,7 @@ async fn wait_for_task_result_marks_work_item_waiting_and_allows_sleep() {
         runtime.storage().write_agent(&guard.state).unwrap();
     }
 
+    append_running_rejoin_task(&runtime, "task-1", &work.id);
     runtime
         .register_wait_for(
             "default",
@@ -7343,6 +6850,7 @@ async fn task_result_resolves_wait_for_task_condition_and_clears_matching_blocke
         .create_work_item("wait for task".into(), None, None, Vec::new())
         .await
         .unwrap();
+    append_running_rejoin_task(&runtime, "task-1", &work.id);
     runtime
         .register_wait_for(
             "default",
@@ -8074,21 +7582,6 @@ async fn enqueue_inherits_current_work_item_and_preserves_canonical_provenance()
         scheduler_executor::RunLoopPoll::Message(_)
     ));
     let activation_id = scheduler_executor::canonical_activation_id(&message.id);
-    let scheduler = runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .load_scheduler_protocol_snapshot("default")
-        .unwrap();
-    let activation = &scheduler.activation_admissions[&activation_id].activation;
-    assert_eq!(
-        activation.provenance.origin,
-        crate::domain::scheduler_protocol::ActivationOrigin::System
-    );
-    assert_eq!(
-        activation.provenance.trust,
-        crate::domain::scheduler_protocol::ActivationTrust::ExternalEvidence
-    );
     let execution = runtime
         .inner
         .runtime_db
@@ -8099,6 +7592,10 @@ async fn enqueue_inherits_current_work_item_and_preserves_canonical_provenance()
     assert_eq!(
         execution.attempts[&activation_id].provenance.trust,
         crate::domain::execution_protocol::ExecutionTrust::ExternalEvidence
+    );
+    assert_eq!(
+        execution.attempts[&activation_id].provenance.origin,
+        crate::domain::execution_protocol::ExecutionOrigin::System
     );
     assert!(matches!(
         execution.attempts[&activation_id].source.identity,
@@ -8168,27 +7665,23 @@ async fn enqueue_does_not_bind_to_focus_without_current_turn_ownership() {
 
 #[tokio::test]
 async fn runtime_owned_followup_preserves_all_authority_classes() {
-    use crate::domain::{execution_protocol::ExecutionTrust, scheduler_protocol::ActivationTrust};
+    use crate::domain::execution_protocol::ExecutionTrust;
 
-    for (authority, activation_trust, execution_trust) in [
+    for (authority, execution_trust) in [
         (
             AuthorityClass::OperatorInstruction,
-            ActivationTrust::OperatorInstruction,
             ExecutionTrust::OperatorInstruction,
         ),
         (
             AuthorityClass::RuntimeInstruction,
-            ActivationTrust::RuntimeInstruction,
             ExecutionTrust::RuntimeInstruction,
         ),
         (
             AuthorityClass::IntegrationSignal,
-            ActivationTrust::IntegrationSignal,
             ExecutionTrust::IntegrationSignal,
         ),
         (
             AuthorityClass::ExternalEvidence,
-            ActivationTrust::ExternalEvidence,
             ExecutionTrust::ExternalEvidence,
         ),
     ] {
@@ -8237,19 +7730,6 @@ async fn runtime_owned_followup_preserves_all_authority_classes() {
             scheduler_executor::RunLoopPoll::Message(_)
         ));
         let activation_id = scheduler_executor::canonical_activation_id(&message.id);
-        let scheduler = runtime
-            .inner
-            .runtime_db
-            .transitions()
-            .load_scheduler_protocol_snapshot("default")
-            .unwrap();
-        assert_eq!(
-            scheduler.activation_admissions[&activation_id]
-                .activation
-                .provenance
-                .trust,
-            activation_trust
-        );
         let execution = runtime
             .inner
             .runtime_db
@@ -8312,21 +7792,6 @@ async fn runtime_owned_task_followup_preserves_task_origin_and_external_evidence
         scheduler_executor::RunLoopPoll::Message(_)
     ));
     let activation_id = scheduler_executor::canonical_activation_id(&message.id);
-    let scheduler = runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .load_scheduler_protocol_snapshot("child")
-        .unwrap();
-    let activation = &scheduler.activation_admissions[&activation_id].activation;
-    assert_eq!(
-        activation.provenance.origin,
-        crate::domain::scheduler_protocol::ActivationOrigin::Task
-    );
-    assert_eq!(
-        activation.provenance.trust,
-        crate::domain::scheduler_protocol::ActivationTrust::ExternalEvidence
-    );
     let execution = runtime
         .inner
         .runtime_db
@@ -8407,27 +7872,6 @@ async fn runtime_owned_bound_task_followup_survives_scheduler_reload() {
         context_config(),
     )
     .unwrap();
-    let scheduler = reopened
-        .inner
-        .runtime_db
-        .transitions()
-        .load_scheduler_protocol_snapshot("child")
-        .unwrap();
-    let activation = &scheduler.activation_admissions[&activation_id].activation;
-    assert_eq!(
-        activation.provenance.origin,
-        crate::domain::scheduler_protocol::ActivationOrigin::Task
-    );
-    assert_eq!(
-        activation.provenance.trust,
-        crate::domain::scheduler_protocol::ActivationTrust::ExternalEvidence
-    );
-    assert!(matches!(
-        activation.binding,
-        crate::domain::scheduler_protocol::ActivationBinding::WorkItem {
-            ref work_item_id
-        } if work_item_id == &work_item.id
-    ));
     let execution = reopened
         .inner
         .runtime_db
@@ -8438,6 +7882,19 @@ async fn runtime_owned_bound_task_followup_survives_scheduler_reload() {
     assert!(matches!(
         execution.attempts[&activation_id].source.identity,
         crate::domain::execution_protocol::ExecutionSourceIdentity::InternalFollowup { .. }
+    ));
+    assert_eq!(
+        execution.attempts[&activation_id].provenance.origin,
+        crate::domain::execution_protocol::ExecutionOrigin::Task
+    );
+    assert_eq!(
+        execution.attempts[&activation_id].provenance.trust,
+        crate::domain::execution_protocol::ExecutionTrust::ExternalEvidence
+    );
+    assert!(matches!(
+        &execution.attempts[&activation_id].binding,
+        crate::domain::execution_protocol::ExecutionBinding::WorkItem { work_item_id }
+            if work_item_id == &work_item.id
     ));
 }
 
@@ -8579,32 +8036,26 @@ async fn canonical_stale_correlated_wait_is_dropped_without_blocking_next_messag
         .checked_sub(1)
         .filter(|generation| *generation > 0)
         .expect("wait fixture must have an older generation");
-    let mut canonical =
-        canonical_waiting_snapshot(&waiting, &registration.condition.id, current_generation);
-    canonical
-        .waits
-        .get_mut(&registration.condition.id)
-        .unwrap()
-        .generations
-        .insert(
-            old_generation,
-            WaitGenerationRecord {
-                owner: SchedulerOwner::WorkItem {
-                    work_item_id: work_item.id.clone(),
+    let mut execution = crate::domain::execution_protocol::ExecutionProtocolState::empty("default");
+    execution.work_items.insert(
+        waiting.id.clone(),
+        crate::domain::execution_protocol::WorkItemExecutionRecord {
+            source_revision: waiting.revision,
+            state: crate::domain::execution_protocol::WorkItemExecutionState::Waiting {
+                generation: current_generation,
+                wait: crate::domain::execution_protocol::WaitReference {
+                    wait_id: registration.condition.id.clone(),
                 },
-                state: WaitState::Resolved,
-                trigger: None,
-                consuming_activation_id: None,
             },
-        );
+        },
+    );
     runtime
         .inner
         .runtime_db
-        .transitions()
-        .initialize_scheduler_protocol_partition("default", &canonical)
+        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
         .unwrap();
 
-    let correlated_message = |text: &str, generation: u64, priority: Priority| {
+    let correlated_message = |text: &str, wait_id: &str, generation: u64, priority: Priority| {
         let mut message = MessageEnvelope::new(
             "default",
             MessageKind::WebhookEvent,
@@ -8623,17 +8074,23 @@ async fn canonical_stale_correlated_wait_is_dropped_without_blocking_next_messag
         message.work_item_id = Some(work_item.id.clone());
         message
             .source_refs
-            .insert("wait_id".into(), registration.condition.id.clone());
+            .insert("wait_id".into(), wait_id.to_string());
         message
             .source_refs
             .insert("wait_generation".into(), generation.to_string());
         message
     };
-    let stale = correlated_message("stale webhook", old_generation, Priority::Next);
+    let stale = correlated_message(
+        "stale webhook",
+        "wait-stale-history",
+        old_generation,
+        Priority::Next,
+    );
     let stale = runtime.enqueue(stale).await.unwrap();
     let valid = runtime
         .enqueue(correlated_message(
             "current webhook",
+            &registration.condition.id,
             current_generation,
             Priority::Normal,
         ))
@@ -8709,6 +8166,8 @@ async fn scheduler_recovery_converges_completed_work_item_lane_reservation() {
         resolved_at: None,
         cancelled_at: Some(Utc::now()),
         turn_id: None,
+        trigger_message_id: None,
+        triggered_at: None,
     };
     runtime.storage().append_wait_condition(&wait).unwrap();
     runtime
@@ -8863,6 +8322,8 @@ async fn lifecycle_ingress_converges_completed_work_item_lane_before_claim() {
         resolved_at: None,
         cancelled_at: Some(Utc::now()),
         turn_id: None,
+        trigger_message_id: None,
+        triggered_at: None,
     };
     runtime.storage().append_wait_condition(&wait).unwrap();
     runtime
@@ -8890,25 +8351,42 @@ async fn lifecycle_ingress_converges_completed_work_item_lane_before_claim() {
         panic!("operator ingress should repair the stale lane before claim");
     };
     assert_eq!(scheduled.message.id, message.id);
-    let repaired = runtime
+    let execution = runtime
         .inner
         .runtime_db
         .transitions()
-        .load_scheduler_protocol_snapshot("default")
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
         .unwrap();
+    let activation_id = scheduler_executor::canonical_activation_id(&message.id);
     assert!(matches!(
-        repaired.slot,
-        ActivationSlot::Running {
-            owner: SchedulerOwner::AgentLifecycle { ref agent_id },
+        &execution.attempts[&activation_id],
+        crate::domain::execution_protocol::ExecutionAttempt {
+            binding: crate::domain::execution_protocol::ExecutionBinding::AgentLifecycle {
+                agent_id
+            },
+            state: crate::domain::execution_protocol::ExecutionAttemptState::Open,
             ..
         } if agent_id == "default"
     ));
-    assert_eq!(repaired.dispatch, AgentDispatchState::Open);
-    assert_eq!(repaired.focus, None);
-    assert_eq!(repaired.work[&completed.id].status, WorkStatus::Terminal);
     assert_eq!(
-        repaired.waits[&wait.id].generations[&completed.revision].state,
-        WaitState::Resolved
+        runtime
+            .latest_work_item(&completed.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        WorkItemState::Completed
+    );
+    assert_eq!(
+        runtime
+            .storage()
+            .latest_wait_conditions()
+            .unwrap()
+            .into_iter()
+            .find(|condition| condition.id == wait.id)
+            .map(|condition| condition.status),
+        Some(WaitConditionStatus::Cancelled)
     );
 }
 
@@ -9547,7 +9025,7 @@ async fn operator_interjection_prompt_is_interjected_before_next_provider_round(
 }
 
 #[tokio::test]
-async fn operator_interjection_attaches_to_lifecycle_activation() {
+async fn operator_interjection_preserves_unified_lifecycle_attempt() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -9576,6 +9054,18 @@ async fn operator_interjection_attaches_to_lifecycle_activation() {
         .begin_interactive_turn(Some(&scheduled.message), None, None)
         .await
         .unwrap();
+    let execution_before = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .expect("lifecycle claim should initialize unified authority");
+    let attempt_id = scheduler_executor::canonical_activation_id(&message.id);
+    assert_eq!(
+        execution_before.attempts[&attempt_id].state,
+        crate::domain::execution_protocol::ExecutionAttemptState::Open
+    );
 
     let mut interjection = trusted_operator_prompt(None, "use the smaller lifecycle fix");
     interjection.priority = Priority::Interject;
@@ -9590,27 +9080,14 @@ async fn operator_interjection_attaches_to_lifecycle_activation() {
         .unwrap();
     assert_eq!(follow_ups.len(), 1);
 
-    let snapshot = runtime
+    let execution_after = runtime
         .inner
         .runtime_db
         .transitions()
-        .load_scheduler_protocol_snapshot("default")
-        .unwrap();
-    let attachment = snapshot
-        .activation_inputs
-        .values()
-        .find(|attachment| attachment.message_id == interjection.id)
-        .expect("lifecycle activation input attachment");
-    assert_eq!(
-        attachment.activation_id,
-        scheduler_executor::canonical_activation_id(&message.id)
-    );
-    assert_eq!(
-        attachment.owner,
-        SchedulerOwner::AgentLifecycle {
-            agent_id: "default".into(),
-        }
-    );
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .expect("interjection should preserve unified authority");
+    assert_eq!(execution_after, execution_before);
     assert_eq!(
         runtime
             .storage()
@@ -10030,6 +9507,8 @@ async fn task_result_records_wait_reconciliation_and_resolves_task_wait_conditio
             cancelled_at: None,
 
             turn_id: None,
+            trigger_message_id: None,
+            triggered_at: None,
         })
         .unwrap();
 
@@ -10134,6 +9613,8 @@ async fn legacy_task_result_resolves_unique_wait_without_canonical_partition() {
             resolved_at: None,
             cancelled_at: None,
             turn_id: None,
+            trigger_message_id: None,
+            triggered_at: None,
         })
         .unwrap();
 
@@ -10251,6 +9732,8 @@ async fn timer_and_system_ticks_record_wait_reconciliation_signals() {
                 cancelled_at: None,
 
                 turn_id: None,
+                trigger_message_id: None,
+                triggered_at: None,
             })
             .unwrap();
     }
@@ -10345,17 +9828,11 @@ async fn same_turn_message_does_not_reconcile_wait_condition() {
         resolved_at: None,
         cancelled_at: None,
         turn_id: Some("turn-seed".into()),
+        trigger_message_id: None,
+        triggered_at: None,
     };
     runtime.storage().append_wait_condition(&wait).unwrap();
-    runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .initialize_scheduler_protocol_partition(
-            "default",
-            &canonical_waiting_snapshot(&work_item, &wait.id, work_item.revision),
-        )
-        .unwrap();
+    persist_waiting_work_execution(&runtime, &work_item, &wait.id);
 
     // Process an operator message that belongs to the SAME turn that created the
     // wait condition.  It must NOT reconcile the wait.
@@ -10456,6 +9933,24 @@ async fn work_item_wait_resume_repairs_missing_scheduler_wait_mirror() {
         .await
         .unwrap()
         .unwrap();
+    let mut execution = crate::domain::execution_protocol::ExecutionProtocolState::empty("default");
+    execution.work_items.insert(
+        work_item.id.clone(),
+        crate::domain::execution_protocol::WorkItemExecutionRecord {
+            source_revision: work_item.revision,
+            state: crate::domain::execution_protocol::WorkItemExecutionState::Waiting {
+                generation: work_item.revision,
+                wait: crate::domain::execution_protocol::WaitReference {
+                    wait_id: wait.condition.id.clone(),
+                },
+            },
+        },
+    );
+    runtime
+        .inner
+        .runtime_db
+        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
+        .unwrap();
     let mut snapshot =
         canonical_waiting_snapshot(&work_item, &wait.condition.id, work_item.revision);
     snapshot.dispatch = AgentDispatchState::Open;
@@ -10485,25 +9980,26 @@ async fn work_item_wait_resume_repairs_missing_scheduler_wait_mirror() {
     };
     assert_eq!(scheduled.message.id, message.id);
 
-    let snapshot = runtime
+    let execution = runtime
         .inner
         .runtime_db
         .transitions()
-        .load_scheduler_protocol_snapshot("default")
-        .unwrap();
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .expect("claim should preserve unified execution authority");
     let activation_id = scheduler_executor::canonical_activation_id(&message.id);
     assert!(matches!(
-        &snapshot.activation_admissions[&activation_id].activation.cause,
-        ActivationCause::OperatorInput {
-            message_id,
-            resume: Some(resume),
-        } if message_id == &message.id
-            && resume.wait_id == wait.condition.id
-            && resume.wait_generation == work_item.revision
+        &execution.attempts[&activation_id].source.identity,
+        crate::domain::execution_protocol::ExecutionSourceIdentity::TriggeredWait {
+            wait_id,
+            trigger_message_id,
+        } if trigger_message_id == &message.id && wait_id == &wait.condition.id
     ));
     assert_eq!(
-        snapshot.waits[&wait.condition.id].generations[&work_item.revision].state,
-        WaitState::Consumed
+        execution.attempts[&activation_id].binding,
+        crate::domain::execution_protocol::ExecutionBinding::WorkItem {
+            work_item_id: work_item.id.clone(),
+        }
     );
 
     runtime

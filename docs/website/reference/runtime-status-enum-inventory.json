@@ -59,6 +59,7 @@
       "name": "WaitConditionStatus",
       "serialized_values": [
         "active",
+        "triggered",
         "resolved",
         "cancelled",
         "expired"

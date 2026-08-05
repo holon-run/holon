@@ -1347,7 +1347,7 @@ impl WaitConditionRepository<'_> {
         let mut statement = connection.prepare(
             "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
                 subject_ref, waiting_for, created_at, updated_at, expires_at,
-                resolved_at, cancelled_at, last_turn_id,
+                resolved_at, cancelled_at, last_turn_id, trigger_message_id, triggered_at,
                 wake_sources_json, continuation_json
              FROM wait_conditions
              ORDER BY wait_condition_id ASC",
@@ -1368,7 +1368,7 @@ impl WaitConditionRepository<'_> {
         let mut statement = connection.prepare(
             "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
                 subject_ref, waiting_for, created_at, updated_at, expires_at,
-                resolved_at, cancelled_at, last_turn_id,
+                resolved_at, cancelled_at, last_turn_id, trigger_message_id, triggered_at,
                 wake_sources_json, continuation_json
              FROM wait_conditions
              ORDER BY updated_at DESC, created_at DESC, wait_condition_id ASC
@@ -1397,7 +1397,7 @@ impl WaitConditionRepository<'_> {
         let mut statement = connection.prepare(
             "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
                 subject_ref, waiting_for, created_at, updated_at, expires_at,
-                resolved_at, cancelled_at, last_turn_id,
+                resolved_at, cancelled_at, last_turn_id, trigger_message_id, triggered_at,
                 wake_sources_json, continuation_json
              FROM wait_conditions
              WHERE agent_id = ?1
@@ -1419,7 +1419,7 @@ impl WaitConditionRepository<'_> {
         let mut statement = connection.prepare(
             "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
                 subject_ref, waiting_for, created_at, updated_at, expires_at,
-                resolved_at, cancelled_at, last_turn_id,
+                resolved_at, cancelled_at, last_turn_id, trigger_message_id, triggered_at,
                 wake_sources_json, continuation_json
              FROM wait_conditions
              WHERE agent_id = ?1 AND status = 'active'
@@ -1432,12 +1432,30 @@ impl WaitConditionRepository<'_> {
             .map_err(|e| anyhow::anyhow!("reading wait conditions: {e}"))
     }
 
+    pub fn unresolved_for_agent(&self, agent_id: &str) -> Result<Vec<WaitConditionRecord>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
+                subject_ref, waiting_for, created_at, updated_at, expires_at,
+                resolved_at, cancelled_at, last_turn_id, trigger_message_id, triggered_at,
+                wake_sources_json, continuation_json
+             FROM wait_conditions
+             WHERE agent_id = ?1 AND status IN ('active', 'triggered')
+             ORDER BY updated_at DESC, created_at DESC, wait_condition_id ASC",
+        )?;
+        let rows = statement.query_map([agent_id], |row| {
+            decode_wait_condition_row(row).map_err(wait_condition_decode_error)
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| anyhow::anyhow!("reading unresolved wait conditions: {e}"))
+    }
+
     pub fn active_all(&self) -> Result<Vec<WaitConditionRecord>> {
         let connection = self.db.connection()?;
         let mut statement = connection.prepare(
             "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
                 subject_ref, waiting_for, created_at, updated_at, expires_at,
-                resolved_at, cancelled_at, last_turn_id,
+                resolved_at, cancelled_at, last_turn_id, trigger_message_id, triggered_at,
                 wake_sources_json, continuation_json
              FROM wait_conditions
              WHERE status = 'active'
@@ -1475,6 +1493,19 @@ impl QueueEntryRepository<'_> {
     pub fn try_claim_queued_message(&self, record: &QueueEntryRecord) -> Result<bool> {
         self.db
             .transaction(|tx| try_claim_queued_message_tx(tx, record))
+    }
+
+    pub fn latest(&self, message_id: &str) -> Result<Option<QueueEntryRecord>> {
+        let connection = self.db.connection()?;
+        connection
+            .query_row(
+                "SELECT payload_json FROM queue_entries WHERE message_id = ?1",
+                [message_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|payload| decode_queue_entry_payload(&payload))
+            .transpose()
     }
 
     pub fn latest_all(&self) -> Result<Vec<QueueEntryRecord>> {
@@ -3327,9 +3358,9 @@ pub(crate) fn upsert_wait_condition_tx(
         "INSERT INTO wait_conditions (
             wait_condition_id, agent_id, work_item_id, status, kind, source,
             subject_ref, waiting_for, created_at, updated_at, expires_at,
-            resolved_at, cancelled_at, last_turn_id,
+            resolved_at, cancelled_at, last_turn_id, trigger_message_id, triggered_at,
             wake_sources_json, continuation_json, payload_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
          ON CONFLICT(wait_condition_id) DO UPDATE SET
             agent_id = excluded.agent_id,
             work_item_id = excluded.work_item_id,
@@ -3344,6 +3375,8 @@ pub(crate) fn upsert_wait_condition_tx(
             resolved_at = excluded.resolved_at,
             cancelled_at = excluded.cancelled_at,
             last_turn_id = excluded.last_turn_id,
+            trigger_message_id = excluded.trigger_message_id,
+            triggered_at = excluded.triggered_at,
             wake_sources_json = excluded.wake_sources_json,
             continuation_json = excluded.continuation_json,
             payload_json = excluded.payload_json
@@ -3363,6 +3396,8 @@ pub(crate) fn upsert_wait_condition_tx(
             record.resolved_at.map(timestamp),
             record.cancelled_at.map(timestamp),
             record.turn_id,
+            record.trigger_message_id(),
+            record.triggered_at().map(timestamp),
             wake_sources_json,
             continuation_json,
             payload_json,
@@ -3544,6 +3579,31 @@ pub(crate) fn wait_condition_transition(
     }
     if incoming.updated_at < existing.updated_at {
         return Ok(StateTransitionOutcome::Idempotent);
+    }
+    let valid = matches!(
+        (&existing.status, &incoming.status),
+        (WaitConditionStatus::Active, WaitConditionStatus::Triggered)
+            | (WaitConditionStatus::Active, WaitConditionStatus::Resolved)
+            | (WaitConditionStatus::Active, WaitConditionStatus::Cancelled)
+            | (WaitConditionStatus::Active, WaitConditionStatus::Expired)
+            | (
+                WaitConditionStatus::Triggered,
+                WaitConditionStatus::Resolved
+            )
+            | (
+                WaitConditionStatus::Triggered,
+                WaitConditionStatus::Cancelled
+            )
+            | (WaitConditionStatus::Triggered, WaitConditionStatus::Expired)
+    );
+    if !valid {
+        return Err(RuntimeStateTransitionConflict::new(
+            "wait condition",
+            &existing.id,
+            enum_string(&existing.status)?,
+            enum_string(&incoming.status)?,
+        )
+        .into());
     }
     Ok(StateTransitionOutcome::Applied)
 }
@@ -4354,8 +4414,10 @@ pub(crate) fn decode_wait_condition_row(row: &rusqlite::Row<'_>) -> Result<WaitC
     let resolved_at_str: Option<String> = row.get(11)?;
     let cancelled_at_str: Option<String> = row.get(12)?;
     let turn_id: Option<String> = row.get(13)?;
-    let wake_sources_json: String = row.get(14)?;
-    let continuation_json: Option<String> = row.get(15)?;
+    let trigger_message_id: Option<String> = row.get(14)?;
+    let triggered_at_str: Option<String> = row.get(15)?;
+    let wake_sources_json: String = row.get(16)?;
+    let continuation_json: Option<String> = row.get(17)?;
     let status: WaitConditionStatus = serde_json::from_value(serde_json::Value::String(status_str))
         .context("parsing wait condition status")?;
     let kind: WaitConditionKind = serde_json::from_value(serde_json::Value::String(kind_str))
@@ -4384,6 +4446,8 @@ pub(crate) fn decode_wait_condition_row(row: &rusqlite::Row<'_>) -> Result<WaitC
         resolved_at: parse_optional_timestamp(resolved_at_str.as_deref())?,
         cancelled_at: parse_optional_timestamp(cancelled_at_str.as_deref())?,
         turn_id,
+        trigger_message_id,
+        triggered_at: parse_optional_timestamp(triggered_at_str.as_deref())?,
     })
 }
 

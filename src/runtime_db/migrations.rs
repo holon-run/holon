@@ -760,6 +760,320 @@ CREATE UNIQUE INDEX idx_scheduler_activations_recovery_admission_fence
     result
 }
 
+fn migrate_wait_trigger_identity(connection: &mut Connection, migration: &Migration) -> Result<()> {
+    let transaction = connection.transaction()?;
+    if table_exists_internal(&transaction, "wait_conditions")? {
+        let columns = transaction
+            .prepare("PRAGMA table_info(wait_conditions)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        if !columns.iter().any(|column| column == "trigger_message_id") {
+            transaction
+                .execute_batch("ALTER TABLE wait_conditions ADD COLUMN trigger_message_id TEXT;")?;
+        }
+        if !columns.iter().any(|column| column == "triggered_at") {
+            transaction
+                .execute_batch("ALTER TABLE wait_conditions ADD COLUMN triggered_at TEXT;")?;
+        }
+        transaction.execute_batch(
+            "CREATE UNIQUE INDEX IF NOT EXISTS wait_conditions_trigger_message
+               ON wait_conditions(agent_id, trigger_message_id)
+               WHERE trigger_message_id IS NOT NULL;",
+        )?;
+    }
+    record_migration(&transaction, migration)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+fn migrate_wait_unresolved_owner_uniqueness(
+    connection: &mut Connection,
+    migration: &Migration,
+) -> Result<()> {
+    let transaction = connection.transaction()?;
+    if table_exists_internal(&transaction, "wait_conditions")? {
+        converge_unresolved_wait_owners(&transaction)?;
+        transaction.execute_batch(migration.sql)?;
+    }
+    record_migration(&transaction, migration)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+fn migrate_wait_protocol_cutover(connection: &mut Connection, migration: &Migration) -> Result<()> {
+    let transaction = connection.transaction()?;
+    let has_execution_attempts =
+        table_exists_internal(&transaction, "execution_protocol_attempts")?;
+    if has_execution_attempts {
+        let attempts = transaction
+            .prepare(
+                "SELECT attempt_id, payload_json
+                 FROM execution_protocol_attempts",
+            )?
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        for (attempt_id, payload_json) in attempts {
+            let mut payload: serde_json::Value =
+                serde_json::from_str(&payload_json).with_context(|| {
+                    format!("decoding execution attempt {attempt_id} during cutover")
+                })?;
+            let source_message_id = payload
+                .get("source_message_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
+            let Some(identity) = payload
+                .get_mut("source")
+                .and_then(|source| source.get_mut("identity"))
+                .and_then(serde_json::Value::as_object_mut)
+            else {
+                continue;
+            };
+            if identity.get("kind").and_then(serde_json::Value::as_str) != Some("triggered_wait")
+                || identity.contains_key("trigger_message_id")
+            {
+                continue;
+            }
+            let Some(trigger_message_id) = source_message_id else {
+                continue;
+            };
+            identity.insert(
+                "trigger_message_id".into(),
+                serde_json::Value::String(trigger_message_id),
+            );
+            identity.remove("wait_generation");
+            identity.remove("trigger_id");
+            identity.remove("trigger_generation");
+            let normalized_identity = serde_json::Value::Object(identity.clone());
+            transaction.execute(
+                "UPDATE execution_protocol_attempts
+                 SET source_identity_json = ?1,
+                     payload_json = ?2
+                 WHERE attempt_id = ?3",
+                params![
+                    serde_json::to_string(&normalized_identity)?,
+                    serde_json::to_string(&payload)?,
+                    attempt_id,
+                ],
+            )?;
+        }
+    }
+
+    let has_wait_conditions = table_exists_internal(&transaction, "wait_conditions")?;
+    if !has_wait_conditions {
+        record_migration(&transaction, migration)?;
+        transaction.commit()?;
+        return Ok(());
+    }
+    let has_work_items = table_exists_internal(&transaction, "work_items")?;
+    let has_execution_work_items =
+        table_exists_internal(&transaction, "execution_protocol_work_items")?;
+
+    let waits = transaction
+        .prepare(
+            "SELECT payload_json
+             FROM wait_conditions
+             WHERE status IN ('active', 'triggered')
+             ORDER BY created_at ASC, wait_condition_id ASC",
+        )?
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let now = Utc::now();
+    for payload_json in waits {
+        let mut wait: WaitConditionRecord = serde_json::from_str(&payload_json)
+            .context("decoding unresolved wait during protocol cutover")?;
+        let original_updated_at = wait.updated_at;
+        wait.status = crate::types::WaitConditionStatus::Cancelled;
+        wait.updated_at = now;
+        wait.resolved_at = None;
+        wait.cancelled_at = Some(now);
+        let mut continuation = wait
+            .continuation
+            .take()
+            .unwrap_or_else(|| serde_json::json!({}));
+        if let Some(object) = continuation.as_object_mut() {
+            object.insert(
+                "cancel_reason".into(),
+                serde_json::Value::String("protocol_cutover".into()),
+            );
+        } else {
+            continuation = serde_json::json!({
+                "legacy_continuation": continuation,
+                "cancel_reason": "protocol_cutover",
+            });
+        }
+        wait.continuation = Some(continuation);
+        transaction.execute(
+            "UPDATE wait_conditions
+             SET status = 'cancelled',
+                 updated_at = ?1,
+                 resolved_at = NULL,
+                 cancelled_at = ?1,
+                 continuation_json = ?2,
+                 payload_json = ?3
+             WHERE wait_condition_id = ?4",
+            params![
+                timestamp(now),
+                wait.continuation
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()?,
+                serde_json::to_string(&wait)?,
+                wait.id,
+            ],
+        )?;
+
+        let Some(work_item_id) = wait.work_item_id.as_deref() else {
+            continue;
+        };
+        if !has_work_items {
+            continue;
+        }
+        let work_item_payload = transaction
+            .query_row(
+                "SELECT payload_json FROM work_items WHERE work_item_id = ?1",
+                [work_item_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let Some(work_item_payload) = work_item_payload else {
+            continue;
+        };
+        let mut work_item: WorkItemRecord = serde_json::from_str(&work_item_payload)
+            .with_context(|| format!("decoding WorkItem {work_item_id} during wait cutover"))?;
+        let owns_blocker = wait.source.as_deref() == Some("WaitFor")
+            && work_item.state == crate::domain::work_item::WorkItemState::Open
+            && work_item.blocked_by.as_deref() == Some(wait.waiting_for.as_str())
+            && work_item.updated_at == original_updated_at;
+        if owns_blocker {
+            work_item.revision = work_item
+                .revision
+                .checked_add(1)
+                .context("WorkItem revision overflow during wait cutover")?;
+            work_item.blocked_by = None;
+            work_item.recheck_at = None;
+            work_item.recheck_consumed_at = None;
+            work_item.updated_at = now;
+            transaction.execute(
+                "UPDATE work_items
+                 SET revision = ?1,
+                     updated_at = ?2,
+                     blocked_by = NULL,
+                     recheck_at = NULL,
+                     recheck_consumed_at = NULL,
+                     payload_json = ?3
+                 WHERE work_item_id = ?4",
+                params![
+                    i64::try_from(work_item.revision)
+                        .context("WorkItem revision exceeds SQLite range")?,
+                    timestamp(now),
+                    serde_json::to_string(&work_item)?,
+                    work_item_id,
+                ],
+            )?;
+        }
+    }
+
+    if has_execution_work_items {
+        let waiting = transaction
+            .prepare(
+                "SELECT agent_id, work_item_id, payload_json
+                 FROM execution_protocol_work_items
+                 WHERE lifecycle_state = 'waiting'",
+            )?
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        for (agent_id, work_item_id, execution_payload) in waiting {
+            let mut execution: WorkItemExecutionRecord = serde_json::from_str(&execution_payload)
+                .with_context(|| {
+                format!("decoding WorkItem execution {work_item_id} during wait cutover")
+            })?;
+            let WorkItemExecutionState::Waiting {
+                generation,
+                wait: reference,
+            } = &execution.state
+            else {
+                continue;
+            };
+            let unresolved = transaction
+                .query_row(
+                    "SELECT 1
+                     FROM wait_conditions
+                     WHERE wait_condition_id = ?1
+                       AND status IN ('active', 'triggered')",
+                    [&reference.wait_id],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some();
+            if unresolved {
+                continue;
+            }
+            if has_work_items {
+                if let Some(source_revision) = transaction
+                    .query_row(
+                        "SELECT revision FROM work_items WHERE work_item_id = ?1",
+                        [&work_item_id],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .optional()?
+                {
+                    execution.source_revision = u64::try_from(source_revision)
+                        .context("WorkItem source revision is negative during wait cutover")?
+                        .max(1);
+                }
+            }
+            let generation = generation
+                .checked_add(1)
+                .context("WorkItem scheduling generation overflow during wait cutover")?;
+            execution.state = WorkItemExecutionState::Runnable {
+                generation,
+                recovery_ref: Some("protocol_cutover".into()),
+            };
+            transaction.execute(
+                "UPDATE execution_protocol_work_items
+                 SET source_revision = ?1,
+                     generation = ?2,
+                     lifecycle_state = 'runnable',
+                     payload_json = ?3
+                 WHERE agent_id = ?4 AND work_item_id = ?5",
+                params![
+                    i64::try_from(execution.source_revision)
+                        .context("WorkItem source revision exceeds SQLite range")?,
+                    i64::try_from(execution.generation())
+                        .context("WorkItem generation exceeds SQLite range")?,
+                    serde_json::to_string(&execution)?,
+                    agent_id,
+                    work_item_id,
+                ],
+            )?;
+        }
+    }
+
+    record_migration(&transaction, migration)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+fn record_migration(transaction: &Transaction<'_>, migration: &Migration) -> Result<()> {
+    transaction.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
+        (
+            migration.version,
+            migration.name,
+            Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        ),
+    )?;
+    Ok(())
+}
+
 pub(crate) const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 1,
@@ -2584,6 +2898,36 @@ CREATE TABLE IF NOT EXISTS execution_protocol_command_results (
         name: "scheduler_internal_followup_admission",
         sql: "",
     },
+    Migration {
+        version: 43,
+        name: "wait_trigger_identity",
+        sql: r#"
+ALTER TABLE wait_conditions ADD COLUMN trigger_message_id TEXT;
+ALTER TABLE wait_conditions ADD COLUMN triggered_at TEXT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS wait_conditions_trigger_message
+  ON wait_conditions(agent_id, trigger_message_id)
+  WHERE trigger_message_id IS NOT NULL;
+"#,
+    },
+    Migration {
+        version: 44,
+        name: "wait_unresolved_owner_uniqueness",
+        sql: r#"
+CREATE UNIQUE INDEX IF NOT EXISTS wait_conditions_unresolved_agent_owner
+  ON wait_conditions(agent_id)
+  WHERE work_item_id IS NULL AND status IN ('active', 'triggered');
+
+CREATE UNIQUE INDEX IF NOT EXISTS wait_conditions_unresolved_work_item_owner
+  ON wait_conditions(agent_id, work_item_id)
+  WHERE work_item_id IS NOT NULL AND status IN ('active', 'triggered');
+"#,
+    },
+    Migration {
+        version: 45,
+        name: "wait_protocol_cutover",
+        sql: "",
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -2624,6 +2968,15 @@ pub(crate) fn apply_migration(connection: &mut Connection, migration: &Migration
     if migration.name == "scheduler_internal_followup_admission" {
         return migrate_scheduler_internal_followup_admission(connection, migration);
     }
+    if migration.name == "wait_trigger_identity" {
+        return migrate_wait_trigger_identity(connection, migration);
+    }
+    if migration.name == "wait_unresolved_owner_uniqueness" {
+        return migrate_wait_unresolved_owner_uniqueness(connection, migration);
+    }
+    if migration.name == "wait_protocol_cutover" {
+        return migrate_wait_protocol_cutover(connection, migration);
+    }
 
     let transaction = connection.transaction()?;
     if migration.name == "strict_runtime_sequences" {
@@ -2658,6 +3011,54 @@ pub(crate) fn apply_migration(connection: &mut Connection, migration: &Migration
         ),
     )?;
     transaction.commit()?;
+    Ok(())
+}
+
+fn converge_unresolved_wait_owners(transaction: &Transaction<'_>) -> Result<()> {
+    let rows = transaction
+        .prepare(
+            "SELECT wait_condition_id, agent_id, work_item_id, payload_json
+             FROM wait_conditions
+             WHERE status IN ('active', 'triggered')
+             ORDER BY agent_id ASC,
+                      work_item_id IS NOT NULL ASC,
+                      work_item_id ASC,
+                      updated_at DESC,
+                      created_at DESC,
+                      wait_condition_id DESC",
+        )?
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let now = Utc::now();
+    let mut owners = std::collections::BTreeSet::new();
+    for (wait_id, agent_id, work_item_id, payload_json) in rows {
+        if owners.insert((agent_id, work_item_id)) {
+            continue;
+        }
+        let mut record: WaitConditionRecord = serde_json::from_str(&payload_json)
+            .with_context(|| format!("decoding duplicate unresolved wait {wait_id}"))?;
+        record.status = crate::types::WaitConditionStatus::Cancelled;
+        record.updated_at = now;
+        record.cancelled_at = Some(now);
+        record.resolved_at = None;
+        transaction.execute(
+            "UPDATE wait_conditions
+             SET status = 'cancelled',
+                 updated_at = ?1,
+                 resolved_at = NULL,
+                 cancelled_at = ?1,
+                 payload_json = ?2
+             WHERE wait_condition_id = ?3",
+            params![timestamp(now), serde_json::to_string(&record)?, wait_id,],
+        )?;
+    }
     Ok(())
 }
 
@@ -3038,15 +3439,13 @@ fn migration_execution_source(
         }
         ActivationCause::WaitResume {
             wait_id,
-            wait_generation,
+            wait_generation: _,
             trigger_id,
-            trigger_generation,
+            trigger_generation: _,
         } => (
             ExecutionSourceIdentity::TriggeredWait {
                 wait_id: wait_id.clone(),
-                wait_generation: *wait_generation,
-                trigger_id: trigger_id.clone(),
-                trigger_generation: *trigger_generation,
+                trigger_message_id: trigger_id.clone(),
             },
             None,
             None,
