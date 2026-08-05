@@ -132,6 +132,7 @@ When a candidate image is already published, use an immutable reference:
 ```bash
 python3 scripts/docker-e2e.py \
   --image-digest ghcr.io/holon-run/holon@sha256:... \
+  --previous-image ghcr.io/holon-run/holon:v0.30.0 \
   --skip-build \
   --suite core
 ```
@@ -279,8 +280,11 @@ Exercise:
    WorkItems, tasks, waits, and workspace state.
 2. Interrupt tool execution, task completion, and worktree cleanup at
    controlled points; reconciliation must not duplicate side effects.
-3. Start from the current recommended release's runtime data and upgrade to
-   the candidate image.
+3. Start `v0.30.0` against an isolated shared volume, complete a real
+   deterministic agent turn, then start the candidate against that same
+   volume. The required release case verifies schema migration provenance,
+   preserved message/brief identities, and a successful post-upgrade agent
+   turn.
 4. Cover a locked database, missing workspace path, and orphaned worktree,
    verifying diagnostics and retention behavior.
 

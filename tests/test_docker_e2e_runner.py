@@ -40,6 +40,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
             [case["id"] for case in selected],
             [
                 "runtime-auth-model-delivery",
+                "runtime-upgrade-v030",
                 "memory-agent-home-persistence",
                 "workspace-restart-lifecycle",
                 "workitem-wait-restart-complete",
@@ -657,13 +658,9 @@ class DockerE2ERunnerTests(unittest.TestCase):
         self.assertEqual(scenario.phase, 8)
 
     def test_openai_stub_registers_every_required_scenario(self) -> None:
-        profile = runner.resolve_profile(self.manifest, "scheduler-required")
-        selected = runner.select_cases(
-            self.manifest,
-            requested=profile["case_ids"],
-            suite="core",
-            tags=[],
-        )
+        selected = [
+            case for case in self.manifest["cases"] if case.get("stub_scenario")
+        ]
         self.assertEqual(
             {case["stub_scenario"] for case in selected},
             set(stub.SCENARIOS),
@@ -1561,6 +1558,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
             [(case["id"], engine) for case, engine in expanded],
             [
                 ("runtime-auth-model-delivery", None),
+                ("runtime-upgrade-v030", None),
                 ("memory-agent-home-persistence", None),
                 ("workspace-restart-lifecycle", None),
                 ("workitem-wait-restart-complete", None),

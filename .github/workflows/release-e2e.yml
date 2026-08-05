@@ -124,7 +124,7 @@ jobs:
 
       - name: Run release core E2E
         env:
-          HOLON_E2E_PREVIOUS_IMAGE: ${{ inputs.previous_image }}
+          HOLON_E2E_PREVIOUS_IMAGE: ${{ inputs.previous_image || 'ghcr.io/holon-run/holon:v0.30.0' }}
           HOLON_E2E_PROVIDER_ENV_FILE: /tmp/holon-e2e.env
         run: |
           set -euo pipefail

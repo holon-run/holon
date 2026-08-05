@@ -228,6 +228,7 @@ class CaseHarness:
         tool_assertion_mode: str = "strict",
         resource_names: dict[str, str] | None = None,
         control_token: str | None = None,
+        previous_image: str | None = None,
     ) -> None:
         suffix = secrets.token_hex(4)
         self.case_id = case_id
@@ -255,6 +256,7 @@ class CaseHarness:
         self.model_runtime_override = dict(model_runtime_override or {})
         self._model_runtime_override_seeded = False
         self.tool_assertion_mode = tool_assertion_mode
+        self.previous_image = previous_image
         names = resource_names or {}
         self.volume = names.get("volume", f"holon-live-{case_id}-{suffix}")
         self.network = names.get("network", f"holon-live-{case_id}-{suffix}")
@@ -691,6 +693,11 @@ class CaseHarness:
 
     def restart(self, *, wait_idle: bool = True) -> None:
         self.stop()
+        self.start(wait_idle=wait_idle)
+
+    def restart_with_image(self, image: str, *, wait_idle: bool = True) -> None:
+        self.stop()
+        self.image = image
         self.start(wait_idle=wait_idle)
 
     def reset_callback(self, label: str) -> dict[str, Any]:
@@ -1534,14 +1541,81 @@ class CaseHarness:
         write_json(self.evidence / f"{label}-runtime-db.json", snapshot)
         return snapshot
 
+    def upgrade_db_snapshot(self, label: str, marker: str) -> dict[str, Any]:
+        snapshot_dir = self.evidence / f"{label}-runtime-state"
+        if snapshot_dir.exists():
+            shutil.rmtree(snapshot_dir)
+        snapshot_dir.mkdir(parents=True)
+        for name in ("runtime.sqlite", "runtime.sqlite-wal", "runtime.sqlite-shm"):
+            self.docker(
+                "cp",
+                f"{self.container}:/var/lib/holon/state/{name}",
+                str(snapshot_dir / name),
+                check=name == "runtime.sqlite",
+                timeout=RUNTIME_DB_COPY_TIMEOUT_SECONDS,
+            )
+        connection = sqlite3.connect(
+            f"file:{snapshot_dir / 'runtime.sqlite'}?mode=ro", uri=True
+        )
+        connection.row_factory = sqlite3.Row
+        try:
+            has_baseline = connection.execute(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'schema_migration_baselines')"
+            ).fetchone()[0]
+            snapshot = {
+                "integrity_check": connection.execute(
+                    "PRAGMA integrity_check"
+                ).fetchone()[0],
+                "schema_revision": connection.execute(
+                    "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
+                ).fetchone()[0],
+                "agent_ids": [
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT agent_id FROM agent_states ORDER BY agent_id"
+                    )
+                ],
+                "messages": sqlite_rows(
+                    connection,
+                    "SELECT evidence_id, message_id, turn_id, payload_json "
+                    "FROM messages WHERE payload_json LIKE ? ORDER BY created_at",
+                    (f"%{marker}%",),
+                ),
+                "briefs": sqlite_rows(
+                    connection,
+                    "SELECT evidence_id, message_id, turn_id, payload_json "
+                    "FROM briefs WHERE payload_json LIKE ? ORDER BY created_at",
+                    (f"%{marker}%",),
+                ),
+                "baseline": (
+                    sqlite_rows(
+                        connection,
+                        "SELECT baseline_id, source_version, target_version, "
+                        "covered_versions_json, schema_fingerprint "
+                        "FROM schema_migration_baselines",
+                    )
+                    if has_baseline
+                    else []
+                ),
+            }
+        finally:
+            connection.close()
+        write_json(self.evidence / f"{label}-upgrade-db.json", snapshot)
+        return snapshot
+
 
 def result_value(detail: dict[str, Any]) -> dict[str, Any]:
     output = detail.get("output", {})
     return output.get("envelope", {}).get("result", output.get("result", output))
 
 
-def sqlite_rows(connection: sqlite3.Connection, query: str) -> list[dict[str, Any]]:
-    return [dict(row) for row in connection.execute(query).fetchall()]
+def sqlite_rows(
+    connection: sqlite3.Connection,
+    query: str,
+    parameters: tuple[Any, ...] = (),
+) -> list[dict[str, Any]]:
+    return [dict(row) for row in connection.execute(query, parameters).fetchall()]
 
 
 def require_processed_queue_entries(
@@ -2061,6 +2135,84 @@ def run_runtime_case(harness: CaseHarness, case: dict[str, Any]) -> None:
         and marker in json.dumps(entry, ensure_ascii=False)
     ]
     require(assistant_rounds, "marker assistant round is missing from transcript")
+
+
+def run_runtime_upgrade_v030_case(
+    harness: CaseHarness, case: dict[str, Any]
+) -> None:
+    require(
+        bool(harness.previous_image),
+        f"{case['id']} requires --previous-image",
+    )
+    candidate_image = harness.image
+    old_marker = f"UPGRADE-V030-OLD-{secrets.token_hex(6)}"
+    new_marker = f"UPGRADE-V030-NEW-{secrets.token_hex(6)}"
+
+    harness.image = str(harness.previous_image)
+    harness.initialize_workspace()
+    harness.start()
+    harness.prompt(
+        "upgrade-v030-old",
+        case["phases"][0]["prompt"].format(marker=old_marker),
+    )
+    old_snapshot = harness.upgrade_db_snapshot("upgrade-v030-old", old_marker)
+    require(
+        old_snapshot["integrity_check"] == "ok",
+        f"old database is invalid: {old_snapshot}",
+    )
+    require(
+        old_snapshot["schema_revision"] == 25,
+        f"previous release did not produce schema 25: {old_snapshot}",
+    )
+    require(
+        old_snapshot["messages"] and old_snapshot["briefs"],
+        f"previous release did not persist the marker: {old_snapshot}",
+    )
+    old_agent_ids = set(old_snapshot["agent_ids"])
+    old_message_ids = {row["message_id"] for row in old_snapshot["messages"]}
+    old_brief_ids = {row["evidence_id"] for row in old_snapshot["briefs"]}
+
+    harness.restart_with_image(candidate_image)
+    migrated = harness.upgrade_db_snapshot("upgrade-v030-migrated", old_marker)
+    require(
+        migrated["integrity_check"] == "ok",
+        f"migrated database is invalid: {migrated}",
+    )
+    require(
+        migrated["schema_revision"] > old_snapshot["schema_revision"],
+        f"candidate did not advance the schema: {migrated}",
+    )
+    require(
+        len(migrated["baseline"]) == 1,
+        f"baseline provenance is missing: {migrated}",
+    )
+    require(
+        old_agent_ids.issubset(set(migrated["agent_ids"]))
+        and old_message_ids.issubset(
+            {row["message_id"] for row in migrated["messages"]}
+        )
+        and old_brief_ids.issubset(
+            {row["evidence_id"] for row in migrated["briefs"]}
+        ),
+        f"release data was not preserved: old={old_snapshot}, migrated={migrated}",
+    )
+
+    before_turn = int(
+        harness.state("upgrade-v030-before-new")["agent"]["agent"]["turn_index"]
+    )
+    harness.prompt(
+        "upgrade-v030-new",
+        case["phases"][1]["prompt"].format(marker=new_marker),
+    )
+    after_turn = int(
+        harness.state("upgrade-v030-after-new")["agent"]["agent"]["turn_index"]
+    )
+    require(after_turn > before_turn, "upgraded agent did not complete a new turn")
+    final_snapshot = harness.upgrade_db_snapshot("upgrade-v030-final", new_marker)
+    require(
+        final_snapshot["messages"] and final_snapshot["briefs"],
+        f"upgraded agent did not persist the new marker: {final_snapshot}",
+    )
 
 
 def run_memory_case(harness: CaseHarness, case: dict[str, Any]) -> None:
@@ -4008,6 +4160,7 @@ def run_scheduler_checkpoint_replay_case(
 
 CASE_RUNNERS = {
     "runtime-auth-model-delivery": run_runtime_case,
+    "runtime-upgrade-v030": run_runtime_upgrade_v030_case,
     "memory-agent-home-persistence": run_memory_case,
     "workspace-restart-lifecycle": run_workspace_case,
     "workitem-wait-restart-complete": run_workitem_case,
@@ -4103,6 +4256,11 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             require(
                 isinstance(case["requires_model"], bool),
                 f"{case_id} requires_model must be boolean",
+            )
+        if "requires_previous_image" in case:
+            require(
+                isinstance(case["requires_previous_image"], bool),
+                f"{case_id} requires_previous_image must be boolean",
             )
         coverage_ids = case.get("coverage_ids", [])
         require(
@@ -4742,6 +4900,11 @@ def main(argv: list[str] | None = None) -> int:
         suite=args.suite,
         tags=args.tag,
     )
+    if any(case.get("requires_previous_image") for case in selected):
+        require(
+            bool(args.previous_image),
+            "selected upgrade case requires --previous-image",
+        )
     if args.scheduler_matrix:
         require(
             any("scheduler" in case.get("tags", []) for case in selected),
@@ -4891,6 +5054,7 @@ def main(argv: list[str] | None = None) -> int:
             stub_scenario=case.get("stub_scenario", profile.get("stub_scenario")),
             model_runtime_override=case.get("model_runtime_override"),
             tool_assertion_mode=profile.get("tool_assertion_mode", "strict"),
+            previous_image=args.previous_image,
         )
         control_tokens.append(harness.token)
         error_text = ""

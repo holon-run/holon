@@ -70,6 +70,31 @@
       ]
     },
     {
+      "id": "runtime-upgrade-v030",
+      "tier": "core",
+      "tags": ["runtime", "upgrade", "migration", "persistence"],
+      "timeout_seconds": 300,
+      "requires_model": false,
+      "requires_previous_image": true,
+      "provider_mode": "stub",
+      "stub_scenario": "runtime-upgrade-v030",
+      "description": "Run v0.30.0 against a shared volume, persist one agent turn, upgrade the same database to the candidate, verify baseline provenance and preserved data, then complete a new agent turn.",
+      "phases": [
+        {
+          "id": "old-release",
+          "prompt": "Reply with the exact marker {marker}.",
+          "required_tools": [],
+          "forbidden_tools": []
+        },
+        {
+          "id": "candidate",
+          "prompt": "Reply with the exact marker {marker}.",
+          "required_tools": [],
+          "forbidden_tools": []
+        }
+      ]
+    },
+    {
       "id": "memory-agent-home-persistence",
       "tier": "core",
       "tags": ["memory", "agent-home", "restart", "persistence"],

@@ -8,8 +8,9 @@ use crate::runtime_db::evidence::insert_audit_event_tx;
 #[cfg(test)]
 use crate::runtime_db::migrations::{
     apply_migration, backfill_wait_condition_payload_columns, backfill_work_item_recheck_columns,
-    current_schema_version, ensure_migration_table, max_known_migration_version, table_exists,
-    MIGRATIONS,
+    current_schema_version, ensure_migration_table, max_known_migration_version,
+    schema_fingerprint, table_exists, MIGRATIONS, PUBLISHED_MIGRATION_FLOOR,
+    RELEASE_BASELINE_TARGET,
 };
 #[cfg(test)]
 use crate::runtime_db::storage_domain::upsert_storage_domain;
@@ -561,6 +562,7 @@ mod tests {
         assert_eq!(version, max_known_migration_version());
         for table in [
             "schema_migrations",
+            "schema_migration_baselines",
             "storage_domains",
             "runtime_metadata",
             "agents",
@@ -647,6 +649,176 @@ mod tests {
         assert!(!activation_input_columns.contains("work_item_id"));
         assert!(!activation_input_columns.contains("expected_scheduling_generation"));
 
+        let baseline: (i64, i64, String, String) = connection.query_row(
+            "SELECT source_version, target_version, covered_versions_json,
+                    schema_fingerprint
+             FROM schema_migration_baselines",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        assert_eq!(baseline.0, PUBLISHED_MIGRATION_FLOOR);
+        assert_eq!(baseline.1, RELEASE_BASELINE_TARGET);
+        assert_eq!(
+            serde_json::from_str::<Vec<i64>>(&baseline.2)?,
+            (PUBLISHED_MIGRATION_FLOOR + 1..=RELEASE_BASELINE_TARGET).collect::<Vec<_>>()
+        );
+        assert_eq!(baseline.3, schema_fingerprint(&connection)?);
+
+        Ok(())
+    }
+
+    #[test]
+    fn release_baseline_matches_compatibility_migration_schema() -> Result<()> {
+        let (_baseline_temp, baseline_path, baseline_lock) = temp_paths()?;
+        let baseline = RuntimeDb::open_and_migrate(&baseline_path, &baseline_lock)?;
+        let baseline_connection = baseline.connection()?;
+        let schema_objects = |connection: &rusqlite::Connection| -> Result<Vec<String>> {
+            let mut statement = connection.prepare(
+                "SELECT type, name, sql
+                 FROM sqlite_master
+                 WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'
+                 ORDER BY type, name",
+            )?;
+            let objects = statement
+                .query_map([], |row| {
+                    Ok(format!(
+                        "{}\n{}\n{}",
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?
+                            .split_whitespace()
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    ))
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            Ok(objects)
+        };
+        let baseline_schema = schema_objects(&baseline_connection)?;
+        let baseline_fingerprint = schema_fingerprint(&baseline_connection)?;
+        drop(baseline_connection);
+        drop(baseline);
+
+        let (_compat_temp, compat_path, compat_lock) = temp_paths()?;
+        {
+            let mut connection = open_connection(&compat_path)?;
+            ensure_migration_table(&connection)?;
+            for migration in MIGRATIONS {
+                apply_migration(&mut connection, migration)?;
+            }
+            backfill_wait_condition_payload_columns(&connection)?;
+            backfill_work_item_recheck_columns(&connection)?;
+        }
+        let compat = RuntimeDb::open_and_migrate(&compat_path, &compat_lock)?;
+        let compat_connection = compat.connection()?;
+        let compat_schema = schema_objects(&compat_connection)?;
+        let baseline_only = baseline_schema
+            .iter()
+            .filter(|object| !compat_schema.contains(object))
+            .collect::<Vec<_>>();
+        let compatibility_only = compat_schema
+            .iter()
+            .filter(|object| !baseline_schema.contains(object))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            baseline_schema,
+            compat_schema,
+            "release baseline and checkpoint compatibility chain must have identical schema objects\nbaseline only: {baseline_only:#?}\ncompatibility only: {compatibility_only:#?}"
+        );
+        assert_eq!(
+            baseline_fingerprint,
+            schema_fingerprint(&compat_connection)?,
+            "release baseline and checkpoint compatibility chain must converge"
+        );
+        let baseline_count: i64 = compat_connection.query_row(
+            "SELECT COUNT(*) FROM schema_migration_baselines",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(baseline_count, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn unreleased_checkpoints_use_compatibility_chain_without_baseline() -> Result<()> {
+        for checkpoint in PUBLISHED_MIGRATION_FLOOR + 1..=RELEASE_BASELINE_TARGET {
+            let (_temp_dir, db_path, lock_path) = temp_paths()?;
+            {
+                let mut connection = open_connection(&db_path)?;
+                ensure_migration_table(&connection)?;
+                for migration in MIGRATIONS
+                    .iter()
+                    .filter(|migration| migration.version <= checkpoint)
+                {
+                    apply_migration(&mut connection, migration)?;
+                }
+                backfill_wait_condition_payload_columns(&connection)?;
+                backfill_work_item_recheck_columns(&connection)?;
+            }
+
+            let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)
+                .with_context(|| format!("migrating unreleased checkpoint {checkpoint}"))?;
+            let connection = db.connection()?;
+            assert_eq!(
+                current_schema_version(&connection)?,
+                MIGRATIONS.last().map_or(0, |migration| migration.version),
+                "checkpoint {checkpoint} did not reach the current schema"
+            );
+            let baseline_count: i64 = connection.query_row(
+                "SELECT COUNT(*) FROM schema_migration_baselines",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(
+                baseline_count, 0,
+                "checkpoint {checkpoint} must use the compatibility chain"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn release_baseline_failure_rolls_back_to_published_floor() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        {
+            let mut connection = open_connection(&db_path)?;
+            ensure_migration_table(&connection)?;
+            for migration in MIGRATIONS
+                .iter()
+                .filter(|migration| migration.version <= PUBLISHED_MIGRATION_FLOOR)
+            {
+                apply_migration(&mut connection, migration)?;
+            }
+            connection.execute(
+                "INSERT INTO work_items (
+                   work_item_id, agent_id, state, objective, plan_status, readiness,
+                   revision, current_focus, created_at, updated_at, payload_json
+                 ) VALUES (
+                   'work-invalid', 'agent-a', 'completed', 'invalid focus', NULL, NULL,
+                   1, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, '{}'
+                 )",
+                [],
+            )?;
+        }
+
+        let error = RuntimeDb::open_and_migrate(&db_path, &lock_path)
+            .expect_err("invalid release data must fail the baseline");
+        assert!(
+            error.to_string().contains("invalid legacy focus"),
+            "{error:#}"
+        );
+        let connection = open_connection(&db_path)?;
+        assert_eq!(
+            current_schema_version(&connection)?,
+            PUBLISHED_MIGRATION_FLOOR
+        );
+        assert!(!table_exists(&connection, "runtime_sequences")?);
+        let baseline_count: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM schema_migration_baselines",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(baseline_count, 0);
         Ok(())
     }
 

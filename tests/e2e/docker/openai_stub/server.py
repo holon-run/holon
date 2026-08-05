@@ -10,6 +10,7 @@ CALLBACK_CAPABILITY_PATTERN = re.compile(
     r"(/api/callbacks/(?:wake|enqueue)/)[A-Za-z0-9_-]+"
 )
 SCENARIOS = (
+    "runtime-upgrade-v030",
     "scheduler-task-wait",
     "scheduler-provider-retry",
     "scheduler-multi",
@@ -138,6 +139,14 @@ class Scenario:
                 and "This is the first run of Holon" in current_input
             ):
                 return 200, response([text_item("Deterministic Holon test runtime ready.")], "resp_intro")
+            if self.name == "runtime-upgrade-v030":
+                match = re.search(r"UPGRADE-V030-(?:OLD|NEW)-[0-9a-f]+", raw)
+                if match and self.phase < self.expected_phase():
+                    self.phase += 1
+                    return 200, response(
+                        [text_item(match.group(0))],
+                        f"resp_runtime_upgrade_v030_{self.phase}",
+                    )
             if self.phase == self.expected_phase() - 1:
                 self.phase += 1
                 return 200, response(
@@ -822,6 +831,7 @@ class Scenario:
 
     def expected_phase(self) -> int:
         return {
+            "runtime-upgrade-v030": 2,
             "scheduler-task-wait": 10,
             "scheduler-provider-retry": 3,
             "scheduler-multi": 12,

@@ -3,6 +3,7 @@
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use std::collections::BTreeSet;
 
 use crate::domain::{
     execution_protocol::{
@@ -24,6 +25,11 @@ pub struct Migration {
     pub(crate) name: &'static str,
     pub(crate) sql: &'static str,
 }
+
+pub(crate) const PUBLISHED_MIGRATION_FLOOR: i64 = 25;
+pub(crate) const RELEASE_BASELINE_TARGET: i64 = 45;
+const RELEASE_BASELINE_SCHEMA_TARGET: i64 = 42;
+const RELEASE_BASELINE_ID: &str = "v0.30.0-schema-25-to-schema-45";
 
 fn migrate_scheduler_lifecycle_owners(
     connection: &mut Connection,
@@ -762,6 +768,15 @@ CREATE UNIQUE INDEX idx_scheduler_activations_recovery_admission_fence
 
 fn migrate_wait_trigger_identity(connection: &mut Connection, migration: &Migration) -> Result<()> {
     let transaction = connection.transaction()?;
+    apply_wait_trigger_identity_transaction(&transaction, migration)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+fn apply_wait_trigger_identity_transaction(
+    transaction: &Transaction<'_>,
+    migration: &Migration,
+) -> Result<()> {
     if table_exists_internal(&transaction, "wait_conditions")? {
         let columns = transaction
             .prepare("PRAGMA table_info(wait_conditions)")?
@@ -782,7 +797,6 @@ fn migrate_wait_trigger_identity(connection: &mut Connection, migration: &Migrat
         )?;
     }
     record_migration(&transaction, migration)?;
-    transaction.commit()?;
     Ok(())
 }
 
@@ -791,17 +805,34 @@ fn migrate_wait_unresolved_owner_uniqueness(
     migration: &Migration,
 ) -> Result<()> {
     let transaction = connection.transaction()?;
+    apply_wait_unresolved_owner_uniqueness_transaction(&transaction, migration)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+fn apply_wait_unresolved_owner_uniqueness_transaction(
+    transaction: &Transaction<'_>,
+    migration: &Migration,
+) -> Result<()> {
     if table_exists_internal(&transaction, "wait_conditions")? {
         converge_unresolved_wait_owners(&transaction)?;
         transaction.execute_batch(migration.sql)?;
     }
     record_migration(&transaction, migration)?;
-    transaction.commit()?;
     Ok(())
 }
 
 fn migrate_wait_protocol_cutover(connection: &mut Connection, migration: &Migration) -> Result<()> {
     let transaction = connection.transaction()?;
+    apply_wait_protocol_cutover_transaction(&transaction, migration)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+fn apply_wait_protocol_cutover_transaction(
+    transaction: &Transaction<'_>,
+    migration: &Migration,
+) -> Result<()> {
     let has_execution_attempts =
         table_exists_internal(&transaction, "execution_protocol_attempts")?;
     if has_execution_attempts {
@@ -863,7 +894,6 @@ fn migrate_wait_protocol_cutover(connection: &mut Connection, migration: &Migrat
     let has_wait_conditions = table_exists_internal(&transaction, "wait_conditions")?;
     if !has_wait_conditions {
         record_migration(&transaction, migration)?;
-        transaction.commit()?;
         return Ok(());
     }
     let has_work_items = table_exists_internal(&transaction, "work_items")?;
@@ -1058,7 +1088,6 @@ fn migrate_wait_protocol_cutover(connection: &mut Connection, migration: &Migrat
     }
 
     record_migration(&transaction, migration)?;
-    transaction.commit()?;
     Ok(())
 }
 
@@ -2938,9 +2967,181 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
   name TEXT NOT NULL,
   applied_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS schema_migration_baselines (
+  baseline_id TEXT PRIMARY KEY,
+  source_version INTEGER NOT NULL,
+  target_version INTEGER NOT NULL,
+  covered_versions_json TEXT NOT NULL,
+  schema_fingerprint TEXT NOT NULL,
+  applied_at TEXT NOT NULL
+);
 "#,
     )?;
     Ok(())
+}
+
+pub(crate) fn apply_release_baseline(connection: &mut Connection) -> Result<()> {
+    let current_version = current_schema_version(connection)?;
+    if current_version != PUBLISHED_MIGRATION_FLOOR {
+        bail!(
+            "release baseline {} requires schema version {}, found {}",
+            RELEASE_BASELINE_ID,
+            PUBLISHED_MIGRATION_FLOOR,
+            current_version
+        );
+    }
+
+    let final_schema = release_baseline_final_schema()?;
+    let transaction = connection.transaction()?;
+    for migration in MIGRATIONS.iter().filter(|migration| {
+        migration.version > PUBLISHED_MIGRATION_FLOOR && migration.version <= 30
+    }) {
+        apply_migration_transaction(&transaction, migration)?;
+    }
+    for sql in final_schema {
+        transaction.execute_batch(&sql)?;
+    }
+    ensure_execution_protocol_authority_columns(&transaction)?;
+    transaction.execute_batch(
+        r#"
+INSERT INTO scheduler_protocol_config (
+  config_id, protocol_mode, config_revision, latest_preflight_revision, updated_at
+) VALUES (1, 'authoritative', 1, 0, CURRENT_TIMESTAMP);
+
+INSERT INTO scheduler_rollout_retirement (
+  retirement_id, retired_schema_revision, reason, retired_at
+) VALUES (
+  1, 40,
+  'production scheduler authority no longer reads rollout metadata',
+  CURRENT_TIMESTAMP
+);
+"#,
+    )?;
+    let wait_trigger_identity = MIGRATIONS
+        .iter()
+        .find(|migration| migration.version == 43)
+        .context("missing wait trigger identity migration")?;
+    apply_wait_trigger_identity_transaction(&transaction, wait_trigger_identity)?;
+    backfill_wait_condition_payload_columns(&transaction)?;
+    backfill_work_item_recheck_columns(&transaction)?;
+    let wait_owner_uniqueness = MIGRATIONS
+        .iter()
+        .find(|migration| migration.version == 44)
+        .context("missing wait owner uniqueness migration")?;
+    apply_wait_unresolved_owner_uniqueness_transaction(&transaction, wait_owner_uniqueness)?;
+    let wait_protocol_cutover = MIGRATIONS
+        .iter()
+        .find(|migration| migration.version == 45)
+        .context("missing wait protocol cutover migration")?;
+    apply_wait_protocol_cutover_transaction(&transaction, wait_protocol_cutover)?;
+
+    let applied_at = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    for migration in MIGRATIONS.iter().filter(|migration| {
+        migration.version > 30 && migration.version <= RELEASE_BASELINE_SCHEMA_TARGET
+    }) {
+        transaction.execute(
+            "INSERT INTO schema_migrations (version, name, applied_at)
+             VALUES (?1, ?2, ?3)",
+            (migration.version, migration.name, &applied_at),
+        )?;
+    }
+    let fingerprint = schema_fingerprint(&transaction)?;
+    let covered_versions =
+        (PUBLISHED_MIGRATION_FLOOR + 1..=RELEASE_BASELINE_TARGET).collect::<Vec<_>>();
+    transaction.execute(
+        "INSERT INTO schema_migration_baselines (
+           baseline_id, source_version, target_version, covered_versions_json,
+           schema_fingerprint, applied_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        (
+            RELEASE_BASELINE_ID,
+            PUBLISHED_MIGRATION_FLOOR,
+            RELEASE_BASELINE_TARGET,
+            serde_json::to_string(&covered_versions)?,
+            fingerprint,
+            applied_at,
+        ),
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
+fn release_baseline_final_schema() -> Result<Vec<String>> {
+    let mut scratch = Connection::open_in_memory()?;
+    ensure_migration_table(&scratch)?;
+    for migration in MIGRATIONS
+        .iter()
+        .filter(|migration| migration.version <= 30)
+    {
+        apply_migration(&mut scratch, migration)?;
+    }
+    let before = schema_object_keys(&scratch)?;
+    for migration in MIGRATIONS.iter().filter(|migration| {
+        migration.version > 30 && migration.version <= RELEASE_BASELINE_SCHEMA_TARGET
+    }) {
+        apply_migration(&mut scratch, migration)?;
+    }
+
+    let mut statement = scratch.prepare(
+        "SELECT type, name, sql
+         FROM sqlite_master
+         WHERE sql IS NOT NULL
+           AND name NOT LIKE 'sqlite_%'
+         ORDER BY
+           CASE type WHEN 'table' THEN 0 WHEN 'index' THEN 1 WHEN 'trigger' THEN 2 ELSE 3 END,
+           name",
+    )?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(object_type, name, sql)| {
+            (!before.contains(&(object_type, name))).then_some(sql)
+        })
+        .collect())
+}
+
+fn schema_object_keys(connection: &Connection) -> Result<BTreeSet<(String, String)>> {
+    let mut statement = connection.prepare(
+        "SELECT type, name
+         FROM sqlite_master
+         WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'",
+    )?;
+    let keys = statement
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<std::result::Result<_, _>>()?;
+    Ok(keys)
+}
+
+pub(crate) fn schema_fingerprint(connection: &Connection) -> Result<String> {
+    let mut statement = connection.prepare(
+        "SELECT type, name, sql
+         FROM sqlite_master
+         WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'
+         ORDER BY type, name",
+    )?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok(format!(
+                "{}\n{}\n{}",
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(content_hash(&rows.join("\n")))
 }
 
 pub(crate) fn apply_migration(connection: &mut Connection, migration: &Migration) -> Result<()> {
@@ -2979,28 +3180,34 @@ pub(crate) fn apply_migration(connection: &mut Connection, migration: &Migration
     }
 
     let transaction = connection.transaction()?;
+    apply_migration_transaction(&transaction, migration)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+fn apply_migration_transaction(transaction: &Transaction<'_>, migration: &Migration) -> Result<()> {
     if migration.name == "strict_runtime_sequences" {
-        repair_runtime_sequence_duplicates(&transaction)?;
+        repair_runtime_sequence_duplicates(transaction)?;
     }
     if migration.name == "canonical_work_item_focus" {
-        preflight_work_item_focus(&transaction)?;
-        migrate_work_item_focus(&transaction)?;
+        preflight_work_item_focus(transaction)?;
+        migrate_work_item_focus(transaction)?;
     }
     if migration.name == "execution_protocol_authority" {
-        ensure_execution_protocol_authority_columns(&transaction)?;
+        ensure_execution_protocol_authority_columns(transaction)?;
     }
     transaction.execute_batch(migration.sql)?;
     if migration.name == "execution_protocol_authority" {
-        backfill_execution_protocol_authority(&transaction)?;
+        backfill_execution_protocol_authority(transaction)?;
     }
     if migration.name == "drop_work_item_readiness" {
-        drop_work_item_readiness(&transaction)?;
+        drop_work_item_readiness(transaction)?;
     }
     if migration.name == "strict_runtime_sequences" {
-        migrate_runtime_sequences(&transaction)?;
+        migrate_runtime_sequences(transaction)?;
     }
     if migration.name == "runtime_retention_created_at_indexes" {
-        migrate_runtime_retention_created_at_indexes(&transaction)?;
+        migrate_runtime_retention_created_at_indexes(transaction)?;
     }
     transaction.execute(
         "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
@@ -3010,7 +3217,6 @@ pub(crate) fn apply_migration(connection: &mut Connection, migration: &Migration
             Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         ),
     )?;
-    transaction.commit()?;
     Ok(())
 }
 

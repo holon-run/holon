@@ -63,8 +63,9 @@ use crate::runtime_db::connection::{
     unlock, LockMode,
 };
 use crate::runtime_db::migrations::{
-    apply_migration, backfill_wait_condition_payload_columns, backfill_work_item_recheck_columns,
-    current_schema_version, ensure_migration_table, max_known_migration_version, MIGRATIONS,
+    apply_migration, apply_release_baseline, backfill_wait_condition_payload_columns,
+    backfill_work_item_recheck_columns, current_schema_version, ensure_migration_table,
+    max_known_migration_version, MIGRATIONS, PUBLISHED_MIGRATION_FLOOR, RELEASE_BASELINE_TARGET,
 };
 use crate::runtime_db::storage_domain::{
     read_storage_domain_connection, upsert_storage_domain, upsert_storage_domain_checkpoint_json,
@@ -698,8 +699,26 @@ impl RuntimeDb {
                 max_known_version
             );
         }
-        for migration in MIGRATIONS {
-            apply_migration(&mut connection, migration)?;
+        if current_version <= PUBLISHED_MIGRATION_FLOOR
+            && max_known_version >= RELEASE_BASELINE_TARGET
+        {
+            for migration in MIGRATIONS
+                .iter()
+                .filter(|migration| migration.version <= PUBLISHED_MIGRATION_FLOOR)
+            {
+                apply_migration(&mut connection, migration)?;
+            }
+            apply_release_baseline(&mut connection)?;
+            for migration in MIGRATIONS
+                .iter()
+                .filter(|migration| migration.version > RELEASE_BASELINE_TARGET)
+            {
+                apply_migration(&mut connection, migration)?;
+            }
+        } else {
+            for migration in MIGRATIONS {
+                apply_migration(&mut connection, migration)?;
+            }
         }
         ensure_event_log_epoch(&connection)?;
         backfill_wait_condition_payload_columns(&connection)?;
