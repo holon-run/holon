@@ -3872,7 +3872,7 @@ async fn pre_cutover_task_rejoin_without_execution_owner_is_dropped() {
 }
 
 #[tokio::test]
-async fn task_rejoin_without_execution_owner_but_with_exact_wait_is_not_orphaned() {
+async fn task_rejoin_missing_from_initialized_execution_partition_is_rejected() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(

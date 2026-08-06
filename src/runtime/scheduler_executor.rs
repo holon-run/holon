@@ -882,14 +882,14 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 });
             }
         }
-        let unresolved_candidate = candidate.clone();
+        let original_candidate = candidate.clone();
         let mut scenario =
             scheduler::resolve_canonical_activation_scenario(projection, message, candidate)?;
         if scenario.is_none() && task.is_some_and(TaskRecord::terminal_reentry) {
             if let scheduler::CanonicalActivationCandidate::ExactTaskRejoin {
                 task_id,
                 work_item_id,
-            } = &unresolved_candidate
+            } = &original_candidate
             {
                 scenario = Some(scheduler::CanonicalActivationScenario::ExactTaskRejoin {
                     task_id: task_id.clone(),
@@ -913,7 +913,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             }
             if let scheduler::CanonicalActivationCandidate::ExactTaskRejoin {
                 work_item_id, ..
-            } = &unresolved_candidate
+            } = &original_candidate
             {
                 if self
                     .runtime
