@@ -3095,6 +3095,7 @@ impl RuntimeHandle {
     pub(crate) async fn complete_work_item_with_report(
         &self,
         work_item_id: String,
+        authority: WorkItemCompletionAuthority,
         report_text: String,
         source_turn_index: Option<u64>,
         source_round: Option<usize>,
@@ -3138,25 +3139,6 @@ impl RuntimeHandle {
             .into());
         }
 
-        let execution_binding = self.agent_state().await?.current_execution_binding;
-        if let Some(bound_work_item_id) = execution_binding
-            .as_ref()
-            .and_then(|binding| binding.work_item_id.as_deref())
-            .filter(|bound_work_item_id| *bound_work_item_id != existing.id)
-        {
-            return Err(RuntimeError::policy(
-                "work_item_execution_binding_mismatch",
-                format!(
-                    "current execution is bound to work item {bound_work_item_id}, not {work_item_id}"
-                ),
-            )
-            .with_safe_context("work_item_id", work_item_id)
-            .with_recovery_hint(
-                "complete the WorkItem from its own execution or from an agent-lifecycle execution without another WorkItem binding",
-            )
-            .into());
-        }
-
         let mut brief =
             BriefRecord::new(agent_id.clone(), BriefKind::Result, report_text, None, None);
         brief.work_item_id = Some(existing.id.clone());
@@ -3169,6 +3151,7 @@ impl RuntimeHandle {
         let Some(completed) = self
             .finalize_open_work_item_completion_with_brief(
                 &work_item_id,
+                &authority,
                 &brief,
                 AuditEvent::legacy(
                     "work_item_completion_report_promoted",
@@ -3286,6 +3269,7 @@ impl RuntimeHandle {
     ) -> Result<Option<CompletedWorkItem>> {
         self.finalize_work_item_completion_with_brief_mode(
             work_item_id,
+            None,
             brief,
             binding_event,
             false,
@@ -3296,16 +3280,24 @@ impl RuntimeHandle {
     async fn finalize_open_work_item_completion_with_brief(
         &self,
         work_item_id: &str,
+        authority: &WorkItemCompletionAuthority,
         brief: &BriefRecord,
         binding_event: AuditEvent,
     ) -> Result<Option<CompletedWorkItem>> {
-        self.finalize_work_item_completion_with_brief_mode(work_item_id, brief, binding_event, true)
-            .await
+        self.finalize_work_item_completion_with_brief_mode(
+            work_item_id,
+            Some(authority),
+            brief,
+            binding_event,
+            true,
+        )
+        .await
     }
 
     async fn finalize_work_item_completion_with_brief_mode(
         &self,
         work_item_id: &str,
+        authority: Option<&WorkItemCompletionAuthority>,
         brief: &BriefRecord,
         binding_event: AuditEvent,
         require_open: bool,
@@ -3334,13 +3326,58 @@ impl RuntimeHandle {
             let now = Utc::now();
             let mut state = self.agent_state().await?;
             let expected_agent_state = state.clone();
-            let matching_execution_binding =
-                state.current_execution_binding.as_ref().filter(|binding| {
-                    binding.work_item_id.as_deref() == Some(existing.id.as_str())
-                        && Some(binding.turn_id.as_str()) == brief.turn_id.as_deref()
-                        && Some(binding.source_message_id.as_str())
-                            == brief.related_message_id.as_deref()
-                });
+            let matching_execution_binding = match authority {
+                Some(WorkItemCompletionAuthority::AgentExecution(expected_binding)) => {
+                    if let Some(bound_work_item_id) = expected_binding.work_item_id.as_deref() {
+                        if bound_work_item_id != existing.id {
+                            return Err(RuntimeError::policy(
+                                "work_item_execution_binding_mismatch",
+                                format!(
+                                    "current execution is bound to work item {bound_work_item_id}, not {work_item_id}"
+                                ),
+                            )
+                            .with_safe_context("work_item_id", work_item_id)
+                            .with_recovery_hint(
+                                "complete the WorkItem from its own execution or from an agent-lifecycle execution without another WorkItem binding",
+                            )
+                            .into());
+                        }
+                    }
+                    let Some(current_binding) = state.current_execution_binding.as_ref() else {
+                        return Err(RuntimeError::policy(
+                            "work_item_execution_binding_missing",
+                            "the execution binding that authorized this completion is no longer active",
+                        )
+                        .with_safe_context("work_item_id", work_item_id)
+                        .into());
+                    };
+                    if current_binding != expected_binding {
+                        return Err(RuntimeError::policy(
+                            "work_item_execution_binding_stale",
+                            "the execution binding that authorized this completion changed before commit",
+                        )
+                        .with_safe_context("work_item_id", work_item_id)
+                        .with_recovery_hint(
+                            "retry completion from the WorkItem's current execution",
+                        )
+                        .into());
+                    }
+                    if Some(expected_binding.turn_id.as_str()) != brief.turn_id.as_deref()
+                        || Some(expected_binding.source_message_id.as_str())
+                            != brief.related_message_id.as_deref()
+                    {
+                        return Err(RuntimeError::policy(
+                            "work_item_completion_report_binding_mismatch",
+                            "the completion report does not belong to the authorizing execution",
+                        )
+                        .with_safe_context("work_item_id", work_item_id)
+                        .into());
+                    }
+                    (expected_binding.work_item_id.as_deref() == Some(existing.id.as_str()))
+                        .then_some(expected_binding)
+                }
+                Some(WorkItemCompletionAuthority::Control) | None => None,
+            };
             let mut completion_intent = if require_open {
                 WorkItemCompletionIntent {
                     work_item_id: existing.id.clone(),
@@ -3528,6 +3565,9 @@ impl RuntimeHandle {
                 }),
             ));
 
+            #[cfg(test)]
+            self.apply_completion_binding_replacement_before_commit()
+                .await?;
             let commit = self.inner.runtime_db.transitions().commit_work_item_focus(
                 &crate::runtime_db::transitions::WorkItemFocusTransitionCommand {
                     agent_id: agent_id.clone(),

@@ -468,6 +468,8 @@ impl RuntimeHandle {
                 shutdown_requested: AtomicBool::new(false),
                 transition_faults: StdMutex::new(std::collections::VecDeque::new()),
                 #[cfg(test)]
+                completion_binding_replacement: StdMutex::new(None),
+                #[cfg(test)]
                 task_transition_conflicts_remaining: AtomicUsize::new(0),
                 #[cfg(test)]
                 fail_after_next_runtime_claim: AtomicBool::new(false),

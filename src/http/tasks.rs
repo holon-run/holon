@@ -531,6 +531,7 @@ pub async fn complete_work_item(
         crate::types::WorkItemState::Open | crate::types::WorkItemState::Completed => runtime
             .complete_work_item_with_report(
                 work_item_id,
+                crate::runtime::WorkItemCompletionAuthority::Control,
                 report_text.to_string(),
                 None,
                 None,

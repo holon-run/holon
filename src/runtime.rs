@@ -158,6 +158,12 @@ pub(super) enum WorkItemCompletionReportPromotionOutcome {
     Promoted(WorkItemCompletionReportPromotion),
 }
 
+#[derive(Debug, Clone)]
+pub(crate) enum WorkItemCompletionAuthority {
+    AgentExecution(WorkItemExecutionBinding),
+    Control,
+}
+
 impl WorkItemCompletionReportPromotionOutcome {
     pub(super) fn into_record(self) -> crate::types::WorkItemRecord {
         match self {
@@ -288,6 +294,8 @@ struct RuntimeInner {
     suppress_next_continue_active_tick: Mutex<bool>,
     shutdown_requested: AtomicBool,
     transition_faults: StdMutex<std::collections::VecDeque<TransitionFaultPoint>>,
+    #[cfg(test)]
+    completion_binding_replacement: StdMutex<Option<WorkItemExecutionBinding>>,
     #[cfg(test)]
     task_transition_conflicts_remaining: AtomicUsize,
     #[cfg(test)]
@@ -2511,6 +2519,38 @@ impl RuntimeHandle {
     pub(crate) fn inject_next_transition_fault(&self, fault: TransitionFaultPoint) {
         self.inject_next_transition_fault_unchecked(fault)
             .expect("a transition fault is already armed for this runtime fixture");
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_completion_binding_replacement_before_commit(
+        &self,
+        binding: WorkItemExecutionBinding,
+    ) {
+        let mut replacement = self
+            .inner
+            .completion_binding_replacement
+            .lock()
+            .expect("completion binding replacement lock poisoned");
+        assert!(
+            replacement.replace(binding).is_none(),
+            "a completion binding replacement is already armed"
+        );
+    }
+
+    #[cfg(test)]
+    async fn apply_completion_binding_replacement_before_commit(&self) -> Result<()> {
+        let replacement = self
+            .inner
+            .completion_binding_replacement
+            .lock()
+            .expect("completion binding replacement lock poisoned")
+            .take();
+        let Some(binding) = replacement else {
+            return Ok(());
+        };
+        let mut guard = self.inner.agent.lock().await;
+        guard.state.current_execution_binding = Some(binding);
+        guard.persist_state(&self.inner.storage)
     }
 
     fn inject_next_transition_fault_unchecked(&self, fault: TransitionFaultPoint) -> Result<()> {
