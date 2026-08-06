@@ -3756,33 +3756,11 @@ async fn pre_cutover_task_rejoin_without_execution_owner_is_dropped() {
             "default",
             &canonical_waiting_snapshot(
                 &waiting_work,
-                &registration.condition.id,
+                "legacy-current-wait-for-other-work",
                 waiting_work.revision,
             ),
         )
         .unwrap();
-    append_completed_rejoin_task(
-        &runtime,
-        "task-pre-cutover",
-        &work_item.id,
-        "turn-pre-cutover-parent",
-    );
-    let completing = runtime
-        .complete_work_item(work_item.id.clone(), Vec::new())
-        .await
-        .unwrap();
-    assert_eq!(completing.state, WorkItemState::Completing);
-    runtime
-        .inner
-        .runtime_db
-        .transaction(|tx| {
-            crate::runtime_db::transitions::persist_state_tx(
-                tx,
-                &crate::domain::execution_protocol::ExecutionProtocolState::empty("default"),
-            )
-        })
-        .unwrap();
-
     let mut stale = task_result_message("task-pre-cutover").with_admission(
         MessageDeliverySurface::TaskRejoin,
         AdmissionContext::RuntimeOwned,
@@ -3796,6 +3774,51 @@ async fn pre_cutover_task_rejoin_without_execution_owner_is_dropped() {
         "work_item_id": work_item.id,
     }));
     stale.turn_id = Some("turn-pre-cutover".into());
+    let running = runtime
+        .storage()
+        .latest_task_record("task-pre-cutover")
+        .unwrap()
+        .expect("running task");
+    let terminal = TaskRecord {
+        status: TaskStatus::Completed,
+        updated_at: Utc::now(),
+        parent_message_id: Some(stale.id.clone()),
+        detail: Some(serde_json::json!({
+            "rejoin_obligation_id": "task-pre-cutover",
+            "rejoin_generation": 1,
+            "parent_turn_id": "turn-pre-cutover-parent",
+        })),
+        ..running
+    };
+    runtime
+        .persist_task_transition_with_message(&terminal, "task_status_updated", &stale)
+        .await
+        .unwrap();
+    let completing = runtime
+        .complete_work_item(work_item.id.clone(), Vec::new())
+        .await
+        .unwrap();
+    assert_eq!(completing.state, WorkItemState::Completing);
+    assert!(runtime
+        .storage()
+        .latest_wait_conditions()
+        .unwrap()
+        .into_iter()
+        .any(|condition| {
+            condition.id == registration.condition.id
+                && condition.status == WaitConditionStatus::Resolved
+        }));
+    runtime
+        .inner
+        .runtime_db
+        .transaction(|tx| {
+            crate::runtime_db::transitions::persist_state_tx(
+                tx,
+                &crate::domain::execution_protocol::ExecutionProtocolState::empty("default"),
+            )
+        })
+        .unwrap();
+
     let stale = runtime.enqueue(stale).await.unwrap();
     let valid = runtime
         .enqueue(trusted_operator_prompt(
@@ -3822,17 +3845,21 @@ async fn pre_cutover_task_rejoin_without_execution_owner_is_dropped() {
             .map(|entry| entry.status),
         Some(QueueEntryStatus::Dropped)
     );
-    assert!(runtime
+    let stale_events = runtime
         .storage()
         .read_recent_events(usize::MAX)
         .unwrap()
-        .iter()
-        .any(|event| {
+        .into_iter()
+        .filter(|event| event.data["message_id"] == stale.id)
+        .collect::<Vec<_>>();
+    assert!(
+        stale_events.iter().any(|event| {
             event.kind == "scheduler_authority_input_rejected"
-                && event.data["message_id"] == stale.id
                 && event.data["reason"] == "canonical_task_rejoin_stale"
                 && event.data["queue_disposition"] == "dropped"
-        }));
+        }),
+        "unexpected stale task-result events: {stale_events:#?}"
+    );
 
     let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
         .poll()

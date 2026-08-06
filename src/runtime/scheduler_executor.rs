@@ -761,10 +761,22 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         };
         let Some(work) = execution.work_items.get(work_item_id) else {
             // Once the unified partition exists, an exact task rejoin can only
-            // resume a WorkItem owned by that partition. Pre-cutover task
-            // results may still reference a legacy scheduler Waiting mirror,
-            // but they are only provably orphaned when no exact durable task
-            // wait remains for the same WorkItem.
+            // resume an open WorkItem owned by that partition. A completing or
+            // completed WorkItem cannot regain execution authority even when a
+            // pre-cutover resolved task wait still references it.
+            if self
+                .runtime
+                .inner
+                .runtime_db
+                .work_items()
+                .latest(work_item_id)?
+                .is_none_or(|work_item| work_item.state != WorkItemState::Open)
+            {
+                return Ok(true);
+            }
+            // Open pre-cutover WorkItems may still reference a legacy scheduler
+            // Waiting mirror, but they are only provably orphaned when no exact
+            // durable task wait remains for the same WorkItem.
             let exact_wait_exists = self
                 .runtime
                 .inner
