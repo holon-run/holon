@@ -7192,6 +7192,130 @@ async fn task_result_resolves_wait_for_task_condition_and_clears_matching_blocke
 }
 
 #[tokio::test]
+async fn resolved_task_result_uses_unified_wait_when_legacy_wait_is_stale() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work = runtime
+        .create_work_item("resume resolved task wait".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    append_running_rejoin_task(&runtime, "task-unified-wait", &work.id);
+    let registration = runtime
+        .register_wait_for(
+            "default",
+            Some(work.id.clone()),
+            WaitForWakeKind::TaskResult,
+            Some("task-unified-wait".into()),
+            "waiting for unified task result".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let waiting = runtime.latest_work_item(&work.id).await.unwrap().unwrap();
+
+    let now = Utc::now();
+    let mut resolved = registration.condition.clone();
+    resolved.status = WaitConditionStatus::Resolved;
+    resolved.updated_at = now;
+    resolved.resolved_at = Some(now);
+    runtime.storage().append_wait_condition(&resolved).unwrap();
+    let resumed = WorkItemRecord {
+        revision: waiting.revision + 1,
+        blocked_by: None,
+        updated_at: now,
+        ..waiting
+    };
+    runtime.storage().append_work_item(&resumed).unwrap();
+
+    let generation = resumed.revision - 1;
+    let mut execution = crate::domain::execution_protocol::ExecutionProtocolState::empty("default");
+    execution.work_items.insert(
+        resumed.id.clone(),
+        crate::domain::execution_protocol::WorkItemExecutionRecord {
+            source_revision: resumed.revision,
+            state: crate::domain::execution_protocol::WorkItemExecutionState::Waiting {
+                generation,
+                wait: crate::domain::execution_protocol::WaitReference {
+                    wait_id: resolved.id.clone(),
+                },
+            },
+        },
+    );
+    runtime
+        .inner
+        .runtime_db
+        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
+        .unwrap();
+
+    runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .initialize_scheduler_protocol_partition(
+            "default",
+            &canonical_waiting_snapshot(&resumed, "wait-stale-legacy", resumed.revision),
+        )
+        .unwrap();
+    append_completed_rejoin_task(
+        &runtime,
+        "task-unified-wait",
+        &resumed.id,
+        "turn-unified-wait",
+    );
+    let mut result = task_result_message("task-unified-wait").with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    result.work_item_id = Some(resumed.id.clone());
+    result.task_id = Some("task-unified-wait".into());
+    result.metadata = Some(serde_json::json!({
+        "task_id": "task-unified-wait",
+        "task_kind": "command_task",
+        "task_status": "completed",
+        "task_result_id": "result-unified-wait",
+        "work_item_id": resumed.id,
+    }));
+    let result = runtime.enqueue(result).await.unwrap();
+
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("unified waiting authority should admit the resolved task result");
+    };
+    assert_eq!(scheduled.message.id, result.id);
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    let attempt = &execution.attempts[&scheduler_executor::canonical_activation_id(&result.id)];
+    assert!(matches!(
+        &attempt.source.identity,
+        crate::domain::execution_protocol::ExecutionSourceIdentity::TaskResult {
+            task_id,
+            result_message_id,
+        } if task_id == "task-unified-wait" && result_message_id == &result.id
+    ));
+}
+
+#[tokio::test]
 async fn message_admission_wakes_asleep_and_booting_agents() {
     for status in [AgentStatus::Asleep, AgentStatus::Booting] {
         let dir = tempdir().unwrap();

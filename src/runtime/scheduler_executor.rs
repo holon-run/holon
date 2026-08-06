@@ -882,9 +882,23 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 });
             }
         }
-        let Some(mut scenario) =
-            scheduler::resolve_canonical_activation_scenario(projection, message, candidate)?
-        else {
+        let unresolved_candidate = candidate.clone();
+        let mut scenario =
+            scheduler::resolve_canonical_activation_scenario(projection, message, candidate)?;
+        if scenario.is_none() && task.is_some_and(TaskRecord::terminal_reentry) {
+            if let scheduler::CanonicalActivationCandidate::ExactTaskRejoin {
+                task_id,
+                work_item_id,
+            } = &unresolved_candidate
+            {
+                scenario = Some(scheduler::CanonicalActivationScenario::ExactTaskRejoin {
+                    task_id: task_id.clone(),
+                    work_item_id: work_item_id.clone(),
+                    wait_id: None,
+                });
+            }
+        }
+        let Some(mut scenario) = scenario else {
             if stale_task_rejoin {
                 return Ok(CanonicalClaimOutcome::RejectQueued {
                     scenario_class,
@@ -896,6 +910,24 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     scenario_class,
                     reason: "canonical_correlated_wait_stale",
                 });
+            }
+            if let scheduler::CanonicalActivationCandidate::ExactTaskRejoin {
+                work_item_id, ..
+            } = &unresolved_candidate
+            {
+                if self
+                    .runtime
+                    .inner
+                    .runtime_db
+                    .transitions()
+                    .load_execution_protocol_state_if_initialized(&message.agent_id)?
+                    .is_some_and(|execution| !execution.work_items.contains_key(work_item_id))
+                {
+                    return Ok(CanonicalClaimOutcome::RejectQueued {
+                        scenario_class,
+                        reason: "canonical_wait_execution_authority_missing",
+                    });
+                }
             }
             return Ok(canonical_claim_hard_blocker(
                 scenario_class,

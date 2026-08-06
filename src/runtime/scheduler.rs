@@ -1,5 +1,6 @@
 use super::*;
-use crate::domain::scheduler_protocol::{SchedulerOwner, SchedulerScenarioClass, WorkStatus};
+use crate::domain::execution_protocol::WorkItemExecutionState;
+use crate::domain::scheduler_protocol::{SchedulerOwner, SchedulerScenarioClass};
 use crate::runtime::closure::runtime_error_active;
 use crate::storage::{AppStorage, WorkQueueReadModel};
 use crate::types::{
@@ -159,8 +160,13 @@ pub(crate) struct SchedulerProjection {
     pub turn_in_progress: bool,
     pub runtime_error: bool,
     activation_waits: Vec<WaitConditionRecord>,
-    canonical_work_statuses: Option<HashMap<String, WorkStatus>>,
-    canonical_wait_generations: HashMap<String, u64>,
+    canonical_work_states: Option<HashMap<String, CanonicalWorkExecutionState>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CanonicalWorkExecutionState {
+    Waiting { wait_id: String },
+    Other,
 }
 
 pub(crate) struct SchedulerAgentSnapshot {
@@ -193,21 +199,13 @@ impl SchedulerAgentSnapshot {
 impl SchedulerProjection {
     pub(crate) fn without_canonical_authority(mut self) -> Self {
         // activation_waits remains shared input for legacy wait-to-WorkItem correlation.
-        self.canonical_work_statuses = None;
-        self.canonical_wait_generations.clear();
+        self.canonical_work_states = None;
         self
     }
 
     #[cfg(test)]
-    pub(crate) fn set_canonical_wait_generation_for_test(
-        &mut self,
-        wait_id: impl Into<String>,
-        generation: u64,
-    ) {
-        self.canonical_work_statuses
-            .get_or_insert_with(HashMap::new);
-        self.canonical_wait_generations
-            .insert(wait_id.into(), generation);
+    pub(crate) fn enable_canonical_authority_for_test(&mut self) {
+        self.canonical_work_states.get_or_insert_with(HashMap::new);
     }
 
     pub(crate) fn from_state(storage: &AppStorage, state: &AgentState) -> Result<Self> {
@@ -306,31 +304,32 @@ impl SchedulerProjection {
                         && condition.kind == WaitConditionKind::Task)
             })
             .collect();
-        let canonical_snapshot = storage
+        let execution_snapshot = storage
             .runtime_db()?
             .map(|runtime_db| {
                 runtime_db
                     .transitions()
-                    .load_scheduler_protocol_snapshot_if_initialized(&snapshot.id)
+                    .load_execution_protocol_state_if_initialized(&snapshot.id)
             })
             .transpose()?
             .flatten();
-        let canonical_work_statuses = canonical_snapshot.as_ref().map(|snapshot| {
+        let canonical_work_states = execution_snapshot.as_ref().map(|snapshot| {
             snapshot
-                .work
+                .work_items
                 .iter()
-                .map(|(work_item_id, demand)| (work_item_id.clone(), demand.status.clone()))
+                .map(|(work_item_id, record)| {
+                    let state = match &record.state {
+                        WorkItemExecutionState::Waiting { wait, .. } => {
+                            CanonicalWorkExecutionState::Waiting {
+                                wait_id: wait.wait_id.clone(),
+                            }
+                        }
+                        _ => CanonicalWorkExecutionState::Other,
+                    };
+                    (work_item_id.clone(), state)
+                })
                 .collect()
         });
-        let canonical_wait_generations = canonical_snapshot
-            .map(|snapshot| {
-                snapshot
-                    .waits
-                    .into_iter()
-                    .map(|(wait_id, wait)| (wait_id, wait.current_generation))
-                    .collect()
-            })
-            .unwrap_or_default();
         let active_work_item_waiting_intents = active_wait_conditions
             .iter()
             .filter(|condition| condition.work_item_id.is_some())
@@ -378,8 +377,7 @@ impl SchedulerProjection {
                 &storage.read_recent_briefs(64)?,
             ),
             activation_waits,
-            canonical_work_statuses,
-            canonical_wait_generations,
+            canonical_work_states,
         })
     }
 
@@ -1312,7 +1310,7 @@ pub(crate) fn resolve_canonical_activation_scenario(
             candidate,
             CanonicalActivationCandidate::ExactTaskRejoin { .. }
         )
-        && projection.canonical_work_statuses.is_none()
+        && projection.canonical_work_states.is_none()
     {
         // The durable task rejoin fence is authoritative. Before the canonical
         // scheduler partition exists, duplicate legacy wait rows are mirrors
@@ -1331,14 +1329,19 @@ pub(crate) fn resolve_canonical_activation_scenario(
         work_item_id,
     } = candidate
     {
-        if matching_wait.is_none()
-            && projection
-                .canonical_work_statuses
+        if matching_wait.is_none() {
+            match projection
+                .canonical_work_states
                 .as_ref()
-                .and_then(|statuses| statuses.get(&work_item_id))
-                .is_some_and(|status| matches!(status, WorkStatus::Waiting { .. }))
-        {
-            return Ok(None);
+                .and_then(|states| states.get(&work_item_id))
+            {
+                Some(CanonicalWorkExecutionState::Other) => {}
+                Some(CanonicalWorkExecutionState::Waiting { .. }) => {
+                    return Ok(None);
+                }
+                None if projection.canonical_work_states.is_some() => return Ok(None),
+                None => {}
+            }
         }
         return Ok(Some(CanonicalActivationScenario::ExactTaskRejoin {
             task_id,
@@ -1440,15 +1443,15 @@ fn resolved_task_wait_is_current(
     projection: &SchedulerProjection,
     condition: &WaitConditionRecord,
 ) -> bool {
-    let Some(statuses) = &projection.canonical_work_statuses else {
+    let Some(states) = &projection.canonical_work_states else {
         return true;
     };
     let Some(work_item_id) = condition.work_item_id.as_deref() else {
         return false;
     };
     matches!(
-        statuses.get(work_item_id),
-        Some(WorkStatus::Waiting { wait_id }) if wait_id == &condition.id
+        states.get(work_item_id),
+        Some(CanonicalWorkExecutionState::Waiting { wait_id }) if wait_id == &condition.id
     )
 }
 

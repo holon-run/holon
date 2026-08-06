@@ -1565,8 +1565,7 @@ fn correlated_wait_resume_requires_the_exact_expected_owner() {
     append_active_external_wait_condition(&storage, "wait-work", "default", Some("work-a"));
     append_active_external_wait_condition(&storage, "wait-lifecycle", "default", None);
     let mut projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
-    projection.set_canonical_wait_generation_for_test("wait-work", 7);
-    projection.set_canonical_wait_generation_for_test("wait-lifecycle", 8);
+    projection.enable_canonical_authority_for_test();
     let message = MessageEnvelope::new(
         "default",
         MessageKind::CallbackEvent,
@@ -1685,7 +1684,7 @@ fn unbound_operator_input_exactly_resumes_agent_wait_or_becomes_nudge() {
 
     append_operator_wait_condition(&storage, "wait-operator", "default", None);
     let mut projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
-    projection.set_canonical_wait_generation_for_test("wait-operator", 1);
+    projection.enable_canonical_authority_for_test();
     let candidate = scheduler::canonical_activation_candidate(&message, Some(&continuation), None)
         .unwrap()
         .unwrap();
