@@ -13,7 +13,7 @@ use crate::{
 };
 
 use super::{
-    spec::{ToolCall, ToolResult, ToolSpec},
+    spec::{ToolCall, ToolExecutionContext, ToolResult, ToolSpec},
     tools,
 };
 
@@ -100,6 +100,24 @@ impl ToolRegistry {
         authority_class: &AuthorityClass,
         call: &ToolCall,
     ) -> Result<(ToolResult, ToolExecutionRecord)> {
+        self.execute_with_context(
+            runtime,
+            agent_id,
+            authority_class,
+            call,
+            &ToolExecutionContext::default(),
+        )
+        .await
+    }
+
+    pub(crate) async fn execute_with_context(
+        &self,
+        runtime: &RuntimeHandle,
+        agent_id: &str,
+        authority_class: &AuthorityClass,
+        call: &ToolCall,
+        context: &ToolExecutionContext,
+    ) -> Result<(ToolResult, ToolExecutionRecord)> {
         let started_at = chrono::Utc::now();
         let required_family = match self.family_for_tool(&call.name)? {
             Some(required_family) => required_family,
@@ -144,7 +162,14 @@ impl ToolRegistry {
             .into());
         }
         let tool_started = std::time::Instant::now();
-        let result = tools::execute_builtin_tool(runtime, agent_id, authority_class, call).await?;
+        let result = tools::execute_builtin_tool_with_context(
+            runtime,
+            agent_id,
+            authority_class,
+            call,
+            context,
+        )
+        .await?;
         crate::diagnostics::record_tool_execution(&call.name, tool_started.elapsed(), None);
         if !result.is_error() {
             if let Err(error) =

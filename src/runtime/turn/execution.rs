@@ -33,9 +33,9 @@ use super::checkpoint::{
 };
 use super::completion::{
     command_batch_preview_field, command_cost_field, command_display_field, command_preview_field,
-    envelope_completes_work_item, exec_command_disposition_field, exec_command_exit_status_field,
-    exec_command_task_handle_field, rejects_truncated_mutation_tool_call, result_work_item_id,
-    truncated_mutation_recovery_hint,
+    completion_report_texts_by_tool_id, envelope_completes_work_item,
+    exec_command_disposition_field, exec_command_exit_status_field, exec_command_task_handle_field,
+    rejects_truncated_mutation_tool_call, result_work_item_id, truncated_mutation_recovery_hint,
 };
 use super::context_management::context_management_diagnostic;
 use super::projection::{
@@ -1940,6 +1940,8 @@ impl TurnExecution<'_> {
             }
 
             let round_tool_calls = tool_calls.clone();
+            let completion_report_texts =
+                completion_report_texts_by_tool_id(&completed_round_assistant_blocks);
             let mut tool_results = Vec::new();
             let mut tool_result_envelopes = Vec::new();
             let mut tool_execution_refs: Vec<(String, String)> = Vec::new();
@@ -2104,19 +2106,40 @@ impl TurnExecution<'_> {
                     all_tool_results_should_sleep = false;
                     continue;
                 }
-                let pre_tool_work_item_id = {
+                let (pre_tool_work_item_id, execution_binding) = {
                     let guard = runtime.inner.agent.lock().await;
-                    guard
-                        .state
-                        .current_turn_work_item_id
-                        .clone()
-                        .or_else(|| guard.state.current_work_item_id.clone())
+                    (
+                        guard
+                            .state
+                            .current_turn_work_item_id
+                            .clone()
+                            .or_else(|| guard.state.current_work_item_id.clone()),
+                        guard.state.current_execution_binding.clone(),
+                    )
+                };
+                let tool_execution_context = crate::tool::spec::ToolExecutionContext {
+                    completion_report_candidate: completion_report_texts
+                        .iter()
+                        .find(|(candidate_tool_call_id, _)| candidate_tool_call_id == &tool_call_id)
+                        .map(|(_, text)| crate::tool::spec::CompletionReportCandidate {
+                            text: text.clone(),
+                            source_turn_index: turn_index,
+                            source_round: round,
+                            source_turn_id: execution_binding
+                                .as_ref()
+                                .map(|binding| binding.turn_id.clone()),
+                            source_message_id: execution_binding
+                                .as_ref()
+                                .map(|binding| binding.source_message_id.clone()),
+                            source_assistant_round_id: assistant_round_id.clone(),
+                            source_tool_call_id: tool_call_id.clone(),
+                        }),
                 };
                 let tool_exec_started = std::time::Instant::now();
                 let tool_execution = if let Some(snapshot) = runtime.current_run_abort_token().await
                 {
                     tokio::select! {
-                        result = runtime.inner.tools.execute(runtime, agent_id, &authority_class, &call) => result,
+                        result = runtime.inner.tools.execute_with_context(runtime, agent_id, &authority_class, &call, &tool_execution_context) => result,
                         _ = snapshot.token.cancelled() => Err(CurrentRunAborted {
                             run_id: snapshot.run_id.clone(),
                             reason: snapshot.reason(),
@@ -2126,7 +2149,13 @@ impl TurnExecution<'_> {
                     runtime
                         .inner
                         .tools
-                        .execute(runtime, agent_id, &authority_class, &call)
+                        .execute_with_context(
+                            runtime,
+                            agent_id,
+                            &authority_class,
+                            &call,
+                            &tool_execution_context,
+                        )
                         .await
                 };
                 crate::diagnostics::record_turn_tool_execution(tool_exec_started.elapsed());

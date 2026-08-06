@@ -156,9 +156,16 @@ current WorkItem is the focus for the current turn:
   blocker is resolved; this clears `blocked_by`, fallback recheck fields, and
   active WorkItem-scoped waits.
 - `CompleteWorkItem` promotion: the operator-facing completion report must be
-  written as assistant text **in the same round**. After the tool succeeds,
-  the runtime promotes that text as the canonical completion report and
-  terminal user-facing delivery for the turn.
+  written immediately before the tool call as assistant text **in the same
+  round**. The runtime requires that report before mutation and atomically
+  commits the `Open -> Completed` transition, canonical result brief, focus and
+  wait cleanup, and continuation effects.
+- If the same-round completion report is missing or empty,
+  `CompleteWorkItem` fails with `missing_completion_report`; the WorkItem stays
+  open and retains its focus, waits, and continuation state.
+- New agent-tool completions do not create the legacy `Completing` state.
+  Existing `Completing` records can still be finalized through the control
+  completion API.
 - A promoted completion report writes exactly one result brief for that
   WorkItem. The turn-final result brief is suppressed so the same completion is
   not delivered twice.

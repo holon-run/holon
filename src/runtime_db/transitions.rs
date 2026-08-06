@@ -1230,7 +1230,7 @@ fn validate_work_item_state_transition(
         (&existing.state, &incoming.state),
         (
             WorkItemState::Open,
-            WorkItemState::Open | WorkItemState::Completing
+            WorkItemState::Open | WorkItemState::Completing | WorkItemState::Completed
         ) | (
             WorkItemState::Completing,
             WorkItemState::Completing | WorkItemState::Completed

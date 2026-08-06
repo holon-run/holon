@@ -513,20 +513,47 @@ pub async fn complete_work_item(
     let boundary = current_boundary_metadata(&runtime)
         .await
         .map_err(error_response)?;
-    let completing = runtime
-        .complete_work_item(work_item_id, Vec::new())
+    let existing = runtime
+        .latest_work_item(&work_item_id)
         .await
-        .map_err(work_item_lifecycle_error)?;
-    let record = runtime
-        .promote_work_item_completion_report(
-            completing.id,
-            report_text.to_string(),
-            None,
-            None,
-            Vec::new(),
-        )
-        .await
-        .map_err(work_item_lifecycle_error)?;
+        .map_err(work_item_lifecycle_error)?
+        .ok_or_else(|| {
+            work_item_lifecycle_error(
+                RuntimeError::not_found(
+                    "work_item_not_found",
+                    format!("work item {work_item_id} not found"),
+                )
+                .with_safe_context("work_item_id", work_item_id.clone())
+                .into(),
+            )
+        })?;
+    let record = match existing.state {
+        crate::types::WorkItemState::Open | crate::types::WorkItemState::Completed => runtime
+            .complete_work_item_with_report(
+                work_item_id,
+                report_text.to_string(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Vec::new(),
+            )
+            .await
+            .map_err(work_item_lifecycle_error)?
+            .into_record(),
+        crate::types::WorkItemState::Completing => runtime
+            .promote_work_item_completion_report(
+                work_item_id,
+                report_text.to_string(),
+                None,
+                None,
+                Vec::new(),
+            )
+            .await
+            .map_err(work_item_lifecycle_error)?,
+    };
     runtime
         .append_audit_event(
             "work_item_complete_requested",

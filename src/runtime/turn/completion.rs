@@ -37,6 +37,12 @@ impl RuntimeHandle {
                     && envelope
                         .result
                         .as_ref()
+                        .and_then(|result| result.get("completion_report_promoted"))
+                        .and_then(Value::as_bool)
+                        != Some(true)
+                    && envelope
+                        .result
+                        .as_ref()
                         .and_then(|result| result.get("completed_transition"))
                         .and_then(Value::as_bool)
                         == Some(true)

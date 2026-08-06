@@ -4,13 +4,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    runtime::RuntimeHandle,
+    runtime::{RuntimeHandle, WorkItemCompletionReportPromotionOutcome},
     tool::helpers::{parse_tool_args, validate_non_empty},
-    tool::spec::typed_spec,
-    types::{
-        AuthorityClass, TodoItem, TodoItemState, ToolCapabilityFamily, WorkItemRecord,
-        WorkItemState,
-    },
+    tool::spec::{typed_spec, ToolExecutionContext},
+    types::{AuthorityClass, TodoItem, TodoItemState, ToolCapabilityFamily, WorkItemRecord},
 };
 
 use super::{
@@ -55,30 +52,60 @@ pub(crate) async fn execute(
     _agent_id: &str,
     _authority_class: &AuthorityClass,
     input: &Value,
+    context: &ToolExecutionContext,
 ) -> Result<crate::tool::ToolResult> {
     let args: CompleteWorkItemArgs = parse_tool_args(NAME, input)?;
     let work_item_id = validate_non_empty(args.work_item_id, NAME, "work_item_id")?;
     let before = runtime.latest_work_item(&work_item_id).await?;
-    let completed_transition = before
-        .as_ref()
-        .map(|record| record.state == WorkItemState::Open)
-        .unwrap_or(false);
     let warnings = before.as_ref().map(completion_warnings).unwrap_or_default();
-    let completed = runtime
-        .complete_work_item_with_continuation(work_item_id, warnings_json(&warnings))
+    let candidate = context.completion_report_candidate.as_ref();
+    let outcome = runtime
+        .complete_work_item_with_report(
+            work_item_id,
+            candidate
+                .map(|candidate| candidate.text.clone())
+                .unwrap_or_default(),
+            candidate.map(|candidate| candidate.source_turn_index),
+            candidate.map(|candidate| candidate.source_round),
+            candidate.and_then(|candidate| candidate.source_turn_id.clone()),
+            candidate.and_then(|candidate| candidate.source_message_id.clone()),
+            candidate.map(|candidate| candidate.source_assistant_round_id.clone()),
+            candidate.map(|candidate| candidate.source_tool_call_id.clone()),
+            warnings_json(&warnings),
+        )
         .await?;
+    let (completed, completed_transition, completion_report_promoted, continuation_resumed) =
+        match outcome {
+            WorkItemCompletionReportPromotionOutcome::Promoted(promotion) => {
+                (promotion.record, true, true, promotion.continuation_resumed)
+            }
+            WorkItemCompletionReportPromotionOutcome::Unchanged(record) => {
+                (record, false, false, None)
+            }
+        };
     let context = query_context(runtime).await?;
-    let work_item =
-        view_for_record(runtime, &context, completed.work_item, true, None, None).await?;
-    serialize_success(
-        NAME,
-        &WorkItemMutationResult::with_completion_transition(
+    let work_item = view_for_record(runtime, &context, completed, true, None, None).await?;
+    let mut result = serde_json::to_value(
+        WorkItemMutationResult::with_completion_transition(
             work_item,
             warnings_json(&warnings),
             completed_transition,
         )
-        .with_continuation_resumed(completed.continuation_resumed),
-    )
+        .with_continuation_resumed(continuation_resumed),
+    )?;
+    if let Some(object) = result.as_object_mut() {
+        object.insert(
+            "completion_report_promoted".into(),
+            serde_json::json!(completion_report_promoted),
+        );
+        if completion_report_promoted {
+            object.insert(
+                "completion_report_source".into(),
+                serde_json::json!("same_assistant_round_preceding_text"),
+            );
+        }
+    }
+    serialize_success(NAME, &result)
 }
 
 pub(crate) fn completion_warnings(record: &WorkItemRecord) -> Vec<WorkItemCompletionWarning> {

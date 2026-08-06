@@ -5,7 +5,9 @@ use std::{future::Future, pin::Pin};
 
 use crate::{
     runtime::RuntimeHandle,
-    tool::{apply_patch::ApplyPatchSurface, ToolCall, ToolResult, ToolSpec},
+    tool::{
+        apply_patch::ApplyPatchSurface, spec::ToolExecutionContext, ToolCall, ToolResult, ToolSpec,
+    },
     types::{AuthorityClass, ToolCapabilityFamily},
 };
 
@@ -110,17 +112,32 @@ pub(crate) fn builtin_tool_definitions_for_apply_patch_surface(
         .collect()
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn execute_builtin_tool<'a>(
     runtime: &'a RuntimeHandle,
     agent_id: &'a str,
     authority_class: &'a AuthorityClass,
     call: &'a ToolCall,
 ) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + 'a>> {
+    Box::pin(async move {
+        let context = ToolExecutionContext::default();
+        execute_builtin_tool_inner(runtime, agent_id, authority_class, call, &context).await
+    })
+}
+
+pub(crate) fn execute_builtin_tool_with_context<'a>(
+    runtime: &'a RuntimeHandle,
+    agent_id: &'a str,
+    authority_class: &'a AuthorityClass,
+    call: &'a ToolCall,
+    context: &'a ToolExecutionContext,
+) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + 'a>> {
     Box::pin(execute_builtin_tool_inner(
         runtime,
         agent_id,
         authority_class,
         call,
+        context,
     ))
 }
 
@@ -129,6 +146,7 @@ async fn execute_builtin_tool_inner(
     agent_id: &str,
     authority_class: &AuthorityClass,
     call: &ToolCall,
+    context: &ToolExecutionContext,
 ) -> Result<ToolResult> {
     match call.name.as_str() {
         sleep::NAME => sleep::execute(runtime, agent_id, authority_class, &call.input).await,
@@ -183,7 +201,8 @@ async fn execute_builtin_tool_inner(
             update_work_item::execute(runtime, agent_id, authority_class, &call.input).await
         }
         complete_work_item::NAME => {
-            complete_work_item::execute(runtime, agent_id, authority_class, &call.input).await
+            complete_work_item::execute(runtime, agent_id, authority_class, &call.input, context)
+                .await
         }
         memory_search::NAME => {
             memory_search::execute(runtime, agent_id, authority_class, &call.input).await

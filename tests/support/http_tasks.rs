@@ -692,6 +692,30 @@ pub async fn work_item_mutation_routes_pick_update_and_complete() -> Result<()> 
     assert_eq!(complete["state"], "completed");
     assert!(complete.get("blocked_by").is_none());
 
+    let legacy = runtime
+        .create_work_item("legacy completing item".into(), None, None, Vec::new())
+        .await?;
+    let legacy = runtime
+        .complete_work_item(legacy.id.clone(), Vec::new())
+        .await?;
+    assert_eq!(legacy.state, WorkItemState::Completing);
+    let legacy_complete: serde_json::Value = client
+        .post(format!(
+            "{base}/api/control/agents/default/work-items/{work_item_id}/complete",
+            work_item_id = legacy.id
+        ))
+        .json(&serde_json::json!({
+            "report_text": "Recovered legacy completion through the HTTP control plane.",
+            "authority_class": "integration_signal"
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(legacy_complete["id"], legacy.id);
+    assert_eq!(legacy_complete["state"], "completed");
+    assert!(legacy_complete["result_brief_id"].is_string());
+
     wait_until(|| {
         let events = runtime.storage().read_recent_events(200)?;
         Ok([

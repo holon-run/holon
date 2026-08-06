@@ -3092,6 +3092,115 @@ impl RuntimeHandle {
             .into_record())
     }
 
+    pub(crate) async fn complete_work_item_with_report(
+        &self,
+        work_item_id: String,
+        report_text: String,
+        source_turn_index: Option<u64>,
+        source_round: Option<usize>,
+        source_turn_id: Option<String>,
+        source_message_id: Option<String>,
+        source_assistant_round_id: Option<String>,
+        source_tool_call_id: Option<String>,
+        warnings: Vec<serde_json::Value>,
+    ) -> Result<WorkItemCompletionReportPromotionOutcome> {
+        let agent_id = self.agent_id().await?;
+        let existing = self.validate_owned_work_item(&agent_id, &work_item_id)?;
+        if existing.state == WorkItemState::Completed {
+            return Ok(WorkItemCompletionReportPromotionOutcome::Unchanged(
+                existing,
+            ));
+        }
+        if existing.state != WorkItemState::Open {
+            return Err(RuntimeError::new(
+                RuntimeErrorDomain::Conflict,
+                "work_item_completion_in_progress",
+                format!(
+                    "work item {work_item_id} already has a legacy completion intent in progress"
+                ),
+            )
+            .with_safe_context("work_item_id", work_item_id)
+            .with_recovery_hint(
+                "complete the existing legacy completion intent through the control completion API",
+            )
+            .into());
+        }
+        let report_text = report_text.trim();
+        if report_text.is_empty() {
+            return Err(RuntimeError::validation(
+                "missing_completion_report",
+                "CompleteWorkItem requires nearby preceding same-round operator-facing report text",
+            )
+            .with_safe_context("work_item_id", work_item_id)
+            .with_recovery_hint(
+                "write the concise operator-facing completion report immediately before CompleteWorkItem in the same assistant response",
+            )
+            .into());
+        }
+
+        let execution_binding = self.agent_state().await?.current_execution_binding;
+        if let Some(bound_work_item_id) = execution_binding
+            .as_ref()
+            .and_then(|binding| binding.work_item_id.as_deref())
+            .filter(|bound_work_item_id| *bound_work_item_id != existing.id)
+        {
+            return Err(RuntimeError::policy(
+                "work_item_execution_binding_mismatch",
+                format!(
+                    "current execution is bound to work item {bound_work_item_id}, not {work_item_id}"
+                ),
+            )
+            .with_safe_context("work_item_id", work_item_id)
+            .with_recovery_hint(
+                "complete the WorkItem from its own execution or from an agent-lifecycle execution without another WorkItem binding",
+            )
+            .into());
+        }
+
+        let mut brief =
+            BriefRecord::new(agent_id.clone(), BriefKind::Result, report_text, None, None);
+        brief.work_item_id = Some(existing.id.clone());
+        brief.workspace_id = existing.workspace_id.clone();
+        brief.turn_index = source_turn_index;
+        brief.turn_id = source_turn_id;
+        brief.related_message_id = source_message_id;
+        brief.finalizes_assistant_round_id = source_assistant_round_id.clone();
+
+        let Some(completed) = self
+            .finalize_open_work_item_completion_with_brief(
+                &work_item_id,
+                &brief,
+                AuditEvent::legacy(
+                    "work_item_completion_report_promoted",
+                    serde_json::json!({
+                        "agent_id": agent_id,
+                        "work_item_id": work_item_id,
+                        "source_turn_index": source_turn_index,
+                        "source_round": source_round,
+                        "source_assistant_round_id": source_assistant_round_id,
+                        "source_tool_call_id": source_tool_call_id,
+                        "source": "same_assistant_round_preceding_text",
+                        "text_preview": crate::tool::helpers::truncate_text(report_text, 600),
+                        "warnings": warnings.clone(),
+                        "warning_count": warnings.len(),
+                        "brief_id": brief.id.clone(),
+                    }),
+                ),
+            )
+            .await?
+        else {
+            let latest = self.validate_owned_work_item(&self.agent_id().await?, &work_item_id)?;
+            return Ok(WorkItemCompletionReportPromotionOutcome::Unchanged(latest));
+        };
+        Ok(WorkItemCompletionReportPromotionOutcome::Promoted(
+            WorkItemCompletionReportPromotion {
+                record: completed.work_item,
+                brief_id: brief.id,
+                continuation_resumed: completed.continuation_resumed,
+            },
+        ))
+    }
+
     pub(super) async fn promote_work_item_completion_report_with_metadata(
         &self,
         work_item_id: String,
@@ -3175,6 +3284,32 @@ impl RuntimeHandle {
         brief: &BriefRecord,
         binding_event: AuditEvent,
     ) -> Result<Option<CompletedWorkItem>> {
+        self.finalize_work_item_completion_with_brief_mode(
+            work_item_id,
+            brief,
+            binding_event,
+            false,
+        )
+        .await
+    }
+
+    async fn finalize_open_work_item_completion_with_brief(
+        &self,
+        work_item_id: &str,
+        brief: &BriefRecord,
+        binding_event: AuditEvent,
+    ) -> Result<Option<CompletedWorkItem>> {
+        self.finalize_work_item_completion_with_brief_mode(work_item_id, brief, binding_event, true)
+            .await
+    }
+
+    async fn finalize_work_item_completion_with_brief_mode(
+        &self,
+        work_item_id: &str,
+        brief: &BriefRecord,
+        binding_event: AuditEvent,
+        require_open: bool,
+    ) -> Result<Option<CompletedWorkItem>> {
         const MAX_ATTEMPTS: usize = 8;
 
         for attempt in 0..MAX_ATTEMPTS {
@@ -3183,27 +3318,60 @@ impl RuntimeHandle {
             if existing.state == WorkItemState::Completed {
                 return Ok(None);
             }
-            if existing.state != WorkItemState::Completing {
+            let expected_state = if require_open {
+                WorkItemState::Open
+            } else {
+                WorkItemState::Completing
+            };
+            if existing.state != expected_state {
                 return Err(anyhow!(
-                    "cannot finalize completion report for non-completing work item {}",
-                    work_item_id
+                    "cannot finalize completion report for work item {} in state {:?}; expected {:?}",
+                    work_item_id,
+                    existing.state,
+                    expected_state,
                 ));
             }
-            let mut completion_intent = existing
-                .completion_intent
-                .clone()
-                .ok_or_else(|| anyhow!("completion brief binding requires a completion intent"))?;
-            if completion_intent.work_item_id != existing.id
-                || completion_intent.source_turn_id != brief.turn_id
-                || completion_intent.source_message_id != brief.related_message_id
-            {
-                return Err(anyhow!(
-                    "completion brief identity does not match work item {} intent",
-                    work_item_id
-                ));
-            }
-
             let now = Utc::now();
+            let mut state = self.agent_state().await?;
+            let expected_agent_state = state.clone();
+            let matching_execution_binding =
+                state.current_execution_binding.as_ref().filter(|binding| {
+                    binding.work_item_id.as_deref() == Some(existing.id.as_str())
+                        && Some(binding.turn_id.as_str()) == brief.turn_id.as_deref()
+                        && Some(binding.source_message_id.as_str())
+                            == brief.related_message_id.as_deref()
+                });
+            let mut completion_intent = if require_open {
+                WorkItemCompletionIntent {
+                    work_item_id: existing.id.clone(),
+                    source_activation_id: matching_execution_binding
+                        .and_then(|binding| binding.activation_id.clone()),
+                    source_message_id: brief.related_message_id.clone(),
+                    source_turn_id: brief.turn_id.clone(),
+                    expected_work_revision: matching_execution_binding
+                        .and_then(|binding| binding.claimed_work_revision)
+                        .unwrap_or(existing.revision),
+                    report_requirement: CompletionReportRequirement::Required,
+                    report_state: CompletionReportState::Pending,
+                    result_brief_id: None,
+                    created_at: now,
+                    updated_at: now,
+                }
+            } else {
+                let intent = existing.completion_intent.clone().ok_or_else(|| {
+                    anyhow!("completion brief binding requires a completion intent")
+                })?;
+                if intent.work_item_id != existing.id
+                    || intent.source_turn_id != brief.turn_id
+                    || intent.source_message_id != brief.related_message_id
+                {
+                    return Err(anyhow!(
+                        "completion brief identity does not match work item {} intent",
+                        work_item_id
+                    ));
+                }
+                intent
+            };
             completion_intent.report_state = CompletionReportState::Bound;
             completion_intent.result_brief_id = Some(brief.id.clone());
             completion_intent.updated_at = now;
@@ -3241,8 +3409,6 @@ impl RuntimeHandle {
                 wait_conditions.push(cancelled);
             }
 
-            let mut state = self.agent_state().await?;
-            let expected_state = state.clone();
             state.last_brief_at = Some(brief.created_at);
             let release_current = state.current_work_item_id.as_deref() == Some(record.id.as_str());
             let release_turn =
@@ -3372,7 +3538,7 @@ impl RuntimeHandle {
                     wait_conditions,
                     continuations: continuation_records,
                     agent_state: crate::runtime_db::transitions::AgentStateMutation {
-                        expected: Some(Box::new(expected_state)),
+                        expected: Some(Box::new(expected_agent_state)),
                         record: Box::new(state),
                     },
                     brief_evidence: vec![brief.clone()],

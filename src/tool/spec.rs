@@ -34,6 +34,22 @@ pub struct ToolCall {
     pub input: Value,
 }
 
+#[derive(Debug, Clone)]
+pub struct CompletionReportCandidate {
+    pub text: String,
+    pub source_turn_index: u64,
+    pub source_round: usize,
+    pub source_turn_id: Option<String>,
+    pub source_message_id: Option<String>,
+    pub source_assistant_round_id: String,
+    pub source_tool_call_id: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ToolExecutionContext {
+    pub completion_report_candidate: Option<CompletionReportCandidate>,
+}
+
 /// Result from executing a tool.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResult {

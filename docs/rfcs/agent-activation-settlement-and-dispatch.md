@@ -1185,9 +1185,15 @@ The target write set atomically commits:
 - queue settlement; and
 - audit/outbox facts.
 
-If implementation needs an internal `Completing` intent to stage the report,
-that state is canonical and recoverable. The public lifecycle does not need to
-expose it initially.
+The normal completion path must not persist an intermediate `Completing`
+lifecycle. Once the runtime has the complete assistant round, it already has
+the target, report candidate, provenance, execution binding, and expected
+revisions needed for one atomic `Open -> Completed` command. A missing or empty
+report candidate rejects the command without releasing focus, cancelling waits,
+or changing the WorkItem.
+
+Legacy `Completing` records remain recoverable through the control completion
+API, but new agent-tool completion commands do not create that state.
 
 ## Required Invariants
 
@@ -1700,7 +1706,7 @@ overhead without weakening correctness gates.
 The protocol deliberately defers:
 
 - whether interaction affinity becomes a separate persisted record initially;
-- whether public WorkItem lifecycle exposes `Completing` or `Failed`;
+- whether public WorkItem lifecycle exposes `Failed`;
 - final configuration key spelling and storage representation, but not the
   rollout manifest fields, authority states, or transition preconditions;
 - multi-agent assignment policy;

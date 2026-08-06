@@ -2098,7 +2098,211 @@ async fn complete_work_item_promotes_same_round_report_and_binds_evidence() {
 }
 
 #[tokio::test]
-async fn later_final_report_binds_completed_work_item_after_continuation_resume() {
+async fn atomic_completion_rolls_back_all_effects_on_transition_failure() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item("complete atomically".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(work_item.id.clone()).await.unwrap();
+    let before = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let state_before = runtime.agent_state().await.unwrap();
+    let result_brief_ids_before = runtime
+        .recent_briefs(100)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|brief| {
+            brief.kind == BriefKind::Result
+                && brief.work_item_id.as_deref() == Some(work_item.id.as_str())
+        })
+        .map(|brief| brief.id)
+        .collect::<Vec<_>>();
+
+    runtime.inject_next_transition_fault(
+        crate::runtime_db::transitions::TransitionFaultPoint::AfterCanonicalWrites,
+    );
+    let error = runtime
+        .complete_work_item_with_report(
+            work_item.id.clone(),
+            "Atomic completion report".into(),
+            Some(1),
+            Some(1),
+            Some("turn-atomic-completion".into()),
+            Some("message-atomic-completion".into()),
+            Some("assistant-round-atomic-completion".into()),
+            Some("tool-call-atomic-completion".into()),
+            Vec::new(),
+        )
+        .await
+        .expect_err("injected transition fault should fail completion");
+    assert_injected_transition_fault(&error);
+
+    let after = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after, before);
+    assert_eq!(runtime.agent_state().await.unwrap(), state_before);
+    let result_brief_ids_after = runtime
+        .recent_briefs(100)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|brief| {
+            brief.kind == BriefKind::Result
+                && brief.work_item_id.as_deref() == Some(work_item.id.as_str())
+        })
+        .map(|brief| brief.id)
+        .collect::<Vec<_>>();
+    assert_eq!(result_brief_ids_after, result_brief_ids_before);
+}
+
+#[tokio::test]
+async fn lifecycle_execution_can_complete_without_borrowing_work_item_authority() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item(
+            "complete from lifecycle execution".into(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.current_execution_binding = Some(WorkItemExecutionBinding {
+            activation_id: Some("activation-lifecycle".into()),
+            admission_provenance: None,
+            source_message_id: "message-lifecycle".into(),
+            turn_id: "turn-lifecycle".into(),
+            work_item_id: None,
+            claimed_work_revision: None,
+        });
+        guard.persist_state(&runtime.inner.storage).unwrap();
+    }
+
+    let completed = runtime
+        .complete_work_item_with_report(
+            work_item.id.clone(),
+            "Lifecycle completion report".into(),
+            Some(4),
+            Some(2),
+            Some("turn-lifecycle".into()),
+            Some("message-lifecycle".into()),
+            Some("assistant-round-lifecycle".into()),
+            Some("tool-call-lifecycle".into()),
+            Vec::new(),
+        )
+        .await
+        .unwrap()
+        .into_record();
+    assert_eq!(completed.state, WorkItemState::Completed);
+    let intent = completed.completion_intent.expect("completion intent");
+    assert_eq!(intent.source_activation_id, None);
+    assert_eq!(
+        intent.source_message_id.as_deref(),
+        Some("message-lifecycle")
+    );
+    assert_eq!(intent.source_turn_id.as_deref(), Some("turn-lifecycle"));
+    assert_eq!(intent.expected_work_revision, work_item.revision);
+}
+
+#[tokio::test]
+async fn work_item_execution_cannot_complete_an_unrelated_work_item() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let active = runtime
+        .create_work_item("active execution".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let unrelated = runtime
+        .create_work_item("unrelated completion target".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.current_execution_binding = Some(WorkItemExecutionBinding {
+            activation_id: Some("activation-active".into()),
+            admission_provenance: None,
+            source_message_id: "message-active".into(),
+            turn_id: "turn-active".into(),
+            work_item_id: Some(active.id.clone()),
+            claimed_work_revision: Some(active.revision),
+        });
+        guard.persist_state(&runtime.inner.storage).unwrap();
+    }
+
+    let error = runtime
+        .complete_work_item_with_report(
+            unrelated.id.clone(),
+            "Must be rejected".into(),
+            Some(1),
+            Some(1),
+            Some("turn-active".into()),
+            Some("message-active".into()),
+            Some("assistant-round-active".into()),
+            Some("tool-call-active".into()),
+            Vec::new(),
+        )
+        .await
+        .expect_err("unrelated WorkItem completion should fail closed");
+    assert_eq!(
+        error
+            .downcast_ref::<crate::runtime_error::RuntimeError>()
+            .map(|error| error.descriptor().code.as_str()),
+        Some("work_item_execution_binding_mismatch")
+    );
+    let unchanged = runtime
+        .latest_work_item(&unrelated.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(unchanged.state, WorkItemState::Open);
+    assert!(unchanged.completion_intent.is_none());
+    assert!(unchanged.result_brief_id.is_none());
+}
+
+#[tokio::test]
+async fn later_final_report_does_not_complete_after_missing_same_round_report() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let seed_runtime = RuntimeHandle::new(
@@ -2175,55 +2379,31 @@ async fn later_final_report_binds_completed_work_item_after_continuation_resume(
         .await
         .unwrap();
 
-    let completed = runtime
+    let incomplete = runtime
         .latest_work_item(&completed_work.id)
         .await
         .unwrap()
         .unwrap();
-    let result_brief_id = completed
-        .result_brief_id
-        .as_deref()
-        .expect("later final report should bind the completed work item");
-    let result_brief = runtime
-        .storage()
-        .read_brief_by_id(result_brief_id)
-        .unwrap()
-        .expect("bound later final report should exist");
-    assert_eq!(result_brief.text, "done");
-    assert_eq!(
-        result_brief.work_item_id.as_deref(),
-        Some(completed_work.id.as_str())
-    );
-    assert_eq!(
-        result_brief.related_message_id.as_deref(),
-        Some(message.id.as_str())
-    );
-    let completion_intent = completed
-        .completion_intent
-        .as_ref()
-        .expect("completion intent should remain durable");
-    assert_eq!(completion_intent.report_state, CompletionReportState::Bound);
-    assert_eq!(
-        completion_intent.result_brief_id.as_deref(),
-        Some(result_brief_id)
-    );
+    assert_eq!(incomplete.state, WorkItemState::Open);
+    assert!(incomplete.result_brief_id.is_none());
+    assert!(incomplete.completion_intent.is_none());
     let state = runtime.agent_state().await.unwrap();
     assert_eq!(
         state.current_work_item_id.as_deref(),
-        Some(caller.id.as_str())
+        Some(completed_work.id.as_str())
     );
     assert_eq!(
         state.current_turn_work_item_id.as_deref(),
-        Some(caller.id.as_str())
+        Some(completed_work.id.as_str())
     );
+    let continuations = runtime.storage().latest_work_item_continuations().unwrap();
     assert!(
-        runtime
-            .recent_briefs(10)
-            .await
-            .unwrap()
-            .iter()
-            .all(|brief| brief.work_item_id.as_deref() != Some(caller.id.as_str())),
-        "completed child final report must not be rebound to resumed caller"
+        continuations.iter().any(|frame| {
+            frame.suspended_work_item_id == caller.id
+                && frame.active_work_item_id == completed_work.id
+                && frame.state == WorkItemContinuationState::Active
+        }),
+        "failed completion must preserve the active continuation"
     );
 
     let restarted = RuntimeHandle::new(
@@ -2236,19 +2416,14 @@ async fn later_final_report_binds_completed_work_item_after_continuation_resume(
         context_config(),
     )
     .unwrap();
-    let restarted_completed = restarted
+    let restarted_incomplete = restarted
         .latest_work_item(&completed_work.id)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(
-        restarted_completed.result_brief_id,
-        completed.result_brief_id
-    );
-    assert_eq!(
-        restarted_completed.completion_intent,
-        completed.completion_intent
-    );
+    assert_eq!(restarted_incomplete.state, WorkItemState::Open);
+    assert!(restarted_incomplete.result_brief_id.is_none());
+    assert!(restarted_incomplete.completion_intent.is_none());
 }
 
 #[tokio::test]
@@ -2490,7 +2665,7 @@ async fn complete_work_item_followed_by_same_round_tool_keeps_terminal_brief() {
 }
 
 #[tokio::test]
-async fn complete_work_item_does_not_promote_text_before_other_tool() {
+async fn complete_work_item_rejects_text_before_other_tool() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let seed_runtime = RuntimeHandle::new(
@@ -2548,13 +2723,22 @@ async fn complete_work_item_does_not_promote_text_before_other_tool() {
         .await
         .unwrap();
 
-    let completed = runtime
+    let incomplete = runtime
         .latest_work_item(&work_item.id)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(completed.state, WorkItemState::Completed);
-    assert_eq!(completed.result_summary, None);
+    assert_eq!(incomplete.state, WorkItemState::Open);
+    assert_eq!(incomplete.result_summary, None);
+    assert_eq!(
+        runtime
+            .agent_state()
+            .await
+            .unwrap()
+            .current_work_item_id
+            .as_deref(),
+        Some(work_item.id.as_str())
+    );
     assert!(runtime
         .storage()
         .latest_delivery_summary(&work_item.id)
@@ -2583,8 +2767,8 @@ async fn complete_work_item_does_not_promote_text_before_other_tool() {
         .expect("provider_visible_text");
     let content_json: serde_json::Value = serde_json::from_str(content).unwrap();
     assert_eq!(
-        content_json["result"]["completion_report_promoted"].as_bool(),
-        None
+        content_json["kind"].as_str(),
+        Some("missing_completion_report")
     );
 }
 
@@ -2668,7 +2852,7 @@ async fn promoted_completion_report_resumes_next_queued_work_item_via_system_tic
 }
 
 #[tokio::test]
-async fn complete_work_item_without_same_round_report_warns_without_summary() {
+async fn complete_work_item_without_same_round_report_fails_without_mutation() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let seed_runtime = RuntimeHandle::new(
@@ -2726,13 +2910,24 @@ async fn complete_work_item_without_same_round_report_warns_without_summary() {
         )
         .await
         .unwrap();
-    let completed = runtime
+    let incomplete = runtime
         .latest_work_item(&work_item.id)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(completed.state, WorkItemState::Completing);
-    assert_eq!(completed.result_summary, None);
+    assert_eq!(incomplete.state, WorkItemState::Open);
+    assert_eq!(incomplete.result_summary, None);
+    assert!(incomplete.completion_intent.is_none());
+    assert!(incomplete.result_brief_id.is_none());
+    assert_eq!(
+        runtime
+            .agent_state()
+            .await
+            .unwrap()
+            .current_work_item_id
+            .as_deref(),
+        Some(work_item.id.as_str())
+    );
     assert!(runtime
         .storage()
         .latest_delivery_summary(&work_item.id)
@@ -2755,14 +2950,17 @@ async fn complete_work_item_without_same_round_report_warns_without_summary() {
         .expect("provider_visible_text");
     let tool_result: serde_json::Value = serde_json::from_str(content).unwrap();
     assert_eq!(
-        tool_result["result"]["warnings"][0]["kind"].as_str(),
+        tool_result["kind"].as_str(),
         Some("missing_completion_report")
     );
     let events = runtime.storage().read_recent_events(20).unwrap();
-    assert!(events.iter().any(|event| {
-        event.kind == "work_item_completion_warning"
-            && event.data["kind"].as_str() == Some("missing_completion_report")
-            && event.data["work_item_id"].as_str() == Some(work_item.id.as_str())
+    assert!(events.iter().all(|event| {
+        event.kind != "work_item_completion_warning"
+            && !(event.kind == "work_item_written"
+                && matches!(
+                    event.data["action"].as_str(),
+                    Some("completing" | "completed")
+                ))
     }));
 }
 
@@ -3130,7 +3328,7 @@ async fn complete_work_item_with_unfinished_todos_returns_structured_warning() {
 
     let registry = crate::tool::ToolRegistry::new(runtime.workspace_root());
     let (result, _) = registry
-        .execute(
+        .execute_with_context(
             &runtime,
             "default",
             &AuthorityClass::OperatorInstruction,
@@ -3138,6 +3336,17 @@ async fn complete_work_item_with_unfinished_todos_returns_structured_warning() {
                 id: "complete".into(),
                 name: "CompleteWorkItem".into(),
                 input: serde_json::json!({"work_item_id": work_item.id}),
+            },
+            &crate::tool::spec::ToolExecutionContext {
+                completion_report_candidate: Some(crate::tool::spec::CompletionReportCandidate {
+                    text: "Completed with unfinished todos.".into(),
+                    source_turn_index: 1,
+                    source_round: 1,
+                    source_turn_id: None,
+                    source_message_id: None,
+                    source_assistant_round_id: "assistant-round-complete".into(),
+                    source_tool_call_id: "complete".into(),
+                }),
             },
         )
         .await
@@ -3153,19 +3362,17 @@ async fn complete_work_item_with_unfinished_todos_returns_structured_warning() {
         Some(1)
     );
     let events = runtime.storage().read_recent_events(20).unwrap();
-    let completing_event = events
+    let completed_event = events
         .iter()
         .find(|event| {
-            event.kind == "work_item_written" && event.data["action"].as_str() == Some("completing")
+            event.kind == "work_item_written" && event.data["action"].as_str() == Some("completed")
         })
-        .expect("completion intent event should be recorded");
+        .expect("completed event should be recorded");
     assert_eq!(
-        completing_event.data["work_item_id"].as_str(),
+        completed_event.data["work_item_id"].as_str(),
         Some(work_item.id.as_str())
     );
-    assert_eq!(completing_event.data["warning_count"].as_u64(), Some(1));
-    assert!(completing_event.data.get("warnings").is_none());
-    assert!(completing_event.data.get("record").is_none());
+    assert!(completed_event.data.get("record").is_none());
 }
 
 #[tokio::test]
