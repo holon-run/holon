@@ -114,6 +114,11 @@ struct QueueCandidate {
     queue_len: usize,
 }
 
+enum PrepareMessageOutcome {
+    Poll(RunLoopPoll),
+    Replan,
+}
+
 impl RuntimeHandle {
     pub(super) fn legacy_execution_admission_provenance(
         &self,
@@ -330,42 +335,64 @@ impl<'a> SchedulerDecisionExecutor<'a> {
 
     pub(super) async fn poll(&self) -> Result<RunLoopPoll> {
         let started_at = std::time::Instant::now();
-        let candidate = {
-            let guard = self.runtime.inner.agent.lock().await;
-            if self.runtime.inner.shutdown_requested.load(Ordering::SeqCst) {
-                let poll = self.shutdown(guard)?;
-                crate::diagnostics::record_scheduler_poll(
-                    poll.outcome_name(),
-                    started_at.elapsed(),
-                );
-                return Ok(poll);
-            }
-            if guard.state.status == AgentStatus::Stopped {
-                let poll = RunLoopPoll::Stopped(guard.state.clone(), guard.queue.len());
-                crate::diagnostics::record_scheduler_poll(
-                    poll.outcome_name(),
-                    started_at.elapsed(),
-                );
-                return Ok(poll);
-            }
-            let Some(message) = guard.queue.peek().cloned() else {
-                let poll = RunLoopPoll::Idle;
-                crate::diagnostics::record_scheduler_poll(
-                    poll.outcome_name(),
-                    started_at.elapsed(),
-                );
-                return Ok(poll);
+        let mut replans = 0;
+        loop {
+            let candidate = {
+                let guard = self.runtime.inner.agent.lock().await;
+                if self.runtime.inner.shutdown_requested.load(Ordering::SeqCst) {
+                    let poll = self.shutdown(guard)?;
+                    crate::diagnostics::record_scheduler_poll(
+                        poll.outcome_name(),
+                        started_at.elapsed(),
+                    );
+                    return Ok(poll);
+                }
+                if guard.state.status == AgentStatus::Stopped {
+                    let poll = RunLoopPoll::Stopped(guard.state.clone(), guard.queue.len());
+                    crate::diagnostics::record_scheduler_poll(
+                        poll.outcome_name(),
+                        started_at.elapsed(),
+                    );
+                    return Ok(poll);
+                }
+                let Some(message) = guard.queue.peek().cloned() else {
+                    let poll = RunLoopPoll::Idle;
+                    crate::diagnostics::record_scheduler_poll(
+                        poll.outcome_name(),
+                        started_at.elapsed(),
+                    );
+                    return Ok(poll);
+                };
+                QueueCandidate {
+                    message,
+                    prior_state: guard.state.clone(),
+                    queue_len: guard.queue.len(),
+                }
             };
-            QueueCandidate {
-                message,
-                prior_state: guard.state.clone(),
-                queue_len: guard.queue.len(),
-            }
-        };
 
-        let poll = self.prepare_message(candidate).await?;
-        crate::diagnostics::record_scheduler_poll(poll.outcome_name(), started_at.elapsed());
-        Ok(poll)
+            match self.prepare_message(candidate).await? {
+                PrepareMessageOutcome::Poll(poll) => {
+                    crate::diagnostics::record_scheduler_poll(
+                        poll.outcome_name(),
+                        started_at.elapsed(),
+                    );
+                    return Ok(poll);
+                }
+                PrepareMessageOutcome::Replan
+                    if replans + 1 < super::ENQUEUE_AGENT_STATE_MAX_ATTEMPTS =>
+                {
+                    replans += 1;
+                }
+                PrepareMessageOutcome::Replan => {
+                    let poll = RunLoopPoll::AuthorityBlocked;
+                    crate::diagnostics::record_scheduler_poll(
+                        poll.outcome_name(),
+                        started_at.elapsed(),
+                    );
+                    return Ok(poll);
+                }
+            }
+        }
     }
 
     fn shutdown(
@@ -377,7 +404,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         Ok(RunLoopPoll::Shutdown)
     }
 
-    async fn prepare_message(&self, candidate: QueueCandidate) -> Result<RunLoopPoll> {
+    async fn prepare_message(&self, candidate: QueueCandidate) -> Result<PrepareMessageOutcome> {
         let prior_closure = self
             .runtime
             .closure_decision_for_state(&candidate.prior_state, None)
@@ -437,7 +464,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     .await?;
                     // Terminalization notifies the scheduler, so the next poll can
                     // advance past the rejected queue head in the same session.
-                    return Ok(RunLoopPoll::Idle);
+                    return Ok(PrepareMessageOutcome::Poll(RunLoopPoll::Idle));
                 }
                 Ok(CanonicalClaimOutcome::RetainQueued {
                     scenario_class,
@@ -456,11 +483,11 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                                 "queue_disposition": "retained_queued",
                             }),
                         ))?;
-                    return Ok(RunLoopPoll::AuthorityBlocked);
+                    return Ok(PrepareMessageOutcome::Poll(RunLoopPoll::AuthorityBlocked));
                 }
                 Ok(CanonicalClaimOutcome::HardBlocker(blocker)) => {
                     self.report_canonical_claim_hard_blocker(&persisted_message, blocker)?;
-                    return Ok(RunLoopPoll::AuthorityBlocked);
+                    return Ok(PrepareMessageOutcome::Poll(RunLoopPoll::AuthorityBlocked));
                 }
                 Err(error) => {
                     if let Some(ambiguous) =
@@ -476,7 +503,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                             &candidate.prior_state,
                             candidate.queue_len,
                         )?;
-                        return Ok(RunLoopPoll::AuthorityBlocked);
+                        return Ok(PrepareMessageOutcome::Poll(RunLoopPoll::AuthorityBlocked));
                     }
                     return Err(error);
                 }
@@ -512,6 +539,10 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             &candidate.prior_state,
             candidate.queue_len,
         )?;
+        #[cfg(test)]
+        self.runtime
+            .apply_claim_work_item_plan_status_before_commit()
+            .await?;
 
         let (message, running_state, transition_commit) = {
             let queue_record = QueueEntryRecord {
@@ -545,17 +576,20 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 }
                 let mut guard = self.runtime.inner.agent.lock().await;
                 if self.runtime.inner.shutdown_requested.load(Ordering::SeqCst) {
-                    return self.shutdown(guard);
+                    return Ok(PrepareMessageOutcome::Poll(self.shutdown(guard)?));
                 }
                 if matches!(guard.state.status, AgentStatus::Stopped) {
-                    return Ok(RunLoopPoll::Stopped(guard.state.clone(), guard.queue.len()));
+                    return Ok(PrepareMessageOutcome::Poll(RunLoopPoll::Stopped(
+                        guard.state.clone(),
+                        guard.queue.len(),
+                    )));
                 }
                 if !guard
                     .queue
                     .peek()
                     .is_some_and(|message| message.id == candidate.message.id)
                 {
-                    return Ok(RunLoopPoll::Idle);
+                    return Ok(PrepareMessageOutcome::Poll(RunLoopPoll::Idle));
                 }
                 let mut running_state = guard.state.clone();
                 running_state.pending = guard.queue.len().saturating_sub(1);
@@ -624,6 +658,10 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 let mut commit = match commit_result {
                     Ok(commit) => commit,
                     Err(error) => {
+                        if scheduler_work_item_claim_conflict(&error) {
+                            drop(guard);
+                            return Ok(PrepareMessageOutcome::Replan);
+                        }
                         let can_retry = attempt + 1 < super::ENQUEUE_AGENT_STATE_MAX_ATTEMPTS
                             && super::retryable_enqueue_conflict(&error, &agent_id);
                         if !can_retry {
@@ -645,13 +683,13 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     commit.effects.agent_state = None;
                     drop(guard);
                     self.runtime.apply_transition_commit(commit).await;
-                    return Ok(RunLoopPoll::AuthorityBlocked);
+                    return Ok(PrepareMessageOutcome::Poll(RunLoopPoll::AuthorityBlocked));
                 }
                 if !commit.applied {
                     let _ = guard.queue.pop_if_next(&candidate.message.id);
                     guard.state.pending = guard.queue.len();
                     guard.persist_state(&self.runtime.inner.storage)?;
-                    return Ok(RunLoopPoll::Idle);
+                    return Ok(PrepareMessageOutcome::Poll(RunLoopPoll::Idle));
                 }
                 let queued_message = guard
                     .queue
@@ -673,12 +711,14 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             .apply_transition_commit(transition_commit)
             .await;
 
-        Ok(RunLoopPoll::Message(ScheduledMessage {
-            message,
-            running_state,
-            dispatch_plan,
-            scheduler_decision: effective_decision,
-        }))
+        Ok(PrepareMessageOutcome::Poll(RunLoopPoll::Message(
+            ScheduledMessage {
+                message,
+                running_state,
+                dispatch_plan,
+                scheduler_decision: effective_decision,
+            },
+        )))
     }
 
     fn provably_stale_correlated_wait(
@@ -1032,11 +1072,17 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         if matches!(
             scenario,
             scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation { .. }
+                | scheduler::CanonicalActivationScenario::InternalFollowup { .. }
         ) && work_projection.scheduling_state != crate::types::WorkItemSchedulingState::Runnable
         {
             return Ok(CanonicalClaimOutcome::RejectQueued {
                 scenario_class,
-                reason: "canonical_autonomous_work_item_not_runnable",
+                reason: match scenario {
+                    scheduler::CanonicalActivationScenario::InternalFollowup { .. } => {
+                        "canonical_internal_followup_work_item_not_runnable"
+                    }
+                    _ => "canonical_autonomous_work_item_not_runnable",
+                },
             });
         }
 
@@ -1562,6 +1608,16 @@ impl<'a> SchedulerDecisionExecutor<'a> {
 
 pub(super) fn canonical_activation_id(message_id: &str) -> String {
     format!("activation:message:{message_id}")
+}
+
+fn scheduler_work_item_claim_conflict(error: &anyhow::Error) -> bool {
+    error.chain().any(|source| {
+        source
+            .downcast_ref::<RuntimeStateTransitionConflict>()
+            .is_some_and(|conflict| {
+                conflict.retryable() && conflict.domain() == "scheduler_claim_work_item"
+            })
+    })
 }
 
 fn align_execution_claim_with_wait_transition(

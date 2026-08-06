@@ -8022,6 +8022,215 @@ async fn enqueue_inherits_current_work_item_and_preserves_canonical_provenance()
 }
 
 #[tokio::test]
+async fn stale_bound_internal_followup_is_dropped_before_operator_resume() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item(
+            "stale bound follow-up".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let mut followup = MessageEnvelope::new(
+        "default",
+        MessageKind::InternalFollowup,
+        MessageOrigin::System {
+            subsystem: "tool_enqueue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Next,
+        MessageBody::Text {
+            text: "continue stale work".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+    followup.work_item_id = Some(work_item.id.clone());
+    let followup = runtime.enqueue(followup).await.unwrap();
+    runtime
+        .update_work_item_fields(
+            work_item.id.clone(),
+            None,
+            Some(WorkItemPlanStatus::NeedsInput),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let operator = runtime
+        .enqueue(trusted_operator_prompt(
+            Some(&work_item.id),
+            "resume with new operator input",
+        ))
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Idle
+    ));
+    assert_eq!(
+        runtime
+            .storage()
+            .latest_queue_entries()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == followup.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Dropped)
+    );
+    assert!(runtime
+        .storage()
+        .read_recent_events(usize::MAX)
+        .unwrap()
+        .iter()
+        .any(|event| {
+            event.kind == "scheduler_authority_input_rejected"
+                && event.data["message_id"] == followup.id
+                && event.data["reason"] == "canonical_internal_followup_work_item_not_runnable"
+                && event.data["queue_disposition"] == "dropped"
+        }));
+
+    drop(runtime);
+    let reopened = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&reopened)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("new operator input should advance after the stale follow-up");
+    };
+    assert_eq!(scheduled.message.id, operator.id);
+}
+
+#[tokio::test]
+async fn claim_time_work_item_change_replans_and_drops_stale_internal_followup() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item(
+            "claim race follow-up".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let mut followup = MessageEnvelope::new(
+        "default",
+        MessageKind::InternalFollowup,
+        MessageOrigin::System {
+            subsystem: "tool_enqueue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Next,
+        MessageBody::Text {
+            text: "race with needs input".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+    followup.work_item_id = Some(work_item.id.clone());
+    let followup = runtime.enqueue(followup).await.unwrap();
+    let operator = runtime
+        .enqueue(trusted_operator_prompt(
+            Some(&work_item.id),
+            "continue after claim race",
+        ))
+        .await
+        .unwrap();
+    runtime.inject_claim_work_item_plan_status_before_commit(
+        work_item.id.clone(),
+        WorkItemPlanStatus::NeedsInput,
+    );
+
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Idle
+    ));
+    assert_eq!(
+        runtime
+            .latest_work_item(&work_item.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .plan_status,
+        WorkItemPlanStatus::NeedsInput
+    );
+    assert_eq!(
+        runtime
+            .storage()
+            .latest_queue_entries()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == followup.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Dropped)
+    );
+
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("operator input behind claim-race follow-up should remain runnable");
+    };
+    assert_eq!(scheduled.message.id, operator.id);
+}
+
+#[tokio::test]
 async fn enqueue_does_not_bind_to_focus_without_current_turn_ownership() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();

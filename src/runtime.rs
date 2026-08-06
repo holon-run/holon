@@ -300,6 +300,9 @@ struct RuntimeInner {
     task_transition_conflicts_remaining: AtomicUsize,
     #[cfg(test)]
     fail_after_next_runtime_claim: AtomicBool,
+    #[cfg(test)]
+    claim_work_item_plan_status_before_commit:
+        StdMutex<Option<(String, crate::types::WorkItemPlanStatus)>>,
     transition_warnings: StdMutex<Vec<PostCommitWarning>>,
 }
 
@@ -2574,6 +2577,39 @@ impl RuntimeHandle {
             .fail_after_next_runtime_claim
             .store(true, Ordering::SeqCst);
         self.inner.notify.notify_one();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_claim_work_item_plan_status_before_commit(
+        &self,
+        work_item_id: String,
+        plan_status: crate::types::WorkItemPlanStatus,
+    ) {
+        let mut injected = self
+            .inner
+            .claim_work_item_plan_status_before_commit
+            .lock()
+            .expect("claim WorkItem mutation lock poisoned");
+        assert!(
+            injected.replace((work_item_id, plan_status)).is_none(),
+            "a claim WorkItem mutation is already armed"
+        );
+    }
+
+    #[cfg(test)]
+    async fn apply_claim_work_item_plan_status_before_commit(&self) -> Result<()> {
+        let injected = self
+            .inner
+            .claim_work_item_plan_status_before_commit
+            .lock()
+            .expect("claim WorkItem mutation lock poisoned")
+            .take();
+        let Some((work_item_id, plan_status)) = injected else {
+            return Ok(());
+        };
+        self.update_work_item_fields(work_item_id, None, Some(plan_status), None, None, None)
+            .await?;
+        Ok(())
     }
 
     pub(super) fn take_transition_warnings(&self) -> Vec<PostCommitWarning> {

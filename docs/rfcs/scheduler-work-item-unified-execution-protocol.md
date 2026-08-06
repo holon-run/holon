@@ -334,6 +334,16 @@ even when historical wait correlation is absent or stale. Contentful external
 input keeps its original ingress trust but loses stale correlation; a
 wait-trigger-only envelope is dropped as a whole.
 
+A WorkItem-bound internal follow-up is eligible only while its exact WorkItem
+owner is runnable. If the WorkItem becomes waiting, paused, completing, or
+otherwise non-runnable before admission, the queued follow-up is stale and is
+terminally dropped with audit evidence. New operator input may independently
+resume a `needs_input` WorkItem, but it does not revive or replay an older
+follow-up. A WorkItem snapshot conflict at atomic queue claim discards the
+entire prepared claim and rebuilds the candidate from current durable facts;
+the runtime never retries the old execution plan against a refreshed partial
+baseline.
+
 ## Persistence And Compatibility
 
 The runtime database remains the transactional store. The target normalized
