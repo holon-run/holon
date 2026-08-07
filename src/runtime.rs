@@ -4967,12 +4967,14 @@ impl RuntimeHandle {
     fn complete_bootstrap(&self, result: &Result<()>) {
         *self.inner.bootstrap_result.lock().unwrap() =
             Some(result.as_ref().map(|_| ()).map_err(ToString::to_string));
-        self.inner.bootstrap_notify.notify_one();
+        self.inner.bootstrap_notify.notify_waiters();
     }
 
     pub(crate) async fn wait_for_bootstrap(&self) -> Result<()> {
         loop {
             let notified = self.inner.bootstrap_notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             if let Some(result) = self.inner.bootstrap_result.lock().unwrap().clone() {
                 return result.map_err(|error| anyhow!("runtime bootstrap failed: {error}"));
             }

@@ -4278,12 +4278,20 @@ async fn terminal_task_result_without_work_item_uses_non_reentrant_dispatch() {
         .poll()
         .await
         .unwrap();
-    assert!(matches!(
-        poll,
-        scheduler_executor::RunLoopPoll::Message(ref scheduled)
-            if scheduled.scheduler_decision.kind
-                == scheduler::SchedulerDecisionKind::ReduceMessageOnly
-    ));
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("unbound terminal TaskResult should be reduced as the queued message");
+    };
+    assert_eq!(scheduled.message.id, message.id);
+    assert_eq!(
+        scheduled.scheduler_decision.kind,
+        scheduler::SchedulerDecisionKind::ReduceMessageOnly
+    );
+    assert!(!scheduled.scheduler_decision.model_reentry);
+    assert!(scheduled
+        .dispatch_plan
+        .continuation_resolution
+        .as_ref()
+        .is_none_or(|resolution| !resolution.model_reentry));
     assert_eq!(
         runtime
             .inner
@@ -4303,6 +4311,43 @@ async fn terminal_task_result_without_work_item_uses_non_reentrant_dispatch() {
         .load_scheduler_protocol_snapshot_if_initialized("default")
         .unwrap()
         .is_none());
+}
+
+#[tokio::test]
+async fn bootstrap_completion_releases_all_waiters() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let first = {
+        let runtime = runtime.clone();
+        tokio::spawn(async move { runtime.wait_for_bootstrap().await })
+    };
+    let second = {
+        let runtime = runtime.clone();
+        tokio::spawn(async move { runtime.wait_for_bootstrap().await })
+    };
+
+    tokio::task::yield_now().await;
+    runtime.complete_bootstrap(&Ok(()));
+
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        first.await.unwrap().unwrap();
+        second.await.unwrap().unwrap();
+    })
+    .await
+    .expect("all bootstrap waiters should observe the durable result");
 }
 
 #[tokio::test]
