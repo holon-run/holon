@@ -2075,6 +2075,55 @@ class DockerE2ERunnerTests(unittest.TestCase):
             source.index('harness.runtime_db_snapshot("scheduler-external")'),
         )
 
+    def test_result_brief_waits_for_its_source_turn_to_reach_terminal(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            harness = runner.CaseHarness(
+                case_id="terminal-turn-race",
+                image="unused",
+                model="unused",
+                credential_envs=[],
+                env_file=None,
+                runtime_env={},
+                evidence_root=Path(directory),
+                timeout_seconds=1,
+                keep=True,
+            )
+            events = [
+                [
+                    {
+                        "type": "tool_execution_completed",
+                        "payload": {"turn_id": "turn-source"},
+                    }
+                ],
+                [
+                    {
+                        "type": "turn_terminal",
+                        "payload": {
+                            "turn_id": "turn-source",
+                            "kind": "completed",
+                        },
+                    }
+                ],
+            ]
+            with (
+                patch.object(harness, "events", side_effect=events) as event_poll,
+                patch.object(runner.time, "sleep"),
+            ):
+                source_turn_id = harness.wait_result_brief_terminal_turn(
+                    brief={"turn_id": "turn-source"},
+                    label="terminal-race",
+                )
+
+            self.assertEqual(source_turn_id, "turn-source")
+            self.assertEqual(event_poll.call_count, 2)
+
+    def test_multi_workitem_waits_for_terminal_turns_before_snapshot(self) -> None:
+        source = inspect.getsource(runner.run_scheduler_multi_workitem_case)
+        self.assertLess(
+            source.index("harness.wait_result_brief_terminal_turn"),
+            source.index('harness.runtime_db_snapshot("scheduler-multi")'),
+        )
+
     def test_compaction_oracle_requires_actual_compaction_evidence(self) -> None:
         event = {
             "kind": "turn_local_compaction_applied",

@@ -1034,6 +1034,40 @@ class CaseHarness:
         write_json(self.evidence / f"{label}-brief.json", value)
         return value
 
+    def wait_result_brief_terminal_turn(
+        self,
+        *,
+        brief: dict[str, Any],
+        label: str,
+    ) -> str:
+        source_turn_id = brief.get("turn_id")
+        require(
+            isinstance(source_turn_id, str) and source_turn_id,
+            f"{label} result brief omitted its source turn: {brief}",
+        )
+        deadline = time.monotonic() + self.timeout_seconds
+        while time.monotonic() < deadline:
+            terminal_events = [
+                event
+                for event in self.events(f"{label}-terminal-poll")
+                if event.get("type") == "turn_terminal"
+                and event.get("payload", {}).get("turn_id") == source_turn_id
+            ]
+            if terminal_events:
+                terminal_kind = terminal_events[-1].get("payload", {}).get("kind")
+                require(
+                    terminal_kind == "completed",
+                    f"{label} source turn ended with {terminal_kind}: "
+                    f"{terminal_events[-1].get('payload', {})}",
+                )
+                return source_turn_id
+            time.sleep(1)
+        self.capture_context(f"{label}-terminal-timeout")
+        raise TimeoutError(
+            f"timed out waiting for {label} source turn {source_turn_id} "
+            "to reach terminal"
+        )
+
     def events(
         self,
         label: str,
@@ -2999,6 +3033,7 @@ def run_scheduler_multi_workitem_case(
     require(item_a["state"] == "completed", f"WorkItem A not completed: {item_a}")
     require(item_b["state"] == "completed", f"WorkItem B not completed: {item_b}")
     require(work_item_a_id != work_item_b_id, "WorkItem A and B share the same id")
+    terminal_turn_ids_by_work_item: dict[str, str] = {}
     for item, label_letter, completion, brief_label in (
         (item_a, "A", completion_a, "scheduler-multi-result-a"),
         (item_b, "B", completion_b, "scheduler-multi-result-b"),
@@ -3014,21 +3049,30 @@ def run_scheduler_multi_workitem_case(
             and completion in (brief.get("text") or ""),
             f"WorkItem {label_letter} brief mismatch: {brief}",
         )
+        terminal_turn_ids_by_work_item[item["id"]] = (
+            harness.wait_result_brief_terminal_turn(
+                brief=brief,
+                label=brief_label,
+            )
+        )
     snapshot = harness.runtime_db_snapshot("scheduler-multi")
-    turn_ids_by_work_item = {
-        work_item_id: {
-            row["turn_id"]
-            for row in snapshot["turn_records"]
-            if row["current_work_item_id"] == work_item_id
-        }
-        for work_item_id in (work_item_a_id, work_item_b_id)
-    }
+    for work_item_id, terminal_turn_id in terminal_turn_ids_by_work_item.items():
+        require(
+            any(
+                row["turn_id"] == terminal_turn_id
+                and row["current_work_item_id"] == work_item_id
+                and row["terminal_kind"] == "completed"
+                for row in snapshot["turn_records"]
+            ),
+            "multi-WorkItem source turn was not persisted as completed: "
+            f"work_item_id={work_item_id}, turn_id={terminal_turn_id}",
+        )
     harness.assert_tools(
         "scheduler-multi-a",
         baseline,
         ["AgentGet", "ListWorkItems", "UpdateWorkItem", "CompleteWorkItem"],
         forbidden + ["CreateWorkItem", "GetWorkspaceState"],
-        turn_ids=turn_ids_by_work_item[work_item_a_id],
+        turn_ids={terminal_turn_ids_by_work_item[work_item_a_id]},
     )
     harness.assert_tools(
         "scheduler-multi-b",
@@ -3040,7 +3084,7 @@ def run_scheduler_multi_workitem_case(
             "CompleteWorkItem",
         ],
         forbidden + ["CreateWorkItem", "AgentGet"],
-        turn_ids=turn_ids_by_work_item[work_item_b_id],
+        turn_ids={terminal_turn_ids_by_work_item[work_item_b_id]},
     )
     for wid in (work_item_a_id, work_item_b_id):
         require_scheduler_engine_activation_chain(
