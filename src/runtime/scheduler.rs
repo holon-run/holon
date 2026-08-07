@@ -1186,7 +1186,10 @@ pub(crate) fn canonical_activation_candidate(
                 agent_id: message.agent_id.clone(),
             }));
         }
-        return Ok(None);
+        return Ok(Some(CanonicalActivationCandidate::ExactWaitResume {
+            expected_work_item_id: None,
+            correlated_wait: None,
+        }));
     }
 
     if message.kind == MessageKind::OperatorPrompt {
@@ -1430,6 +1433,7 @@ fn matching_wait_conditions_for_work_item<'a>(
                         && condition.status == WaitConditionStatus::Resolved
                         && condition.kind == WaitConditionKind::Task
                         && condition.work_item_id == message.work_item_id
+                        && condition.trigger_message_id() == Some(message.id.as_str())
                         && resolved_task_wait_is_current(projection, condition)))
                 && message_matches_wait_condition(message, condition)
                 && (!(message.kind == MessageKind::TaskResult
@@ -1447,7 +1451,7 @@ fn resolved_task_wait_is_current(
         return true;
     };
     let Some(work_item_id) = condition.work_item_id.as_deref() else {
-        return false;
+        return condition.trigger_message_id().is_some();
     };
     matches!(
         states.get(work_item_id),

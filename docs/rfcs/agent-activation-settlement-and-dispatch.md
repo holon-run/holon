@@ -535,6 +535,17 @@ arms the new generation atomically.
 authority. Exact external resume requires a runtime-owned or
 capability-authenticated correlation carrying `wait_id + generation`.
 
+A terminal task result for an unbound task that does not request unconditional
+terminal re-entry is narrower. The terminal task transition resolves matching
+agent-lifecycle task waits and binds each resolved wait to the exact durable
+result message id in the same transaction as task and message evidence. The
+canonical scheduler may then lower the unique match to
+`ExactWaitResume(AgentLifecycle, wait_id)` and claim it with
+`TriggeredWait(wait_id, result_message_id)`. A result with no such exact wait is
+reducer-only; it must not create a lifecycle nudge or consume queue-head
+no-progress budget. A duplicate or historical result cannot resume the wait
+because its message identity does not match the resolved generation.
+
 Canonical scheduler tables persist `owner_kind + owner_id` and retain
 row-local primary-key, unique, `NOT NULL`, `CHECK`, generation, and idempotency
 constraints. Cross-table lifecycle consistency is enforced by typed commands,
@@ -835,8 +846,10 @@ callback capability does not make one semantic wait reusable.
 
 External and operator events trigger waits but do not resolve them. The
 consuming activation must resolve, cancel, or rearm. A matching runtime-owned
-terminal task result may perform trigger, consume, and resolve in one
-transaction while retaining all logical audit facts.
+terminal task result may persist the task/message evidence and exact resolved
+wait binding in one transaction, then atomically consume that same wait
+generation during canonical activation claim while retaining all logical audit
+facts.
 
 `recheck_after_ms` is a fallback wake source for the same wait generation, not
 a separate generic blocker timer.

@@ -3301,21 +3301,6 @@ async fn lifecycle_wait_handoff_to_work_item_wait_is_atomic_idempotent_and_resta
         })),
         recovery: None,
     };
-    reopened
-        .persist_task_transition(&terminal_task, "task_completed")
-        .await
-        .unwrap();
-    assert!(reopened
-        .storage()
-        .active_wait_conditions_for_work_item("default", &work_item.id)
-        .unwrap()
-        .is_empty());
-    let resolved_work_item = reopened
-        .latest_work_item(&work_item.id)
-        .await
-        .unwrap()
-        .expect("task result should retain the WorkItem");
-    assert!(resolved_work_item.revision > work_generation);
     let mut rejoin = task_result_message("task-lifecycle-handoff").with_admission(
         MessageDeliverySurface::TaskRejoin,
         AdmissionContext::RuntimeOwned,
@@ -3329,6 +3314,21 @@ async fn lifecycle_wait_handoff_to_work_item_wait_is_atomic_idempotent_and_resta
         "work_item_id": work_item.id,
     }));
     rejoin.turn_id = Some("turn-lifecycle-handoff-rejoin".into());
+    reopened
+        .persist_task_transition_with_message(&terminal_task, "task_completed", &rejoin)
+        .await
+        .unwrap();
+    assert!(reopened
+        .storage()
+        .active_wait_conditions_for_work_item("default", &work_item.id)
+        .unwrap()
+        .is_empty());
+    let resolved_work_item = reopened
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .expect("task result should retain the WorkItem");
+    assert!(resolved_work_item.revision > work_generation);
     let rejoin = reopened.enqueue(rejoin).await.unwrap();
     assert!(matches!(
         scheduler_executor::SchedulerDecisionExecutor::new(&reopened)
@@ -3475,17 +3475,6 @@ async fn exact_task_rejoin_prefers_canonical_wait_when_legacy_revision_advanced(
         })),
         recovery: None,
     };
-    runtime
-        .persist_task_transition(&terminal_task, "task_completed")
-        .await
-        .unwrap();
-    let resolved_work = runtime
-        .latest_work_item(&work_item.id)
-        .await
-        .unwrap()
-        .expect("resolved WorkItem");
-    assert!(resolved_work.revision > wait_generation);
-
     let mut rejoin = task_result_message("task-stale-legacy-rejoin").with_admission(
         MessageDeliverySurface::TaskRejoin,
         AdmissionContext::RuntimeOwned,
@@ -3499,6 +3488,17 @@ async fn exact_task_rejoin_prefers_canonical_wait_when_legacy_revision_advanced(
         "work_item_id": work_item.id,
     }));
     rejoin.turn_id = Some("turn-stale-legacy-rejoin".into());
+    runtime
+        .persist_task_transition_with_message(&terminal_task, "task_completed", &rejoin)
+        .await
+        .unwrap();
+    let resolved_work = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .expect("resolved WorkItem");
+    assert!(resolved_work.revision > wait_generation);
+
     let rejoin = runtime.enqueue(rejoin).await.unwrap();
 
     let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
@@ -4261,19 +4261,10 @@ async fn terminal_task_result_without_work_item_uses_non_reentrant_dispatch() {
         .unwrap()
         .is_none());
 
-    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+    let _ = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
         .poll()
         .await
         .unwrap();
-    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
-        panic!("task result without a WorkItem should use ordinary dispatch");
-    };
-    assert_eq!(scheduled.message.id, message.id);
-    assert!(!scheduled
-        .dispatch_plan
-        .continuation_resolution
-        .as_ref()
-        .is_some_and(|resolution| resolution.model_reentry));
     assert_eq!(
         runtime
             .inner
@@ -4293,6 +4284,209 @@ async fn terminal_task_result_without_work_item_uses_non_reentrant_dispatch() {
         .load_scheduler_protocol_snapshot_if_initialized("default")
         .unwrap()
         .is_none());
+}
+
+#[tokio::test]
+async fn terminal_task_result_resumes_exact_agent_lifecycle_task_wait() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime
+        .storage()
+        .append_task(&TaskRecord {
+            id: "task-lifecycle-wait".into(),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Running,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_message_id: None,
+            work_item_id: None,
+            summary: Some("task lifecycle wait".into()),
+            detail: None,
+            recovery: None,
+        })
+        .unwrap();
+    let registration = runtime
+        .register_wait_for(
+            "default",
+            None,
+            WaitForWakeKind::TaskResult,
+            Some("task-lifecycle-wait".into()),
+            "waiting for lifecycle task".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let mut message = task_result_message("task-lifecycle-wait").with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    message.task_id = Some("task-lifecycle-wait".into());
+    message.metadata = Some(serde_json::json!({
+        "task_id": "task-lifecycle-wait",
+        "task_kind": "command_task",
+        "task_status": "completed",
+        "task_result_id": "result-lifecycle-wait",
+    }));
+    let terminal = TaskRecord {
+        status: TaskStatus::Completed,
+        updated_at: Utc::now(),
+        parent_message_id: Some(message.id.clone()),
+        ..runtime
+            .task_record("task-lifecycle-wait")
+            .await
+            .unwrap()
+            .unwrap()
+    };
+    runtime
+        .persist_task_transition_with_message(
+            &terminal,
+            "command_task_terminal_persisted",
+            &message,
+        )
+        .await
+        .unwrap();
+    let resolved = runtime
+        .storage()
+        .latest_wait_conditions()
+        .unwrap()
+        .into_iter()
+        .find(|condition| condition.id == registration.condition.id)
+        .unwrap();
+    assert_eq!(resolved.status, WaitConditionStatus::Resolved);
+    assert_eq!(resolved.trigger_message_id(), Some(message.id.as_str()));
+
+    let queued = runtime.enqueue(message).await.unwrap();
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("exact lifecycle task wait should resume into the model");
+    };
+    assert_eq!(scheduled.message.id, queued.id);
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    let attempt = &execution.attempts[&scheduler_executor::canonical_activation_id(&queued.id)];
+    assert!(matches!(
+        &attempt.source.identity,
+        crate::domain::execution_protocol::ExecutionSourceIdentity::TriggeredWait {
+            wait_id,
+            trigger_message_id,
+        } if wait_id == &registration.condition.id && trigger_message_id == &queued.id
+    ));
+}
+
+#[tokio::test]
+async fn exact_agent_lifecycle_task_wait_runs_one_model_continuation() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let provider = Arc::new(CountingProvider {
+        calls: Mutex::new(0),
+        reply: "resumed",
+    });
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider.clone(),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime
+        .storage()
+        .append_task(&TaskRecord {
+            id: "task-lifecycle-model-reentry".into(),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Running,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_message_id: None,
+            work_item_id: None,
+            summary: Some("task lifecycle model reentry".into()),
+            detail: None,
+            recovery: None,
+        })
+        .unwrap();
+    runtime
+        .register_wait_for(
+            "default",
+            None,
+            WaitForWakeKind::TaskResult,
+            Some("task-lifecycle-model-reentry".into()),
+            "waiting for lifecycle task model reentry".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let mut message = task_result_message("task-lifecycle-model-reentry").with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    message.task_id = Some("task-lifecycle-model-reentry".into());
+    message.metadata = Some(serde_json::json!({
+        "task_id": "task-lifecycle-model-reentry",
+        "task_kind": "command_task",
+        "task_status": "completed",
+        "task_result_id": "result-lifecycle-model-reentry",
+    }));
+    let terminal = TaskRecord {
+        status: TaskStatus::Completed,
+        updated_at: Utc::now(),
+        parent_message_id: Some(message.id.clone()),
+        ..runtime
+            .task_record("task-lifecycle-model-reentry")
+            .await
+            .unwrap()
+            .unwrap()
+    };
+    runtime
+        .persist_task_transition_with_message(
+            &terminal,
+            "command_task_terminal_persisted",
+            &message,
+        )
+        .await
+        .unwrap();
+    runtime.enqueue(message).await.unwrap();
+
+    let runner = tokio::spawn(runtime.clone().run());
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    while provider.call_count().await == 0 {
+        assert!(
+            !runner.is_finished(),
+            "runtime exited before model continuation"
+        );
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "exact lifecycle task wait did not enter the model"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(provider.call_count().await, 1);
+    runner.abort();
 }
 
 #[tokio::test(start_paused = true)]
@@ -7543,11 +7737,25 @@ async fn resolved_task_result_uses_unified_wait_when_legacy_wait_is_stale() {
         .unwrap();
     let waiting = runtime.latest_work_item(&work.id).await.unwrap().unwrap();
 
+    let mut result = task_result_message("task-unified-wait").with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    result.work_item_id = Some(waiting.id.clone());
+    result.task_id = Some("task-unified-wait".into());
+    result.metadata = Some(serde_json::json!({
+        "task_id": "task-unified-wait",
+        "task_kind": "command_task",
+        "task_status": "completed",
+        "task_result_id": "result-unified-wait",
+        "work_item_id": waiting.id,
+    }));
     let now = Utc::now();
     let mut resolved = registration.condition.clone();
     resolved.status = WaitConditionStatus::Resolved;
     resolved.updated_at = now;
     resolved.resolved_at = Some(now);
+    resolved.trigger_message_id = Some(result.id.clone());
     runtime.storage().append_wait_condition(&resolved).unwrap();
     let resumed = WorkItemRecord {
         revision: waiting.revision + 1,
@@ -7592,19 +7800,9 @@ async fn resolved_task_result_uses_unified_wait_when_legacy_wait_is_stale() {
         &resumed.id,
         "turn-unified-wait",
     );
-    let mut result = task_result_message("task-unified-wait").with_admission(
-        MessageDeliverySurface::TaskRejoin,
-        AdmissionContext::RuntimeOwned,
-    );
     result.work_item_id = Some(resumed.id.clone());
-    result.task_id = Some("task-unified-wait".into());
-    result.metadata = Some(serde_json::json!({
-        "task_id": "task-unified-wait",
-        "task_kind": "command_task",
-        "task_status": "completed",
-        "task_result_id": "result-unified-wait",
-        "work_item_id": resumed.id,
-    }));
+    result.metadata.as_mut().unwrap()["work_item_id"] =
+        serde_json::Value::String(resumed.id.clone());
     let result = runtime.enqueue(result).await.unwrap();
 
     let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)

@@ -206,6 +206,9 @@ impl RuntimeHandle {
                 })
                 .collect::<Vec<_>>();
             let now = Utc::now();
+            let trigger_message_id = transition
+                .message_evidence
+                .map(|message| message.id.as_str());
             let mut resolved_ids = Vec::with_capacity(matching.len());
             let mut updated_work_item_ids = std::collections::BTreeSet::new();
             for condition in matching {
@@ -213,6 +216,9 @@ impl RuntimeHandle {
                 resolved.status = WaitConditionStatus::Resolved;
                 resolved.updated_at = now;
                 resolved.resolved_at = Some(now);
+                if resolved.kind == WaitConditionKind::Task {
+                    resolved.trigger_message_id = trigger_message_id.map(ToString::to_string);
+                }
                 wait_conditions.push(resolved.clone());
                 resolved_ids.push(condition.id);
                 if resolved.kind == WaitConditionKind::Task {
