@@ -2957,6 +2957,26 @@ CREATE UNIQUE INDEX IF NOT EXISTS wait_conditions_unresolved_work_item_owner
         name: "wait_protocol_cutover",
         sql: "",
     },
+    Migration {
+        version: 46,
+        name: "queue_head_no_progress",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS queue_head_no_progress (
+  message_id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  attempts INTEGER NOT NULL CHECK (attempts > 0),
+  max_attempts INTEGER NOT NULL CHECK (max_attempts > 0),
+  status TEXT NOT NULL CHECK (status IN ('bounded_defer', 'quarantined')),
+  first_reason TEXT NOT NULL,
+  last_reason TEXT NOT NULL,
+  first_deferred_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_queue_head_no_progress_agent_status
+  ON queue_head_no_progress(agent_id, status, updated_at);
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

@@ -84,6 +84,7 @@
         "interjected",
         "aborted",
         "dropped",
+        "quarantined",
         "interrupted"
       ],
       "source": "src/types.rs"

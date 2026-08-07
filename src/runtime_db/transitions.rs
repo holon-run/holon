@@ -220,6 +220,30 @@ pub(crate) struct QueueTransitionCommand {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct QueueHeadNoProgressCommand {
+    pub agent_id: String,
+    pub expected: QueueEntryRecord,
+    pub quarantined: QueueEntryRecord,
+    pub agent_state: AgentStateMutation,
+    pub reason: String,
+    pub scenario_class: Option<String>,
+    pub max_attempts: u32,
+    pub fault: Option<TransitionFaultPoint>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QueueHeadNoProgressOutcome {
+    BoundedDefer { attempt: u32, max_attempts: u32 },
+    Quarantined { attempt: u32, max_attempts: u32 },
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct QueueHeadNoProgressCommit {
+    pub outcome: QueueHeadNoProgressOutcome,
+    pub commit: TransitionCommit,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct TurnTerminalTransitionCommand {
     pub agent_id: String,
     pub agent_state: AgentStateMutation,
@@ -331,6 +355,167 @@ impl RuntimeDb {
 }
 
 impl RuntimeTransitionRepository<'_> {
+    pub fn commit_queue_head_no_progress(
+        &self,
+        command: &QueueHeadNoProgressCommand,
+    ) -> Result<Option<QueueHeadNoProgressCommit>> {
+        if command.max_attempts == 0 {
+            bail!("queue-head no-progress budget must be non-zero");
+        }
+        if command.expected.message_id != command.quarantined.message_id
+            || command.expected.agent_id != command.quarantined.agent_id
+            || command.expected.agent_id != command.agent_id
+        {
+            bail!("queue-head no-progress identity must remain unchanged");
+        }
+        if !matches!(
+            command.expected.status,
+            QueueEntryStatus::Queued | QueueEntryStatus::Interrupted
+        ) || command.quarantined.status != QueueEntryStatus::Quarantined
+        {
+            bail!("queue-head no-progress requires an active head and quarantined terminal record");
+        }
+
+        self.db.transaction(|tx| {
+            let current = tx
+                .query_row(
+                    "SELECT payload_json FROM queue_entries WHERE message_id = ?1",
+                    [&command.expected.message_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .map(|payload| serde_json::from_str::<QueueEntryRecord>(&payload))
+                .transpose()?;
+            if current.as_ref() != Some(&command.expected) {
+                return Ok(None);
+            }
+
+            let previous = tx
+                .query_row(
+                    "SELECT attempts, max_attempts, status, first_reason, first_deferred_at
+                     FROM queue_head_no_progress
+                     WHERE message_id = ?1",
+                    [&command.expected.message_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, u32>(0)?,
+                            row.get::<_, u32>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, String>(4)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            if previous
+                .as_ref()
+                .is_some_and(|(_, _, status, _, _)| status == "quarantined")
+            {
+                return Ok(None);
+            }
+            inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
+            let attempt = previous
+                .as_ref()
+                .map_or(1, |(attempts, _, _, _, _)| attempts.saturating_add(1));
+            let max_attempts = previous
+                .as_ref()
+                .map_or(command.max_attempts, |(_, max, _, _, _)| *max);
+            let now = Utc::now();
+            let first_reason = previous
+                .as_ref()
+                .map_or(command.reason.as_str(), |(_, _, _, reason, _)| {
+                    reason.as_str()
+                });
+            let first_deferred_at = previous
+                .as_ref()
+                .map_or_else(|| now.to_rfc3339(), |(_, _, _, _, value)| value.clone());
+            let quarantined = attempt >= max_attempts;
+            let status = if quarantined {
+                "quarantined"
+            } else {
+                "bounded_defer"
+            };
+
+            validate_agent_state_mutation_tx(tx, quarantined.then_some(&command.agent_state))?;
+            if quarantined
+                && !compare_and_set_queue_entry_tx(tx, &command.expected, &command.quarantined)?
+            {
+                return Ok(None);
+            }
+            tx.execute(
+                "INSERT INTO queue_head_no_progress (
+                    message_id, agent_id, attempts, max_attempts, status,
+                    first_reason, last_reason, first_deferred_at, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 ON CONFLICT(message_id) DO UPDATE SET
+                    attempts = excluded.attempts,
+                    max_attempts = excluded.max_attempts,
+                    status = excluded.status,
+                    last_reason = excluded.last_reason,
+                    updated_at = excluded.updated_at",
+                rusqlite::params![
+                    command.expected.message_id,
+                    command.agent_id,
+                    attempt,
+                    max_attempts,
+                    status,
+                    first_reason,
+                    command.reason,
+                    first_deferred_at,
+                    now.to_rfc3339(),
+                ],
+            )?;
+            let agent_state_applied = if quarantined {
+                apply_agent_state_mutation_tx(tx, Some(&command.agent_state))?
+            } else {
+                false
+            };
+            inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
+            let event_kind = if quarantined {
+                "scheduler_queue_head_quarantined"
+            } else {
+                "scheduler_queue_head_deferred"
+            };
+            let event = AuditEvent::legacy(
+                event_kind,
+                serde_json::json!({
+                    "message_id": command.expected.message_id,
+                    "agent_id": command.agent_id,
+                    "reason": command.reason,
+                    "scenario_class": command.scenario_class,
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                    "queue_disposition": status,
+                }),
+            );
+            let commit = finish_transition_tx(
+                tx,
+                true,
+                &command.agent_id,
+                &[event],
+                &[],
+                command.fault,
+                PostCommitEffects {
+                    agent_state: agent_state_applied.then(|| command.agent_state.clone()),
+                    notify_scheduler: quarantined,
+                    ..PostCommitEffects::default()
+                },
+            )?;
+            let outcome = if quarantined {
+                QueueHeadNoProgressOutcome::Quarantined {
+                    attempt,
+                    max_attempts,
+                }
+            } else {
+                QueueHeadNoProgressOutcome::BoundedDefer {
+                    attempt,
+                    max_attempts,
+                }
+            };
+            Ok(Some(QueueHeadNoProgressCommit { outcome, commit }))
+        })
+    }
+
     pub fn commit_turn_terminal(
         &self,
         command: &TurnTerminalTransitionCommand,
@@ -1422,7 +1607,8 @@ fn validate_queue_operation(command: &QueueTransitionCommand) -> Result<()> {
                 status: QueueEntryStatus::Processed
                     | QueueEntryStatus::Interrupted
                     | QueueEntryStatus::Aborted
-                    | QueueEntryStatus::Dropped,
+                    | QueueEntryStatus::Dropped
+                    | QueueEntryStatus::Quarantined,
                 ..
             })
         ) | (
@@ -1436,7 +1622,8 @@ fn validate_queue_operation(command: &QueueTransitionCommand) -> Result<()> {
                     status: QueueEntryStatus::Processed
                         | QueueEntryStatus::Interrupted
                         | QueueEntryStatus::Aborted
-                        | QueueEntryStatus::Dropped,
+                        | QueueEntryStatus::Dropped
+                        | QueueEntryStatus::Quarantined,
                     ..
                 },
             }
@@ -1448,7 +1635,7 @@ fn validate_queue_operation(command: &QueueTransitionCommand) -> Result<()> {
                     ..
                 },
                 record: QueueEntryRecord {
-                    status: QueueEntryStatus::Dropped,
+                    status: QueueEntryStatus::Dropped | QueueEntryStatus::Quarantined,
                     ..
                 },
             }

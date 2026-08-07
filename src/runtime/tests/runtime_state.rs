@@ -4650,7 +4650,7 @@ async fn canonical_processed_settlement_without_terminal_turn_fails_closed() {
 }
 
 #[tokio::test]
-async fn authoritative_explicit_operator_missing_target_remains_queued_without_rollback() {
+async fn authoritative_explicit_operator_missing_target_is_bounded_across_restart() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -4670,6 +4670,13 @@ async fn authoritative_explicit_operator_missing_target_remains_queued_without_r
         .enqueue(trusted_operator_prompt(
             Some("work-missing"),
             "wrong-fence explicit operator input",
+        ))
+        .await
+        .unwrap();
+    let valid = runtime
+        .enqueue(trusted_operator_prompt(
+            None,
+            "continue after quarantined missing target",
         ))
         .await
         .unwrap();
@@ -4693,15 +4700,64 @@ async fn authoritative_explicit_operator_missing_target_remains_queued_without_r
             .map(|entry| entry.status),
         Some(QueueEntryStatus::Queued)
     );
-    assert!(runtime
+    drop(runtime);
+
+    let reopened = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&reopened)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::AuthorityBlocked
+    ));
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&reopened)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Idle
+    ));
+    assert_eq!(
+        reopened
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&message.id)
+            .unwrap()
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Quarantined)
+    );
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&reopened)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("valid input should advance after the retained head is quarantined");
+    };
+    assert_eq!(scheduled.message.id, valid.id);
+    assert!(reopened
         .storage()
         .read_recent_events(usize::MAX)
         .unwrap()
         .iter()
         .any(|event| {
-            event.kind == "scheduler_authority_input_rejected"
+            event.kind == "scheduler_queue_head_quarantined"
                 && event.data["message_id"] == message.id
                 && event.data["reason"] == "explicit_binding_work_item_missing"
+                && event.data["attempt"] == 3
+                && event.data["queue_disposition"] == "quarantined"
         }));
 }
 

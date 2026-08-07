@@ -480,6 +480,7 @@ async fn late_task_result_terminal_queue_states_are_already_consumed() {
         QueueEntryStatus::Processed,
         QueueEntryStatus::Aborted,
         QueueEntryStatus::Dropped,
+        QueueEntryStatus::Quarantined,
     ] {
         let harness = LifecycleHarness::new();
         let work_item = harness

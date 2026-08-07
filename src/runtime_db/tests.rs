@@ -7,10 +7,10 @@ use crate::runtime_db::evidence::content_hash;
 use crate::runtime_db::evidence::insert_audit_event_tx;
 #[cfg(test)]
 use crate::runtime_db::migrations::{
-    apply_migration, backfill_wait_condition_payload_columns, backfill_work_item_recheck_columns,
-    current_schema_version, ensure_migration_table, max_known_migration_version,
-    schema_fingerprint, table_exists, MIGRATIONS, PUBLISHED_MIGRATION_FLOOR,
-    RELEASE_BASELINE_TARGET,
+    apply_migration, apply_release_baseline, backfill_wait_condition_payload_columns,
+    backfill_work_item_recheck_columns, current_schema_version, ensure_migration_table,
+    max_known_migration_version, schema_fingerprint, table_exists, MIGRATIONS,
+    PUBLISHED_MIGRATION_FLOOR, RELEASE_BASELINE_TARGET,
 };
 #[cfg(test)]
 use crate::runtime_db::storage_domain::upsert_storage_domain;
@@ -94,8 +94,9 @@ mod tests {
         },
         runtime_db::repositories::{enum_string, slim_task_record_for_payload},
         runtime_db::transitions::{
-            scheduler_protocol_repository::SchedulerProtocolCommandIdentityConflict, QueueMutation,
-            QueueOperation, QueueTransitionCommand, TransitionFaultPoint,
+            scheduler_protocol_repository::SchedulerProtocolCommandIdentityConflict,
+            AgentStateMutation, QueueHeadNoProgressCommand, QueueHeadNoProgressOutcome,
+            QueueMutation, QueueOperation, QueueTransitionCommand, TransitionFaultPoint,
         },
         system::WorkspaceAccessMode,
         types::{
@@ -581,6 +582,7 @@ mod tests {
             "artifact_metadata",
             "wait_conditions",
             "queue_entries",
+            "queue_head_no_progress",
             "timers",
             "turn_records",
             "agent_states",
@@ -662,7 +664,16 @@ mod tests {
             serde_json::from_str::<Vec<i64>>(&baseline.2)?,
             (PUBLISHED_MIGRATION_FLOOR + 1..=RELEASE_BASELINE_TARGET).collect::<Vec<_>>()
         );
-        assert_eq!(baseline.3, schema_fingerprint(&connection)?);
+        let mut baseline_connection = rusqlite::Connection::open_in_memory()?;
+        ensure_migration_table(&baseline_connection)?;
+        for migration in MIGRATIONS
+            .iter()
+            .filter(|migration| migration.version <= PUBLISHED_MIGRATION_FLOOR)
+        {
+            apply_migration(&mut baseline_connection, migration)?;
+        }
+        apply_release_baseline(&mut baseline_connection)?;
+        assert_eq!(baseline.3, schema_fingerprint(&baseline_connection)?);
 
         Ok(())
     }
@@ -4097,6 +4108,121 @@ CREATE TABLE working_memory_deltas (
     }
 
     #[test]
+    fn queue_head_no_progress_budget_is_atomic_and_survives_restart() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let now = Utc::now();
+        let queued = QueueEntryRecord {
+            message_id: "message-no-progress".into(),
+            agent_id: "agent-a".into(),
+            priority: crate::types::Priority::Normal,
+            status: QueueEntryStatus::Queued,
+            created_at: now,
+            updated_at: now,
+        };
+        let mut quarantined = queued.clone();
+        quarantined.status = QueueEntryStatus::Quarantined;
+        quarantined.updated_at = now + chrono::Duration::seconds(1);
+        let mut current_state = AgentState::new("agent-a");
+        current_state.pending = 1;
+        let mut terminal_state = current_state.clone();
+        terminal_state.pending = 0;
+        db.queue_entries().upsert(&queued)?;
+        db.agent_states().upsert(&current_state)?;
+
+        let command = |fault| QueueHeadNoProgressCommand {
+            agent_id: "agent-a".into(),
+            expected: queued.clone(),
+            quarantined: quarantined.clone(),
+            agent_state: AgentStateMutation {
+                expected: Some(Box::new(current_state.clone())),
+                record: Box::new(terminal_state.clone()),
+            },
+            reason: "canonical_claim_contended".into(),
+            scenario_class: Some("lifecycle_external_nudge".into()),
+            max_attempts: 3,
+            fault,
+        };
+
+        for fault in [
+            TransitionFaultPoint::AfterValidation,
+            TransitionFaultPoint::AfterCanonicalWrites,
+            TransitionFaultPoint::AfterAuditWrites,
+            TransitionFaultPoint::BeforeCommit,
+        ] {
+            let error = db
+                .transitions()
+                .commit_queue_head_no_progress(&command(Some(fault)))
+                .unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("injected runtime transition fault"));
+            assert_eq!(
+                db.queue_entries().latest(&queued.message_id)?,
+                Some(queued.clone())
+            );
+            let no_progress_rows: i64 = db.connection()?.query_row(
+                "SELECT COUNT(*) FROM queue_head_no_progress WHERE message_id = ?1",
+                [&queued.message_id],
+                |row| row.get(0),
+            )?;
+            assert_eq!(no_progress_rows, 0);
+        }
+
+        assert_eq!(
+            db.transitions()
+                .commit_queue_head_no_progress(&command(None))?
+                .unwrap()
+                .outcome,
+            QueueHeadNoProgressOutcome::BoundedDefer {
+                attempt: 1,
+                max_attempts: 3,
+            }
+        );
+        drop(db);
+
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        assert_eq!(
+            reopened
+                .transitions()
+                .commit_queue_head_no_progress(&command(None))?
+                .unwrap()
+                .outcome,
+            QueueHeadNoProgressOutcome::BoundedDefer {
+                attempt: 2,
+                max_attempts: 3,
+            }
+        );
+        assert_eq!(
+            reopened
+                .transitions()
+                .commit_queue_head_no_progress(&command(None))?
+                .unwrap()
+                .outcome,
+            QueueHeadNoProgressOutcome::Quarantined {
+                attempt: 3,
+                max_attempts: 3,
+            }
+        );
+        assert_eq!(
+            reopened.queue_entries().latest(&queued.message_id)?,
+            Some(quarantined)
+        );
+        assert_eq!(
+            reopened.agent_states().latest("agent-a")?,
+            Some(terminal_state)
+        );
+        let persisted: (u32, u32, String) = reopened.connection()?.query_row(
+            "SELECT attempts, max_attempts, status
+             FROM queue_head_no_progress WHERE message_id = ?1",
+            [&queued.message_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!(persisted, (3, 3, "quarantined".into()));
+        Ok(())
+    }
+
+    #[test]
     fn queue_terminal_state_rejects_late_updates_and_allows_identical_retries() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
@@ -4533,7 +4659,10 @@ CREATE TABLE working_memory_deltas (
                 trigger_message_id: "message-cutover-trigger".into(),
             }
         );
-        assert_eq!(current_schema_version(&connection)?, 45);
+        assert_eq!(
+            current_schema_version(&connection)?,
+            max_known_migration_version()
+        );
         Ok(())
     }
 

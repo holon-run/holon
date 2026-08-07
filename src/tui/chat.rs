@@ -659,6 +659,7 @@ fn operator_message_status_label(status: OperatorMessageStatus) -> Option<&'stat
         OperatorMessageStatus::Processing | OperatorMessageStatus::Processed => None,
         OperatorMessageStatus::Failed => Some("failed"),
         OperatorMessageStatus::Dropped => Some("dropped"),
+        OperatorMessageStatus::Quarantined => Some("quarantined"),
     }
 }
 

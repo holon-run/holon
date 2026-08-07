@@ -3980,6 +3980,7 @@ pub enum QueueEntryStatus {
     Interrupted,
     Aborted,
     Dropped,
+    Quarantined,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -3992,6 +3993,7 @@ pub enum OperatorMessageStatus {
     Processed,
     Failed,
     Dropped,
+    Quarantined,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

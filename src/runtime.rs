@@ -3692,6 +3692,7 @@ impl RuntimeHandle {
                     | QueueEntryStatus::Processed
                     | QueueEntryStatus::Aborted
                     | QueueEntryStatus::Dropped
+                    | QueueEntryStatus::Quarantined
             )
         }) {
             return Ok(TransitionCommit::default());

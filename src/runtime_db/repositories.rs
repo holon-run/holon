@@ -3611,7 +3611,10 @@ pub(crate) fn wait_condition_transition(
 fn is_terminal_queue_entry_status(status: &QueueEntryStatus) -> bool {
     matches!(
         status,
-        QueueEntryStatus::Processed | QueueEntryStatus::Aborted | QueueEntryStatus::Dropped
+        QueueEntryStatus::Processed
+            | QueueEntryStatus::Aborted
+            | QueueEntryStatus::Dropped
+            | QueueEntryStatus::Quarantined
     )
 }
 

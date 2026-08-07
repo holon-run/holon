@@ -326,6 +326,20 @@ writes audit evidence in the same transaction.
 A normal typed conflict must not cause an unbounded queue-head retry, agent
 restart loop, or lane reservation leak.
 
+Every FIFO queue head has one explicit disposition:
+
+- `consume` when admission succeeds;
+- `drop` when current durable facts prove the input stale or inadmissible;
+- `bounded-defer` when authority may still converge;
+- `quarantine` when the durable no-progress budget is exhausted.
+
+Retained authority input, unresolved hard blockers, ambiguous waits, claim
+contention, and exhausted claim replanning all consume the same durable
+queue-head budget. The budget survives process restart. Its terminal
+transition atomically marks the queue entry `Quarantined`, updates the pending
+projection, and records diagnostic audit evidence, allowing the next queued
+input to advance.
+
 The run loop may terminalize a bounded number of provably stale or reduce-only
 queue heads in one poll and continue to the next candidate. Wake-only timer,
 callback, system, or legacy wait-trigger envelopes with no exact current

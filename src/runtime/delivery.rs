@@ -240,5 +240,6 @@ fn operator_message_status(
         QueueEntryStatus::Processed => OperatorMessageStatus::Processed,
         QueueEntryStatus::Aborted => OperatorMessageStatus::Failed,
         QueueEntryStatus::Dropped => OperatorMessageStatus::Dropped,
+        QueueEntryStatus::Quarantined => OperatorMessageStatus::Quarantined,
     }
 }

@@ -5183,7 +5183,8 @@
                         "processed",
                         "interjected",
                         "aborted",
-                        "dropped"
+                        "dropped",
+                        "quarantined"
                       ],
                       "type": "string"
                     },
@@ -5272,7 +5273,8 @@
                           "processed",
                           "interjected",
                           "aborted",
-                          "dropped"
+                          "dropped",
+                          "quarantined"
                         ],
                         "type": "string"
                       },

@@ -2,6 +2,8 @@ use super::message_dispatch::MessageDispatchPlan;
 use super::*;
 use crate::types::ExecutionAdmissionProvenance;
 
+const QUEUE_HEAD_NO_PROGRESS_MAX_ATTEMPTS: u32 = 3;
+
 pub(super) enum RunLoopPoll {
     Shutdown,
     Stopped(AgentState, usize),
@@ -104,10 +106,45 @@ struct CanonicalClaimHardBlocker {
     blocker_code: &'static str,
 }
 
+enum QueueHeadNoProgressCause {
+    RetainedAuthority {
+        scenario_class: crate::domain::scheduler_protocol::SchedulerScenarioClass,
+        reason: &'static str,
+    },
+    HardBlocker(CanonicalClaimHardBlocker),
+    AmbiguousWait,
+    ClaimContended {
+        scenario_class: Option<crate::domain::scheduler_protocol::SchedulerScenarioClass>,
+    },
+    ReplanExhausted,
+}
+
+impl QueueHeadNoProgressCause {
+    fn scenario_class(&self) -> Option<crate::domain::scheduler_protocol::SchedulerScenarioClass> {
+        match self {
+            Self::RetainedAuthority { scenario_class, .. } => Some(*scenario_class),
+            Self::HardBlocker(blocker) => Some(blocker.scenario_class),
+            Self::ClaimContended { scenario_class } => *scenario_class,
+            Self::AmbiguousWait | Self::ReplanExhausted => None,
+        }
+    }
+
+    fn reason(&self) -> &'static str {
+        match self {
+            Self::RetainedAuthority { reason, .. } => reason,
+            Self::HardBlocker(blocker) => blocker.blocker_code,
+            Self::AmbiguousWait => "canonical_wait_ambiguous",
+            Self::ClaimContended { .. } => "canonical_claim_contended",
+            Self::ReplanExhausted => "canonical_claim_replan_exhausted",
+        }
+    }
+}
+
 pub(super) struct SchedulerDecisionExecutor<'a> {
     runtime: &'a RuntimeHandle,
 }
 
+#[derive(Clone)]
 struct QueueCandidate {
     message: MessageEnvelope,
     prior_state: AgentState,
@@ -370,7 +407,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 }
             };
 
-            match self.prepare_message(candidate).await? {
+            match self.prepare_message(candidate.clone()).await? {
                 PrepareMessageOutcome::Poll(poll) => {
                     crate::diagnostics::record_scheduler_poll(
                         poll.outcome_name(),
@@ -384,7 +421,12 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     replans += 1;
                 }
                 PrepareMessageOutcome::Replan => {
-                    let poll = RunLoopPoll::AuthorityBlocked;
+                    let poll = self
+                        .defer_or_quarantine_queue_head(
+                            &candidate,
+                            QueueHeadNoProgressCause::ReplanExhausted,
+                        )
+                        .await?;
                     crate::diagnostics::record_scheduler_poll(
                         poll.outcome_name(),
                         started_at.elapsed(),
@@ -470,24 +512,25 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     scenario_class,
                     reason,
                 }) => {
-                    self.runtime
-                        .inner
-                        .storage
-                        .append_event(&AuditEvent::legacy(
-                            "scheduler_authority_input_rejected",
-                            serde_json::json!({
-                                "message_id": persisted_message.id,
-                                "agent_id": persisted_message.agent_id,
-                                "scenario_class": scenario_class.as_str(),
-                                "reason": reason,
-                                "queue_disposition": "retained_queued",
-                            }),
-                        ))?;
-                    return Ok(PrepareMessageOutcome::Poll(RunLoopPoll::AuthorityBlocked));
+                    return Ok(PrepareMessageOutcome::Poll(
+                        self.defer_or_quarantine_queue_head(
+                            &candidate,
+                            QueueHeadNoProgressCause::RetainedAuthority {
+                                scenario_class,
+                                reason,
+                            },
+                        )
+                        .await?,
+                    ));
                 }
                 Ok(CanonicalClaimOutcome::HardBlocker(blocker)) => {
-                    self.report_canonical_claim_hard_blocker(&persisted_message, blocker)?;
-                    return Ok(PrepareMessageOutcome::Poll(RunLoopPoll::AuthorityBlocked));
+                    return Ok(PrepareMessageOutcome::Poll(
+                        self.defer_or_quarantine_queue_head(
+                            &candidate,
+                            QueueHeadNoProgressCause::HardBlocker(blocker),
+                        )
+                        .await?,
+                    ));
                 }
                 Err(error) => {
                     if let Some(ambiguous) =
@@ -503,7 +546,13 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                             &candidate.prior_state,
                             candidate.queue_len,
                         )?;
-                        return Ok(PrepareMessageOutcome::Poll(RunLoopPoll::AuthorityBlocked));
+                        return Ok(PrepareMessageOutcome::Poll(
+                            self.defer_or_quarantine_queue_head(
+                                &candidate,
+                                QueueHeadNoProgressCause::AmbiguousWait,
+                            )
+                            .await?,
+                        ));
                     }
                     return Err(error);
                 }
@@ -683,7 +732,17 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     commit.effects.agent_state = None;
                     drop(guard);
                     self.runtime.apply_transition_commit(commit).await;
-                    return Ok(PrepareMessageOutcome::Poll(RunLoopPoll::AuthorityBlocked));
+                    return Ok(PrepareMessageOutcome::Poll(
+                        self.defer_or_quarantine_queue_head(
+                            &candidate,
+                            QueueHeadNoProgressCause::ClaimContended {
+                                scenario_class: canonical_claim
+                                    .as_ref()
+                                    .map(|plan| plan.scenario_class),
+                            },
+                        )
+                        .await?,
+                    ));
                 }
                 if !commit.applied {
                     let _ = guard.queue.pop_if_next(&candidate.message.id);
@@ -1563,26 +1622,80 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         )
     }
 
-    fn report_canonical_claim_hard_blocker(
+    async fn defer_or_quarantine_queue_head(
         &self,
-        message: &MessageEnvelope,
-        blocker: CanonicalClaimHardBlocker,
-    ) -> Result<()> {
-        let scenario_class = blocker.scenario_class.as_str();
-        self.runtime
+        candidate: &QueueCandidate,
+        cause: QueueHeadNoProgressCause,
+    ) -> Result<RunLoopPoll> {
+        let scenario_class = cause.scenario_class();
+        let reason = cause.reason();
+        let expected = self
+            .runtime
             .inner
-            .storage
-            .append_event(&AuditEvent::legacy(
-                "scheduler_authority_hard_blocker",
-                serde_json::json!({
-                    "message_id": message.id,
-                    "agent_id": message.agent_id,
-                    "scenario_class": scenario_class,
-                    "blocker_code": blocker.blocker_code,
-                    "queue_disposition": "retained_queued",
-                }),
-            ))?;
-        Ok(())
+            .runtime_db
+            .queue_entries()
+            .latest(&candidate.message.id)?
+            .ok_or_else(|| anyhow!("deferred queue head is missing durable state"))?;
+        if !matches!(
+            expected.status,
+            QueueEntryStatus::Queued | QueueEntryStatus::Interrupted
+        ) {
+            return Ok(RunLoopPoll::Idle);
+        }
+        let mut quarantined = expected.clone();
+        quarantined.status = QueueEntryStatus::Quarantined;
+        quarantined.updated_at = self.runtime.now();
+
+        let mut guard = self.runtime.inner.agent.lock().await;
+        if !guard
+            .queue
+            .peek()
+            .is_some_and(|queued| queued.id == candidate.message.id)
+        {
+            return Ok(RunLoopPoll::Idle);
+        }
+        let mut next_state = guard.state.clone();
+        next_state.pending = guard.queue.len().saturating_sub(1);
+        let Some(mut result) = self
+            .runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .commit_queue_head_no_progress(
+                &crate::runtime_db::transitions::QueueHeadNoProgressCommand {
+                    agent_id: candidate.message.agent_id.clone(),
+                    expected,
+                    quarantined,
+                    agent_state: crate::runtime_db::transitions::AgentStateMutation {
+                        expected: Some(Box::new(guard.state.clone())),
+                        record: Box::new(next_state.clone()),
+                    },
+                    reason: reason.into(),
+                    scenario_class: scenario_class.map(|scenario| scenario.as_str().to_string()),
+                    max_attempts: QUEUE_HEAD_NO_PROGRESS_MAX_ATTEMPTS,
+                    fault: self.runtime.take_transition_fault(),
+                },
+            )?
+        else {
+            return Ok(RunLoopPoll::Idle);
+        };
+        let quarantined = matches!(
+            result.outcome,
+            crate::runtime_db::transitions::QueueHeadNoProgressOutcome::Quarantined { .. }
+        );
+        if quarantined {
+            let _ = guard.queue.pop_if_next(&candidate.message.id);
+            guard.state = next_state.clone();
+            guard.last_persisted_state = next_state;
+            result.commit.effects.agent_state = None;
+        }
+        drop(guard);
+        self.runtime.apply_transition_commit(result.commit).await;
+        Ok(if quarantined {
+            RunLoopPoll::Idle
+        } else {
+            RunLoopPoll::AuthorityBlocked
+        })
     }
 
     fn append_posture_decision(
@@ -2022,6 +2135,209 @@ pub(super) fn apply_bootstrap_recovered_projection(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn no_progress_cause(reason: &'static str) -> QueueHeadNoProgressCause {
+        use crate::domain::scheduler_protocol::SchedulerScenarioClass;
+
+        match reason {
+            "explicit_binding_work_item_missing" => QueueHeadNoProgressCause::RetainedAuthority {
+                scenario_class: SchedulerScenarioClass::ExplicitlyBoundOperatorInput,
+                reason,
+            },
+            "canonical_activation_scenario_unresolved" => {
+                QueueHeadNoProgressCause::HardBlocker(CanonicalClaimHardBlocker {
+                    scenario_class: SchedulerScenarioClass::ExactWaitResume,
+                    blocker_code: reason,
+                })
+            }
+            "canonical_wait_ambiguous" => QueueHeadNoProgressCause::AmbiguousWait,
+            "canonical_claim_contended" => QueueHeadNoProgressCause::ClaimContended {
+                scenario_class: Some(SchedulerScenarioClass::WorkItemAutonomousContinuation),
+            },
+            "canonical_claim_replan_exhausted" => QueueHeadNoProgressCause::ReplanExhausted,
+            other => panic!("unknown queue-head no-progress test cause: {other}"),
+        }
+    }
+
+    fn operator_prompt(text: impl Into<String>) -> MessageEnvelope {
+        MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: Some("control".into()),
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text { text: text.into() },
+        )
+        .with_admission(
+            MessageDeliverySurface::HttpControlPrompt,
+            AdmissionContext::ControlAuthenticated,
+        )
+    }
+
+    async fn queue_candidate(runtime: &RuntimeHandle) -> QueueCandidate {
+        let guard = runtime.inner.agent.lock().await;
+        QueueCandidate {
+            message: guard.queue.peek().cloned().expect("queued test message"),
+            prior_state: guard.state.clone(),
+            queue_len: guard.queue.len(),
+        }
+    }
+
+    #[test]
+    fn queue_head_no_progress_causes_have_total_diagnostic_mapping() {
+        use crate::domain::scheduler_protocol::SchedulerScenarioClass;
+
+        let cases = [
+            (
+                QueueHeadNoProgressCause::RetainedAuthority {
+                    scenario_class: SchedulerScenarioClass::ExplicitlyBoundOperatorInput,
+                    reason: "explicit_binding_work_item_missing",
+                },
+                Some(SchedulerScenarioClass::ExplicitlyBoundOperatorInput),
+                "explicit_binding_work_item_missing",
+            ),
+            (
+                QueueHeadNoProgressCause::HardBlocker(CanonicalClaimHardBlocker {
+                    scenario_class: SchedulerScenarioClass::ExactWaitResume,
+                    blocker_code: "canonical_activation_scenario_unresolved",
+                }),
+                Some(SchedulerScenarioClass::ExactWaitResume),
+                "canonical_activation_scenario_unresolved",
+            ),
+            (
+                QueueHeadNoProgressCause::AmbiguousWait,
+                None,
+                "canonical_wait_ambiguous",
+            ),
+            (
+                QueueHeadNoProgressCause::ClaimContended {
+                    scenario_class: Some(SchedulerScenarioClass::WorkItemAutonomousContinuation),
+                },
+                Some(SchedulerScenarioClass::WorkItemAutonomousContinuation),
+                "canonical_claim_contended",
+            ),
+            (
+                QueueHeadNoProgressCause::ReplanExhausted,
+                None,
+                "canonical_claim_replan_exhausted",
+            ),
+        ];
+
+        for (cause, scenario_class, reason) in cases {
+            assert_eq!(cause.scenario_class(), scenario_class);
+            assert_eq!(cause.reason(), reason);
+        }
+    }
+
+    #[tokio::test]
+    async fn queue_head_no_progress_matrix_quarantines_across_restart_and_advances_valid_next() {
+        use crate::runtime::tests::support::{context_config, CountingProvider};
+        use tempfile::tempdir;
+
+        for reason in [
+            "explicit_binding_work_item_missing",
+            "canonical_activation_scenario_unresolved",
+            "canonical_wait_ambiguous",
+            "canonical_claim_contended",
+            "canonical_claim_replan_exhausted",
+        ] {
+            let dir = tempdir().unwrap();
+            let workspace = tempdir().unwrap();
+            let runtime = RuntimeHandle::new(
+                "default",
+                dir.path().to_path_buf(),
+                workspace.path().to_path_buf(),
+                "http://127.0.0.1:7878".into(),
+                Arc::new(CountingProvider {
+                    calls: Mutex::new(0),
+                    reply: "unused",
+                }),
+                "default".into(),
+                context_config(),
+            )
+            .unwrap();
+            let blocked = runtime
+                .enqueue(operator_prompt(format!("blocked by {reason}")))
+                .await
+                .unwrap();
+            let valid = runtime
+                .enqueue(operator_prompt(format!("valid after {reason}")))
+                .await
+                .unwrap();
+            let candidate = queue_candidate(&runtime).await;
+            assert_eq!(candidate.message.id, blocked.id);
+            assert!(matches!(
+                SchedulerDecisionExecutor::new(&runtime)
+                    .defer_or_quarantine_queue_head(&candidate, no_progress_cause(reason))
+                    .await
+                    .unwrap(),
+                RunLoopPoll::AuthorityBlocked
+            ));
+            drop(runtime);
+
+            let reopened = RuntimeHandle::new(
+                "default",
+                dir.path().to_path_buf(),
+                workspace.path().to_path_buf(),
+                "http://127.0.0.1:7878".into(),
+                Arc::new(CountingProvider {
+                    calls: Mutex::new(0),
+                    reply: "unused",
+                }),
+                "default".into(),
+                context_config(),
+            )
+            .unwrap();
+            let candidate = queue_candidate(&reopened).await;
+            assert!(matches!(
+                SchedulerDecisionExecutor::new(&reopened)
+                    .defer_or_quarantine_queue_head(&candidate, no_progress_cause(reason))
+                    .await
+                    .unwrap(),
+                RunLoopPoll::AuthorityBlocked
+            ));
+            assert!(matches!(
+                SchedulerDecisionExecutor::new(&reopened)
+                    .defer_or_quarantine_queue_head(&candidate, no_progress_cause(reason))
+                    .await
+                    .unwrap(),
+                RunLoopPoll::Idle
+            ));
+            assert_eq!(
+                reopened
+                    .inner
+                    .runtime_db
+                    .queue_entries()
+                    .latest(&blocked.id)
+                    .unwrap()
+                    .map(|entry| entry.status),
+                Some(QueueEntryStatus::Quarantined),
+                "cause {reason}"
+            );
+
+            let poll = SchedulerDecisionExecutor::new(&reopened)
+                .poll()
+                .await
+                .unwrap();
+            let RunLoopPoll::Message(scheduled) = poll else {
+                panic!("valid input should advance after quarantining {reason}");
+            };
+            assert_eq!(scheduled.message.id, valid.id, "cause {reason}");
+            assert!(reopened
+                .storage()
+                .read_recent_events(usize::MAX)
+                .unwrap()
+                .iter()
+                .any(|event| {
+                    event.kind == "scheduler_queue_head_quarantined"
+                        && event.data["message_id"] == blocked.id
+                        && event.data["reason"] == reason
+                        && event.data["attempt"] == QUEUE_HEAD_NO_PROGRESS_MAX_ATTEMPTS
+                }));
+        }
+    }
 
     fn bootstrap_state(status: AgentStatus) -> AgentState {
         let mut state = AgentState::new("default");

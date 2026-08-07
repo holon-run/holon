@@ -3374,8 +3374,11 @@ export interface components {
                 resolved_at?: string | null;
                 source?: string | null;
                 /** @enum {string} */
-                status: "active" | "resolved" | "cancelled" | "expired";
+                status: "active" | "triggered" | "resolved" | "cancelled" | "expired";
                 subject_ref?: string | null;
+                trigger_message_id?: string | null;
+                /** Format: date-time */
+                triggered_at?: string | null;
                 turn_id?: string | null;
                 /** Format: date-time */
                 updated_at: string;
@@ -3410,7 +3413,7 @@ export interface components {
                 message_id: string;
                 /** @enum {string} */
                 priority: "interject" | "next" | "normal" | "background";
-                status: ("queued" | "dequeued" | "processed" | "interjected" | "aborted" | "dropped") | "interrupted";
+                status: ("queued" | "dequeued" | "processed" | "interjected" | "aborted" | "dropped" | "quarantined") | "interrupted";
                 /** Format: date-time */
                 updated_at: string;
             }[];
@@ -3421,14 +3424,14 @@ export interface components {
             dry_run: boolean;
             operation: {
                 /** @enum {string} */
-                expected_status: "active" | "resolved" | "cancelled" | "expired";
+                expected_status: "active" | "triggered" | "resolved" | "cancelled" | "expired";
                 /** Format: date-time */
                 expected_updated_at: string;
                 /** @constant */
                 kind: "cancel_wait";
                 wait_id: string;
             } | {
-                expected_status: ("queued" | "dequeued" | "processed" | "interjected" | "aborted" | "dropped") | "interrupted";
+                expected_status: ("queued" | "dequeued" | "processed" | "interjected" | "aborted" | "dropped" | "quarantined") | "interrupted";
                 /** Format: date-time */
                 expected_updated_at: string;
                 /** @constant */
