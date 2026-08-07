@@ -708,21 +708,34 @@ impl RuntimeHost {
     }
 
     pub async fn recover_orphaned_queue_claims_at_startup(&self) -> Result<Vec<String>> {
-        let recovered_agent_ids = self
+        let recovered_queue_agent_ids = self
             .runtime_db()
             .recover_orphaned_dequeued_claims_at_startup()?;
-        for agent_id in &recovered_agent_ids {
+        let active_task_owner_ids = self
+            .runtime_db()
+            .tasks()
+            .active_owner_agent_ids()?
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut recovery_agent_ids = recovered_queue_agent_ids
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        recovery_agent_ids.extend(active_task_owner_ids.iter().cloned());
+        for agent_id in recovery_agent_ids {
             let state = self
-                .agent_storage_read_only(agent_id)?
+                .agent_storage_read_only(&agent_id)?
                 .read_agent()?
-                .unwrap_or_else(|| AgentState::new(agent_id));
-            if state.status == AgentStatus::Stopped {
+                .unwrap_or_else(|| AgentState::new(&agent_id));
+            if state.status == AgentStatus::Stopped && !active_task_owner_ids.contains(&agent_id) {
                 continue;
             }
-            self.activate_agent(agent_id, RuntimeActivationReason::StartupRecovery)
+            let runtime = self
+                .activate_agent(&agent_id, RuntimeActivationReason::StartupRecovery)
                 .await?;
+            runtime.wait_for_bootstrap().await?;
         }
-        Ok(recovered_agent_ids)
+        Ok(recovered_queue_agent_ids)
     }
 
     fn active_agent_identity(
@@ -5895,6 +5908,92 @@ mod tests {
             .public_agent_scheduler_repair_inspection(&agent_id)
             .expect("scheduler repair inspection");
         assert!(host.inner.runtimes.read().await.agents.is_empty());
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_activates_active_task_owners_and_waits_for_bootstrap() {
+        let (_home, host) = canonical_test_host();
+        let agent_id = "startup-task-owner";
+        host.create_named_agent(agent_id, None).await.unwrap();
+        host.unload_runtime(agent_id).await;
+        let storage = host.agent_storage(agent_id).unwrap();
+        storage
+            .append_task(&TaskRecord {
+                id: "task-startup-owner".into(),
+                agent_id: agent_id.into(),
+                kind: crate::types::TaskKind::CommandTask,
+                status: TaskStatus::Running,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                parent_message_id: None,
+                work_item_id: None,
+                summary: Some("startup owner task".into()),
+                detail: None,
+                recovery: None,
+            })
+            .unwrap();
+
+        assert!(host.try_get_loaded_runtime(agent_id).await.is_none());
+        host.recover_orphaned_queue_claims_at_startup()
+            .await
+            .unwrap();
+
+        let task = storage
+            .latest_task_record("task-startup-owner")
+            .unwrap()
+            .unwrap();
+        assert_eq!(task.status, TaskStatus::Interrupted);
+        let message_id = format!("message:task-restart:{}", task.id);
+        assert!(storage.read_message_by_id(&message_id).unwrap().is_some());
+        assert!(host.try_get_loaded_runtime(agent_id).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_converges_stopped_task_owner_without_reentry() {
+        let (_home, host) = canonical_test_host();
+        let agent_id = "stopped-task-owner";
+        host.create_named_agent(agent_id, None).await.unwrap();
+        host.unload_runtime(agent_id).await;
+        let storage = host.agent_storage(agent_id).unwrap();
+        let mut state = storage.read_agent().unwrap().unwrap();
+        state.status = AgentStatus::Stopped;
+        storage.write_agent(&state).unwrap();
+        storage
+            .append_task(&TaskRecord {
+                id: "task-stopped-owner".into(),
+                agent_id: agent_id.into(),
+                kind: crate::types::TaskKind::CommandTask,
+                status: TaskStatus::Running,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                parent_message_id: None,
+                work_item_id: None,
+                summary: Some("stopped owner task".into()),
+                detail: None,
+                recovery: None,
+            })
+            .unwrap();
+
+        host.recover_orphaned_queue_claims_at_startup()
+            .await
+            .unwrap();
+
+        let task = storage
+            .latest_task_record("task-stopped-owner")
+            .unwrap()
+            .unwrap();
+        assert_eq!(task.status, TaskStatus::Interrupted);
+        assert_eq!(
+            task.detail
+                .as_ref()
+                .and_then(|detail| detail["interrupted_reason"].as_str()),
+            Some("agent_stopped")
+        );
+        assert!(task.parent_message_id.is_none());
+        assert!(storage
+            .read_message_by_id("message:task-restart:task-stopped-owner")
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

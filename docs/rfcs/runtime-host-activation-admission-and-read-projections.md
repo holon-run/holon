@@ -86,7 +86,7 @@ operator input, but does not project a transient agent-level
 broader live-runtime closure signal would require activation or a separate
 durable projection and is outside this read-only contract.
 
-## Startup recovery of orphaned claims
+## Startup recovery
 
 Startup recovery runs before listeners accept requests. It may change a queue
 entry from `dequeued` to `interrupted` only when one transaction proves:
@@ -101,9 +101,23 @@ The transition is compare-and-set and records an audit event. Any canonical
 activation or terminal turn excludes the entry from orphan recovery. No age,
 posture, or heuristic threshold is sufficient evidence.
 
-Recovered non-stopped agents are explicitly activated with the startup recovery
-reason before HTTP listeners open. Stopped agents retain the recoverable durable
-claim but are not started.
+The same pre-listener pass discovers distinct owner agents for durable active
+tasks (`queued`, `running`, or `cancelling`) directly from the shared runtime
+database. It does not enumerate agent directories or use read APIs to
+materialize runtimes.
+
+Every affected owner is explicitly activated with the startup recovery reason,
+and the host waits for a one-shot bootstrap result before continuing. Bootstrap
+completion includes task/timer recovery, scheduler bootstrap settlement, and
+canonical orphan-claim recovery; spawning a runtime task alone is not sufficient
+evidence that startup reconciliation completed.
+
+Non-stopped agents retain the normal task-kind recovery policy: supervised child
+tasks may reattach, while process-local command tasks become
+`interrupted(runtime_restarted)` and emit an idempotent terminal result. A
+stopped owner is materialized only to converge residual active tasks through the
+existing lifecycle-stop path; it must not reattach children or emit restart
+re-entry messages. Unrelated unloaded agents remain lazy.
 
 ## Verification
 
@@ -113,6 +127,9 @@ Tests cover:
 - activation and shutdown linearization in both orders;
 - execution ingress after admission closes;
 - orphan `dequeued` recovery and idempotence;
+- active-task owner discovery for unloaded named and default agents;
+- bootstrap completion before startup recovery returns;
+- stopped-owner task convergence without child reattach or model re-entry;
 - canonical or terminal ownership exclusions;
 - read-only HTTP routes without activation;
 - unloaded blocking task-output behavior.

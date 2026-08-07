@@ -464,6 +464,8 @@ impl RuntimeHandle {
                 task_handles: Mutex::new(HashMap::new()),
                 recovered_tasks: Mutex::new(Some(active_tasks)),
                 recovered_timers: Mutex::new(Some(active_timers)),
+                bootstrap_result: StdMutex::new(None),
+                bootstrap_notify: Notify::new(),
                 suppress_next_continue_active_tick: Mutex::new(false),
                 shutdown_requested: AtomicBool::new(false),
                 transition_faults: StdMutex::new(std::collections::VecDeque::new()),

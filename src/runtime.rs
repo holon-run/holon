@@ -291,6 +291,8 @@ struct RuntimeInner {
     task_handles: Mutex<HashMap<String, ManagedTaskHandle>>,
     recovered_tasks: Mutex<Option<Vec<TaskRecord>>>,
     recovered_timers: Mutex<Option<Vec<TimerRecord>>>,
+    bootstrap_result: StdMutex<Option<std::result::Result<(), String>>>,
+    bootstrap_notify: Notify,
     suppress_next_continue_active_tick: Mutex<bool>,
     shutdown_requested: AtomicBool,
     transition_faults: StdMutex<std::collections::VecDeque<TransitionFaultPoint>>,
@@ -4208,17 +4210,23 @@ impl RuntimeHandle {
 
     pub async fn run(self) -> Result<()> {
         let agent_id = self.inner.agent.lock().await.state.id.clone();
-        if !self.inner.scheduler_engine.is_canonical() {
-            // Fail fast on residual canonical state before general recovery mutates runtime state.
-            self.validate_legacy_engine_startup(&agent_id)?;
+        let bootstrap = async {
+            if !self.inner.scheduler_engine.is_canonical() {
+                // Fail fast on residual canonical state before general recovery mutates runtime state.
+                self.validate_legacy_engine_startup(&agent_id)?;
+            }
+            self.bootstrap_recovery().await?;
+            scheduler_executor::SchedulerDecisionExecutor::new(&self)
+                .bootstrap_recovered()
+                .await?;
+            if self.inner.scheduler_engine.is_canonical() {
+                self.recover_scheduler_bootstrap_claims().await?;
+            }
+            Ok(())
         }
-        self.bootstrap_recovery().await?;
-        scheduler_executor::SchedulerDecisionExecutor::new(&self)
-            .bootstrap_recovered()
-            .await?;
-        if self.inner.scheduler_engine.is_canonical() {
-            self.recover_scheduler_bootstrap_claims().await?;
-        }
+        .await;
+        self.complete_bootstrap(&bootstrap);
+        bootstrap?;
 
         loop {
             let poll = scheduler_executor::SchedulerDecisionExecutor::new(&self)
@@ -4924,19 +4932,24 @@ impl RuntimeHandle {
     async fn bootstrap_recovery(&self) -> Result<()> {
         let mut interrupted_for_delivery = self.missing_interrupted_task_results().await?;
         if let Some(tasks) = self.inner.recovered_tasks.lock().await.take() {
-            let (reattached, interrupted_tasks) =
-                self.recover_supervised_child_tasks(tasks).await?;
-            let interrupted = self.interrupt_active_tasks(interrupted_tasks).await?;
-            if !reattached.is_empty() {
-                self.inner.storage.append_event(&AuditEvent::legacy(
-                    "supervised_child_task_monitor_reattached",
-                    serde_json::json!({
-                        "agent_id": self.agent_id().await?,
-                        "task_ids": reattached.iter().map(|task| task.id.clone()).collect::<Vec<_>>(),
-                    }),
-                ))?;
+            if self.agent_state().await?.status == AgentStatus::Stopped {
+                self.interrupt_active_tasks_for_lifecycle_stop(tasks)
+                    .await?;
+            } else {
+                let (reattached, interrupted_tasks) =
+                    self.recover_supervised_child_tasks(tasks).await?;
+                let interrupted = self.interrupt_active_tasks(interrupted_tasks).await?;
+                if !reattached.is_empty() {
+                    self.inner.storage.append_event(&AuditEvent::legacy(
+                        "supervised_child_task_monitor_reattached",
+                        serde_json::json!({
+                            "agent_id": self.agent_id().await?,
+                            "task_ids": reattached.iter().map(|task| task.id.clone()).collect::<Vec<_>>(),
+                        }),
+                    ))?;
+                }
+                interrupted_for_delivery.extend(interrupted);
             }
-            interrupted_for_delivery.extend(interrupted);
         }
         interrupted_for_delivery.sort_by(|left, right| left.id.cmp(&right.id));
         interrupted_for_delivery.dedup_by(|left, right| left.id == right.id);
@@ -4949,6 +4962,22 @@ impl RuntimeHandle {
         }
         self.emit_recovered_pending_wake_hint().await?;
         Ok(())
+    }
+
+    fn complete_bootstrap(&self, result: &Result<()>) {
+        *self.inner.bootstrap_result.lock().unwrap() =
+            Some(result.as_ref().map(|_| ()).map_err(ToString::to_string));
+        self.inner.bootstrap_notify.notify_one();
+    }
+
+    pub(crate) async fn wait_for_bootstrap(&self) -> Result<()> {
+        loop {
+            let notified = self.inner.bootstrap_notify.notified();
+            if let Some(result) = self.inner.bootstrap_result.lock().unwrap().clone() {
+                return result.map_err(|error| anyhow!("runtime bootstrap failed: {error}"));
+            }
+            notified.await;
+        }
     }
 }
 

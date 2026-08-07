@@ -1293,6 +1293,22 @@ impl TaskRepository<'_> {
         )
     }
 
+    pub fn active_owner_agent_ids(&self) -> Result<Vec<String>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT DISTINCT t.owner_agent_id
+             FROM tasks t
+             JOIN agent_identities i
+               ON i.agent_id = t.owner_agent_id
+              AND i.status = 'active'
+             WHERE t.status IN ('queued', 'running', 'cancelling')
+             ORDER BY t.owner_agent_id ASC",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
     fn query_for_agent(
         &self,
         _agent_id: &str,
