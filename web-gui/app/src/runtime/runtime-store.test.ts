@@ -1154,9 +1154,11 @@ describe("agent event catch-up", () => {
     const eventRequests = fetchMock.mock.calls
       .map(([input]) => new URL(String(input), "http://localhost"))
       .filter((url) => url.pathname.endsWith("/agents/agent-a/events"));
-    // Phase 1: descending tail fetch, Phase 2: ascending backfill from cached cursor
-    expect(eventRequests.map((url) => url.searchParams.get("order"))).toEqual(["desc", "asc"]);
-    expect(eventRequests.map((url) => url.searchParams.get("after_seq"))).toEqual([null, "1"]);
+    // Phase 1: descending tail fetch, Phase 1.5: display-level filtered tail, Phase 2: ascending backfill from cached cursor
+    expect(eventRequests.map((url) => url.searchParams.get("order"))).toEqual(["desc", "desc", "asc"]);
+    expect(eventRequests.map((url) => url.searchParams.get("after_seq"))).toEqual([null, null, "1"]);
+    // Phase 1.5 request carries the display-level filter
+    expect(eventRequests[1].searchParams.get("max_level")).toBe("info");
     expect(useRuntimeStore.getState().sessionsByAgentId["agent-a"]).toMatchObject({
       eventSeqs: Array.from({ length: 150 }, (_, index) => index + 1),
       newestSeq: 150,
