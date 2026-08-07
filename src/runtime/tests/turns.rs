@@ -2140,6 +2140,7 @@ async fn runtime_failure_artifacts_create_terminal_turn_record_when_missing() {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.last_turn_terminal = None;
         runtime.storage().write_agent(&guard.state).unwrap();
+        guard.last_persisted_state = guard.state.clone();
     }
 
     runtime
