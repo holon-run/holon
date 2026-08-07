@@ -218,12 +218,26 @@ impl RuntimeHandle {
             .storage
             .read_recent_wait_conditions(TURN_RECORD_SCAN_LIMIT)?;
 
+        let source_message_id = {
+            let guard = self.inner.agent.lock().await;
+            guard
+                .state
+                .current_execution_binding
+                .as_ref()
+                .map(|binding| binding.source_message_id.clone())
+        };
         let input_messages = messages
             .iter()
-            .filter(|message| turn_optional_id_matches(message.turn_id.as_deref(), turn_id))
+            .filter(|message| {
+                turn_optional_id_matches(message.turn_id.as_deref(), turn_id)
+                    || source_message_id.as_deref() == Some(message.id.as_str())
+            })
             .collect::<Vec<_>>();
 
         let mut record = TurnRecord::new(agent_id, turn_id, terminal.turn_index);
+        if let Some(existing) = self.inner.storage.read_turn_by_id(turn_id)? {
+            record.created_at = existing.created_at;
+        }
         record.run_id = run_id;
         record.current_work_item_id = current_work_item_id;
         record.trigger = input_messages
@@ -259,6 +273,31 @@ impl RuntimeHandle {
             .map(|condition| condition.id.clone())
             .collect();
         record.terminal = Some(TurnTerminalSummary::from_terminal(terminal));
+        record.replay = source_message_id
+            .as_deref()
+            .and_then(|source_message_id| {
+                input_messages
+                    .iter()
+                    .find(|message| message.id == source_message_id)
+            })
+            .and_then(|message| {
+                let source_turn_id = message.turn_id.as_deref()?.trim();
+                (!source_turn_id.is_empty() && source_turn_id != turn_id).then(|| {
+                    let prior_terminal = self
+                        .inner
+                        .storage
+                        .read_turn_by_id(source_turn_id)
+                        .ok()
+                        .flatten()
+                        .and_then(|turn| turn.terminal);
+                    crate::types::TurnReplayProvenance {
+                        source_message_id: message.id.clone(),
+                        source_turn_id: source_turn_id.to_string(),
+                        reason: "interrupted_queue_claim_reentry".into(),
+                        prior_terminal,
+                    }
+                })
+            });
 
         Ok(record)
     }
@@ -301,6 +340,7 @@ impl RuntimeHandle {
                 "completed_work_item_ids": record.completed_work_item_ids,
                 "waiting_condition_ids": record.waiting_condition_ids,
                 "terminal": record.terminal,
+                "replay": record.replay,
                 "created_at": record.created_at,
             }),
         )

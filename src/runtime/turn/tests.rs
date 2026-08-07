@@ -7,7 +7,8 @@ use crate::tool::{
     ToolError, ToolSpec,
 };
 use crate::types::{
-    TodoItemState, TurnTerminalCheckpointRecord, WorkItemPlanStatus, WorkItemRecord,
+    AuthorityClass, MessageBody, MessageKind, MessageOrigin, Priority, TodoItemState,
+    TurnTerminalCheckpointRecord, WorkItemPlanStatus, WorkItemRecord,
 };
 use chrono::Utc;
 
@@ -165,6 +166,151 @@ async fn persist_turn_record_uses_turn_id_not_numeric_sequence_collisions() {
     assert_eq!(record.tool_execution_ids, vec![owned_tool.id]);
     assert_eq!(record.produced_brief_ids, vec![owned_brief.id]);
     assert_eq!(record.completed_work_item_ids, vec!["work-owned"]);
+}
+
+#[test]
+fn turn_record_identity_is_immutable_after_first_persist() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        std::sync::Arc::new(crate::provider::StubProvider::new("unused")),
+        "default".into(),
+        crate::runtime::tests::support::context_config(),
+    )
+    .unwrap();
+    let mut initial = crate::types::TurnRecord::new("default", "turn-immutable", 7);
+    initial.run_id = Some("run-original".into());
+    initial.current_work_item_id = Some("work-original".into());
+    runtime.storage().append_turn(&initial).unwrap();
+
+    let mut terminal_update = initial.clone();
+    terminal_update.terminal = Some(crate::types::TurnTerminalSummary {
+        kind: TurnTerminalKind::Completed,
+        reason: None,
+        completed_at: Utc::now(),
+        duration_ms: 5,
+    });
+    runtime.storage().append_turn(&terminal_update).unwrap();
+
+    let mut conflicting = terminal_update.clone();
+    conflicting.current_work_item_id = Some("work-conflicting".into());
+    let error = runtime.storage().append_turn(&conflicting).unwrap_err();
+    let conflict = error
+        .downcast_ref::<crate::runtime_db::RuntimeStateTransitionConflict>()
+        .expect("turn identity conflict should be typed");
+    assert_eq!(conflict.domain(), "turn identity");
+    assert_eq!(conflict.record_id(), "turn-immutable");
+
+    assert_eq!(
+        runtime.storage().read_turn_by_id("turn-immutable").unwrap(),
+        Some(terminal_update)
+    );
+}
+
+#[tokio::test]
+async fn replay_persists_a_new_turn_with_source_provenance() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        std::sync::Arc::new(crate::provider::StubProvider::new("unused")),
+        "default".into(),
+        crate::runtime::tests::support::context_config(),
+    )
+    .unwrap();
+    let mut source_message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator { actor_id: None },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "resume after interrupted claim".into(),
+        },
+    );
+    source_message.id = "message-replay-source".into();
+    source_message.turn_id = Some("turn-replay-source".into());
+    runtime.storage().append_message(&source_message).unwrap();
+
+    let mut source_turn = crate::types::TurnRecord::new("default", "turn-replay-source", 4);
+    source_turn.current_work_item_id = Some("work-source".into());
+    source_turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(
+        &source_message,
+    ));
+    source_turn.terminal = Some(crate::types::TurnTerminalSummary {
+        kind: TurnTerminalKind::Aborted,
+        reason: Some("runtime_restart".into()),
+        completed_at: Utc::now(),
+        duration_ms: 10,
+    });
+    runtime.storage().append_turn(&source_turn).unwrap();
+
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.current_turn_id = Some("turn-replay-attempt".into());
+        guard.state.current_turn_work_item_id = Some("work-source".into());
+        guard.state.current_execution_binding = Some(crate::types::WorkItemExecutionBinding {
+            activation_id: Some("activation-replay".into()),
+            admission_provenance: None,
+            source_message_id: source_message.id.clone(),
+            turn_id: "turn-replay-attempt".into(),
+            work_item_id: Some("work-source".into()),
+            claimed_work_revision: Some(1),
+        });
+    }
+
+    runtime
+        .persist_turn_record(&TurnTerminalRecord {
+            turn_id: "turn-replay-attempt".into(),
+            turn_index: 5,
+            kind: TurnTerminalKind::Completed,
+            reason: None,
+            last_assistant_message: None,
+            checkpoint: None,
+            completed_at: Utc::now(),
+            duration_ms: 20,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        runtime
+            .storage()
+            .read_turn_by_id("turn-replay-source")
+            .unwrap(),
+        Some(source_turn.clone()),
+        "replay must not overwrite the historical source turn"
+    );
+    let replay = runtime
+        .storage()
+        .read_turn_by_id("turn-replay-attempt")
+        .unwrap()
+        .expect("replay attempt turn");
+    assert_eq!(replay.turn_id, "turn-replay-attempt");
+    assert_eq!(replay.current_work_item_id.as_deref(), Some("work-source"));
+    assert_eq!(
+        replay
+            .trigger
+            .as_ref()
+            .and_then(|trigger| trigger.message_id.as_deref()),
+        Some(source_message.id.as_str())
+    );
+    assert_eq!(
+        replay.replay,
+        Some(crate::types::TurnReplayProvenance {
+            source_message_id: source_message.id,
+            source_turn_id: source_turn.turn_id,
+            reason: "interrupted_queue_claim_reentry".into(),
+            prior_terminal: source_turn.terminal,
+        })
+    );
 }
 
 #[test]

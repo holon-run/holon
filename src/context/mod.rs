@@ -2123,6 +2123,18 @@ fn render_turn_record_projection(
         }
     )];
     lines.push(format!("  - turn_id: {}", sanitize_inline(&record.turn_id)));
+    if let Some(replay) = &record.replay {
+        lines.push(format!(
+            "  - replay: source_message_id={} source_turn_id={} reason={}",
+            sanitize_inline(&replay.source_message_id),
+            sanitize_inline(&replay.source_turn_id),
+            sanitize_inline(&replay.reason)
+        ));
+        lines.push(
+            "  - projection advisory: replay provenance is historical evidence, not continuation identity"
+                .to_string(),
+        );
+    }
     if let Some(trigger_message) = trigger_message {
         lines.push(format!(
             "  - trigger: {}",
@@ -3217,6 +3229,74 @@ mod tests {
         assert!(recent_turns.contains(&format!("message_ref=message:{}", operator.id)));
         assert!(recent_turns.contains("Rendered from DB turn record."));
         assert!(recent_turns.contains("brief_ref=brief:brief-db-context"));
+    }
+
+    #[test]
+    fn recent_turns_marks_replay_provenance_without_treating_source_as_continuation() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        let mut source = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: Some("operator:test".into()),
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Historical input must not become current continuation.".into(),
+            },
+        );
+        source.turn_id = Some("turn-replay-source".into());
+        storage.append_message(&source).unwrap();
+
+        let mut replay = TurnRecord::new("default", "turn-replay-attempt", 8);
+        replay.input_message_ids = vec![source.id.clone()];
+        replay.trigger = Some(crate::types::TurnTriggerSummary::from_message(&source));
+        replay.replay = Some(crate::types::TurnReplayProvenance {
+            source_message_id: source.id.clone(),
+            source_turn_id: "turn-replay-source".into(),
+            reason: "interrupted_queue_claim_reentry".into(),
+            prior_terminal: None,
+        });
+        storage.append_turn(&replay).unwrap();
+
+        let current_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: Some("operator:test".into()),
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "New current instruction.".into(),
+            },
+        );
+        let context = build_context(
+            &storage,
+            &AgentState::new("default"),
+            &execution_snapshot_for(&AgentState::new("default")),
+            &SkillsRuntimeView::default(),
+            &current_message,
+            None,
+            &ContextConfig::default(),
+            dir.path(),
+        )
+        .unwrap();
+        let recent_turns = context
+            .sections
+            .iter()
+            .find(|section| section.name == "recent_turns")
+            .expect("recent_turns section")
+            .content
+            .clone();
+        assert!(recent_turns.contains("source_turn_id=turn-replay-source"));
+        assert!(recent_turns.contains(
+            "projection advisory: replay provenance is historical evidence, not continuation identity"
+        ));
+        assert!(!recent_turns.contains("Historical input must not become current continuation."));
     }
 
     #[test]

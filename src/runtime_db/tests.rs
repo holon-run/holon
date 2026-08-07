@@ -5348,6 +5348,48 @@ CREATE TABLE working_memory_deltas (
     }
 
     #[test]
+    fn turn_record_legacy_import_preserves_existing_identity() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let mut canonical = crate::types::TurnRecord::new("agent-a", "turn-a", 11);
+        canonical.current_work_item_id = Some("work-current".into());
+        canonical.created_at = Utc::now() - chrono::Duration::seconds(5);
+        db.turn_records().upsert(&canonical)?;
+
+        let mut delivery = crate::types::DeliverySummaryRecord::new(
+            "agent-a",
+            "work-legacy",
+            "legacy delivery",
+            Some(7),
+            None,
+        );
+        delivery.id = "delivery-legacy".into();
+        delivery.turn_id = Some("turn-a".into());
+
+        db.turn_records().import_legacy(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![delivery],
+            Vec::new(),
+        )?;
+
+        let imported = db
+            .turn_records()
+            .by_id(Some("agent-a"), "turn-a")?
+            .expect("existing turn should remain");
+        assert_eq!(imported.turn_index, 11);
+        assert_eq!(
+            imported.current_work_item_id.as_deref(),
+            Some("work-current")
+        );
+        assert_eq!(imported.created_at, canonical.created_at);
+        assert_eq!(imported.delivery_summary_ids, vec!["delivery-legacy"]);
+        assert_eq!(imported.completed_work_item_ids, vec!["work-legacy"]);
+        Ok(())
+    }
+
+    #[test]
     fn runtime_db_temp_helper_uses_isolated_state_dir() -> Result<()> {
         let temp_db = test_support::TempRuntimeDb::new()?;
         assert!(temp_db.db.path().ends_with("state/runtime.sqlite"));

@@ -3257,6 +3257,21 @@ impl RuntimeHandle {
         operator_reply_route_id: Option<&str>,
         execution_admission_provenance: ExecutionAdmissionProvenance,
     ) -> Result<()> {
+        let replay_source = if let Some(message) = message {
+            if let Some(source_turn_id) = message.source_refs.get("replay_source_turn_id") {
+                Some((
+                    source_turn_id.clone(),
+                    self.inner
+                        .runtime_db
+                        .turn_records()
+                        .by_id(Some(&message.agent_id), source_turn_id)?,
+                ))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let canonical_execution_binding = match &execution_admission_provenance {
             ExecutionAdmissionProvenance::Canonical { activation_id, .. } => {
                 let message = message.ok_or_else(|| {
@@ -3332,13 +3347,21 @@ impl RuntimeHandle {
         let state = {
             let mut guard = self.inner.agent.lock().await;
             guard.state.turn_index += 1;
-            let turn_id = message
-                .and_then(|message| normalized_turn_id(message.turn_id.as_deref()))
-                .unwrap_or_else(crate::ids::turn_id);
+            let turn_id = if replay_source.is_some() {
+                crate::ids::turn_id()
+            } else {
+                message
+                    .and_then(|message| normalized_turn_id(message.turn_id.as_deref()))
+                    .unwrap_or_else(crate::ids::turn_id)
+            };
             guard.state.current_turn_id = Some(turn_id.clone());
             guard.state.last_turn_terminal = None;
             if let Some((_, work_item_id)) = canonical_execution_binding.as_ref() {
                 guard.state.current_turn_work_item_id = work_item_id.clone();
+            } else if let Some((_, source_turn)) = replay_source.as_ref() {
+                guard.state.current_turn_work_item_id = source_turn
+                    .as_ref()
+                    .and_then(|turn| turn.current_work_item_id.clone());
             } else if guard.state.current_turn_work_item_id.is_none() {
                 guard.state.current_turn_work_item_id = guard.state.current_work_item_id.clone();
             }
@@ -3412,6 +3435,22 @@ impl RuntimeHandle {
                     "turn_index": state.turn_index,
                 }),
             ))?;
+            if let Some((source_turn_id, source_turn)) = replay_source {
+                self.inner.storage.append_event(&AuditEvent::legacy(
+                    "turn_replay_started",
+                    serde_json::json!({
+                        "agent_id": message.agent_id,
+                        "message_id": message.id,
+                        "source_turn_id": source_turn_id,
+                        "replay_turn_id": state.current_turn_id,
+                        "reason": "interrupted_queue_claim_reentry",
+                        "source_work_item_id": source_turn
+                            .as_ref()
+                            .and_then(|turn| turn.current_work_item_id.clone()),
+                        "prior_terminal": source_turn.and_then(|turn| turn.terminal),
+                    }),
+                ))?;
+            }
         }
         Ok(())
     }
@@ -4594,57 +4633,10 @@ impl RuntimeHandle {
             return Ok(0);
         }
         let agent_id = self.inner.agent.lock().await.state.id.clone();
-        let claimed = self
-            .inner
+        self.inner
             .runtime_db
-            .queue_entries()
-            .recent(Some(&agent_id), usize::MAX)?
-            .into_iter()
-            .filter(|entry| entry.status == QueueEntryStatus::Dequeued)
-            .collect::<Vec<_>>();
-        let mut released = 0;
-        for mut entry in claimed {
-            entry.status = QueueEntryStatus::Interrupted;
-            entry.updated_at = Utc::now();
-            let message_id = entry.message_id.clone();
-            let execution_protocol =
-                crate::runtime_db::transitions::ExecutionProtocolTransition::default();
-            let commit = self
-                .inner
-                .runtime_db
-                .transitions()
-                .commit_queue_with_execution_protocol(
-                    &crate::runtime_db::transitions::QueueTransitionCommand {
-                        agent_id: agent_id.clone(),
-                        operation: crate::runtime_db::transitions::QueueOperation::Release,
-                        mutation: crate::runtime_db::transitions::QueueMutation::Upsert(entry),
-                        scheduler_claim_work_item: None,
-                        scheduler_protocol_bootstrap: None,
-                        scheduler_protocol_commands: Vec::new(),
-                        agent_state: None,
-                        message_evidence: Vec::new(),
-                        transcript_entries: Vec::new(),
-                        turn_record: None,
-                        audit_events: vec![AuditEvent::legacy(
-                            "queue_claim_released_for_runtime_restart",
-                            serde_json::json!({
-                                "agent_id": agent_id,
-                                "message_id": message_id,
-                                "status": QueueEntryStatus::Interrupted,
-                            }),
-                        )],
-                        notify_scheduler: true,
-                        fault: None,
-                        brief_evidence: Vec::new(),
-                    },
-                    &execution_protocol,
-                )?;
-            if commit.applied {
-                released += 1;
-            }
-            self.apply_transition_commit(commit).await;
-        }
-        Ok(released)
+            .reconcile_orphaned_dequeued_claims(Some(&agent_id))
+            .map(|(_, changed)| changed)
     }
 
     fn validate_legacy_engine_startup(&self, agent_id: &str) -> Result<()> {

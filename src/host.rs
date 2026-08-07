@@ -3080,10 +3080,10 @@ mod tests {
         system::WorkspaceProjectionKind,
         types::{
             AgentDeletionPhase, AgentDeletionStatus, AgentKind, AgentOwnership, AgentProfilePreset,
-            AgentRegistryStatus, AgentStatus, AgentVisibility, AuthorityClass, ControlAction,
-            MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority, QueueEntryRecord,
-            QueueEntryStatus, TaskRecord, TaskRecoverySpec, TaskStatus, TurnTerminalKind,
-            WorkItemRecord, WorkItemState,
+            AgentRegistryStatus, AgentStatus, AgentVisibility, AuthorityClass, BriefKind,
+            BriefRecord, ControlAction, DeliverySummaryRecord, MessageBody, MessageEnvelope,
+            MessageKind, MessageOrigin, Priority, QueueEntryRecord, QueueEntryStatus, TaskRecord,
+            TaskRecoverySpec, TaskStatus, TurnTerminalKind, WorkItemRecord, WorkItemState,
         },
     };
 
@@ -6140,7 +6140,7 @@ mod tests {
             })
             .expect("insert legacy activation");
 
-        // Has terminal turn: should NOT be recovered
+        // Has terminal turn: completion evidence settles the stale claim.
         let msg_c = make_message("msg-terminal");
         storage.append_message(&msg_c).unwrap();
         storage
@@ -6159,6 +6159,57 @@ mod tests {
             .upsert(&turn)
             .expect("upsert turn");
 
+        // Has a result brief without a terminal turn: should also settle, not replay.
+        let msg_result = make_message("msg-result-brief");
+        storage.append_message(&msg_result).unwrap();
+        storage
+            .append_queue_entry(&make_queue_entry(&msg_result, QueueEntryStatus::Dequeued))
+            .unwrap();
+        let result_brief = BriefRecord::new(
+            &agent_id,
+            BriefKind::Result,
+            "completed before restart",
+            Some(msg_result.id.clone()),
+            None,
+        );
+        storage.append_brief(&result_brief).unwrap();
+
+        // Has failure evidence: should settle as aborted, not replay.
+        let msg_failure = make_message("msg-failure-brief");
+        storage.append_message(&msg_failure).unwrap();
+        storage
+            .append_queue_entry(&make_queue_entry(&msg_failure, QueueEntryStatus::Dequeued))
+            .unwrap();
+        let failure_brief = BriefRecord::new(
+            &agent_id,
+            BriefKind::Failure,
+            "failed before restart",
+            Some(msg_failure.id.clone()),
+            None,
+        );
+        storage.append_brief(&failure_brief).unwrap();
+
+        // Has delivery evidence attached to its trigger turn: should settle, not replay.
+        let msg_delivery = make_message("msg-delivery");
+        storage.append_message(&msg_delivery).unwrap();
+        storage
+            .append_queue_entry(&make_queue_entry(&msg_delivery, QueueEntryStatus::Dequeued))
+            .unwrap();
+        let mut delivery_turn = crate::types::TurnRecord::new(&agent_id, "turn-delivery", 1);
+        delivery_turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(
+            &msg_delivery,
+        ));
+        storage.append_turn(&delivery_turn).unwrap();
+        let mut delivery = DeliverySummaryRecord::new(
+            &agent_id,
+            "work-delivery",
+            "delivered before restart",
+            Some(1),
+            None,
+        );
+        delivery.turn_id = Some(delivery_turn.turn_id);
+        storage.append_delivery_summary(&delivery).unwrap();
+
         let recovered = host
             .recover_orphaned_queue_claims_at_startup()
             .await
@@ -6173,18 +6224,37 @@ mod tests {
                     QueueEntryStatus::Interrupted,
                     "orphaned should be recovered"
                 ),
-                "msg-activated" | "msg-terminal" => assert_eq!(
+                "msg-activated" => assert_eq!(
                     entry.status,
                     QueueEntryStatus::Dequeued,
-                    "non-orphaned should not be recovered"
+                    "active execution should retain its claim"
+                ),
+                "msg-terminal" | "msg-result-brief" | "msg-delivery" => assert_eq!(
+                    entry.status,
+                    QueueEntryStatus::Processed,
+                    "successful completion evidence should prevent replay"
+                ),
+                "msg-failure-brief" => assert_eq!(
+                    entry.status,
+                    QueueEntryStatus::Aborted,
+                    "failure completion evidence should prevent replay"
                 ),
                 _ => {}
             }
         }
 
         let events = storage.read_recent_events(32).unwrap();
-        assert!(events
-            .iter()
-            .any(|e| e.kind == "orphaned_queue_claim_recovered"));
+        assert!(events.iter().any(|event| {
+            event.kind == "orphaned_queue_claim_recovered"
+                && event.data["message_id"] == "msg-result-brief"
+                && event.data["next_status"] == "processed"
+                && event.data["reason"] == "terminal_or_result_completion_evidence"
+        }));
+        assert!(events.iter().any(|event| {
+            event.kind == "orphaned_queue_claim_recovered"
+                && event.data["message_id"] == "msg-failure-brief"
+                && event.data["next_status"] == "aborted"
+                && event.data["reason"] == "terminal_failure_completion_evidence"
+        }));
     }
 }

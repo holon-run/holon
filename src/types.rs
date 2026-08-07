@@ -1718,6 +1718,15 @@ impl TurnTerminalSummary {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TurnReplayProvenance {
+    pub source_message_id: String,
+    pub source_turn_id: String,
+    pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prior_terminal: Option<TurnTerminalSummary>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TurnRecord {
     pub turn_id: String,
@@ -1743,6 +1752,8 @@ pub struct TurnRecord {
     pub waiting_condition_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal: Option<TurnTerminalSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay: Option<TurnReplayProvenance>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -1762,6 +1773,7 @@ impl TurnRecord {
             completed_work_item_ids: Vec::new(),
             waiting_condition_ids: Vec::new(),
             terminal: None,
+            replay: None,
             created_at: Utc::now(),
         }
     }

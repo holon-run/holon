@@ -825,6 +825,102 @@ async fn runtime_failure_preserves_canonical_claim_for_bootstrap_reconciliation(
 }
 
 #[tokio::test]
+async fn interrupted_message_replay_creates_new_turn_without_current_focus_drift() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let message = runtime
+        .enqueue(trusted_operator_prompt(None, "replay interrupted message"))
+        .await
+        .unwrap();
+    let source_turn_id = message.turn_id.clone().expect("source turn id");
+    let mut interrupted = runtime
+        .inner
+        .runtime_db
+        .queue_entries()
+        .latest(&message.id)
+        .unwrap()
+        .expect("queued message");
+    interrupted.status = QueueEntryStatus::Interrupted;
+    interrupted.updated_at = Utc::now();
+    runtime.storage().append_queue_entry(&interrupted).unwrap();
+    let current_work_item = runtime
+        .create_work_item("unrelated current focus".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.current_work_item_id = Some(current_work_item.id.clone());
+        guard.state.current_turn_work_item_id = Some(current_work_item.id);
+        guard.persist_state(&runtime.inner.storage).unwrap();
+    }
+
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("interrupted message should be claimed for replay");
+    };
+    assert_eq!(
+        scheduled.message.source_refs.get("replay_source_turn_id"),
+        Some(&source_turn_id)
+    );
+    runtime
+        .begin_interactive_turn(Some(&scheduled.message), None, None)
+        .await
+        .unwrap();
+    let state = runtime.agent_state().await.unwrap();
+    let replay_turn_id = state.current_turn_id.expect("replay turn id");
+    assert_ne!(replay_turn_id, source_turn_id);
+    assert_eq!(state.current_turn_work_item_id, None);
+
+    runtime
+        .persist_turn_record(&TurnTerminalRecord {
+            turn_id: replay_turn_id.clone(),
+            turn_index: state.turn_index,
+            kind: TurnTerminalKind::Completed,
+            reason: None,
+            last_assistant_message: None,
+            checkpoint: None,
+            completed_at: Utc::now(),
+            duration_ms: 1,
+        })
+        .await
+        .unwrap();
+
+    assert!(runtime
+        .storage()
+        .read_turn_by_id(&source_turn_id)
+        .unwrap()
+        .is_none());
+    let replay = runtime
+        .storage()
+        .read_turn_by_id(&replay_turn_id)
+        .unwrap()
+        .expect("replay turn");
+    assert_eq!(replay.current_work_item_id, None);
+    assert_eq!(
+        replay.replay,
+        Some(crate::types::TurnReplayProvenance {
+            source_message_id: message.id,
+            source_turn_id,
+            reason: "interrupted_queue_claim_reentry".into(),
+            prior_terminal: None,
+        })
+    );
+}
+
+#[tokio::test]
 async fn legacy_recovery_plan_reconciles_an_existing_dispatch_reservation() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();

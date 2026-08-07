@@ -101,7 +101,6 @@ pub(crate) enum QueueOperation {
     Admit,
     Claim,
     Interject,
-    Release,
     Settle,
     RepairDrop,
 }
@@ -289,8 +288,31 @@ impl RuntimeDb {
     }
 
     pub(crate) fn recover_orphaned_dequeued_claims_at_startup(&self) -> Result<Vec<String>> {
+        self.reconcile_orphaned_dequeued_claims(None)
+            .map(|(agents, _)| agents)
+    }
+
+    pub(crate) fn reconcile_orphaned_dequeued_claims(
+        &self,
+        agent_id: Option<&str>,
+    ) -> Result<(Vec<String>, usize)> {
         self.transaction(|tx| {
-            let mut statement = tx.prepare(
+            let sql = if agent_id.is_some() {
+                "SELECT q.payload_json
+                 FROM queue_entries q
+                 JOIN agent_identities i
+                   ON i.agent_id = q.agent_id
+                  AND i.status = 'active'
+                 WHERE q.status = 'dequeued'
+                   AND q.agent_id = ?1
+                   AND NOT EXISTS (
+                     SELECT 1
+                     FROM execution_protocol_attempts a
+                     WHERE a.agent_id = q.agent_id
+                       AND a.attempt_id = 'activation:message:' || q.message_id
+                   )
+                 ORDER BY q.agent_id, q.updated_at, q.message_id"
+            } else {
                 "SELECT q.payload_json
                  FROM queue_entries q
                  JOIN agent_identities i
@@ -303,30 +325,93 @@ impl RuntimeDb {
                      WHERE a.agent_id = q.agent_id
                        AND a.attempt_id = 'activation:message:' || q.message_id
                    )
-                   AND NOT EXISTS (
-                     SELECT 1
-                     FROM turn_records t
-                     WHERE t.agent_id = q.agent_id
-                       AND t.trigger_message_id = q.message_id
-                       AND t.terminal_kind IS NOT NULL
-                   )
-                 ORDER BY q.agent_id, q.updated_at, q.message_id",
-            )?;
-            let candidates = statement
-                .query_map([], |row| row.get::<_, String>(0))?
-                .map(|row| Ok(serde_json::from_str::<QueueEntryRecord>(&row?)?))
-                .collect::<Result<Vec<_>>>()?;
+                 ORDER BY q.agent_id, q.updated_at, q.message_id"
+            };
+            let mut statement = tx.prepare(sql)?;
+            let candidates = if let Some(agent_id) = agent_id {
+                statement
+                    .query_map([agent_id], |row| row.get::<_, String>(0))?
+                    .map(|row| Ok(serde_json::from_str::<QueueEntryRecord>(&row?)?))
+                    .collect::<Result<Vec<_>>>()?
+            } else {
+                statement
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .map(|row| Ok(serde_json::from_str::<QueueEntryRecord>(&row?)?))
+                    .collect::<Result<Vec<_>>>()?
+            };
             drop(statement);
 
             let recovered_at = Utc::now();
             let mut recovered_agents = Vec::new();
+            let mut changed = 0;
             for expected in candidates {
                 let mut recovered = expected.clone();
-                recovered.status = QueueEntryStatus::Interrupted;
+                let terminal_kind = tx
+                    .query_row(
+                        "SELECT terminal_kind
+                         FROM turn_records
+                         WHERE agent_id = ?1
+                           AND trigger_message_id = ?2
+                           AND terminal_kind IS NOT NULL
+                         ORDER BY completed_at DESC
+                         LIMIT 1",
+                        rusqlite::params![expected.agent_id, expected.message_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?;
+                let terminal_brief_kind = tx
+                    .query_row(
+                        "SELECT kind
+                         FROM briefs
+                         WHERE agent_id = ?1
+                           AND message_id = ?2
+                           AND kind IN ('result', 'failure')
+                         ORDER BY created_at DESC
+                         LIMIT 1",
+                        rusqlite::params![expected.agent_id, expected.message_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?;
+                let delivered = tx.query_row(
+                    "SELECT EXISTS(
+                         SELECT 1
+                         FROM delivery_summaries d
+                         JOIN turn_records t
+                           ON t.agent_id = d.agent_id
+                          AND t.turn_id = d.turn_id
+                         WHERE d.agent_id = ?1
+                           AND t.trigger_message_id = ?2
+                     )",
+                    rusqlite::params![expected.agent_id, expected.message_id],
+                    |row| row.get::<_, bool>(0),
+                )?;
+                let (next_status, reason) = if terminal_kind.as_deref() == Some("completed")
+                    || terminal_brief_kind.as_deref() == Some("result")
+                    || delivered
+                {
+                    (
+                        QueueEntryStatus::Processed,
+                        "terminal_or_result_completion_evidence",
+                    )
+                } else if terminal_kind.is_some()
+                    || terminal_brief_kind.as_deref() == Some("failure")
+                {
+                    (
+                        QueueEntryStatus::Aborted,
+                        "terminal_failure_completion_evidence",
+                    )
+                } else {
+                    (
+                        QueueEntryStatus::Interrupted,
+                        "no_execution_attempt_or_completion_evidence",
+                    )
+                };
+                recovered.status = next_status.clone();
                 recovered.updated_at = recovered_at;
                 if !compare_and_set_queue_entry_tx(tx, &expected, &recovered)? {
                     continue;
                 }
+                changed += 1;
                 let event = AuditEvent {
                     id: format!("audit:orphaned-queue-claim:{}", expected.message_id),
                     event_seq: 0,
@@ -339,17 +424,22 @@ impl RuntimeDb {
                     data: serde_json::json!({
                         "message_id": expected.message_id,
                         "agent_id": expected.agent_id,
-                        "reason": "no_execution_attempt_or_terminal_turn",
+                        "reason": reason,
                         "previous_status": "dequeued",
-                        "next_status": "interrupted",
+                        "next_status": next_status,
+                        "terminal_kind": terminal_kind,
+                        "terminal_brief_kind": terminal_brief_kind,
+                        "delivery_evidence": delivered,
                     }),
                 };
                 append_audit_event_tx(tx, Some(&recovered.agent_id), &event)?;
-                recovered_agents.push(recovered.agent_id);
+                if recovered.status == QueueEntryStatus::Interrupted {
+                    recovered_agents.push(recovered.agent_id);
+                }
             }
             recovered_agents.sort();
             recovered_agents.dedup();
-            Ok(recovered_agents)
+            Ok((recovered_agents, changed))
         })
     }
 }
@@ -837,10 +927,7 @@ impl RuntimeTransitionRepository<'_> {
                 let include_interrupted = match command.operation {
                     QueueOperation::Claim => true,
                     QueueOperation::Interject => false,
-                    QueueOperation::Admit
-                    | QueueOperation::Release
-                    | QueueOperation::Settle
-                    | QueueOperation::RepairDrop => {
+                    QueueOperation::Admit | QueueOperation::Settle | QueueOperation::RepairDrop => {
                         unreachable!("queue operation validation rejects this combination")
                     }
                 };
@@ -923,10 +1010,7 @@ impl RuntimeTransitionRepository<'_> {
                 QueueMutation::Consume(record) => match command.operation {
                     QueueOperation::Claim => try_claim_queued_message_tx(tx, record)?,
                     QueueOperation::Interject => try_interject_queued_message_tx(tx, record)?,
-                    QueueOperation::Admit
-                    | QueueOperation::Release
-                    | QueueOperation::Settle
-                    | QueueOperation::RepairDrop => {
+                    QueueOperation::Admit | QueueOperation::Settle | QueueOperation::RepairDrop => {
                         unreachable!("queue operation validation rejects this combination")
                     }
                 },
@@ -1593,12 +1677,6 @@ fn validate_queue_operation(command: &QueueTransitionCommand) -> Result<()> {
             QueueOperation::Interject,
             QueueMutation::Consume(QueueEntryRecord {
                 status: QueueEntryStatus::Interjected,
-                ..
-            })
-        ) | (
-            QueueOperation::Release,
-            QueueMutation::Upsert(QueueEntryRecord {
-                status: QueueEntryStatus::Interrupted,
                 ..
             })
         ) | (

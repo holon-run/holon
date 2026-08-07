@@ -484,6 +484,14 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             .storage
             .read_message_by_id(&candidate.message.id)?
             .ok_or_else(|| anyhow!("claimed message is missing persisted ingress evidence"))?;
+        let replay_source_turn_id = self
+            .runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&candidate.message.id)?
+            .filter(|entry| entry.status == QueueEntryStatus::Interrupted)
+            .and_then(|_| persisted_message.turn_id.clone());
         let canonical_claim = if self.runtime.inner.scheduler_engine.is_canonical() {
             match self.canonical_activation_plan(
                 &projection,
@@ -763,7 +771,17 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     reason: Arc::new(StdMutex::new("operator_aborted".into())),
                 });
                 commit.effects.agent_state = None;
-                break (persisted_message.clone(), running_state, commit);
+                let mut claimed_message = persisted_message.clone();
+                if let Some(source_turn_id) = replay_source_turn_id.as_ref() {
+                    claimed_message
+                        .source_refs
+                        .insert("replay_source_turn_id".into(), source_turn_id.clone());
+                    claimed_message.source_refs.insert(
+                        "replay_reason".into(),
+                        "interrupted_queue_claim_reentry".into(),
+                    );
+                }
+                break (claimed_message, running_state, commit);
             }
         };
         self.runtime

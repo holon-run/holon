@@ -1728,7 +1728,8 @@ impl TurnRecordRepository<'_> {
                     wait_conditions,
                 )?;
                 for record in &records {
-                    upsert_turn_record_tx(tx, record)?;
+                    let record = merge_legacy_turn_evidence_tx(tx, record)?;
+                    upsert_turn_record_tx(tx, &record)?;
                 }
                 Ok(serde_json::json!({
                     "imported_records": records.len(),
@@ -3853,7 +3854,96 @@ fn upsert_timer_tx(tx: &Transaction<'_>, record: &TimerRecord) -> Result<()> {
     Ok(())
 }
 
+fn merge_legacy_turn_evidence_tx(tx: &Transaction<'_>, derived: &TurnRecord) -> Result<TurnRecord> {
+    let Some(mut existing) = tx
+        .query_row(
+            "SELECT payload_json FROM turn_records WHERE turn_id = ?1",
+            [&derived.turn_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|payload| decode_turn_record_payload(&payload))
+        .transpose()?
+    else {
+        return Ok(derived.clone());
+    };
+    if existing.agent_id != derived.agent_id {
+        return Err(RuntimeStateTransitionConflict::new(
+            "turn identity",
+            &derived.turn_id,
+            &existing.agent_id,
+            &derived.agent_id,
+        )
+        .into());
+    }
+    existing
+        .input_message_ids
+        .extend(derived.input_message_ids.iter().cloned());
+    existing
+        .tool_execution_ids
+        .extend(derived.tool_execution_ids.iter().cloned());
+    existing
+        .produced_brief_ids
+        .extend(derived.produced_brief_ids.iter().cloned());
+    existing
+        .delivery_summary_ids
+        .extend(derived.delivery_summary_ids.iter().cloned());
+    existing
+        .completed_work_item_ids
+        .extend(derived.completed_work_item_ids.iter().cloned());
+    existing
+        .waiting_condition_ids
+        .extend(derived.waiting_condition_ids.iter().cloned());
+    existing.input_message_ids.sort();
+    existing.input_message_ids.dedup();
+    existing.tool_execution_ids.sort();
+    existing.tool_execution_ids.dedup();
+    existing.produced_brief_ids.sort();
+    existing.produced_brief_ids.dedup();
+    existing.delivery_summary_ids.sort();
+    existing.delivery_summary_ids.dedup();
+    existing.completed_work_item_ids.sort();
+    existing.completed_work_item_ids.dedup();
+    existing.waiting_condition_ids.sort();
+    existing.waiting_condition_ids.dedup();
+    Ok(existing)
+}
+
 pub(crate) fn upsert_turn_record_tx(tx: &Transaction<'_>, record: &TurnRecord) -> Result<()> {
+    let existing = tx
+        .query_row(
+            "SELECT payload_json FROM turn_records WHERE turn_id = ?1",
+            [&record.turn_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|payload| decode_turn_record_payload(&payload))
+        .transpose()?;
+    if let Some(existing) = existing.as_ref() {
+        let identity_matches = existing.agent_id == record.agent_id
+            && existing.turn_index == record.turn_index
+            && existing.run_id == record.run_id
+            && existing.current_work_item_id == record.current_work_item_id
+            && existing
+                .trigger
+                .as_ref()
+                .and_then(|trigger| trigger.message_id.as_deref())
+                == record
+                    .trigger
+                    .as_ref()
+                    .and_then(|trigger| trigger.message_id.as_deref())
+            && existing.created_at == record.created_at
+            && existing.replay == record.replay;
+        if !identity_matches {
+            return Err(RuntimeStateTransitionConflict::new(
+                "turn identity",
+                &record.turn_id,
+                "immutable",
+                "conflicting",
+            )
+            .into());
+        }
+    }
     let payload_json = serde_json::to_string(record)?;
     let terminal_kind = record
         .terminal
@@ -3870,13 +3960,7 @@ pub(crate) fn upsert_turn_record_tx(tx: &Transaction<'_>, record: &TurnRecord) -
             trigger_message_id, terminal_kind, created_at, completed_at, payload_json
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
          ON CONFLICT(turn_id) DO UPDATE SET
-            turn_index = excluded.turn_index,
-            agent_id = excluded.agent_id,
-            run_id = excluded.run_id,
-            current_work_item_id = excluded.current_work_item_id,
-            trigger_message_id = excluded.trigger_message_id,
             terminal_kind = excluded.terminal_kind,
-            created_at = excluded.created_at,
             completed_at = excluded.completed_at,
             payload_json = excluded.payload_json
          WHERE COALESCE(excluded.completed_at, excluded.created_at) >= COALESCE(turn_records.completed_at, turn_records.created_at)",
