@@ -3920,6 +3920,15 @@ pub(crate) fn upsert_turn_record_tx(tx: &Transaction<'_>, record: &TurnRecord) -
         .map(|payload| decode_turn_record_payload(&payload))
         .transpose()?;
     if let Some(existing) = existing.as_ref() {
+        let replay_identity_matches = match (&existing.replay, &record.replay) {
+            (Some(existing), Some(record)) => {
+                existing.source_message_id == record.source_message_id
+                    && existing.source_turn_id == record.source_turn_id
+                    && existing.reason == record.reason
+            }
+            (None, None) => true,
+            _ => false,
+        };
         let identity_matches = existing.agent_id == record.agent_id
             && existing.turn_index == record.turn_index
             && existing.run_id == record.run_id
@@ -3933,7 +3942,7 @@ pub(crate) fn upsert_turn_record_tx(tx: &Transaction<'_>, record: &TurnRecord) -
                     .as_ref()
                     .and_then(|trigger| trigger.message_id.as_deref())
             && existing.created_at == record.created_at
-            && existing.replay == record.replay;
+            && replay_identity_matches;
         if !identity_matches {
             return Err(RuntimeStateTransitionConflict::new(
                 "turn identity",

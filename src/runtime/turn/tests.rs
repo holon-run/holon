@@ -185,19 +185,35 @@ fn turn_record_identity_is_immutable_after_first_persist() {
     let mut initial = crate::types::TurnRecord::new("default", "turn-immutable", 7);
     initial.run_id = Some("run-original".into());
     initial.current_work_item_id = Some("work-original".into());
+    initial.replay = Some(crate::types::TurnReplayProvenance {
+        source_message_id: "message-original".into(),
+        source_turn_id: "turn-original".into(),
+        reason: "interrupted_queue_claim_reentry".into(),
+        prior_terminal: None,
+    });
     runtime.storage().append_turn(&initial).unwrap();
 
     let mut terminal_update = initial.clone();
-    terminal_update.terminal = Some(crate::types::TurnTerminalSummary {
+    let terminal = crate::types::TurnTerminalSummary {
         kind: TurnTerminalKind::Completed,
         reason: None,
         completed_at: Utc::now(),
         duration_ms: 5,
-    });
+    };
+    terminal_update.terminal = Some(terminal.clone());
+    terminal_update
+        .replay
+        .as_mut()
+        .expect("replay provenance")
+        .prior_terminal = Some(terminal);
     runtime.storage().append_turn(&terminal_update).unwrap();
 
     let mut conflicting = terminal_update.clone();
-    conflicting.current_work_item_id = Some("work-conflicting".into());
+    conflicting
+        .replay
+        .as_mut()
+        .expect("replay provenance")
+        .reason = "conflicting-replay-reason".into();
     let error = runtime.storage().append_turn(&conflicting).unwrap_err();
     let conflict = error
         .downcast_ref::<crate::runtime_db::RuntimeStateTransitionConflict>()
