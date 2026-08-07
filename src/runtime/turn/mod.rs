@@ -1,8 +1,7 @@
 //! Turn execution module: drives the provider conversation loop, context
 //! projection, checkpointing, tool execution, and completion handling.
 //!
-//! Public entrypoints are [`RuntimeHandle::run_agent_loop`],
-//! [`RuntimeHandle::persist_turn_record`], and
+//! Public entrypoints are [`RuntimeHandle::run_agent_loop`] and
 //! [`RuntimeHandle::persist_turn_aborted_record`].
 
 mod checkpoint;
@@ -263,6 +262,7 @@ impl RuntimeHandle {
         Ok(record)
     }
 
+    #[cfg(test)]
     pub(super) async fn persist_turn_record(&self, terminal: &TurnTerminalRecord) -> Result<()> {
         let record = self.build_turn_record(terminal).await?;
         self.persist_built_turn_record(&record)
@@ -272,19 +272,12 @@ impl RuntimeHandle {
         &self,
         transition: &TurnTerminalTransition,
     ) -> Result<()> {
-        {
-            let mut guard = self.inner.agent.lock().await;
-            guard.state.current_turn_id = Some(transition.terminal.turn_id.clone());
-            guard.state.last_turn_terminal = Some(transition.terminal.clone());
-            guard.persist_state(&self.inner.storage)?;
-        }
-        self.inner.storage.append_event(&AuditEvent::legacy(
-            "turn_terminal",
-            serde_json::to_value(&transition.terminal)?,
-        ))?;
-        self.persist_built_turn_record(&transition.turn_record)
+        self.commit_terminal_transition(transition, Vec::new())
+            .await
+            .map(|_| ())
     }
 
+    #[cfg(test)]
     pub(super) fn persist_built_turn_record(&self, record: &TurnRecord) -> Result<()> {
         self.inner.storage.append_turn(&record)?;
         self.inner
@@ -324,29 +317,26 @@ impl RuntimeHandle {
             .build_turn_aborted_record(reason, last_assistant_message, duration_ms)
             .await;
         if persist {
-            {
-                let mut guard = self.inner.agent.lock().await;
-                guard.state.current_turn_id = Some(record.turn_id.clone());
-                guard.state.last_turn_terminal = Some(record.clone());
-                guard.persist_state(&self.inner.storage)?;
-            }
-            self.persist_turn_record(&record).await?;
-            self.inner.storage.append_event(&AuditEvent::legacy(
-                "turn_terminal",
-                serde_json::to_value(&record)?,
-            ))?;
-            self.inner.storage.append_event(&AuditEvent::legacy(
-                "turn_terminal_aborted",
-                serde_json::json!({
-                    "run_id": run_id,
-                    "reason": reason,
-                    "turn_id": record.turn_id.clone(),
-                    "turn_index": record.turn_index,
-                    "kind": record.kind,
-                    "completed_at": record.completed_at,
-                    "duration_ms": record.duration_ms,
-                }),
-            ))?;
+            let transition = TurnTerminalTransition {
+                turn_record: self.build_turn_record(&record).await?,
+                terminal: record.clone(),
+            };
+            self.commit_terminal_transition(
+                &transition,
+                vec![AuditEvent::legacy(
+                    "turn_terminal_aborted",
+                    serde_json::json!({
+                        "run_id": run_id,
+                        "reason": reason,
+                        "turn_id": record.turn_id.clone(),
+                        "turn_index": record.turn_index,
+                        "kind": record.kind,
+                        "completed_at": record.completed_at,
+                        "duration_ms": record.duration_ms,
+                    }),
+                )],
+            )
+            .await?;
         }
         Ok(record)
     }

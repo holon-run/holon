@@ -153,7 +153,7 @@ impl RuntimeHandle {
         persist: bool,
     ) -> Result<TurnTerminalRecord> {
         let record = {
-            let mut guard = self.inner.agent.lock().await;
+            let guard = self.inner.agent.lock().await;
             let checkpoint = if kind == TurnTerminalKind::Completed {
                 checkpoint_state
                     .and_then(|state| terminal_checkpoint_from_state(state, guard.state.turn_index))
@@ -166,8 +166,7 @@ impl RuntimeHandle {
                 .clone()
                 .filter(|turn_id| !turn_id.trim().is_empty())
                 .unwrap_or_else(crate::ids::turn_id);
-            guard.state.current_turn_id = Some(turn_id.clone());
-            let record = TurnTerminalRecord {
+            TurnTerminalRecord {
                 turn_id,
                 turn_index: guard.state.turn_index,
                 kind,
@@ -176,18 +175,14 @@ impl RuntimeHandle {
                 checkpoint,
                 completed_at: chrono::Utc::now(),
                 duration_ms,
-            };
-            if persist {
-                guard.state.last_turn_terminal = Some(record.clone());
-                guard.persist_state(&self.inner.storage)?;
             }
-            record
         };
         if persist {
-            self.inner.storage.append_event(&AuditEvent::legacy(
-                "turn_terminal",
-                serde_json::to_value(&record)?,
-            ))?;
+            let transition = super::TurnTerminalTransition {
+                turn_record: self.build_turn_record(&record).await?,
+                terminal: record.clone(),
+            };
+            self.persist_terminal_transition(&transition).await?;
         }
         Ok(record)
     }

@@ -40,6 +40,8 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TransitionFaultPoint {
     AfterValidation,
+    AfterTerminalAgentStateWrite,
+    AfterTerminalTurnRecordWrite,
     AfterCanonicalWrites,
     AfterAuditWrites,
     BeforeCommit,
@@ -217,6 +219,15 @@ pub(crate) struct QueueTransitionCommand {
     pub brief_evidence: Vec<BriefRecord>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct TurnTerminalTransitionCommand {
+    pub agent_id: String,
+    pub agent_state: AgentStateMutation,
+    pub turn_record: TurnRecord,
+    pub audit_events: Vec<AuditEvent>,
+    pub fault: Option<TransitionFaultPoint>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ExecutionProtocolTransition {
     pub bootstrap: Option<crate::domain::execution_protocol::ExecutionProtocolState>,
@@ -320,6 +331,57 @@ impl RuntimeDb {
 }
 
 impl RuntimeTransitionRepository<'_> {
+    pub fn commit_turn_terminal(
+        &self,
+        command: &TurnTerminalTransitionCommand,
+    ) -> Result<TransitionCommit> {
+        self.db.transaction(|tx| {
+            validate_agent_state_mutation_tx(tx, Some(&command.agent_state))?;
+            inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
+
+            let agent_state_applied =
+                apply_agent_state_mutation_tx(tx, Some(&command.agent_state))?;
+            inject_fault(
+                command.fault,
+                TransitionFaultPoint::AfterTerminalAgentStateWrite,
+            )?;
+            let turn_record_applied = tx
+                .query_row(
+                    "SELECT payload_json FROM turn_records WHERE turn_id = ?1",
+                    [&command.turn_record.turn_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .map(|payload| serde_json::from_str::<TurnRecord>(&payload))
+                .transpose()?
+                .as_ref()
+                != Some(&command.turn_record);
+            upsert_turn_record_tx(tx, &command.turn_record)?;
+            inject_fault(
+                command.fault,
+                TransitionFaultPoint::AfterTerminalTurnRecordWrite,
+            )?;
+            let applied = agent_state_applied || turn_record_applied;
+            if !applied {
+                return Ok(TransitionCommit::default());
+            }
+            inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
+
+            finish_transition_tx(
+                tx,
+                applied,
+                &command.agent_id,
+                &command.audit_events,
+                &[],
+                command.fault,
+                PostCommitEffects {
+                    agent_state: agent_state_applied.then(|| command.agent_state.clone()),
+                    ..PostCommitEffects::default()
+                },
+            )
+        })
+    }
+
     pub fn commit_work_item_focus(
         &self,
         command: &WorkItemFocusTransitionCommand,

@@ -5151,6 +5151,267 @@ async fn terminal_settlement_fault_rolls_back_all_facts_and_retry_is_idempotent(
 }
 
 #[tokio::test]
+async fn standalone_terminal_transition_fault_rolls_back_and_restart_replays_exactly_once() {
+    for fault in TERMINAL_PRE_COMMIT_FAULTS {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let provider = Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        });
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            provider.clone(),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        let mut message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "persist terminal atomically".into(),
+            },
+        );
+        message.turn_id = Some(format!("turn-standalone-terminal-{fault:?}"));
+        let transition = terminal_transition(&message, None);
+        runtime.inject_next_transition_fault(fault);
+
+        let error = runtime
+            .persist_terminal_transition(&transition)
+            .await
+            .unwrap_err();
+        assert_injected_transition_fault(&error);
+        assert!(runtime
+            .inner
+            .runtime_db
+            .agent_states()
+            .latest("default")
+            .unwrap()
+            .unwrap()
+            .last_turn_terminal
+            .is_none());
+        assert!(runtime
+            .storage()
+            .read_recent_turns(16)
+            .unwrap()
+            .iter()
+            .all(|turn| turn.turn_id != transition.terminal.turn_id));
+        assert!(runtime
+            .storage()
+            .read_recent_events(64)
+            .unwrap()
+            .iter()
+            .all(|event| {
+                !(matches!(event.kind.as_str(), "turn_terminal" | "turn_record")
+                    && event.data["turn_id"] == transition.terminal.turn_id)
+            }));
+        drop(runtime);
+
+        let restarted = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            provider.clone(),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        restarted
+            .persist_terminal_transition(&transition)
+            .await
+            .unwrap();
+        restarted
+            .persist_terminal_transition(&transition)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            restarted
+                .storage()
+                .read_recent_turns(16)
+                .unwrap()
+                .iter()
+                .filter(|turn| turn.turn_id == transition.terminal.turn_id)
+                .count(),
+            1
+        );
+        for kind in ["turn_terminal", "turn_record"] {
+            assert_eq!(
+                restarted
+                    .storage()
+                    .read_recent_events(64)
+                    .unwrap()
+                    .iter()
+                    .filter(|event| {
+                        event.kind == kind && event.data["turn_id"] == transition.terminal.turn_id
+                    })
+                    .count(),
+                1
+            );
+        }
+        assert_eq!(
+            restarted
+                .inner
+                .runtime_db
+                .agent_states()
+                .latest("default")
+                .unwrap()
+                .unwrap()
+                .last_turn_terminal,
+            Some(transition.terminal.clone())
+        );
+    }
+}
+
+#[tokio::test]
+async fn standalone_terminal_transition_survives_post_commit_effect_faults() {
+    for (fault, expected_effect) in POST_COMMIT_FAULTS
+        .into_iter()
+        .filter(|(fault, _)| *fault != TransitionFaultPoint::BeforeSchedulerNotification)
+    {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(CountingProvider {
+                calls: Mutex::new(0),
+                reply: "unused",
+            }),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        let mut message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "retain committed terminal".into(),
+            },
+        );
+        message.turn_id = Some(format!("turn-standalone-post-commit-{fault:?}"));
+        let transition = terminal_transition(&message, None);
+        runtime.inject_next_transition_fault(fault);
+
+        runtime
+            .persist_terminal_transition(&transition)
+            .await
+            .unwrap();
+        let warnings = runtime.take_transition_warnings();
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].effect, expected_effect);
+        assert_eq!(
+            runtime
+                .inner
+                .runtime_db
+                .agent_states()
+                .latest("default")
+                .unwrap()
+                .unwrap()
+                .last_turn_terminal,
+            Some(transition.terminal.clone())
+        );
+        assert_eq!(
+            runtime
+                .storage()
+                .read_recent_turns(16)
+                .unwrap()
+                .iter()
+                .filter(|turn| turn.turn_id == transition.terminal.turn_id)
+                .count(),
+            1
+        );
+        for kind in ["turn_terminal", "turn_record"] {
+            assert_eq!(
+                runtime
+                    .storage()
+                    .read_recent_events(64)
+                    .unwrap()
+                    .iter()
+                    .filter(|event| {
+                        event.kind == kind && event.data["turn_id"] == transition.terminal.turn_id
+                    })
+                    .count(),
+                1
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn standalone_aborted_terminal_commits_terminal_and_abort_audits_atomically() {
+    for fault in TERMINAL_PRE_COMMIT_FAULTS {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(CountingProvider {
+                calls: Mutex::new(0),
+                reply: "unused",
+            }),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        let turn_id = {
+            let mut guard = runtime.inner.agent.lock().await;
+            guard.state.current_turn_id = Some(format!("turn-aborted-terminal-{fault:?}"));
+            guard.persist_state(&runtime.inner.storage).unwrap();
+            guard.state.current_turn_id.clone().unwrap()
+        };
+        runtime.inject_next_transition_fault(fault);
+
+        let error = runtime
+            .persist_turn_aborted_record("run-aborted", "operator_aborted", None, 1, true)
+            .await
+            .unwrap_err();
+        assert_injected_transition_fault(&error);
+        assert!(runtime
+            .inner
+            .runtime_db
+            .agent_states()
+            .latest("default")
+            .unwrap()
+            .unwrap()
+            .last_turn_terminal
+            .is_none());
+        assert!(runtime
+            .storage()
+            .read_recent_turns(16)
+            .unwrap()
+            .iter()
+            .all(|turn| turn.turn_id != turn_id));
+        assert!(runtime
+            .storage()
+            .read_recent_events(64)
+            .unwrap()
+            .iter()
+            .all(|event| {
+                !(matches!(
+                    event.kind.as_str(),
+                    "turn_terminal" | "turn_record" | "turn_terminal_aborted"
+                ) && event.data["turn_id"] == turn_id)
+            }));
+    }
+}
+
+#[tokio::test]
 async fn terminal_settlement_survives_post_commit_effect_faults() {
     for (fault, expected_effect) in POST_COMMIT_FAULTS {
         let dir = tempdir().unwrap();

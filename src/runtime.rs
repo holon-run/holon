@@ -3871,6 +3871,73 @@ impl RuntimeHandle {
         .await
     }
 
+    async fn commit_terminal_transition(
+        &self,
+        terminal_transition: &turn::TurnTerminalTransition,
+        audit_events: Vec<AuditEvent>,
+    ) -> Result<bool> {
+        let original_audit_len = audit_events.len();
+        let mut command = crate::runtime_db::transitions::TurnTerminalTransitionCommand {
+            agent_id: terminal_transition.turn_record.agent_id.clone(),
+            agent_state: crate::runtime_db::transitions::AgentStateMutation {
+                expected: None,
+                record: Box::new(self.inner.agent.lock().await.state.clone()),
+            },
+            turn_record: terminal_transition.turn_record.clone(),
+            audit_events: audit_events.clone(),
+            fault: None,
+        };
+        for attempt in 0..ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
+            {
+                let guard = self.inner.agent.lock().await;
+                let mut state = guard.state.clone();
+                state.current_turn_id = Some(terminal_transition.terminal.turn_id.clone());
+                state.last_turn_terminal = Some(terminal_transition.terminal.clone());
+                command.agent_state = crate::runtime_db::transitions::AgentStateMutation {
+                    expected: Some(Box::new(guard.last_persisted_state.clone())),
+                    record: Box::new(state),
+                };
+            }
+            command.audit_events = audit_events.clone();
+            command.audit_events.truncate(original_audit_len);
+            command.audit_events.push(AuditEvent::legacy(
+                "turn_terminal",
+                serde_json::to_value(&terminal_transition.terminal)?,
+            ));
+            command.audit_events.push(Self::turn_record_audit_event(
+                &terminal_transition.turn_record,
+            ));
+            command.fault = self.take_transition_fault();
+            match self
+                .inner
+                .runtime_db
+                .transitions()
+                .commit_turn_terminal(&command)
+            {
+                Ok(commit) => {
+                    return Ok(self.apply_transition_commit(commit).await.applied);
+                }
+                Err(error) => {
+                    let can_retry = attempt + 1 < ENQUEUE_AGENT_STATE_MAX_ATTEMPTS
+                        && retryable_enqueue_conflict(
+                            &error,
+                            &terminal_transition.turn_record.agent_id,
+                        );
+                    if !can_retry
+                        || !self
+                            .refresh_enqueue_agent_state_baseline(
+                                &terminal_transition.turn_record.agent_id,
+                            )
+                            .await?
+                    {
+                        return Err(error);
+                    }
+                }
+            }
+        }
+        unreachable!("terminal transition OCC retry loop always returns or errors")
+    }
+
     async fn commit_queue_terminal_settlement_with_evidence(
         &self,
         record: QueueEntryRecord,

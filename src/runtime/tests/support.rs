@@ -41,6 +41,7 @@ mod lifecycle;
 pub(crate) use lifecycle::{
     advance_lifecycle_time, assert_injected_transition_fault, controlled_clock,
     DurableLifecycleSnapshot, LifecycleHarness, POST_COMMIT_FAULTS, PRE_COMMIT_FAULTS,
+    TERMINAL_PRE_COMMIT_FAULTS,
 };
 
 pub(crate) fn context_config() -> ContextConfig {

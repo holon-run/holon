@@ -7,6 +7,16 @@ pub(crate) const PRE_COMMIT_FAULTS: [crate::runtime_db::transitions::TransitionF
     crate::runtime_db::transitions::TransitionFaultPoint::BeforeCommit,
 ];
 
+pub(crate) const TERMINAL_PRE_COMMIT_FAULTS:
+    [crate::runtime_db::transitions::TransitionFaultPoint; 6] = [
+    crate::runtime_db::transitions::TransitionFaultPoint::AfterValidation,
+    crate::runtime_db::transitions::TransitionFaultPoint::AfterTerminalAgentStateWrite,
+    crate::runtime_db::transitions::TransitionFaultPoint::AfterTerminalTurnRecordWrite,
+    crate::runtime_db::transitions::TransitionFaultPoint::AfterCanonicalWrites,
+    crate::runtime_db::transitions::TransitionFaultPoint::AfterAuditWrites,
+    crate::runtime_db::transitions::TransitionFaultPoint::BeforeCommit,
+];
+
 pub(crate) const POST_COMMIT_FAULTS: [(
     crate::runtime_db::transitions::TransitionFaultPoint,
     &str,
