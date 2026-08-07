@@ -54,6 +54,7 @@ pub(crate) enum CanonicalActivationScenario {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CanonicalActivationCandidate {
+    UnboundTaskResultWaitOrReduce,
     WorkItemAutonomousContinuation {
         work_item_id: String,
     },
@@ -110,6 +111,7 @@ impl CanonicalActivationScenario {
 impl CanonicalActivationCandidate {
     pub(crate) fn scenario_class(&self) -> SchedulerScenarioClass {
         match self {
+            Self::UnboundTaskResultWaitOrReduce => EXACT_WAIT_RESUME_SCENARIO,
             Self::WorkItemAutonomousContinuation { .. } | Self::InternalFollowup { .. } => {
                 WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO
             }
@@ -123,6 +125,7 @@ impl CanonicalActivationCandidate {
 
     fn expected_work_item_id(&self) -> Option<&str> {
         match self {
+            Self::UnboundTaskResultWaitOrReduce => None,
             Self::WorkItemAutonomousContinuation { work_item_id }
             | Self::InternalFollowup { work_item_id }
             | Self::ExactTaskRejoin { work_item_id, .. }
@@ -1186,10 +1189,9 @@ pub(crate) fn canonical_activation_candidate(
                 agent_id: message.agent_id.clone(),
             }));
         }
-        return Ok(Some(CanonicalActivationCandidate::ExactWaitResume {
-            expected_work_item_id: None,
-            correlated_wait: None,
-        }));
+        return Ok(Some(
+            CanonicalActivationCandidate::UnboundTaskResultWaitOrReduce,
+        ));
     }
 
     if message.kind == MessageKind::OperatorPrompt {

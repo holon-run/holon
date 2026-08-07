@@ -998,14 +998,8 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             }
         }
         let Some(mut scenario) = scenario else {
-            if message.kind == MessageKind::TaskResult
-                && matches!(
-                    original_candidate,
-                    scheduler::CanonicalActivationCandidate::ExactWaitResume {
-                        expected_work_item_id: None,
-                        correlated_wait: None,
-                    }
-                )
+            if original_candidate
+                == scheduler::CanonicalActivationCandidate::UnboundTaskResultWaitOrReduce
             {
                 return Ok(CanonicalClaimOutcome::ReduceOnly);
             }

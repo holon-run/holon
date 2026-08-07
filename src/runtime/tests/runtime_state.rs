@@ -4260,11 +4260,30 @@ async fn terminal_task_result_without_work_item_uses_non_reentrant_dispatch() {
         .load_scheduler_protocol_snapshot_if_initialized("default")
         .unwrap()
         .is_none());
+    assert_eq!(
+        scheduler::canonical_activation_candidate(
+            &message,
+            None,
+            runtime
+                .storage()
+                .latest_task_record("task-without-work-item")
+                .unwrap()
+                .as_ref(),
+        )
+        .unwrap(),
+        Some(scheduler::CanonicalActivationCandidate::UnboundTaskResultWaitOrReduce)
+    );
 
-    let _ = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
         .poll()
         .await
         .unwrap();
+    assert!(matches!(
+        poll,
+        scheduler_executor::RunLoopPoll::Message(ref scheduled)
+            if scheduled.scheduler_decision.kind
+                == scheduler::SchedulerDecisionKind::ReduceMessageOnly
+    ));
     assert_eq!(
         runtime
             .inner
