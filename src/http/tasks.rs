@@ -533,6 +533,7 @@ pub async fn complete_work_item(
                 work_item_id,
                 crate::runtime::WorkItemCompletionAuthority::Control,
                 report_text.to_string(),
+                Vec::new(),
                 None,
                 None,
                 None,

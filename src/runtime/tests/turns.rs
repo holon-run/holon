@@ -151,6 +151,19 @@ async fn runtime_recovers_from_max_token_truncation() {
 
     assert!(outcome.final_text.contains("Partial report heading:"));
     assert!(outcome.final_text.contains("final grounded recommendation"));
+    assert_eq!(
+        outcome.final_citations,
+        vec![
+            crate::types::Citation {
+                url: "https://example.com/first".into(),
+                title: Some("First".into()),
+            },
+            crate::types::Citation {
+                url: "https://example.com/second".into(),
+                title: Some("Second".into()),
+            },
+        ]
+    );
 }
 
 #[tokio::test]

@@ -4608,6 +4608,13 @@ impl BriefKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct Citation {
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct BriefRecord {
     pub id: String,
     #[serde(alias = "session_id")]
@@ -4627,6 +4634,8 @@ pub struct BriefRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finalizes_assistant_round_id: Option<String>,
     pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub citations: Option<Vec<Citation>>,
     pub attachments: Option<Vec<BriefAttachment>>,
     pub related_message_id: Option<String>,
     pub related_task_id: Option<String>,
@@ -4653,6 +4662,7 @@ impl BriefRecord {
             content_source: BriefContentSource::Inline,
             finalizes_assistant_round_id: None,
             text: text.into(),
+            citations: None,
             attachments: None,
             related_message_id,
             related_task_id,
@@ -5701,6 +5711,7 @@ mod tests {
         let brief: BriefRecord = serde_json::from_value(brief).unwrap();
         assert_eq!(brief.workspace_id, AGENT_HOME_WORKSPACE_ID);
         assert_eq!(brief.turn_index, None);
+        assert_eq!(brief.citations, None);
 
         let mut work_item =
             serde_json::to_value(WorkItemRecord::new("default", "ship", WorkItemState::Open))
@@ -5875,6 +5886,10 @@ mod tests {
             Some("task-1".into()),
         );
         brief.work_item_id = Some("wi-1".into());
+        brief.citations = Some(vec![Citation {
+            url: "https://example.com/source".into(),
+            title: Some("Source".into()),
+        }]);
         brief.attachments = Some(vec![BriefAttachment {
             kind: "json".into(),
             name: "large".into(),
@@ -5888,6 +5903,7 @@ mod tests {
 
         assert_eq!(payload["brief_id"], brief.id);
         assert_eq!(payload["work_item_id"], "wi-1");
+        assert!(payload.get("citations").is_none());
         assert!(payload.get("text").is_none());
         assert!(payload.get("text_preview").is_none());
         assert!(payload.get("attachments").is_none());

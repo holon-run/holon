@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { markdownUrlTransform, parseWorkspaceImageRef, remarkWorkspaceAutolink, resolveWorkspaceRelativePath } from "./MarkdownContent";
+import {
+  markdownUrlTransform,
+  parseWorkspaceImageRef,
+  remarkWorkspaceAutolink,
+  resolveWorkspaceRelativePath,
+  safeCitation,
+  stripOpenAiCitationSentinels,
+} from "./MarkdownContent";
 
 describe("parseWorkspaceImageRef", () => {
   it("parses workspace image URIs", () => {
@@ -97,5 +104,33 @@ describe("remarkWorkspaceAutolink", () => {
   it("does not modify text without workspace:// URLs", () => {
     const nodes = runPlugin("Just a regular http://example.com link");
     expect(nodes).toEqual([{ type: "text", value: "Just a regular http://example.com link" }]);
+  });
+});
+
+describe("OpenAI citations", () => {
+  it("strips complete and malformed sentinels without removing following text", () => {
+    expect(
+      stripOpenAiCitationSentinels(
+        "Before \uE200cite\uE202turn0search0\uE202turn0search1\uE201 after",
+      ),
+    ).toBe("Before  after");
+    expect(
+      stripOpenAiCitationSentinels(
+        "Before \uE200cite\uE202turn0search0\uE202turn0search1 normal answer",
+      ),
+    ).toBe("Before  normal answer");
+  });
+
+  it("accepts only absolute http and https links", () => {
+    expect(safeCitation({ url: "https://example.com/path", title: " Example " })).toEqual({
+      url: "https://example.com/path",
+      title: "Example",
+    });
+    expect(safeCitation({ url: "https://example.com/path" })).toEqual({
+      url: "https://example.com/path",
+      title: "example.com",
+    });
+    expect(safeCitation({ url: "javascript:alert(1)", title: "Unsafe" })).toBeUndefined();
+    expect(safeCitation({ url: "/relative", title: "Relative" })).toBeUndefined();
   });
 });

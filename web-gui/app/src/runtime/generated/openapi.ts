@@ -2535,6 +2535,10 @@ export interface components {
                 uri?: string | null;
                 value?: unknown;
             }[] | null;
+            citations?: {
+                title?: string | null;
+                url: string;
+            }[] | null;
             /**
              * @default {
              *       "kind": "inline"
@@ -3374,8 +3378,11 @@ export interface components {
                 resolved_at?: string | null;
                 source?: string | null;
                 /** @enum {string} */
-                status: "active" | "resolved" | "cancelled" | "expired";
+                status: "active" | "triggered" | "resolved" | "cancelled" | "expired";
                 subject_ref?: string | null;
+                trigger_message_id?: string | null;
+                /** Format: date-time */
+                triggered_at?: string | null;
                 turn_id?: string | null;
                 /** Format: date-time */
                 updated_at: string;
@@ -3421,7 +3428,7 @@ export interface components {
             dry_run: boolean;
             operation: {
                 /** @enum {string} */
-                expected_status: "active" | "resolved" | "cancelled" | "expired";
+                expected_status: "active" | "triggered" | "resolved" | "cancelled" | "expired";
                 /** Format: date-time */
                 expected_updated_at: string;
                 /** @constant */

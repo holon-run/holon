@@ -1,4 +1,4 @@
-import type { AgentTimelineActivity, AgentTimelineItem, DisplayLevel } from "./types";
+import type { AgentTimelineActivity, AgentTimelineItem, DisplayLevel, RuntimeCitation } from "./types";
 
 /**
  * Semantic dedup key for a timeline item. Items with the same key are merged.
@@ -172,8 +172,22 @@ function mergeTimelineItemActivities(preferred: AgentTimelineItem, fallback: Age
   return {
     ...preferred,
     sourceIds: mergeSourceIds([...fallback.sourceIds, ...preferred.sourceIds]),
+    citations: mergeCitations(preferred.citations, fallback.citations),
     activities: mergeTimelineActivities(fallback.activities ?? [], preferred.activities ?? []),
   };
+}
+
+function mergeCitations(
+  preferred: RuntimeCitation[] | undefined,
+  fallback: RuntimeCitation[] | undefined,
+): RuntimeCitation[] | undefined {
+  const seen = new Set<string>();
+  const merged = [...(preferred ?? []), ...(fallback ?? [])].filter((citation) => {
+    if (seen.has(citation.url)) return false;
+    seen.add(citation.url);
+    return true;
+  });
+  return merged.length > 0 ? merged : undefined;
 }
 
 function mergeTimelineActivities(

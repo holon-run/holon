@@ -204,6 +204,7 @@ It owns:
 - turn binding;
 - brief kind;
 - user-facing delivery text or summary text;
+- provider-neutral citations associated with that delivery;
 - delivery attachments when they are user-facing;
 - source references such as message, task, or transcript entry ids.
 
@@ -219,6 +220,12 @@ There are two content modes:
 Historical rows may continue to store full text for compatibility. New code
 should treat `content_source` as the first-class source contract rather than a
 decorative field.
+
+Provider-specific citation markers and request-local source ids must not become
+canonical brief text or identifiers. Provider adapters should convert supported
+annotations into durable URL/title citation metadata, while transcript-backed
+assistant rounds preserve the same provider-neutral metadata for replay and
+hydration.
 
 ### TurnRecord
 

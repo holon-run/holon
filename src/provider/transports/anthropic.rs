@@ -1453,6 +1453,7 @@ fn conversation_message_to_api(
             content: Value::Array(
                 blocks
                     .iter()
+                    .filter(|block| !matches!(block, ModelBlock::Citations { .. }))
                     .enumerate()
                     .map(|(block_index, block)| {
                         maybe_mark_cache_control(
@@ -1485,6 +1486,9 @@ fn conversation_message_to_api(
                                     "type": "redacted_thinking",
                                     "data": data,
                                 }),
+                                ModelBlock::Citations { .. } => unreachable!(
+                                    "citation blocks are filtered before Anthropic encoding"
+                                ),
                             },
                             rolling_cache_block_index == Some(block_index),
                         )
@@ -2152,6 +2156,7 @@ fn model_block_kind(block: &ModelBlock) -> &'static str {
         ModelBlock::ToolUse { .. } => "tool_use",
         ModelBlock::Thinking { .. } => "thinking",
         ModelBlock::RedactedThinking { .. } => "redacted_thinking",
+        ModelBlock::Citations { .. } => "citations",
     }
 }
 
@@ -2181,6 +2186,10 @@ fn hash_model_block(block: &ModelBlock) -> String {
             });
             sha256_hex(canonical_json(&value).as_bytes())
         }
+        ModelBlock::Citations { citations } => {
+            let value = json!({ "type": "citations", "citations": citations });
+            sha256_hex(canonical_json(&value).as_bytes())
+        }
     }
 }
 
@@ -2200,6 +2209,13 @@ fn estimate_model_block_tokens(block: &ModelBlock) -> u64 {
         ModelBlock::ToolUse { .. } => 50,
         ModelBlock::Thinking { text, .. } => estimate_tokens_from_chars(text.len()),
         ModelBlock::RedactedThinking { data } => estimate_tokens_from_chars(data.len()),
+        ModelBlock::Citations { citations } => citations
+            .iter()
+            .map(|citation| {
+                citation.url.len() + citation.title.as_ref().map(String::len).unwrap_or_default()
+            })
+            .map(estimate_tokens_from_chars)
+            .sum(),
     }
 }
 

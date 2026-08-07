@@ -442,7 +442,9 @@ pub(crate) fn build_openai_input(conversation: &[ConversationMessage]) -> Result
                                 })),
                             }
                         }
-                        ModelBlock::Thinking { .. } | ModelBlock::RedactedThinking { .. } => {}
+                        ModelBlock::Thinking { .. }
+                        | ModelBlock::RedactedThinking { .. }
+                        | ModelBlock::Citations { .. } => {}
                     }
                 }
                 flush_assistant_text(&mut items, &mut pending_text);

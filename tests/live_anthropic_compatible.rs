@@ -157,7 +157,9 @@ async fn provider_accepts_context_management(provider_id: &str, model: &str) -> 
         .filter_map(|block| match block {
             ModelBlock::Text { text } => Some(text.as_str()),
             ModelBlock::ToolUse { .. } => None,
-            ModelBlock::Thinking { .. } | ModelBlock::RedactedThinking { .. } => None,
+            ModelBlock::Thinking { .. }
+            | ModelBlock::RedactedThinking { .. }
+            | ModelBlock::Citations { .. } => None,
         })
         .collect::<Vec<_>>()
         .join("\n");

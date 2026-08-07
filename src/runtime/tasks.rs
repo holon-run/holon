@@ -3084,6 +3084,7 @@ impl RuntimeHandle {
             .promote_work_item_completion_report_with_metadata(
                 work_item_id,
                 report_text,
+                Vec::new(),
                 source_turn_index,
                 source_round,
                 warnings,
@@ -3097,6 +3098,7 @@ impl RuntimeHandle {
         work_item_id: String,
         authority: WorkItemCompletionAuthority,
         report_text: String,
+        citations: Vec<crate::types::Citation>,
         source_turn_index: Option<u64>,
         source_round: Option<usize>,
         source_turn_id: Option<String>,
@@ -3141,6 +3143,9 @@ impl RuntimeHandle {
 
         let mut brief =
             BriefRecord::new(agent_id.clone(), BriefKind::Result, report_text, None, None);
+        if !citations.is_empty() {
+            brief.citations = Some(citations);
+        }
         brief.work_item_id = Some(existing.id.clone());
         brief.workspace_id = existing.workspace_id.clone();
         brief.turn_index = source_turn_index;
@@ -3188,6 +3193,7 @@ impl RuntimeHandle {
         &self,
         work_item_id: String,
         report_text: String,
+        citations: Vec<crate::types::Citation>,
         source_turn_index: Option<u64>,
         source_round: Option<usize>,
         warnings: Vec<serde_json::Value>,
@@ -3218,6 +3224,9 @@ impl RuntimeHandle {
         }
         let mut brief =
             BriefRecord::new(agent_id.clone(), BriefKind::Result, report_text, None, None);
+        if !citations.is_empty() {
+            brief.citations = Some(citations);
+        }
         brief.work_item_id = Some(existing.id.clone());
         brief.workspace_id = existing.workspace_id.clone();
         brief.turn_index = source_turn_index;

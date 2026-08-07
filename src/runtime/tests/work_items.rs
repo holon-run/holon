@@ -46,6 +46,7 @@ async fn finalize_completion_with_report(
         .promote_work_item_completion_report_with_metadata(
             work_item_id.to_string(),
             report_text.to_string(),
+            Vec::new(),
             None,
             None,
             Vec::new(),
@@ -2248,6 +2249,7 @@ async fn atomic_completion_rolls_back_all_effects_on_transition_failure() {
             work_item.id.clone(),
             WorkItemCompletionAuthority::Control,
             "Atomic completion report".into(),
+            Vec::new(),
             Some(1),
             Some(1),
             Some("turn-atomic-completion".into()),
@@ -2323,6 +2325,7 @@ async fn lifecycle_execution_can_complete_without_borrowing_work_item_authority(
             work_item.id.clone(),
             WorkItemCompletionAuthority::AgentExecution(execution_binding),
             "Lifecycle completion report".into(),
+            Vec::new(),
             Some(4),
             Some(2),
             Some("turn-lifecycle".into()),
@@ -2385,6 +2388,7 @@ async fn control_completion_ignores_unrelated_execution_binding() {
             target.id.clone(),
             WorkItemCompletionAuthority::Control,
             "Completed through authenticated control.".into(),
+            Vec::new(),
             None,
             None,
             None,
@@ -2445,6 +2449,7 @@ async fn work_item_execution_cannot_complete_an_unrelated_work_item() {
             unrelated.id.clone(),
             WorkItemCompletionAuthority::AgentExecution(execution_binding),
             "Must be rejected".into(),
+            Vec::new(),
             Some(1),
             Some(1),
             Some("turn-active".into()),
@@ -2516,6 +2521,7 @@ async fn completion_retry_rejects_replaced_execution_binding() {
             target.id.clone(),
             WorkItemCompletionAuthority::AgentExecution(execution_binding),
             "Must not commit after authority changes.".into(),
+            Vec::new(),
             Some(1),
             Some(1),
             Some("turn-original".into()),
@@ -3603,6 +3609,10 @@ async fn complete_work_item_with_unfinished_todos_returns_structured_warning() {
             &crate::tool::spec::ToolExecutionContext {
                 completion_report_candidate: Some(crate::tool::spec::CompletionReportCandidate {
                     text: "Completed with unfinished todos.".into(),
+                    citations: vec![crate::types::Citation {
+                        url: "https://example.com/completion".into(),
+                        title: Some("Completion source".into()),
+                    }],
                     source_turn_index: 1,
                     source_round: 1,
                     source_turn_id: Some("turn-complete-with-warning".into()),
@@ -3636,6 +3646,28 @@ async fn complete_work_item_with_unfinished_todos_returns_structured_warning() {
         Some(work_item.id.as_str())
     );
     assert!(completed_event.data.get("record").is_none());
+    let completed = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .expect("completed work item");
+    let brief = runtime
+        .storage()
+        .read_brief_by_id(
+            completed
+                .result_brief_id
+                .as_deref()
+                .expect("completion result brief"),
+        )
+        .unwrap()
+        .expect("completion brief");
+    assert_eq!(
+        brief.citations,
+        Some(vec![crate::types::Citation {
+            url: "https://example.com/completion".into(),
+            title: Some("Completion source".into()),
+        }])
+    );
 }
 
 #[tokio::test]

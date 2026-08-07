@@ -208,6 +208,12 @@ impl AgentProvider for TerminalResultBriefProvider {
                     ModelBlock::Text {
                         text: "Verification is complete. I'll package the final answer now.".into(),
                     },
+                    ModelBlock::Citations {
+                        citations: vec![holon::types::Citation {
+                            url: "https://example.com/verification".into(),
+                            title: Some("Verification source".into()),
+                        }],
+                    },
                     ModelBlock::ToolUse {
                         id: "sleep-1".into(),
                         name: "Sleep".into(),

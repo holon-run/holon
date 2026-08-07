@@ -62,6 +62,7 @@ export function renderDomainObject(
     meta: eventMeta(eventType, payload, event.event_seq),
     minDisplayLevel: projection.minDisplayLevel,
     sourceIds: orderedSourceEventIds(obj, ctx),
+    citations: projection.citations,
     relatedStateObjectRef: relatedStateObjectRefFor(obj),
     detail: projection.detail,
     rawEvent: event,

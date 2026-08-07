@@ -118,6 +118,71 @@ fn openai_text_response_with_provider_metadata(response_id: &str, text: &str) ->
 }
 
 #[test]
+fn openai_responses_preserves_url_citations_and_strips_sentinels() {
+    let response = parse_openai_response(json!({
+        "id": "resp_citations",
+        "status": "completed",
+        "usage": { "input_tokens": 10, "output_tokens": 5 },
+        "output": [{
+            "type": "message",
+            "role": "assistant",
+            "content": [{
+                "type": "output_text",
+                "text": "Current answer. \u{e200}cite\u{e202}turn0search0\u{e202}turn0search1\u{e201} After.",
+                "annotations": [{
+                    "type": "url_citation",
+                    "url": "https://example.com/source",
+                    "title": "Example Source",
+                    "start_index": -1,
+                    "end_index": 9999
+                }, {
+                    "type": "url_citation",
+                    "url_citation": {
+                        "url": "https://example.com/source",
+                        "title": "Duplicate"
+                    }
+                }, {
+                    "type": "url_citation",
+                    "url": "javascript:alert(1)",
+                    "title": "Unsafe"
+                }, {
+                    "type": "file_citation",
+                    "file_id": "file_1"
+                }]
+            }]
+        }]
+    }))
+    .unwrap();
+
+    assert!(matches!(
+        &response.blocks[0],
+        ModelBlock::Text { text } if text == "Current answer.  After."
+    ));
+    assert!(matches!(
+        &response.blocks[1],
+        ModelBlock::Citations { citations }
+            if citations == &vec![crate::types::Citation {
+                url: "https://example.com/source".to_string(),
+                title: Some("Example Source".to_string()),
+            }]
+    ));
+}
+
+#[test]
+fn openai_responses_strips_malformed_citation_without_consuming_following_text() {
+    let response = parse_openai_response(openai_text_response(
+        "resp_malformed_citation",
+        "Before \u{e200}cite\u{e202}turn0search0\u{e202}turn0search1 normal answer",
+    ))
+    .unwrap();
+
+    assert!(matches!(
+        &response.blocks[0],
+        ModelBlock::Text { text } if text == "Before  normal answer"
+    ));
+}
+
+#[test]
 fn openai_responses_classifies_empty_output_as_retryable_with_usage() {
     let error = parse_openai_response(json!({
         "id": "resp_empty",

@@ -37,6 +37,7 @@ import type {
   DisplayLevel,
   RuntimeMessageEnvelope,
   RuntimeBriefRecord,
+  RuntimeCitation,
   RuntimeTranscriptEntry,
 } from "./types";
 import { canApplySessionEvent, type SessionEventEnvelope } from "./session-events";
@@ -83,6 +84,7 @@ interface SessionItemDraft {
   meta: string;
   minDisplayLevel: DisplayLevel;
   sourceIds: string[];
+  citations?: RuntimeCitation[];
   detail?: AgentTimelineItemDetail;
   executionMeta?: TimelineExecutionMeta;
   statusTrail?: TimelineStatusStep[];
@@ -389,7 +391,7 @@ export function projectRuntimeEvent(
   messagesById?: Record<string, RuntimeMessageEnvelope>,
   transcriptEntriesById?: Record<string, RuntimeTranscriptEntry>,
   briefRecordsById?: Record<string, RuntimeBriefRecord>,
-): (Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel" | "detail" | "executionMeta" | "statusTrail"> & { timestamp?: string }) | undefined {
+): (Pick<SessionItemDraft, "kind" | "label" | "body" | "citations" | "minDisplayLevel" | "detail" | "executionMeta" | "statusTrail"> & { timestamp?: string }) | undefined {
   if (eventType === "message_enqueued") {
     const message = messageEnvelopeProjection(payload, messagesById);
     if (message?.origin === "operator") {
@@ -410,12 +412,14 @@ export function projectRuntimeEvent(
   }
 
   if (eventType === "brief_created") {
+    const brief = briefForPayload(payload, briefRecordsById);
     return {
       kind: "assistant",
       label: stringField(payload, "kind") === "result" ? "Result" : "Brief Created",
       body:
-        briefTextForPayload(payload, briefRecordsById) ||
+        brief?.text?.trim() ||
         readableTextWithoutSummary(payload),
+      citations: normalizeCitations(brief?.citations),
       timestamp: stringField(payload, "created_at"),
       minDisplayLevel: runtimeEventDisplayLevel(eventType),
     };
@@ -525,16 +529,17 @@ function runtimeEventDisplayLevel(eventType: string): DisplayLevel {
 function projectAssistantRoundRecorded(
   payload: Record<string, unknown> | undefined,
   transcriptEntriesById?: Record<string, RuntimeTranscriptEntry>,
-): Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel" | "detail"> | undefined {
+): Pick<SessionItemDraft, "kind" | "label" | "body" | "citations" | "minDisplayLevel" | "detail"> | undefined {
   if (stringField(payload, "round_purpose") === "runtime_checkpoint") {
     return undefined;
   }
-  const transcriptText = transcriptTextForPayload(payload, transcriptEntriesById);
-  if (transcriptText) {
+  const transcript = transcriptContentForPayload(payload, transcriptEntriesById);
+  if (transcript.text) {
     return {
       kind: "assistant",
       label: "Assistant round",
-      body: transcriptText,
+      body: transcript.text,
+      citations: transcript.citations,
       minDisplayLevel: "verbose",
     };
   }
@@ -1684,22 +1689,21 @@ function hydratedMessageForPayload(
   return messageId ? messagesById?.[messageId] : undefined;
 }
 
-function transcriptTextForPayload(
+function transcriptContentForPayload(
   payload: Record<string, unknown> | undefined,
   transcriptEntriesById: Record<string, RuntimeTranscriptEntry> | undefined,
-): string | undefined {
+): { text?: string; citations?: RuntimeCitation[] } {
   const entryId = transcriptEntryIdForPayload(payload);
   const entry = entryId ? transcriptEntriesById?.[entryId] : undefined;
-  return transcriptEntryText(entry);
+  return transcriptEntryContent(entry);
 }
 
-function briefTextForPayload(
+function briefForPayload(
   payload: Record<string, unknown> | undefined,
   briefRecordsById: Record<string, RuntimeBriefRecord> | undefined,
-): string | undefined {
+): RuntimeBriefRecord | undefined {
   const briefId = briefIdForPayload(payload);
-  const text = briefId ? briefRecordsById?.[briefId]?.text : undefined;
-  return text && text.trim() ? text : undefined;
+  return briefId ? briefRecordsById?.[briefId] : undefined;
 }
 
 export function briefIdForPayload(payload: Record<string, unknown> | undefined): string | undefined {
@@ -1713,17 +1717,40 @@ export function transcriptEntryIdForPayload(payload: Record<string, unknown> | u
   return stringField(contentSource, "entry_id");
 }
 
-function transcriptEntryText(entry: RuntimeTranscriptEntry | undefined): string | undefined {
+function transcriptEntryContent(entry: RuntimeTranscriptEntry | undefined): {
+  text?: string;
+  citations?: RuntimeCitation[];
+} {
   const data = asRecord(entry?.data);
   const text = stringField(data, "text");
-  if (text) return text;
+  if (text) return { text };
   const blocks = Array.isArray(data?.blocks) ? data.blocks : [];
   const parts = blocks.flatMap((block) => {
     const record = asRecord(block);
     if (stringField(record, "type") !== "text") return [];
     return stringField(record, "text") ?? stringField(record, "content") ?? [];
   });
-  return compactJoin(parts);
+  const citations = blocks.flatMap((block) => {
+    const record = asRecord(block);
+    return stringField(record, "type") === "citations"
+      ? normalizeCitations(record?.citations) ?? []
+      : [];
+  });
+  return { text: compactJoin(parts), citations: normalizeCitations(citations) };
+}
+
+function normalizeCitations(value: unknown): RuntimeCitation[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const seen = new Set<string>();
+  const citations = value.flatMap((candidate) => {
+    const record = asRecord(candidate);
+    const url = stringField(record, "url")?.trim();
+    if (!url || seen.has(url)) return [];
+    seen.add(url);
+    const title = stringField(record, "title")?.trim();
+    return [{ url, title: title || undefined }];
+  });
+  return citations.length > 0 ? citations : undefined;
 }
 
 function messageBodyText(body: Record<string, unknown> | undefined): string {

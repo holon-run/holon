@@ -5,8 +5,11 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::{
-    config::ModelRouteRef, prompt::PromptStability, tool::ToolError, tool::ToolSpec,
-    types::TokenUsage,
+    config::ModelRouteRef,
+    prompt::PromptStability,
+    tool::ToolError,
+    tool::ToolSpec,
+    types::{Citation, TokenUsage},
 };
 
 mod catalog;
@@ -421,6 +424,9 @@ pub enum ConversationMessage {
 pub enum ModelBlock {
     Text {
         text: String,
+    },
+    Citations {
+        citations: Vec<Citation>,
     },
     ToolUse {
         id: String,

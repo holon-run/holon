@@ -505,6 +505,7 @@ When a WorkItem completes with a same-round completion report candidate, the
 runtime should atomically persist:
 
 - a `BriefRecord(kind=result, work_item_id=...)` using the report text;
+- any provider-neutral citations attached to that same report segment;
 - a WorkItem result report projection that context and compaction can read.
 
 That delivery projection is terminal for the current turn. Normal turn-final

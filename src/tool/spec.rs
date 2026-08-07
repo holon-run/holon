@@ -37,6 +37,7 @@ pub struct ToolCall {
 #[derive(Debug, Clone)]
 pub struct CompletionReportCandidate {
     pub text: String,
+    pub citations: Vec<crate::types::Citation>,
     pub source_turn_index: u64,
     pub source_round: usize,
     pub source_turn_id: Option<String>,

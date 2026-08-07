@@ -380,6 +380,12 @@ export interface RuntimeBriefRecord {
   created_at?: string;
   text?: string;
   kind?: string;
+  citations?: RuntimeCitation[];
+}
+
+export interface RuntimeCitation {
+  url: string;
+  title?: string;
 }
 
 export interface RuntimeProviderSummary {
@@ -775,6 +781,7 @@ export interface AgentTimelineItem {
   meta: string;
   minDisplayLevel: DisplayLevel;
   sourceIds: string[];
+  citations?: RuntimeCitation[];
   stateObjectRef?: TimelineStateObjectRef;
   relatedStateObjectRef?: TimelineStateObjectRef;
   detail?: AgentTimelineItemDetail;

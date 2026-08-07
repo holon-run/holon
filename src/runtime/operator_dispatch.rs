@@ -183,6 +183,9 @@ impl RuntimeHandle {
         if outcome.terminal_kind.is_failure() {
             let mut brief =
                 brief::make_failure(&message.agent_id, message, outcome.final_text.clone());
+            if !outcome.final_citations.is_empty() {
+                brief.citations = Some(outcome.final_citations.clone());
+            }
             brief.turn_index = Some(outcome.turn_index);
             bind_brief_to_assistant_round(
                 &mut brief,
@@ -198,6 +201,9 @@ impl RuntimeHandle {
             // has no operator delivery, so it must not create an empty result brief.
             let mut brief =
                 brief::make_result(&message.agent_id, message, outcome.final_text.clone());
+            if !outcome.final_citations.is_empty() {
+                brief.citations = Some(outcome.final_citations.clone());
+            }
             brief.turn_index = Some(outcome.turn_index);
             bind_brief_to_assistant_round(
                 &mut brief,

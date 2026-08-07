@@ -2348,6 +2348,42 @@ fn completion_report_texts_skips_thinking_blocks() {
 }
 
 #[test]
+fn completion_report_texts_captures_and_deduplicates_citations() {
+    let blocks = vec![
+        ModelBlock::Text {
+            text: "Report text.".to_string(),
+        },
+        ModelBlock::Citations {
+            citations: vec![
+                crate::types::Citation {
+                    url: "https://example.com/one".to_string(),
+                    title: Some("One".to_string()),
+                },
+                crate::types::Citation {
+                    url: "https://example.com/one".to_string(),
+                    title: Some("Duplicate".to_string()),
+                },
+            ],
+        },
+        ModelBlock::ToolUse {
+            id: "call_citations".to_string(),
+            name: "CompleteWorkItem".to_string(),
+            input: serde_json::json!({"work_item_id": "work_456"}),
+            kind: crate::provider::ModelToolCallKind::Function,
+        },
+    ];
+
+    let reports = completion_report_texts_by_tool_id(&blocks);
+    assert_eq!(
+        reports[0].2,
+        vec![crate::types::Citation {
+            url: "https://example.com/one".to_string(),
+            title: Some("One".to_string()),
+        }]
+    );
+}
+
+#[test]
 fn completion_report_texts_clears_pending_on_non_complete_tool() {
     let blocks = vec![
         ModelBlock::Text {

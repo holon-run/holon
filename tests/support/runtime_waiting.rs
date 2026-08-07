@@ -395,6 +395,13 @@ pub async fn terminal_brief_uses_last_assistant_message_without_terminal_deliver
         briefs[0].text,
         "Verification is complete. I'll package the final answer now."
     );
+    assert_eq!(
+        briefs[0].citations,
+        Some(vec![holon::types::Citation {
+            url: "https://example.com/verification".into(),
+            title: Some("Verification source".into()),
+        }])
+    );
     assert!(
         !briefs[0]
             .text

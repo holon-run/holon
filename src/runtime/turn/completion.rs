@@ -15,7 +15,7 @@ use crate::tool::{
     spec::{ToolResultEnvelope, ToolResultStatus},
     ToolCall,
 };
-use crate::types::AuditEvent;
+use crate::types::{AuditEvent, Citation};
 
 use super::{truncate_preview, ROUND_TEXT_PREVIEW_LIMIT};
 impl RuntimeHandle {
@@ -57,10 +57,15 @@ impl RuntimeHandle {
         let mut promotions = Vec::new();
         for (index, work_item_id) in completion_indexes {
             let tool_use_id = tool_results[index].tool_use_id.as_str();
-            let report_text = report_texts_by_tool_id
+            let report = report_texts_by_tool_id
                 .iter()
-                .find_map(|(id, text)| (id == tool_use_id).then_some(text.trim()))
-                .unwrap_or_default();
+                .find_map(|(id, text, citations)| {
+                    (id == tool_use_id).then_some((text.trim(), citations))
+                });
+            let (report_text, report_citations): (&str, &[Citation]) = match report {
+                Some((text, citations)) => (text, citations.as_slice()),
+                None => ("", &[]),
+            };
             if report_text.is_empty() {
                 let warning = completion_report_warning(
                     "missing_completion_report",
@@ -88,6 +93,7 @@ impl RuntimeHandle {
                 .promote_work_item_completion_report_with_metadata(
                     work_item_id.clone(),
                     report_text.to_string(),
+                    report_citations.to_vec(),
                     Some(turn_index),
                     Some(round),
                     warnings,
@@ -132,9 +138,10 @@ impl RuntimeHandle {
 
 pub(super) fn completion_report_texts_by_tool_id(
     assistant_blocks: &[ModelBlock],
-) -> Vec<(String, String)> {
+) -> Vec<(String, String, Vec<Citation>)> {
     let mut pending_text = Vec::<String>::new();
-    let mut reports = Vec::<(String, String)>::new();
+    let mut pending_citations = Vec::<Citation>::new();
+    let mut reports = Vec::<(String, String, Vec<Citation>)>::new();
     for block in assistant_blocks {
         match block {
             ModelBlock::Text { text } => {
@@ -150,9 +157,20 @@ pub(super) fn completion_report_texts_by_tool_id(
                         .filter(|text| !text.is_empty())
                         .collect::<Vec<_>>()
                         .join("\n\n");
-                    reports.push((id.clone(), report_text));
+                    reports.push((id.clone(), report_text, pending_citations.clone()));
                 }
                 pending_text.clear();
+                pending_citations.clear();
+            }
+            ModelBlock::Citations { citations } => {
+                for citation in citations {
+                    if !pending_citations
+                        .iter()
+                        .any(|existing| existing.url == citation.url)
+                    {
+                        pending_citations.push(citation.clone());
+                    }
+                }
             }
             ModelBlock::Thinking { .. } | ModelBlock::RedactedThinking { .. } => {}
         }

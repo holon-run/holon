@@ -77,6 +77,17 @@ pub(super) fn estimate_model_block_tokens(block: &ModelBlock) -> usize {
         } => estimate_text_tokens(id) + estimate_text_tokens(name) + estimate_json_tokens(input),
         ModelBlock::Thinking { text, .. } => estimate_text_tokens(text),
         ModelBlock::RedactedThinking { data } => estimate_text_tokens(data),
+        ModelBlock::Citations { citations } => citations
+            .iter()
+            .map(|citation| {
+                estimate_text_tokens(&citation.url)
+                    + citation
+                        .title
+                        .as_deref()
+                        .map(estimate_text_tokens)
+                        .unwrap_or(0)
+            })
+            .sum(),
     }
 }
 

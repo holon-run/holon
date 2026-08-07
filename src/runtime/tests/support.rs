@@ -481,9 +481,17 @@ impl AgentProvider for TruncatingProvider {
         *calls += 1;
         if *calls == 1 {
             return Ok(ProviderTurnResponse {
-                blocks: vec![ModelBlock::Text {
-                    text: "Partial report heading:".into(),
-                }],
+                blocks: vec![
+                    ModelBlock::Text {
+                        text: "Partial report heading:".into(),
+                    },
+                    ModelBlock::Citations {
+                        citations: vec![crate::types::Citation {
+                            url: "https://example.com/first".into(),
+                            title: Some("First".into()),
+                        }],
+                    },
+                ],
                 stop_reason: Some("max_tokens".into()),
                 input_tokens: 100,
                 output_tokens: 50,
@@ -505,9 +513,23 @@ impl AgentProvider for TruncatingProvider {
         }));
 
         Ok(ProviderTurnResponse {
-            blocks: vec![ModelBlock::Text {
-                text: "\n\n- final grounded recommendation".into(),
-            }],
+            blocks: vec![
+                ModelBlock::Text {
+                    text: "\n\n- final grounded recommendation".into(),
+                },
+                ModelBlock::Citations {
+                    citations: vec![
+                        crate::types::Citation {
+                            url: "https://example.com/first".into(),
+                            title: Some("Duplicate".into()),
+                        },
+                        crate::types::Citation {
+                            url: "https://example.com/second".into(),
+                            title: Some("Second".into()),
+                        },
+                    ],
+                },
+            ],
             stop_reason: None,
             input_tokens: 50,
             output_tokens: 25,

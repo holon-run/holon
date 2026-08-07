@@ -1,5 +1,8 @@
 use super::super::*;
 use super::continuation::{canonicalize_openai_provider_item, normalize_openai_function_arguments};
+use crate::types::Citation;
+use std::collections::HashSet;
+use url::Url;
 
 pub(super) async fn read_openai_streaming_response(
     response: Response,
@@ -371,8 +374,12 @@ pub(in super::super) fn parse_openai_response_with_transport_state(
                                 if let Some(text) = content_item.get("text").and_then(Value::as_str)
                                 {
                                     blocks.push(ModelBlock::Text {
-                                        text: text.to_string(),
+                                        text: strip_openai_citation_sentinels(text),
                                     });
+                                    let citations = openai_url_citations(content_item);
+                                    if !citations.is_empty() {
+                                        blocks.push(ModelBlock::Citations { citations });
+                                    }
                                 }
                             }
                             _ => {}
@@ -503,6 +510,73 @@ pub(in super::super) fn parse_openai_response_with_transport_state(
         response_id,
         output_items,
     })
+}
+
+fn openai_url_citations(content_item: &Value) -> Vec<Citation> {
+    let mut seen = HashSet::new();
+    content_item
+        .get("annotations")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|annotation| {
+            if annotation.get("type").and_then(Value::as_str) != Some("url_citation") {
+                return None;
+            }
+            let citation = annotation
+                .get("url_citation")
+                .filter(|value| value.is_object())
+                .unwrap_or(annotation);
+            let raw_url = citation.get("url").and_then(Value::as_str)?.trim();
+            let parsed = Url::parse(raw_url).ok()?;
+            if !matches!(parsed.scheme(), "http" | "https") {
+                return None;
+            }
+            let url = parsed.to_string();
+            if !seen.insert(url.clone()) {
+                return None;
+            }
+            let title = citation
+                .get("title")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|title| !title.is_empty())
+                .map(ToString::to_string);
+            Some(Citation { url, title })
+        })
+        .collect()
+}
+
+fn strip_openai_citation_sentinels(text: &str) -> String {
+    const START: &str = "\u{e200}cite\u{e202}";
+    const END: char = '\u{e201}';
+
+    let mut visible = String::with_capacity(text.len());
+    let mut remaining = text;
+    while let Some(start) = remaining.find(START) {
+        visible.push_str(&remaining[..start]);
+        let marker_body = &remaining[start + START.len()..];
+        if let Some(end) = marker_body.find(END) {
+            remaining = &marker_body[end + END.len_utf8()..];
+            continue;
+        }
+        let token_end = marker_body
+            .char_indices()
+            .find_map(|(index, character)| {
+                (character.is_whitespace() || !is_openai_citation_token_character(character))
+                    .then_some(index)
+            })
+            .unwrap_or(marker_body.len());
+        remaining = &marker_body[token_end..];
+    }
+    visible.push_str(remaining);
+    visible.retain(|character| !matches!(character, '\u{e200}' | '\u{e201}' | '\u{e202}'));
+    visible
+}
+
+fn is_openai_citation_token_character(character: char) -> bool {
+    character.is_ascii_alphanumeric()
+        || matches!(character, '_' | '-' | ':' | ',' | '.' | '\u{e202}')
 }
 
 #[allow(dead_code)]

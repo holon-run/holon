@@ -2127,6 +2127,29 @@
               "null"
             ]
           },
+          "citations": {
+            "items": {
+              "properties": {
+                "title": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "url"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "content_source": {
             "default": {
               "kind": "inline"

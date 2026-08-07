@@ -354,6 +354,11 @@ fn conversation_message_to_gemini_content(message: &ConversationMessage) -> Opti
                             function_response: None,
                         }
                     }
+                    ModelBlock::Citations { .. } => GeminiPart {
+                        text: None,
+                        function_call: None,
+                        function_response: None,
+                    },
                 })
                 .filter(|part| part.text.is_some() || part.function_call.is_some())
                 .collect::<Vec<_>>();

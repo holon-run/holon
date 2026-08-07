@@ -4,11 +4,13 @@ import { SKIP, visit } from "unist-util-visit";
 import { memo, useEffect, useState, type ImgHTMLAttributes, type ReactNode } from "react";
 
 import { useRuntimeStore } from "../runtime/runtime-store";
+import type { RuntimeCitation } from "../runtime/types";
 
 const WORKSPACE_URL_RE = /workspace:\/\/[^\s<>"')\]]+/g;
 
 interface MarkdownContentProps {
   text: string;
+  citations?: RuntimeCitation[];
   compact?: boolean;
 }
 
@@ -207,7 +209,46 @@ export function remarkWorkspaceAutolink() {
   };
 }
 
-function MarkdownContentView({ text, compact = false }: MarkdownContentProps) {
+export function stripOpenAiCitationSentinels(text: string): string {
+  const start = "\uE200cite\uE202";
+  let visible = "";
+  let remaining = text;
+  while (true) {
+    const markerStart = remaining.indexOf(start);
+    if (markerStart < 0) break;
+    visible += remaining.slice(0, markerStart);
+    const markerBody = remaining.slice(markerStart + start.length);
+    const markerEnd = markerBody.indexOf("\uE201");
+    if (markerEnd >= 0) {
+      remaining = markerBody.slice(markerEnd + 1);
+      continue;
+    }
+    const tokenEnd = markerBody.search(/\s|[^A-Za-z0-9_,.:\-\uE202]/);
+    remaining = tokenEnd < 0 ? "" : markerBody.slice(tokenEnd);
+  }
+  return `${visible}${remaining}`.replace(/[\uE200\uE201\uE202]/g, "");
+}
+
+export function safeCitation(citation: RuntimeCitation): RuntimeCitation | undefined {
+  try {
+    const parsed = new URL(citation.url);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return undefined;
+    const title = citation.title?.trim();
+    return { url: parsed.toString(), title: title || parsed.hostname || parsed.toString() };
+  } catch {
+    return undefined;
+  }
+}
+
+function MarkdownContentView({ text, citations, compact = false }: MarkdownContentProps) {
+  const safeCitations = Array.from(
+    new Map(
+      (citations ?? [])
+        .map(safeCitation)
+        .filter((citation): citation is RuntimeCitation => Boolean(citation))
+        .map((citation) => [citation.url, citation]),
+    ).values(),
+  );
   return (
     <div className={`markdown-content${compact ? " compact" : ""}`}>
       <ReactMarkdown
@@ -245,8 +286,22 @@ function MarkdownContentView({ text, compact = false }: MarkdownContentProps) {
           },
         }}
       >
-        {text}
+        {stripOpenAiCitationSentinels(text)}
       </ReactMarkdown>
+      {safeCitations.length > 0 ? (
+        <section className="markdown-sources" aria-label="Sources">
+          <strong>Sources</strong>
+          <ol>
+            {safeCitations.map((citation) => (
+              <li key={citation.url}>
+                <a href={citation.url} rel="noreferrer noopener" target="_blank">
+                  {citation.title}
+                </a>
+              </li>
+            ))}
+          </ol>
+        </section>
+      ) : null}
     </div>
   );
 }

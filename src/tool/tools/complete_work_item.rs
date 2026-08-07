@@ -79,6 +79,9 @@ pub(crate) async fn execute(
             candidate
                 .map(|candidate| candidate.text.clone())
                 .unwrap_or_default(),
+            candidate
+                .map(|candidate| candidate.citations.clone())
+                .unwrap_or_default(),
             candidate.map(|candidate| candidate.source_turn_index),
             candidate.map(|candidate| candidate.source_round),
             candidate.and_then(|candidate| candidate.source_turn_id.clone()),

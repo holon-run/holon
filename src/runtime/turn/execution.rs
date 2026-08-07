@@ -20,7 +20,7 @@ use crate::runtime::provider_turn::{
 use crate::storage::to_json_value;
 use crate::tool::{ToolCall, ToolError};
 use crate::types::{
-    AdmissionContext, AssistantRoundPurpose, AuditEvent, AuthorityClass, MessageBody,
+    AdmissionContext, AssistantRoundPurpose, AuditEvent, AuthorityClass, Citation, MessageBody,
     MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, Priority,
     QueueEntryRecord, QueueEntryStatus, TokenUsage, ToolExecutionAuditEvent, TranscriptEntry,
     TranscriptEntryKind, TurnTerminalKind, TurnTerminalRecord,
@@ -134,6 +134,7 @@ impl RuntimeHandle {
             .await?;
         Ok(Some(AgentLoopOutcome {
             final_text,
+            final_citations: Vec::new(),
             final_text_source_assistant_round_id: None,
             turn_index: terminal.turn_index,
             terminal,
@@ -332,6 +333,7 @@ impl RuntimeHandle {
         ))?;
         Ok(Some(AgentLoopOutcome {
             final_text,
+            final_citations: Vec::new(),
             final_text_source_assistant_round_id: None,
             turn_index: terminal.turn_index,
             terminal,
@@ -907,7 +909,9 @@ impl TurnExecution<'_> {
         let mut completed_work_item_this_turn = false;
         let mut round = 0usize;
         let mut truncated_text_history = Vec::new();
+        let mut truncated_citation_history = Vec::<Citation>::new();
         let mut last_assistant_message: Option<String> = None;
+        let mut last_assistant_citations = Vec::<Citation>::new();
         let mut last_assistant_round_id: Option<String> = None;
         let mut max_output_recovery_count = 0usize;
         let mut rounds_since_work_item_update = 0usize;
@@ -989,6 +993,7 @@ impl TurnExecution<'_> {
                         .await?;
                     return Ok(AgentLoopOutcome {
                         final_text,
+                        final_citations: Vec::new(),
                         final_text_source_assistant_round_id: None,
                         turn_index: terminal.turn_index,
                         terminal,
@@ -1307,6 +1312,7 @@ impl TurnExecution<'_> {
                                 .await?;
                             return Ok(AgentLoopOutcome {
                                 final_text,
+                                final_citations: Vec::new(),
                                 final_text_source_assistant_round_id: None,
                                 turn_index: terminal.turn_index,
                                 terminal,
@@ -1483,6 +1489,7 @@ impl TurnExecution<'_> {
             };
             let mut tool_calls = Vec::new();
             let mut text_blocks = Vec::new();
+            let mut citation_blocks = Vec::<Citation>::new();
             let mut thinking_block_count = 0usize;
 
             for block in &assistant_blocks {
@@ -1500,6 +1507,9 @@ impl TurnExecution<'_> {
                             name: name.clone(),
                             input: input.clone(),
                         });
+                    }
+                    ModelBlock::Citations { citations } => {
+                        extend_unique_citations(&mut citation_blocks, citations.iter().cloned());
                     }
                     ModelBlock::Thinking { .. } | ModelBlock::RedactedThinking { .. } => {
                         thinking_block_count += 1;
@@ -1539,6 +1549,11 @@ impl TurnExecution<'_> {
                     .join("\n\n");
                 if !aggregated_text.is_empty() {
                     last_assistant_message = Some(aggregated_text);
+                    last_assistant_citations = truncated_citation_history.clone();
+                    extend_unique_citations(
+                        &mut last_assistant_citations,
+                        citation_blocks.iter().cloned(),
+                    );
                 } else if !truncated_text_history.is_empty() {
                     // If current round has no text, preserve text history from previous rounds.
                     let history_text = truncated_text_history
@@ -1549,6 +1564,7 @@ impl TurnExecution<'_> {
                         .join("\n\n");
                     if !history_text.is_empty() {
                         last_assistant_message = Some(history_text);
+                        last_assistant_citations = truncated_citation_history.clone();
                     }
                 }
             }
@@ -1823,6 +1839,10 @@ impl TurnExecution<'_> {
                         && !combined_text.is_empty()
                     {
                         truncated_text_history.push(combined_text.clone());
+                        extend_unique_citations(
+                            &mut truncated_citation_history,
+                            citation_blocks.iter().cloned(),
+                        );
                     }
                     max_output_recovery_count += 1;
                     let continuation_text =
@@ -1929,6 +1949,7 @@ impl TurnExecution<'_> {
                     .await?;
                 return Ok(AgentLoopOutcome {
                     final_text,
+                    final_citations: last_assistant_citations.clone(),
                     final_text_source_assistant_round_id: last_assistant_round_id.clone(),
                     turn_index: terminal.turn_index,
                     terminal,
@@ -2120,20 +2141,25 @@ impl TurnExecution<'_> {
                 let tool_execution_context = crate::tool::spec::ToolExecutionContext {
                     completion_report_candidate: completion_report_texts
                         .iter()
-                        .find(|(candidate_tool_call_id, _)| candidate_tool_call_id == &tool_call_id)
-                        .map(|(_, text)| crate::tool::spec::CompletionReportCandidate {
-                            text: text.clone(),
-                            source_turn_index: turn_index,
-                            source_round: round,
-                            source_turn_id: execution_binding
-                                .as_ref()
-                                .map(|binding| binding.turn_id.clone()),
-                            source_message_id: execution_binding
-                                .as_ref()
-                                .map(|binding| binding.source_message_id.clone()),
-                            source_assistant_round_id: assistant_round_id.clone(),
-                            source_tool_call_id: tool_call_id.clone(),
-                        }),
+                        .find(|(candidate_tool_call_id, _, _)| {
+                            candidate_tool_call_id == &tool_call_id
+                        })
+                        .map(
+                            |(_, text, citations)| crate::tool::spec::CompletionReportCandidate {
+                                text: text.clone(),
+                                citations: citations.clone(),
+                                source_turn_index: turn_index,
+                                source_round: round,
+                                source_turn_id: execution_binding
+                                    .as_ref()
+                                    .map(|binding| binding.turn_id.clone()),
+                                source_message_id: execution_binding
+                                    .as_ref()
+                                    .map(|binding| binding.source_message_id.clone()),
+                                source_assistant_round_id: assistant_round_id.clone(),
+                                source_tool_call_id: tool_call_id.clone(),
+                            },
+                        ),
                 };
                 let tool_exec_started = std::time::Instant::now();
                 let tool_execution = if let Some(snapshot) = runtime.current_run_abort_token().await
@@ -2469,6 +2495,11 @@ impl TurnExecution<'_> {
                     .await?;
                 return Ok(AgentLoopOutcome {
                     final_text,
+                    final_citations: if terminal_wait_without_text {
+                        Vec::new()
+                    } else {
+                        last_assistant_citations.clone()
+                    },
                     final_text_source_assistant_round_id: (!terminal_wait_without_text)
                         .then(|| last_assistant_round_id.clone())
                         .flatten(),
@@ -2482,4 +2513,19 @@ impl TurnExecution<'_> {
             }
         }
     }
+}
+
+fn extend_unique_citations(
+    target: &mut Vec<Citation>,
+    citations: impl IntoIterator<Item = Citation>,
+) {
+    let mut seen = target
+        .iter()
+        .map(|citation| citation.url.clone())
+        .collect::<HashSet<_>>();
+    target.extend(
+        citations
+            .into_iter()
+            .filter(|citation| seen.insert(citation.url.clone())),
+    );
 }

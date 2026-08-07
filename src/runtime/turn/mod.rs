@@ -24,8 +24,8 @@ use crate::config::ModelRouteRef;
 use crate::provider::{ModelBlock, ToolResultBlock};
 use crate::tool::{spec::ToolResultEnvelope, ToolCall};
 use crate::types::{
-    AuditEvent, BriefKind, MessageEnvelope, TurnRecord, TurnTerminalKind, TurnTerminalRecord,
-    TurnTerminalSummary, TurnTriggerSummary,
+    AuditEvent, BriefKind, Citation, MessageEnvelope, TurnRecord, TurnTerminalKind,
+    TurnTerminalRecord, TurnTerminalSummary, TurnTriggerSummary,
 };
 
 use super::{message_dispatch::message_text, RuntimeHandle};
@@ -37,6 +37,7 @@ pub(crate) use projection::estimate_tool_specs_tokens;
 
 pub(crate) struct AgentLoopOutcome {
     pub(super) final_text: String,
+    pub(super) final_citations: Vec<Citation>,
     pub(super) final_text_source_assistant_round_id: Option<String>,
     pub(super) turn_index: u64,
     pub(super) terminal: TurnTerminalRecord,

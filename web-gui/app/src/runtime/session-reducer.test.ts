@@ -1307,6 +1307,7 @@ describe("reduceAgentSessionTimeline", () => {
           id: "brief_123",
           text: "Full persisted brief text.",
           kind: "result",
+          citations: [{ url: "https://example.com/source", title: "Source" }],
         },
       },
     });
@@ -1316,6 +1317,7 @@ describe("reduceAgentSessionTimeline", () => {
         id: "brief:brief_123",
         label: "Result",
         body: "Full persisted brief text.",
+        citations: [{ url: "https://example.com/source", title: "Source" }],
       }),
     );
   });
@@ -1415,6 +1417,10 @@ describe("reduceAgentSessionTimeline", () => {
             blocks: [
               { type: "thinking", text: "Internal reasoning must not be visible." },
               { type: "text", text: "Operator-visible response." },
+              {
+                type: "citations",
+                citations: [{ url: "https://example.com/source", title: "Source" }],
+              },
               { type: "tool_use", content: "Internal tool block." },
             ],
           },
@@ -1426,6 +1432,7 @@ describe("reduceAgentSessionTimeline", () => {
       expect.objectContaining({
         id: "assistant_round:round_123",
         body: "Operator-visible response.",
+        citations: [{ url: "https://example.com/source", title: "Source" }],
         minDisplayLevel: "verbose",
       }),
     );

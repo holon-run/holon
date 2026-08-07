@@ -210,7 +210,7 @@ function extractWorkspaceImageRefs(text: string): WorkspaceImageRef[] {
   return refs;
 }
 function TimelineItemContent({ item }: { item: AgentTimelineItem }) {
-  return <MarkdownContent text={item.body} compact={false} />;
+  return <MarkdownContent text={item.body} citations={item.citations} compact={false} />;
 }
 
 export function BriefHydrationStatus({
