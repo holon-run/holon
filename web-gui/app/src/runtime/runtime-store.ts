@@ -4476,7 +4476,7 @@ async function catchUpAgentEvents(
   get: () => RuntimeStoreState,
   set: StoreSet,
   agentId: string,
-  _displayLevel: DisplayLevel,
+  displayLevel: DisplayLevel,
   trace = createRuntimeTrace("events.catch_up", { agentId, trigger: "events.catch_up" }),
 ): Promise<void> {
   const existing = agentEventCatchUpInFlight.get(agentId);
@@ -4534,6 +4534,45 @@ async function catchUpAgentEvents(
       scheduleMessageHydration(get, set, agentId, "debug");
       scheduleTranscriptHydration(get, set, agentId, "debug");
       scheduleBriefHydration(get, set, agentId, "debug");
+    }
+
+    // Phase 1.5 — Ensure display-level-visible events are present.
+    // The Phase 1 tail returns the most recent events of *all* levels.  For
+    // active agents these can be entirely debug-level (tool executions,
+    // system activity), leaving the info-level timeline blank after filtering.
+    // Fetch a filtered tail so the user sees meaningful content immediately.
+    if (displayLevel) {
+      const displayTailPage = await runtimeClient.getAgentEvents(agentId, {
+        limit: 80,
+        order: "desc",
+        displayLevel,
+      });
+      if (!isCurrentClientGeneration(generation)) {
+        span.end("cancelled");
+        return;
+      }
+      const displayTailEvents = displayTailPage.events ?? [];
+      const displayTailConsumedSeq =
+        Math.max(...displayTailEvents.map((event) => event.event_seq ?? 0)) || undefined;
+      set((state) =>
+        mergeEventPageIntoSession(
+          state,
+          agentId,
+          displayTailEvents,
+          displayTailPage.oldest_seq ?? undefined,
+          displayTailPage.has_older ?? false,
+          "debug",
+          {
+            newestSeq: displayTailConsumedSeq,
+            append: true,
+            eventLogEpoch: displayTailPage.event_log_epoch,
+          },
+        ),
+      );
+      eventCount += displayTailEvents.length;
+      pageCount += 1;
+      refreshWorkItems ||= displayTailEvents.some(isWorkItemCacheInvalidationEvent);
+      refreshAgentState ||= displayTailEvents.some(isAgentStateCacheInvalidationEvent);
     }
 
     // Phase 2 — Backfill the gap between cached state and tail in ascending

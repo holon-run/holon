@@ -1845,11 +1845,17 @@ code {
 .history-status {
   max-width: 720px;
   padding: 9px 12px;
-  border: 1px solid color-mix(in srgb, var(--danger) 34%, var(--line));
+  border: 1px solid var(--line);
   border-radius: 999px;
+  font-size: 12px;
+  background: var(--surface);
+  color: var(--muted);
+}
+
+.history-status--recovering {
+  border-color: color-mix(in srgb, var(--danger) 34%, var(--line));
   background: color-mix(in srgb, var(--danger) 8%, var(--surface));
   color: var(--danger);
-  font-size: 12px;
 }
 
 .timeline-turn {

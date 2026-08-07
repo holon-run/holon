@@ -714,7 +714,9 @@ export function AgentPage({
               </div>
             ) : null}
             {timeline.length === 0 ? (
-              detailLoading || (contentStatus === "unknown" && syncStatus !== "error") ? (
+              detailLoading ||
+              (contentStatus === "unknown" && syncStatus !== "error") ||
+              (contentStatus === "available" && (syncStatus === "refreshing" || syncStatus === "recovering")) ? (
                 <div className="conversation-loading" role="status" aria-label={t("common.loading")}>
                   <LoaderCircle size={24} className="spin" />
                   <span>{t("common.syncing")}</span>
@@ -732,9 +734,9 @@ export function AgentPage({
               />
               ) : null
             ) : null}
-            {timeline.length > 0 && (syncStatus === "refreshing" || syncStatus === "stale" || syncStatus === "recovering") ? (
-              <div className="history-status" role="status">
-                {syncStatus === "refreshing" ? t("common.refreshing") : syncStatus === "recovering" ? t("common.recovering") : t("common.syncing")}
+            {timeline.length > 0 && (syncStatus === "refreshing" || syncStatus === "recovering") ? (
+              <div className={`history-status${syncStatus === "recovering" ? " history-status--recovering" : ""}`} role="status">
+                {syncStatus === "refreshing" ? t("common.refreshing") : t("common.recovering")}
               </div>
             ) : null}
           </div>
