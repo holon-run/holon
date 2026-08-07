@@ -634,7 +634,7 @@ describe("roster activity unread state", () => {
     });
   });
 
-  it("counts unread brief and non-operator message events once by seq", async () => {
+  it("counts unread brief events once by seq, ignores non-operator messages", async () => {
     const { touchRosterActivityFromEvent } = await import("./runtime-store");
     const afterBrief = touchRosterActivityFromEvent(
       {},
@@ -661,7 +661,7 @@ describe("roster activity unread state", () => {
       "agent-b",
     );
 
-    expect(afterAgentMessage["agent-a"]).toMatchObject({ unreadCount: 2, lastUnreadSeq: 11 });
+    expect(afterAgentMessage["agent-a"]).toMatchObject({ unreadCount: 1, lastUnreadSeq: 10 });
   });
 
   it("does not count unread for the currently open agent or operator messages", async () => {
@@ -687,6 +687,51 @@ describe("roster activity unread state", () => {
 
     expect(afterOperatorMessage["agent-a"]?.unreadCount).toBeUndefined();
     expect(afterOperatorMessage["agent-a"]?.operatorAt).toBe("2026-01-01T00:00:01.000Z");
+  });
+
+  it("advances lastReadSeq for the currently open agent to prevent re-counting on replay", async () => {
+    const { touchRosterActivityFromEvent } = await import("./runtime-store");
+    // Simulate: user opens agent-a with lastReadSeq=7, then views events 8-10
+    // while the agent is selected.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let activity: Record<string, any> = {
+      "agent-a": { unreadCount: 0, lastUnreadSeq: 7, lastReadSeq: 7 },
+    };
+    for (const seq of [8, 9, 10]) {
+      activity = touchRosterActivityFromEvent(
+        activity,
+        "agent-a",
+        { agent_id: "agent-a", event_seq: seq, ts: `2026-01-01T00:00:0${seq}.000Z`, type: "brief_created", payload: {} },
+        "agent-a",
+      );
+    }
+    // Unread should stay 0 and lastReadSeq should advance to 10.
+    expect(activity["agent-a"]?.unreadCount ?? 0).toBe(0);
+    expect(activity["agent-a"]?.lastReadSeq).toBe(10);
+
+    // Now simulate a page reload: events 8-10 are re-delivered while agent-a
+    // is NOT selected. They must NOT be re-counted as unread.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let replayed: Record<string, any> = activity;
+    for (const seq of [8, 9, 10]) {
+      replayed = touchRosterActivityFromEvent(
+        replayed,
+        "agent-a",
+        { agent_id: "agent-a", event_seq: seq, ts: `2026-01-01T00:00:0${seq}.000Z`, type: "brief_created", payload: {} },
+        "agent-b",
+      );
+    }
+    expect(replayed["agent-a"]?.unreadCount ?? 0).toBe(0);
+
+    // A genuinely new event (seq 11) should still be counted.
+    replayed = touchRosterActivityFromEvent(
+      replayed,
+      "agent-a",
+      { agent_id: "agent-a", event_seq: 11, ts: "2026-01-01T00:00:11.000Z", type: "brief_created", payload: {} },
+      "agent-b",
+    );
+    expect(replayed["agent-a"]?.unreadCount).toBe(1);
+    expect(replayed["agent-a"]?.lastUnreadSeq).toBe(11);
   });
 });
 

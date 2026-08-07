@@ -4281,15 +4281,21 @@ export function touchRosterActivityFromEvent(
   if (event.type === "message_enqueued" && messageOrigin(event.payload) === "operator") {
     next = touchRosterActivity(next, agentId, "operator", eventTimestamp(event));
   }
-  if (isUnreadEvent(event) && agentId !== selectedAgentId) {
-    next = incrementUnreadFromEvent(next, agentId, event);
+  if (isUnreadEvent(event)) {
+    if (agentId !== selectedAgentId) {
+      next = incrementUnreadFromEvent(next, agentId, event);
+    } else {
+      // Advance the read watermark for the currently-viewed agent so that
+      // events seen in real time are not re-counted as unread after a page
+      // reload or session reset (when eventsBySeq is empty and dedup fails).
+      next = advanceReadSeqFromEvent(next, agentId, event);
+    }
   }
   return next;
 }
 
 function isUnreadEvent(event: StreamEventEnvelopeDto): boolean {
-  if (event.type === "brief_created") return true;
-  return event.type === "message_enqueued" && messageOrigin(event.payload) !== "operator";
+  return event.type === "brief_created";
 }
 
 function incrementUnreadFromEvent(
@@ -4307,6 +4313,24 @@ function incrementUnreadFromEvent(
       ...existing,
       unreadCount: (existing?.unreadCount ?? 0) + 1,
       lastUnreadSeq: seq ?? existing?.lastUnreadSeq,
+    },
+  };
+}
+
+function advanceReadSeqFromEvent(
+  current: Record<string, AgentRosterActivity>,
+  agentId: string,
+  event: StreamEventEnvelopeDto,
+): Record<string, AgentRosterActivity> {
+  const existing = current[agentId];
+  const seq = event.event_seq;
+  if (seq == null) return current;
+  if (existing?.lastReadSeq != null && seq <= existing.lastReadSeq) return current;
+  return {
+    ...current,
+    [agentId]: {
+      ...existing,
+      lastReadSeq: Math.max(seq, existing?.lastReadSeq ?? 0),
     },
   };
 }
