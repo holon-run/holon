@@ -667,7 +667,7 @@ async function runProjectionEvalCommand(args) {
 
 async function runProjectionEvalCaseCommand({ name, commandTemplate, inputPath, cwd, caseDir }) {
   const renderedCommand = renderProjectionEvalCommand(commandTemplate, inputPath);
-  const result = await runCommand("zsh", ["-lc", renderedCommand], cwd, process.env, false);
+  const result = await runCommand("sh", ["-c", renderedCommand], cwd, process.env, false);
   const manifest = JSON.parse(result.stdout);
   const stdoutPath = path.join(caseDir, `${name}.stdout.json`);
   const stderrPath = path.join(caseDir, `${name}.stderr.log`);
