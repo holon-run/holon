@@ -80,8 +80,14 @@ pub(super) fn validate_execution_commands_tx(
         if let ExecutionProtocolCommand::Admit(command) = command {
             validate_admission_authority_tx(tx, agent_id, &command.attempt.admitted_fences)?;
         }
+        if let ExecutionProtocolCommand::RegisterWorkItem(command) = command {
+            validate_register_work_item(tx, agent_id, command, work_item_mutations)?;
+        }
         if let ExecutionProtocolCommand::AdvanceWorkItemSourceRevision(command) = command {
             validate_work_item_source_revision_advance(command, work_item_mutations)?;
+        }
+        if let ExecutionProtocolCommand::SetWorkItemReadiness(command) = command {
+            validate_set_work_item_readiness(command, work_item_mutations, wait_conditions)?;
         }
         if let ExecutionProtocolCommand::SetWorkItemWaiting(command) = command {
             validate_set_work_item_waiting(command, work_item_mutations, wait_conditions)?;
@@ -102,6 +108,122 @@ pub(super) fn validate_execution_commands_tx(
         initialized_partition,
         results,
     }))
+}
+
+pub(super) fn synchronize_work_item_revisions_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    transition: &crate::runtime_db::transitions::ExecutionProtocolTransition,
+    work_item_mutations: &[WorkItemMutation],
+) -> Result<crate::runtime_db::transitions::ExecutionProtocolTransition> {
+    if !partition_exists_tx(tx, agent_id)? {
+        return Ok(transition.clone());
+    }
+    let state = load_state_tx(tx, agent_id)?;
+    let mut synchronized = transition.clone();
+    for mutation in work_item_mutations {
+        let WorkItemMutation::Update { record, .. } = mutation else {
+            continue;
+        };
+        if record.state != crate::types::WorkItemState::Open {
+            continue;
+        }
+        let command_targets_work_item = synchronized.commands.iter().any(|command| match command {
+            ExecutionProtocolCommand::RegisterWorkItem(command) => {
+                command.work_item_id == record.id
+            }
+            ExecutionProtocolCommand::AdvanceWorkItemSourceRevision(command) => {
+                command.work_item_id == record.id
+            }
+            ExecutionProtocolCommand::SetWorkItemReadiness(command) => {
+                command.work_item_id == record.id
+            }
+            ExecutionProtocolCommand::SetWorkItemWaiting(command) => {
+                command.work_item_id == record.id
+            }
+            _ => false,
+        });
+        let Some(authoritative) = state.work_items.get(&record.id) else {
+            if !command_targets_work_item {
+                let mut statement = tx.prepare(
+                    "SELECT wait_condition_id
+                     FROM wait_conditions
+                     WHERE agent_id = ?1
+                       AND work_item_id = ?2
+                       AND status IN ('active', 'triggered')
+                     ORDER BY created_at ASC, wait_condition_id ASC",
+                )?;
+                let wait_ids = statement
+                    .query_map([agent_id, record.id.as_str()], |row| {
+                        row.get::<_, String>(0)
+                    })?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                let execution_state = match wait_ids.as_slice() {
+                    [wait_id] => WorkItemExecutionState::Waiting {
+                        generation: record.revision.max(1),
+                        wait: execution_protocol::WaitReference {
+                            wait_id: wait_id.clone(),
+                        },
+                    },
+                    [] if record.blocked_by.is_some() => WorkItemExecutionState::Paused {
+                        generation: record.revision.max(1),
+                        reason: record
+                            .blocked_by
+                            .clone()
+                            .expect("manual blocker checked above"),
+                    },
+                    [] => WorkItemExecutionState::Runnable {
+                        generation: record.revision.max(1),
+                        recovery_ref: None,
+                    },
+                    _ => WorkItemExecutionState::NeedsRepair {
+                        generation: record.revision.max(1),
+                        repair_id: format!("work_item_waits_ambiguous:{}", record.id),
+                    },
+                };
+                synchronized.commands.insert(
+                    0,
+                    ExecutionProtocolCommand::RegisterWorkItem(Box::new(
+                        execution_protocol::RegisterWorkItemExecution {
+                            work_item_id: record.id.clone(),
+                            record: execution_protocol::WorkItemExecutionRecord {
+                                source_revision: record.revision,
+                                state: execution_state,
+                            },
+                        },
+                    )),
+                );
+            }
+            continue;
+        };
+        if authoritative.source_revision == record.revision {
+            continue;
+        }
+        if authoritative.source_revision > record.revision {
+            bail!(
+                "WorkItem execution source revision {} exceeds durable revision {}",
+                authoritative.source_revision,
+                record.revision
+            );
+        }
+        if !command_targets_work_item {
+            synchronized.commands.insert(
+                0,
+                ExecutionProtocolCommand::AdvanceWorkItemSourceRevision(
+                    execution_protocol::AdvanceWorkItemSourceRevision {
+                        command_id: format!(
+                            "work_item:auto_revision:{}:{}",
+                            record.id, record.revision
+                        ),
+                        work_item_id: record.id.clone(),
+                        expected_source_revision: authoritative.source_revision,
+                        source_revision: record.revision,
+                    },
+                ),
+            );
+        }
+    }
+    Ok(synchronized)
 }
 
 pub(super) fn persist_execution_commands_tx(
@@ -142,6 +264,9 @@ fn reduce(
         ExecutionProtocolCommand::AdvanceWorkItemSourceRevision(command) => {
             execution_protocol::advance_work_item_source_revision(state, command)
         }
+        ExecutionProtocolCommand::SetWorkItemReadiness(command) => {
+            execution_protocol::set_work_item_readiness(state, command)
+        }
         ExecutionProtocolCommand::SetWorkItemWaiting(command) => {
             execution_protocol::set_work_item_waiting(state, command)
         }
@@ -164,6 +289,9 @@ fn command_identity(command: &ExecutionProtocolCommand) -> (&'static str, &str) 
         }
         ExecutionProtocolCommand::AdvanceWorkItemSourceRevision(command) => {
             ("advance_work_item_source_revision", &command.command_id)
+        }
+        ExecutionProtocolCommand::SetWorkItemReadiness(command) => {
+            ("set_work_item_readiness", &command.command_id)
         }
         ExecutionProtocolCommand::SetWorkItemWaiting(command) => {
             ("set_work_item_waiting", &command.command_id)
@@ -213,6 +341,42 @@ fn validate_set_work_item_waiting(
     Ok(())
 }
 
+fn validate_register_work_item(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    command: &execution_protocol::RegisterWorkItemExecution,
+    mutations: &[WorkItemMutation],
+) -> Result<()> {
+    let atomic_record = mutations.iter().find_map(|mutation| {
+        let record = mutation.record();
+        (record.id == command.work_item_id
+            && record.revision == command.record.source_revision
+            && !record.agent_id.is_empty())
+        .then_some(record)
+    });
+    if atomic_record.is_some_and(|record| record.state == crate::types::WorkItemState::Open) {
+        return Ok(());
+    }
+    let compatible_record = tx
+        .query_row(
+            "SELECT payload_json
+             FROM work_items
+             WHERE work_item_id = ?1 AND agent_id = ?2",
+            [&command.work_item_id, agent_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|payload| serde_json::from_str::<crate::types::WorkItemRecord>(&payload))
+        .transpose()?;
+    if !compatible_record.is_some_and(|record| {
+        record.state == crate::types::WorkItemState::Open
+            && record.revision == command.record.source_revision
+    }) {
+        bail!("WorkItem registration requires an open WorkItem");
+    }
+    Ok(())
+}
+
 fn validate_work_item_source_revision_advance(
     command: &execution_protocol::AdvanceWorkItemSourceRevision,
     mutations: &[WorkItemMutation],
@@ -229,6 +393,45 @@ fn validate_work_item_source_revision_advance(
     };
     if record.agent_id.is_empty() {
         bail!("WorkItem source revision advance does not match its atomic WorkItem update");
+    }
+    Ok(())
+}
+
+fn validate_set_work_item_readiness(
+    command: &execution_protocol::SetWorkItemReadiness,
+    mutations: &[WorkItemMutation],
+    wait_conditions: &[crate::types::WaitConditionRecord],
+) -> Result<()> {
+    let mutation = mutations.iter().find_map(|mutation| match mutation {
+        WorkItemMutation::Update { record, .. } if record.id == command.work_item_id => {
+            Some(record)
+        }
+        _ => None,
+    });
+    if let Some(record) = mutation {
+        if record.revision != command.record.source_revision || record.agent_id.is_empty() {
+            bail!("WorkItem readiness transition does not match its atomic WorkItem update");
+        }
+    } else if command.record.source_revision != command.expected.source_revision {
+        bail!("WorkItem readiness revision advance requires an atomic WorkItem update");
+    }
+    match &command.record.state {
+        WorkItemExecutionState::Paused { .. } => {
+            if mutation.is_none_or(|record| record.blocked_by.is_none()) {
+                bail!("WorkItem pause transition requires an atomic blocker update");
+            }
+        }
+        WorkItemExecutionState::Runnable { .. } => {
+            let clears_blocker = mutation.is_some_and(|record| record.blocked_by.is_none());
+            let cancels_wait = wait_conditions.iter().any(|condition| {
+                condition.work_item_id.as_deref() == Some(command.work_item_id.as_str())
+                    && condition.status == crate::types::WaitConditionStatus::Cancelled
+            });
+            if !clears_blocker && !cancels_wait {
+                bail!("WorkItem runnable transition requires blocker or wait clearance");
+            }
+        }
+        _ => bail!("WorkItem readiness transition must target Runnable or Paused"),
     }
     Ok(())
 }

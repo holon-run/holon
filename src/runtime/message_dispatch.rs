@@ -325,7 +325,7 @@ impl RuntimeHandle {
         record.work_refs = merged;
         record.revision = record.revision.saturating_add(1);
         record.updated_at = Utc::now();
-        let commit = self.inner.runtime_db.transitions().commit_work_item(
+        let commit = self.commit_work_item_transition(
             &crate::runtime_db::transitions::WorkItemTransitionCommand {
                 agent_id: agent.id.clone(),
                 mutation: crate::runtime_db::transitions::WorkItemMutation::Update {

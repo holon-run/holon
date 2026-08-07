@@ -107,6 +107,21 @@ The matrix fixes previously divergent cases:
 - metadata edits do not create a new runnable generation; and
 - a running or settlement-missing activation outranks queued demand.
 
+## Canonical Mutation Synchronization
+
+WorkItem creation and revision changes commit their canonical
+`WorkItemExecutionRecord` in the same `runtime_db::transitions` transaction.
+Creation registers the initial Runnable generation before first admission.
+Display-only metadata edits advance `source_revision` without changing the
+execution lifecycle or generation, including while an activation is InFlight.
+
+During compatibility migration, an explicit blocker mutation is an adapter
+input to a fenced Runnable-to-Paused execution transition; blocker text is not
+independently read as canonical authority. Explicit blocker or wait clearance
+commits the matching Paused/Waiting-to-Runnable transition with the WorkItem,
+wait cancellation, and focus facts. Readiness changes advance scheduling
+generation, while same-readiness metadata changes do not.
+
 Consumed and terminal waits do not occupy the blocking-wait column. They
 remain projection facets and diagnostics. An orphan consumed wait emits a
 diagnostic and must be repaired through activation/settlement recovery; the

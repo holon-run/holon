@@ -661,6 +661,27 @@ impl RuntimeTransitionRepository<'_> {
         &self,
         command: &WorkItemFocusTransitionCommand,
     ) -> Result<TransitionCommit> {
+        self.commit_work_item_focus_internal(
+            command,
+            &ExecutionProtocolTransition::default(),
+            false,
+        )
+    }
+
+    pub fn commit_work_item_focus_with_execution_protocol(
+        &self,
+        command: &WorkItemFocusTransitionCommand,
+        execution_protocol: &ExecutionProtocolTransition,
+    ) -> Result<TransitionCommit> {
+        self.commit_work_item_focus_internal(command, execution_protocol, true)
+    }
+
+    fn commit_work_item_focus_internal(
+        &self,
+        command: &WorkItemFocusTransitionCommand,
+        execution_protocol: &ExecutionProtocolTransition,
+        synchronize_execution_protocol: bool,
+    ) -> Result<TransitionCommit> {
         self.db.transaction(|tx| {
             for work_item in &command.work_items {
                 validate_work_item_mutation_tx(tx, work_item)?;
@@ -673,6 +694,24 @@ impl RuntimeTransitionRepository<'_> {
             }
             validate_agent_state_mutation_tx(tx, Some(&command.agent_state))?;
             validate_focus_target_tx(tx, &command.agent_state.record)?;
+            let execution_protocol = if synchronize_execution_protocol {
+                execution_protocol_repository::synchronize_work_item_revisions_tx(
+                    tx,
+                    &command.agent_id,
+                    execution_protocol,
+                    &command.work_items,
+                )?
+            } else {
+                execution_protocol.clone()
+            };
+            let execution_protocol = execution_protocol_repository::validate_execution_commands_tx(
+                tx,
+                &command.agent_id,
+                execution_protocol.bootstrap.as_ref(),
+                &execution_protocol.commands,
+                &command.work_items,
+                &command.wait_conditions,
+            )?;
             inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
 
             let agent_state_applied =
@@ -692,9 +731,13 @@ impl RuntimeTransitionRepository<'_> {
             for continuation in &command.continuations {
                 applied |= upsert_work_item_continuation_tx(tx, continuation)?;
             }
+            applied |= execution_protocol
+                .as_ref()
+                .is_some_and(|prepared| prepared.has_writes());
             if !applied {
                 return Ok(TransitionCommit::default());
             }
+            execution_protocol_repository::persist_execution_commands_tx(tx, execution_protocol)?;
             for brief in &command.brief_evidence {
                 insert_brief_evidence_tx(tx, brief)?;
             }
@@ -721,18 +764,58 @@ impl RuntimeTransitionRepository<'_> {
         &self,
         command: &WorkItemTransitionCommand,
     ) -> Result<TransitionCommit> {
+        self.commit_work_item_internal(command, &ExecutionProtocolTransition::default(), false)
+    }
+
+    pub fn commit_work_item_with_execution_protocol(
+        &self,
+        command: &WorkItemTransitionCommand,
+        execution_protocol: &ExecutionProtocolTransition,
+    ) -> Result<TransitionCommit> {
+        self.commit_work_item_internal(command, execution_protocol, true)
+    }
+
+    fn commit_work_item_internal(
+        &self,
+        command: &WorkItemTransitionCommand,
+        execution_protocol: &ExecutionProtocolTransition,
+        synchronize_execution_protocol: bool,
+    ) -> Result<TransitionCommit> {
         let record = command.mutation.record().clone();
         self.db.transaction(|tx| {
             validate_work_item_mutation_tx(tx, &command.mutation)?;
             validate_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
+            let work_items = std::slice::from_ref(&command.mutation);
+            let execution_protocol = if synchronize_execution_protocol {
+                execution_protocol_repository::synchronize_work_item_revisions_tx(
+                    tx,
+                    &command.agent_id,
+                    execution_protocol,
+                    work_items,
+                )?
+            } else {
+                execution_protocol.clone()
+            };
+            let execution_protocol = execution_protocol_repository::validate_execution_commands_tx(
+                tx,
+                &command.agent_id,
+                execution_protocol.bootstrap.as_ref(),
+                &execution_protocol.commands,
+                work_items,
+                &[],
+            )?;
             inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
             let mut applied = apply_work_item_mutation_tx(tx, &command.mutation)?;
             let agent_state_applied =
                 apply_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
             applied |= agent_state_applied;
+            applied |= execution_protocol
+                .as_ref()
+                .is_some_and(|prepared| prepared.has_writes());
             if !applied {
                 return Ok(TransitionCommit::default());
             }
+            execution_protocol_repository::persist_execution_commands_tx(tx, execution_protocol)?;
             for brief in &command.brief_evidence {
                 insert_brief_evidence_tx(tx, brief)?;
             }

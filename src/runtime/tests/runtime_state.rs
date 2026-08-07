@@ -240,6 +240,9 @@ fn persist_execution_transition_only(
                     &state, &command,
                 )
             }
+            ExecutionProtocolCommand::SetWorkItemReadiness(command) => {
+                crate::domain::execution_protocol::set_work_item_readiness(&state, &command)
+            }
             ExecutionProtocolCommand::SetWorkItemWaiting(command) => {
                 crate::domain::execution_protocol::set_work_item_waiting(&state, &command)
             }
@@ -924,7 +927,7 @@ async fn interrupted_message_replay_creates_new_turn_without_current_focus_drift
 async fn legacy_recovery_plan_reconciles_an_existing_dispatch_reservation() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let runtime = RuntimeHandle::new(
+    let runtime = RuntimeHandle::new_with_scheduler_engine(
         "default",
         dir.path().to_path_buf(),
         workspace.path().to_path_buf(),
@@ -935,6 +938,7 @@ async fn legacy_recovery_plan_reconciles_an_existing_dispatch_reservation() {
         }),
         "default".into(),
         context_config(),
+        crate::config::SchedulerEngineMode::Legacy,
     )
     .unwrap();
     let work_item = runtime
@@ -1276,7 +1280,7 @@ async fn legacy_recovery_commit_returns_typed_rejection_when_source_changes_afte
 async fn legacy_recovery_commit_race_is_diagnostic_and_fresh_retry_converges() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let runtime = RuntimeHandle::new(
+    let runtime = RuntimeHandle::new_with_scheduler_engine(
         "default",
         dir.path().to_path_buf(),
         workspace.path().to_path_buf(),
@@ -1287,6 +1291,7 @@ async fn legacy_recovery_commit_race_is_diagnostic_and_fresh_retry_converges() {
         }),
         "default".into(),
         context_config(),
+        crate::config::SchedulerEngineMode::Legacy,
     )
     .unwrap();
     let work_item = runtime
@@ -3908,10 +3913,12 @@ async fn pre_cutover_task_rejoin_without_execution_owner_is_dropped() {
         .inner
         .runtime_db
         .transaction(|tx| {
-            crate::runtime_db::transitions::persist_state_tx(
-                tx,
-                &crate::domain::execution_protocol::ExecutionProtocolState::empty("default"),
-            )
+            tx.execute(
+                "DELETE FROM execution_protocol_work_items
+                 WHERE agent_id = ?1 AND work_item_id = ?2",
+                ["default", work_item.id.as_str()],
+            )?;
+            Ok(())
         })
         .unwrap();
 
@@ -4028,10 +4035,12 @@ async fn task_rejoin_missing_from_initialized_execution_partition_is_rejected() 
         .inner
         .runtime_db
         .transaction(|tx| {
-            crate::runtime_db::transitions::persist_state_tx(
-                tx,
-                &crate::domain::execution_protocol::ExecutionProtocolState::empty("default"),
-            )
+            tx.execute(
+                "DELETE FROM execution_protocol_work_items
+                 WHERE agent_id = ?1 AND work_item_id = ?2",
+                ["default", work_item.id.as_str()],
+            )?;
+            Ok(())
         })
         .unwrap();
     append_completed_rejoin_task(

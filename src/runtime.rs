@@ -2512,6 +2512,62 @@ impl RuntimeHandle {
             .pop_front()
     }
 
+    pub(super) fn commit_work_item_transition(
+        &self,
+        command: &crate::runtime_db::transitions::WorkItemTransitionCommand,
+    ) -> Result<crate::runtime_db::transitions::TransitionCommit> {
+        self.commit_work_item_transition_with_execution(
+            command,
+            &crate::runtime_db::transitions::ExecutionProtocolTransition::default(),
+        )
+    }
+
+    pub(super) fn commit_work_item_transition_with_execution(
+        &self,
+        command: &crate::runtime_db::transitions::WorkItemTransitionCommand,
+        execution_protocol: &crate::runtime_db::transitions::ExecutionProtocolTransition,
+    ) -> Result<crate::runtime_db::transitions::TransitionCommit> {
+        if self.inner.scheduler_engine.is_canonical() {
+            self.inner
+                .runtime_db
+                .transitions()
+                .commit_work_item_with_execution_protocol(command, execution_protocol)
+        } else {
+            self.inner
+                .runtime_db
+                .transitions()
+                .commit_work_item(command)
+        }
+    }
+
+    pub(super) fn commit_work_item_focus_transition(
+        &self,
+        command: &crate::runtime_db::transitions::WorkItemFocusTransitionCommand,
+    ) -> Result<crate::runtime_db::transitions::TransitionCommit> {
+        self.commit_work_item_focus_transition_with_execution(
+            command,
+            &crate::runtime_db::transitions::ExecutionProtocolTransition::default(),
+        )
+    }
+
+    pub(super) fn commit_work_item_focus_transition_with_execution(
+        &self,
+        command: &crate::runtime_db::transitions::WorkItemFocusTransitionCommand,
+        execution_protocol: &crate::runtime_db::transitions::ExecutionProtocolTransition,
+    ) -> Result<crate::runtime_db::transitions::TransitionCommit> {
+        if self.inner.scheduler_engine.is_canonical() {
+            self.inner
+                .runtime_db
+                .transitions()
+                .commit_work_item_focus_with_execution_protocol(command, execution_protocol)
+        } else {
+            self.inner
+                .runtime_db
+                .transitions()
+                .commit_work_item_focus(command)
+        }
+    }
+
     pub(super) fn inject_next_acceptance_transition_fault(
         &self,
         fault: TransitionFaultPoint,

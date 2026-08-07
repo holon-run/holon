@@ -23,6 +23,19 @@ async fn work_item_runtime_path_rolls_back_each_pre_commit_fault() {
             .unwrap();
         let after = harness.snapshot();
         assert_eq!(after.work_items, vec![created]);
+        let execution = after
+            .execution_protocol
+            .as_ref()
+            .expect("create initializes execution protocol");
+        let execution_work = execution
+            .work_items
+            .get(&after.work_items[0].id)
+            .expect("create registers WorkItem execution state");
+        assert_eq!(execution_work.source_revision, after.work_items[0].revision);
+        assert!(matches!(
+            execution_work.state,
+            crate::domain::execution_protocol::WorkItemExecutionState::Runnable { .. }
+        ));
         assert_eq!(
             after.index_outbox_high_watermark,
             before.index_outbox_high_watermark + 1
@@ -63,6 +76,14 @@ async fn work_item_post_commit_fault_recovers_projection_after_restart() {
             fault != crate::runtime_db::transitions::TransitionFaultPoint::BeforeCacheUpdate
         );
         let committed = harness.snapshot();
+        assert_eq!(
+            committed
+                .execution_protocol
+                .as_ref()
+                .and_then(|state| state.work_items.get(&created.id))
+                .map(|record| record.source_revision),
+            Some(created.revision)
+        );
 
         harness.restart();
 

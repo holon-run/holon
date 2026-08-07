@@ -333,6 +333,169 @@ async fn update_work_item_sets_and_preserves_blocked_recheck_deadline() {
     assert!(cleared.recheck_consumed_at.is_none());
 }
 
+#[tokio::test]
+async fn work_item_mutations_atomically_track_execution_readiness() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let work = runtime
+        .create_work_item("track execution readiness".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .expect("create initializes execution protocol");
+    let registered = execution
+        .work_items
+        .get(&work.id)
+        .expect("create registers WorkItem");
+    assert_eq!(registered.source_revision, work.revision);
+    assert!(matches!(
+        registered.state,
+        crate::domain::execution_protocol::WorkItemExecutionState::Runnable { .. }
+    ));
+
+    let updated = runtime
+        .update_work_item_fields(
+            work.id.clone(),
+            Some("track updated execution readiness".into()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    let registered = execution.work_items.get(&work.id).unwrap();
+    assert_eq!(registered.source_revision, updated.revision);
+    assert!(matches!(
+        registered.state,
+        crate::domain::execution_protocol::WorkItemExecutionState::Runnable { .. }
+    ));
+
+    let blocked = runtime
+        .update_work_item_fields(
+            work.id.clone(),
+            None,
+            None,
+            None,
+            None,
+            Some(Some("manual hold".into())),
+        )
+        .await
+        .unwrap();
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    let registered = execution.work_items.get(&work.id).unwrap();
+    assert_eq!(registered.source_revision, blocked.revision);
+    assert!(matches!(
+        &registered.state,
+        crate::domain::execution_protocol::WorkItemExecutionState::Paused { reason, .. }
+            if reason == "manual hold"
+    ));
+
+    let consumed_recheck = runtime
+        .consume_work_item_recheck(&work.id)
+        .await
+        .unwrap()
+        .expect("blocked recheck is consumed");
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    let registered = execution.work_items.get(&work.id).unwrap();
+    assert_eq!(registered.source_revision, consumed_recheck.revision);
+    assert!(matches!(
+        registered.state,
+        crate::domain::execution_protocol::WorkItemExecutionState::Paused { .. }
+    ));
+
+    let cleared = runtime
+        .pick_work_item_with_reason_and_clear_blocker(
+            work.id.clone(),
+            Some("manual hold resolved".into()),
+            true,
+        )
+        .await
+        .unwrap()
+        .current_work_item;
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    let registered = execution.work_items.get(&work.id).unwrap();
+    assert_eq!(registered.source_revision, cleared.revision);
+    assert!(matches!(
+        registered.state,
+        crate::domain::execution_protocol::WorkItemExecutionState::Runnable { .. }
+    ));
+
+    let before_rejected_block = cleared.clone();
+    let mut waiting_execution = execution;
+    let waiting_record = waiting_execution.work_items.get_mut(&work.id).unwrap();
+    waiting_record.state = crate::domain::execution_protocol::WorkItemExecutionState::Waiting {
+        generation: waiting_record.generation() + 1,
+        wait: crate::domain::execution_protocol::WaitReference {
+            wait_id: "wait-active".into(),
+        },
+    };
+    runtime
+        .inner
+        .runtime_db
+        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &waiting_execution))
+        .unwrap();
+    let error = runtime
+        .update_work_item_fields(
+            work.id.clone(),
+            None,
+            None,
+            None,
+            None,
+            Some(Some("different manual blocker".into())),
+        )
+        .await
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("cannot change WorkItem readiness"));
+    assert_eq!(
+        runtime.latest_work_item(&work.id).await.unwrap().unwrap(),
+        before_rejected_block
+    );
+}
+
 #[tokio::test(start_paused = true)]
 async fn runtime_wakes_itself_for_blocked_work_item_recheck_deadline() {
     let dir = tempdir().unwrap();
@@ -5849,6 +6012,25 @@ async fn pick_blocked_work_item_with_clear_blocker_resumes_runnable_focus() {
         .active_wait_conditions_for_work_item("default", &work.id)
         .unwrap()
         .is_empty());
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .expect("execution protocol remains initialized");
+    let execution_work = execution
+        .work_items
+        .get(&work.id)
+        .expect("clear blocker retains WorkItem execution state");
+    assert_eq!(
+        execution_work.source_revision,
+        picked.current_work_item.revision
+    );
+    assert!(matches!(
+        execution_work.state,
+        crate::domain::execution_protocol::WorkItemExecutionState::Runnable { .. }
+    ));
 }
 
 #[tokio::test]

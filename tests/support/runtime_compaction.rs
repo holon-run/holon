@@ -204,7 +204,7 @@ pub async fn task_result_rejoin_after_compaction_preserves_current_work_truth() 
         "Close the compaction regression gap",
         WorkItemState::Open,
         true,
-        Some("waiting for command task evidence"),
+        None,
     )
     .await?;
     runtime

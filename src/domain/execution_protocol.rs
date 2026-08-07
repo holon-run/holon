@@ -330,6 +330,14 @@ pub struct AdvanceWorkItemSourceRevision {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetWorkItemReadiness {
+    pub command_id: String,
+    pub work_item_id: String,
+    pub expected: WorkItemExecutionRecord,
+    pub record: WorkItemExecutionRecord,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InterruptExecution {
     pub attempt_id: String,
     pub outcome_id: String,
@@ -342,6 +350,7 @@ pub struct InterruptExecution {
 pub enum ExecutionProtocolCommand {
     RegisterWorkItem(Box<RegisterWorkItemExecution>),
     AdvanceWorkItemSourceRevision(AdvanceWorkItemSourceRevision),
+    SetWorkItemReadiness(Box<SetWorkItemReadiness>),
     SetWorkItemWaiting(Box<SetWorkItemWaiting>),
     Admit(Box<AdmitExecution>),
     Settle(SettleExecution),
@@ -410,10 +419,81 @@ pub fn advance_work_item_source_revision(
     if record.source_revision != command.expected_source_revision {
         return Err("WorkItem source revision advance fence is stale".into());
     }
-    if matches!(record.state, WorkItemExecutionState::InFlight { .. }) {
-        return Err("WorkItem source revision cannot advance while InFlight".into());
+    if matches!(record.state, WorkItemExecutionState::Terminal { .. }) {
+        return Err("terminal WorkItem source revision cannot advance".into());
     }
     record.source_revision = command.source_revision;
+    assert_invariants(&next)?;
+    Ok(ExecutionTransition {
+        state: next,
+        references: vec![format!("work_item:{}", command.work_item_id)],
+    })
+}
+
+pub fn set_work_item_readiness(
+    state: &ExecutionProtocolState,
+    command: &SetWorkItemReadiness,
+) -> Result<ExecutionTransition, String> {
+    assert_invariants(state)?;
+    if command.command_id.is_empty()
+        || command.work_item_id.is_empty()
+        || command.expected.source_revision == 0
+        || command.record.source_revision < command.expected.source_revision
+    {
+        return Err(
+            "WorkItem readiness transition requires identity and monotonic revision".into(),
+        );
+    }
+    if state.work_items.get(&command.work_item_id) != Some(&command.expected) {
+        return Err("WorkItem readiness transition fence is stale".into());
+    }
+    let generation = command.expected.generation();
+    let valid = match (&command.expected.state, &command.record.state) {
+        (
+            WorkItemExecutionState::Runnable { .. },
+            WorkItemExecutionState::Runnable {
+                generation: next, ..
+            },
+        )
+        | (
+            WorkItemExecutionState::Paused { .. },
+            WorkItemExecutionState::Paused {
+                generation: next, ..
+            },
+        ) => {
+            *next == generation && command.record.source_revision > command.expected.source_revision
+        }
+        (
+            WorkItemExecutionState::Runnable { .. },
+            WorkItemExecutionState::Paused {
+                generation: next, ..
+            },
+        )
+        | (
+            WorkItemExecutionState::Paused { .. },
+            WorkItemExecutionState::Runnable {
+                generation: next, ..
+            },
+        )
+        | (
+            WorkItemExecutionState::Waiting { .. },
+            WorkItemExecutionState::Runnable {
+                generation: next, ..
+            },
+        ) => {
+            *next
+                == generation
+                    .checked_add(1)
+                    .ok_or_else(|| "WorkItem scheduling generation overflow".to_string())?
+        }
+        _ => false,
+    };
+    if !valid {
+        return Err("WorkItem readiness transition is not allowed".into());
+    }
+    let mut next = state.clone();
+    next.work_items
+        .insert(command.work_item_id.clone(), command.record.clone());
     assert_invariants(&next)?;
     Ok(ExecutionTransition {
         state: next,
@@ -957,6 +1037,118 @@ mod tests {
         assert!(register_work_item_execution(&registered.state, &conflict)
             .unwrap_err()
             .contains("different state"));
+    }
+
+    #[test]
+    fn readiness_transition_is_fenced_and_advances_generation() {
+        let mut state = ExecutionProtocolState::empty("agent-a");
+        let runnable = work_item_record(WorkItemExecutionState::Runnable {
+            generation: 1,
+            recovery_ref: None,
+        });
+        state.work_items.insert("work-a".into(), runnable.clone());
+        let paused = WorkItemExecutionRecord {
+            source_revision: 2,
+            state: WorkItemExecutionState::Paused {
+                generation: 2,
+                reason: "manual hold".into(),
+            },
+        };
+        let paused = set_work_item_readiness(
+            &state,
+            &SetWorkItemReadiness {
+                command_id: "pause-work-a".into(),
+                work_item_id: "work-a".into(),
+                expected: runnable,
+                record: paused,
+            },
+        )
+        .unwrap()
+        .state;
+        let paused_record = paused.work_items.get("work-a").unwrap().clone();
+        assert!(matches!(
+            paused_record.state,
+            WorkItemExecutionState::Paused { generation: 2, .. }
+        ));
+
+        let resumed = set_work_item_readiness(
+            &paused,
+            &SetWorkItemReadiness {
+                command_id: "resume-work-a".into(),
+                work_item_id: "work-a".into(),
+                expected: paused_record,
+                record: WorkItemExecutionRecord {
+                    source_revision: 3,
+                    state: WorkItemExecutionState::Runnable {
+                        generation: 3,
+                        recovery_ref: None,
+                    },
+                },
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            resumed.state.work_items["work-a"].state,
+            WorkItemExecutionState::Runnable { generation: 3, .. }
+        ));
+
+        let stale = SetWorkItemReadiness {
+            command_id: "stale-pause".into(),
+            work_item_id: "work-a".into(),
+            expected: work_item_record(WorkItemExecutionState::Runnable {
+                generation: 1,
+                recovery_ref: None,
+            }),
+            record: WorkItemExecutionRecord {
+                source_revision: 4,
+                state: WorkItemExecutionState::Paused {
+                    generation: 2,
+                    reason: "stale".into(),
+                },
+            },
+        };
+        assert!(set_work_item_readiness(&resumed.state, &stale)
+            .unwrap_err()
+            .contains("fence is stale"));
+    }
+
+    #[test]
+    fn source_revision_can_advance_without_stealing_in_flight_ownership() {
+        let mut state = ExecutionProtocolState::empty("agent-a");
+        state.work_items.insert(
+            "work-a".into(),
+            work_item_record(WorkItemExecutionState::Runnable {
+                generation: 1,
+                recovery_ref: None,
+            }),
+        );
+        let admitted = admit_execution(
+            &state,
+            &AdmitExecution {
+                attempt: attempt("attempt-a", None),
+            },
+        )
+        .unwrap()
+        .state;
+        let advanced = advance_work_item_source_revision(
+            &admitted,
+            &AdvanceWorkItemSourceRevision {
+                command_id: "advance-work-a".into(),
+                work_item_id: "work-a".into(),
+                expected_source_revision: 1,
+                source_revision: 2,
+            },
+        )
+        .unwrap();
+        let record = &advanced.state.work_items["work-a"];
+        assert_eq!(record.source_revision, 2);
+        assert!(matches!(
+            record.state,
+            WorkItemExecutionState::InFlight {
+                ref attempt_id,
+                generation: 1
+            } if attempt_id == "attempt-a"
+        ));
     }
 
     #[test]

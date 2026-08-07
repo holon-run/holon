@@ -28,6 +28,12 @@ const TASK_OUTPUT_PREVIEW_CHAR_BUDGET: usize = 8_000;
 const SPAWN_AGENT_TASK_LABEL_CHAR_BUDGET: usize = 120;
 
 #[derive(Debug, Clone)]
+enum WorkItemReadinessMutation {
+    Pause(String),
+    Resume,
+}
+
+#[derive(Debug, Clone)]
 struct TaskMessageSnapshot {
     state: TaskStatus,
     text: String,
@@ -2400,7 +2406,8 @@ impl RuntimeHandle {
             .active_workspace_entry
             .map(|entry| entry.workspace_id)
             .unwrap_or_else(|| crate::types::AGENT_HOME_WORKSPACE_ID.to_string());
-        let commit = self.inner.runtime_db.transitions().commit_work_item(
+        let execution_protocol = self.plan_work_item_execution_create(&record)?;
+        let commit = self.commit_work_item_transition_with_execution(
             &crate::runtime_db::transitions::WorkItemTransitionCommand {
                 agent_id,
                 mutation: crate::runtime_db::transitions::WorkItemMutation::Insert {
@@ -2413,9 +2420,301 @@ impl RuntimeHandle {
                 notify_scheduler: true,
                 fault: self.take_transition_fault(),
             },
+            &execution_protocol,
         )?;
         self.apply_transition_commit(commit).await;
         Ok(record)
+    }
+
+    fn plan_work_item_execution_create(
+        &self,
+        record: &WorkItemRecord,
+    ) -> Result<crate::runtime_db::transitions::ExecutionProtocolTransition> {
+        use crate::domain::execution_protocol::{
+            ExecutionProtocolCommand, ExecutionProtocolState, RegisterWorkItemExecution,
+            WorkItemExecutionRecord, WorkItemExecutionState,
+        };
+
+        if !self.inner.scheduler_engine.is_canonical() {
+            return Ok(Default::default());
+        }
+        let existing = self
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized(&record.agent_id)?;
+        Ok(
+            crate::runtime_db::transitions::ExecutionProtocolTransition {
+                bootstrap: existing
+                    .is_none()
+                    .then(|| ExecutionProtocolState::empty(&record.agent_id)),
+                commands: vec![ExecutionProtocolCommand::RegisterWorkItem(Box::new(
+                    RegisterWorkItemExecution {
+                        work_item_id: record.id.clone(),
+                        record: WorkItemExecutionRecord {
+                            source_revision: record.revision,
+                            state: WorkItemExecutionState::Runnable {
+                                generation: record.revision,
+                                recovery_ref: None,
+                            },
+                        },
+                    },
+                ))],
+            },
+        )
+    }
+
+    fn plan_work_item_execution_update(
+        &self,
+        record: &WorkItemRecord,
+        readiness_mutation: Option<WorkItemReadinessMutation>,
+    ) -> Result<crate::runtime_db::transitions::ExecutionProtocolTransition> {
+        use crate::domain::execution_protocol::{
+            AdvanceWorkItemSourceRevision, ExecutionProtocolCommand, ExecutionProtocolState,
+            RegisterWorkItemExecution, SetWorkItemReadiness, WorkItemExecutionRecord,
+            WorkItemExecutionState,
+        };
+
+        if !self.inner.scheduler_engine.is_canonical() {
+            return Ok(Default::default());
+        }
+        let existing = self
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized(&record.agent_id)?;
+        let authoritative = existing
+            .as_ref()
+            .and_then(|state| state.work_items.get(&record.id));
+        let Some(authoritative) = authoritative else {
+            let state = match readiness_mutation {
+                Some(WorkItemReadinessMutation::Pause(reason)) => WorkItemExecutionState::Paused {
+                    generation: record.revision,
+                    reason,
+                },
+                _ => WorkItemExecutionState::Runnable {
+                    generation: record.revision,
+                    recovery_ref: None,
+                },
+            };
+            return Ok(
+                crate::runtime_db::transitions::ExecutionProtocolTransition {
+                    bootstrap: existing
+                        .is_none()
+                        .then(|| ExecutionProtocolState::empty(&record.agent_id)),
+                    commands: vec![ExecutionProtocolCommand::RegisterWorkItem(Box::new(
+                        RegisterWorkItemExecution {
+                            work_item_id: record.id.clone(),
+                            record: WorkItemExecutionRecord {
+                                source_revision: record.revision,
+                                state,
+                            },
+                        },
+                    ))],
+                },
+            );
+        };
+        if readiness_mutation.is_some()
+            && matches!(
+                authoritative.state,
+                WorkItemExecutionState::InFlight { .. }
+                    | WorkItemExecutionState::Waiting { .. }
+                    | WorkItemExecutionState::NeedsRepair { .. }
+            )
+        {
+            return Err(anyhow!(
+                "cannot change WorkItem readiness while canonical execution state is active or requires repair"
+            ));
+        }
+        let next_state = match (&authoritative.state, readiness_mutation) {
+            (WorkItemExecutionState::InFlight { .. }, _)
+            | (WorkItemExecutionState::NeedsRepair { .. }, _)
+            | (WorkItemExecutionState::Waiting { .. }, None)
+            | (WorkItemExecutionState::Waiting { .. }, Some(WorkItemReadinessMutation::Pause(_)))
+            | (WorkItemExecutionState::Waiting { .. }, Some(WorkItemReadinessMutation::Resume))
+            | (_, None) => None,
+            (
+                WorkItemExecutionState::Runnable { generation, .. },
+                Some(WorkItemReadinessMutation::Pause(reason)),
+            )
+            | (
+                WorkItemExecutionState::Paused { generation, .. },
+                Some(WorkItemReadinessMutation::Pause(reason)),
+            ) => Some(WorkItemExecutionState::Paused {
+                generation: if matches!(
+                    authoritative.state,
+                    WorkItemExecutionState::Runnable { .. }
+                ) {
+                    generation
+                        .checked_add(1)
+                        .ok_or_else(|| anyhow!("WorkItem scheduling generation overflow"))?
+                } else {
+                    *generation
+                },
+                reason,
+            }),
+            (
+                WorkItemExecutionState::Runnable { generation, .. },
+                Some(WorkItemReadinessMutation::Resume),
+            )
+            | (
+                WorkItemExecutionState::Paused { generation, .. },
+                Some(WorkItemReadinessMutation::Resume),
+            ) => Some(WorkItemExecutionState::Runnable {
+                generation: if matches!(authoritative.state, WorkItemExecutionState::Paused { .. })
+                {
+                    generation
+                        .checked_add(1)
+                        .ok_or_else(|| anyhow!("WorkItem scheduling generation overflow"))?
+                } else {
+                    *generation
+                },
+                recovery_ref: None,
+            }),
+            (WorkItemExecutionState::Terminal { .. }, _) => {
+                return Err(anyhow!("cannot update terminal WorkItem execution state"));
+            }
+        };
+        let command = if let Some(state) = next_state {
+            ExecutionProtocolCommand::SetWorkItemReadiness(Box::new(SetWorkItemReadiness {
+                command_id: format!("work_item:update:{}:{}", record.id, record.revision),
+                work_item_id: record.id.clone(),
+                expected: authoritative.clone(),
+                record: WorkItemExecutionRecord {
+                    source_revision: record.revision,
+                    state,
+                },
+            }))
+        } else {
+            ExecutionProtocolCommand::AdvanceWorkItemSourceRevision(AdvanceWorkItemSourceRevision {
+                command_id: format!("work_item:update:{}:{}", record.id, record.revision),
+                work_item_id: record.id.clone(),
+                expected_source_revision: authoritative.source_revision,
+                source_revision: record.revision,
+            })
+        };
+        Ok(
+            crate::runtime_db::transitions::ExecutionProtocolTransition {
+                bootstrap: None,
+                commands: vec![command],
+            },
+        )
+    }
+
+    fn plan_work_item_execution_clear_blocker(
+        &self,
+        record: &WorkItemRecord,
+        wait_conditions: &[crate::types::WaitConditionRecord],
+    ) -> Result<crate::runtime_db::transitions::ExecutionProtocolTransition> {
+        use crate::domain::execution_protocol::{
+            AdvanceWorkItemSourceRevision, ExecutionProtocolCommand, ExecutionProtocolState,
+            RegisterWorkItemExecution, SetWorkItemReadiness, WorkItemExecutionRecord,
+            WorkItemExecutionState,
+        };
+
+        if !self.inner.scheduler_engine.is_canonical() {
+            return Ok(Default::default());
+        }
+        let existing = self
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized(&record.agent_id)?;
+        let Some(authoritative) = existing
+            .as_ref()
+            .and_then(|state| state.work_items.get(&record.id))
+        else {
+            return Ok(
+                crate::runtime_db::transitions::ExecutionProtocolTransition {
+                    bootstrap: existing
+                        .is_none()
+                        .then(|| ExecutionProtocolState::empty(&record.agent_id)),
+                    commands: vec![ExecutionProtocolCommand::RegisterWorkItem(Box::new(
+                        RegisterWorkItemExecution {
+                            work_item_id: record.id.clone(),
+                            record: WorkItemExecutionRecord {
+                                source_revision: record.revision,
+                                state: WorkItemExecutionState::Runnable {
+                                    generation: record.revision,
+                                    recovery_ref: None,
+                                },
+                            },
+                        },
+                    ))],
+                },
+            );
+        };
+        let revision_changed = authoritative.source_revision != record.revision;
+        let command = match &authoritative.state {
+            WorkItemExecutionState::Waiting { generation, .. }
+            | WorkItemExecutionState::Paused { generation, .. } => Some(
+                ExecutionProtocolCommand::SetWorkItemReadiness(Box::new(SetWorkItemReadiness {
+                    command_id: format!(
+                        "work_item:clear_blocker:{}:{}",
+                        record.id, record.revision
+                    ),
+                    work_item_id: record.id.clone(),
+                    expected: authoritative.clone(),
+                    record: WorkItemExecutionRecord {
+                        source_revision: record.revision,
+                        state: WorkItemExecutionState::Runnable {
+                            generation: generation.checked_add(1).ok_or_else(|| {
+                                anyhow!("WorkItem scheduling generation overflow")
+                            })?,
+                            recovery_ref: None,
+                        },
+                    },
+                })),
+            ),
+            WorkItemExecutionState::Runnable { generation, .. } if revision_changed => Some(
+                ExecutionProtocolCommand::SetWorkItemReadiness(Box::new(SetWorkItemReadiness {
+                    command_id: format!(
+                        "work_item:clear_blocker:{}:{}",
+                        record.id, record.revision
+                    ),
+                    work_item_id: record.id.clone(),
+                    expected: authoritative.clone(),
+                    record: WorkItemExecutionRecord {
+                        source_revision: record.revision,
+                        state: WorkItemExecutionState::Runnable {
+                            generation: *generation,
+                            recovery_ref: None,
+                        },
+                    },
+                })),
+            ),
+            WorkItemExecutionState::InFlight { .. }
+            | WorkItemExecutionState::NeedsRepair { .. }
+                if revision_changed =>
+            {
+                Some(ExecutionProtocolCommand::AdvanceWorkItemSourceRevision(
+                    AdvanceWorkItemSourceRevision {
+                        command_id: format!(
+                            "work_item:clear_blocker:{}:{}",
+                            record.id, record.revision
+                        ),
+                        work_item_id: record.id.clone(),
+                        expected_source_revision: authoritative.source_revision,
+                        source_revision: record.revision,
+                    },
+                ))
+            }
+            WorkItemExecutionState::Terminal { .. } => {
+                return Err(anyhow!("cannot clear terminal WorkItem execution state"));
+            }
+            _ => None,
+        };
+        if command.is_none() && !wait_conditions.is_empty() {
+            return Err(anyhow!(
+                "cancelled WorkItem waits require a canonical readiness transition"
+            ));
+        }
+        Ok(
+            crate::runtime_db::transitions::ExecutionProtocolTransition {
+                bootstrap: None,
+                commands: command.into_iter().collect(),
+            },
+        )
     }
 
     pub async fn pick_work_item(
@@ -2663,7 +2962,12 @@ impl RuntimeHandle {
                 }]
             })
             .unwrap_or_default();
-        let commit = self.inner.runtime_db.transitions().commit_work_item_focus(
+        let execution_protocol = if blocker_cleared {
+            self.plan_work_item_execution_clear_blocker(&record, &wait_conditions)?
+        } else {
+            Default::default()
+        };
+        let commit = self.commit_work_item_focus_transition_with_execution(
             &crate::runtime_db::transitions::WorkItemFocusTransitionCommand {
                 agent_id: agent_id.clone(),
                 work_items,
@@ -2679,6 +2983,7 @@ impl RuntimeHandle {
                 notify_scheduler: true,
                 fault: self.take_transition_fault(),
             },
+            &execution_protocol,
         )?;
         self.apply_transition_commit(commit).await;
         Ok(PickedWorkItem {
@@ -2753,6 +3058,10 @@ impl RuntimeHandle {
             record.updated_at = Utc::now();
             wrote_item = true;
         }
+        let readiness_mutation = blocked_by.as_ref().map(|blocked_by| match blocked_by {
+            Some(reason) => WorkItemReadinessMutation::Pause(reason.clone()),
+            None => WorkItemReadinessMutation::Resume,
+        });
         if let Some(blocked_by) = blocked_by {
             let now = self.now();
             record.blocked_by = blocked_by;
@@ -2827,7 +3136,9 @@ impl RuntimeHandle {
                     });
                 }
             }
-            let commit = self.inner.runtime_db.transitions().commit_work_item(
+            let execution_protocol =
+                self.plan_work_item_execution_update(&record, readiness_mutation)?;
+            let commit = self.commit_work_item_transition_with_execution(
                 &crate::runtime_db::transitions::WorkItemTransitionCommand {
                     agent_id,
                     mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
@@ -2841,6 +3152,7 @@ impl RuntimeHandle {
                     notify_scheduler: true,
                     fault: self.take_transition_fault(),
                 },
+                &execution_protocol,
             )?;
             self.apply_transition_commit(commit).await;
         }
@@ -2895,7 +3207,7 @@ impl RuntimeHandle {
                 "recheck_consumed_at": record.recheck_consumed_at,
             }),
         ));
-        let commit = self.inner.runtime_db.transitions().commit_work_item(
+        let commit = self.commit_work_item_transition(
             &crate::runtime_db::transitions::WorkItemTransitionCommand {
                 agent_id,
                 mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
@@ -3045,7 +3357,7 @@ impl RuntimeHandle {
                 "completion_intent": record.completion_intent,
             }),
         ));
-        let commit = self.inner.runtime_db.transitions().commit_work_item_focus(
+        let commit = self.commit_work_item_focus_transition(
             &crate::runtime_db::transitions::WorkItemFocusTransitionCommand {
                 agent_id,
                 work_items: vec![crate::runtime_db::transitions::WorkItemMutation::Update {
@@ -3577,7 +3889,7 @@ impl RuntimeHandle {
             #[cfg(test)]
             self.apply_completion_binding_replacement_before_commit()
                 .await?;
-            let commit = self.inner.runtime_db.transitions().commit_work_item_focus(
+            let commit = self.commit_work_item_focus_transition(
                 &crate::runtime_db::transitions::WorkItemFocusTransitionCommand {
                     agent_id: agent_id.clone(),
                     work_items: vec![crate::runtime_db::transitions::WorkItemMutation::Update {

@@ -131,7 +131,7 @@ impl RuntimeHandle {
                 Value::Null,
             ));
             let agent_id = self.agent_id().await?;
-            let commit = self.inner.runtime_db.transitions().commit_work_item(
+            let commit = self.commit_work_item_transition(
                 &crate::runtime_db::transitions::WorkItemTransitionCommand {
                     agent_id,
                     mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
@@ -196,7 +196,7 @@ impl RuntimeHandle {
                 updated_at: Utc::now(),
                 ..existing
             };
-            let commit = self.inner.runtime_db.transitions().commit_work_item(
+            let commit = self.commit_work_item_transition(
                 &crate::runtime_db::transitions::WorkItemTransitionCommand {
                     agent_id: record.agent_id.clone(),
                     mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
