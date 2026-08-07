@@ -27,6 +27,9 @@ use serde_json::Value;
 
 use crate::{
     object_resolver::RuntimeObjectResolver,
+    projection_eval::{
+        ProjectionEvidenceIndex, ProjectionEvidenceRef, ProjectionEvidenceRole, ProjectionOwner,
+    },
     prompt::PromptSection,
     storage::{is_active_task_status, AppStorage},
     system::{execution_policy_summary_lines, ExecutionSnapshot},
@@ -99,6 +102,7 @@ impl ContextConfig {
 pub struct BuiltContext {
     pub sections: Vec<PromptSection>,
     pub(crate) plan_evidence: ContextPlanEvidence,
+    pub(crate) projection_evidence: ProjectionEvidenceIndex,
     pub(crate) recent_turns_reprojection: Option<RecentTurnsReprojection>,
 }
 
@@ -619,8 +623,115 @@ pub fn build_context_with_default_external_ingress(
     Ok(BuiltContext {
         sections: plan.sections,
         plan_evidence: plan.evidence,
+        projection_evidence: build_projection_evidence(
+            agent,
+            current_message,
+            current_work_item,
+            &turn_records,
+            &messages,
+            &briefs,
+            &tools,
+        ),
         recent_turns_reprojection,
     })
+}
+
+fn build_projection_evidence(
+    agent: &AgentState,
+    current_message: &MessageEnvelope,
+    current_work_item: Option<&WorkItemRecord>,
+    turn_records: &[TurnRecord],
+    messages: &[MessageEnvelope],
+    briefs: &[BriefRecord],
+    tools: &[ToolExecutionRecord],
+) -> ProjectionEvidenceIndex {
+    let mut evidence = ProjectionEvidenceIndex::new();
+    evidence.insert(
+        "current_input".into(),
+        vec![ProjectionEvidenceRef::new(
+            format!("message:{}", current_message.id),
+            ProjectionEvidenceRole::CurrentInput,
+            projection_owner(current_message.work_item_id.as_deref(), &agent.id),
+        )],
+    );
+    if let Some(work_item) = current_work_item {
+        let owner = projection_owner(Some(&work_item.id), &agent.id);
+        let work_item_ref = ProjectionEvidenceRef::new(
+            format!("work_item:{}", work_item.id),
+            ProjectionEvidenceRole::WorkItemState,
+            owner.clone(),
+        );
+        evidence.insert("current_work_item".into(), vec![work_item_ref]);
+        let work_refs = work_item
+            .work_refs
+            .iter()
+            .filter(|work_ref| work_ref.status == WorkItemRefStatus::Active)
+            .take(crate::work_item_refs::MAX_ACTIVE_WORK_REFS)
+            .map(|work_ref| {
+                ProjectionEvidenceRef::new(
+                    work_ref.ref_id.clone(),
+                    ProjectionEvidenceRole::Supporting,
+                    owner.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        if !work_refs.is_empty() {
+            evidence.insert("current_work_refs".into(), work_refs);
+        }
+    }
+
+    let mut recent_turn_refs = Vec::new();
+    for turn in turn_records {
+        recent_turn_refs.push(ProjectionEvidenceRef::new(
+            format!("turn:{}", turn.turn_id),
+            ProjectionEvidenceRole::Turn,
+            projection_owner(turn.current_work_item_id.as_deref(), &agent.id),
+        ));
+    }
+    let direct_predecessor_id = messages
+        .iter()
+        .max_by(|left, right| compare_message_recency(left, right))
+        .map(|message| message.id.as_str());
+    for message in messages {
+        recent_turn_refs.push(ProjectionEvidenceRef::new(
+            format!("message:{}", message.id),
+            if direct_predecessor_id == Some(message.id.as_str()) {
+                ProjectionEvidenceRole::DirectPredecessor
+            } else {
+                ProjectionEvidenceRole::Input
+            },
+            projection_owner(message.work_item_id.as_deref(), &agent.id),
+        ));
+    }
+    for brief in briefs {
+        recent_turn_refs.push(ProjectionEvidenceRef::new(
+            format!("brief:{}", brief.id),
+            ProjectionEvidenceRole::Result,
+            projection_owner(brief.work_item_id.as_deref(), &agent.id),
+        ));
+    }
+    for tool in tools {
+        recent_turn_refs.push(ProjectionEvidenceRef::new(
+            format!("tool_execution:{}", tool.id),
+            ProjectionEvidenceRole::ToolResult,
+            projection_owner(tool.work_item_id.as_deref(), &agent.id),
+        ));
+    }
+    recent_turn_refs.sort();
+    if !recent_turn_refs.is_empty() {
+        evidence.insert("recent_turns".into(), recent_turn_refs);
+    }
+    evidence
+}
+
+fn projection_owner(work_item_id: Option<&str>, agent_id: &str) -> ProjectionOwner {
+    work_item_id
+        .map(|work_item_id| ProjectionOwner::WorkItem {
+            work_item_id: work_item_id.to_string(),
+        })
+        .unwrap_or_else(|| ProjectionOwner::LegacyUnbound {
+            agent_id: agent_id.to_string(),
+        })
 }
 
 fn hydrate_recent_turn_references(

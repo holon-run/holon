@@ -1,8 +1,9 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import YAML from "yaml";
 
 import { CANONICAL_RUNNER_IDS } from "./naming.mjs";
+
+let yamlModulePromise = null;
 
 const TASK_ALLOWED_KEYS = {
   root: [
@@ -40,6 +41,7 @@ const SUITE_ALLOWED_KEYS = {
 
 export async function loadYamlFile(filePath) {
   const content = await fs.readFile(filePath, "utf8");
+  const { default: YAML } = await loadYamlModule();
   return YAML.parse(content);
 }
 
@@ -362,4 +364,9 @@ function assertAllowedKeys(value, allowedKeys, label) {
       throw new Error(`${label} has unsupported key ${key}`);
     }
   }
+}
+
+async function loadYamlModule() {
+  yamlModulePromise ??= import("yaml");
+  return yamlModulePromise;
 }

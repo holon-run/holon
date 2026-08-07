@@ -5,13 +5,13 @@ import path from "node:path";
 import process from "node:process";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { query, unstable_v2_createSession } from "@anthropic-ai/claude-agent-sdk";
 import {
   ensureBaseShaExists,
   loadBenchmarkSuite,
   loadRealTaskManifest,
   resolveRepoPath
 } from "./lib/manifest.mjs";
+import { loadProjectionEvalSuite } from "./lib/projection-eval.mjs";
 import {
   benchmarkLabelsForTask,
   branchNameForTask,
@@ -31,6 +31,7 @@ const repoSideEffectLocks = new Map();
 const CACHE_BREAK_ABSOLUTE_DROP_THRESHOLD = 2_000;
 const CACHE_BREAK_RELATIVE_RETAINED_THRESHOLD = 0.95;
 const ANTHROPIC_PROMPT_CACHE_5MIN_TTL_MS = 5 * 60 * 1000;
+let claudeAgentSdkPromise = null;
 
 const DEFAULT_TASKS = [
   "analysis-runtime-architecture.json",
@@ -71,6 +72,26 @@ async function main() {
   }
 
   await mkdir(resultsRoot, { recursive: true });
+
+  if (args.command === "projection-eval") {
+    if (!args.suite) {
+      throw new Error("projection-eval requires --suite");
+    }
+    const summary = await runProjectionEvalCommand(args);
+    console.log(
+      JSON.stringify(
+        {
+          ok: summary.ok,
+          label: summary.label,
+          suite_id: summary.suite_id,
+          results_dir: summary.results_dir
+        },
+        null,
+        2
+      )
+    );
+    return;
+  }
 
   if (args.command === "real") {
     const summary = await runRealManifestCommand(args, runnerEnv);
@@ -130,7 +151,11 @@ function parseArgs(argv) {
     runners: []
   };
 
-  if (["compare", "fixture", "real", "suite", "validate-manifest"].includes(argv[0])) {
+  if (
+    ["compare", "fixture", "projection-eval", "real", "suite", "validate-manifest"].includes(
+      argv[0]
+    )
+  ) {
     args.command = argv[0];
     argv = argv.slice(1);
   }
@@ -566,6 +591,186 @@ async function runRealSuiteCommand(args, runnerEnv) {
 
   await finalizeRealSuite(suiteLabel, results);
   return { label: suiteLabel, results };
+}
+
+async function runProjectionEvalCommand(args) {
+  const suitePath = path.resolve(args.suite);
+  const suite = await loadProjectionEvalSuite(suitePath);
+  const suiteCwd = path.dirname(suitePath);
+  const label = args.label ?? `projection-eval-${suite.suite_id}-${timestampLabel()}`;
+  const suiteDir = path.join(resultsRoot, label);
+  const scorecard = [];
+
+  await mkdir(path.join(suiteDir, "cases"), { recursive: true });
+  await copyFile(suitePath, path.join(suiteDir, "suite.json"));
+
+  for (const caseEntry of suite.cases) {
+    const inputPath = path.resolve(suiteCwd, caseEntry.input);
+    for (let repetition = 1; repetition <= (suite.repetitions ?? 1); repetition += 1) {
+      const caseDir = path.join(suiteDir, "cases", caseEntry.id, `repetition-${repetition}`);
+      await mkdir(caseDir, { recursive: true });
+      await writeJson(path.join(caseDir, "assertions.json"), caseEntry.assertions);
+
+      const baseline = await runProjectionEvalCaseCommand({
+        name: "baseline",
+        commandTemplate: suite.baseline_command,
+        inputPath,
+        cwd: suiteCwd,
+        caseDir
+      });
+      const candidate = suite.candidate_command
+        ? await runProjectionEvalCaseCommand({
+            name: "candidate",
+            commandTemplate: suite.candidate_command,
+            inputPath,
+            cwd: suiteCwd,
+            caseDir
+          })
+        : null;
+
+      const evaluation = await evaluateProjectionEvalCase({
+        caseId: caseEntry.id,
+        assertionsPath: path.join(caseDir, "assertions.json"),
+        baselinePath: baseline.manifestPath,
+        candidatePath: candidate?.manifestPath ?? null
+      });
+      const entry = {
+        ...evaluation,
+        repetition,
+        artifacts: {
+          input: inputPath,
+          assertions: path.join(caseDir, "assertions.json"),
+          baseline: baseline.artifacts,
+          candidate: candidate?.artifacts ?? null
+        }
+      };
+      await writeJson(path.join(caseDir, "evaluation.json"), entry);
+      scorecard.push(entry);
+    }
+  }
+
+  const summary = buildProjectionEvalSummary({
+    label,
+    suiteId: suite.suite_id,
+    suitePath,
+    suiteDir,
+    baselineCommand: suite.baseline_command,
+    candidateCommand: suite.candidate_command ?? null,
+    repetitions: suite.repetitions ?? 1,
+    sharedConfig: suite.shared_config ?? {},
+    scorecard
+  });
+  await writeJson(path.join(suiteDir, "scorecard.json"), scorecard);
+  await writeJson(path.join(suiteDir, "summary.json"), summary);
+  return summary;
+}
+
+async function runProjectionEvalCaseCommand({ name, commandTemplate, inputPath, cwd, caseDir }) {
+  const renderedCommand = renderProjectionEvalCommand(commandTemplate, inputPath);
+  const result = await runCommand("zsh", ["-lc", renderedCommand], cwd, process.env, false);
+  const manifest = JSON.parse(result.stdout);
+  const stdoutPath = path.join(caseDir, `${name}.stdout.json`);
+  const stderrPath = path.join(caseDir, `${name}.stderr.log`);
+  const manifestPath = path.join(caseDir, `${name}.manifest.json`);
+  const commandPath = path.join(caseDir, `${name}.command.txt`);
+
+  await writeFile(stdoutPath, result.stdout, "utf8");
+  await writeFile(stderrPath, result.stderr || "", "utf8");
+  await writeFile(commandPath, `${renderedCommand}\n`, "utf8");
+  await writeJson(manifestPath, manifest);
+
+  return {
+    manifestPath,
+    artifacts: {
+      command: commandPath,
+      stdout: stdoutPath,
+      stderr: stderrPath,
+      manifest: manifestPath
+    }
+  };
+}
+
+async function evaluateProjectionEvalCase({ caseId, assertionsPath, baselinePath, candidatePath }) {
+  const evaluatorPath = path.join(repoRoot, "benchmarks", "projection-eval", "evaluator.mjs");
+  const args = [
+    evaluatorPath,
+    "--case-id",
+    caseId,
+    "--assertions",
+    assertionsPath,
+    "--baseline",
+    baselinePath
+  ];
+  if (candidatePath) {
+    args.push("--candidate", candidatePath);
+  }
+  const result = await runCommand(process.execPath, args, repoRoot, process.env, false);
+  return JSON.parse(result.stdout);
+}
+
+function buildProjectionEvalSummary({
+  label,
+  suiteId,
+  suitePath,
+  suiteDir,
+  baselineCommand,
+  candidateCommand,
+  repetitions,
+  sharedConfig,
+  scorecard
+}) {
+  const baselineCasesPassed = scorecard.filter((entry) => entry.baseline?.pass).length;
+  const candidateCasesPassed = candidateCommand
+    ? scorecard.filter((entry) => entry.candidate?.pass).length
+    : null;
+  const improvedAssertions = scorecard.reduce(
+    (sum, entry) => sum + Number(entry.delta?.improved_assertions ?? 0),
+    0
+  );
+  const regressedAssertions = scorecard.reduce(
+    (sum, entry) => sum + Number(entry.delta?.regressed_assertions ?? 0),
+    0
+  );
+  const changedAssertions = scorecard.reduce(
+    (sum, entry) => sum + Number(entry.delta?.changed_assertions ?? 0),
+    0
+  );
+
+  return {
+    schema_version: 1,
+    label,
+    suite_id: suiteId,
+    suite_path: suitePath,
+    results_dir: suiteDir,
+    baseline_command: baselineCommand,
+    candidate_command: candidateCommand,
+    repetitions,
+    shared_config: sharedConfig,
+    generated_at: new Date().toISOString(),
+    ok: candidateCommand
+      ? candidateCasesPassed === scorecard.length && regressedAssertions === 0
+      : true,
+    totals: {
+      case_count: scorecard.length,
+      baseline_cases_passed: baselineCasesPassed,
+      candidate_cases_passed: candidateCasesPassed,
+      improved_assertions: improvedAssertions,
+      regressed_assertions: regressedAssertions,
+      changed_assertions: changedAssertions
+    }
+  };
+}
+
+function renderProjectionEvalCommand(commandTemplate, inputPath) {
+  const escapedInput = shellEscape(inputPath);
+  return commandTemplate
+    .replaceAll('"{input}"', escapedInput)
+    .replaceAll("'{input}'", escapedInput)
+    .replaceAll("{input}", escapedInput);
+}
+
+function shellEscape(value) {
+  return `'${String(value).split("'").join(`'"'"'`)}'`;
 }
 
 async function finalizeRealSuite(suiteLabel, results) {
@@ -1968,6 +2173,11 @@ function timestampLabel() {
   return new Date().toISOString().replace(/[:.]/g, "-");
 }
 
+async function loadClaudeAgentSdk() {
+  claudeAgentSdkPromise ??= import("@anthropic-ai/claude-agent-sdk");
+  return claudeAgentSdkPromise;
+}
+
 async function runHolonTask({ task, taskDir, workspaceDir, runnerEnv }) {
   const homeDir = path.join(taskDir, "holon-home");
   const agentId = task.name;
@@ -2126,6 +2336,7 @@ function holonRunFailure(agentId, kind, run, extra = {}) {
 }
 
 async function runClaudeSdkTask({ task, taskDir, workspaceDir, runnerEnv }) {
+  const { query } = await loadClaudeAgentSdk();
   if (task.turns && task.turns.length > 1) {
     return runClaudeSdkSessionTask({ task, taskDir, workspaceDir, runnerEnv });
   }
@@ -2251,6 +2462,7 @@ function sdkMaxTurnsForTask(task) {
 }
 
 async function runClaudeSdkSessionTask({ task, taskDir, workspaceDir, runnerEnv }) {
+  const { unstable_v2_createSession } = await loadClaudeAgentSdk();
   const startedAt = Date.now();
   const tools =
     task.tool_profile === "read_only"

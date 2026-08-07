@@ -741,6 +741,12 @@ mod tests {
             }],
             rendered_system_prompt: "system prompt".to_string(),
             rendered_context_attachment: "context attachment".to_string(),
+            projection_owner: crate::projection_eval::ProjectionOwner::AgentLifecycle {
+                agent_id: "default".into(),
+            },
+            projection_binding: None,
+            projection_turn_id: None,
+            projection_evidence: Default::default(),
             context_plan_evidence: Default::default(),
             recent_turns_reprojection: None,
         }
@@ -820,6 +826,12 @@ mod tests {
             ],
             rendered_system_prompt: "system prompt".to_string(),
             rendered_context_attachment: "context attachment".to_string(),
+            projection_owner: crate::projection_eval::ProjectionOwner::AgentLifecycle {
+                agent_id: "default".into(),
+            },
+            projection_binding: None,
+            projection_turn_id: None,
+            projection_evidence: Default::default(),
             context_plan_evidence: Default::default(),
             recent_turns_reprojection: None,
         };

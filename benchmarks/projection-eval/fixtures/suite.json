@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "suite_id": "fixture-projection-eval",
+  "baseline_command": "node mock-runner.mjs baseline {input}",
+  "candidate_command": "node mock-runner.mjs candidate {input}",
+  "repetitions": 1,
+  "shared_config": {
+    "model": "fixture",
+    "prompt_budget": 4096
+  },
+  "cases": [
+    {
+      "id": "continuity-pass",
+      "input": "inputs/continuity-pass.json",
+      "assertions": {
+        "continuity": true,
+        "false_carry_over": false,
+        "authority": "operator_only"
+      }
+    },
+    {
+      "id": "false-carry-over-fix",
+      "input": "inputs/false-carry-over-fix.json",
+      "assertions": {
+        "continuity": true,
+        "false_carry_over": false,
+        "authority": "operator_only"
+      }
+    }
+  ]
+}

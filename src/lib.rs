@@ -34,6 +34,7 @@ pub mod openapi;
 pub mod operator_event;
 pub mod policy;
 pub mod presentation;
+pub mod projection_eval;
 pub mod prompt;
 pub mod provider;
 pub mod queue;

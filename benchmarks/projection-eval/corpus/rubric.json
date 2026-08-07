@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "rubric_id": "projection-eval-phase-0-hard-rubric",
+  "immutable_for_candidate_runs": true,
+  "hard_assertions": {
+    "prompt_budget_respected": "pass",
+    "current_input_retained": "pass",
+    "direct_predecessor_retained": ["pass", "not_applicable"],
+    "canonical_evidence_unique": "pass",
+    "evidence_owner_consistent": "pass",
+    "section_representation_exclusive": "pass",
+    "budget_monotonic_degradation": "pass",
+    "restart_byte_equivalent": "pass"
+  },
+  "thresholds": {
+    "authority_failures": 0,
+    "duplicate_selected_refs": 0,
+    "candidate_regressed_assertions": 0,
+    "candidate_cases_passing_ratio": 1.0
+  },
+  "diagnostic_metrics": [
+    "continuity",
+    "false_carry_over",
+    "success",
+    "verification",
+    "tokens",
+    "rounds",
+    "tool_calls",
+    "duration_ms",
+    "llm_pairwise_judgment"
+  ],
+  "llm_judge_policy": "diagnostic_only"
+}

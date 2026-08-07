@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "baseline_id": "legacy-context-sections-v1-phase-0",
+  "projector": "legacy_context_sections_v1",
+  "corpus": "../corpus/cases.json",
+  "rubric": "../corpus/rubric.json",
+  "frozen_at": "2026-08-07",
+  "status": "frozen_observation",
+  "candidate_gate": false,
+  "cases": [
+    {"id": "issue-2512-short-reference-need", "budgets": [2048, 4096, 16384]},
+    {"id": "issue-2512-short-reference-can", "budgets": [2048, 4096, 16384]},
+    {"id": "issue-2512-ordinal-reference", "budgets": [2048, 4096, 16384]},
+    {"id": "continuity-10-turns", "budgets": [2048, 4096, 16384]},
+    {"id": "continuity-20-turns", "budgets": [2048, 4096, 16384]},
+    {"id": "continuity-40-turns", "budgets": [2048, 4096, 16384]},
+    {"id": "new-topic-no-false-carry-over", "budgets": [2048, 4096, 16384]},
+    {"id": "return-to-old-topic", "budgets": [2048, 4096, 16384]},
+    {"id": "work-item-switch-return", "budgets": [2048, 4096, 16384]},
+    {"id": "work-item-wait-task-result-recovery", "budgets": [2048, 4096, 16384]},
+    {"id": "discussion-interleaved-runtime-wakes", "budgets": [2048, 4096, 16384]},
+    {"id": "restart-compaction-equivalence", "budgets": [2048, 4096, 16384]}
+  ],
+  "notes": [
+    "This file freezes the corpus and matrix used to observe the legacy projector.",
+    "Per-activation manifests are byte-stable artifacts produced by EffectivePrompt::projection_manifest().",
+    "A future candidate must use this corpus and rubric without changing thresholds.",
+    "Model-based repeated runs and pairwise judgments are diagnostic and cannot override hard failures."
+  ]
+}

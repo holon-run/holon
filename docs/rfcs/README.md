@@ -41,6 +41,7 @@ implementation and tests.
 - [Turn Model Lineage And Recovery](./turn-model-lineage-and-recovery.md)
 - [Continuation Anchor](./continuation-anchor.md)
 - [Turn-Based Context Projection](./turn-based-context-projection.md)
+- [Deterministic Projection Evaluation Phase 0](./projection-evaluation-phase-0.md)
 - [Operator Interjection Safe Points](./operator-interjection-safe-points.md)
 - [Operator Notification and Intervention](./operator-wait-and-intervention.md)
 - [Waiting Plane And Reactivation](./waiting-plane-and-reactivation.md)

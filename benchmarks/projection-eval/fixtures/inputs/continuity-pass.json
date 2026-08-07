@@ -1,0 +1,15 @@
+{
+  "case_id": "continuity-pass",
+  "manifests": {
+    "baseline": {
+      "continuity": true,
+      "false_carry_over": false,
+      "authority": "operator_only"
+    },
+    "candidate": {
+      "continuity": true,
+      "false_carry_over": false,
+      "authority": "operator_only"
+    }
+  }
+}

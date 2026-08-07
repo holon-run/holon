@@ -1350,6 +1350,12 @@ fn current_input_summary_extracts_body_from_context_section() {
         }],
         rendered_system_prompt: String::new(),
         rendered_context_attachment: String::new(),
+        projection_owner: crate::projection_eval::ProjectionOwner::AgentLifecycle {
+            agent_id: "default".into(),
+        },
+        projection_binding: None,
+        projection_turn_id: None,
+        projection_evidence: Default::default(),
         context_plan_evidence: Default::default(),
         recent_turns_reprojection: None,
     };

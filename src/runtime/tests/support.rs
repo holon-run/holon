@@ -218,6 +218,12 @@ pub(crate) fn test_effective_prompt() -> EffectivePrompt {
         context_sections: vec![],
         rendered_system_prompt: "system".into(),
         rendered_context_attachment: "context".into(),
+        projection_owner: crate::projection_eval::ProjectionOwner::AgentLifecycle {
+            agent_id: "default".into(),
+        },
+        projection_binding: None,
+        projection_turn_id: None,
+        projection_evidence: Default::default(),
         context_plan_evidence: Default::default(),
         recent_turns_reprojection: None,
     }

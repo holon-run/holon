@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "corpus_id": "projection-eval-phase-0",
+  "description": "Frozen durable-fact scenarios for observing the legacy projector before owner-centered projection changes.",
+  "cases": [
+    {
+      "id": "issue-2512-short-reference-need",
+      "tags": ["issue-2512", "conversation", "short-reference"],
+      "turn_count": 3,
+      "budgets": [2048, 4096, 16384],
+      "events": [
+        {"kind": "operator", "ref": "message:2512-plan", "text": "先讨论系统投影重构方案"},
+        {"kind": "assistant", "ref": "brief:2512-plan", "text": "给出 WorkItem + Turn 方案"},
+        {"kind": "operator", "ref": "message:2512-need", "text": "需要"}
+      ],
+      "required_refs": ["message:2512-need", "message:2512-plan"],
+      "forbidden_refs": []
+    },
+    {
+      "id": "issue-2512-short-reference-can",
+      "tags": ["issue-2512", "conversation", "short-reference"],
+      "turn_count": 4,
+      "budgets": [2048, 4096, 16384],
+      "events": [
+        {"kind": "operator", "ref": "message:2512-plan", "text": "先讨论系统投影重构方案"},
+        {"kind": "assistant", "ref": "brief:2512-plan", "text": "给出两个阶段"},
+        {"kind": "operator", "ref": "message:2512-question", "text": "先做评估工具吗"},
+        {"kind": "operator", "ref": "message:2512-can", "text": "可以"}
+      ],
+      "required_refs": ["message:2512-can", "message:2512-question"],
+      "forbidden_refs": []
+    },
+    {
+      "id": "issue-2512-ordinal-reference",
+      "tags": ["issue-2512", "conversation", "adjacency"],
+      "turn_count": 5,
+      "budgets": [2048, 4096, 16384],
+      "events": [
+        {"kind": "operator", "ref": "message:options", "text": "给三个候选方案"},
+        {"kind": "assistant", "ref": "brief:options", "text": "第一、第二、第三方案"},
+        {"kind": "operator", "ref": "message:second", "text": "第二个"},
+        {"kind": "assistant", "ref": "brief:second", "text": "展开第二方案"},
+        {"kind": "operator", "ref": "message:previous-plan", "text": "上一个方案呢"}
+      ],
+      "required_refs": ["message:previous-plan", "message:second", "brief:options"],
+      "forbidden_refs": []
+    },
+    {
+      "id": "continuity-10-turns",
+      "tags": ["conversation", "continuity", "early-decision"],
+      "turn_count": 10,
+      "budgets": [2048, 4096, 16384],
+      "generator": {"pattern": "alternating_operator_assistant", "early_decision_turn": 2, "reference_turn": 10},
+      "required_refs": ["message:turn-10", "brief:turn-2-decision"],
+      "forbidden_refs": []
+    },
+    {
+      "id": "continuity-20-turns",
+      "tags": ["conversation", "continuity", "early-decision"],
+      "turn_count": 20,
+      "budgets": [2048, 4096, 16384],
+      "generator": {"pattern": "alternating_operator_assistant", "early_decision_turn": 3, "reference_turn": 20},
+      "required_refs": ["message:turn-20", "brief:turn-3-decision"],
+      "forbidden_refs": []
+    },
+    {
+      "id": "continuity-40-turns",
+      "tags": ["conversation", "continuity", "compaction", "early-decision"],
+      "turn_count": 40,
+      "budgets": [2048, 4096, 16384],
+      "generator": {"pattern": "alternating_operator_assistant", "early_decision_turn": 4, "reference_turn": 40},
+      "required_refs": ["message:turn-40", "brief:turn-4-decision"],
+      "forbidden_refs": []
+    },
+    {
+      "id": "new-topic-no-false-carry-over",
+      "tags": ["conversation", "topic-boundary"],
+      "turn_count": 8,
+      "budgets": [2048, 4096, 16384],
+      "generator": {"pattern": "topic_a_then_topic_b", "boundary_turn": 5},
+      "required_refs": ["message:topic-b-current"],
+      "forbidden_refs": ["brief:topic-a-abandoned-action"]
+    },
+    {
+      "id": "return-to-old-topic",
+      "tags": ["conversation", "topic-return"],
+      "turn_count": 12,
+      "budgets": [2048, 4096, 16384],
+      "generator": {"pattern": "topic_a_topic_b_return_a", "return_turn": 12},
+      "required_refs": ["message:return-topic-a", "brief:topic-a-decision"],
+      "forbidden_refs": ["brief:topic-b-unrelated-detail"]
+    },
+    {
+      "id": "work-item-switch-return",
+      "tags": ["work-item", "switch", "continuation"],
+      "turn_count": 9,
+      "budgets": [2048, 4096, 16384],
+      "events": [
+        {"kind": "work_item_create", "ref": "work_item:a"},
+        {"kind": "operator", "ref": "message:a-input", "owner": "work_item:a"},
+        {"kind": "work_item_create", "ref": "work_item:b"},
+        {"kind": "work_item_switch", "ref": "turn:switch-a-b", "owner": "work_item:b"},
+        {"kind": "task_result", "ref": "message:b-task-result", "owner": "work_item:b"},
+        {"kind": "work_item_complete", "ref": "brief:b-complete", "owner": "work_item:b"},
+        {"kind": "work_item_return", "ref": "turn:return-b-a", "owner": "work_item:a"}
+      ],
+      "required_refs": ["work_item:a", "message:a-input", "turn:return-b-a"],
+      "forbidden_refs": ["message:b-task-result"]
+    },
+    {
+      "id": "work-item-wait-task-result-recovery",
+      "tags": ["work-item", "wait", "task-result", "restart"],
+      "turn_count": 7,
+      "budgets": [2048, 4096, 16384],
+      "events": [
+        {"kind": "operator", "ref": "message:work-request", "owner": "work_item:recovery"},
+        {"kind": "wait", "ref": "wait:task-1", "owner": "work_item:recovery"},
+        {"kind": "restart", "ref": "turn:daemon-restart", "owner": "legacy_unbound:agent-1"},
+        {"kind": "task_result", "ref": "message:task-1-result", "owner": "work_item:recovery"},
+        {"kind": "recovery", "ref": "turn:recovery", "owner": "work_item:recovery"}
+      ],
+      "required_refs": ["message:work-request", "wait:task-1", "message:task-1-result"],
+      "forbidden_refs": []
+    },
+    {
+      "id": "discussion-interleaved-runtime-wakes",
+      "tags": ["conversation", "external", "timer", "agent-lifecycle"],
+      "turn_count": 11,
+      "budgets": [2048, 4096, 16384],
+      "events": [
+        {"kind": "operator", "ref": "message:discussion-anchor"},
+        {"kind": "external", "ref": "message:external-wake", "owner": "legacy_unbound:agent-1"},
+        {"kind": "timer", "ref": "message:timer-wake", "owner": "legacy_unbound:agent-1"},
+        {"kind": "agent_lifecycle", "ref": "message:lifecycle-wake", "owner": "legacy_unbound:agent-1"},
+        {"kind": "operator", "ref": "message:discussion-followup"}
+      ],
+      "required_refs": ["message:discussion-followup", "message:discussion-anchor"],
+      "forbidden_refs": ["message:external-wake-as-operator", "message:timer-wake-as-operator"]
+    },
+    {
+      "id": "restart-compaction-equivalence",
+      "tags": ["restart", "compaction", "byte-stability"],
+      "turn_count": 40,
+      "budgets": [2048, 4096, 16384],
+      "generator": {"pattern": "compacted_restart_rebuild", "restart_after_turn": 30},
+      "required_refs": ["message:turn-40", "brief:compaction-anchor"],
+      "forbidden_refs": [],
+      "equivalence": ["pre_restart_manifest", "post_restart_manifest"]
+    }
+  ]
+}

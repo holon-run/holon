@@ -20,6 +20,10 @@ use crate::{
         build_context_with_default_external_ingress, reproject_recent_turns, BuiltContext,
         ContextConfig, ContextPlanEvidence, RecentTurnsReprojection,
     },
+    projection_eval::{
+        manifest_from_effective_prompt, ProjectionBindingSummary, ProjectionEvidenceIndex,
+        ProjectionManifest, ProjectionOwner,
+    },
     storage::AppStorage,
     system::{execution_policy_summary_lines, ExecutionSnapshot},
     tool::{ApplyPatchSurface, ToolSpec},
@@ -81,11 +85,19 @@ pub struct EffectivePrompt {
     pub context_sections: Vec<PromptSection>,
     pub rendered_system_prompt: String,
     pub rendered_context_attachment: String,
+    pub(crate) projection_owner: ProjectionOwner,
+    pub(crate) projection_binding: Option<ProjectionBindingSummary>,
+    pub(crate) projection_turn_id: Option<String>,
+    pub(crate) projection_evidence: ProjectionEvidenceIndex,
     pub(crate) context_plan_evidence: ContextPlanEvidence,
     pub(crate) recent_turns_reprojection: Option<RecentTurnsReprojection>,
 }
 
 impl EffectivePrompt {
+    pub fn projection_manifest(&self) -> ProjectionManifest {
+        manifest_from_effective_prompt(self)
+    }
+
     pub(crate) fn recent_turns_initial_budget(&self) -> Option<usize> {
         self.recent_turns_reprojection
             .as_ref()
@@ -550,9 +562,33 @@ fn build_effective_prompt_with_tool_prompt_context_and_default_external_ingress(
         context_sections,
         rendered_system_prompt,
         rendered_context_attachment,
+        projection_owner: built_context_owner(session),
+        projection_binding: session.current_execution_binding.as_ref().map(|binding| {
+            ProjectionBindingSummary {
+                source_message_id: binding.source_message_id.clone(),
+                turn_id: binding.turn_id.clone(),
+                work_item_id: binding.work_item_id.clone(),
+                claimed_work_revision: binding.claimed_work_revision,
+            }
+        }),
+        projection_turn_id: current_message.turn_id.clone(),
+        projection_evidence: built_context.projection_evidence,
         context_plan_evidence: built_context.plan_evidence,
         recent_turns_reprojection: built_context.recent_turns_reprojection,
     })
+}
+
+fn built_context_owner(session: &AgentState) -> ProjectionOwner {
+    session
+        .current_execution_binding
+        .as_ref()
+        .and_then(|binding| binding.work_item_id.as_ref())
+        .map(|work_item_id| ProjectionOwner::WorkItem {
+            work_item_id: work_item_id.clone(),
+        })
+        .unwrap_or_else(|| ProjectionOwner::LegacyUnbound {
+            agent_id: session.id.clone(),
+        })
 }
 
 fn prompt_cache_key(agent_id: &str, context_fingerprint: &str) -> String {
@@ -2330,6 +2366,12 @@ mod tests {
             }],
             rendered_system_prompt: "rendered system".to_string(),
             rendered_context_attachment: "rendered context".to_string(),
+            projection_owner: ProjectionOwner::AgentLifecycle {
+                agent_id: "default".into(),
+            },
+            projection_binding: None,
+            projection_turn_id: None,
+            projection_evidence: ProjectionEvidenceIndex::new(),
             context_plan_evidence: ContextPlanEvidence {
                 total_budget_estimated_tokens: 100,
                 allocated_estimated_tokens: 20,
@@ -2399,6 +2441,12 @@ mod tests {
             }],
             rendered_system_prompt: "rendered turn system".to_string(),
             rendered_context_attachment: "rendered turn context".to_string(),
+            projection_owner: ProjectionOwner::AgentLifecycle {
+                agent_id: "default".into(),
+            },
+            projection_binding: None,
+            projection_turn_id: None,
+            projection_evidence: ProjectionEvidenceIndex::new(),
             context_plan_evidence: ContextPlanEvidence::default(),
             recent_turns_reprojection: None,
         };
@@ -2455,6 +2503,12 @@ mod tests {
             context_sections: vec![],
             rendered_system_prompt: "very secret agent guidance".to_string(),
             rendered_context_attachment: String::new(),
+            projection_owner: ProjectionOwner::AgentLifecycle {
+                agent_id: "default".into(),
+            },
+            projection_binding: None,
+            projection_turn_id: None,
+            projection_evidence: ProjectionEvidenceIndex::new(),
             context_plan_evidence: ContextPlanEvidence::default(),
             recent_turns_reprojection: None,
         };
