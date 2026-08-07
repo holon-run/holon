@@ -95,7 +95,6 @@ jobs:
               - 'Makefile'
               - 'agent_templates/**'
               - 'builtin_templates/**'
-              - 'web-gui/**'
             web:
               - 'web-gui/**'
               - '.github/workflows/ci.yml'
