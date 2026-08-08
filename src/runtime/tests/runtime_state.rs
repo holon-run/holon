@@ -81,6 +81,135 @@ fn trusted_operator_prompt(work_item_id: Option<&str>, text: &str) -> MessageEnv
     message
 }
 
+fn provider_recovery_message(runtime: &RuntimeHandle, work_item_id: &str) -> MessageEnvelope {
+    use crate::domain::execution_protocol::{
+        AdmitExecution, AdmittedFences, ConversationOutcome, ExecutionAttempt,
+        ExecutionAttemptState, ExecutionBinding, ExecutionOrigin, ExecutionOutcome,
+        ExecutionOutcomeRecord, ExecutionPriority, ExecutionProvenance, ExecutionSource,
+        ExecutionSourceIdentity, ExecutionTrust, SettleExecution,
+    };
+
+    let mut source = trusted_operator_prompt(None, "source provider failure");
+    source.turn_id = Some("turn-provider-failure".into());
+    source.message_seq = Some(1);
+    runtime.storage().append_message(&source).unwrap();
+    let mut source_turn = TurnRecord::new("default", "turn-provider-failure", 1);
+    source_turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&source));
+    source_turn.input_message_ids = vec![source.id.clone()];
+    source_turn.terminal = Some(crate::types::TurnTerminalSummary {
+        kind: TurnTerminalKind::DeferredToFallback,
+        reason: None,
+        completed_at: Utc::now(),
+        duration_ms: 1,
+    });
+    runtime.storage().append_turn(&source_turn).unwrap();
+
+    let state = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap_or_else(|| {
+            crate::domain::execution_protocol::ExecutionProtocolState::empty("default")
+        });
+    let source_attempt_id = format!("attempt-provider-failure:{}", source.id);
+    let admitted = crate::domain::execution_protocol::admit_execution(
+        &state,
+        &AdmitExecution {
+            attempt: ExecutionAttempt {
+                attempt_id: source_attempt_id.clone(),
+                agent_id: "default".into(),
+                source_message_id: Some(source.id.clone()),
+                source: ExecutionSource {
+                    identity: ExecutionSourceIdentity::QueueMessage {
+                        message_id: source.id.clone(),
+                    },
+                    generation: 1,
+                },
+                binding: ExecutionBinding::AgentLifecycle {
+                    agent_id: "default".into(),
+                },
+                provenance: ExecutionProvenance {
+                    origin: ExecutionOrigin::Operator,
+                    trust: ExecutionTrust::OperatorInstruction,
+                    priority: ExecutionPriority::Interject,
+                    correlation_id: None,
+                    causation_id: None,
+                },
+                admitted_fences: AdmittedFences {
+                    source_revision: 1,
+                    work_item_source_revision: None,
+                    work_item_generation: None,
+                    rejoin: None,
+                    agent_control_revision: 1,
+                    host_registry_revision: 1,
+                },
+                state: ExecutionAttemptState::Open,
+                run_id: None,
+                turn_id: source.turn_id.clone(),
+                recovery_of_attempt_id: None,
+                terminal_outcome_id: None,
+                admitted_at: Utc::now().to_rfc3339(),
+                terminal_at: None,
+            },
+        },
+    )
+    .unwrap();
+    let settled = crate::domain::execution_protocol::settle_execution(
+        &admitted.state,
+        &SettleExecution {
+            outcome: ExecutionOutcomeRecord {
+                outcome_id: format!("outcome-provider-failure:{}", source.id),
+                attempt_id: source_attempt_id,
+                outcome: ExecutionOutcome::Conversation(ConversationOutcome::Replied),
+                created_at: Utc::now().to_rfc3339(),
+            },
+        },
+    )
+    .unwrap();
+    runtime
+        .inner
+        .runtime_db
+        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &settled.state))
+        .unwrap();
+
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::InternalFollowup,
+        MessageOrigin::System {
+            subsystem: "model_lineage_recovery".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Next,
+        MessageBody::Text {
+            text: "continue provider recovery".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+    message.work_item_id = Some(work_item_id.into());
+    message.causation_id = Some(source.id.clone());
+    message
+        .source_refs
+        .insert("source_turn_id".into(), "turn-provider-failure".into());
+    message
+        .source_refs
+        .insert("source_message_id".into(), source.id.clone());
+    message.metadata = Some(serde_json::json!({
+        "provider_recovery": {
+            "fallback_model_ref": "anthropic/claude-sonnet-4-6",
+            "source_turn_id": "turn-provider-failure",
+            "source_message_id": source.id,
+            "source_terminal_kind": "deferred_to_fallback",
+            "source_round": 1
+        }
+    }));
+    message
+}
+
 fn append_default_host_identity(runtime: &RuntimeHandle) {
     runtime
         .runtime_db()
@@ -197,7 +326,15 @@ fn persist_waiting_work_execution(
     wait_id: &str,
 ) {
     let generation = work_item.revision.max(1);
-    let mut execution = crate::domain::execution_protocol::ExecutionProtocolState::empty("default");
+    let mut execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap_or_else(|| {
+            crate::domain::execution_protocol::ExecutionProtocolState::empty("default")
+        });
     execution.work_items.insert(
         work_item.id.clone(),
         crate::domain::execution_protocol::WorkItemExecutionRecord {
@@ -8819,6 +8956,668 @@ async fn stale_bound_internal_followup_is_dropped_before_operator_resume() {
         panic!("new operator input should advance after the stale follow-up");
     };
     assert_eq!(scheduled.message.id, operator.id);
+}
+
+#[tokio::test]
+async fn provider_recovery_claims_waiting_work_item_without_clearing_wait() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item(
+            "provider recovery while waiting".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    runtime.pick_work_item(work_item.id.clone()).await.unwrap();
+    let registration = runtime
+        .register_wait_for(
+            "default",
+            Some(work_item.id.clone()),
+            WaitForWakeKind::External,
+            Some("github:holon-run/holon#provider-recovery".into()),
+            "waiting for external review".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let waiting_work_item = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        runtime
+            .storage()
+            .work_queue_prompt_projection()
+            .unwrap()
+            .items
+            .into_iter()
+            .find(|item| item.id == work_item.id)
+            .map(|item| item.scheduling_state),
+        Some(WorkItemSchedulingState::WaitingExternal)
+    );
+    persist_waiting_work_execution(&runtime, &waiting_work_item, &registration.condition.id);
+
+    let recovery = runtime
+        .enqueue(provider_recovery_message(&runtime, &work_item.id))
+        .await
+        .unwrap();
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("trusted provider recovery should claim the waiting WorkItem");
+    };
+    assert_eq!(scheduled.message.id, recovery.id);
+
+    let activation_id = scheduler_executor::canonical_activation_id(&recovery.id);
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .expect("provider recovery should preserve execution authority");
+    let attempt = &execution.attempts[&activation_id];
+    assert!(matches!(
+        attempt.source.identity,
+        crate::domain::execution_protocol::ExecutionSourceIdentity::RuntimeRecovery {
+            ref recovery_id
+        } if recovery_id == &recovery.id
+    ));
+    assert_eq!(
+        attempt.provenance.origin,
+        crate::domain::execution_protocol::ExecutionOrigin::RuntimeRecovery
+    );
+    assert_eq!(
+        attempt.provenance.trust,
+        crate::domain::execution_protocol::ExecutionTrust::RuntimeInstruction
+    );
+    let expected_source_attempt_id = format!(
+        "attempt-provider-failure:{}",
+        recovery.causation_id.as_deref().unwrap()
+    );
+    assert_eq!(
+        attempt.recovery_of_attempt_id.as_deref(),
+        Some(expected_source_attempt_id.as_str())
+    );
+    assert!(matches!(
+        &execution.work_items[&work_item.id].state,
+        crate::domain::execution_protocol::WorkItemExecutionState::InFlight {
+            attempt_id,
+            ..
+        } if attempt_id == &activation_id
+    ));
+    assert_eq!(
+        runtime
+            .storage()
+            .latest_wait_conditions()
+            .unwrap()
+            .into_iter()
+            .find(|condition| condition.id == registration.condition.id)
+            .map(|condition| condition.status),
+        Some(WaitConditionStatus::Active)
+    );
+
+    finish_claimed_test_run(&runtime).await;
+    let terminal = terminal_transition(&recovery, Some(&work_item.id));
+    runtime
+        .commit_queue_terminal_settlement(
+            QueueEntryRecord {
+                message_id: recovery.id.clone(),
+                agent_id: recovery.agent_id.clone(),
+                priority: recovery.priority,
+                status: QueueEntryStatus::Processed,
+                created_at: recovery.created_at,
+                updated_at: Utc::now(),
+            },
+            Vec::new(),
+            true,
+            Some(&terminal),
+        )
+        .await
+        .unwrap();
+    let settled = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        &settled.work_items[&work_item.id].state,
+        crate::domain::execution_protocol::WorkItemExecutionState::Waiting { wait, .. }
+            if wait.wait_id == registration.condition.id
+    ));
+    let outcome_id = settled.attempts[&activation_id]
+        .terminal_outcome_id
+        .as_deref()
+        .unwrap();
+    assert!(matches!(
+        &settled.outcomes[outcome_id].outcome,
+        crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
+            crate::domain::execution_protocol::WorkItemOutcome::Wait { wait }
+        ) if wait.wait_id == registration.condition.id
+    ));
+    assert_eq!(
+        runtime
+            .storage()
+            .latest_wait_conditions()
+            .unwrap()
+            .into_iter()
+            .find(|condition| condition.id == registration.condition.id)
+            .map(|condition| condition.status),
+        Some(WaitConditionStatus::Active)
+    );
+}
+
+#[tokio::test]
+async fn provider_recovery_claims_execution_waiting_projection_drift() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item(
+            "recover execution waiting projection drift".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime
+            .storage()
+            .work_queue_prompt_projection()
+            .unwrap()
+            .items
+            .into_iter()
+            .find(|item| item.id == work_item.id)
+            .map(|item| item.scheduling_state),
+        Some(WorkItemSchedulingState::Runnable)
+    );
+    persist_waiting_work_execution(&runtime, &work_item, "wait-stale-projection");
+
+    let recovery = runtime
+        .enqueue(provider_recovery_message(&runtime, &work_item.id))
+        .await
+        .unwrap();
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("provider recovery should repair execution Waiting projection drift");
+    };
+    assert_eq!(scheduled.message.id, recovery.id);
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        &execution.work_items[&work_item.id].state,
+        crate::domain::execution_protocol::WorkItemExecutionState::InFlight { .. }
+    ));
+}
+
+#[tokio::test]
+async fn malformed_provider_recovery_cannot_claim_waiting_work_item() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item(
+            "reject malformed provider recovery".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    runtime.pick_work_item(work_item.id.clone()).await.unwrap();
+    let registration = runtime
+        .register_wait_for(
+            "default",
+            Some(work_item.id.clone()),
+            WaitForWakeKind::External,
+            Some("github:holon-run/holon#malformed-provider-recovery".into()),
+            "waiting for external review".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let waiting_work_item = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .unwrap();
+    persist_waiting_work_execution(&runtime, &waiting_work_item, &registration.condition.id);
+
+    let mut malformed = provider_recovery_message(&runtime, &work_item.id);
+    malformed.metadata = None;
+    let malformed = runtime.enqueue(malformed).await.unwrap();
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Idle
+    ));
+    assert_eq!(
+        runtime
+            .storage()
+            .latest_queue_entries()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == malformed.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Dropped)
+    );
+    assert!(runtime
+        .storage()
+        .read_recent_events(usize::MAX)
+        .unwrap()
+        .iter()
+        .any(|event| {
+            event.kind == "scheduler_authority_input_rejected"
+                && event.data["message_id"] == malformed.id
+                && event.data["reason"] == "canonical_provider_recovery_directive_invalid"
+        }));
+    assert!(matches!(
+        &runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("default")
+            .unwrap()
+            .unwrap()
+            .work_items[&work_item.id]
+            .state,
+        crate::domain::execution_protocol::WorkItemExecutionState::Waiting { wait, .. }
+            if wait.wait_id == registration.condition.id
+    ));
+}
+
+#[tokio::test]
+async fn provider_recovery_rejects_missing_durable_source() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item(
+            "reject provider recovery with missing source".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    runtime.pick_work_item(work_item.id.clone()).await.unwrap();
+    let registration = runtime
+        .register_wait_for(
+            "default",
+            Some(work_item.id.clone()),
+            WaitForWakeKind::External,
+            Some("github:holon-run/holon#missing-recovery-source".into()),
+            "waiting for external review".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let waiting_work_item = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .unwrap();
+    persist_waiting_work_execution(&runtime, &waiting_work_item, &registration.condition.id);
+
+    let mut forged = provider_recovery_message(&runtime, &work_item.id);
+    forged.causation_id = Some("message-missing-provider-failure".into());
+    forged.source_refs.insert(
+        "source_message_id".into(),
+        "message-missing-provider-failure".into(),
+    );
+    forged.metadata.as_mut().unwrap()["provider_recovery"]["source_message_id"] =
+        serde_json::json!("message-missing-provider-failure");
+    let forged = runtime.enqueue(forged).await.unwrap();
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Idle
+    ));
+    assert!(runtime
+        .storage()
+        .read_recent_events(usize::MAX)
+        .unwrap()
+        .iter()
+        .any(|event| {
+            event.kind == "scheduler_authority_input_rejected"
+                && event.data["message_id"] == forged.id
+                && event.data["reason"] == "canonical_provider_recovery_source_invalid"
+        }));
+}
+
+#[tokio::test]
+async fn triggered_wait_survives_provider_recovery_settlement_and_resumes() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item(
+            "provider recovery wait trigger race".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    runtime.pick_work_item(work_item.id.clone()).await.unwrap();
+    let registration = runtime
+        .register_wait_for(
+            "default",
+            Some(work_item.id.clone()),
+            WaitForWakeKind::OperatorInput,
+            None,
+            "waiting for operator".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let waiting_work_item = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .unwrap();
+    persist_waiting_work_execution(&runtime, &waiting_work_item, &registration.condition.id);
+
+    let recovery = runtime
+        .enqueue(provider_recovery_message(&runtime, &work_item.id))
+        .await
+        .unwrap();
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Message(_)
+    ));
+    let wake = runtime
+        .enqueue(trusted_operator_prompt(
+            Some(&work_item.id),
+            "operator wakes recovery wait",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime
+            .storage()
+            .latest_wait_conditions()
+            .unwrap()
+            .into_iter()
+            .find(|condition| condition.id == registration.condition.id)
+            .map(|condition| condition.status),
+        Some(WaitConditionStatus::Triggered)
+    );
+
+    finish_claimed_test_run(&runtime).await;
+    let terminal = terminal_transition(&recovery, Some(&work_item.id));
+    runtime
+        .commit_queue_terminal_settlement(
+            QueueEntryRecord {
+                message_id: recovery.id.clone(),
+                agent_id: recovery.agent_id.clone(),
+                priority: recovery.priority,
+                status: QueueEntryStatus::Processed,
+                created_at: recovery.created_at,
+                updated_at: Utc::now(),
+            },
+            Vec::new(),
+            true,
+            Some(&terminal),
+        )
+        .await
+        .unwrap();
+    let settled = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        &settled.work_items[&work_item.id].state,
+        crate::domain::execution_protocol::WorkItemExecutionState::Waiting { wait, .. }
+            if wait.wait_id == registration.condition.id
+    ));
+
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("triggered wait should resume after provider recovery settlement");
+    };
+    assert_eq!(scheduled.message.id, wake.id);
+    assert_eq!(
+        runtime
+            .storage()
+            .latest_wait_conditions()
+            .unwrap()
+            .into_iter()
+            .find(|condition| condition.id == registration.condition.id)
+            .map(|condition| condition.status),
+        Some(WaitConditionStatus::Resolved)
+    );
+}
+
+#[tokio::test]
+async fn provider_recovery_cannot_claim_blocked_work_item() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item(
+            "provider recovery blocked boundary".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let blocked = runtime
+        .update_work_item_fields(
+            work_item.id.clone(),
+            None,
+            None,
+            None,
+            None,
+            Some(Some("manual blocker".into())),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime
+            .storage()
+            .work_queue_prompt_projection()
+            .unwrap()
+            .items
+            .into_iter()
+            .find(|item| item.id == work_item.id)
+            .map(|item| item.scheduling_state),
+        Some(WorkItemSchedulingState::Blocked)
+    );
+    persist_waiting_work_execution(&runtime, &blocked, "wait-blocked-boundary");
+
+    let recovery = runtime
+        .enqueue(provider_recovery_message(&runtime, &work_item.id))
+        .await
+        .unwrap();
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Idle
+    ));
+    assert!(runtime
+        .storage()
+        .read_recent_events(usize::MAX)
+        .unwrap()
+        .iter()
+        .any(|event| {
+            event.kind == "scheduler_authority_input_rejected"
+                && event.data["message_id"] == recovery.id
+                && event.data["reason"] == "canonical_provider_recovery_work_item_not_recoverable"
+        }));
+}
+
+#[tokio::test]
+async fn provider_recovery_cannot_claim_paused_execution() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item(
+            "provider recovery paused execution boundary".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let generation = work_item.revision.max(1);
+    let mut execution = crate::domain::execution_protocol::ExecutionProtocolState::empty("default");
+    execution.work_items.insert(
+        work_item.id.clone(),
+        crate::domain::execution_protocol::WorkItemExecutionRecord {
+            source_revision: generation,
+            state: crate::domain::execution_protocol::WorkItemExecutionState::Paused {
+                generation,
+                reason: "manual pause".into(),
+            },
+        },
+    );
+    runtime
+        .inner
+        .runtime_db
+        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
+        .unwrap();
+
+    let recovery = runtime
+        .enqueue(provider_recovery_message(&runtime, &work_item.id))
+        .await
+        .unwrap();
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Idle
+    ));
+    assert!(runtime
+        .storage()
+        .read_recent_events(usize::MAX)
+        .unwrap()
+        .iter()
+        .any(|event| {
+            event.kind == "scheduler_authority_input_rejected"
+                && event.data["message_id"] == recovery.id
+                && event.data["reason"] == "canonical_provider_recovery_execution_not_recoverable"
+        }));
 }
 
 #[tokio::test]

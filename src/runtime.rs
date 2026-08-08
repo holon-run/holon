@@ -1031,6 +1031,49 @@ fn execution_protocol_settlement_transition_from_facts(
                     let Some(work_item) = runtime_db.work_items().latest(work_item_id)? else {
                         return Ok(interrupted("work_item_missing"));
                     };
+                    let recovery_wait_id = if matches!(
+                        attempt.source.identity,
+                        crate::domain::execution_protocol::ExecutionSourceIdentity::RuntimeRecovery {
+                            ..
+                        }
+                    ) {
+                        let unresolved_waits = storage
+                            .raw_unresolved_wait_conditions_for_agent(&record.agent_id)?
+                            .into_iter()
+                            .filter(|wait| {
+                                wait.work_item_id.as_deref() == Some(work_item_id.as_str())
+                            })
+                            .collect::<Vec<_>>();
+                        match unresolved_waits.as_slice() {
+                            [] => None,
+                            [wait] => Some(wait.id.clone()),
+                            _ => return Ok(interrupted("wait_outcome_ambiguous")),
+                        }
+                    } else {
+                        None
+                    };
+                    if let Some(wait_id) = recovery_wait_id {
+                        return Ok(
+                            crate::runtime_db::transitions::ExecutionProtocolTransition {
+                                bootstrap: None,
+                                commands: vec![ExecutionProtocolCommand::Settle(SettleExecution {
+                                    outcome: ExecutionOutcomeRecord {
+                                        outcome_id: format!(
+                                            "outcome:message:{}",
+                                            record.message_id
+                                        ),
+                                        attempt_id: attempt.attempt_id.clone(),
+                                        outcome: ExecutionOutcome::WorkItem(
+                                            WorkItemOutcome::Wait {
+                                                wait: WaitReference { wait_id },
+                                            },
+                                        ),
+                                        created_at: record.updated_at.to_rfc3339(),
+                                    },
+                                })],
+                            },
+                        );
+                    }
                     let scheduling = storage
                         .work_queue_prompt_projection()?
                         .items

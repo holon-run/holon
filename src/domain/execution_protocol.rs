@@ -551,6 +551,7 @@ fn validate_source_binding(
             QueueMessage { .. } | InternalFollowup { .. },
             Conversation { .. } | WorkItem { .. } | AgentLifecycle { .. },
         ) => true,
+        (RuntimeRecovery { .. }, WorkItem { .. } | Command) => true,
         (TaskResult { .. }, Conversation { .. } | WorkItem { .. } | Command) => true,
         (ChildResult { .. }, Conversation { .. } | WorkItem { .. } | Command) => true,
         (TriggeredWait { .. }, Conversation { .. } | WorkItem { .. } | AgentLifecycle { .. }) => {
@@ -570,7 +571,6 @@ fn validate_source_binding(
             WorkItem { work_item_id },
         ) => target_work_item_id == work_item_id,
         (TargetedContinuation { .. }, Conversation { .. } | Command) => true,
-        (RuntimeRecovery { .. }, Command) => true,
         _ => false,
     };
     if !allowed {
@@ -1293,12 +1293,12 @@ mod tests {
         assert!(validate_source_binding(&queue, &agent_lifecycle, &fences).is_ok());
         assert!(validate_source_binding(&continuation, &work_item, &fences).is_ok());
         assert!(validate_source_binding(&recovery, &ExecutionBinding::Command, &fences).is_ok());
+        assert!(validate_source_binding(&recovery, &work_item, &fences).is_ok());
 
         // Rejected combinations
         assert!(validate_source_binding(&queue, &ExecutionBinding::Command, &fences).is_err());
         assert!(validate_source_binding(&continuation, &conversation, &fences).is_err());
         assert!(validate_source_binding(&recovery, &conversation, &fences).is_err());
-        assert!(validate_source_binding(&recovery, &work_item, &fences).is_err());
         assert!(validate_source_binding(&recovery, &agent_lifecycle, &fences).is_err());
     }
 

@@ -1153,6 +1153,33 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         };
         if matches!(
             scenario,
+            scheduler::CanonicalActivationScenario::ProviderRecovery { .. }
+        ) {
+            if !crate::runtime::turn::TurnModelSelection::message_has_valid_provider_recovery(
+                message,
+            ) {
+                return Ok(CanonicalClaimOutcome::RejectQueued {
+                    scenario_class,
+                    reason: "canonical_provider_recovery_directive_invalid",
+                });
+            }
+            if !matches!(
+                work_projection.scheduling_state,
+                crate::types::WorkItemSchedulingState::Runnable
+                    | crate::types::WorkItemSchedulingState::WaitingOperator
+                    | crate::types::WorkItemSchedulingState::WaitingTask
+                    | crate::types::WorkItemSchedulingState::WaitingExternal
+                    | crate::types::WorkItemSchedulingState::WaitingTimer
+                    | crate::types::WorkItemSchedulingState::WaitingSystem
+            ) {
+                return Ok(CanonicalClaimOutcome::RejectQueued {
+                    scenario_class,
+                    reason: "canonical_provider_recovery_work_item_not_recoverable",
+                });
+            }
+        }
+        if matches!(
+            scenario,
             scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation { .. }
                 | scheduler::CanonicalActivationScenario::InternalFollowup { .. }
         ) && work_projection.scheduling_state != crate::types::WorkItemSchedulingState::Runnable
@@ -1171,6 +1198,43 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         let authoritative_work = existing_execution
             .as_ref()
             .and_then(|state| state.work_items.get(work_item_id));
+        let recovery_of_attempt_id = if matches!(
+            scenario,
+            scheduler::CanonicalActivationScenario::ProviderRecovery { .. }
+        ) {
+            let Some(attempt_id) =
+                self.provider_recovery_source_attempt_id(message, existing_execution.as_ref())?
+            else {
+                return Ok(CanonicalClaimOutcome::RejectQueued {
+                    scenario_class,
+                    reason: "canonical_provider_recovery_source_invalid",
+                });
+            };
+            Some(attempt_id)
+        } else {
+            None
+        };
+        if matches!(
+            scenario,
+            scheduler::CanonicalActivationScenario::ProviderRecovery { .. }
+        ) {
+            let Some(authoritative_work) = authoritative_work else {
+                return Ok(CanonicalClaimOutcome::RejectQueued {
+                    scenario_class,
+                    reason: "canonical_provider_recovery_execution_authority_missing",
+                });
+            };
+            if !matches!(
+                authoritative_work.state,
+                crate::domain::execution_protocol::WorkItemExecutionState::Runnable { .. }
+                    | crate::domain::execution_protocol::WorkItemExecutionState::Waiting { .. }
+            ) {
+                return Ok(CanonicalClaimOutcome::RejectQueued {
+                    scenario_class,
+                    reason: "canonical_provider_recovery_execution_not_recoverable",
+                });
+            }
+        }
         let wait_id = match &scenario {
             scheduler::CanonicalActivationScenario::ExactTaskRejoin { wait_id, .. }
             | scheduler::CanonicalActivationScenario::ExplicitlyBoundOperatorInput {
@@ -1181,6 +1245,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 Some(wait_id.as_str())
             }
             scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation { .. }
+            | scheduler::CanonicalActivationScenario::ProviderRecovery { .. }
             | scheduler::CanonicalActivationScenario::InternalFollowup { .. } => None,
             scheduler::CanonicalActivationScenario::LifecycleExternalNudge { .. } => {
                 unreachable!("lifecycle scenario is planned before WorkItem lookup")
@@ -1203,7 +1268,10 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     reason: "canonical_wait_execution_authority_mismatch",
                 });
             }
-        } else if authoritative_work.is_some_and(|record| {
+        } else if !matches!(
+            scenario,
+            scheduler::CanonicalActivationScenario::ProviderRecovery { .. }
+        ) && authoritative_work.is_some_and(|record| {
             !matches!(
                 record.state,
                 crate::domain::execution_protocol::WorkItemExecutionState::Runnable { .. }
@@ -1244,6 +1312,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             &activation_id,
             Some((&work_item, scheduling_generation)),
             wait_id,
+            recovery_of_attempt_id,
         )?;
         let work_item_expectation = matches!(
             scenario,
@@ -1334,8 +1403,14 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 reason: "canonical_execution_attempt_replay_conflict",
             });
         }
-        let execution_protocol =
-            self.plan_execution_protocol_claim(message, &scenario, &activation_id, None, wait_id)?;
+        let execution_protocol = self.plan_execution_protocol_claim(
+            message,
+            &scenario,
+            &activation_id,
+            None,
+            wait_id,
+            None,
+        )?;
         Ok(CanonicalClaimOutcome::Plan(CanonicalClaimPlan {
             activation_id,
             scenario_class,
@@ -1454,6 +1529,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         attempt_id: &str,
         work_item: Option<(&crate::types::WorkItemRecord, u64)>,
         admitted_wait_id: Option<&str>,
+        recovery_of_attempt_id: Option<String>,
     ) -> Result<crate::runtime_db::transitions::ExecutionProtocolTransition> {
         use crate::domain::execution_protocol::{
             AdmitExecution, AdmittedFences, ExecutionAttempt, ExecutionAttemptState,
@@ -1502,6 +1578,11 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             } => ExecutionSourceIdentity::WorkItemContinuation {
                 work_item_id: work_item_id.clone(),
             },
+            scheduler::CanonicalActivationScenario::ProviderRecovery { .. } => {
+                ExecutionSourceIdentity::RuntimeRecovery {
+                    recovery_id: message.id.clone(),
+                }
+            }
             scheduler::CanonicalActivationScenario::ExactTaskRejoin { task_id, .. } => {
                 ExecutionSourceIdentity::TaskResult {
                     task_id: task_id.clone(),
@@ -1633,7 +1714,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 state: ExecutionAttemptState::Open,
                 run_id: None,
                 turn_id: message.turn_id.clone(),
-                recovery_of_attempt_id: None,
+                recovery_of_attempt_id,
                 terminal_outcome_id: None,
                 admitted_at: Utc::now().to_rfc3339(),
                 terminal_at: None,
@@ -1647,6 +1728,84 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 commands,
             },
         )
+    }
+
+    fn provider_recovery_source_attempt_id(
+        &self,
+        message: &MessageEnvelope,
+        execution: Option<&crate::domain::execution_protocol::ExecutionProtocolState>,
+    ) -> Result<Option<String>> {
+        use crate::domain::execution_protocol::ExecutionAttemptState;
+
+        let selection = crate::runtime::turn::TurnModelSelection::from_message(message)?;
+        let Some(recovery) = selection.recovery.as_ref() else {
+            return Ok(None);
+        };
+        if !matches!(
+            recovery.source_terminal_kind,
+            crate::types::TurnTerminalKind::DeferredToFallback
+                | crate::types::TurnTerminalKind::ProviderFailedNeedsRecovery
+        ) || message.source_refs.get("source_turn_id") != Some(&recovery.source_turn_id)
+            || message.source_refs.get("source_message_id") != Some(&recovery.source_message_id)
+            || message.causation_id.as_deref() != Some(recovery.source_message_id.as_str())
+        {
+            return Ok(None);
+        }
+        let Some(source_message) = self
+            .runtime
+            .inner
+            .storage
+            .read_message_by_id(&recovery.source_message_id)?
+        else {
+            return Ok(None);
+        };
+        if source_message.agent_id != message.agent_id
+            || source_message.turn_id.as_deref() != Some(recovery.source_turn_id.as_str())
+        {
+            return Ok(None);
+        }
+        let Some(source_turn) = self
+            .runtime
+            .inner
+            .storage
+            .read_turn_by_id(&recovery.source_turn_id)?
+        else {
+            return Ok(None);
+        };
+        if source_turn.agent_id != message.agent_id
+            || source_turn
+                .trigger
+                .as_ref()
+                .and_then(|trigger| trigger.message_id.as_deref())
+                != Some(recovery.source_message_id.as_str())
+            || source_turn.terminal.as_ref().map(|terminal| terminal.kind)
+                != Some(recovery.source_terminal_kind)
+        {
+            return Ok(None);
+        }
+        let Some(execution) = execution else {
+            return Ok(None);
+        };
+        let matching_attempts = execution
+            .attempts
+            .values()
+            .filter(|attempt| {
+                attempt.agent_id == message.agent_id
+                    && attempt.source_message_id.as_deref()
+                        == Some(recovery.source_message_id.as_str())
+                    && attempt.turn_id.as_deref() == Some(recovery.source_turn_id.as_str())
+                    && matches!(
+                        attempt.state,
+                        ExecutionAttemptState::Settled | ExecutionAttemptState::Interrupted
+                    )
+                    && attempt.terminal_outcome_id.is_some()
+            })
+            .map(|attempt| attempt.attempt_id.clone())
+            .collect::<Vec<_>>();
+        Ok(match matching_attempts.as_slice() {
+            [attempt_id] => Some(attempt_id.clone()),
+            _ => None,
+        })
     }
 
     async fn defer_or_quarantine_queue_head(
@@ -1892,6 +2051,13 @@ fn execution_attempt_matches_scenario(
             },
         ) => source_work_item_id == expected && work_item_id == expected,
         (
+            ExecutionSourceIdentity::RuntimeRecovery { recovery_id },
+            ExecutionBinding::WorkItem { work_item_id },
+            scheduler::CanonicalActivationScenario::ProviderRecovery {
+                work_item_id: expected,
+            },
+        ) => recovery_id == &message.id && work_item_id == expected,
+        (
             ExecutionSourceIdentity::InternalFollowup { message_id },
             ExecutionBinding::WorkItem { work_item_id },
             scheduler::CanonicalActivationScenario::InternalFollowup {
@@ -2052,6 +2218,9 @@ fn canonical_activation_origin_for_scenario(
         scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation { .. } => {
             ActivationOrigin::System
         }
+        scheduler::CanonicalActivationScenario::ProviderRecovery { .. } => {
+            ActivationOrigin::RuntimeRecovery
+        }
         scheduler::CanonicalActivationScenario::InternalFollowup { .. }
             if !scheduler::runtime_owned_internal_followup(message) =>
         {
@@ -2076,6 +2245,7 @@ fn canonical_activation_trust_for_scenario(
     use crate::domain::scheduler_protocol::ActivationTrust;
     match scenario {
         scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation { .. }
+        | scheduler::CanonicalActivationScenario::ProviderRecovery { .. }
         | scheduler::CanonicalActivationScenario::ExactTaskRejoin { .. } => {
             ActivationTrust::RuntimeInstruction
         }

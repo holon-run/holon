@@ -112,6 +112,7 @@ Allowed transitions are:
 ```text
 Runnable(g) -> InFlight(g, attempt)
 Waiting(g, exact triggered wait) -> InFlight(g, attempt)
+Waiting(g, trusted provider lineage recovery) -> InFlight(g, attempt)
 
 InFlight(g, attempt) -> Runnable(g + 1)
 InFlight(g, attempt) -> Runnable(g + 1, recovery_ref)
@@ -128,6 +129,20 @@ Creating a new eligibility epoch increments the scheduling generation.
 Terminal transition resolves owned waits and continuation obligations and
 removes scheduler eligibility. Focus may be cleared or restored in the same
 transaction, but it does not grant eligibility.
+
+Provider lineage recovery is the only runtime-owned admission that may claim a
+`Waiting` WorkItem without consuming the wait that made it waiting. The source
+must carry runtime-owned `model_lineage_recovery` provenance plus a valid typed
+provider recovery directive. The directive must reference a durable same-agent
+source message, a matching provider-failure terminal Turn, and exactly one
+terminal execution attempt; the new attempt records that identity in
+`recovery_of_attempt_id`. Admission preserves the WorkItem source revision and
+generation fences, records `RuntimeRecovery(recovery_id)` as the execution
+source, and leaves the `WaitCondition` unresolved. Settlement projects the
+WorkItem back to `Waiting` when that wait remains Active or was Triggered while
+recovery owned the lane, so the exact queued wake can consume it next. Provider
+recovery does not admit `Paused`, `NeedsRepair`, `Terminal`, or already
+`InFlight` WorkItems, and it does not clear blockers or waits.
 
 ### WaitCondition
 
@@ -178,6 +193,7 @@ execution.
 | WorkItem continuation | exact runnable generation | WorkItem outcome | `Runnable -> InFlight` |
 | targeted yield/continuation | exact continuation frame | target-compatible outcome | consume exact continuation |
 | internal contentful follow-up | declared interaction or WorkItem binding | binding-compatible outcome | exact claim to terminal |
+| provider lineage recovery | exact Runnable or Waiting WorkItem generation, runtime-owned typed recovery provenance | WorkItem outcome | `Runnable/Waiting -> InFlight`; preserve an existing wait |
 | startup recovery, repair, stale reduction | command-owned, no model binding | typed `CommandResult` | deterministic state repair |
 | shutdown or closed host | none | reject or defer | no execution |
 

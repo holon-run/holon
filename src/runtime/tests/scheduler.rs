@@ -1415,6 +1415,71 @@ fn runtime_owned_unbound_child_followup_is_lifecycle_nudge() {
 }
 
 #[test]
+fn trusted_bound_provider_recovery_has_a_dedicated_candidate() {
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::InternalFollowup,
+        MessageOrigin::System {
+            subsystem: "model_lineage_recovery".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Next,
+        MessageBody::Text {
+            text: "continue provider recovery".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+    message.work_item_id = Some("work-provider-recovery".into());
+    message.metadata = Some(serde_json::json!({
+        "provider_recovery": {
+            "fallback_model_ref": "anthropic/claude-sonnet-4-6",
+            "source_turn_id": "turn-provider-failure",
+            "source_message_id": "message-provider-failure",
+            "source_terminal_kind": "deferred_to_fallback",
+            "source_round": 1
+        }
+    }));
+
+    assert_eq!(
+        scheduler::canonical_activation_candidate(&message, None, None).unwrap(),
+        Some(scheduler::CanonicalActivationCandidate::ProviderRecovery {
+            work_item_id: "work-provider-recovery".into(),
+        })
+    );
+}
+
+#[test]
+fn malformed_bound_provider_recovery_keeps_its_dedicated_candidate() {
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::InternalFollowup,
+        MessageOrigin::System {
+            subsystem: "model_lineage_recovery".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Next,
+        MessageBody::Text {
+            text: "missing provider recovery directive".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+    message.work_item_id = Some("work-malformed-recovery".into());
+
+    assert_eq!(
+        scheduler::canonical_activation_candidate(&message, None, None).unwrap(),
+        Some(scheduler::CanonicalActivationCandidate::ProviderRecovery {
+            work_item_id: "work-malformed-recovery".into(),
+        })
+    );
+}
+
+#[test]
 fn runtime_owned_unbound_system_followup_is_lifecycle_nudge() {
     let message = MessageEnvelope::new(
         "default",

@@ -359,6 +359,23 @@ the recovery turn must continue from current evidence:
 It should not repeat tool work just because the failed provider's hidden
 continuation state is unavailable.
 
+### 7.4 Recovery Admission Is Independent From Ordinary Work Scheduling
+
+A cross-lineage recovery message is a typed runtime recovery source, not an
+ordinary self-enqueued `InternalFollowup`. When it is bound to an open
+WorkItem, canonical admission may claim the WorkItem at its exact current
+execution generation while the WorkItem is `Runnable` or `Waiting`.
+
+If the WorkItem is waiting, recovery admission must not clear or resolve that
+wait. If the wait is triggered while recovery owns the lane, recovery
+settlement restores the exact `Waiting(wait_id)` execution state before the
+queued wake is admitted. The recovery directive must bind to a durable
+same-agent source message, matching provider-failure terminal Turn, and
+terminal execution attempt; the recovery attempt records that predecessor.
+`Paused`, `NeedsRepair`, `Terminal`, and already `InFlight` WorkItems remain
+ineligible. Missing, malformed, or unbound recovery directives fail closed
+rather than falling back to ordinary internal-follow-up scheduling.
+
 ## 8. Runtime State Model
 
 Suggested runtime additions:

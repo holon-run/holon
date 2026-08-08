@@ -69,15 +69,23 @@ enum OperatorInterjectionPlan {
 }
 
 impl TurnModelSelection {
-    pub(crate) fn from_message(message: &MessageEnvelope) -> Result<Self> {
-        let trusted_recovery = message.kind == MessageKind::InternalFollowup
+    pub(crate) fn message_has_provider_recovery_provenance(message: &MessageEnvelope) -> bool {
+        message.kind == MessageKind::InternalFollowup
             && message.authority_class == AuthorityClass::RuntimeInstruction
             && message.delivery_surface == Some(MessageDeliverySurface::RuntimeSystem)
             && message.admission_context == Some(AdmissionContext::RuntimeOwned)
             && matches!(
                 &message.origin,
                 MessageOrigin::System { subsystem } if subsystem == "model_lineage_recovery"
-            );
+            )
+    }
+
+    pub(crate) fn message_has_valid_provider_recovery(message: &MessageEnvelope) -> bool {
+        Self::from_message(message).is_ok_and(|selection| selection.recovery.is_some())
+    }
+
+    pub(crate) fn from_message(message: &MessageEnvelope) -> Result<Self> {
+        let trusted_recovery = Self::message_has_provider_recovery_provenance(message);
         if !trusted_recovery {
             return Ok(Self::default());
         }

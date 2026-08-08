@@ -31,6 +31,9 @@ pub(crate) enum CanonicalActivationScenario {
     WorkItemAutonomousContinuation {
         work_item_id: String,
     },
+    ProviderRecovery {
+        work_item_id: String,
+    },
     InternalFollowup {
         work_item_id: String,
     },
@@ -56,6 +59,9 @@ pub(crate) enum CanonicalActivationScenario {
 pub(crate) enum CanonicalActivationCandidate {
     UnboundTaskResultWaitOrReduce,
     WorkItemAutonomousContinuation {
+        work_item_id: String,
+    },
+    ProviderRecovery {
         work_item_id: String,
     },
     InternalFollowup {
@@ -99,6 +105,7 @@ impl CanonicalActivationScenario {
     pub(crate) fn work_item_id(&self) -> Option<&str> {
         match self {
             Self::WorkItemAutonomousContinuation { work_item_id }
+            | Self::ProviderRecovery { work_item_id }
             | Self::InternalFollowup { work_item_id }
             | Self::ExactTaskRejoin { work_item_id, .. }
             | Self::ExplicitlyBoundOperatorInput { work_item_id, .. } => Some(work_item_id),
@@ -112,9 +119,9 @@ impl CanonicalActivationCandidate {
     pub(crate) fn scenario_class(&self) -> SchedulerScenarioClass {
         match self {
             Self::UnboundTaskResultWaitOrReduce => EXACT_WAIT_RESUME_SCENARIO,
-            Self::WorkItemAutonomousContinuation { .. } | Self::InternalFollowup { .. } => {
-                WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO
-            }
+            Self::WorkItemAutonomousContinuation { .. }
+            | Self::ProviderRecovery { .. }
+            | Self::InternalFollowup { .. } => WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO,
             Self::ExactTaskRejoin { .. } => EXACT_TASK_REJOIN_SCENARIO,
             Self::ExactWaitResume { .. } | Self::LifecycleExternalNudge { .. } => {
                 EXACT_WAIT_RESUME_SCENARIO
@@ -127,6 +134,7 @@ impl CanonicalActivationCandidate {
         match self {
             Self::UnboundTaskResultWaitOrReduce => None,
             Self::WorkItemAutonomousContinuation { work_item_id }
+            | Self::ProviderRecovery { work_item_id }
             | Self::InternalFollowup { work_item_id }
             | Self::ExactTaskRejoin { work_item_id, .. }
             | Self::ExplicitlyBoundOperatorInput { work_item_id } => Some(work_item_id),
@@ -1145,6 +1153,13 @@ pub(crate) fn canonical_activation_candidate(
         }));
     }
     if message.kind == MessageKind::InternalFollowup {
+        if let Some(work_item_id) = message.work_item_id.clone() {
+            if super::turn::TurnModelSelection::message_has_provider_recovery_provenance(message) {
+                return Ok(Some(CanonicalActivationCandidate::ProviderRecovery {
+                    work_item_id,
+                }));
+            }
+        }
         return Ok(if let Some(work_item_id) = message.work_item_id.clone() {
             Some(CanonicalActivationCandidate::InternalFollowup { work_item_id })
         } else if runtime_owned_internal_followup(message) {
@@ -1266,6 +1281,11 @@ pub(crate) fn resolve_canonical_activation_scenario(
         return Ok(Some(
             CanonicalActivationScenario::WorkItemAutonomousContinuation { work_item_id },
         ));
+    }
+    if let CanonicalActivationCandidate::ProviderRecovery { work_item_id } = candidate {
+        return Ok(Some(CanonicalActivationScenario::ProviderRecovery {
+            work_item_id,
+        }));
     }
     if let CanonicalActivationCandidate::InternalFollowup { work_item_id } = candidate {
         return Ok(Some(CanonicalActivationScenario::InternalFollowup {
