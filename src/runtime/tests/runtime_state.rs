@@ -7814,6 +7814,123 @@ async fn indefinite_sleep_with_queued_runnable_work_item_emits_selection_tick() 
 }
 
 #[tokio::test]
+async fn legacy_indefinite_sleep_uses_read_model_runnable_work_without_execution_partition() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new_with_scheduler_engine(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+        crate::config::SchedulerEngineMode::Legacy,
+    )
+    .unwrap();
+    let queued = runtime
+        .create_work_item("legacy queued runnable work".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    assert!(runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .is_none());
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.status = AgentStatus::AwakeRunning;
+        guard.state.current_run_id = Some("run-legacy".into());
+        guard.persist_state(&runtime.inner.storage).unwrap();
+    }
+
+    runtime.transition_to_sleep(None).await.unwrap();
+
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(state.status, AgentStatus::AwakeRunning);
+    assert_eq!(state.pending, 1);
+    let tick = runtime
+        .storage()
+        .read_recent_messages(10)
+        .unwrap()
+        .into_iter()
+        .find(|message| {
+            matches!(
+                (&message.kind, &message.origin),
+                (MessageKind::SystemTick, MessageOrigin::System { subsystem })
+                    if subsystem == "work_queue"
+            )
+        })
+        .expect("legacy runnable work should override indefinite sleep");
+    assert_eq!(tick.work_item_id.as_deref(), Some(queued.id.as_str()));
+}
+
+#[tokio::test]
+async fn legacy_idle_reactivation_uses_read_model_without_execution_partition() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new_with_scheduler_engine(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+        crate::config::SchedulerEngineMode::Legacy,
+    )
+    .unwrap();
+    let queued = runtime
+        .create_work_item("legacy idle runnable work".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    assert!(runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .is_none());
+
+    let closure = runtime.current_closure_decision().await.unwrap();
+    assert_eq!(closure.outcome, ClosureOutcome::Continuable);
+    assert_eq!(
+        closure
+            .work_signal
+            .as_ref()
+            .map(|signal| signal.work_item_id.as_str()),
+        Some(queued.id.as_str())
+    );
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.status = AgentStatus::AwakeIdle;
+        guard.persist_state(&runtime.inner.storage).unwrap();
+    }
+
+    assert!(runtime.maybe_emit_pending_system_tick(None).await.unwrap());
+    assert!(runtime
+        .storage()
+        .read_recent_messages(10)
+        .unwrap()
+        .iter()
+        .any(|message| {
+            matches!(
+                (&message.kind, &message.origin),
+                (MessageKind::SystemTick, MessageOrigin::System { subsystem })
+                    if subsystem == "work_queue"
+            ) && message.work_item_id.as_deref() == Some(queued.id.as_str())
+        }));
+}
+
+#[tokio::test]
 async fn idle_tick_ignores_read_model_runnable_when_execution_is_paused() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();

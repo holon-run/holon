@@ -141,6 +141,11 @@ impl RuntimeHandle {
                 work_queue_projection.clone(),
                 self.now(),
             )?;
+        let scheduler_projection = if self.inner.scheduler_engine.is_canonical() {
+            scheduler_projection
+        } else {
+            scheduler_projection.without_canonical_authority()
+        };
         let work_reactivation = scheduler_projection
             .work_reactivation_work_item()
             .map(|(work_item, mode)| (work_item.clone(), mode));
