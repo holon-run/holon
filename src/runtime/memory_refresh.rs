@@ -1,8 +1,5 @@
 use super::*;
-use crate::{
-    storage::WorkQueueReadModel,
-    types::{BriefKind, TaskStatus, TodoItemState},
-};
+use crate::types::{BriefKind, TaskStatus, TodoItemState};
 
 const CONTINUE_ACTIVE_SIGNAL_SCAN_LIMIT: usize = 512;
 
@@ -16,20 +13,24 @@ enum IdleTickTrigger {
 
 fn idle_tick_trigger_from_state(
     pending_wake_hint: Option<PendingWakeHint>,
-    projection: WorkQueueReadModel,
+    work_reactivation: Option<(
+        crate::types::WorkItemRecord,
+        crate::types::WorkReactivationMode,
+    )>,
     due_rechecks: Vec<crate::types::WorkItemRecord>,
 ) -> Option<IdleTickTrigger> {
     if let Some(pending) = pending_wake_hint {
         Some(IdleTickTrigger::WakeHint(pending))
     } else {
-        if let Some(current) = projection.current_runnable {
-            return Some(IdleTickTrigger::WorkQueueActive(current.work_item));
-        }
-        projection
-            .queued_runnable
-            .into_iter()
-            .next()
-            .map(|item| IdleTickTrigger::WorkQueueQueued(item.work_item))
+        work_reactivation
+            .map(|(work_item, mode)| match mode {
+                crate::types::WorkReactivationMode::ContinueActive => {
+                    IdleTickTrigger::WorkQueueActive(work_item)
+                }
+                crate::types::WorkReactivationMode::ActivateQueued => {
+                    IdleTickTrigger::WorkQueueQueued(work_item)
+                }
+            })
             .or_else(|| {
                 if due_rechecks.is_empty() {
                     None
@@ -140,9 +141,12 @@ impl RuntimeHandle {
                 work_queue_projection.clone(),
                 self.now(),
             )?;
+        let work_reactivation = scheduler_projection
+            .work_reactivation_work_item()
+            .map(|(work_item, mode)| (work_item.clone(), mode));
         let trigger = idle_tick_trigger_from_state(
             pending_wake_hint,
-            work_queue_projection,
+            work_reactivation,
             due_rechecks.clone(),
         );
 
@@ -1098,6 +1102,49 @@ mod tests {
         } else {
             repository.insert_new(record).unwrap();
         }
+        persist_test_work_execution(test_runtime, record);
+    }
+
+    fn persist_test_work_execution(test_runtime: &TestRuntime, record: &WorkItemRecord) {
+        use crate::domain::execution_protocol::{
+            ExecutionProtocolState, WorkItemExecutionRecord, WorkItemExecutionState,
+        };
+
+        let mut execution = test_runtime
+            .runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized(&record.agent_id)
+            .unwrap()
+            .unwrap_or_else(|| ExecutionProtocolState::empty(&record.agent_id));
+        let generation = execution
+            .work_items
+            .get(&record.id)
+            .map_or(record.revision.max(1), WorkItemExecutionRecord::generation);
+        let state = record.blocked_by.as_ref().map_or_else(
+            || WorkItemExecutionState::Runnable {
+                generation,
+                recovery_ref: None,
+            },
+            |reason| WorkItemExecutionState::Paused {
+                generation,
+                reason: reason.clone(),
+            },
+        );
+        execution.work_items.insert(
+            record.id.clone(),
+            WorkItemExecutionRecord {
+                source_revision: record.revision,
+                state,
+            },
+        );
+        test_runtime
+            .runtime
+            .inner
+            .runtime_db
+            .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
+            .unwrap();
     }
 
     fn add_current_work_item(test_runtime: &TestRuntime, id: &str, target: &str) -> WorkItemRecord {
@@ -1716,12 +1763,7 @@ mod tests {
         let mut updated = queued.clone();
         updated.revision += 1;
         updated.updated_at = chrono::Utc::now();
-        test_runtime
-            .runtime
-            .inner
-            .storage
-            .append_work_item(&updated)
-            .unwrap();
+        persist_test_work_item(&test_runtime, &updated);
 
         assert!(rt
             .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
@@ -2306,12 +2348,7 @@ mod tests {
             state: TodoItemState::InProgress,
         }];
         active.updated_at = chrono::Utc::now();
-        test_runtime
-            .runtime
-            .inner
-            .storage
-            .append_work_item(&active)
-            .unwrap();
+        persist_test_work_item(&test_runtime, &active);
         append_result_brief_for_work_item(&test_runtime, &active.id, "Progress report.");
 
         let rt = tokio::runtime::Runtime::new().unwrap();

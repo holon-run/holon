@@ -194,6 +194,7 @@ async fn runtime_emits_work_queue_system_tick_for_active_item_on_restart() {
         WorkItemState::Open,
     );
     storage.append_work_item(&active).unwrap();
+    seed_runnable_work_execution(&storage, &active);
     let mut agent = AgentState::new("default");
     agent.current_work_item_id = Some(active.id.clone());
     storage.write_agent(&agent).unwrap();
@@ -238,6 +239,8 @@ async fn idle_tick_prefers_current_work_item_over_queued_work_item() {
     let queued = WorkItemRecord::new("default", "queued runtime cleanup", WorkItemState::Open);
     storage.append_work_item(&active).unwrap();
     storage.append_work_item(&queued).unwrap();
+    seed_runnable_work_execution(&storage, &active);
+    seed_runnable_work_execution(&storage, &queued);
     let mut agent = AgentState::new("default");
     agent.current_work_item_id = Some(active.id.clone());
     storage.write_agent(&agent).unwrap();
@@ -410,6 +413,7 @@ async fn runtime_surfaces_queued_work_item_with_work_queue_system_tick_on_restar
     );
     let queued_id = queued.id.clone();
     storage.append_work_item(&queued).unwrap();
+    seed_runnable_work_execution(&storage, &queued);
 
     let runtime = RuntimeHandle::new(
         "default",

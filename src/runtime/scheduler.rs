@@ -30,6 +30,7 @@ pub(crate) const EXPLICITLY_BOUND_OPERATOR_INPUT_SCENARIO: SchedulerScenarioClas
 pub(crate) enum CanonicalActivationScenario {
     WorkItemAutonomousContinuation {
         work_item_id: String,
+        expected_work_item_revision: u64,
     },
     ProviderRecovery {
         work_item_id: String,
@@ -60,6 +61,7 @@ pub(crate) enum CanonicalActivationCandidate {
     UnboundTaskResultWaitOrReduce,
     WorkItemAutonomousContinuation {
         work_item_id: String,
+        expected_work_item_revision: u64,
     },
     ProviderRecovery {
         work_item_id: String,
@@ -104,7 +106,7 @@ impl std::error::Error for AmbiguousCanonicalWaits {}
 impl CanonicalActivationScenario {
     pub(crate) fn work_item_id(&self) -> Option<&str> {
         match self {
-            Self::WorkItemAutonomousContinuation { work_item_id }
+            Self::WorkItemAutonomousContinuation { work_item_id, .. }
             | Self::ProviderRecovery { work_item_id }
             | Self::InternalFollowup { work_item_id }
             | Self::ExactTaskRejoin { work_item_id, .. }
@@ -133,7 +135,7 @@ impl CanonicalActivationCandidate {
     fn expected_work_item_id(&self) -> Option<&str> {
         match self {
             Self::UnboundTaskResultWaitOrReduce => None,
-            Self::WorkItemAutonomousContinuation { work_item_id }
+            Self::WorkItemAutonomousContinuation { work_item_id, .. }
             | Self::ProviderRecovery { work_item_id }
             | Self::InternalFollowup { work_item_id }
             | Self::ExactTaskRejoin { work_item_id, .. }
@@ -177,6 +179,7 @@ pub(crate) struct SchedulerProjection {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CanonicalWorkExecutionState {
+    Runnable { source_revision: u64 },
     Waiting { wait_id: String },
     Other,
 }
@@ -334,23 +337,33 @@ impl SchedulerProjection {
             })
             .transpose()?
             .flatten();
-        let canonical_work_states = execution_snapshot.as_ref().map(|snapshot| {
-            snapshot
-                .work_items
-                .iter()
-                .map(|(work_item_id, record)| {
-                    let state = match &record.state {
-                        WorkItemExecutionState::Waiting { wait, .. } => {
-                            CanonicalWorkExecutionState::Waiting {
-                                wait_id: wait.wait_id.clone(),
-                            }
-                        }
-                        _ => CanonicalWorkExecutionState::Other,
-                    };
-                    (work_item_id.clone(), state)
+        let canonical_work_states = Some(
+            execution_snapshot
+                .as_ref()
+                .map(|snapshot| {
+                    snapshot
+                        .work_items
+                        .iter()
+                        .map(|(work_item_id, record)| {
+                            let state = match &record.state {
+                                WorkItemExecutionState::Runnable { .. } => {
+                                    CanonicalWorkExecutionState::Runnable {
+                                        source_revision: record.source_revision,
+                                    }
+                                }
+                                WorkItemExecutionState::Waiting { wait, .. } => {
+                                    CanonicalWorkExecutionState::Waiting {
+                                        wait_id: wait.wait_id.clone(),
+                                    }
+                                }
+                                _ => CanonicalWorkExecutionState::Other,
+                            };
+                            (work_item_id.clone(), state)
+                        })
+                        .collect()
                 })
-                .collect()
-        });
+                .unwrap_or_default(),
+        );
         let active_work_item_waiting_intents = active_wait_conditions
             .iter()
             .filter(|condition| condition.work_item_id.is_some())
@@ -404,25 +417,40 @@ impl SchedulerProjection {
     }
 
     pub(crate) fn work_reactivation_signal(&self) -> Option<WorkReactivationSignal> {
+        self.work_reactivation_work_item()
+            .map(|(item, reactivation_mode)| WorkReactivationSignal {
+                work_item_id: item.id.clone(),
+                state: item.state.clone(),
+                reactivation_mode,
+            })
+    }
+
+    pub(crate) fn work_reactivation_work_item(
+        &self,
+    ) -> Option<(&WorkItemRecord, WorkReactivationMode)> {
         self.current_work_item
             .as_ref()
             .filter(|_| {
                 self.current_work_item_scheduling_state == Some(WorkItemSchedulingState::Runnable)
             })
-            .map(|item| WorkReactivationSignal {
-                work_item_id: item.id.clone(),
-                state: item.state.clone(),
-                reactivation_mode: WorkReactivationMode::ContinueActive,
-            })
+            .filter(|item| self.execution_authorizes_autonomous(item))
+            .map(|item| (item, WorkReactivationMode::ContinueActive))
             .or_else(|| {
                 self.queued_runnable_work_items
-                    .first()
-                    .map(|item| WorkReactivationSignal {
-                        work_item_id: item.id.clone(),
-                        state: item.state.clone(),
-                        reactivation_mode: WorkReactivationMode::ActivateQueued,
-                    })
+                    .iter()
+                    .find(|item| self.execution_authorizes_autonomous(item))
+                    .map(|item| (item, WorkReactivationMode::ActivateQueued))
             })
+    }
+
+    fn execution_authorizes_autonomous(&self, work_item: &WorkItemRecord) -> bool {
+        self.canonical_work_states.as_ref().is_none_or(|states| {
+            matches!(
+                states.get(&work_item.id),
+                Some(CanonicalWorkExecutionState::Runnable { source_revision })
+                    if *source_revision == work_item.revision
+            )
+        })
     }
 
     pub(crate) fn current_work_item_waits_for_operator(&self) -> bool {
@@ -1159,9 +1187,41 @@ pub(crate) fn canonical_activation_candidate(
         (MessageKind::SystemTick, MessageOrigin::System { subsystem })
             if subsystem == "work_queue"
     ) {
-        return Ok(message.work_item_id.clone().map(|work_item_id| {
-            CanonicalActivationCandidate::WorkItemAutonomousContinuation { work_item_id }
-        }));
+        let metadata = message
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("work_queue"));
+        let metadata_work_item_id = metadata
+            .and_then(|metadata| metadata.get("work_item_id"))
+            .and_then(serde_json::Value::as_str);
+        let expected_work_item_revision = metadata
+            .and_then(|metadata| metadata.get("work_item_revision"))
+            .and_then(serde_json::Value::as_u64)
+            .filter(|revision| *revision > 0);
+        let reason = metadata
+            .and_then(|metadata| metadata.get("reason"))
+            .and_then(serde_json::Value::as_str);
+        return Ok(
+            match (
+                message.work_item_id.as_deref(),
+                metadata_work_item_id,
+                expected_work_item_revision,
+                reason,
+            ) {
+                (
+                    Some(bound_work_item_id),
+                    Some(metadata_work_item_id),
+                    Some(expected_work_item_revision),
+                    Some("continue_active" | "queued_available"),
+                ) if bound_work_item_id == metadata_work_item_id => Some(
+                    CanonicalActivationCandidate::WorkItemAutonomousContinuation {
+                        work_item_id: bound_work_item_id.to_string(),
+                        expected_work_item_revision,
+                    },
+                ),
+                _ => None,
+            },
+        );
     }
     if message.kind == MessageKind::InternalFollowup {
         if let Some(work_item_id) = message.work_item_id.clone() {
@@ -1287,10 +1347,16 @@ pub(crate) fn resolve_canonical_activation_scenario(
     message: &MessageEnvelope,
     candidate: CanonicalActivationCandidate,
 ) -> Result<Option<CanonicalActivationScenario>> {
-    if let CanonicalActivationCandidate::WorkItemAutonomousContinuation { work_item_id } = candidate
+    if let CanonicalActivationCandidate::WorkItemAutonomousContinuation {
+        work_item_id,
+        expected_work_item_revision,
+    } = candidate
     {
         return Ok(Some(
-            CanonicalActivationScenario::WorkItemAutonomousContinuation { work_item_id },
+            CanonicalActivationScenario::WorkItemAutonomousContinuation {
+                work_item_id,
+                expected_work_item_revision,
+            },
         ));
     }
     if let CanonicalActivationCandidate::ProviderRecovery { work_item_id } = candidate {
@@ -1371,7 +1437,10 @@ pub(crate) fn resolve_canonical_activation_scenario(
                 .as_ref()
                 .and_then(|states| states.get(&work_item_id))
             {
-                Some(CanonicalWorkExecutionState::Other) => {}
+                Some(
+                    CanonicalWorkExecutionState::Runnable { .. }
+                    | CanonicalWorkExecutionState::Other,
+                ) => {}
                 Some(CanonicalWorkExecutionState::Waiting { .. }) => {
                     return Ok(None);
                 }

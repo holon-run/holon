@@ -865,6 +865,11 @@ async fn enqueue_scheduler_work_tick(
     work_item_id: &str,
     label: &str,
 ) -> Result<MessageEnvelope> {
+    let work_item = runtime
+        .inner
+        .storage
+        .latest_work_item(work_item_id)?
+        .ok_or_else(|| anyhow!("scheduler work item is missing before tick enqueue"))?;
     let mut message = MessageEnvelope::new(
         agent_id,
         MessageKind::SystemTick,
@@ -881,7 +886,14 @@ async fn enqueue_scheduler_work_tick(
         MessageDeliverySurface::RuntimeSystem,
         AdmissionContext::RuntimeOwned,
     );
-    message.work_item_id = Some(work_item_id.into());
+    message.work_item_id = Some(work_item.id.clone());
+    message.metadata = Some(serde_json::json!({
+        "work_queue": {
+            "reason": "queued_available",
+            "work_item_id": work_item.id,
+            "work_item_revision": work_item.revision
+        }
+    }));
     message.turn_id = Some(format!("turn-scheduler-restart-{label}"));
     let enqueued = runtime.enqueue(message).await?;
     runtime

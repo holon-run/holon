@@ -4625,7 +4625,7 @@ async fn external_wake_records_wait_reconciliation_and_resolves_wait() {
         MessageDeliverySurface::RuntimeSystem,
         AdmissionContext::RuntimeOwned,
     );
-    wait_message.work_item_id = Some(work.id.clone());
+    bind_autonomous_work_queue_tick(&mut wait_message, &work, "continue_active");
     wait_message.turn_id = Some("turn-wait-for-ci".into());
     let wait_message = runtime.enqueue(wait_message).await.unwrap();
     assert!(matches!(
@@ -5194,6 +5194,7 @@ async fn current_closure_reports_continuable_for_current_work_item() {
     );
     let active_id = active.id.clone();
     storage.append_work_item(&active).unwrap();
+    seed_runnable_work_execution(&storage, &active);
     let mut agent = AgentState::new("default");
     agent.current_work_item_id = Some(active_id.clone());
     storage.write_agent(&agent).unwrap();
@@ -5283,6 +5284,8 @@ async fn current_external_wait_does_not_suppress_queued_runnable_work_item() {
     let queued = WorkItemRecord::new("default", "queued follow-up work", WorkItemState::Open);
     let queued_id = queued.id.clone();
     storage.append_work_item(&queued).unwrap();
+    seed_waiting_work_execution(&storage, &current, "wait-current");
+    seed_runnable_work_execution(&storage, &queued);
     let now = Utc::now();
     storage
         .append_wait_condition(&WaitConditionRecord {
@@ -5350,6 +5353,7 @@ async fn current_closure_reports_continuable_for_queued_work_item_without_active
     );
     let queued_id = queued.id.clone();
     storage.append_work_item(&queued).unwrap();
+    seed_runnable_work_execution(&storage, &queued);
 
     let runtime = RuntimeHandle::new(
         "default",
