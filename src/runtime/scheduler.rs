@@ -444,6 +444,7 @@ impl SchedulerProjection {
     }
 
     fn execution_authorizes_autonomous(&self, work_item: &WorkItemRecord) -> bool {
+        // None means the legacy engine opted out of canonical execution authority.
         self.canonical_work_states.as_ref().is_none_or(|states| {
             matches!(
                 states.get(&work_item.id),
