@@ -1140,6 +1140,18 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 reason: "canonical_work_item_not_open_same_agent",
             });
         }
+        if let scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation {
+            expected_work_item_revision,
+            ..
+        } = &scenario
+        {
+            if work_item.revision != *expected_work_item_revision {
+                return Ok(CanonicalClaimOutcome::RejectQueued {
+                    scenario_class,
+                    reason: "canonical_autonomous_work_item_revision_stale",
+                });
+            }
+        }
         let work_queue = self.runtime.inner.storage.work_queue_prompt_projection()?;
         let Some(work_projection) = work_queue
             .items
@@ -1198,6 +1210,24 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         let authoritative_work = existing_execution
             .as_ref()
             .and_then(|state| state.work_items.get(work_item_id));
+        if let scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation {
+            expected_work_item_revision,
+            ..
+        } = &scenario
+        {
+            let Some(authoritative_work) = authoritative_work else {
+                return Ok(CanonicalClaimOutcome::RejectQueued {
+                    scenario_class,
+                    reason: "canonical_autonomous_execution_authority_missing",
+                });
+            };
+            if authoritative_work.source_revision != *expected_work_item_revision {
+                return Ok(CanonicalClaimOutcome::RejectQueued {
+                    scenario_class,
+                    reason: "canonical_autonomous_execution_revision_stale",
+                });
+            }
+        }
         let recovery_of_attempt_id = if matches!(
             scenario,
             scheduler::CanonicalActivationScenario::ProviderRecovery { .. }
@@ -1575,6 +1605,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         let source_identity = match scenario {
             scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation {
                 work_item_id,
+                ..
             } => ExecutionSourceIdentity::WorkItemContinuation {
                 work_item_id: work_item_id.clone(),
             },
@@ -2048,6 +2079,7 @@ fn execution_attempt_matches_scenario(
             ExecutionBinding::WorkItem { work_item_id },
             scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation {
                 work_item_id: expected,
+                ..
             },
         ) => source_work_item_id == expected && work_item_id == expected,
         (

@@ -1795,15 +1795,23 @@ impl RuntimeHandle {
     fn indefinite_sleep_runnable_work(
         &self,
     ) -> Result<Option<(crate::types::WorkItemRecord, &'static str)>> {
-        let projection = self.inner.storage.work_queue_prompt_projection()?;
-        if let Some(current) = projection.current_runnable {
-            return Ok(Some((current.work_item, "continue_active")));
-        }
+        let state = self
+            .inner
+            .storage
+            .read_agent()?
+            .ok_or_else(|| anyhow!("agent state is missing for lifecycle sleep"))?;
+        let projection = scheduler::SchedulerProjection::from_state(&self.inner.storage, &state)?;
         Ok(projection
-            .queued_runnable
-            .into_iter()
-            .next()
-            .map(|queued| (queued.work_item, "queued_available")))
+            .work_reactivation_work_item()
+            .map(|(work_item, mode)| {
+                (
+                    work_item.clone(),
+                    match mode {
+                        crate::types::WorkReactivationMode::ContinueActive => "continue_active",
+                        crate::types::WorkReactivationMode::ActivateQueued => "queued_available",
+                    },
+                )
+            }))
     }
 
     fn spawn_session_sleep_wake(

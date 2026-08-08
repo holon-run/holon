@@ -834,6 +834,7 @@ fn idle_boundary_decision_reactivates_runnable_work_while_asleep() {
     work_item.id = "work-current".into();
     work_item.plan_status = WorkItemPlanStatus::Ready;
     storage.append_work_item(&work_item).unwrap();
+    seed_runnable_work_execution(&storage, &work_item);
     storage.write_agent(&agent).unwrap();
 
     let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
@@ -857,6 +858,7 @@ fn decide_next_action_prioritizes_wake_hint_over_work_queue_but_not_wait_facts()
     work_item.id = "work-1".into();
     work_item.revision = 7;
     append_work_item_at_revision(&storage, &work_item);
+    seed_runnable_work_execution(&storage, &work_item);
 
     let pending = PendingWakeHint {
         reason: "external update".into(),
@@ -919,6 +921,7 @@ fn queued_runnable_work_is_not_suppressed_by_unrelated_agent_waiting_intent() {
     work_item.id = "work-queued".into();
     work_item.revision = 4;
     append_work_item_at_revision(&storage, &work_item);
+    seed_runnable_work_execution(&storage, &work_item);
     append_active_external_wait_condition(&storage, "agent-wait", "default", None);
 
     let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
@@ -991,6 +994,7 @@ fn scheduling_advisories_detect_idle_posture_with_runnable_work() {
     let work_item = WorkItemRecord::new("default", "runnable work", WorkItemState::Open);
     agent.current_work_item_id = Some(work_item.id.clone());
     storage.append_work_item(&work_item).unwrap();
+    seed_runnable_work_execution(&storage, &work_item);
     storage.write_agent(&agent).unwrap();
 
     let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
@@ -1293,10 +1297,11 @@ fn append_task_wait_condition(
         })
         .unwrap();
 }
-fn append_open_work_item(storage: &AppStorage, id: &str, agent_id: &str) {
+fn append_open_work_item(storage: &AppStorage, id: &str, agent_id: &str) -> WorkItemRecord {
     let mut record = WorkItemRecord::new(agent_id, "test objective", WorkItemState::Open);
     record.id = id.into();
     storage.append_work_item(&record).unwrap();
+    record
 }
 
 #[test]
@@ -1813,8 +1818,9 @@ fn wait_resume_claim_authority_scope_is_derived_without_shadow_evidence() {
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let agent = AgentState::new("default");
     storage.write_agent(&agent).unwrap();
-    append_open_work_item(&storage, "wi-1", "default");
+    let work_item = append_open_work_item(&storage, "wi-1", "default");
     append_task_wait_condition(&storage, "wait-1", "default", Some("wi-1"), "task-1");
+    seed_waiting_work_execution(&storage, &work_item, "wait-1");
     let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
     let message = MessageEnvelope::new(
         "default",

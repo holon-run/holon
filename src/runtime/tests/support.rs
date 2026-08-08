@@ -259,6 +259,77 @@ pub(crate) async fn bind_turn_to_work_item(runtime: &RuntimeHandle, work_item_id
     guard.persist_state(&runtime.inner.storage).unwrap();
 }
 
+pub(crate) fn bind_autonomous_work_queue_tick(
+    message: &mut MessageEnvelope,
+    work_item: &WorkItemRecord,
+    reason: &str,
+) {
+    message.work_item_id = Some(work_item.id.clone());
+    message.metadata = Some(serde_json::json!({
+        "work_queue": {
+            "reason": reason,
+            "work_item_id": work_item.id,
+            "work_item_revision": work_item.revision
+        }
+    }));
+}
+
+pub(crate) fn seed_runnable_work_execution(storage: &AppStorage, work_item: &WorkItemRecord) {
+    seed_work_execution(
+        storage,
+        work_item,
+        crate::domain::execution_protocol::WorkItemExecutionState::Runnable {
+            generation: work_item.revision.max(1),
+            recovery_ref: None,
+        },
+    );
+}
+
+pub(crate) fn seed_waiting_work_execution(
+    storage: &AppStorage,
+    work_item: &WorkItemRecord,
+    wait_id: &str,
+) {
+    seed_work_execution(
+        storage,
+        work_item,
+        crate::domain::execution_protocol::WorkItemExecutionState::Waiting {
+            generation: work_item.revision.max(1),
+            wait: crate::domain::execution_protocol::WaitReference {
+                wait_id: wait_id.into(),
+            },
+        },
+    );
+}
+
+fn seed_work_execution(
+    storage: &AppStorage,
+    work_item: &WorkItemRecord,
+    state: crate::domain::execution_protocol::WorkItemExecutionState,
+) {
+    let runtime_db = storage
+        .runtime_db()
+        .unwrap()
+        .expect("test storage should expose RuntimeDb");
+    let mut execution = runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized(&work_item.agent_id)
+        .unwrap()
+        .unwrap_or_else(|| {
+            crate::domain::execution_protocol::ExecutionProtocolState::empty(&work_item.agent_id)
+        });
+    execution.work_items.insert(
+        work_item.id.clone(),
+        crate::domain::execution_protocol::WorkItemExecutionRecord {
+            source_revision: work_item.revision,
+            state,
+        },
+    );
+    runtime_db
+        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
+        .unwrap();
+}
+
 pub(crate) async fn seed_bound_work_item(
     runtime: &RuntimeHandle,
     state: WorkItemState,

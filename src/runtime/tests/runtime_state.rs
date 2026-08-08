@@ -326,6 +326,25 @@ fn persist_waiting_work_execution(
     wait_id: &str,
 ) {
     let generation = work_item.revision.max(1);
+    persist_work_execution(
+        runtime,
+        work_item,
+        work_item.revision,
+        crate::domain::execution_protocol::WorkItemExecutionState::Waiting {
+            generation,
+            wait: crate::domain::execution_protocol::WaitReference {
+                wait_id: wait_id.into(),
+            },
+        },
+    );
+}
+
+fn persist_work_execution(
+    runtime: &RuntimeHandle,
+    work_item: &WorkItemRecord,
+    source_revision: u64,
+    state: crate::domain::execution_protocol::WorkItemExecutionState,
+) {
     let mut execution = runtime
         .inner
         .runtime_db
@@ -338,13 +357,8 @@ fn persist_waiting_work_execution(
     execution.work_items.insert(
         work_item.id.clone(),
         crate::domain::execution_protocol::WorkItemExecutionRecord {
-            source_revision: generation,
-            state: crate::domain::execution_protocol::WorkItemExecutionState::Waiting {
-                generation,
-                wait: crate::domain::execution_protocol::WaitReference {
-                    wait_id: wait_id.into(),
-                },
-            },
+            source_revision,
+            state,
         },
     );
     runtime
@@ -911,7 +925,7 @@ async fn runtime_failure_preserves_canonical_claim_for_bootstrap_reconciliation(
             text: "claim before runtime failure".into(),
         },
     );
-    message.work_item_id = Some(work_item.id.clone());
+    bind_autonomous_work_queue_tick(&mut message, &work_item, "queued_available");
     message.turn_id = Some("turn-runtime-failure-canonical-claim".into());
     let message = runtime.enqueue(message).await.unwrap();
     assert!(matches!(
@@ -1924,7 +1938,7 @@ async fn bootstrap_recovery_interrupts_open_attempt_and_releases_message_for_ree
             text: "claim before restart".into(),
         },
     );
-    message.work_item_id = Some(work_item.id.clone());
+    bind_autonomous_work_queue_tick(&mut message, &work_item, "queued_available");
     let message = runtime.enqueue(message).await.unwrap();
     let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
         .poll()
@@ -2044,7 +2058,7 @@ async fn bootstrap_recovery_uses_execution_attempt_without_scheduler_compatibili
                 text: "claim before compatibility projection loss".into(),
             },
         );
-        message.work_item_id = Some(work_item.id);
+        bind_autonomous_work_queue_tick(&mut message, &work_item, "queued_available");
         let message = runtime.enqueue(message).await.unwrap();
         assert!(matches!(
             scheduler_executor::SchedulerDecisionExecutor::new(runtime)
@@ -2188,7 +2202,7 @@ async fn bootstrap_recovery_settles_dequeued_activation_from_terminal_turn() {
             text: "claim completed before restart".into(),
         },
     );
-    message.work_item_id = Some(work_item.id.clone());
+    bind_autonomous_work_queue_tick(&mut message, &work_item, "queued_available");
     message.turn_id = Some("turn-bootstrap-terminal".into());
     let message = runtime.enqueue(message).await.unwrap();
     let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
@@ -2271,7 +2285,7 @@ async fn bootstrap_restart_reconciles_dequeued_queue_after_unified_settlement() 
                 text: "canonical settlement committed before restart".into(),
             },
         );
-        message.work_item_id = Some(work_item.id.clone());
+        bind_autonomous_work_queue_tick(&mut message, &work_item, "queued_available");
         message.turn_id = Some("turn-bootstrap-split-restart".into());
         let message = runtime.enqueue(message).await.unwrap();
         assert!(matches!(
@@ -2445,7 +2459,7 @@ async fn bootstrap_recovery_settles_completed_work_item_from_bound_terminal_evid
         MessageDeliverySurface::RuntimeSystem,
         AdmissionContext::RuntimeOwned,
     );
-    message.work_item_id = Some(work_item.id.clone());
+    bind_autonomous_work_queue_tick(&mut message, &work_item, "queued_available");
     message.turn_id = Some("turn-bootstrap-completed".into());
     let message = runtime.enqueue(message).await.unwrap();
     let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
@@ -2565,7 +2579,7 @@ async fn bootstrap_recovery_fault_rolls_back_queue_canonical_and_audit() {
                     text: "claim before recovery fault".into(),
                 },
             );
-            message.work_item_id = Some(work_item.id.clone());
+            bind_autonomous_work_queue_tick(&mut message, &work_item, "queued_available");
             message.turn_id = terminal_evidence
                 .then(|| format!("turn-bootstrap-fault-{terminal_evidence}-{fault:?}"));
             let message = runtime.enqueue(message).await.unwrap();
@@ -2813,7 +2827,7 @@ async fn legacy_engine_startup_rejects_open_unified_execution_attempt() {
             text: "leave canonical activation running".into(),
         },
     );
-    message.work_item_id = Some(work_item.id);
+    bind_autonomous_work_queue_tick(&mut message, &work_item, "queued_available");
     message.turn_id = Some("turn-canonical-in-flight".into());
     runtime.enqueue(message).await.unwrap();
     assert!(matches!(
@@ -2879,7 +2893,7 @@ async fn production_protocol_claim_and_settlement_release_the_canonical_slot() {
         MessageDeliverySurface::RuntimeSystem,
         AdmissionContext::RuntimeOwned,
     );
-    message.work_item_id = Some(work_item.id.clone());
+    bind_autonomous_work_queue_tick(&mut message, &work_item, "queued_available");
     message.turn_id = Some("turn-canonical-production-loop".into());
     let message = runtime.enqueue(message).await.unwrap();
 
@@ -3043,7 +3057,7 @@ async fn production_protocol_wait_settlement_creates_rejoinable_wait_generation(
         MessageDeliverySurface::RuntimeSystem,
         AdmissionContext::RuntimeOwned,
     );
-    message.work_item_id = Some(work_item.id.clone());
+    bind_autonomous_work_queue_tick(&mut message, &work_item, "queued_available");
     message.turn_id = Some("turn-canonical-wait-settlement".into());
     let message = runtime.enqueue(message).await.unwrap();
     assert!(matches!(
@@ -5120,7 +5134,7 @@ async fn canonical_processed_settlement_without_terminal_turn_fails_closed() {
             text: "must create a turn".into(),
         },
     );
-    message.work_item_id = Some(work_item.id.clone());
+    bind_autonomous_work_queue_tick(&mut message, &work_item, "queued_available");
     message.turn_id = Some("turn-missing-terminal".into());
     let message = runtime.enqueue(message).await.unwrap();
     assert!(matches!(
@@ -5344,7 +5358,7 @@ async fn authoritative_completion_terminalizes_canonical_work_and_binds_report()
         MessageDeliverySurface::RuntimeSystem,
         AdmissionContext::RuntimeOwned,
     );
-    message.work_item_id = Some(work_item.id.clone());
+    bind_autonomous_work_queue_tick(&mut message, &work_item, "queued_available");
     let message = runtime.enqueue(message).await.unwrap();
     let activation_id = scheduler_executor::canonical_activation_id(&message.id);
 
@@ -5578,7 +5592,7 @@ async fn terminal_settlement_fault_rolls_back_all_facts_and_retry_is_idempotent(
                 text: "commit terminal atomically".into(),
             },
         );
-        message.work_item_id = Some(work_item.id.clone());
+        bind_autonomous_work_queue_tick(&mut message, &work_item, "queued_available");
         message.turn_id = Some(format!("turn-terminal-fault-{fault:?}"));
         let message = runtime.enqueue(message).await.unwrap();
         let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
@@ -6034,7 +6048,7 @@ async fn terminal_settlement_survives_post_commit_effect_faults() {
                 text: "retain committed terminal".into(),
             },
         );
-        message.work_item_id = Some(work_item.id.clone());
+        bind_autonomous_work_queue_tick(&mut message, &work_item, "queued_available");
         message.turn_id = Some(format!("turn-terminal-post-commit-{fault:?}"));
         let message = runtime.enqueue(message).await.unwrap();
         let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
@@ -6150,7 +6164,7 @@ async fn runtime_failure_terminal_fault_rolls_back_queue_canonical_and_failure_e
             text: "fail after canonical claim".into(),
         },
     );
-    message.work_item_id = Some(work_item.id);
+    bind_autonomous_work_queue_tick(&mut message, &work_item, "queued_available");
     let message = runtime.enqueue(message).await.unwrap();
     let turn_id = message.turn_id.clone().expect("enqueued turn id");
 
@@ -6280,7 +6294,7 @@ async fn interrupted_terminal_fault_rolls_back_queue_canonical_and_turn_facts() 
             text: "abort after canonical claim".into(),
         },
     );
-    message.work_item_id = Some(work_item.id);
+    bind_autonomous_work_queue_tick(&mut message, &work_item, "queued_available");
     let message = runtime.enqueue(message).await.unwrap();
     let turn_id = message.turn_id.clone().expect("enqueued turn id");
 
@@ -6422,7 +6436,7 @@ async fn completed_production_settlement_uses_exact_bound_result_brief() {
         MessageDeliverySurface::RuntimeSystem,
         AdmissionContext::RuntimeOwned,
     );
-    message.work_item_id = Some(work_item.id.clone());
+    bind_autonomous_work_queue_tick(&mut message, &work_item, "queued_available");
     message.turn_id = Some("turn-exact-completion".into());
     let message = runtime.enqueue(message).await.unwrap();
 
@@ -6601,7 +6615,7 @@ async fn completed_wait_resume_settlement_accepts_exact_reconciliation_revision(
         MessageDeliverySurface::RuntimeSystem,
         AdmissionContext::RuntimeOwned,
     );
-    wait_message.work_item_id = Some(work_item.id.clone());
+    bind_autonomous_work_queue_tick(&mut wait_message, &work_item, "queued_available");
     wait_message.turn_id = Some("turn-wait-before-completion".into());
     let wait_message = runtime.enqueue(wait_message).await.unwrap();
     assert!(matches!(
@@ -6825,7 +6839,7 @@ async fn completed_production_settlement_interrupts_mismatched_completion_execut
         MessageDeliverySurface::RuntimeSystem,
         AdmissionContext::RuntimeOwned,
     );
-    message.work_item_id = Some(work_item.id.clone());
+    bind_autonomous_work_queue_tick(&mut message, &work_item, "queued_available");
     message.turn_id = Some("turn-mismatched-completion".into());
     let message = runtime.enqueue(message).await.unwrap();
 
@@ -6981,7 +6995,7 @@ async fn completed_production_settlement_interrupts_without_result_report() {
         MessageDeliverySurface::RuntimeSystem,
         AdmissionContext::RuntimeOwned,
     );
-    message.work_item_id = Some(work_item.id.clone());
+    bind_autonomous_work_queue_tick(&mut message, &work_item, "queued_available");
     message.turn_id = Some("turn-missing-completion-report".into());
     let message = runtime.enqueue(message).await.unwrap();
 
@@ -7078,7 +7092,7 @@ async fn production_protocol_settlement_fault_rolls_back_queue_and_protocol_fact
                 text: "run canonical work".into(),
             },
         );
-        message.work_item_id = Some(work_item.id.clone());
+        bind_autonomous_work_queue_tick(&mut message, &work_item, "queued_available");
         message.turn_id = Some(format!("turn-canonical-settlement-fault-{fault:?}"));
         let message = runtime.enqueue(message).await.unwrap();
         let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
@@ -7324,6 +7338,95 @@ async fn run_loop_stale_head_noops_before_canonical_claim() {
     assert!(!events.iter().any(|event| {
         event.kind == "queue_entry_claimed" && event.data["message_id"] == message.id
     }));
+}
+
+#[tokio::test]
+async fn stale_work_queue_revision_is_dropped_before_canonical_claim() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item("drop stale autonomous tick".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "stale autonomous continuation".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+    message.work_item_id = Some(work_item.id.clone());
+    message.metadata = Some(serde_json::json!({
+        "work_queue": {
+            "reason": "queued_available",
+            "work_item_id": work_item.id,
+            "work_item_revision": work_item.revision
+        }
+    }));
+    let message = runtime.enqueue(message).await.unwrap();
+    let updated = runtime
+        .update_work_item_fields(
+            work_item.id.clone(),
+            Some("newer objective revision".into()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(updated.revision > work_item.revision);
+
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Idle
+    ));
+    assert_eq!(
+        runtime
+            .storage()
+            .latest_queue_entries()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == message.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Dropped)
+    );
+    assert!(runtime
+        .storage()
+        .read_recent_events(usize::MAX)
+        .unwrap()
+        .iter()
+        .any(|event| {
+            event.kind == "scheduler_authority_input_rejected"
+                && event.data["message_id"] == message.id
+                && event.data["reason"] == "canonical_autonomous_work_item_revision_stale"
+                && event.data["queue_disposition"] == "dropped"
+        }));
 }
 
 #[tokio::test]
@@ -7708,6 +7811,169 @@ async fn indefinite_sleep_with_queued_runnable_work_item_emits_selection_tick() 
             .and_then(|value| value.as_str()),
         Some("queued_available")
     );
+}
+
+#[tokio::test]
+async fn idle_tick_ignores_read_model_runnable_when_execution_is_paused() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item(
+            "projection-only runnable work".into(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    persist_work_execution(
+        &runtime,
+        &work_item,
+        work_item.revision,
+        crate::domain::execution_protocol::WorkItemExecutionState::Paused {
+            generation: work_item.revision.max(1),
+            reason: "canonical pause".into(),
+        },
+    );
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.status = AgentStatus::AwakeIdle;
+        guard.persist_state(&runtime.inner.storage).unwrap();
+    }
+
+    assert!(!runtime.maybe_emit_pending_system_tick(None).await.unwrap());
+    assert!(runtime
+        .storage()
+        .read_recent_messages(10)
+        .unwrap()
+        .iter()
+        .all(|message| !matches!(
+            (&message.kind, &message.origin),
+            (MessageKind::SystemTick, MessageOrigin::System { subsystem })
+                if subsystem == "work_queue"
+        )));
+}
+
+#[tokio::test]
+async fn restart_sleep_ignores_read_model_runnable_when_execution_is_paused() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item(
+            "restart projection divergence".into(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    persist_work_execution(
+        &runtime,
+        &work_item,
+        work_item.revision,
+        crate::domain::execution_protocol::WorkItemExecutionState::Paused {
+            generation: work_item.revision.max(1),
+            reason: "canonical pause survives restart".into(),
+        },
+    );
+    drop(runtime);
+
+    let reopened = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    {
+        let mut guard = reopened.inner.agent.lock().await;
+        guard.state.status = AgentStatus::AwakeRunning;
+        guard.state.current_run_id = Some("run-after-restart".into());
+        guard.persist_state(&reopened.inner.storage).unwrap();
+    }
+
+    reopened.transition_to_sleep(None).await.unwrap();
+
+    let state = reopened.agent_state().await.unwrap();
+    assert_eq!(state.status, AgentStatus::Asleep);
+    assert_eq!(state.pending, 0);
+    assert!(reopened
+        .storage()
+        .read_recent_events(usize::MAX)
+        .unwrap()
+        .iter()
+        .all(|event| event.data["reason"] != "sleep_overridden_runnable_work"));
+}
+
+#[tokio::test]
+async fn idle_tick_ignores_runnable_execution_with_stale_source_revision() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item("stale execution revision".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    persist_work_execution(
+        &runtime,
+        &work_item,
+        work_item.revision + 1,
+        crate::domain::execution_protocol::WorkItemExecutionState::Runnable {
+            generation: work_item.revision.max(1),
+            recovery_ref: None,
+        },
+    );
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.status = AgentStatus::AwakeIdle;
+        guard.persist_state(&runtime.inner.storage).unwrap();
+    }
+
+    assert!(!runtime.maybe_emit_pending_system_tick(None).await.unwrap());
 }
 
 #[tokio::test]
