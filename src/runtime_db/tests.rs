@@ -4900,6 +4900,48 @@ CREATE TABLE working_memory_deltas (
     }
 
     #[test]
+    fn recovery_candidate_agent_ids_include_dequeued_and_interrupted_entries() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let now = Utc::now();
+        for (message_id, agent_id, status) in [
+            ("msg-queued", "agent-queued", QueueEntryStatus::Queued),
+            ("msg-dequeued", "agent-dequeued", QueueEntryStatus::Dequeued),
+            (
+                "msg-interrupted",
+                "agent-interrupted",
+                QueueEntryStatus::Interrupted,
+            ),
+            (
+                "msg-processed",
+                "agent-processed",
+                QueueEntryStatus::Processed,
+            ),
+        ] {
+            db.queue_entries().upsert(&QueueEntryRecord {
+                message_id: message_id.into(),
+                agent_id: agent_id.into(),
+                priority: crate::types::Priority::Normal,
+                status,
+                created_at: now,
+                updated_at: now,
+            })?;
+        }
+
+        assert_eq!(
+            db.queue_entries().recovery_candidate_agent_ids()?,
+            vec!["agent-dequeued", "agent-interrupted"]
+        );
+        assert!(db
+            .queue_entries()
+            .has_interrupted_for_agent("agent-interrupted")?);
+        assert!(!db
+            .queue_entries()
+            .has_interrupted_for_agent("agent-dequeued")?);
+        Ok(())
+    }
+
+    #[test]
     fn try_claim_succeeds_for_interrupted_entry() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;

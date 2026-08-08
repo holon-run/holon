@@ -426,16 +426,21 @@ fn canonical_matching_terminal_turn(
     terminal_turn: Option<&TurnRecord>,
 ) -> Result<Option<TurnRecord>> {
     let matches_activation = |turn: &TurnRecord| {
+        let matches_turn_identity = message
+            .turn_id
+            .as_deref()
+            .is_none_or(|turn_id| turn_id == turn.turn_id)
+            || turn.replay.as_ref().is_some_and(|replay| {
+                replay.source_message_id == record.message_id
+                    && message.turn_id.as_deref() == Some(replay.source_turn_id.as_str())
+            });
         turn.terminal.is_some()
             && turn
                 .trigger
                 .as_ref()
                 .and_then(|trigger| trigger.message_id.as_deref())
                 == Some(record.message_id.as_str())
-            && message
-                .turn_id
-                .as_deref()
-                .is_none_or(|turn_id| turn_id == turn.turn_id)
+            && matches_turn_identity
             && turn.current_work_item_id.as_deref() == owner_work_item_id
     };
     if let Some(turn) = terminal_turn.filter(|turn| matches_activation(turn)) {
@@ -2423,6 +2428,27 @@ impl RuntimeAgent {
         self.last_persisted_state = self.state.clone();
         crate::diagnostics::record_storage_persist_state(started.elapsed());
         Ok(())
+    }
+
+    fn restore_bootstrap_replay_message(
+        &mut self,
+        storage: &AppStorage,
+        message: &MessageEnvelope,
+    ) -> Result<()> {
+        if self
+            .queue
+            .peek_next_matching(|queued| queued.id == message.id)
+            .is_none()
+        {
+            self.queue.push(message.clone());
+        }
+        let queued_messages = self.queue.len();
+        self.state.pending = queued_messages;
+        scheduler_executor::apply_bootstrap_recovered_projection(
+            &mut self.state,
+            scheduler_executor::BootstrapRecoveryFacts { queued_messages },
+        );
+        self.persist_state(storage)
     }
 }
 
@@ -4760,7 +4786,7 @@ impl RuntimeHandle {
         let mut recovered = 0;
 
         for mut entry in claimed {
-            let _guard = self.inner.agent.lock().await;
+            let mut guard = self.inner.agent.lock().await;
             let expected_entry = entry.clone();
             let Some(message) = self.inner.storage.read_message_by_id(&entry.message_id)? else {
                 continue;
@@ -4907,7 +4933,9 @@ impl RuntimeHandle {
                 )?;
                 if commit.applied {
                     recovered += 1;
+                    guard.restore_bootstrap_replay_message(&self.inner.storage, &message)?;
                 }
+                drop(guard);
                 self.apply_transition_commit(commit).await;
                 continue;
             }
@@ -4971,7 +4999,11 @@ impl RuntimeHandle {
                 )?;
             if commit.applied {
                 recovered += 1;
+                if !terminal_is_completed {
+                    guard.restore_bootstrap_replay_message(&self.inner.storage, &message)?;
+                }
             }
+            drop(guard);
             self.apply_transition_commit(commit).await;
         }
         Ok(recovered)

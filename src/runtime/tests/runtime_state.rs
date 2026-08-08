@@ -915,11 +915,39 @@ async fn interrupted_message_replay_creates_new_turn_without_current_focus_drift
     assert_eq!(
         replay.replay,
         Some(crate::types::TurnReplayProvenance {
-            source_message_id: message.id,
+            source_message_id: message.id.clone(),
             source_turn_id,
             reason: "interrupted_queue_claim_reentry".into(),
             prior_terminal: None,
         })
+    );
+
+    finish_claimed_test_run(&runtime).await;
+    runtime
+        .commit_queue_terminal_settlement(
+            QueueEntryRecord {
+                message_id: message.id.clone(),
+                agent_id: message.agent_id.clone(),
+                priority: message.priority,
+                status: QueueEntryStatus::Processed,
+                created_at: message.created_at,
+                updated_at: Utc::now(),
+            },
+            Vec::new(),
+            true,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&message.id)
+            .unwrap()
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Processed)
     );
 }
 

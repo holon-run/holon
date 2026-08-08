@@ -2112,3 +2112,60 @@ fn waiting_operator_with_future_recheck_still_waits() {
         scheduler::SchedulerDecisionKind::WaitForOperator
     );
 }
+
+#[test]
+fn waiting_external_with_interrupted_replay_does_not_return_liveness_only_wait() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.current_work_item_id = Some("work-external-replay".into());
+    append_active_external_wait_condition(
+        &storage,
+        "wait-external-replay",
+        "default",
+        Some("work-external-replay"),
+    );
+    storage.write_agent(&agent).unwrap();
+    storage
+        .append_queue_entry(&QueueEntryRecord {
+            message_id: "msg-interrupted-replay".into(),
+            agent_id: "default".into(),
+            priority: Priority::Normal,
+            status: QueueEntryStatus::Interrupted,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        })
+        .unwrap();
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    assert_eq!(
+        projection.waiting_work_item_scheduling_state,
+        Some(WorkItemSchedulingState::WaitingExternal)
+    );
+    assert!(projection.has_interrupted_replay);
+    assert!(scheduler::wait_decision_for_projection(&projection).is_none());
+}
+
+#[test]
+fn waiting_external_without_interrupted_replay_remains_liveness_only() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.current_work_item_id = Some("work-external-idle".into());
+    append_active_external_wait_condition(
+        &storage,
+        "wait-external-idle",
+        "default",
+        Some("work-external-idle"),
+    );
+    storage.write_agent(&agent).unwrap();
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let decision =
+        scheduler::wait_decision_for_projection(&projection).expect("external wait decision");
+    assert_eq!(
+        decision.kind,
+        scheduler::SchedulerDecisionKind::WaitForExternalChange
+    );
+    assert!(decision.liveness_only);
+}

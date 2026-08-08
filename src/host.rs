@@ -711,6 +711,12 @@ impl RuntimeHost {
         let recovered_queue_agent_ids = self
             .runtime_db()
             .recover_orphaned_dequeued_claims_at_startup()?;
+        let queue_recovery_candidate_ids = self
+            .runtime_db()
+            .queue_entries()
+            .recovery_candidate_agent_ids()?
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
         let active_task_owner_ids = self
             .runtime_db()
             .tasks()
@@ -721,13 +727,17 @@ impl RuntimeHost {
             .iter()
             .cloned()
             .collect::<std::collections::BTreeSet<_>>();
+        recovery_agent_ids.extend(queue_recovery_candidate_ids.iter().cloned());
         recovery_agent_ids.extend(active_task_owner_ids.iter().cloned());
         for agent_id in recovery_agent_ids {
             let state = self
                 .agent_storage_read_only(&agent_id)?
                 .read_agent()?
                 .unwrap_or_else(|| AgentState::new(&agent_id));
-            if state.status == AgentStatus::Stopped && !active_task_owner_ids.contains(&agent_id) {
+            if state.status == AgentStatus::Stopped
+                && !active_task_owner_ids.contains(&agent_id)
+                && !queue_recovery_candidate_ids.contains(&agent_id)
+            {
                 continue;
             }
             let runtime = self
@@ -3083,7 +3093,8 @@ mod tests {
             AgentRegistryStatus, AgentStatus, AgentVisibility, AuthorityClass, BriefKind,
             BriefRecord, ControlAction, DeliverySummaryRecord, MessageBody, MessageEnvelope,
             MessageKind, MessageOrigin, Priority, QueueEntryRecord, QueueEntryStatus, TaskRecord,
-            TaskRecoverySpec, TaskStatus, TurnTerminalKind, WorkItemRecord, WorkItemState,
+            TaskRecoverySpec, TaskStatus, TurnTerminalKind, WaitConditionKind, WaitConditionRecord,
+            WaitConditionStatus, WakeSource, WorkItemRecord, WorkItemState,
         },
     };
 
@@ -5401,7 +5412,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runtime_loop_failure_preserves_canonical_claim_and_reconciles_on_next_host_access() {
+    async fn runtime_loop_failure_reconciles_and_replays_canonical_claim_on_next_host_access() {
         let (_home, host) = canonical_test_host();
         let agent_id = host.config().default_agent_id.clone();
         let runtime = host.default_runtime().await.unwrap();
@@ -5474,40 +5485,53 @@ mod tests {
         assert_eq!(rebuilt.agent_state().await.unwrap().id, agent_id);
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         loop {
-            let queue_reconciled = rebuilt
+            let queue_replayed = rebuilt
                 .storage()
                 .latest_queue_entries()
                 .unwrap()
                 .iter()
                 .any(|entry| {
-                    entry.message_id == message.id && entry.status == QueueEntryStatus::Interrupted
+                    entry.message_id == message.id && entry.status == QueueEntryStatus::Processed
                 });
-            let recovery_recorded = rebuilt
+            let events = rebuilt.storage().read_recent_events(64).unwrap();
+            let recovery_recorded = events.iter().any(|event| {
+                event.kind == "scheduler_bootstrap_claim_recovered"
+                    && event.data["message_id"].as_str() == Some(message.id.as_str())
+                    && event.data["recovery_outcome"].as_str()
+                        == Some("attempt_interrupted_for_reentry")
+            });
+            let replay_started = events.iter().any(|event| {
+                event.kind == "turn_replay_started"
+                    && event.data["message_id"].as_str() == Some(message.id.as_str())
+            });
+            let brief_delivered = rebuilt
                 .storage()
-                .read_recent_events(32)
+                .read_recent_briefs(10)
                 .unwrap()
                 .iter()
-                .any(|event| {
-                    event.kind == "scheduler_bootstrap_claim_recovered"
-                        && event.data["message_id"].as_str() == Some(message.id.as_str())
-                        && event.data["recovery_outcome"].as_str()
-                            == Some("attempt_interrupted_for_reentry")
-                });
-            if queue_reconciled && recovery_recorded {
+                .any(|brief| brief.related_message_id.as_deref() == Some(message.id.as_str()));
+            if queue_replayed && recovery_recorded && replay_started && brief_delivered {
                 break;
             }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "timed out waiting for canonical claim reconciliation"
-            );
+            if tokio::time::Instant::now() >= deadline {
+                let queue = rebuilt.storage().latest_queue_entries().unwrap();
+                let briefs = rebuilt.storage().read_recent_briefs(10).unwrap();
+                let task_finished = host
+                    .inner
+                    .runtimes
+                    .read()
+                    .await
+                    .agents
+                    .get(&agent_id)
+                    .is_none_or(|entry| entry.task.is_finished());
+                panic!(
+                    "timed out waiting for canonical claim reconciliation and replay: \
+                     queue={queue:?}, events={events:?}, briefs={briefs:?}, \
+                     task_finished={task_finished}"
+                );
+            }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        assert!(rebuilt
-            .storage()
-            .read_recent_briefs(10)
-            .unwrap()
-            .iter()
-            .all(|brief| brief.related_message_id.as_deref() != Some(message.id.as_str())));
         let registry = host.inner.runtimes.read().await;
         let entry = registry
             .agents
@@ -5946,6 +5970,109 @@ mod tests {
         let message_id = format!("message:task-restart:{}", task.id);
         assert!(storage.read_message_by_id(&message_id).unwrap().is_some());
         assert!(host.try_get_loaded_runtime(agent_id).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_replays_interrupted_operator_prompt_while_work_item_waits_external() {
+        let (_home, host) = canonical_test_host();
+        let config = host.config().as_ref().clone();
+        let agent_id = "startup-interrupted-prompt";
+        host.create_named_agent(agent_id, None).await.unwrap();
+        host.unload_runtime(agent_id).await;
+        let storage = host.agent_storage(agent_id).unwrap();
+        let mut work_item = WorkItemRecord::new(agent_id, "wait for review", WorkItemState::Open);
+        work_item.id = "work-startup-external".into();
+        storage.append_work_item(&work_item).unwrap();
+        let now = Utc::now();
+        storage
+            .append_wait_condition(&WaitConditionRecord {
+                id: "wait-startup-external".into(),
+                agent_id: agent_id.into(),
+                work_item_id: Some(work_item.id.clone()),
+                status: WaitConditionStatus::Active,
+                kind: WaitConditionKind::External,
+                source: Some("github".into()),
+                subject_ref: Some("github:holon-run/holon#2528".into()),
+                waiting_for: "review".into(),
+                wake_sources: vec![WakeSource::ExternalIngress {
+                    external_trigger_id: Some("trigger-startup-external".into()),
+                }],
+                continuation: None,
+                created_at: now,
+                updated_at: now,
+                expires_at: None,
+                resolved_at: None,
+                cancelled_at: None,
+                turn_id: None,
+                trigger_message_id: None,
+                triggered_at: None,
+            })
+            .unwrap();
+        let mut state = storage.read_agent().unwrap().unwrap();
+        state.current_work_item_id = Some(work_item.id.clone());
+        storage.write_agent(&state).unwrap();
+        let mut message = MessageEnvelope::new(
+            agent_id,
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "resume after restart".into(),
+            },
+        );
+        message.id = "msg-startup-interrupted-prompt".into();
+        message.turn_id = Some("turn-startup-interrupted-prompt".into());
+        storage.append_message(&message).unwrap();
+        storage
+            .append_queue_entry(&QueueEntryRecord {
+                message_id: message.id.clone(),
+                agent_id: agent_id.into(),
+                priority: message.priority,
+                status: QueueEntryStatus::Interrupted,
+                created_at: message.created_at,
+                updated_at: now,
+            })
+            .unwrap();
+
+        assert!(storage.latest_active_task_records(10).unwrap().is_empty());
+        assert!(host.try_get_loaded_runtime(agent_id).await.is_none());
+        drop(storage);
+        drop(host);
+
+        let started = Arc::new(Notify::new());
+        let started_wait = started.notified();
+        tokio::pin!(started_wait);
+        started_wait.as_mut().enable();
+        let restarted = RuntimeHost::new_with_provider(
+            config,
+            Arc::new(BlockingProvider {
+                started: started.clone(),
+            }),
+        )
+        .unwrap();
+        assert!(restarted
+            .recover_orphaned_queue_claims_at_startup()
+            .await
+            .unwrap()
+            .is_empty());
+        tokio::time::timeout(Duration::from_secs(5), &mut started_wait)
+            .await
+            .expect("startup recovery should replay the interrupted prompt");
+
+        let runtime = restarted
+            .try_get_loaded_runtime(agent_id)
+            .await
+            .expect("startup recovery should keep the interrupted prompt owner active");
+        assert!(runtime
+            .storage()
+            .read_recent_events(100)
+            .unwrap()
+            .iter()
+            .any(|event| {
+                event.kind == "turn_replay_started"
+                    && event.data["source_turn_id"] == "turn-startup-interrupted-prompt"
+            }));
     }
 
     #[tokio::test]

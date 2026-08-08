@@ -1587,6 +1587,36 @@ impl QueueEntryRepository<'_> {
         Ok(exists.is_some())
     }
 
+    pub fn recovery_candidate_agent_ids(&self) -> Result<Vec<String>> {
+        let connection = self.db.connection()?;
+        let dequeued_status = enum_string(&crate::types::QueueEntryStatus::Dequeued)?;
+        let interrupted_status = enum_string(&crate::types::QueueEntryStatus::Interrupted)?;
+        let mut statement = connection.prepare(
+            "SELECT DISTINCT agent_id
+             FROM queue_entries
+             WHERE status IN (?1, ?2)
+             ORDER BY agent_id ASC",
+        )?;
+        let rows = statement.query_map(params![dequeued_status, interrupted_status], |row| {
+            row.get::<_, String>(0)
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub fn has_interrupted_for_agent(&self, agent_id: &str) -> Result<bool> {
+        let connection = self.db.connection()?;
+        let interrupted_status = enum_string(&crate::types::QueueEntryStatus::Interrupted)?;
+        let exists: Option<i64> = connection
+            .query_row(
+                "SELECT 1 FROM queue_entries WHERE agent_id = ?1 AND status = ?2 LIMIT 1",
+                params![agent_id, interrupted_status],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        Ok(exists.is_some())
+    }
+
     /// Returns only entries currently queued for a specific agent.
     pub fn queued_for_agent(&self, agent_id: &str) -> Result<Vec<QueueEntryRecord>> {
         let connection = self.db.connection()?;
