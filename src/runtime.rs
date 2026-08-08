@@ -4886,6 +4886,7 @@ impl RuntimeHandle {
                 if commit.applied {
                     recovered += 1;
                 }
+                drop(guard);
                 self.apply_transition_commit(commit).await;
                 continue;
             }
