@@ -3346,6 +3346,129 @@ async fn production_settlement_interrupts_yield_to_stale_execution_revision() {
 }
 
 #[tokio::test]
+async fn production_settlement_accepts_authoritative_revision_advance_while_in_flight() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let owner = runtime
+        .create_work_item("advancing canonical owner".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "continue after an authoritative revision advance".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+    bind_autonomous_work_queue_tick(&mut message, &owner, "queued_available");
+    message.turn_id = Some("turn-canonical-revision-advance".into());
+    let message = runtime.enqueue(message).await.unwrap();
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Message(_)
+    ));
+
+    let updated = runtime
+        .update_work_item_fields(
+            owner.id.clone(),
+            Some("advanced while the canonical attempt remains in flight".into()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+    let in_flight = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    let attempt = &in_flight.attempts[&activation_id];
+    assert_eq!(
+        attempt.admitted_fences.work_item_source_revision,
+        Some(owner.revision)
+    );
+    assert_eq!(
+        in_flight.work_items[&owner.id].source_revision,
+        updated.revision
+    );
+    assert!(matches!(
+        &in_flight.work_items[&owner.id].state,
+        crate::domain::execution_protocol::WorkItemExecutionState::InFlight {
+            attempt_id,
+            ..
+        } if attempt_id == &activation_id
+    ));
+
+    finish_claimed_test_run(&runtime).await;
+    let terminal = terminal_transition(&message, Some(&owner.id));
+    runtime
+        .commit_queue_terminal_settlement(
+            QueueEntryRecord {
+                message_id: message.id.clone(),
+                agent_id: message.agent_id.clone(),
+                priority: message.priority,
+                status: QueueEntryStatus::Processed,
+                created_at: message.created_at,
+                updated_at: Utc::now(),
+            },
+            Vec::new(),
+            true,
+            Some(&terminal),
+        )
+        .await
+        .unwrap();
+
+    let settled = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    let attempt = &settled.attempts[&activation_id];
+    assert_eq!(
+        attempt.state,
+        crate::domain::execution_protocol::ExecutionAttemptState::Settled
+    );
+    assert_eq!(
+        settled.outcomes[attempt.terminal_outcome_id.as_deref().unwrap()].outcome,
+        crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
+            crate::domain::execution_protocol::WorkItemOutcome::Continue,
+        )
+    );
+}
+
+#[tokio::test]
 async fn production_settlement_interrupts_stale_owner_execution_revision() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();

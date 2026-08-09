@@ -1023,11 +1023,6 @@ fn execution_protocol_settlement_transition_from_facts(
             {
                 return Ok(interrupted("work_item_execution_attempt_mismatch"));
             }
-            if attempt.admitted_fences.work_item_source_revision
-                != Some(authoritative_work.source_revision)
-            {
-                return Ok(interrupted("work_item_execution_revision_mismatch"));
-            }
             let matching_continuations = runtime_db
                 .work_item_continuations()
                 .active_for_agent(&record.agent_id)?
