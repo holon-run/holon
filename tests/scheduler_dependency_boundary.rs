@@ -1,34 +1,120 @@
-use std::{fs, path::Path};
-
-const CANONICAL_SCHEDULER_CONSUMERS: &[&str] = &[
-    "src/context/mod.rs",
-    "src/runtime.rs",
-    "src/runtime/scheduler.rs",
-    "src/runtime/scheduler_executor.rs",
-    "src/runtime/tests/message_dispatch.rs",
-    "src/runtime/tests/scheduler.rs",
-    "src/runtime/turn/execution.rs",
-    "src/types.rs",
-];
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 const NEUTRAL_SCHEDULER_TYPES: &[&str] =
     &["ScenarioMode", "SchedulerOwner", "SchedulerScenarioClass"];
+const SCHEDULER_DOMAIN_MODULES: &[&str] = &[
+    "src/domain/scheduler.rs",
+    "src/domain/scheduler_protocol.rs",
+];
+
+fn collect_rust_sources(directory: &Path, sources: &mut Vec<PathBuf>) {
+    for entry in fs::read_dir(directory)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", directory.display()))
+    {
+        let path = entry
+            .unwrap_or_else(|error| {
+                panic!(
+                    "failed to read entry under {}: {error}",
+                    directory.display()
+                )
+            })
+            .path();
+        if path.is_dir() {
+            collect_rust_sources(&path, sources);
+        } else if path.extension().is_some_and(|extension| extension == "rs") {
+            sources.push(path);
+        }
+    }
+}
+
+fn imports_neutral_type_from_legacy_protocol(statement: &str) -> bool {
+    let compact = statement
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect::<String>();
+    let mut remainder = compact.as_str();
+
+    while let Some(protocol_index) = remainder.find("scheduler_protocol::") {
+        let protocol_import = &remainder[protocol_index + "scheduler_protocol::".len()..];
+        if let Some(group) = protocol_import.strip_prefix('{') {
+            let mut depth = 1;
+            let group_end = group.char_indices().find_map(|(index, character)| {
+                match character {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return Some(index);
+                        }
+                    }
+                    _ => {}
+                }
+                None
+            });
+            let Some(group_end) = group_end else {
+                return false;
+            };
+            let group = &group[..group_end];
+            if NEUTRAL_SCHEDULER_TYPES
+                .iter()
+                .any(|type_name| group.split(',').any(|item| item.starts_with(type_name)))
+            {
+                return true;
+            }
+        } else if NEUTRAL_SCHEDULER_TYPES
+            .iter()
+            .any(|type_name| protocol_import.starts_with(type_name))
+        {
+            return true;
+        }
+
+        remainder = protocol_import;
+    }
+
+    false
+}
 
 #[test]
 fn canonical_scheduler_consumers_do_not_import_neutral_types_from_legacy_protocol() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut sources = Vec::new();
     let mut violations = Vec::new();
+    collect_rust_sources(&root.join("src"), &mut sources);
+    sources.sort();
 
-    for relative_path in CANONICAL_SCHEDULER_CONSUMERS {
-        let source = fs::read_to_string(root.join(relative_path))
+    for path in sources {
+        let relative_path = path
+            .strip_prefix(root)
+            .unwrap_or_else(|error| panic!("failed to relativize {}: {error}", path.display()))
+            .to_string_lossy();
+        if SCHEDULER_DOMAIN_MODULES.contains(&relative_path.as_ref()) {
+            continue;
+        }
+
+        let source = fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("failed to read {relative_path}: {error}"));
+        let mut import = None::<(usize, String)>;
         for (index, line) in source.lines().enumerate() {
-            if line.contains("scheduler_protocol")
-                && NEUTRAL_SCHEDULER_TYPES
-                    .iter()
-                    .any(|type_name| line.contains(type_name))
+            let trimmed = line.trim_start();
+            if import.is_none() && (trimmed.starts_with("use ") || trimmed.starts_with("pub use "))
             {
-                violations.push(format!("{relative_path}:{}: {line}", index + 1));
+                import = Some((index + 1, String::new()));
+            }
+            if let Some((start_line, statement)) = import.as_mut() {
+                statement.push_str(line);
+                statement.push('\n');
+                if line.contains(';') {
+                    if imports_neutral_type_from_legacy_protocol(statement) {
+                        violations.push(format!(
+                            "{relative_path}:{start_line}: {}",
+                            statement.trim()
+                        ));
+                    }
+                    import = None;
+                }
             }
         }
     }

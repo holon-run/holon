@@ -12,9 +12,10 @@ use crate::domain::{
         ExecutionSource, ExecutionSourceIdentity, ExecutionTrust, RejoinFence,
         WorkItemExecutionRecord, WorkItemExecutionState,
     },
+    scheduler::SchedulerOwner,
     scheduler_protocol::{
         ActivationBinding, ActivationCause, ActivationOrigin, ActivationPriority, ActivationTrust,
-        AdmitActivationCommand, SchedulerOwner, WorkDemand,
+        AdmitActivationCommand, WorkDemand,
     },
 };
 use crate::runtime_db::evidence::content_hash;

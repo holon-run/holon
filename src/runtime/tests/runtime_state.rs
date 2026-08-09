@@ -1,8 +1,9 @@
 use super::super::*;
 use super::support::*;
+use crate::domain::scheduler::SchedulerOwner;
 use crate::domain::scheduler_protocol::{
-    ActivationSlot, AgentDispatchState, SchedulerOwner, Snapshot, WaitGenerationRecord,
-    WaitIdentity, WaitRecord, WaitState, WorkDemand, WorkStatus,
+    ActivationSlot, AgentDispatchState, Snapshot, WaitGenerationRecord, WaitIdentity, WaitRecord,
+    WaitState, WorkDemand, WorkStatus,
 };
 use crate::types::{
     ActiveSkillRecord, AuthorityClass, BriefKind, BriefRecord, CompletionReportState,

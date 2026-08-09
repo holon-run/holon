@@ -15,14 +15,15 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::{inject_fault, RuntimeTransitionRepository, TransitionFaultPoint};
+use crate::domain::scheduler::SchedulerOwner;
 use crate::domain::scheduler_protocol::{
     self, ActivationCause, ActivationInputAttachment, ActivationRecord, ActivationSlot,
     ActivationState, AdmitActivationCommand, AdoptActivationWorkStateCommand,
     AdoptLegacyWorkStateCommand, AgentActivation, AgentDispatchState, AuthoritativeWaitState,
     AuthoritativeWorkState, ContinuationAdmissionRecord, Decision, LegacyWaitAdoption,
     MissingSettlementRecord, ProtocolCommand, ProtocolConflict, ProtocolConflictKind,
-    ReplaceCompletedFocusProof, SchedulerOwner, Snapshot, WaitGenerationRecord, WaitIdentity,
-    WaitRecord, WaitState, WaitTrigger, WorkDemand, WorkStatus,
+    ReplaceCompletedFocusProof, Snapshot, WaitGenerationRecord, WaitIdentity, WaitRecord,
+    WaitState, WaitTrigger, WorkDemand, WorkStatus,
 };
 
 const CANONICAL_COMMAND_SCHEMA_VERSION: i64 = 1;
