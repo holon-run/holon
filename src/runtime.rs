@@ -1127,6 +1127,8 @@ fn execution_protocol_settlement_transition_from_facts(
                                 wait: WaitReference { wait_id },
                             })
                         } else {
+                            // Settlement inspects raw durable wait facts so read-model readiness
+                            // cannot become reverse authority over the canonical outcome.
                             let unresolved_waits = storage
                                 .raw_unresolved_wait_conditions_for_agent(&record.agent_id)?
                                 .into_iter()

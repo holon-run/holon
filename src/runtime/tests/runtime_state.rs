@@ -7467,8 +7467,8 @@ async fn completed_production_settlement_interrupts_without_result_report() {
     assert!(matches!(
         &execution.outcomes[attempt.terminal_outcome_id.as_deref().unwrap()].outcome,
         crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
-            crate::domain::execution_protocol::WorkItemOutcome::Interrupted { .. }
-        )
+            crate::domain::execution_protocol::WorkItemOutcome::Interrupted { reason }
+        ) if reason == "completion_brief_binding_missing"
     ));
 }
 
