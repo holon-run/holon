@@ -52,6 +52,7 @@ interface AgentPageProps {
   onClearModel: () => Promise<void>;
   onLoadOlderEvents: () => Promise<void>;
   onSendPrompt: (text: string, attachments?: OperatorPromptAttachment[]) => Promise<void>;
+  onConversationRead: () => void;
   onOpenInspector: () => void;
   onInspectActivity: (activity: AgentTimelineActivity) => void;
   selectedActivityId?: string;
@@ -307,6 +308,7 @@ export function AgentPage({
   onClearModel,
   onLoadOlderEvents,
   onSendPrompt,
+  onConversationRead,
   onOpenInspector,
   onInspectActivity,
   selectedActivityId,
@@ -439,8 +441,25 @@ export function AgentPage({
 
     if (stickToBottomRef.current) {
       scrollToConversationBottom();
+      onConversationRead();
     }
-  }, [timelineVersion]);
+  }, [timelineVersion, syncStatus, onConversationRead]);
+
+  useEffect(() => {
+    const markReadIfVisible = () => {
+      const list = messageListRef.current;
+      if (
+        document.visibilityState === "visible" &&
+        list &&
+        isScrolledNearBottom(list)
+      ) {
+        onConversationRead();
+      }
+    };
+    markReadIfVisible();
+    document.addEventListener("visibilitychange", markReadIfVisible);
+    return () => document.removeEventListener("visibilitychange", markReadIfVisible);
+  }, [activeAgent.id, timelineVersion, syncStatus, onConversationRead]);
 
   useReconciledVirtualMeasurements({
     virtualizer: rowVirtualizer,
@@ -582,6 +601,7 @@ export function AgentPage({
       return;
     }
     stickToBottomRef.current = isScrolledNearBottom(list);
+    if (stickToBottomRef.current) onConversationRead();
   }
 
   async function handleLoadOlderEvents() {

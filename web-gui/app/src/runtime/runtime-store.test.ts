@@ -627,10 +627,15 @@ describe("roster activity unread state", () => {
     const { readStoredRosterActivity } = await import("./runtime-store");
 
     expect(readStoredRosterActivity("local")).toEqual({
-      localAgent: { unreadCount: 2, lastUnreadSeq: 12, lastReadSeq: 7, briefAt: "2026-01-01T00:00:00.000Z" },
+      localAgent: {
+        unreadCount: 2,
+        lastUnreadDeliverySeq: 12,
+        lastReadDeliverySeq: 7,
+        briefAt: "2026-01-01T00:00:00.000Z",
+      },
     });
     expect(readStoredRosterActivity("http://remote.example:7878")).toEqual({
-      remoteAgent: { unreadCount: 4, lastUnreadSeq: 20 },
+      remoteAgent: { unreadCount: 4, lastUnreadDeliverySeq: 20 },
     });
   });
 
@@ -661,10 +666,13 @@ describe("roster activity unread state", () => {
       "agent-b",
     );
 
-    expect(afterAgentMessage["agent-a"]).toMatchObject({ unreadCount: 1, lastUnreadSeq: 10 });
+    expect(afterAgentMessage["agent-a"]).toMatchObject({
+      unreadCount: 1,
+      lastUnreadDeliverySeq: 10,
+    });
   });
 
-  it("does not count unread for the currently open agent or operator messages", async () => {
+  it("counts a selected brief until the conversation confirms it was viewed", async () => {
     const { touchRosterActivityFromEvent } = await import("./runtime-store");
     const afterSelectedBrief = touchRosterActivityFromEvent(
       {},
@@ -685,17 +693,15 @@ describe("roster activity unread state", () => {
       "agent-b",
     );
 
-    expect(afterOperatorMessage["agent-a"]?.unreadCount).toBeUndefined();
+    expect(afterOperatorMessage["agent-a"]?.unreadCount).toBe(1);
     expect(afterOperatorMessage["agent-a"]?.operatorAt).toBe("2026-01-01T00:00:01.000Z");
   });
 
-  it("advances lastReadSeq for the currently open agent to prevent re-counting on replay", async () => {
+  it("advances the delivery read marker only after the synchronized conversation is visible", async () => {
     const { touchRosterActivityFromEvent } = await import("./runtime-store");
-    // Simulate: user opens agent-a with lastReadSeq=7, then views events 8-10
-    // while the agent is selected.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let activity: Record<string, any> = {
-      "agent-a": { unreadCount: 0, lastUnreadSeq: 7, lastReadSeq: 7 },
+      "agent-a": { unreadCount: 0, lastUnreadDeliverySeq: 7, lastReadDeliverySeq: 7 },
     };
     for (const seq of [8, 9, 10]) {
       activity = touchRosterActivityFromEvent(
@@ -705,12 +711,44 @@ describe("roster activity unread state", () => {
         "agent-a",
       );
     }
-    // Unread should stay 0 and lastReadSeq should advance to 10.
-    expect(activity["agent-a"]?.unreadCount ?? 0).toBe(0);
-    expect(activity["agent-a"]?.lastReadSeq).toBe(10);
+    expect(activity["agent-a"]?.unreadCount).toBe(3);
 
-    // Now simulate a page reload: events 8-10 are re-delivered while agent-a
-    // is NOT selected. They must NOT be re-counted as unread.
+    vi.stubGlobal("document", { visibilityState: "visible" });
+    useRuntimeStore.setState({
+      route: "agent",
+      selectedAgentId: "agent-a",
+      rosterActivityByAgentId: activity,
+      sessionsByAgentId: {
+        "agent-a": sessionState({
+          cacheStatus: "hit",
+          contentStatus: "available",
+          syncStatus: "streaming",
+          liveStatus: "recovering",
+          eventsBySeq: {
+            8: { agent_id: "agent-a", event_seq: 8, type: "brief_created", payload: {} },
+            9: { agent_id: "agent-a", event_seq: 9, type: "brief_created", payload: {} },
+            10: { agent_id: "agent-a", event_seq: 10, type: "brief_created", payload: {} },
+          },
+          eventSeqs: [8, 9, 10],
+        }),
+      },
+    });
+    useRuntimeStore.getState().markAgentConversationRead("agent-a");
+    expect(useRuntimeStore.getState().rosterActivityByAgentId["agent-a"]?.unreadCount).toBe(3);
+    useRuntimeStore.setState((state) => ({
+      sessionsByAgentId: {
+        ...state.sessionsByAgentId,
+        "agent-a": {
+          ...state.sessionsByAgentId["agent-a"],
+          liveStatus: "streaming",
+        },
+      },
+    }));
+    useRuntimeStore.getState().markAgentConversationRead("agent-a");
+    activity = useRuntimeStore.getState().rosterActivityByAgentId;
+    expect(activity["agent-a"]?.unreadCount).toBe(0);
+    expect(activity["agent-a"]?.lastReadDeliverySeq).toBe(10);
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let replayed: Record<string, any> = activity;
     for (const seq of [8, 9, 10]) {
@@ -731,7 +769,7 @@ describe("roster activity unread state", () => {
       "agent-b",
     );
     expect(replayed["agent-a"]?.unreadCount).toBe(1);
-    expect(replayed["agent-a"]?.lastUnreadSeq).toBe(11);
+    expect(replayed["agent-a"]?.lastUnreadDeliverySeq).toBe(11);
   });
 });
 
@@ -1034,6 +1072,111 @@ describe("runtime client generation", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("global event stream recovery", () => {
+  afterEach(() => {
+    useRuntimeStore.getState().stopGlobalEventStream();
+    useRuntimeStore.getState().unregisterAgentForEvents("agent-a");
+    useRuntimeStore.setState({
+      sessionsByAgentId: {},
+      globalStreamStatus: "idle",
+      selectedAgentId: "",
+    });
+    vi.unstubAllGlobals();
+  });
+
+  it("does not report streaming until the subscribed agent backfill completes", async () => {
+    const localStorage = new MemoryStorage();
+    const sessionStorage = new MemoryStorage();
+    vi.stubGlobal("window", {
+      localStorage,
+      sessionStorage,
+      setTimeout,
+      clearTimeout,
+      location: { hostname: "localhost", protocol: "http:" },
+    });
+    let resolveBackfill!: (response: Response) => void;
+    const backfill = new Promise<Response>((resolve) => {
+      resolveBackfill = resolve;
+    });
+    const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname.endsWith("/handshake")) return Promise.resolve(jsonResponse({}));
+      if (url.pathname.endsWith("/agents/list")) return Promise.resolve(jsonResponse([]));
+      if (url.pathname.endsWith("/events/stream")) {
+        return Promise.resolve(new Response(new ReadableStream<Uint8Array>({
+          start(controller) {
+            init?.signal?.addEventListener("abort", () => controller.close());
+          },
+        }), {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        }));
+      }
+      if (url.pathname.endsWith("/agents/agent-a/events")) return backfill;
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    fetchMock.mockClear();
+    useRuntimeStore.setState({
+      sessionsByAgentId: {
+        "agent-a": sessionState({
+          eventLogEpoch: "epoch-1",
+          eventsBySeq: {
+            1: {
+              agent_id: "agent-a",
+              event_seq: 1,
+              event_log_epoch: "epoch-1",
+              type: "legacy_event",
+              payload: {},
+            },
+            5: {
+              agent_id: "agent-a",
+              event_seq: 5,
+              event_log_epoch: "epoch-1",
+              type: "legacy_event",
+              payload: {},
+            },
+          },
+          eventSeqs: [1, 5],
+          newestSeq: 5,
+          gaps: [{ afterSeq: 1, beforeSeq: 5 }],
+        }),
+      },
+    });
+
+    useRuntimeStore.getState().registerAgentForEvents("agent-a");
+
+    await vi.waitFor(() => {
+      expect(useRuntimeStore.getState().globalStreamStatus).toBe("catching_up");
+    });
+    const eventRequest = fetchMock.mock.calls
+      .map(([input]) => new URL(String(input), "http://localhost"))
+      .find((url) => url.pathname.endsWith("/agents/agent-a/events"));
+    expect(eventRequest?.searchParams.get("after_seq")).toBe("1");
+
+    resolveBackfill(jsonResponse({
+      events: [2, 3, 4, 5].map((eventSeq) => ({
+        id: `event-${eventSeq}`,
+        event_seq: eventSeq,
+        event_log_epoch: "epoch-1",
+        ts: "2026-08-09T00:00:00Z",
+        agent_id: "agent-a",
+        type: "legacy_event",
+        payload: {},
+      })),
+      event_log_epoch: "epoch-1",
+      has_older: false,
+      has_newer: false,
+      order: "asc",
+      limit: 100,
+    }));
+    await vi.waitFor(() => {
+      expect(useRuntimeStore.getState().globalStreamStatus).toBe("streaming");
+    });
   });
 });
 
@@ -1452,6 +1595,79 @@ describe("brief hydration retry limits", () => {
       expect(useRuntimeStore.getState().sessionsByAgentId["agent-a"]?.briefRecordsById["brief-123"]?.text)
         .toBe("Hydrated after manual retry.");
     });
+  });
+
+  it("hydrates selected message references on the fresh streaming fast path", async () => {
+    const localStorage = new MemoryStorage();
+    const sessionStorage = new MemoryStorage();
+    vi.stubGlobal("window", {
+      localStorage,
+      sessionStorage,
+      setTimeout,
+      clearTimeout,
+      location: { hostname: "localhost", protocol: "http:" },
+    });
+    const fetchMock = vi.fn((input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/agents/agent-a/messages:batchGet")) {
+        return Promise.resolve(jsonResponse({
+          messages: [{
+            id: "message-123",
+            origin: { kind: "operator" },
+            body: { text: "Hydrated selected message." },
+          }],
+          missing_message_ids: [],
+        }));
+      }
+      if (url.endsWith("/handshake")) return Promise.resolve(jsonResponse({}));
+      if (url.endsWith("/agents/list")) return Promise.resolve(jsonResponse([]));
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    fetchMock.mockClear();
+
+    const now = Date.now();
+    useRuntimeStore.setState({
+      route: "agent",
+      selectedAgentId: "agent-a",
+      globalStreamStatus: "streaming",
+      sessionsByAgentId: {
+        "agent-a": sessionState({
+          cacheStatus: "hit",
+          contentStatus: "available",
+          syncStatus: "streaming",
+          detailValidatedAt: now,
+          eventsValidatedAt: now,
+          detail: {
+            agent: agentSummary({ id: "agent-a" }),
+            source: "http",
+            timeline: [],
+          },
+          eventsBySeq: {
+            1: {
+              agent_id: "agent-a",
+              event_seq: 1,
+              type: "message_enqueued",
+              payload: {
+                message_id: "message-123",
+                origin: { kind: "operator" },
+              },
+            },
+          },
+          eventSeqs: [1],
+          referencedMessageIds: { "message-123": true },
+        }),
+      },
+    });
+
+    await useRuntimeStore.getState().ensureAgentSession("agent-a", "info");
+
+    await vi.waitFor(() => {
+      expect(useRuntimeStore.getState().sessionsByAgentId["agent-a"]?.messagesById["message-123"])
+        .toMatchObject({ id: "message-123" });
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 

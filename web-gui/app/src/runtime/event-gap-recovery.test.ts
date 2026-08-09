@@ -19,6 +19,28 @@ function eventPage(events: SequencedEvent[], eventLogEpoch?: string) {
 }
 
 describe("EventGapRecoveryTracker", () => {
+  it("starts cold agents at zero instead of treating the first live event as complete history", () => {
+    const tracker = new EventGapRecoveryTracker();
+
+    expect(tracker.observe("agent-a", 13)).toEqual({
+      contiguousSeq: 0,
+      highestObservedSeq: 13,
+      recovering: true,
+    });
+  });
+
+  it("rebases from hydrated cache while preserving newer live observations", () => {
+    const tracker = new EventGapRecoveryTracker();
+    tracker.register("agent-a");
+    tracker.observe("agent-a", 13, "epoch-a");
+
+    expect(tracker.rebase("agent-a", 10, "epoch-a")).toEqual({
+      contiguousSeq: 10,
+      highestObservedSeq: 13,
+      recovering: true,
+    });
+  });
+
   it("keeps the contiguous cursor behind an observed high watermark", () => {
     const tracker = new EventGapRecoveryTracker();
     tracker.register("agent-a", 10);
@@ -94,10 +116,9 @@ describe("EventGapRecoveryTracker", () => {
     firstPage.resolve(eventPage([event(21), event(21), event(22)]));
     await firstRecovery;
 
-    expect(fetchPage).toHaveBeenCalledTimes(3);
+    expect(fetchPage).toHaveBeenCalledTimes(2);
     expect(fetchPage).toHaveBeenNthCalledWith(1, 20);
     expect(fetchPage).toHaveBeenNthCalledWith(2, 22);
-    expect(fetchPage).toHaveBeenNthCalledWith(3, 24);
     expect(tracker.snapshotFor("agent-a")?.contiguousSeq).toBe(24);
   });
 
@@ -126,6 +147,51 @@ describe("EventGapRecoveryTracker", () => {
 
     tracker.unregister("agent-a");
     expect(tracker.snapshotFor("agent-a")).toBeUndefined();
+  });
+
+  it("reports incomplete when an empty page does not reach the observed high watermark", async () => {
+    const tracker = new EventGapRecoveryTracker();
+    tracker.register("agent-a", 30);
+    tracker.observe("agent-a", 32);
+
+    await expect(
+      recoverEventGap(tracker, "agent-a", {
+        limit: 100,
+        fetchPage: async () => eventPage([]),
+        applyEvents: () => undefined,
+      }),
+    ).resolves.toEqual({ complete: false });
+    expect(tracker.snapshotFor("agent-a")?.recovering).toBe(true);
+  });
+
+  it("bounds a recovery cycle and can continue from the advanced cursor", async () => {
+    const tracker = new EventGapRecoveryTracker();
+    tracker.register("agent-a", 10);
+    tracker.observe("agent-a", 14);
+    const fetchPage = vi
+      .fn<(afterSeq: number) => Promise<ReturnType<typeof eventPage>>>()
+      .mockResolvedValueOnce(eventPage([event(11), event(12)]))
+      .mockResolvedValueOnce(eventPage([event(13), event(14)]));
+
+    await expect(
+      recoverEventGap(tracker, "agent-a", {
+        limit: 2,
+        maxPages: 1,
+        fetchPage,
+        applyEvents: () => undefined,
+      }),
+    ).resolves.toEqual({ complete: false });
+
+    await expect(
+      recoverEventGap(tracker, "agent-a", {
+        limit: 2,
+        maxPages: 1,
+        fetchPage,
+        applyEvents: () => undefined,
+      }),
+    ).resolves.toEqual({ complete: true });
+    expect(fetchPage).toHaveBeenNthCalledWith(1, 10);
+    expect(fetchPage).toHaveBeenNthCalledWith(2, 12);
   });
 
   it("does not let a stale backfill mutate a re-registered agent", async () => {

@@ -23,6 +23,10 @@ export interface AgentRecoverySnapshot {
   recovering: boolean;
 }
 
+export interface EventGapRecoveryResult {
+  complete: boolean;
+}
+
 interface RecoveryCycle {
   generation: number;
   afterSeq: number;
@@ -37,16 +41,47 @@ export class EventGapRecoveryTracker {
     this.states.clear();
   }
 
-  register(agentId: string, baselineSeq?: number, eventLogEpoch?: string): void {
-    if (baselineSeq == null || this.states.has(agentId)) return;
+  register(
+    agentId: string,
+    baselineSeq = 0,
+    eventLogEpoch?: string,
+    highestObservedSeq = baselineSeq,
+  ): void {
+    if (this.states.has(agentId)) return;
     this.states.set(agentId, {
       generation: this.nextGeneration++,
       eventLogEpoch: normalizeEpoch(eventLogEpoch),
       contiguousSeq: baselineSeq,
-      highestObservedSeq: baselineSeq,
+      highestObservedSeq: Math.max(baselineSeq, highestObservedSeq),
       observationVersion: 0,
       backfillInFlight: false,
     });
+  }
+
+  rebase(
+    agentId: string,
+    baselineSeq = 0,
+    eventLogEpoch?: string,
+    observedSeq = baselineSeq,
+  ): AgentRecoverySnapshot {
+    const current = this.states.get(agentId);
+    const normalizedEpoch = normalizeEpoch(eventLogEpoch);
+    const preserveObserved =
+      current != null &&
+      (!normalizedEpoch || !current.eventLogEpoch || current.eventLogEpoch === normalizedEpoch);
+    const highestObservedSeq = preserveObserved
+      ? Math.max(current.highestObservedSeq, baselineSeq, observedSeq)
+      : Math.max(baselineSeq, observedSeq);
+    const state: AgentRecoveryState = {
+      generation: this.nextGeneration++,
+      eventLogEpoch: normalizedEpoch ?? (preserveObserved ? current?.eventLogEpoch : undefined),
+      contiguousSeq: baselineSeq,
+      highestObservedSeq,
+      observationVersion: current?.observationVersion ?? 0,
+      backfillInFlight: false,
+    };
+    this.states.set(agentId, state);
+    return this.snapshot(state);
   }
 
   unregister(agentId: string): void {
@@ -60,7 +95,7 @@ export class EventGapRecoveryTracker {
       state = {
         generation: this.nextGeneration++,
         eventLogEpoch: normalizeEpoch(eventLogEpoch),
-        contiguousSeq: seq,
+        contiguousSeq: 0,
         highestObservedSeq: seq,
         observationVersion: 0,
         backfillInFlight: false,
@@ -171,44 +206,62 @@ export async function recoverEventGap<T extends SequencedEvent>(
   options: {
     force?: boolean;
     limit: number;
+    maxPages?: number;
     fetchPage: (afterSeq: number) => Promise<SequencedEventPage<T>>;
     applyEvents: (events: T[]) => void;
   },
-): Promise<void> {
+): Promise<EventGapRecoveryResult> {
   let cycle = tracker.beginBackfill(agentId, options.force ?? false);
-  if (!cycle) return;
+  if (!cycle) {
+    return { complete: !tracker.snapshotFor(agentId)?.recovering };
+  }
   let cleanupCycle = cycle;
+  let pageCount = 0;
 
   try {
     while (cycle) {
       let cursor = cycle.afterSeq;
       let hasMore = true;
       while (hasMore) {
+        if (options.maxPages != null && pageCount >= options.maxPages) {
+          return { complete: false };
+        }
         const page = await options.fetchPage(cursor);
+        pageCount += 1;
         if (tracker.adoptEpoch(agentId, page.eventLogEpoch)) {
           const restartedCycle = tracker.beginBackfill(agentId, true);
-          if (!restartedCycle) return;
+          if (!restartedCycle) {
+            return { complete: !tracker.snapshotFor(agentId)?.recovering };
+          }
           cycle = restartedCycle;
           cleanupCycle = restartedCycle;
           cursor = restartedCycle.afterSeq;
           continue;
         }
         const events = page.events.filter((event) => event.event_seq != null);
-        if (!events.length) break;
+        if (!events.length) {
+          return { complete: !tracker.snapshotFor(agentId)?.recovering };
+        }
 
         const snapshot = tracker.acceptBackfill(
           agentId,
           cycle,
           events.map((event) => event.event_seq as number),
         );
-        if (!snapshot) return;
+        if (!snapshot) {
+          return { complete: !tracker.snapshotFor(agentId)?.recovering };
+        }
         options.applyEvents(events);
         const nextCursor = snapshot.contiguousSeq;
-        hasMore = events.length >= options.limit && nextCursor > cursor;
+        hasMore =
+          snapshot.recovering &&
+          events.length >= options.limit &&
+          nextCursor > cursor;
         cursor = nextCursor;
       }
       cycle = tracker.nextCycle(agentId, cycle);
     }
+    return { complete: !tracker.snapshotFor(agentId)?.recovering };
   } finally {
     tracker.endBackfill(agentId, cleanupCycle);
   }

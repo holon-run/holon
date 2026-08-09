@@ -195,8 +195,8 @@ export interface AgentRosterActivity {
   operatorAt?: string;
   briefAt?: string;
   unreadCount?: number;
-  lastUnreadSeq?: number;
-  lastReadSeq?: number;
+  lastUnreadDeliverySeq?: number;
+  lastReadDeliverySeq?: number;
 }
 
 const OPTIMISTIC_OPERATOR_PROMPT_SOURCE = "pending-operator-prompt";
@@ -271,7 +271,7 @@ export interface RuntimeStoreState {
   bootstrap: RuntimeBootstrap;
   bootstrapLoading: boolean;
   bootstrapError?: string;
-  globalStreamStatus: "idle" | "connecting" | "streaming" | "reconnecting";
+  globalStreamStatus: "idle" | "connecting" | "catching_up" | "streaming" | "reconnecting";
   modelCatalog: RuntimeModelCatalog;
   modelCatalogLoading: boolean;
   modelCatalogError?: string;
@@ -314,6 +314,7 @@ export interface RuntimeStoreState {
 
   setRoute: (route: RouteKey) => void;
   openAgent: (agentId: string, targetEventSeq?: number) => void;
+  markAgentConversationRead: (agentId: string) => void;
   openSkill: (skillId: string, agentId?: string) => void;
   openTemplate: (catalogId: string) => void;
   setDisplayLevel: (displayLevel: DisplayLevel, agentId?: string) => void;
@@ -505,7 +506,11 @@ let globalStreamReconnectTimer: number | undefined;
 let globalStreamStaleTimer: number | undefined;
 let globalStreamReconnectAttempt = 0;
 const globalStreamSubscribedAgents = new Set<string>();
+const globalStreamCatchUpPendingAgents = new Set<string>();
 const globalEventRecovery = new EventGapRecoveryTracker();
+const globalBackfillRetryTimers = new Map<string, number>();
+const globalBackfillRetryAttempts = new Map<string, number>();
+const globalRecoveryBaselineInFlight = new Map<string, Promise<void>>();
 const messageHydrationInFlight = new Map<string, Set<string>>();
 const transcriptHydrationInFlight = new Map<string, Set<string>>();
 const briefHydrationInFlight = new Map<string, Set<string>>();
@@ -533,6 +538,8 @@ const STREAM_RECONNECT_BASE_MS = 1_000;
 const STREAM_RECONNECT_MAX_MS = 15_000;
 const GLOBAL_STREAM_STALE_TIMEOUT_MS = 45_000;
 const GLOBAL_BACKFILL_LIMIT = 100;
+const GLOBAL_BACKFILL_MAX_PAGES = 10;
+const GLOBAL_BACKFILL_CONCURRENCY = 4;
 const AGENT_VALIDATION_TTL_MS = 60_000;
 const RESUME_RECONCILIATION_THRESHOLD_MS = 60_000;
 const BRIEF_HYDRATION_RETRY_DELAYS_MS = [1_000, 2_000] as const;
@@ -589,6 +596,11 @@ function cancelClientGenerationWork(): void {
   for (const timer of agentDetailRetryTimers.values()) window.clearTimeout(timer);
   agentDetailRetryTimers.clear();
   agentDetailRetryAttempts.clear();
+  for (const timer of globalBackfillRetryTimers.values()) window.clearTimeout(timer);
+  globalBackfillRetryTimers.clear();
+  globalBackfillRetryAttempts.clear();
+  globalRecoveryBaselineInFlight.clear();
+  globalStreamCatchUpPendingAgents.clear();
   inspectorDetailInFlight.clear();
   workItemRefreshInFlight.clear();
   workItemDetailInFlight.clear();
@@ -931,18 +943,23 @@ function writeStoredRosterActivity(remoteKey: string, activityByAgentId: Record<
 }
 
 function coerceRosterActivity(value: unknown): AgentRosterActivity | undefined {
-  const parsed = value as Partial<AgentRosterActivity>;
+  const parsed = value as Partial<AgentRosterActivity> & {
+    lastUnreadSeq?: number;
+    lastReadSeq?: number;
+  };
   const activity: AgentRosterActivity = {};
   if (typeof parsed.operatorAt === "string") activity.operatorAt = parsed.operatorAt;
   if (typeof parsed.briefAt === "string") activity.briefAt = parsed.briefAt;
   if (typeof parsed.unreadCount === "number" && Number.isFinite(parsed.unreadCount) && parsed.unreadCount > 0) {
     activity.unreadCount = Math.floor(parsed.unreadCount);
   }
-  if (typeof parsed.lastUnreadSeq === "number" && Number.isFinite(parsed.lastUnreadSeq)) {
-    activity.lastUnreadSeq = Math.floor(parsed.lastUnreadSeq);
+  const lastUnreadDeliverySeq = parsed.lastUnreadDeliverySeq ?? parsed.lastUnreadSeq;
+  if (typeof lastUnreadDeliverySeq === "number" && Number.isFinite(lastUnreadDeliverySeq)) {
+    activity.lastUnreadDeliverySeq = Math.floor(lastUnreadDeliverySeq);
   }
-  if (typeof parsed.lastReadSeq === "number" && Number.isFinite(parsed.lastReadSeq)) {
-    activity.lastReadSeq = Math.floor(parsed.lastReadSeq);
+  const lastReadDeliverySeq = parsed.lastReadDeliverySeq ?? parsed.lastReadSeq;
+  if (typeof lastReadDeliverySeq === "number" && Number.isFinite(lastReadDeliverySeq)) {
+    activity.lastReadDeliverySeq = Math.floor(lastReadDeliverySeq);
   }
   return Object.keys(activity).length ? activity : undefined;
 }
@@ -1072,10 +1089,11 @@ function initSessionCacheForRemote(set: StoreSet, get?: () => RuntimeStoreState)
       if (get && sessionCacheContextIsCurrent(context)) {
         const displayLevel = get().displayLevel;
         const selectedAgentId = get().selectedAgentId;
+        for (const agentId of restoredAgentIds) {
+          rebaseGlobalRecoveryFromSession(agentId, get().sessionsByAgentId[agentId]);
+        }
         if (selectedAgentId && restoredAgentIds.includes(selectedAgentId)) {
-          scheduleMessageHydration(get, set, selectedAgentId, displayLevel);
-          scheduleTranscriptHydration(get, set, selectedAgentId, displayLevel);
-          scheduleBriefHydration(get, set, selectedAgentId, displayLevel);
+          reconcileSelectedSessionHydration(get, set, selectedAgentId, displayLevel);
         }
       }
     } catch {
@@ -1180,19 +1198,10 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   openAgent: (agentId, targetEventSeq) =>
     set((state) => {
       const currentSession = state.sessionsByAgentId[agentId];
-      const rosterActivityByAgentId = markAgentRead(
-        state.rosterActivityByAgentId,
-        agentId,
-        currentSession?.newestSeq,
-      );
-      if (rosterActivityByAgentId !== state.rosterActivityByAgentId) {
-        writeStoredRosterActivity(currentRemoteKey(runtimeConnectionConfig), rosterActivityByAgentId);
-      }
       return {
         selectedAgentId: agentId,
         route: "agent",
         displayLevel: state.displayLevelsByAgentId[agentId] ?? "info",
-        rosterActivityByAgentId,
         sessionsByAgentId:
           targetEventSeq == null
             ? state.sessionsByAgentId
@@ -1207,6 +1216,43 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
               },
       };
     }),
+  markAgentConversationRead: (agentId) => {
+    const state = get();
+    const session = state.sessionsByAgentId[agentId];
+    if (
+      state.route !== "agent" ||
+      state.selectedAgentId !== agentId ||
+      typeof document === "undefined" ||
+      document.visibilityState !== "visible" ||
+      !session ||
+      session.loading ||
+      session.gaps.length > 0 ||
+      session.syncStatus === "refreshing" ||
+      session.syncStatus === "recovering" ||
+      session.syncStatus === "stale" ||
+      session.syncStatus === "error" ||
+      session.liveStatus === "connecting" ||
+      session.liveStatus === "reconnecting" ||
+      session.liveStatus === "recovering" ||
+      session.liveStatus === "stale" ||
+      session.liveStatus === "error" ||
+      missingBriefIdsForHydration(session).length > 0
+    ) {
+      return;
+    }
+    const deliverySeq = latestBriefDeliverySeq(session);
+    if (deliverySeq == null) return;
+    set((current) => {
+      const rosterActivityByAgentId = markAgentDeliveriesRead(
+        current.rosterActivityByAgentId,
+        agentId,
+        deliverySeq,
+      );
+      if (rosterActivityByAgentId === current.rosterActivityByAgentId) return current;
+      writeStoredRosterActivity(currentRemoteKey(runtimeConnectionConfig), rosterActivityByAgentId);
+      return { rosterActivityByAgentId };
+    });
+  },
   setDisplayLevel: (displayLevel, agentId) =>
     set((state) => {
       const targetAgentId = agentId ?? state.selectedAgentId;
@@ -2490,6 +2536,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
               },
             };
           });
+          rebaseGlobalRecoveryFromSession(agentId, get().sessionsByAgentId[agentId]);
           startRuntimeSpan(trace, "ui.session_state_transition", {
             state: cached ? "cache_hit/stale" : "cache_miss/refreshing",
           }).end("ok");
@@ -2558,6 +2605,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         }
         await get().refreshAgentDetail(agentId, displayLevel, { trace, trigger: "agent.open" });
       } finally {
+        reconcileSelectedSessionHydration(get, set, agentId, displayLevel);
         if (ensureAgentSessionInFlight.get(agentId) === promise) {
           ensureAgentSessionInFlight.delete(agentId);
         }
@@ -3164,7 +3212,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     stopGlobalEventStream(set);
   },
   registerAgentForEvents: (agentId) => {
-    registerAgentForEvents(get, set, agentId, false);
+    registerAgentForEvents(get, set, agentId);
   },
   unregisterAgentForEvents: (agentId) => {
     unregisterAgentForEvents(agentId);
@@ -3455,9 +3503,9 @@ function startGlobalEventStream(get: () => RuntimeStoreState, set: StoreSet): vo
     onOpen: () => {
       if (!isCurrentClientRequest(request)) return;
       globalStreamReconnectAttempt = 0;
-      set({ globalStreamStatus: "streaming" });
       connectSpan.end("ok");
       scheduleGlobalStaleWatchdog(get, set);
+      void Promise.resolve().then(() => catchUpGlobalEventStream(get, set, request));
     },
     onActivity: () => {
       if (!isCurrentClientRequest(request)) return;
@@ -3495,6 +3543,10 @@ function stopGlobalEventStream(set: StoreSet): void {
     globalStreamStaleTimer = undefined;
   }
   globalStreamReconnectAttempt = 0;
+  globalStreamCatchUpPendingAgents.clear();
+  for (const agentId of Array.from(globalBackfillRetryTimers.keys())) {
+    clearGlobalBackfillRetry(agentId);
+  }
   set({ globalStreamStatus: "idle" });
   // Flush any pending events for all agents.
   for (const agentId of globalStreamSubscribedAgents) {
@@ -3506,25 +3558,142 @@ function registerAgentForEvents(
   get: () => RuntimeStoreState,
   set: StoreSet,
   agentId: string,
-  backfill = true,
 ): void {
   const wasSubscribed = globalStreamSubscribedAgents.has(agentId);
   globalStreamSubscribedAgents.add(agentId);
-  // Initialize seq tracking from existing session state.
-  const session = wasSubscribed ? undefined : get().sessionsByAgentId[agentId];
-  if (session && !globalEventRecovery.snapshotFor(agentId)) {
-    const lastSeq = highestSeq(session.eventSeqs) ?? session.newestSeq;
-    globalEventRecovery.register(agentId, lastSeq, session.eventLogEpoch);
+  if (!wasSubscribed && !globalEventRecovery.snapshotFor(agentId)) {
+    const session = get().sessionsByAgentId[agentId];
+    globalEventRecovery.register(
+      agentId,
+      contiguousEventSeq(session),
+      session?.eventLogEpoch,
+      observedEventSeq(session),
+    );
   }
   // Start global stream if not running.
   startGlobalEventStream(get, set);
-  // Initial backfill from the last known seq.
-  if (!wasSubscribed && backfill) void backfillAgentEvents(set, agentId);
+  const globalStreamStatus = get().globalStreamStatus;
+  if (
+    !wasSubscribed &&
+    (
+      globalStreamStatus === "streaming" ||
+      globalStreamStatus === "catching_up"
+    )
+  ) {
+    void catchUpRegisteredAgent(get, set, agentId);
+  }
 }
 
 function unregisterAgentForEvents(agentId: string): void {
   globalStreamSubscribedAgents.delete(agentId);
+  globalStreamCatchUpPendingAgents.delete(agentId);
+  globalRecoveryBaselineInFlight.delete(agentId);
+  clearGlobalBackfillRetry(agentId);
   globalEventRecovery.unregister(agentId);
+}
+
+async function catchUpGlobalEventStream(
+  get: () => RuntimeStoreState,
+  set: StoreSet,
+  request: ClientRequest,
+): Promise<void> {
+  const agentIds = Array.from(globalStreamSubscribedAgents);
+  globalStreamCatchUpPendingAgents.clear();
+  agentIds.forEach((agentId) => globalStreamCatchUpPendingAgents.add(agentId));
+  set({ globalStreamStatus: "catching_up" });
+  await runWithConcurrencyLimit(
+    agentIds,
+    GLOBAL_BACKFILL_CONCURRENCY,
+    async (agentId) => {
+      if (!isCurrentClientRequest(request) || !globalEventStream) return;
+      await recoverRegisteredGlobalAgent(get, set, agentId, request);
+    },
+    () => isCurrentClientRequest(request) && Boolean(globalEventStream),
+  );
+  if (isCurrentClientRequest(request) && globalEventStream && globalStreamCatchUpPendingAgents.size === 0) {
+    set({ globalStreamStatus: "streaming" });
+  }
+}
+
+function catchUpRegisteredAgent(
+  get: () => RuntimeStoreState,
+  set: StoreSet,
+  agentId: string,
+): Promise<void> {
+  if (globalStreamCatchUpPendingAgents.has(agentId)) return Promise.resolve();
+  const request = captureClientRequest();
+  globalStreamCatchUpPendingAgents.add(agentId);
+  set({ globalStreamStatus: "catching_up" });
+  return recoverRegisteredGlobalAgent(get, set, agentId, request);
+}
+
+async function recoverRegisteredGlobalAgent(
+  get: () => RuntimeStoreState,
+  set: StoreSet,
+  agentId: string,
+  request: ClientRequest,
+): Promise<void> {
+  try {
+    await ensureGlobalRecoveryBaseline(get, set, agentId);
+    if (!isCurrentClientRequest(request) || !globalEventStream) return;
+    const recovered = await backfillAgentEvents(set, agentId, true);
+    if (recovered) completeGlobalStreamCatchUp(set, agentId);
+  } catch (error) {
+    scheduleGlobalBackfillRetry(set, agentId);
+    setStreamState(set, agentId, "recovering", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function completeGlobalStreamCatchUp(set: StoreSet, agentId: string): void {
+  globalStreamCatchUpPendingAgents.delete(agentId);
+  if (globalEventStream && globalStreamCatchUpPendingAgents.size === 0) {
+    set({ globalStreamStatus: "streaming" });
+  }
+}
+
+async function ensureGlobalRecoveryBaseline(
+  get: () => RuntimeStoreState,
+  set: StoreSet,
+  agentId: string,
+): Promise<void> {
+  const session = get().sessionsByAgentId[agentId];
+  if (session?.eventSeqs.length) {
+    rebaseGlobalRecoveryFromSession(agentId, session);
+    return;
+  }
+  const existing = globalRecoveryBaselineInFlight.get(agentId);
+  if (existing) return existing;
+  const generation = clientGeneration;
+  let initialization!: Promise<void>;
+  initialization = (async () => {
+    const page = await runtimeClient.getAgentEvents(agentId, {
+      order: "desc",
+      limit: GLOBAL_BACKFILL_LIMIT,
+    });
+    if (
+      !isCurrentClientGeneration(generation) ||
+      globalRecoveryBaselineInFlight.get(agentId) !== initialization ||
+      !globalStreamSubscribedAgents.has(agentId)
+    ) return;
+    const events = (page.events ?? [])
+      .filter((event) => event.event_seq != null)
+      .map((event) => streamEventFromBackfill(event, agentId, page.event_log_epoch));
+    const seqs = eventSeqs(events);
+    const baselineSeq = seqs.length ? Math.max(0, seqs[0] - 1) : 0;
+    globalEventRecovery.rebase(agentId, baselineSeq, page.event_log_epoch);
+    for (const seq of seqs) {
+      globalEventRecovery.observe(agentId, seq, page.event_log_epoch);
+    }
+    if (events.length) applyStreamEvents(set, agentId, events);
+  })().finally(() => {
+    if (globalRecoveryBaselineInFlight.get(agentId) === initialization) {
+      globalRecoveryBaselineInFlight.delete(agentId);
+    }
+  });
+  globalRecoveryBaselineInFlight.set(agentId, initialization);
+  return initialization;
 }
 
 function syncGlobalEventRoster(get: () => RuntimeStoreState, set: StoreSet): void {
@@ -3533,8 +3702,31 @@ function syncGlobalEventRoster(get: () => RuntimeStoreState, set: StoreSet): voi
     if (!agentIds.has(agentId)) unregisterAgentForEvents(agentId);
   }
   for (const agentId of agentIds) {
-    registerAgentForEvents(get, set, agentId, false);
+    registerAgentForEvents(get, set, agentId);
   }
+}
+
+function contiguousEventSeq(session: AgentSessionState | undefined): number {
+  if (!session) return 0;
+  return session.gaps[0]?.afterSeq ?? highestSeq(session.eventSeqs) ?? session.newestSeq ?? 0;
+}
+
+function observedEventSeq(session: AgentSessionState | undefined): number {
+  return session ? highestSeq(session.eventSeqs) ?? session.newestSeq ?? 0 : 0;
+}
+
+function rebaseGlobalRecoveryFromSession(
+  agentId: string,
+  session: AgentSessionState | undefined,
+): void {
+  if (!globalStreamSubscribedAgents.has(agentId)) return;
+  globalRecoveryBaselineInFlight.delete(agentId);
+  globalEventRecovery.rebase(
+    agentId,
+    contiguousEventSeq(session),
+    session?.eventLogEpoch,
+    observedEventSeq(session),
+  );
 }
 
 function dispatchGlobalStreamEvent(set: StoreSet, event: StreamEventEnvelopeDto): void {
@@ -3558,7 +3750,7 @@ function dispatchGlobalStreamEvent(set: StoreSet, event: StreamEventEnvelopeDto)
   enqueueStreamEvent(set, agentId, event);
 }
 
-async function backfillAgentEvents(set: StoreSet, agentId: string, force = false): Promise<void> {
+async function backfillAgentEvents(set: StoreSet, agentId: string, force = false): Promise<boolean> {
   const generation = clientGeneration;
   const span = startRuntimeSpan(
     createRuntimeTrace("stream.reconnect", { agentId, trigger: "events.backfill" }),
@@ -3567,9 +3759,10 @@ async function backfillAgentEvents(set: StoreSet, agentId: string, force = false
   );
   let eventCount = 0;
   try {
-    await recoverEventGap(globalEventRecovery, agentId, {
+    const result = await recoverEventGap(globalEventRecovery, agentId, {
       force,
       limit: GLOBAL_BACKFILL_LIMIT,
+      maxPages: GLOBAL_BACKFILL_MAX_PAGES,
       fetchPage: async (afterSeq) => {
         const page = await runtimeClient.getAgentEvents(agentId, {
           afterSeq,
@@ -3591,11 +3784,43 @@ async function backfillAgentEvents(set: StoreSet, agentId: string, force = false
         }
       },
     });
+    if (!result.complete) {
+      scheduleGlobalBackfillRetry(set, agentId);
+      setAgentLiveStatus(set, agentId, "recovering");
+      span.end("ok", { eventCount, incomplete: true });
+      return false;
+    }
+    clearGlobalBackfillRetry(agentId);
     span.end("ok", { eventCount });
-  } catch {
+    return true;
+  } catch (error) {
     span.end("error");
-    // Silently ignore backfill errors; the stream will retry.
+    scheduleGlobalBackfillRetry(set, agentId);
+    setStreamState(set, agentId, "recovering", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
   }
+}
+
+function scheduleGlobalBackfillRetry(set: StoreSet, agentId: string): void {
+  if (!globalStreamSubscribedAgents.has(agentId) || globalBackfillRetryTimers.has(agentId)) return;
+  const attempt = (globalBackfillRetryAttempts.get(agentId) ?? 0) + 1;
+  globalBackfillRetryAttempts.set(agentId, attempt);
+  const timer = window.setTimeout(() => {
+    globalBackfillRetryTimers.delete(agentId);
+    void backfillAgentEvents(set, agentId, true).then((recovered) => {
+      if (recovered) completeGlobalStreamCatchUp(set, agentId);
+    });
+  }, reconnectDelayMs(attempt));
+  globalBackfillRetryTimers.set(agentId, timer);
+}
+
+function clearGlobalBackfillRetry(agentId: string): void {
+  const timer = globalBackfillRetryTimers.get(agentId);
+  if (timer != null) window.clearTimeout(timer);
+  globalBackfillRetryTimers.delete(agentId);
+  globalBackfillRetryAttempts.delete(agentId);
 }
 
 export function streamEventFromBackfill(
@@ -3628,6 +3853,10 @@ function scheduleGlobalStreamReconnect(
 ): void {
   globalEventStream?.close();
   globalEventStream = undefined;
+  globalStreamCatchUpPendingAgents.clear();
+  for (const agentId of Array.from(globalBackfillRetryTimers.keys())) {
+    clearGlobalBackfillRetry(agentId);
+  }
   if (globalStreamStaleTimer != null) {
     window.clearTimeout(globalStreamStaleTimer);
     globalStreamStaleTimer = undefined;
@@ -4250,19 +4479,23 @@ function touchRosterActivity(
   };
 }
 
-function markAgentRead(
+function markAgentDeliveriesRead(
   current: Record<string, AgentRosterActivity>,
   agentId: string,
-  newestSeq: number | undefined,
+  deliverySeq: number,
 ): Record<string, AgentRosterActivity> {
   const existing = current[agentId];
-  if (!existing?.unreadCount && (newestSeq == null || existing?.lastReadSeq === newestSeq)) return current;
+  if (!existing?.unreadCount && existing?.lastReadDeliverySeq === deliverySeq) return current;
   return {
     ...current,
     [agentId]: {
       ...existing,
       unreadCount: 0,
-      lastReadSeq: Math.max(newestSeq ?? 0, existing?.lastUnreadSeq ?? 0, existing?.lastReadSeq ?? 0),
+      lastReadDeliverySeq: Math.max(
+        deliverySeq,
+        existing?.lastUnreadDeliverySeq ?? 0,
+        existing?.lastReadDeliverySeq ?? 0,
+      ),
     },
   };
 }
@@ -4271,7 +4504,7 @@ export function touchRosterActivityFromEvent(
   current: Record<string, AgentRosterActivity>,
   agentId: string,
   event: StreamEventEnvelopeDto,
-  selectedAgentId: string,
+  _selectedAgentId: string,
 ): Record<string, AgentRosterActivity> {
   if (!canApplySessionEvent(event)) return current;
   let next = current;
@@ -4282,14 +4515,7 @@ export function touchRosterActivityFromEvent(
     next = touchRosterActivity(next, agentId, "operator", eventTimestamp(event));
   }
   if (isUnreadEvent(event)) {
-    if (agentId !== selectedAgentId) {
-      next = incrementUnreadFromEvent(next, agentId, event);
-    } else {
-      // Advance the read watermark for the currently-viewed agent so that
-      // events seen in real time are not re-counted as unread after a page
-      // reload or session reset (when eventsBySeq is empty and dedup fails).
-      next = advanceReadSeqFromEvent(next, agentId, event);
-    }
+    next = incrementUnreadFromEvent(next, agentId, event);
   }
   return next;
 }
@@ -4305,34 +4531,32 @@ function incrementUnreadFromEvent(
 ): Record<string, AgentRosterActivity> {
   const existing = current[agentId];
   const seq = event.event_seq;
-  if (seq != null && existing?.lastReadSeq != null && seq <= existing.lastReadSeq) return current;
-  if (seq != null && existing?.lastUnreadSeq != null && seq <= existing.lastUnreadSeq) return current;
+  if (
+    seq != null &&
+    existing?.lastReadDeliverySeq != null &&
+    seq <= existing.lastReadDeliverySeq
+  ) return current;
+  if (
+    seq != null &&
+    existing?.lastUnreadDeliverySeq != null &&
+    seq <= existing.lastUnreadDeliverySeq
+  ) return current;
   return {
     ...current,
     [agentId]: {
       ...existing,
       unreadCount: (existing?.unreadCount ?? 0) + 1,
-      lastUnreadSeq: seq ?? existing?.lastUnreadSeq,
+      lastUnreadDeliverySeq: seq ?? existing?.lastUnreadDeliverySeq,
     },
   };
 }
 
-function advanceReadSeqFromEvent(
-  current: Record<string, AgentRosterActivity>,
-  agentId: string,
-  event: StreamEventEnvelopeDto,
-): Record<string, AgentRosterActivity> {
-  const existing = current[agentId];
-  const seq = event.event_seq;
-  if (seq == null) return current;
-  if (existing?.lastReadSeq != null && seq <= existing.lastReadSeq) return current;
-  return {
-    ...current,
-    [agentId]: {
-      ...existing,
-      lastReadSeq: Math.max(seq, existing?.lastReadSeq ?? 0),
-    },
-  };
+function latestBriefDeliverySeq(session: AgentSessionState): number | undefined {
+  for (let index = session.eventSeqs.length - 1; index >= 0; index -= 1) {
+    const seq = session.eventSeqs[index];
+    if (session.eventsBySeq[seq]?.type === "brief_created") return seq;
+  }
+  return undefined;
 }
 
 function eventTimestamp(event: StreamEventEnvelopeDto): string | undefined {
@@ -4779,6 +5003,18 @@ function isAgentStateCacheInvalidationEvent(event: StreamEventEnvelopeDto): bool
     event.type === "worktree_entered" ||
     event.type === "worktree_exited"
   );
+}
+
+function reconcileSelectedSessionHydration(
+  get: () => RuntimeStoreState,
+  set: StoreSet,
+  agentId: string,
+  displayLevel: DisplayLevel,
+): void {
+  if (get().route !== "agent" || get().selectedAgentId !== agentId) return;
+  scheduleMessageHydration(get, set, agentId, displayLevel);
+  scheduleTranscriptHydration(get, set, agentId, displayLevel);
+  scheduleBriefHydration(get, set, agentId, displayLevel);
 }
 
 function scheduleMessageHydration(

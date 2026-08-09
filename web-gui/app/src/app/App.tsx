@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import {
@@ -82,6 +82,7 @@ export function App() {
   const navCollapsed = useRuntimeStore((state) => state.navCollapsed);
   const setRoute = useRuntimeStore((state) => state.setRoute);
   const openAgent = useRuntimeStore((state) => state.openAgent);
+  const markAgentConversationRead = useRuntimeStore((state) => state.markAgentConversationRead);
   const openSkill = useRuntimeStore((state) => state.openSkill);
   const openTemplate = useRuntimeStore((state) => state.openTemplate);
   const setDisplayLevel = useRuntimeStore((state) => state.setDisplayLevel);
@@ -103,6 +104,9 @@ export function App() {
   const rosterActivityByAgentId = useRuntimeStore((state) => state.rosterActivityByAgentId);
   const activeAgentId = route === "agent" ? selectedAgent?.id ?? selectedAgentId : undefined;
   const sidePanelAgentId = selectedAgent?.id ?? selectedAgentId;
+  const markSelectedAgentConversationRead = useCallback(() => {
+    if (activeAgentId) markAgentConversationRead(activeAgentId);
+  }, [activeAgentId, markAgentConversationRead]);
   const selectedAgentSession = useRuntimeStore((state) =>
     sidePanelAgentId ? state.sessionsByAgentId[sidePanelAgentId] : undefined,
   );
@@ -664,6 +668,7 @@ export function App() {
             onClearModel={() => clearAgentModel(activeAgent.id, effectiveDisplayLevel)}
             onLoadOlderEvents={() => loadOlderAgentEvents(activeAgent.id, effectiveDisplayLevel)}
             onSendPrompt={(text, attachments) => sendOperatorPrompt(activeAgent.id, text, effectiveDisplayLevel, attachments)}
+            onConversationRead={markSelectedAgentConversationRead}
             onOpenInspector={() => {
               showAgentOverview(activeAgent.id);
             }}
