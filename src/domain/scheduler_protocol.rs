@@ -7,6 +7,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize, Serializer};
 
+pub use super::scheduler::{ScenarioMode, SchedulerOwner, SchedulerScenarioClass};
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "SnapshotWire")]
 pub struct Snapshot {
@@ -109,29 +111,6 @@ pub enum ActivationSlot {
         #[serde(default)]
         recovery_for: Option<String>,
     },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum SchedulerOwner {
-    WorkItem { work_item_id: String },
-    AgentLifecycle { agent_id: String },
-}
-
-impl SchedulerOwner {
-    pub fn work_item_id(&self) -> Option<&str> {
-        match self {
-            Self::WorkItem { work_item_id } => Some(work_item_id),
-            Self::AgentLifecycle { .. } => None,
-        }
-    }
-
-    pub fn lifecycle_agent_id(&self) -> Option<&str> {
-        match self {
-            Self::AgentLifecycle { agent_id } => Some(agent_id),
-            Self::WorkItem { .. } => None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -325,42 +304,6 @@ pub enum WaitState {
     Triggered,
     Consumed,
     Resolved,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ScenarioMode {
-    Off,
-    Shadow,
-    Authoritative,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SchedulerScenarioClass {
-    ReducerOnlyCandidates,
-    ExactTaskRejoin,
-    ExactWaitResume,
-    ExplicitlyBoundOperatorInput,
-    WorkItemAutonomousContinuation,
-    OperatorInterjection,
-    Settlement,
-    Delivery,
-}
-
-impl SchedulerScenarioClass {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::ReducerOnlyCandidates => "reducer_only_candidates",
-            Self::ExactTaskRejoin => "exact_task_rejoin",
-            Self::ExactWaitResume => "exact_wait_resume",
-            Self::ExplicitlyBoundOperatorInput => "explicitly_bound_operator_input",
-            Self::WorkItemAutonomousContinuation => "work_item_autonomous_continuation",
-            Self::OperatorInterjection => "operator_interjection",
-            Self::Settlement => "settlement",
-            Self::Delivery => "delivery",
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

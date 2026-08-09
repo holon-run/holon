@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::config::ModelRouteRef;
-use crate::domain::scheduler_protocol::{ScenarioMode, SchedulerScenarioClass};
+use crate::domain::scheduler::{ScenarioMode, SchedulerScenarioClass};
 pub use crate::domain::{agent_home_workspace_id, work_item::*, AGENT_HOME_WORKSPACE_ID};
 use crate::ids;
 use crate::model_catalog::ResolvedRuntimeModelPolicy;

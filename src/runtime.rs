@@ -3615,7 +3615,7 @@ impl RuntimeHandle {
         } else {
             ExecutionAdmissionProvenance::LegacyCompat {
                 scenario_class: None,
-                effective_mode: crate::domain::scheduler_protocol::ScenarioMode::Off,
+                effective_mode: crate::domain::scheduler::ScenarioMode::Off,
             }
         };
         self.begin_interactive_turn_with_provenance(
@@ -3639,7 +3639,7 @@ impl RuntimeHandle {
             operator_reply_route_id,
             ExecutionAdmissionProvenance::LegacyCompat {
                 scenario_class: None,
-                effective_mode: crate::domain::scheduler_protocol::ScenarioMode::Off,
+                effective_mode: crate::domain::scheduler::ScenarioMode::Off,
             },
         )
         .await

@@ -63,8 +63,8 @@ use crate::runtime::{
 enum OperatorInterjectionPlan {
     Admit,
     LegacyTurnDeferred {
-        scenario_class: Option<crate::domain::scheduler_protocol::SchedulerScenarioClass>,
-        effective_mode: crate::domain::scheduler_protocol::ScenarioMode,
+        scenario_class: Option<crate::domain::scheduler::SchedulerScenarioClass>,
+        effective_mode: crate::domain::scheduler::ScenarioMode,
     },
 }
 
@@ -582,7 +582,7 @@ impl RuntimeHandle {
         round: usize,
         boundary: &str,
     ) -> Result<OperatorInterjectionPlan> {
-        use crate::domain::scheduler_protocol::ScenarioMode;
+        use crate::domain::scheduler::ScenarioMode;
         use crate::types::ExecutionAdmissionProvenance;
 
         let execution_binding = expected_state
@@ -683,8 +683,8 @@ impl RuntimeHandle {
         message: &MessageEnvelope,
         round: usize,
         boundary: &str,
-        scenario_class: Option<crate::domain::scheduler_protocol::SchedulerScenarioClass>,
-        effective_mode: crate::domain::scheduler_protocol::ScenarioMode,
+        scenario_class: Option<crate::domain::scheduler::SchedulerScenarioClass>,
+        effective_mode: crate::domain::scheduler::ScenarioMode,
     ) -> Result<()> {
         let turn_id = expected_state
             .current_turn_id

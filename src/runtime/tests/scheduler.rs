@@ -1,6 +1,6 @@
 use super::super::*;
 use super::support::*;
-use crate::domain::scheduler_protocol::SchedulerOwner;
+use crate::domain::scheduler::SchedulerOwner;
 use crate::types::{
     AgentPostureProjection, AgentSchedulingPosture, ToolExecutionStatus, WaitConditionKind,
     WaitConditionRecord, WaitConditionStatus, WakeSource, WorkItemPlanStatus,

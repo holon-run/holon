@@ -8,7 +8,7 @@
 use super::super::message_dispatch::MessageDispatchPlan;
 use super::super::*;
 use super::support::*;
-use crate::domain::scheduler_protocol::ScenarioMode;
+use crate::domain::scheduler::ScenarioMode;
 use crate::types::{
     AuthorityClass, ClosureDecision, ClosureOutcome, ExecutionAdmissionProvenance, MessageBody,
     MessageKind, MessageOrigin, Priority, RuntimePosture,

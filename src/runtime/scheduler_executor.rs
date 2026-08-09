@@ -81,7 +81,7 @@ pub(super) struct ScheduledMessage {
 
 struct CanonicalClaimPlan {
     activation_id: String,
-    scenario_class: crate::domain::scheduler_protocol::SchedulerScenarioClass,
+    scenario_class: crate::domain::scheduler::SchedulerScenarioClass,
     work_item_id: Option<String>,
     work_item_expectation: Option<crate::types::WorkItemRecord>,
     execution_protocol: crate::runtime_db::transitions::ExecutionProtocolTransition,
@@ -91,36 +91,36 @@ enum CanonicalClaimOutcome {
     ReduceOnly,
     Plan(CanonicalClaimPlan),
     RejectQueued {
-        scenario_class: crate::domain::scheduler_protocol::SchedulerScenarioClass,
+        scenario_class: crate::domain::scheduler::SchedulerScenarioClass,
         reason: &'static str,
     },
     RetainQueued {
-        scenario_class: crate::domain::scheduler_protocol::SchedulerScenarioClass,
+        scenario_class: crate::domain::scheduler::SchedulerScenarioClass,
         reason: &'static str,
     },
     HardBlocker(CanonicalClaimHardBlocker),
 }
 
 struct CanonicalClaimHardBlocker {
-    scenario_class: crate::domain::scheduler_protocol::SchedulerScenarioClass,
+    scenario_class: crate::domain::scheduler::SchedulerScenarioClass,
     blocker_code: &'static str,
 }
 
 enum QueueHeadNoProgressCause {
     RetainedAuthority {
-        scenario_class: crate::domain::scheduler_protocol::SchedulerScenarioClass,
+        scenario_class: crate::domain::scheduler::SchedulerScenarioClass,
         reason: &'static str,
     },
     HardBlocker(CanonicalClaimHardBlocker),
     AmbiguousWait,
     ClaimContended {
-        scenario_class: Option<crate::domain::scheduler_protocol::SchedulerScenarioClass>,
+        scenario_class: Option<crate::domain::scheduler::SchedulerScenarioClass>,
     },
     ReplanExhausted,
 }
 
 impl QueueHeadNoProgressCause {
-    fn scenario_class(&self) -> Option<crate::domain::scheduler_protocol::SchedulerScenarioClass> {
+    fn scenario_class(&self) -> Option<crate::domain::scheduler::SchedulerScenarioClass> {
         match self {
             Self::RetainedAuthority { scenario_class, .. } => Some(*scenario_class),
             Self::HardBlocker(blocker) => Some(blocker.scenario_class),
@@ -166,7 +166,7 @@ impl RuntimeHandle {
         if !self.inner.scheduler_engine.is_canonical() {
             return Ok(ExecutionAdmissionProvenance::LegacyCompat {
                 scenario_class: None,
-                effective_mode: crate::domain::scheduler_protocol::ScenarioMode::Off,
+                effective_mode: crate::domain::scheduler::ScenarioMode::Off,
             });
         }
         let scenario_class = if matches!(
@@ -181,7 +181,7 @@ impl RuntimeHandle {
         };
         Ok(ExecutionAdmissionProvenance::LegacyCompat {
             scenario_class,
-            effective_mode: crate::domain::scheduler_protocol::ScenarioMode::Off,
+            effective_mode: crate::domain::scheduler::ScenarioMode::Off,
         })
     }
 }
@@ -975,7 +975,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             return Ok(if model_reentry {
                 CanonicalClaimOutcome::RejectQueued {
                     scenario_class:
-                        crate::domain::scheduler_protocol::SchedulerScenarioClass::ReducerOnlyCandidates,
+                        crate::domain::scheduler::SchedulerScenarioClass::ReducerOnlyCandidates,
                     reason: "canonical_model_reentry_candidate_unclassified",
                 }
             } else {
@@ -1365,12 +1365,12 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         message: &MessageEnvelope,
         scenario: scheduler::CanonicalActivationScenario,
         existing_execution: Option<crate::domain::execution_protocol::ExecutionProtocolState>,
-        scenario_class: crate::domain::scheduler_protocol::SchedulerScenarioClass,
+        scenario_class: crate::domain::scheduler::SchedulerScenarioClass,
     ) -> Result<CanonicalClaimOutcome> {
         let wait_id = match &scenario {
             scheduler::CanonicalActivationScenario::ExactWaitResume { owner, wait_id }
                 if owner
-                    == &(crate::domain::scheduler_protocol::SchedulerOwner::AgentLifecycle {
+                    == &(crate::domain::scheduler::SchedulerOwner::AgentLifecycle {
                         agent_id: message.agent_id.clone(),
                     }) =>
             {
@@ -1454,7 +1454,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         &self,
         candidate: &QueueCandidate,
         message: &MessageEnvelope,
-        scenario_class: crate::domain::scheduler_protocol::SchedulerScenarioClass,
+        scenario_class: crate::domain::scheduler::SchedulerScenarioClass,
         reason: &'static str,
     ) -> Result<()> {
         let expected = self
@@ -2120,7 +2120,7 @@ fn execution_attempt_matches_scenario(
             ExecutionBinding::WorkItem { work_item_id },
             scheduler::CanonicalActivationScenario::ExactWaitResume {
                 owner:
-                    crate::domain::scheduler_protocol::SchedulerOwner::WorkItem {
+                    crate::domain::scheduler::SchedulerOwner::WorkItem {
                         work_item_id: expected_work_item,
                     },
                 wait_id: expected_wait,
@@ -2138,7 +2138,7 @@ fn execution_attempt_matches_scenario(
             ExecutionBinding::AgentLifecycle { agent_id },
             scheduler::CanonicalActivationScenario::ExactWaitResume {
                 owner:
-                    crate::domain::scheduler_protocol::SchedulerOwner::AgentLifecycle {
+                    crate::domain::scheduler::SchedulerOwner::AgentLifecycle {
                         agent_id: expected_agent,
                     },
                 wait_id: expected_wait,
@@ -2184,7 +2184,7 @@ fn execution_attempt_matches_scenario(
 }
 
 fn canonical_claim_hard_blocker(
-    scenario_class: crate::domain::scheduler_protocol::SchedulerScenarioClass,
+    scenario_class: crate::domain::scheduler::SchedulerScenarioClass,
     blocker_code: &'static str,
 ) -> CanonicalClaimOutcome {
     CanonicalClaimOutcome::HardBlocker(CanonicalClaimHardBlocker {
@@ -2366,7 +2366,7 @@ mod tests {
     use super::*;
 
     fn no_progress_cause(reason: &'static str) -> QueueHeadNoProgressCause {
-        use crate::domain::scheduler_protocol::SchedulerScenarioClass;
+        use crate::domain::scheduler::SchedulerScenarioClass;
 
         match reason {
             "explicit_binding_work_item_missing" => QueueHeadNoProgressCause::RetainedAuthority {
@@ -2416,7 +2416,7 @@ mod tests {
 
     #[test]
     fn queue_head_no_progress_causes_have_total_diagnostic_mapping() {
-        use crate::domain::scheduler_protocol::SchedulerScenarioClass;
+        use crate::domain::scheduler::SchedulerScenarioClass;
 
         let cases = [
             (

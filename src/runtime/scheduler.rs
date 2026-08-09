@@ -1,6 +1,6 @@
 use super::*;
 use crate::domain::execution_protocol::WorkItemExecutionState;
-use crate::domain::scheduler_protocol::{SchedulerOwner, SchedulerScenarioClass};
+use crate::domain::scheduler::{SchedulerOwner, SchedulerScenarioClass};
 use crate::runtime::closure::runtime_error_active;
 use crate::storage::{AppStorage, WorkQueueReadModel};
 use crate::types::{

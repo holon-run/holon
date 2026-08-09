@@ -5756,8 +5756,7 @@ mod tests {
         agent.current_execution_binding = Some(crate::types::WorkItemExecutionBinding {
             activation_id: Some("activation-bound".into()),
             admission_provenance: Some(crate::types::ExecutionAdmissionProvenance::Canonical {
-                scenario_class:
-                    crate::domain::scheduler_protocol::SchedulerScenarioClass::ExactWaitResume,
+                scenario_class: crate::domain::scheduler::SchedulerScenarioClass::ExactWaitResume,
                 activation_id: "activation-bound".into(),
             }),
             source_message_id: "message-bound".into(),
@@ -5820,8 +5819,7 @@ mod tests {
         agent.current_execution_binding = Some(crate::types::WorkItemExecutionBinding {
             activation_id: Some("activation-lifecycle".into()),
             admission_provenance: Some(crate::types::ExecutionAdmissionProvenance::Canonical {
-                scenario_class:
-                    crate::domain::scheduler_protocol::SchedulerScenarioClass::ExactWaitResume,
+                scenario_class: crate::domain::scheduler::SchedulerScenarioClass::ExactWaitResume,
                 activation_id: "activation-lifecycle".into(),
             }),
             source_message_id: "message-lifecycle".into(),
