@@ -1008,6 +1008,26 @@ fn execution_protocol_settlement_transition_from_facts(
 
     let outcome = match &attempt.binding {
         ExecutionBinding::WorkItem { work_item_id } => {
+            let Some(authoritative_work) = state.work_items.get(work_item_id) else {
+                return Ok(interrupted("work_item_execution_missing"));
+            };
+            let crate::domain::execution_protocol::WorkItemExecutionState::InFlight {
+                generation,
+                attempt_id,
+            } = &authoritative_work.state
+            else {
+                return Ok(interrupted("work_item_execution_not_in_flight"));
+            };
+            if attempt_id != &attempt.attempt_id
+                || attempt.admitted_fences.work_item_generation != Some(*generation)
+            {
+                return Ok(interrupted("work_item_execution_attempt_mismatch"));
+            }
+            if attempt.admitted_fences.work_item_source_revision
+                != Some(authoritative_work.source_revision)
+            {
+                return Ok(interrupted("work_item_execution_revision_mismatch"));
+            }
             let matching_continuations = runtime_db
                 .work_item_continuations()
                 .active_for_agent(&record.agent_id)?
@@ -1022,9 +1042,16 @@ fn execution_protocol_settlement_transition_from_facts(
                     let Some(target) = storage.latest_work_item(&frame.active_work_item_id)? else {
                         return Ok(interrupted("yield_target_missing"));
                     };
+                    let Some(target_execution) = state.work_items.get(&target.id) else {
+                        return Ok(interrupted("yield_target_execution_missing"));
+                    };
                     if target.agent_id != record.agent_id
                         || target.state != crate::types::WorkItemState::Open
-                        || target.readiness() != crate::types::WorkItemReadiness::Runnable
+                        || target_execution.source_revision != target.revision
+                        || !matches!(
+                            target_execution.state,
+                            crate::domain::execution_protocol::WorkItemExecutionState::Runnable { .. }
+                        )
                     {
                         return Ok(interrupted("yield_target_not_runnable"));
                     }
@@ -1036,128 +1063,107 @@ fn execution_protocol_settlement_transition_from_facts(
                     let Some(work_item) = runtime_db.work_items().latest(work_item_id)? else {
                         return Ok(interrupted("work_item_missing"));
                     };
-                    let recovery_wait_id = if matches!(
-                        attempt.source.identity,
-                        crate::domain::execution_protocol::ExecutionSourceIdentity::RuntimeRecovery {
-                            ..
+                    let completion_intent = work_item.completion_intent.as_ref();
+                    if let Some(intent) = completion_intent {
+                        if intent.work_item_id != *work_item_id
+                            || intent.source_activation_id.as_deref()
+                                != Some(attempt.attempt_id.as_str())
+                            || intent.source_message_id.as_deref()
+                                != Some(record.message_id.as_str())
+                            || intent.source_turn_id.as_deref()
+                                != Some(terminal_turn.turn_id.as_str())
+                            || Some(intent.expected_work_revision)
+                                != attempt.admitted_fences.work_item_source_revision
+                        {
+                            return Ok(interrupted("completion_intent_mismatch"));
                         }
-                    ) {
-                        let unresolved_waits = storage
-                            .raw_unresolved_wait_conditions_for_agent(&record.agent_id)?
-                            .into_iter()
-                            .filter(|wait| {
-                                wait.work_item_id.as_deref() == Some(work_item_id.as_str())
-                            })
-                            .collect::<Vec<_>>();
-                        match unresolved_waits.as_slice() {
-                            [] => None,
-                            [wait] => Some(wait.id.clone()),
-                            _ => return Ok(interrupted("wait_outcome_ambiguous")),
-                        }
+                        let Some(brief_id) = intent.result_brief_id.as_deref().filter(|brief_id| {
+                            work_item.result_brief_id.as_deref() == Some(*brief_id)
+                        }) else {
+                            return Ok(interrupted("completion_brief_binding_missing"));
+                        };
+                        let Some(brief) = storage.read_brief_by_id(brief_id)?.filter(|brief| {
+                            brief.kind.is_success()
+                                && brief.work_item_id.as_deref() == Some(work_item_id.as_str())
+                                && brief.turn_id.as_deref() == Some(terminal_turn.turn_id.as_str())
+                                && brief.related_message_id.as_deref()
+                                    == Some(record.message_id.as_str())
+                                && !brief.text.trim().is_empty()
+                        }) else {
+                            return Ok(interrupted("completion_brief_evidence_missing"));
+                        };
+                        ExecutionOutcome::WorkItem(WorkItemOutcome::Complete {
+                            completion: brief.id,
+                        })
                     } else {
-                        None
-                    };
-                    if let Some(wait_id) = recovery_wait_id {
-                        return Ok(
-                            crate::runtime_db::transitions::ExecutionProtocolTransition {
-                                bootstrap: None,
-                                commands: vec![ExecutionProtocolCommand::Settle(SettleExecution {
-                                    outcome: ExecutionOutcomeRecord {
-                                        outcome_id: format!(
-                                            "outcome:message:{}",
-                                            record.message_id
-                                        ),
-                                        attempt_id: attempt.attempt_id.clone(),
-                                        outcome: ExecutionOutcome::WorkItem(
-                                            WorkItemOutcome::Wait {
-                                                wait: WaitReference { wait_id },
-                                            },
-                                        ),
-                                        created_at: record.updated_at.to_rfc3339(),
-                                    },
-                                })],
-                            },
-                        );
-                    }
-                    let scheduling = storage
-                        .work_queue_prompt_projection()?
-                        .items
-                        .into_iter()
-                        .find(|candidate| candidate.id == *work_item_id)
-                        .map(|candidate| candidate.scheduling_state);
-                    match scheduling {
-                        Some(crate::types::WorkItemSchedulingState::Runnable) => {
-                            ExecutionOutcome::WorkItem(WorkItemOutcome::Continue)
+                        if work_item.state != crate::types::WorkItemState::Open
+                            || work_item.result_brief_id.is_some()
+                        {
+                            return Ok(interrupted("completion_intent_missing"));
                         }
-                        Some(crate::types::WorkItemSchedulingState::Completed) => {
-                            let Some(intent) = work_item.completion_intent.as_ref() else {
-                                return Ok(interrupted("completion_intent_missing"));
-                            };
-                            if intent.work_item_id != *work_item_id
-                                || intent.source_activation_id.as_deref()
-                                    != Some(attempt.attempt_id.as_str())
-                                || intent.source_message_id.as_deref()
-                                    != Some(record.message_id.as_str())
-                                || intent.source_turn_id.as_deref()
-                                    != Some(terminal_turn.turn_id.as_str())
-                                || intent.expected_work_revision
-                                    != attempt
-                                        .admitted_fences
-                                        .work_item_source_revision
-                                        .unwrap_or_default()
-                            {
-                                return Ok(interrupted("completion_intent_mismatch"));
+                        let recovery_wait_id = if matches!(
+                            attempt.source.identity,
+                            crate::domain::execution_protocol::ExecutionSourceIdentity::RuntimeRecovery {
+                                ..
                             }
-                            let Some(brief_id) =
-                                intent.result_brief_id.as_deref().filter(|brief_id| {
-                                    work_item.result_brief_id.as_deref() == Some(*brief_id)
+                        ) {
+                            let unresolved_waits = storage
+                                .raw_unresolved_wait_conditions_for_agent(&record.agent_id)?
+                                .into_iter()
+                                .filter(|wait| {
+                                    wait.work_item_id.as_deref() == Some(work_item_id.as_str())
                                 })
-                            else {
-                                return Ok(interrupted("completion_brief_binding_missing"));
-                            };
-                            let Some(brief) = storage.read_brief_by_id(brief_id)?.filter(|brief| {
-                                brief.kind.is_success()
-                                    && brief.work_item_id.as_deref() == Some(work_item_id.as_str())
-                                    && brief.turn_id.as_deref()
-                                        == Some(terminal_turn.turn_id.as_str())
-                                    && brief.related_message_id.as_deref()
-                                        == Some(record.message_id.as_str())
-                                    && !brief.text.trim().is_empty()
-                            }) else {
-                                return Ok(interrupted("completion_brief_evidence_missing"));
-                            };
-                            ExecutionOutcome::WorkItem(WorkItemOutcome::Complete {
-                                completion: brief.id,
-                            })
-                        }
-                        Some(
-                            crate::types::WorkItemSchedulingState::WaitingOperator
-                            | crate::types::WorkItemSchedulingState::WaitingTask
-                            | crate::types::WorkItemSchedulingState::WaitingExternal
-                            | crate::types::WorkItemSchedulingState::WaitingTimer
-                            | crate::types::WorkItemSchedulingState::WaitingSystem,
-                        ) => {
-                            let active_waits = storage.active_wait_conditions_for_work_item(
-                                &record.agent_id,
-                                work_item_id,
-                            )?;
-                            let [wait] = active_waits.as_slice() else {
-                                return Ok(interrupted("wait_outcome_ambiguous"));
-                            };
+                                .collect::<Vec<_>>();
+                            match unresolved_waits.as_slice() {
+                                [] => None,
+                                [wait] => Some(wait.id.clone()),
+                                _ => return Ok(interrupted("wait_outcome_ambiguous")),
+                            }
+                        } else {
+                            None
+                        };
+                        if let Some(wait_id) = recovery_wait_id {
                             ExecutionOutcome::WorkItem(WorkItemOutcome::Wait {
-                                wait: WaitReference {
-                                    wait_id: wait.id.clone(),
-                                },
+                                wait: WaitReference { wait_id },
                             })
+                        } else {
+                            let unresolved_waits = storage
+                                .raw_unresolved_wait_conditions_for_agent(&record.agent_id)?
+                                .into_iter()
+                                .filter(|wait| {
+                                    wait.work_item_id.as_deref() == Some(work_item_id.as_str())
+                                })
+                                .collect::<Vec<_>>();
+                            let current_turn_waits = unresolved_waits
+                                .iter()
+                                .filter(|wait| {
+                                    wait.status == crate::types::WaitConditionStatus::Active
+                                        && wait.turn_id.as_deref()
+                                            == Some(terminal_turn.turn_id.as_str())
+                                })
+                                .collect::<Vec<_>>();
+                            match (unresolved_waits.as_slice(), current_turn_waits.as_slice()) {
+                                ([], []) => {
+                                    if authoritative_work.source_revision != work_item.revision {
+                                        return Ok(interrupted(
+                                            "work_item_execution_revision_mismatch",
+                                        ));
+                                    }
+                                    ExecutionOutcome::WorkItem(WorkItemOutcome::Continue)
+                                }
+                                ([_], [wait]) => {
+                                    ExecutionOutcome::WorkItem(WorkItemOutcome::Wait {
+                                        wait: WaitReference {
+                                            wait_id: wait.id.clone(),
+                                        },
+                                    })
+                                }
+                                ([_], []) => {
+                                    return Ok(interrupted("wait_outcome_turn_mismatch"));
+                                }
+                                _ => return Ok(interrupted("wait_outcome_ambiguous")),
+                            }
                         }
-                        Some(crate::types::WorkItemSchedulingState::YieldedToWorkItem) => {
-                            return Ok(interrupted("yield_continuation_missing"));
-                        }
-                        Some(
-                            crate::types::WorkItemSchedulingState::Blocked
-                            | crate::types::WorkItemSchedulingState::Completing,
-                        )
-                        | None => return Ok(interrupted("terminal_outcome_unresolved")),
                     }
                 }
                 _ => return Ok(interrupted("yield_continuation_ambiguous")),

@@ -3021,6 +3021,425 @@ async fn production_protocol_claim_and_settlement_release_the_canonical_slot() {
 }
 
 #[tokio::test]
+async fn production_settlement_ignores_foreign_turn_read_model_yield_divergence() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let owner = runtime
+        .create_work_item("canonical settlement owner".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let target = runtime
+        .create_work_item(
+            "foreign turn continuation target".into(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "settle from canonical facts".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+    bind_autonomous_work_queue_tick(&mut message, &owner, "queued_available");
+    message.turn_id = Some("turn-canonical-read-model-divergence".into());
+    let message = runtime.enqueue(message).await.unwrap();
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Message(_)
+    ));
+
+    runtime
+        .storage()
+        .append_work_item_continuation(&crate::types::WorkItemContinuationFrame::new_on_completed(
+            "default",
+            owner.id.clone(),
+            target.id,
+            Some("turn-foreign-continuation".into()),
+        ))
+        .unwrap();
+    let projection = runtime.storage().work_queue_prompt_projection().unwrap();
+    assert_eq!(
+        projection
+            .items
+            .iter()
+            .find(|item| item.work_item.id == owner.id)
+            .map(|item| item.scheduling_state),
+        Some(WorkItemSchedulingState::YieldedToWorkItem)
+    );
+
+    finish_claimed_test_run(&runtime).await;
+    let terminal = terminal_transition(&message, Some(&owner.id));
+    runtime
+        .commit_queue_terminal_settlement(
+            QueueEntryRecord {
+                message_id: message.id.clone(),
+                agent_id: message.agent_id.clone(),
+                priority: message.priority,
+                status: QueueEntryStatus::Processed,
+                created_at: message.created_at,
+                updated_at: Utc::now(),
+            },
+            Vec::new(),
+            true,
+            Some(&terminal),
+        )
+        .await
+        .unwrap();
+
+    let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+    let settled = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    let attempt = &settled.attempts[&activation_id];
+    assert_eq!(
+        settled.outcomes[attempt.terminal_outcome_id.as_deref().unwrap()].outcome,
+        crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
+            crate::domain::execution_protocol::WorkItemOutcome::Continue,
+        )
+    );
+}
+
+#[tokio::test]
+async fn production_settlement_yields_to_exact_matching_revision_continuation() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let owner = runtime
+        .create_work_item("yielding canonical owner".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let target = runtime
+        .create_work_item("canonical yield target".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "yield to exact target".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+    bind_autonomous_work_queue_tick(&mut message, &owner, "queued_available");
+    message.turn_id = Some("turn-canonical-exact-yield".into());
+    let message = runtime.enqueue(message).await.unwrap();
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Message(_)
+    ));
+
+    runtime
+        .storage()
+        .append_work_item_continuation(&crate::types::WorkItemContinuationFrame::new_on_completed(
+            "default",
+            owner.id.clone(),
+            target.id.clone(),
+            message.turn_id.clone(),
+        ))
+        .unwrap();
+    finish_claimed_test_run(&runtime).await;
+    let terminal = terminal_transition(&message, Some(&owner.id));
+    runtime
+        .commit_queue_terminal_settlement(
+            QueueEntryRecord {
+                message_id: message.id.clone(),
+                agent_id: message.agent_id.clone(),
+                priority: message.priority,
+                status: QueueEntryStatus::Processed,
+                created_at: message.created_at,
+                updated_at: Utc::now(),
+            },
+            Vec::new(),
+            true,
+            Some(&terminal),
+        )
+        .await
+        .unwrap();
+
+    let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+    let settled = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    let attempt = &settled.attempts[&activation_id];
+    assert!(matches!(
+        &settled.outcomes[attempt.terminal_outcome_id.as_deref().unwrap()].outcome,
+        crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
+            crate::domain::execution_protocol::WorkItemOutcome::Yield {
+                target_work_item_id
+            }
+        ) if target_work_item_id == &target.id
+    ));
+    assert_eq!(
+        settled.work_items[&owner.id].state,
+        crate::domain::execution_protocol::WorkItemExecutionState::Paused {
+            generation: owner.revision + 1,
+            reason: format!("yielded_to:{}", target.id),
+        }
+    );
+}
+
+#[tokio::test]
+async fn production_settlement_interrupts_yield_to_stale_execution_revision() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let owner = runtime
+        .create_work_item("stale yield owner".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let target = runtime
+        .create_work_item("stale yield target".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "reject stale yield target".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+    bind_autonomous_work_queue_tick(&mut message, &owner, "queued_available");
+    message.turn_id = Some("turn-canonical-stale-yield".into());
+    let message = runtime.enqueue(message).await.unwrap();
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Message(_)
+    ));
+
+    let mut stale_target = target.clone();
+    stale_target.revision += 1;
+    stale_target.objective = "metadata advanced without canonical execution".into();
+    stale_target.updated_at = Utc::now();
+    runtime.storage().append_work_item(&stale_target).unwrap();
+    runtime
+        .storage()
+        .append_work_item_continuation(&crate::types::WorkItemContinuationFrame::new_on_completed(
+            "default",
+            owner.id.clone(),
+            target.id,
+            message.turn_id.clone(),
+        ))
+        .unwrap();
+
+    finish_claimed_test_run(&runtime).await;
+    let terminal = terminal_transition(&message, Some(&owner.id));
+    runtime
+        .commit_queue_terminal_settlement(
+            QueueEntryRecord {
+                message_id: message.id.clone(),
+                agent_id: message.agent_id.clone(),
+                priority: message.priority,
+                status: QueueEntryStatus::Processed,
+                created_at: message.created_at,
+                updated_at: Utc::now(),
+            },
+            Vec::new(),
+            true,
+            Some(&terminal),
+        )
+        .await
+        .unwrap();
+
+    let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+    let settled = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    let attempt = &settled.attempts[&activation_id];
+    assert_eq!(
+        attempt.state,
+        crate::domain::execution_protocol::ExecutionAttemptState::Interrupted
+    );
+    assert!(matches!(
+        &settled.outcomes[attempt.terminal_outcome_id.as_deref().unwrap()].outcome,
+        crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
+            crate::domain::execution_protocol::WorkItemOutcome::Interrupted { reason }
+        ) if reason == "yield_target_not_runnable"
+    ));
+}
+
+#[tokio::test]
+async fn production_settlement_interrupts_stale_owner_execution_revision() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let owner = runtime
+        .create_work_item("stale canonical owner".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "reject stale owner revision".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+    bind_autonomous_work_queue_tick(&mut message, &owner, "queued_available");
+    message.turn_id = Some("turn-canonical-stale-owner".into());
+    let message = runtime.enqueue(message).await.unwrap();
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Message(_)
+    ));
+
+    let mut stale_owner = owner.clone();
+    stale_owner.revision += 1;
+    stale_owner.objective = "metadata advanced beyond admitted execution".into();
+    stale_owner.updated_at = Utc::now();
+    runtime.storage().append_work_item(&stale_owner).unwrap();
+
+    finish_claimed_test_run(&runtime).await;
+    let terminal = terminal_transition(&message, Some(&owner.id));
+    runtime
+        .commit_queue_terminal_settlement(
+            QueueEntryRecord {
+                message_id: message.id.clone(),
+                agent_id: message.agent_id.clone(),
+                priority: message.priority,
+                status: QueueEntryStatus::Processed,
+                created_at: message.created_at,
+                updated_at: Utc::now(),
+            },
+            Vec::new(),
+            true,
+            Some(&terminal),
+        )
+        .await
+        .unwrap();
+
+    let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+    let settled = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    let attempt = &settled.attempts[&activation_id];
+    assert_eq!(
+        attempt.state,
+        crate::domain::execution_protocol::ExecutionAttemptState::Interrupted
+    );
+    assert!(matches!(
+        &settled.outcomes[attempt.terminal_outcome_id.as_deref().unwrap()].outcome,
+        crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
+            crate::domain::execution_protocol::WorkItemOutcome::Interrupted { reason }
+        ) if reason == "work_item_execution_revision_mismatch"
+    ));
+}
+
+#[tokio::test]
 async fn production_protocol_wait_settlement_creates_rejoinable_wait_generation() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
