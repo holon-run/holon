@@ -4904,6 +4904,18 @@ CREATE TABLE working_memory_deltas (
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
         let now = Utc::now();
+        for agent_id in [
+            "agent-queued",
+            "agent-dequeued",
+            "agent-interrupted",
+            "agent-processed",
+        ] {
+            db.agent_identities().upsert(&agent_identity(agent_id, 0))?;
+        }
+        let mut deleted_identity = agent_identity("agent-deleted", 0);
+        deleted_identity.status = AgentRegistryStatus::Deleted;
+        deleted_identity.deleted_at = Some(now);
+        db.agent_identities().upsert(&deleted_identity)?;
         for (message_id, agent_id, status) in [
             ("msg-queued", "agent-queued", QueueEntryStatus::Queued),
             ("msg-dequeued", "agent-dequeued", QueueEntryStatus::Dequeued),
@@ -4916,6 +4928,11 @@ CREATE TABLE working_memory_deltas (
                 "msg-processed",
                 "agent-processed",
                 QueueEntryStatus::Processed,
+            ),
+            (
+                "msg-deleted",
+                "agent-deleted",
+                QueueEntryStatus::Interrupted,
             ),
         ] {
             db.queue_entries().upsert(&QueueEntryRecord {

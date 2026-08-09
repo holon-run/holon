@@ -1592,10 +1592,13 @@ impl QueueEntryRepository<'_> {
         let dequeued_status = enum_string(&crate::types::QueueEntryStatus::Dequeued)?;
         let interrupted_status = enum_string(&crate::types::QueueEntryStatus::Interrupted)?;
         let mut statement = connection.prepare(
-            "SELECT DISTINCT agent_id
-             FROM queue_entries
-             WHERE status IN (?1, ?2)
-             ORDER BY agent_id ASC",
+            "SELECT DISTINCT q.agent_id
+             FROM queue_entries q
+             JOIN agent_identities i
+               ON i.agent_id = q.agent_id
+              AND i.status = 'active'
+             WHERE q.status IN (?1, ?2)
+             ORDER BY q.agent_id ASC",
         )?;
         let rows = statement.query_map(params![dequeued_status, interrupted_status], |row| {
             row.get::<_, String>(0)

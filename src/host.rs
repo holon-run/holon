@@ -6124,6 +6124,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn startup_recovery_ignores_interrupted_queue_for_deleted_private_child() {
+        let (_home, host) = canonical_test_host();
+        let agent_id = "tmp_child_deleted_recovery";
+        let now = Utc::now();
+        let mut identity = AgentIdentityRecord::new(
+            agent_id,
+            AgentKind::Child,
+            AgentVisibility::Private,
+            AgentOwnership::ParentSupervised,
+            AgentProfilePreset::PrivateChild,
+            Some(host.config().default_agent_id.clone()),
+            Some("task-deleted-child".into()),
+        );
+        identity.status = AgentRegistryStatus::Deleted;
+        identity.deleted_at = Some(now);
+        host.append_agent_identity(&identity).unwrap();
+        host.runtime_db()
+            .queue_entries()
+            .upsert(&QueueEntryRecord {
+                message_id: "msg-deleted-child".into(),
+                agent_id: agent_id.into(),
+                priority: Priority::Normal,
+                status: QueueEntryStatus::Interrupted,
+                created_at: now,
+                updated_at: now,
+            })
+            .unwrap();
+
+        assert!(host
+            .recover_orphaned_queue_claims_at_startup()
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(host.try_get_loaded_runtime(agent_id).await.is_none());
+        assert_eq!(
+            host.runtime_db()
+                .queue_entries()
+                .latest("msg-deleted-child")
+                .unwrap()
+                .unwrap()
+                .status,
+            QueueEntryStatus::Interrupted
+        );
+    }
+
+    #[tokio::test]
     async fn shutdown_rejects_new_runtime_activation() {
         let (_home, host) = test_host();
         let agent_id = host.config().default_agent_id.clone();
