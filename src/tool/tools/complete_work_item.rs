@@ -109,6 +109,7 @@ pub(crate) async fn execute(
         };
     let context = query_context(runtime).await?;
     let work_item = view_for_record(runtime, &context, completed, true, None, None).await?;
+    let terminal_transition = continuation_resumed.is_some();
     let mut result = serde_json::to_value(
         WorkItemMutationResult::with_completion_transition(
             work_item,
@@ -130,8 +131,10 @@ pub(crate) async fn execute(
         }
     }
     let mut result = serialize_success(NAME, &result)?;
-    result.should_sleep = true;
-    result.terminal_transition = true;
+    if terminal_transition {
+        result.should_sleep = true;
+        result.terminal_transition = true;
+    }
     result.prepared_work_item_completion = prepared.map(Box::new);
     Ok(result)
 }

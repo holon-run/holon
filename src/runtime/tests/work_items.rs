@@ -2184,9 +2184,13 @@ async fn complete_work_item_promotes_same_round_report_and_binds_evidence() {
     .expect("timed out waiting for canonical completion commit");
     assert_eq!(
         *provider.calls.lock().await,
-        1,
-        "CompleteWorkItem must hard-stop the provider loop"
+        2,
+        "standalone completion must allow the provider to consume its tool result"
     );
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(state.total_model_rounds, 2);
+    assert_eq!(state.total_input_tokens, 20);
+    assert_eq!(state.total_output_tokens, 20);
 
     let completed = runtime
         .latest_work_item(&work_item.id)
@@ -3946,7 +3950,7 @@ async fn complete_work_item_with_unfinished_todos_returns_structured_warning() {
         )
         .await
         .unwrap();
-    assert!(result.terminal_transition);
+    assert!(!result.terminal_transition);
     let prepared = result
         .prepared_work_item_completion
         .as_ref()

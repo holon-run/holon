@@ -1959,7 +1959,7 @@ impl TurnExecution<'_> {
                     sleep_duration_ms,
                     allow_sleep_runnable_work_override: completed_work_item_this_turn,
                     terminal_kind: TurnTerminalKind::Completed,
-                    prepared_work_item_completion: None,
+                    prepared_work_item_completion: prepared_work_item_completion.take(),
                 });
             }
 
@@ -1971,7 +1971,7 @@ impl TurnExecution<'_> {
             let mut tool_execution_refs: Vec<(String, String)> = Vec::new();
             let mut all_tool_results_should_sleep = !round_tool_calls.is_empty();
             let mut terminal_tool_transition = false;
-            for call in tool_calls {
+            for (tool_call_index, call) in tool_calls.into_iter().enumerate() {
                 if let Err(err) = runtime.ensure_not_aborted().await {
                     if let Some(aborted) = err.downcast_ref::<CurrentRunAborted>() {
                         runtime
@@ -2266,6 +2266,7 @@ impl TurnExecution<'_> {
                                 reason: None,
                             }),
                         );
+                        let stops_tool_batch = result.prepared_work_item_completion.is_some();
                         if let Some(mut prepared) = result.prepared_work_item_completion.take() {
                             prepared.tool_execution = Some(record.clone());
                             prepared.audit_events.push(tool_executed_event);
@@ -2292,8 +2293,9 @@ impl TurnExecution<'_> {
                             is_error: result.is_error(),
                             error: result.tool_error().cloned(),
                         });
-                        if result.terminal_transition {
-                            terminal_tool_transition = true;
+                        if result.terminal_transition || stops_tool_batch {
+                            terminal_tool_transition = result.terminal_transition
+                                || tool_call_index + 1 < round_tool_calls.len();
                             break;
                         }
                     }

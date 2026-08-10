@@ -165,6 +165,30 @@ pub(crate) struct PreparedWorkItemCompletion {
     pub(crate) transcript_entries: Vec<crate::types::TranscriptEntry>,
 }
 
+fn rebase_prepared_completion_agent_state(
+    prepared: &PreparedWorkItemCompletion,
+    baseline: &AgentState,
+) -> Result<AgentState> {
+    let expected = &prepared.expected_agent_state;
+    anyhow::ensure!(
+        baseline.id == expected.id
+            && baseline.current_run_id == expected.current_run_id
+            && baseline.current_work_item_id == expected.current_work_item_id
+            && baseline.current_turn_work_item_id == expected.current_turn_work_item_id
+            && baseline.current_execution_binding == expected.current_execution_binding,
+        "completion commit execution or focus binding changed before settlement"
+    );
+    let committed = &prepared.committed_agent_state;
+    let mut state = baseline.clone();
+    state.status = committed.status.clone();
+    state.current_run_id = committed.current_run_id.clone();
+    state.last_brief_at = committed.last_brief_at;
+    state.current_work_item_id = committed.current_work_item_id.clone();
+    state.current_turn_work_item_id = committed.current_turn_work_item_id.clone();
+    state.current_execution_binding = committed.current_execution_binding.clone();
+    Ok(state)
+}
+
 #[derive(Debug, Clone)]
 pub(super) enum WorkItemCompletionReportPromotionOutcome {
     /// Completion changed the WorkItem state, but did not create a new
@@ -4404,19 +4428,18 @@ impl RuntimeHandle {
             // Rebuild guard-dependent fields from the current baseline.
             let agent_state = {
                 let guard = self.inner.agent.lock().await;
-                let mut state = prepared_completion
-                    .map(|prepared| prepared.committed_agent_state.clone())
-                    .or_else(|| committed_agent_state.clone())
-                    .unwrap_or_else(|| guard.state.clone());
+                let mut state = if let Some(prepared) = prepared_completion {
+                    rebase_prepared_completion_agent_state(prepared, &guard.last_persisted_state)?
+                } else {
+                    committed_agent_state
+                        .clone()
+                        .unwrap_or_else(|| guard.state.clone())
+                };
                 let agent_state = if let Some(transition) = terminal_transition {
                     state.current_turn_id = Some(transition.terminal.turn_id.clone());
                     state.last_turn_terminal = Some(transition.terminal.clone());
                     Some(crate::runtime_db::transitions::AgentStateMutation {
-                        expected: Some(Box::new(
-                            prepared_completion
-                                .map(|prepared| prepared.expected_agent_state.clone())
-                                .unwrap_or_else(|| guard.last_persisted_state.clone()),
-                        )),
+                        expected: Some(Box::new(guard.last_persisted_state.clone())),
                         record: Box::new(state.clone()),
                     })
                 } else {
