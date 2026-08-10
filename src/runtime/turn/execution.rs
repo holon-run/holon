@@ -80,7 +80,7 @@ struct PendingCompletionReport {
     request_tool_call_id: String,
     tool_execution: ToolExecutionRecord,
     warnings: Vec<Value>,
-    corrective_retries: usize,
+    corrective_retry_attempted: bool,
 }
 
 impl TurnModelSelection {
@@ -1863,8 +1863,8 @@ impl TurnExecution<'_> {
                     } else {
                         "empty_completion_report"
                     };
-                    if pending.corrective_retries == 0 {
-                        pending.corrective_retries += 1;
+                    if !pending.corrective_retry_attempted {
+                        pending.corrective_retry_attempted = true;
                         let continuation_text = "Completion report expected. Reply with the final operator-facing completion report as text only. Do not call any tool.".to_string();
                         completed_rounds.push(TurnRoundRecord {
                             round,
@@ -2614,7 +2614,7 @@ impl TurnExecution<'_> {
                                 request_tool_call_id: tool_call_id.clone(),
                                 tool_execution: record.clone(),
                                 warnings: directive.warnings,
-                                corrective_retries: 0,
+                                corrective_retry_attempted: false,
                             });
                         }
                         if prepared_work_item_completion.is_none()
