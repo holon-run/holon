@@ -262,6 +262,7 @@ pub(crate) struct TurnTerminalTransitionCommand {
     pub agent_id: String,
     pub agent_state: AgentStateMutation,
     pub turn_record: TurnRecord,
+    pub terminal_tool_executions: Vec<ToolExecutionRecord>,
     pub audit_events: Vec<AuditEvent>,
     pub fault: Option<TransitionFaultPoint>,
 }
@@ -627,6 +628,11 @@ impl RuntimeTransitionRepository<'_> {
     ) -> Result<TransitionCommit> {
         self.db.transaction(|tx| {
             validate_agent_state_mutation_tx(tx, Some(&command.agent_state))?;
+            validate_terminal_tool_execution_mutations_tx(
+                tx,
+                &command.agent_id,
+                &command.terminal_tool_executions,
+            )?;
             inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
 
             let agent_state_applied =
@@ -647,11 +653,23 @@ impl RuntimeTransitionRepository<'_> {
                 .as_ref()
                 != Some(&command.turn_record);
             upsert_turn_record_tx(tx, &command.turn_record)?;
+            let mut terminal_tool_execution_applied = false;
+            for tool_execution in &command.terminal_tool_executions {
+                insert_tool_evidence_tx(tx, tool_execution)?;
+                terminal_tool_execution_applied = true;
+            }
+            terminal_tool_execution_applied |=
+                interrupt_deferred_tool_executions_for_terminal_turn_tx(
+                    tx,
+                    &command.agent_id,
+                    &command.turn_record,
+                )? > 0;
             inject_fault(
                 command.fault,
                 TransitionFaultPoint::AfterTerminalTurnRecordWrite,
             )?;
-            let applied = agent_state_applied || turn_record_applied;
+            let applied =
+                agent_state_applied || turn_record_applied || terminal_tool_execution_applied;
             if !applied {
                 return Ok(TransitionCommit::default());
             }
@@ -954,6 +972,7 @@ impl RuntimeTransitionRepository<'_> {
             None,
             None,
             None,
+            &[],
         )
     }
 
@@ -962,7 +981,24 @@ impl RuntimeTransitionRepository<'_> {
         command: &QueueTransitionCommand,
         execution_protocol: &ExecutionProtocolTransition,
     ) -> Result<TransitionCommit> {
-        self.commit_queue_transaction(command, execution_protocol, None, None, None, None)
+        self.commit_queue_transaction(command, execution_protocol, None, None, None, None, &[])
+    }
+
+    pub fn commit_queue_with_execution_protocol_and_terminal_tool_executions(
+        &self,
+        command: &QueueTransitionCommand,
+        execution_protocol: &ExecutionProtocolTransition,
+        terminal_tool_executions: &[ToolExecutionRecord],
+    ) -> Result<TransitionCommit> {
+        self.commit_queue_transaction(
+            command,
+            execution_protocol,
+            None,
+            None,
+            None,
+            None,
+            terminal_tool_executions,
+        )
     }
 
     pub fn commit_queue_with_wait_trigger(
@@ -977,6 +1013,7 @@ impl RuntimeTransitionRepository<'_> {
             None,
             None,
             None,
+            &[],
         )
     }
 
@@ -993,6 +1030,7 @@ impl RuntimeTransitionRepository<'_> {
             None,
             None,
             None,
+            &[],
         )
     }
 
@@ -1009,6 +1047,7 @@ impl RuntimeTransitionRepository<'_> {
             Some(task_expectation),
             None,
             None,
+            &[],
         )
     }
 
@@ -1025,6 +1064,7 @@ impl RuntimeTransitionRepository<'_> {
             None,
             None,
             Some(completion),
+            &[],
         )
     }
 
@@ -1041,6 +1081,7 @@ impl RuntimeTransitionRepository<'_> {
             None,
             Some(scheduler_protocol),
             None,
+            &[],
         )
     }
 
@@ -1052,6 +1093,7 @@ impl RuntimeTransitionRepository<'_> {
         task_expectation: Option<&TaskExpectation>,
         legacy_scheduler_protocol: Option<&LegacySchedulerProtocolTransition>,
         completion: Option<&CompletionTransition>,
+        terminal_tool_executions: &[ToolExecutionRecord],
     ) -> Result<TransitionCommit> {
         self.db.transaction(|tx| {
             validate_queue_operation(command)?;
@@ -1084,6 +1126,11 @@ impl RuntimeTransitionRepository<'_> {
                     validate_work_item_continuation_tx(tx, continuation)?;
                 }
             }
+            validate_terminal_tool_execution_mutations_tx(
+                tx,
+                &command.agent_id,
+                terminal_tool_executions,
+            )?;
             if let QueueMutation::Consume(record) = &command.mutation {
                 let include_interrupted = match command.operation {
                     QueueOperation::Claim => true,
@@ -1254,11 +1301,29 @@ impl RuntimeTransitionRepository<'_> {
                     .map(|payload| serde_json::from_str::<ToolExecutionRecord>(&payload))
                     .transpose()?;
                 if let Some(existing) = existing_tool_execution {
-                    anyhow::ensure!(
-                        existing == completion.tool_execution,
-                        "conflicting CompleteWorkItem tool execution evidence for {}",
-                        completion.tool_execution.id
-                    );
+                    if existing != completion.tool_execution {
+                        anyhow::ensure!(
+                            existing.status == crate::types::ToolExecutionStatus::Deferred
+                                && completion.tool_execution.status
+                                    == crate::types::ToolExecutionStatus::Success
+                                && existing.agent_id == completion.tool_execution.agent_id
+                                && existing.work_item_id
+                                    == completion.tool_execution.work_item_id
+                                && existing.turn_index == completion.tool_execution.turn_index
+                                && existing.turn_id == completion.tool_execution.turn_id
+                                && existing.tool_name == completion.tool_execution.tool_name
+                                && existing.created_at == completion.tool_execution.created_at
+                                && existing.authority_class
+                                    == completion.tool_execution.authority_class
+                                && existing.input == completion.tool_execution.input
+                                && existing.invocation_surface
+                                    == completion.tool_execution.invocation_surface,
+                            "conflicting CompleteWorkItem tool execution evidence for {}",
+                            completion.tool_execution.id
+                        );
+                        insert_tool_evidence_tx(tx, &completion.tool_execution)?;
+                        applied = true;
+                    }
                 } else {
                     insert_tool_evidence_tx(tx, &completion.tool_execution)?;
                     applied = true;
@@ -1267,13 +1332,28 @@ impl RuntimeTransitionRepository<'_> {
             } else {
                 false
             };
+            let mut terminal_tool_execution_applied = false;
+            for tool_execution in terminal_tool_executions {
+                insert_tool_evidence_tx(tx, tool_execution)?;
+                terminal_tool_execution_applied = true;
+            }
+            if let Some(turn_record) = command.turn_record.as_ref() {
+                terminal_tool_execution_applied |=
+                    interrupt_deferred_tool_executions_for_terminal_turn_tx(
+                        tx,
+                        &command.agent_id,
+                        turn_record,
+                    )?
+                    > 0;
+            }
             let applied = mutation_applied
                 || agent_state_applied
                 || protocol_applied
                 || execution_protocol_applied
                 || wait_transition_applied
                 || wait_work_item_applied
-                || completion_applied;
+                || completion_applied
+                || terminal_tool_execution_applied;
             if !applied {
                 return Ok(TransitionCommit::default());
             }
@@ -1662,6 +1742,103 @@ fn validate_work_item_continuation_tx(
         }
     }
     Ok(())
+}
+
+fn validate_terminal_tool_execution_mutations_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    incoming: &[ToolExecutionRecord],
+) -> Result<()> {
+    for terminal in incoming {
+        anyhow::ensure!(
+            terminal.agent_id == agent_id
+                && terminal.status == crate::types::ToolExecutionStatus::Interrupted
+                && terminal.completed_at.is_some(),
+            "terminal tool execution mutation must be a completed interruption for the same agent"
+        );
+        let existing = tx
+            .query_row(
+                "SELECT payload_json FROM tool_executions WHERE evidence_id = ?1",
+                [&terminal.id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|payload| serde_json::from_str::<ToolExecutionRecord>(&payload))
+            .transpose()?
+            .ok_or_else(|| anyhow!("deferred tool execution {} is missing", terminal.id))?;
+        anyhow::ensure!(
+            existing.status == crate::types::ToolExecutionStatus::Deferred
+                && existing.agent_id == terminal.agent_id
+                && existing.work_item_id == terminal.work_item_id
+                && existing.turn_index == terminal.turn_index
+                && existing.turn_id == terminal.turn_id
+                && existing.tool_name == terminal.tool_name
+                && existing.created_at == terminal.created_at
+                && existing.authority_class == terminal.authority_class
+                && existing.input == terminal.input
+                && existing.invocation_surface == terminal.invocation_surface,
+            "conflicting terminal tool execution mutation for {}",
+            terminal.id
+        );
+    }
+    Ok(())
+}
+
+fn interrupt_deferred_tool_executions_for_terminal_turn_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    turn_record: &TurnRecord,
+) -> Result<usize> {
+    let Some(terminal) = turn_record.terminal.as_ref() else {
+        return Ok(0);
+    };
+    let mut statement = tx.prepare(
+        "SELECT payload_json
+         FROM tool_executions
+         WHERE agent_id = ?1 AND turn_id = ?2
+         ORDER BY created_at, evidence_id",
+    )?;
+    let deferred = statement
+        .query_map(rusqlite::params![agent_id, turn_record.turn_id], |row| {
+            row.get::<_, String>(0)
+        })?
+        .map(|row| Ok(serde_json::from_str::<ToolExecutionRecord>(&row?)?))
+        .collect::<Result<Vec<_>>>()?;
+    drop(statement);
+
+    let reason = terminal
+        .reason
+        .as_deref()
+        .filter(|reason| !reason.trim().is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("turn_terminal_{:?}", terminal.kind).to_lowercase());
+    let mut interrupted = 0;
+    for mut record in deferred
+        .into_iter()
+        .filter(|record| record.status == crate::types::ToolExecutionStatus::Deferred)
+    {
+        let completion_request_id = record
+            .output
+            .pointer("/envelope/result/completion_request_id")
+            .cloned();
+        record.status = crate::types::ToolExecutionStatus::Interrupted;
+        record.completed_at = Some(terminal.completed_at);
+        record.duration_ms = terminal
+            .completed_at
+            .signed_duration_since(record.created_at)
+            .num_milliseconds()
+            .max(0) as u64;
+        record.summary = format!("Interrupted: {reason}");
+        record.output = serde_json::json!({
+            "disposition": "interrupted",
+            "reason": reason,
+            "turn_terminal_kind": terminal.kind,
+            "completion_request_id": completion_request_id,
+        });
+        insert_tool_evidence_tx(tx, &record)?;
+        interrupted += 1;
+    }
+    Ok(interrupted)
 }
 
 fn validate_completion_transition_tx(
@@ -2126,6 +2303,35 @@ mod tests {
         }
     }
 
+    fn deferred_completion_tool(
+        turn_id: &str,
+        created_at: chrono::DateTime<Utc>,
+    ) -> ToolExecutionRecord {
+        ToolExecutionRecord {
+            id: "tool-deferred-completion".into(),
+            agent_id: "agent-a".into(),
+            work_item_id: Some("work-a".into()),
+            turn_index: 1,
+            turn_id: Some(turn_id.into()),
+            tool_name: crate::tool::names::COMPLETE_WORK_ITEM.into(),
+            created_at,
+            completed_at: None,
+            duration_ms: 1,
+            authority_class: AuthorityClass::RuntimeInstruction,
+            status: ToolExecutionStatus::Deferred,
+            input: serde_json::json!({"work_item_id": "work-a"}),
+            output: serde_json::json!({
+                "envelope": {
+                    "result": {
+                        "completion_request_id": "completion-request-a"
+                    }
+                }
+            }),
+            summary: "Awaiting the final operator-facing completion report.".into(),
+            invocation_surface: None,
+        }
+    }
+
     fn task(id: &str, status: TaskStatus) -> TaskRecord {
         let now = Utc::now();
         TaskRecord {
@@ -2570,6 +2776,150 @@ mod tests {
             assert!(db.transcript_entries().all(Some("agent-a"))?.is_empty());
             assert!(db.audit_events().recent(Some("agent-a"), 10)?.is_empty());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn queue_terminal_settlement_interrupts_deferred_completion_tool_for_all_exit_reasons(
+    ) -> Result<()> {
+        for (case, reason, queue_status) in [
+            ("cancel", "operator_aborted", QueueEntryStatus::Interrupted),
+            ("shutdown", "daemon_shutdown", QueueEntryStatus::Interrupted),
+            ("runtime-error", "runtime_error", QueueEntryStatus::Aborted),
+            ("restart", "runtime_restart", QueueEntryStatus::Interrupted),
+        ] {
+            let (_dir, db) = runtime_db()?;
+            let now = Utc::now();
+            let message_id = format!("message-deferred-completion-{case}");
+            let turn_id = format!("turn-deferred-completion-{case}");
+            let queued = QueueEntryRecord {
+                message_id,
+                agent_id: "agent-a".into(),
+                priority: Priority::Normal,
+                status: QueueEntryStatus::Dequeued,
+                created_at: now,
+                updated_at: now,
+            };
+            db.queue_entries().upsert(&queued)?;
+            let deferred = deferred_completion_tool(&turn_id, now);
+            db.evidence().append_tool_execution(&deferred)?;
+            let terminal = crate::types::TurnTerminalRecord {
+                turn_id,
+                turn_index: 1,
+                kind: crate::types::TurnTerminalKind::Aborted,
+                reason: Some(reason.into()),
+                last_assistant_message: None,
+                checkpoint: None,
+                completed_at: now + chrono::Duration::seconds(2),
+                duration_ms: 2_000,
+            };
+            let mut turn = TurnRecord::new("agent-a", &terminal.turn_id, terminal.turn_index);
+            turn.tool_execution_ids = vec![deferred.id.clone()];
+            turn.terminal = Some(crate::types::TurnTerminalSummary::from_terminal(&terminal));
+            let mut settled_queue = queued;
+            settled_queue.status = queue_status;
+            settled_queue.updated_at = terminal.completed_at;
+
+            assert!(
+                db.transitions()
+                    .commit_queue_with_execution_protocol(
+                        &QueueTransitionCommand {
+                            agent_id: "agent-a".into(),
+                            operation: QueueOperation::Settle,
+                            mutation: QueueMutation::Upsert(settled_queue),
+                            scheduler_claim_work_item: None,
+                            agent_state: None,
+                            message_evidence: Vec::new(),
+                            transcript_entries: Vec::new(),
+                            turn_record: Some(turn),
+                            audit_events: Vec::new(),
+                            notify_scheduler: false,
+                            fault: None,
+                            brief_evidence: Vec::new(),
+                        },
+                        &ExecutionProtocolTransition::default(),
+                    )?
+                    .applied
+            );
+
+            let interrupted = db
+                .evidence()
+                .tool_execution_by_id("agent-a", &deferred.id)?
+                .expect("terminal settlement must retain the tool execution");
+            assert_eq!(interrupted.status, ToolExecutionStatus::Interrupted);
+            assert_eq!(interrupted.completed_at, Some(terminal.completed_at));
+            assert_eq!(interrupted.output["reason"], reason);
+            assert_eq!(
+                interrupted.output["completion_request_id"],
+                "completion-request-a"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn queue_terminal_fault_rolls_back_deferred_tool_interruption() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        let now = Utc::now();
+        let queued = QueueEntryRecord {
+            message_id: "message-deferred-completion-fault".into(),
+            agent_id: "agent-a".into(),
+            priority: Priority::Normal,
+            status: QueueEntryStatus::Dequeued,
+            created_at: now,
+            updated_at: now,
+        };
+        db.queue_entries().upsert(&queued)?;
+        let deferred = deferred_completion_tool("turn-deferred-completion-fault", now);
+        db.evidence().append_tool_execution(&deferred)?;
+        let terminal = crate::types::TurnTerminalRecord {
+            turn_id: "turn-deferred-completion-fault".into(),
+            turn_index: 1,
+            kind: crate::types::TurnTerminalKind::Aborted,
+            reason: Some("runtime_restart".into()),
+            last_assistant_message: None,
+            checkpoint: None,
+            completed_at: now + chrono::Duration::seconds(2),
+            duration_ms: 2_000,
+        };
+        let mut turn = TurnRecord::new("agent-a", &terminal.turn_id, terminal.turn_index);
+        turn.tool_execution_ids = vec![deferred.id.clone()];
+        turn.terminal = Some(crate::types::TurnTerminalSummary::from_terminal(&terminal));
+        let mut interrupted_queue = queued.clone();
+        interrupted_queue.status = QueueEntryStatus::Interrupted;
+        interrupted_queue.updated_at = terminal.completed_at;
+
+        db.transitions()
+            .commit_queue_with_execution_protocol(
+                &QueueTransitionCommand {
+                    agent_id: "agent-a".into(),
+                    operation: QueueOperation::Settle,
+                    mutation: QueueMutation::Upsert(interrupted_queue),
+                    scheduler_claim_work_item: None,
+                    agent_state: None,
+                    message_evidence: Vec::new(),
+                    transcript_entries: Vec::new(),
+                    turn_record: Some(turn),
+                    audit_events: Vec::new(),
+                    notify_scheduler: false,
+                    fault: Some(TransitionFaultPoint::AfterCanonicalWrites),
+                    brief_evidence: Vec::new(),
+                },
+                &ExecutionProtocolTransition::default(),
+            )
+            .unwrap_err();
+
+        assert_eq!(db.queue_entries().latest_all()?, vec![queued]);
+        assert_eq!(
+            db.evidence()
+                .tool_execution_by_id("agent-a", &deferred.id)?
+                .expect("deferred record must remain after rollback"),
+            deferred
+        );
+        assert!(db
+            .turn_records()
+            .recent_for_agent("agent-a", 10)?
+            .is_empty());
         Ok(())
     }
 

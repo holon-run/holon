@@ -595,16 +595,20 @@ Shape:
 The target tool contract should not ask the agent to duplicate the completion
 report in a tool argument.
 
-Before executing `CompleteWorkItem`, the runtime associates the immediately
-preceding same-round operator-facing text with that tool call. A unique,
-non-empty report candidate is required. The WorkItem terminal state, completion
-intent binding, result brief, focus/wait cleanup, and continuation effects are
-committed atomically as one `Open -> Completed` transition.
+Before committing `CompleteWorkItem`, the runtime requires a unique, non-empty
+operator-facing report candidate. It may come from immediately preceding
+same-round text or from a text-only follow-up round requested after a tool-only
+call. The WorkItem terminal state, completion intent binding, result brief,
+focus/wait cleanup, and continuation effects are committed atomically as one
+`Open -> Completed` transition.
 
-If the report candidate is missing or empty, the tool fails with
-`missing_completion_report` and the WorkItem remains open without completion
-side effects. The normal agent-tool path does not persist an intermediate
-`Completing` state.
+A tool-only call validates ownership, execution binding, and current WorkItem
+revision, then records an `awaiting_completion_report` request and a `Deferred`
+tool execution without changing the WorkItem lifecycle. The follow-up report is
+accepted only while those fences remain unchanged. If acquisition is abandoned
+or the Turn terminates first, the WorkItem remains open and the deferred tool
+execution becomes `Interrupted`; the normal agent-tool path does not persist an
+intermediate `Completing` state.
 
 When completion succeeds, the runtime promotes the report text into the
 WorkItem completion brief.

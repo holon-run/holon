@@ -138,7 +138,7 @@ current WorkItem is the focus for the current turn:
 | `PickWorkItem` | Set current focus to an existing open WorkItem; optionally clear a resolved blocker |
 | `GetWorkItem` | Read a single WorkItem with plan preview |
 | `ListWorkItems` | Query with filters: all, open, completed, current, queued, blocked, waiting_for_operator, runnable |
-| `CompleteWorkItem` | Mark complete; same-round assistant text is promoted as the completion report |
+| `CompleteWorkItem` | Mark complete; bound assistant text is promoted as the completion report |
 | `WaitFor` | Attach a task, external, or operator wait to the current WorkItem and yield |
 
 **Key contract:**
@@ -155,14 +155,17 @@ current WorkItem is the focus for the current turn:
   `PickWorkItem(clear_blocker=true, reason=...)` only after confirming the
   blocker is resolved; this clears `blocked_by`, fallback recheck fields, and
   active WorkItem-scoped waits.
-- `CompleteWorkItem` promotion: the operator-facing completion report must be
-  written immediately before the tool call as assistant text **in the same
-  round**. The runtime requires that report before mutation and atomically
-  commits the `Open -> Completed` transition, canonical result brief, focus and
-  wait cleanup, and continuation effects.
-- If the same-round completion report is missing or empty,
-  `CompleteWorkItem` fails with `missing_completion_report`; the WorkItem stays
-  open and retains its focus, waits, and continuation state.
+- `CompleteWorkItem` promotion: the operator-facing completion report can be
+  written immediately before the tool call in the same assistant round. A
+  tool-only call instead returns an `awaiting_completion_report` receipt and
+  requests one text-only follow-up round.
+- The runtime binds a non-empty report to the same execution, WorkItem revision,
+  completion request, and source tool call before atomically committing the
+  `Open -> Completed` transition, canonical result brief, focus and wait
+  cleanup, and continuation effects.
+- While a follow-up report is pending, the WorkItem remains open and the tool
+  execution is `Deferred`. If the Turn terminates or the report protocol is
+  abandoned, that execution becomes `Interrupted` in the terminal transaction.
 - New agent-tool completions do not create the legacy `Completing` state.
   Existing `Completing` records can still be finalized through the control
   completion API.

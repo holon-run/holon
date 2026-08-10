@@ -2471,8 +2471,10 @@ fn tool_execution_rollup_ref(record: &ToolExecutionRecord) -> String {
 
 fn status_label(status: &ToolExecutionStatus) -> &'static str {
     match status {
+        ToolExecutionStatus::Deferred => "deferred",
         ToolExecutionStatus::Success => "success",
         ToolExecutionStatus::Error => "error",
+        ToolExecutionStatus::Interrupted => "interrupted",
     }
 }
 

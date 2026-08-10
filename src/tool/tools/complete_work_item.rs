@@ -7,8 +7,14 @@ use crate::{
     runtime::{RuntimeHandle, WorkItemCompletionAuthority},
     runtime_error::RuntimeError,
     tool::helpers::{parse_tool_args, validate_non_empty},
-    tool::spec::{typed_spec, ToolExecutionContext},
-    types::{AuthorityClass, TodoItem, TodoItemState, ToolCapabilityFamily, WorkItemRecord},
+    tool::spec::{
+        typed_spec, AwaitCompletionReportDirective, CompletionReportCandidate,
+        ToolExecutionContext, ToolLoopDirective,
+    },
+    types::{
+        AuthorityClass, TodoItem, TodoItemState, ToolCapabilityFamily, WorkItemRecord,
+        WorkItemState,
+    },
 };
 
 use super::{
@@ -26,7 +32,7 @@ pub(crate) struct CompleteWorkItemArgs {
     pub(crate) work_item_id: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub(crate) struct WorkItemCompletionWarning {
     pub(crate) kind: String,
     pub(crate) message: String,
@@ -59,7 +65,10 @@ pub(crate) async fn execute(
     let work_item_id = validate_non_empty(args.work_item_id, NAME, "work_item_id")?;
     let before = runtime.latest_work_item(&work_item_id).await?;
     let warnings = before.as_ref().map(completion_warnings).unwrap_or_default();
-    let candidate = context.completion_report_candidate.as_ref();
+    let candidate = context
+        .completion_report_candidate
+        .as_ref()
+        .filter(|candidate| !candidate.text.trim().is_empty());
     let execution_binding = runtime
         .agent_state()
         .await?
@@ -70,10 +79,58 @@ pub(crate) async fn execute(
                 "CompleteWorkItem requires an active agent execution binding",
             )
         })?;
+    let authority = WorkItemCompletionAuthority::AgentExecution(execution_binding);
+    if candidate.is_none()
+        && before
+            .as_ref()
+            .is_some_and(|record| record.state != WorkItemState::Completed)
+    {
+        let expected_work_revision = runtime
+            .validate_work_item_completion_request(&work_item_id, &authority)
+            .await?;
+        let request_id = crate::ids::completion_report_request_id();
+        return Ok(crate::tool::ToolResult::deferred(
+            NAME,
+            serde_json::json!({
+                "disposition": "awaiting_completion_report",
+                "completion_request_id": request_id,
+                "work_item_id": work_item_id,
+                "completed_transition": false,
+                "expected_output": "final_text_only",
+                "warnings": warnings_json(&warnings),
+            }),
+            Some("Awaiting the final operator-facing completion report.".into()),
+            ToolLoopDirective::AwaitCompletionReport(AwaitCompletionReportDirective {
+                request_id,
+                work_item_id,
+                expected_work_revision,
+                warnings: warnings_json(&warnings),
+            }),
+        ));
+    }
+    complete_with_report_candidate(
+        runtime,
+        work_item_id,
+        authority,
+        candidate,
+        warnings,
+        "same_assistant_round_preceding_text",
+    )
+    .await
+}
+
+pub(crate) async fn complete_with_report_candidate(
+    runtime: &RuntimeHandle,
+    work_item_id: String,
+    authority: WorkItemCompletionAuthority,
+    candidate: Option<&CompletionReportCandidate>,
+    warnings: Vec<WorkItemCompletionWarning>,
+    report_source: &'static str,
+) -> Result<crate::tool::ToolResult> {
     let prepared = runtime
         .prepare_work_item_completion_with_report(
             work_item_id.clone(),
-            WorkItemCompletionAuthority::AgentExecution(execution_binding),
+            authority,
             candidate
                 .map(|candidate| candidate.text.clone())
                 .unwrap_or_default(),
@@ -86,6 +143,7 @@ pub(crate) async fn execute(
             candidate.and_then(|candidate| candidate.source_message_id.clone()),
             candidate.map(|candidate| candidate.source_assistant_round_id.clone()),
             candidate.map(|candidate| candidate.source_tool_call_id.clone()),
+            report_source,
             warnings_json(&warnings),
         )
         .await?;
@@ -126,7 +184,7 @@ pub(crate) async fn execute(
         if completion_report_promoted {
             object.insert(
                 "completion_report_source".into(),
-                serde_json::json!("same_assistant_round_preceding_text"),
+                serde_json::json!(report_source),
             );
         }
     }

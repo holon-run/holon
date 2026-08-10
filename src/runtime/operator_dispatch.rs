@@ -254,6 +254,7 @@ impl RuntimeHandle {
             terminal: outcome.terminal,
             turn_record,
             prepared_work_item_completion: outcome.prepared_work_item_completion,
+            terminal_tool_executions: outcome.terminal_tool_executions,
         })
     }
 

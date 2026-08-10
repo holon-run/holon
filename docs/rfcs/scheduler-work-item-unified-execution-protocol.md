@@ -257,6 +257,13 @@ queue terminal state, Turn terminal record, attempt outcome, owner state, and
 wait/continuation mutations commits. A terminal tool returns success only
 after that commit and then ends the provider/tool loop.
 
+`CompleteWorkItem` may first return a non-terminal `Deferred` receipt when a
+tool-only call must acquire its operator-facing report. This is not completion
+success and does not mutate the WorkItem lifecycle. The canonical tool evidence
+transition is `Deferred -> Success` inside `CompletionCommit`, or
+`Deferred -> Interrupted` inside any competing terminal Turn transaction.
+`Deferred` must never survive a terminal Turn.
+
 For `CompleteWorkItem`, this transaction is the `CompletionCommit`. It also
 binds the result brief, completes the legacy WorkItem, records the successful
 tool execution, cancels child waits, resumes or cancels the matching

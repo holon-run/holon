@@ -4259,6 +4259,7 @@ impl RuntimeHandle {
                 agent_id: terminal_transition.turn_record.agent_id.clone(),
                 agent_state,
                 turn_record: terminal_transition.turn_record.clone(),
+                terminal_tool_executions: terminal_transition.terminal_tool_executions.clone(),
                 audit_events: transition_audit_events,
                 fault: self.take_transition_fault(),
             };
@@ -4489,6 +4490,19 @@ impl RuntimeHandle {
                             tool_execution,
                             index_changes: prepared.index_changes.clone(),
                         },
+                    )
+            } else if terminal_transition
+                .is_some_and(|transition| !transition.terminal_tool_executions.is_empty())
+            {
+                self.inner
+                    .runtime_db
+                    .transitions()
+                    .commit_queue_with_execution_protocol_and_terminal_tool_executions(
+                        &command,
+                        &execution_protocol,
+                        &terminal_transition
+                            .expect("terminal tool executions require a terminal transition")
+                            .terminal_tool_executions,
                     )
             } else {
                 self.inner
@@ -4926,6 +4940,7 @@ impl RuntimeHandle {
                         terminal,
                         turn_record,
                         prepared_work_item_completion: None,
+                        terminal_tool_executions: Vec::new(),
                     };
                     let committed_state = {
                         let guard = self.inner.agent.lock().await;

@@ -51,6 +51,19 @@ pub struct ToolExecutionContext {
     pub completion_report_candidate: Option<CompletionReportCandidate>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct AwaitCompletionReportDirective {
+    pub(crate) request_id: String,
+    pub(crate) work_item_id: String,
+    pub(crate) expected_work_revision: u64,
+    pub(crate) warnings: Vec<Value>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum ToolLoopDirective {
+    AwaitCompletionReport(AwaitCompletionReportDirective),
+}
+
 /// Result from executing a tool.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResult {
@@ -63,11 +76,14 @@ pub struct ToolResult {
     #[serde(skip)]
     pub(crate) prepared_work_item_completion:
         Option<Box<crate::runtime::PreparedWorkItemCompletion>>,
+    #[serde(skip)]
+    pub(crate) loop_directive: Option<ToolLoopDirective>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolResultStatus {
+    Deferred,
     Success,
     Error,
 }
@@ -103,6 +119,7 @@ impl ToolResult {
             terminal_transition: false,
             sleep_duration_ms: None,
             prepared_work_item_completion: None,
+            loop_directive: None,
         }
     }
 
@@ -125,6 +142,30 @@ impl ToolResult {
             terminal_transition: false,
             sleep_duration_ms,
             prepared_work_item_completion: None,
+            loop_directive: None,
+        }
+    }
+
+    pub(crate) fn deferred(
+        tool_name: impl Into<String>,
+        result: Value,
+        summary_text: Option<String>,
+        directive: ToolLoopDirective,
+    ) -> Self {
+        let envelope = ToolResultEnvelope {
+            tool_name: tool_name.into(),
+            status: ToolResultStatus::Deferred,
+            summary_text,
+            result: Some(result),
+            error: None,
+        };
+        Self {
+            envelope,
+            should_sleep: false,
+            terminal_transition: false,
+            sleep_duration_ms: None,
+            prepared_work_item_completion: None,
+            loop_directive: Some(directive),
         }
     }
 
@@ -142,6 +183,7 @@ impl ToolResult {
             terminal_transition: false,
             sleep_duration_ms: None,
             prepared_work_item_completion: None,
+            loop_directive: None,
         }
     }
 

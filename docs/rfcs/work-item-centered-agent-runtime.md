@@ -22,9 +22,9 @@ The direction is:
   reactivation signals;
 - context compaction should preserve current WorkItem truth and compress older
   WorkItem history around completed reports and process notes;
-- a successful `CompleteWorkItem` should promote the same assistant round's
-  operator-facing completion report text into the canonical report for a
-  completed WorkItem.
+- a successful `CompleteWorkItem` should promote its bound operator-facing
+  completion report text into the canonical report for a completed WorkItem,
+  whether supplied before the tool call or in its typed follow-up round.
 
 This RFC is intentionally cross-cutting. It does not replace the lower-level
 RFCs for WorkItem schema, scheduler decisions, waiting intents, or context
@@ -168,9 +168,10 @@ future resumption.
 The final WorkItem completion report.
 
 The canonical source should be an explicit operator-facing assistant text block
-emitted in the same assistant round as a successful `CompleteWorkItem` call. The
-tool call marks the WorkItem completed; the same-round text is promoted by the
-runtime into the WorkItem result report and completion brief.
+bound to a `CompleteWorkItem` request. The runtime accepts either text
+immediately preceding the tool call or a text-only follow-up round requested by
+a tool-only call. In both cases the report is promoted only by the successful
+atomic completion commit.
 
 `CompleteWorkItem` should not require a duplicate `result_summary` argument in
 the target contract.
@@ -439,23 +440,27 @@ WorkItem mutations. They should capture:
 - scope changes.
 
 Most assistant messages remain process trace. A completion report is the
-exception: when an assistant round contains operator-facing report text
-immediately before `CompleteWorkItem` for the focused WorkItem, the runtime
-should bind that text into the atomic completion command as the canonical short
-answer for what the WorkItem accomplished.
+exception: the runtime binds either operator-facing report text immediately
+before `CompleteWorkItem` or the text-only response to a typed turn-local report
+request into the atomic completion command as the canonical short answer for
+what the WorkItem accomplished.
 
 The report promotion rules should be explicit:
 
-- the tool call must have a unique, non-empty immediately preceding report
-  candidate;
+- the report must be a unique, non-empty candidate from the same execution and
+  WorkItem binding;
+- a tool-only call may create a turn-local report request fenced by request id,
+  WorkItem revision, execution binding, and source tool call;
 - the text should be written as a final operator-facing report, not as a plan,
   progress note, or "I will complete this" preamble;
 - report persistence, binding, terminal lifecycle, and scheduling side effects
   commit atomically;
 - if completion succeeds with structured warnings, such as unfinished todos, the
   completion result must preserve or surface those warnings;
-- if a tool call has no unique report candidate, completion must fail without
-  mutating the WorkItem.
+- while a follow-up report is pending, the WorkItem remains open and the tool
+  execution remains `Deferred`;
+- a terminal Turn without a committed report must settle that deferred tool
+  execution to `Interrupted` in the same transaction.
 
 Other briefs may cite or render the promoted report, but should not compete with
 it as the durable source of truth.
@@ -494,15 +499,15 @@ default. It should preserve selected process notes and completed reports.
 ## Briefs And Operator Output
 
 The operator-visible completion brief for a WorkItem should be the promoted
-completion report text from the assistant round that successfully completed the
-WorkItem.
+completion report text that successfully completed the WorkItem, whether it
+preceded the tool call or arrived in the bound follow-up round.
 
 During execution, assistant messages can remain conversational process updates.
 The runtime should not require every assistant message to become a durable
 report.
 
-When a WorkItem completes with a same-round completion report candidate, the
-runtime should atomically persist:
+When a WorkItem completes with a bound completion report candidate, the runtime
+should atomically persist:
 
 - a `BriefRecord(kind=result, work_item_id=...)` using the report text;
 - any provider-neutral citations attached to that same report segment;
@@ -512,10 +517,12 @@ That delivery projection is terminal for the current turn. Normal turn-final
 brief generation should not emit a second user-facing result for the same
 completion report.
 
-If a WorkItem has no same-round report text, completion must fail with
-`missing_completion_report`. The runtime must not synthesize a generic result
+If the initial tool call has no report text, the runtime may request one
+text-only follow-up in the same Turn. It must not synthesize a generic result
 report from arbitrary runtime evidence or leave a persistent intermediate
-completion state.
+WorkItem completion state. Abandonment, interruption, restart, or binding
+failure leaves the WorkItem open and records the deferred tool execution as
+interrupted.
 
 ## Relationship To Other RFCs
 
@@ -644,10 +651,12 @@ be referenced, synced, displayed, or retained independently of their sources.
 The target `CompleteWorkItem` contract should not ask the model to pass
 `result_summary`.
 
-Instead, the agent should write the final completion report as assistant text in
-the same round immediately before calling `CompleteWorkItem`. The runtime should
-resolve that text as a completion-report candidate before mutation and include
-it in the atomic completion command.
+Instead, the agent should write the final completion report as assistant text.
+The preferred one-round form places it immediately before
+`CompleteWorkItem`. A tool-only call enters a typed turn-local acquisition
+protocol: the runtime returns an `awaiting_completion_report` result, accepts
+only final text from the bound follow-up round, and then includes that candidate
+in the same atomic completion command.
 
 This keeps the agent from writing the same result twice:
 
@@ -662,8 +671,10 @@ It also keeps responsibilities separated:
   result brief.
 
 Promotion should be conservative. Arbitrary assistant progress text must not
-become a result report just because the WorkItem was current. If there is no
-unique non-empty same-round report candidate, the WorkItem remains open.
+become a result report just because the WorkItem was current. Follow-up text
+must retain the original execution binding and expected WorkItem revision.
+Empty text or another tool call receives at most one corrective prompt; protocol
+abandonment leaves the WorkItem open.
 
 ### CompleteWorkItem With Unfinished Todos
 

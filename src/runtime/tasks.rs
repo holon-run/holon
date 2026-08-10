@@ -3569,6 +3569,7 @@ impl RuntimeHandle {
         source_message_id: Option<String>,
         source_assistant_round_id: Option<String>,
         source_tool_call_id: Option<String>,
+        report_source: &'static str,
         warnings: Vec<serde_json::Value>,
     ) -> Result<Option<PreparedWorkItemCompletion>> {
         let agent_id = self.agent_id().await?;
@@ -3628,7 +3629,7 @@ impl RuntimeHandle {
                     "source_round": source_round,
                     "source_assistant_round_id": source_assistant_round_id,
                     "source_tool_call_id": source_tool_call_id,
-                    "source": "same_assistant_round_preceding_text",
+                    "source": report_source,
                     "text_preview": crate::tool::helpers::truncate_text(report_text, 600),
                     "warnings": warnings.clone(),
                     "warning_count": warnings.len(),
@@ -3639,6 +3640,54 @@ impl RuntimeHandle {
             true,
         )
         .await
+    }
+
+    pub(crate) async fn validate_work_item_completion_request(
+        &self,
+        work_item_id: &str,
+        authority: &WorkItemCompletionAuthority,
+    ) -> Result<u64> {
+        let agent_id = self.agent_id().await?;
+        let existing = self.validate_owned_work_item(&agent_id, work_item_id)?;
+        if existing.state != WorkItemState::Open {
+            return Err(RuntimeError::new(
+                RuntimeErrorDomain::Conflict,
+                "work_item_completion_in_progress",
+                format!("work item {work_item_id} is not open"),
+            )
+            .with_safe_context("work_item_id", work_item_id)
+            .into());
+        }
+        let WorkItemCompletionAuthority::AgentExecution(binding) = authority else {
+            return Ok(existing.revision);
+        };
+        let mut brief = BriefRecord::new(
+            agent_id,
+            BriefKind::Result,
+            "completion report request validation",
+            None,
+            None,
+        );
+        brief.work_item_id = Some(existing.id.clone());
+        brief.workspace_id = existing.workspace_id.clone();
+        brief.turn_id = Some(binding.turn_id.clone());
+        brief.related_message_id = Some(binding.source_message_id.clone());
+        self.plan_work_item_completion_with_brief_mode(
+            work_item_id,
+            Some(authority),
+            &brief,
+            AuditEvent::legacy(
+                "work_item_completion_request_validated",
+                serde_json::json!({
+                    "agent_id": brief.agent_id,
+                    "work_item_id": work_item_id,
+                }),
+            ),
+            true,
+            false,
+        )
+        .await?;
+        Ok(existing.revision)
     }
 
     pub(super) async fn promote_work_item_completion_report_with_metadata(

@@ -4034,8 +4034,10 @@ pub struct QueueEntryRecord {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolExecutionStatus {
+    Deferred,
     Success,
     Error,
+    Interrupted,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]

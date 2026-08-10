@@ -12,6 +12,11 @@ const TOOL_RESULT_SUMMARY_LIMIT: usize = 200;
 
 pub(crate) fn tool_result_summary(envelope: &ToolResultEnvelope) -> String {
     let summary = match envelope.status {
+        ToolResultStatus::Deferred => envelope
+            .summary_text
+            .clone()
+            .or_else(|| summary_from_result_payload(envelope.result.as_ref()))
+            .unwrap_or_else(|| "deferred".into()),
         ToolResultStatus::Error => envelope
             .summary_text
             .clone()

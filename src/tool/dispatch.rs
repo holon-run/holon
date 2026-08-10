@@ -189,11 +189,16 @@ impl ToolRegistry {
             "sleep_duration_ms": result.sleep_duration_ms,
             "error": result.tool_error().cloned(),
         });
-        let completed_at = chrono::Utc::now();
-        let duration_ms = completed_at
+        let finished_at = chrono::Utc::now();
+        let duration_ms = finished_at
             .signed_duration_since(started_at)
             .num_milliseconds()
             .max(0) as u64;
+        let completed_at = (!matches!(
+            result.envelope.status,
+            crate::tool::spec::ToolResultStatus::Deferred
+        ))
+        .then_some(finished_at);
         let record = ToolExecutionRecord {
             id: crate::ids::tool_execution_id(),
             agent_id: agent_id.to_string(),
@@ -202,13 +207,13 @@ impl ToolRegistry {
             turn_id: None,
             tool_name: call.name.clone(),
             created_at: started_at,
-            completed_at: Some(completed_at),
+            completed_at,
             duration_ms,
             authority_class: authority_class.clone(),
-            status: if result.is_error() {
-                ToolExecutionStatus::Error
-            } else {
-                ToolExecutionStatus::Success
+            status: match result.envelope.status {
+                crate::tool::spec::ToolResultStatus::Deferred => ToolExecutionStatus::Deferred,
+                crate::tool::spec::ToolResultStatus::Success => ToolExecutionStatus::Success,
+                crate::tool::spec::ToolResultStatus::Error => ToolExecutionStatus::Error,
             },
             input: call.input.clone(),
             output: output_value,

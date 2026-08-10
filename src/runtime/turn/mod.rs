@@ -46,6 +46,7 @@ pub(crate) struct AgentLoopOutcome {
     pub(super) terminal_kind: TurnTerminalKind,
     pub(super) prepared_work_item_completion:
         Option<Box<crate::runtime::PreparedWorkItemCompletion>>,
+    pub(super) terminal_tool_executions: Vec<crate::types::ToolExecutionRecord>,
 }
 
 #[derive(Debug, Clone)]
@@ -54,6 +55,7 @@ pub(crate) struct TurnTerminalTransition {
     pub(super) turn_record: TurnRecord,
     pub(super) prepared_work_item_completion:
         Option<Box<crate::runtime::PreparedWorkItemCompletion>>,
+    pub(super) terminal_tool_executions: Vec<crate::types::ToolExecutionRecord>,
 }
 
 pub(crate) struct LoopControlOptions {
@@ -370,6 +372,7 @@ impl RuntimeHandle {
                 turn_record: self.build_turn_record(&record).await?,
                 terminal: record.clone(),
                 prepared_work_item_completion: None,
+                terminal_tool_executions: Vec::new(),
             };
             self.commit_terminal_transition(
                 &transition,

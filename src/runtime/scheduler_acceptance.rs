@@ -637,6 +637,7 @@ async fn seed_scheduler_waiting_work(
         terminal,
         turn_record,
         prepared_work_item_completion: None,
+        terminal_tool_executions: Vec::new(),
     };
     let task_id = format!("scheduler-restart-task-{agent_id}");
     let registration = runtime
@@ -827,6 +828,7 @@ async fn scheduler_acceptance_terminal_transition(
         terminal,
         turn_record,
         prepared_work_item_completion: None,
+        terminal_tool_executions: Vec::new(),
     })
 }
 

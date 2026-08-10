@@ -146,9 +146,12 @@ produce a completion-report brief, and that brief is simultaneously the
 canonical report stored on the completed WorkItem.
 
 `CompleteWorkItem` is both a WorkItem lifecycle boundary and a hard provider
-turn boundary:
+turn boundary once completion commits:
 
-- the provider/tool loop stops at the first successful `CompleteWorkItem`;
+- a call with a report candidate prepares completion immediately;
+- a tool-only call stops the current tool batch and enters a text-only,
+  turn-local report acquisition round;
+- the provider/tool loop stops when the completion commit succeeds;
 - tool calls after it in the same assistant response are not executed;
 - the completion report, WorkItem transition, waits, continuation, Turn
   terminal record, queue settlement, and canonical execution outcome commit in
@@ -158,7 +161,8 @@ turn boundary:
 The completion-report brief may also be the turn's operator-facing result. The
 runtime must not ask the model to restate it after commit.
 
-Completion report capture should be deterministic and local to the tool call.
+Completion report capture should be deterministic and local to the tool call or
+its typed follow-up request.
 For a response such as:
 
 ```text
@@ -170,6 +174,13 @@ tool call: some_other_tool()
 the report is bound to `A`, `some_other_tool` is not executed, and the Turn
 closes at the completion settlement. Completing another WorkItem requires a
 later activation with its own execution binding.
+
+For a tool-only call, the original `ToolExecutionRecord` remains `Deferred`
+until the bound report commits it as `Success`. If the Turn instead terminates
+because of cancellation, shutdown, runtime error, restart, or report-protocol
+abandonment, terminal settlement updates that same record to `Interrupted` in
+the terminal transaction. No terminal Turn may retain a deferred tool
+execution.
 
 ### 5.3 Link Operator Inputs And Briefs Through Turns
 

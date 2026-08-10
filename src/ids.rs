@@ -40,6 +40,10 @@ pub fn tool_execution_id() -> String {
     runtime_id("tool")
 }
 
+pub fn completion_report_request_id() -> String {
+    runtime_id("completion")
+}
+
 /// Derive a workspace ID deterministically from a (normalized) anchor path.
 /// Same path always produces the same ID, preventing stale-ID accumulation.
 pub fn deterministic_workspace_id(anchor: &Path) -> String {

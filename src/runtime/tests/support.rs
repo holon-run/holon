@@ -128,6 +128,7 @@ pub(crate) fn terminal_transition(
         terminal,
         turn_record,
         prepared_work_item_completion: None,
+        terminal_tool_executions: Vec::new(),
     }
 }
 

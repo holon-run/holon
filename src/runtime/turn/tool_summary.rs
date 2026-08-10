@@ -16,6 +16,13 @@ use super::{TurnRoundRecord, RECAP_TEXT_PREVIEW_LIMIT};
 
 pub(super) fn summarize_tool_result_envelope(envelope: &ToolResultEnvelope) -> String {
     match envelope.status {
+        ToolResultStatus::Deferred => {
+            format!(
+                "{} deferred: {}",
+                envelope.tool_name,
+                tool_result_summary(envelope)
+            )
+        }
         ToolResultStatus::Error => {
             let error = envelope.error.as_ref();
             let kind = error
