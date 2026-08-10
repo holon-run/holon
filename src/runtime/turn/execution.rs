@@ -771,16 +771,18 @@ impl RuntimeHandle {
         loop_control: LoopControlOptions,
     ) -> Result<AgentLoopOutcome> {
         self.reconfigure_provider_for_turn(None).await?;
-        TurnExecution {
-            runtime: self,
-            agent_id,
-            authority_class,
-            effective_prompt,
-            model_selection: TurnModelSelection::default(),
-            loop_control,
-            persist_terminal: true,
-        }
-        .run()
+        Box::pin(
+            TurnExecution {
+                runtime: self,
+                agent_id,
+                authority_class,
+                effective_prompt,
+                model_selection: TurnModelSelection::default(),
+                loop_control,
+                persist_terminal: true,
+            }
+            .run(),
+        )
         .await
     }
 
@@ -792,16 +794,18 @@ impl RuntimeHandle {
         model_selection: TurnModelSelection,
         loop_control: LoopControlOptions,
     ) -> Result<AgentLoopOutcome> {
-        TurnExecution {
-            runtime: self,
-            agent_id,
-            authority_class,
-            effective_prompt,
-            model_selection,
-            loop_control,
-            persist_terminal: false,
-        }
-        .run()
+        Box::pin(
+            TurnExecution {
+                runtime: self,
+                agent_id,
+                authority_class,
+                effective_prompt,
+                model_selection,
+                loop_control,
+                persist_terminal: false,
+            }
+            .run(),
+        )
         .await
     }
 }
