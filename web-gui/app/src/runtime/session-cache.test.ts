@@ -3,12 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   currentRemoteKey,
   extractCacheableSession,
+  hydrateAllSessions,
   hydrateSessionFromCache,
   SessionCacheWriter,
   enforceCacheLimits,
 } from "./session-cache";
 import type { AgentSessionState } from "./runtime-store-helpers";
-import { CACHE_SCHEMA_VERSION } from "./idb-cache";
+import { CACHE_SCHEMA_VERSION, type CachedAgentSession } from "./idb-cache";
 import {
   SESSION_PROJECTION_GENERATION,
   createSessionProjectionState,
@@ -30,6 +31,38 @@ function makeSession(overrides: Partial<AgentSessionState> = {}): AgentSessionSt
     workItemDetailsById: {},
     taskDetailsById: {},
     toolExecutionDetailsById: {},
+    ...overrides,
+  };
+}
+
+function makeCachedSession(
+  overrides: Partial<CachedAgentSession> = {},
+): CachedAgentSession {
+  const eventSeqs = overrides.eventSeqs ?? [];
+  const eventLogEpoch = overrides.eventLogEpoch;
+  const newestSeq = overrides.newestSeq ?? eventSeqs.at(-1);
+  return {
+    remoteKey: "local",
+    agentId: "agent-1",
+    schemaVersion: CACHE_SCHEMA_VERSION,
+    projectionGeneration: SESSION_PROJECTION_GENERATION,
+    eventLogEpoch,
+    eventsBySeq: {},
+    eventSeqs,
+    messagesById: {},
+    transcriptEntriesById: {},
+    briefRecordsById: {},
+    newestSeq,
+    oldestSeq: overrides.oldestSeq ?? eventSeqs[0],
+    syncCoverage: {
+      eventLogEpoch,
+      contiguousSeq: newestSeq ?? 0,
+      observedSeq: newestSeq ?? 0,
+      retainedOldestSeq: eventSeqs[0],
+      retainedNewestSeq: eventSeqs.at(-1),
+      gaps: [],
+    },
+    cachedAt: Date.now(),
     ...overrides,
   };
 }
@@ -73,7 +106,51 @@ describe("extractCacheableSession", () => {
     expect(result.agentSummary).toBeUndefined();
     expect(result.newestSeq).toBe(2);
     expect(result.oldestSeq).toBe(1);
+    expect(result.syncCoverage).toEqual({
+      eventLogEpoch: "epoch-1",
+      contiguousSeq: 2,
+      observedSeq: 2,
+      retainedOldestSeq: 1,
+      retainedNewestSeq: 2,
+      gaps: [],
+    });
     expect(result.cachedAt).toBeGreaterThan(0);
+  });
+
+  it("persists sync gaps, semantic history coverage, and read state atomically", () => {
+    const session = makeSession({
+      eventLogEpoch: "epoch-1",
+      eventsBySeq: { 1: { id: "e1" }, 5: { id: "e5" } },
+      eventSeqs: [1, 5],
+      gaps: [{ afterSeq: 1, beforeSeq: 5 }],
+      newestSeq: 5,
+      oldestSeq: 1,
+      semanticHistoryByDisplayLevel: {
+        info: { eventLogEpoch: "epoch-1", cursorSeq: 1, hasOlder: false, loading: false },
+        verbose: { eventLogEpoch: "epoch-1", cursorSeq: 1, hasOlder: true, loading: true },
+        debug: { eventLogEpoch: "epoch-old", cursorSeq: 1, hasOlder: true, loading: false },
+      },
+    });
+
+    const result = extractCacheableSession("local", "agent-1", session, {
+      unreadCount: 2,
+      lastUnreadDeliverySeq: 5,
+      lastReadDeliverySeq: 3,
+    });
+
+    expect(result.syncCoverage).toMatchObject({
+      contiguousSeq: 1,
+      observedSeq: 5,
+      gaps: [{ afterSeq: 1, beforeSeq: 5 }],
+    });
+    expect(result.semanticHistoryByDisplayLevel).toEqual({
+      info: { eventLogEpoch: "epoch-1", cursorSeq: 1, hasOlder: false },
+    });
+    expect(result.readState).toEqual({
+      unreadCount: 2,
+      lastUnreadDeliverySeq: 5,
+      lastReadDeliverySeq: 3,
+    });
   });
 
   it("persists the agent summary needed to render cached history", () => {
@@ -141,26 +218,33 @@ describe("extractCacheableSession", () => {
     expect(result.eventSeqs[MAX - 1]).toBe(MAX + 100);
     expect(result.oldestSeq).toBe(101);
     expect(result.newestSeq).toBe(MAX + 100);
+    expect(result.syncCoverage).toMatchObject({
+      contiguousSeq: MAX + 100,
+      observedSeq: MAX + 100,
+      retainedOldestSeq: 101,
+      retainedNewestSeq: MAX + 100,
+    });
   });
 });
 
 describe("hydrateSessionFromCache", () => {
   it("returns partial session with cached data", () => {
-    const cached = {
-      remoteKey: "local",
-      agentId: "agent-1",
-      schemaVersion: CACHE_SCHEMA_VERSION,
-      projectionGeneration: SESSION_PROJECTION_GENERATION,
+    const cached = makeCachedSession({
       eventLogEpoch: "epoch-1",
       eventsBySeq: { 1: { id: "e1" } },
       eventSeqs: [1],
       messagesById: { m1: { id: "m1" } },
-      transcriptEntriesById: {},
-      briefRecordsById: {},
       newestSeq: 1,
       oldestSeq: 1,
-      cachedAt: Date.now(),
-    };
+      syncCoverage: {
+        eventLogEpoch: "epoch-1",
+        contiguousSeq: 1,
+        observedSeq: 1,
+        retainedOldestSeq: 1,
+        retainedNewestSeq: 1,
+        gaps: [],
+      },
+    });
 
     const result = hydrateSessionFromCache(cached);
 
@@ -172,11 +256,7 @@ describe("hydrateSessionFromCache", () => {
   });
 
   it("restores a renderable detail when the cache includes an agent summary", () => {
-    const cached = {
-      remoteKey: "local",
-      agentId: "agent-1",
-      schemaVersion: CACHE_SCHEMA_VERSION,
-      projectionGeneration: SESSION_PROJECTION_GENERATION,
+    const cached = makeCachedSession({
       agentSummary: {
         id: "agent-1",
         badge: "A",
@@ -198,11 +278,14 @@ describe("hydrateSessionFromCache", () => {
       },
       eventsBySeq: { 1: { id: "e1", event_seq: 1 } },
       eventSeqs: [1],
-      messagesById: {},
-      transcriptEntriesById: {},
-      briefRecordsById: {},
-      cachedAt: Date.now(),
-    };
+      syncCoverage: {
+        contiguousSeq: 1,
+        observedSeq: 1,
+        retainedOldestSeq: 1,
+        retainedNewestSeq: 1,
+        gaps: [],
+      },
+    });
 
     const result = hydrateSessionFromCache(cached);
 
@@ -213,19 +296,18 @@ describe("hydrateSessionFromCache", () => {
   });
 
   it("ignores a malformed or mismatched cached agent summary", () => {
-    const cached = {
-      remoteKey: "local",
-      agentId: "agent-1",
-      schemaVersion: CACHE_SCHEMA_VERSION,
-      projectionGeneration: SESSION_PROJECTION_GENERATION,
+    const cached = makeCachedSession({
       agentSummary: { id: "agent-2" },
       eventsBySeq: { 1: { id: "e1", event_seq: 1 } },
       eventSeqs: [1],
-      messagesById: {},
-      transcriptEntriesById: {},
-      briefRecordsById: {},
-      cachedAt: Date.now(),
-    };
+      syncCoverage: {
+        contiguousSeq: 1,
+        observedSeq: 1,
+        retainedOldestSeq: 1,
+        retainedNewestSeq: 1,
+        gaps: [],
+      },
+    });
 
     const result = hydrateSessionFromCache(cached);
 
@@ -235,23 +317,109 @@ describe("hydrateSessionFromCache", () => {
   });
 
   it("does not include UI state fields", () => {
-    const cached = {
-      remoteKey: "local",
-      agentId: "agent-1",
-      schemaVersion: CACHE_SCHEMA_VERSION,
-      eventsBySeq: {},
-      eventSeqs: [],
-      messagesById: {},
-      transcriptEntriesById: {},
-      briefRecordsById: {},
-      cachedAt: Date.now(),
-    };
+    const cached = makeCachedSession();
 
     const result = hydrateSessionFromCache(cached);
 
     expect(result).not.toHaveProperty("loading");
     expect(result).not.toHaveProperty("liveStatus");
     expect(result).not.toHaveProperty("detail");
+  });
+
+  it("restores persisted gaps and independent display-level history coverage", () => {
+    const cached = makeCachedSession({
+      eventLogEpoch: "epoch-1",
+      eventsBySeq: {
+        1: { id: "e1", event_seq: 1 },
+        5: { id: "e5", event_seq: 5 },
+      },
+      eventSeqs: [1, 5],
+      newestSeq: 5,
+      oldestSeq: 1,
+      syncCoverage: {
+        eventLogEpoch: "epoch-1",
+        contiguousSeq: 1,
+        observedSeq: 5,
+        retainedOldestSeq: 1,
+        retainedNewestSeq: 5,
+        gaps: [{ afterSeq: 1, beforeSeq: 5 }],
+      },
+      semanticHistoryByDisplayLevel: {
+        info: { eventLogEpoch: "epoch-1", cursorSeq: 1, hasOlder: false },
+        verbose: { eventLogEpoch: "epoch-1", cursorSeq: 3, hasOlder: true },
+        debug: { eventLogEpoch: "epoch-old", cursorSeq: 1, hasOlder: true },
+      },
+    });
+
+    const result = hydrateSessionFromCache(cached);
+
+    expect(result.gaps).toEqual([{ afterSeq: 1, beforeSeq: 5 }]);
+    expect(result.semanticHistoryByDisplayLevel).toEqual({
+      info: { eventLogEpoch: "epoch-1", cursorSeq: 1, hasOlder: false, loading: false },
+      verbose: { eventLogEpoch: "epoch-1", cursorSeq: 3, hasOlder: true, loading: false },
+    });
+  });
+
+  it("invalidates incomplete or internally inconsistent cache metadata", () => {
+    const missingCoverage = makeCachedSession({
+      eventsBySeq: { 1: { id: "e1", event_seq: 1 } },
+      eventSeqs: [1],
+      syncCoverage: undefined,
+    });
+    const mismatchedRetainedWindow = makeCachedSession({
+      eventsBySeq: { 1: { id: "e1", event_seq: 1 } },
+      eventSeqs: [1],
+      syncCoverage: {
+        contiguousSeq: 1,
+        observedSeq: 1,
+        retainedOldestSeq: 2,
+        retainedNewestSeq: 1,
+        gaps: [],
+      },
+    });
+
+    expect(hydrateSessionFromCache(missingCoverage)).toMatchObject({
+      eventSeqs: [],
+      invalidatedReason: "cache_integrity_mismatch",
+      syncStatus: "stale",
+    });
+    expect(hydrateSessionFromCache(mismatchedRetainedWindow)).toMatchObject({
+      eventSeqs: [],
+      invalidatedReason: "cache_integrity_mismatch",
+      syncStatus: "stale",
+    });
+  });
+});
+
+describe("hydrateAllSessions", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("restores session and read state from the same cached record", async () => {
+    const cached = makeCachedSession({
+      eventsBySeq: { 1: { id: "e1", event_seq: 1 } },
+      eventSeqs: [1],
+      syncCoverage: {
+        contiguousSeq: 1,
+        observedSeq: 1,
+        retainedOldestSeq: 1,
+        retainedNewestSeq: 1,
+        gaps: [],
+      },
+      readState: {
+        unreadCount: 2,
+        lastUnreadDeliverySeq: 8,
+        lastReadDeliverySeq: 5,
+      },
+    });
+    const idbModule = await import("./idb-cache");
+    vi.spyOn(idbModule, "cacheGetAllSessions").mockResolvedValue([cached]);
+
+    const result = await hydrateAllSessions("local");
+
+    expect(result.sessionsByAgentId["agent-1"]?.eventSeqs).toEqual([1]);
+    expect(result.readStateByAgentId["agent-1"]).toEqual(cached.readState);
   });
 });
 
@@ -316,6 +484,20 @@ describe("SessionCacheWriter", () => {
 
     expect(putSpy).not.toHaveBeenCalled();
 
+    putSpy.mockRestore();
+  });
+
+  it("discard cancels a deleted agent without affecting other pending writes", async () => {
+    const writer = new SessionCacheWriter("local");
+    const putSpy = vi.spyOn(await import("./idb-cache"), "cachePutSession").mockResolvedValue(undefined);
+
+    writer.scheduleWrite("agent-1", makeSession({ eventSeqs: [1] }));
+    writer.scheduleWrite("agent-2", makeSession({ eventSeqs: [2] }));
+    writer.discard("agent-1");
+    await writer.flush();
+
+    expect(putSpy).toHaveBeenCalledTimes(1);
+    expect(putSpy.mock.calls[0]?.[0].agentId).toBe("agent-2");
     putSpy.mockRestore();
   });
 });

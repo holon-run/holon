@@ -12,6 +12,7 @@ import {
   isLoopbackWebHostname,
   materializeProjectionDetail,
   mergeBootstrapAgentState,
+  mergeCachedReadState,
   mergeCachedSessionIntoCurrent,
   mergeTimelineEventPage,
   missingBriefIdsForHydration,
@@ -512,11 +513,24 @@ describe("session cache restoration", () => {
       eventSeqs: [1],
       newestSeq: 1,
       oldestSeq: 1,
+      semanticHistoryByDisplayLevel: {
+        info: {
+          eventLogEpoch: "epoch-cache",
+          cursorSeq: 1,
+          hasOlder: false,
+          loading: false,
+        },
+      },
     };
 
     const restored = mergeCachedSessionIntoCurrent(current, cached);
 
     expect(restored.eventSeqs).toEqual([1]);
+    expect(restored.semanticHistoryByDisplayLevel.info).toMatchObject({
+      cursorSeq: 1,
+      hasOlder: false,
+      loading: false,
+    });
     expect(restored.loading).toBe(true);
     expect(restored.liveStatus).toBe("connecting");
   });
@@ -627,6 +641,88 @@ describe("runtime connection storage", () => {
   });
 });
 
+describe("agent deletion cache cleanup", () => {
+  afterEach(() => {
+    useRuntimeStore.setState({
+      selectedAgentId: "",
+      route: "dashboard",
+      sessionsByAgentId: {},
+      rosterActivityByAgentId: {},
+    });
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("removes persisted session and read state after server deletion succeeds", async () => {
+    const localStorage = new MemoryStorage();
+    const sessionStorage = new MemoryStorage();
+    vi.stubGlobal("window", {
+      localStorage,
+      sessionStorage,
+      setTimeout,
+      clearTimeout,
+      location: { hostname: "localhost", protocol: "http:" },
+    });
+    const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/handshake")) return Promise.resolve(jsonResponse({}));
+      if (url.endsWith("/agents/list")) return Promise.resolve(jsonResponse([]));
+      if (
+        url.endsWith("/control/agents/agent-a") &&
+        init?.method === "DELETE"
+      ) {
+        return Promise.resolve(jsonResponse({
+          created: true,
+          ok: true,
+          identity: { agent_id: "agent-a", status: "deleting" },
+          job: {
+            deletion_id: "delete-1",
+            status: "completed",
+            phase: "completed",
+            attempts: 1,
+            created_at: "2026-08-10T00:00:00Z",
+            updated_at: "2026-08-10T00:00:01Z",
+            completed_at: "2026-08-10T00:00:01Z",
+          },
+        }));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const idbModule = await import("./idb-cache");
+    const deleteSpy = vi.spyOn(idbModule, "cacheDeleteSession").mockResolvedValue(undefined);
+
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    useRuntimeStore.setState({
+      selectedAgentId: "agent-a",
+      route: "agent",
+      sessionsByAgentId: {
+        "agent-a": sessionState({
+          eventSeqs: [1],
+          eventsBySeq: { 1: { id: "event-1", event_seq: 1 } },
+        }),
+      },
+      rosterActivityByAgentId: {
+        "agent-a": {
+          unreadCount: 2,
+          lastUnreadDeliverySeq: 3,
+          lastReadDeliverySeq: 1,
+        },
+      },
+    });
+
+    await useRuntimeStore.getState().deleteAgent("agent-a");
+
+    expect(deleteSpy).toHaveBeenCalledWith("local", "agent-a");
+    expect(useRuntimeStore.getState().sessionsByAgentId["agent-a"]).toBeUndefined();
+    expect(useRuntimeStore.getState().rosterActivityByAgentId["agent-a"]).toBeUndefined();
+    expect(useRuntimeStore.getState()).toMatchObject({
+      selectedAgentId: "",
+      route: "dashboard",
+    });
+  });
+});
+
 describe("roster activity unread state", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -660,6 +756,30 @@ describe("roster activity unread state", () => {
     expect(readStoredRosterActivity("http://remote.example:7878")).toEqual({
       remoteAgent: { unreadCount: 4, lastUnreadDeliverySeq: 20 },
     });
+  });
+
+  it("uses IndexedDB read state only when localStorage has no read marker", () => {
+    const cached = {
+      unreadCount: 3,
+      lastUnreadDeliverySeq: 12,
+      lastReadDeliverySeq: 7,
+    };
+
+    expect(
+      mergeCachedReadState(
+        { operatorAt: "2026-01-01T00:00:00.000Z" },
+        cached,
+      ),
+    ).toEqual({
+      operatorAt: "2026-01-01T00:00:00.000Z",
+      ...cached,
+    });
+    const localStorageState = {
+      unreadCount: 1,
+      lastUnreadDeliverySeq: 20,
+      lastReadDeliverySeq: 19,
+    };
+    expect(mergeCachedReadState(localStorageState, cached)).toBe(localStorageState);
   });
 
   it("counts unread brief events once by seq, ignores non-operator messages", async () => {

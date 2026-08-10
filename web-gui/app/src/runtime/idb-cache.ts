@@ -8,9 +8,30 @@
 
 const DB_NAME = "holon-webgui-cache";
 const DB_VERSION = 1;
-export const CACHE_SCHEMA_VERSION = 4;
+export const CACHE_SCHEMA_VERSION = 5;
 const SESSIONS_STORE = "sessions";
 const META_STORE = "meta";
+
+export interface CachedSyncCoverage {
+  eventLogEpoch?: string;
+  contiguousSeq: number;
+  observedSeq: number;
+  retainedOldestSeq?: number;
+  retainedNewestSeq?: number;
+  gaps: Array<{ afterSeq: number; beforeSeq: number }>;
+}
+
+export interface CachedSemanticHistoryState {
+  eventLogEpoch?: string;
+  cursorSeq?: number;
+  hasOlder: boolean;
+}
+
+export interface CachedAgentReadState {
+  unreadCount?: number;
+  lastUnreadDeliverySeq?: number;
+  lastReadDeliverySeq?: number;
+}
 
 export interface CachedAgentSession {
   remoteKey: string;
@@ -26,6 +47,9 @@ export interface CachedAgentSession {
   briefRecordsById: Record<string, unknown>;
   newestSeq?: number;
   oldestSeq?: number;
+  syncCoverage?: CachedSyncCoverage;
+  semanticHistoryByDisplayLevel?: Record<string, CachedSemanticHistoryState>;
+  readState?: CachedAgentReadState;
   cachedAt: number;
 }
 

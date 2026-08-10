@@ -8,7 +8,10 @@ import {
   type StreamEventEnvelopeDto,
 } from "./client";
 import { EventGapRecoveryTracker, recoverEventGap } from "./event-gap-recovery";
-import { cacheClearRemote } from "./idb-cache";
+import {
+  cacheDeleteSession,
+  type CachedAgentReadState,
+} from "./idb-cache";
 import { ResumeReconciliationCoordinator } from "./resume-reconciliation";
 import {
   currentRemoteKey,
@@ -1092,23 +1095,34 @@ function initSessionCacheForRemote(set: StoreSet, get?: () => RuntimeStoreState)
       // Hydrate cached sessions into store.
       const cached = await hydrateAllSessions(context.remoteKey);
       if (!sessionCacheContextIsCurrent(context) || sessionCacheWriter !== writer) return;
-      if (Object.keys(cached).length === 0) return;
+      if (Object.keys(cached.sessionsByAgentId).length === 0) return;
 
       const restoredAgentIds: string[] = [];
       set((state) => {
         const sessionsByAgentId = { ...state.sessionsByAgentId };
-        for (const [agentId, partial] of Object.entries(cached)) {
+        for (const [agentId, partial] of Object.entries(cached.sessionsByAgentId)) {
           const current = sessionsByAgentId[agentId] ?? emptyAgentSession();
           const restored = mergeCachedSessionIntoCurrent(current, partial);
           if (restored === current) continue;
           sessionsByAgentId[agentId] = restored;
           restoredAgentIds.push(agentId);
         }
+        const rosterActivityByAgentId = mergeCachedReadStates(
+          state.rosterActivityByAgentId,
+          cached.readStateByAgentId,
+        );
+        if (rosterActivityByAgentId !== state.rosterActivityByAgentId) {
+          writeStoredRosterActivity(context.remoteKey, rosterActivityByAgentId);
+        }
         const withProvisional = rebuildProvisionalDetailsWithAgents(
           state.bootstrap.agents,
           sessionsByAgentId,
         );
-        return { sessionsByAgentId: withProvisional ?? sessionsByAgentId };
+        return {
+          bootstrap: sortBootstrapAgents(state.bootstrap, rosterActivityByAgentId),
+          rosterActivityByAgentId,
+          sessionsByAgentId: withProvisional ?? sessionsByAgentId,
+        };
       });
 
       if (get && sessionCacheContextIsCurrent(context)) {
@@ -1153,11 +1167,44 @@ export function mergeCachedSessionIntoCurrent(
     ...current,
     ...cached,
     loading: current.loading,
-    semanticHistoryByDisplayLevel: current.semanticHistoryByDisplayLevel,
+    semanticHistoryByDisplayLevel:
+      Object.keys(current.semanticHistoryByDisplayLevel).length > 0
+        ? current.semanticHistoryByDisplayLevel
+        : (cached.semanticHistoryByDisplayLevel ?? {}),
     targetEventLoading: current.targetEventLoading,
     liveStatus: current.liveStatus,
     sendingPrompt: current.sendingPrompt,
   };
+}
+
+export function mergeCachedReadState(
+  current: AgentRosterActivity | undefined,
+  cached: CachedAgentReadState | undefined,
+): AgentRosterActivity | undefined {
+  if (!cached) return current;
+  const currentHasReadState =
+    current?.unreadCount != null ||
+    current?.lastUnreadDeliverySeq != null ||
+    current?.lastReadDeliverySeq != null;
+  if (currentHasReadState) return current;
+  return {
+    ...current,
+    ...cached,
+  };
+}
+
+function mergeCachedReadStates(
+  current: Record<string, AgentRosterActivity>,
+  cached: Record<string, CachedAgentReadState>,
+): Record<string, AgentRosterActivity> {
+  let merged = current;
+  for (const [agentId, readState] of Object.entries(cached)) {
+    const activity = mergeCachedReadState(merged[agentId], readState);
+    if (!activity || activity === merged[agentId]) continue;
+    if (merged === current) merged = { ...current };
+    merged[agentId] = activity;
+  }
+  return merged;
 }
 
 export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
@@ -1278,6 +1325,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       writeStoredRosterActivity(currentRemoteKey(runtimeConnectionConfig), rosterActivityByAgentId);
       return { rosterActivityByAgentId };
     });
+    scheduleCacheWrite(get, agentId);
   },
   setDisplayLevel: (displayLevel, agentId) =>
     set((state) => {
@@ -2547,9 +2595,30 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
           );
           set((state) => {
             const current = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
-            const restored = cached ? mergeCachedSessionIntoCurrent(current, cached) : current;
+            const restored = cached
+              ? mergeCachedSessionIntoCurrent(current, cached.session)
+              : current;
             const available = Boolean(restored.detail?.timeline.length || restored.eventSeqs.length);
+            const cachedActivity = mergeCachedReadState(
+              state.rosterActivityByAgentId[agentId],
+              cached?.readState,
+            );
+            const rosterActivityByAgentId =
+              cachedActivity && cachedActivity !== state.rosterActivityByAgentId[agentId]
+                ? {
+                    ...state.rosterActivityByAgentId,
+                    [agentId]: cachedActivity,
+                  }
+                : state.rosterActivityByAgentId;
+            if (rosterActivityByAgentId !== state.rosterActivityByAgentId) {
+              writeStoredRosterActivity(
+                currentRemoteKey(runtimeConnectionConfig),
+                rosterActivityByAgentId,
+              );
+            }
             return {
+              bootstrap: sortBootstrapAgents(state.bootstrap, rosterActivityByAgentId),
+              rosterActivityByAgentId,
               sessionsByAgentId: {
                 ...state.sessionsByAgentId,
                 [agentId]: {
@@ -3011,6 +3080,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       scheduleMessageHydration(get, set, agentId, displayLevel);
       scheduleTranscriptHydration(get, set, agentId, displayLevel);
       scheduleBriefHydration(get, set, agentId, displayLevel);
+      scheduleCacheWrite(get, agentId);
     } catch (error) {
       if (!isCurrentClientRequest(request)) return;
       set((state) => ({
@@ -3181,11 +3251,28 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     try {
       await request.client.deleteAgent(agentId, cascadePrivateChildren);
       if (!isCurrentClientRequest(request)) return;
+      sessionCacheWriter?.discard(agentId);
+      await cacheDeleteSession(currentRemoteKey(runtimeConnectionConfig), agentId);
+      unregisterAgentForEvents(agentId);
+      stopAgentEventStream(agentId, set);
+      set((state) => {
+        const sessionsByAgentId = { ...state.sessionsByAgentId };
+        const rosterActivityByAgentId = { ...state.rosterActivityByAgentId };
+        delete sessionsByAgentId[agentId];
+        delete rosterActivityByAgentId[agentId];
+        writeStoredRosterActivity(
+          currentRemoteKey(runtimeConnectionConfig),
+          rosterActivityByAgentId,
+        );
+        return {
+          sessionsByAgentId,
+          rosterActivityByAgentId,
+        };
+      });
       await get().refreshBootstrap({ background: true });
       // If we deleted the currently selected agent, clean up and reset to dashboard
       // so the UI doesn't stay on a stale agent page that errors on refresh.
       if (get().selectedAgentId === agentId) {
-        stopAgentEventStream(agentId, set);
         set({
           selectedAgentId: "",
           route: "dashboard",
@@ -3538,9 +3625,29 @@ type StoreSet = (
  */
 function scheduleCacheWrite(get: () => RuntimeStoreState, agentId: string): void {
   if (!sessionCacheWriter) return;
-  const session = get().sessionsByAgentId[agentId];
+  const state = get();
+  const session = state.sessionsByAgentId[agentId];
   if (!session) return;
-  sessionCacheWriter.scheduleWrite(agentId, session);
+  sessionCacheWriter.scheduleWrite(
+    agentId,
+    session,
+    cachedReadState(state.rosterActivityByAgentId[agentId]),
+  );
+}
+
+function cachedReadState(
+  activity: AgentRosterActivity | undefined,
+): CachedAgentReadState | undefined {
+  if (!activity) return undefined;
+  const readState: CachedAgentReadState = {};
+  if (activity.unreadCount != null) readState.unreadCount = activity.unreadCount;
+  if (activity.lastUnreadDeliverySeq != null) {
+    readState.lastUnreadDeliverySeq = activity.lastUnreadDeliverySeq;
+  }
+  if (activity.lastReadDeliverySeq != null) {
+    readState.lastReadDeliverySeq = activity.lastReadDeliverySeq;
+  }
+  return Object.keys(readState).length ? readState : undefined;
 }
 
 function scheduleAgentDetailRetry(

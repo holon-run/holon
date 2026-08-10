@@ -46,7 +46,10 @@ export interface SessionProjectionState {
   referencedBriefIds: Record<string, true>;
   newestSeq?: number;
   oldestSeq?: number;
-  invalidatedReason?: "event_identity_conflict" | "cache_generation_mismatch";
+  invalidatedReason?:
+    | "event_identity_conflict"
+    | "cache_generation_mismatch"
+    | "cache_integrity_mismatch";
 }
 
 export type SessionProjectionAction =
