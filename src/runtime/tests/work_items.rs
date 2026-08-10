@@ -3340,7 +3340,7 @@ async fn promoted_completion_report_resumes_next_queued_work_item_via_system_tic
         "http://127.0.0.1:7878".into(),
         provider,
         "default".into(),
-        context_config(),
+        continuation_ready_context_config(&workspace, 16_000),
     )
     .unwrap();
     let mut message = MessageEnvelope::new(

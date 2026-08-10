@@ -5891,7 +5891,7 @@ async fn authoritative_completion_terminalizes_canonical_work_and_binds_report()
             calls: Mutex::new(0),
         }),
         "default".into(),
-        context_config(),
+        continuation_ready_context_config(&workspace, 16_000),
     )
     .unwrap();
     let mut message = MessageEnvelope::new(
