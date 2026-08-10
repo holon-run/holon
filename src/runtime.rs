@@ -526,6 +526,28 @@ fn completion_intent_revision_matches_activation(
         })
 }
 
+fn legacy_scheduler_open_activation_id(
+    snapshot: &crate::domain::scheduler_protocol::Snapshot,
+    message_id: &str,
+) -> Option<String> {
+    // Compatibility/recovery boundary: locate the retained legacy activation
+    // needed to settle a canonical queue record without coupling the canonical
+    // scheduler executor to the legacy protocol model.
+    snapshot
+        .activations
+        .iter()
+        .filter(|(_, activation)| {
+            activation.state == crate::domain::scheduler_protocol::ActivationState::Running
+        })
+        .find_map(|(activation_id, _)| {
+            snapshot
+                .activation_admissions
+                .get(activation_id)
+                .filter(|admission| admission.activation.provenance.source_id == message_id)
+                .map(|_| activation_id.clone())
+        })
+}
+
 fn canonical_queue_settlement_commands_from_facts(
     storage: &AppStorage,
     runtime_db: &RuntimeDb,
@@ -549,8 +571,7 @@ fn canonical_queue_settlement_commands_from_facts(
     else {
         return Ok(Vec::new());
     };
-    let Some(activation_id) =
-        scheduler_executor::canonical_open_activation_id(&snapshot, &record.message_id)
+    let Some(activation_id) = legacy_scheduler_open_activation_id(&snapshot, &record.message_id)
     else {
         return Ok(Vec::new());
     };

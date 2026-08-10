@@ -11,6 +11,7 @@ const SCHEDULER_DOMAIN_MODULES: &[&str] = &[
 ];
 const NORMAL_QUEUE_TRANSITION: &str = "pub(crate) struct QueueTransitionCommand";
 const LEGACY_QUEUE_TRANSITION: &str = "pub(crate) struct LegacySchedulerProtocolTransition";
+const CANONICAL_SCHEDULER_EXECUTOR: &str = "src/runtime/scheduler_executor.rs";
 
 fn collect_rust_sources(directory: &Path, sources: &mut Vec<PathBuf>) {
     for entry in fs::read_dir(directory)
@@ -175,5 +176,17 @@ fn normal_queue_transition_does_not_carry_legacy_scheduler_payload() {
     assert!(
         source.contains("commit_queue_with_legacy_scheduler_protocol"),
         "legacy queue and scheduler protocol commits must use an explicit compatibility boundary"
+    );
+}
+
+#[test]
+fn canonical_scheduler_executor_does_not_reference_legacy_scheduler_protocol() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let source = fs::read_to_string(root.join(CANONICAL_SCHEDULER_EXECUTOR))
+        .expect("read canonical scheduler executor");
+
+    assert!(
+        !source.contains("scheduler_protocol"),
+        "{CANONICAL_SCHEDULER_EXECUTOR} must not reference legacy scheduler_protocol"
     );
 }

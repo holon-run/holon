@@ -1990,29 +1990,6 @@ fn align_execution_claim_with_wait_transition(
     Ok(())
 }
 
-pub(super) fn canonical_open_activation_id(
-    snapshot: &crate::domain::scheduler_protocol::Snapshot,
-    message_id: &str,
-) -> Option<String> {
-    // Phase 4: derive the open activation from the `activations` authority map
-    // rather than the `slot` mirror.  `assert_invariants` already guarantees
-    // that a Running slot corresponds to exactly one Running activation, so
-    // scanning activations is equivalent and removes the slot reader dependency.
-    snapshot
-        .activations
-        .iter()
-        .filter(|(_, activation)| {
-            activation.state == crate::domain::scheduler_protocol::ActivationState::Running
-        })
-        .find_map(|(activation_id, _)| {
-            snapshot
-                .activation_admissions
-                .get(activation_id)
-                .filter(|admission| admission.activation.provenance.source_id == message_id)
-                .map(|_| activation_id.clone())
-        })
-}
-
 fn canonical_execution_attempt_id_for_message(
     state: Option<&crate::domain::execution_protocol::ExecutionProtocolState>,
     message_id: &str,
@@ -2189,86 +2166,30 @@ pub(super) fn canonical_wait_trigger_id(message: &MessageEnvelope) -> String {
     }
 }
 
-fn canonical_activation_origin(
+fn canonical_execution_origin(
     message: &MessageEnvelope,
-) -> crate::domain::scheduler_protocol::ActivationOrigin {
-    use crate::domain::scheduler_protocol::ActivationOrigin;
+) -> crate::domain::execution_protocol::ExecutionOrigin {
+    use crate::domain::execution_protocol::ExecutionOrigin;
     match message.origin {
-        MessageOrigin::Operator { .. } => ActivationOrigin::Operator,
-        MessageOrigin::Channel { .. } => ActivationOrigin::Channel,
-        MessageOrigin::Webhook { .. } => ActivationOrigin::Webhook,
-        MessageOrigin::Callback { .. } => ActivationOrigin::Callback,
-        MessageOrigin::Timer { .. } => ActivationOrigin::Timer,
-        MessageOrigin::System { .. } => ActivationOrigin::System,
-        MessageOrigin::Task { .. } => ActivationOrigin::Task,
+        MessageOrigin::Operator { .. } => ExecutionOrigin::Operator,
+        MessageOrigin::Channel { .. } => ExecutionOrigin::Channel,
+        MessageOrigin::Webhook { .. } => ExecutionOrigin::Webhook,
+        MessageOrigin::Callback { .. } => ExecutionOrigin::Callback,
+        MessageOrigin::Timer { .. } => ExecutionOrigin::Timer,
+        MessageOrigin::System { .. } => ExecutionOrigin::System,
+        MessageOrigin::Task { .. } => ExecutionOrigin::Task,
     }
 }
 
-fn canonical_activation_trust(
+fn canonical_execution_trust(
     message: &MessageEnvelope,
-) -> crate::domain::scheduler_protocol::ActivationTrust {
-    use crate::domain::scheduler_protocol::ActivationTrust;
+) -> crate::domain::execution_protocol::ExecutionTrust {
+    use crate::domain::execution_protocol::ExecutionTrust;
     match message.authority_class {
-        crate::types::AuthorityClass::OperatorInstruction => ActivationTrust::OperatorInstruction,
-        crate::types::AuthorityClass::RuntimeInstruction => ActivationTrust::RuntimeInstruction,
-        crate::types::AuthorityClass::IntegrationSignal => ActivationTrust::IntegrationSignal,
-        crate::types::AuthorityClass::ExternalEvidence => ActivationTrust::ExternalEvidence,
-    }
-}
-
-fn canonical_activation_origin_for_scenario(
-    message: &MessageEnvelope,
-    scenario: &scheduler::CanonicalActivationScenario,
-) -> crate::domain::scheduler_protocol::ActivationOrigin {
-    use crate::domain::scheduler_protocol::ActivationOrigin;
-    match scenario {
-        scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation { .. } => {
-            ActivationOrigin::System
-        }
-        scheduler::CanonicalActivationScenario::ProviderRecovery { .. } => {
-            ActivationOrigin::RuntimeRecovery
-        }
-        scheduler::CanonicalActivationScenario::InternalFollowup { .. }
-            if !scheduler::runtime_owned_internal_followup(message) =>
-        {
-            ActivationOrigin::System
-        }
-        scheduler::CanonicalActivationScenario::ExactTaskRejoin { .. } => ActivationOrigin::Task,
-        scheduler::CanonicalActivationScenario::ExplicitlyBoundOperatorInput { .. } => {
-            ActivationOrigin::Operator
-        }
-        scheduler::CanonicalActivationScenario::InternalFollowup { .. }
-        | scheduler::CanonicalActivationScenario::ExactWaitResume { .. }
-        | scheduler::CanonicalActivationScenario::LifecycleExternalNudge { .. } => {
-            canonical_activation_origin(message)
-        }
-    }
-}
-
-fn canonical_activation_trust_for_scenario(
-    message: &MessageEnvelope,
-    scenario: &scheduler::CanonicalActivationScenario,
-) -> crate::domain::scheduler_protocol::ActivationTrust {
-    use crate::domain::scheduler_protocol::ActivationTrust;
-    match scenario {
-        scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation { .. }
-        | scheduler::CanonicalActivationScenario::ProviderRecovery { .. }
-        | scheduler::CanonicalActivationScenario::ExactTaskRejoin { .. } => {
-            ActivationTrust::RuntimeInstruction
-        }
-        scheduler::CanonicalActivationScenario::InternalFollowup { .. }
-            if !scheduler::runtime_owned_internal_followup(message) =>
-        {
-            ActivationTrust::RuntimeInstruction
-        }
-        scheduler::CanonicalActivationScenario::ExplicitlyBoundOperatorInput { .. } => {
-            ActivationTrust::OperatorInstruction
-        }
-        scheduler::CanonicalActivationScenario::InternalFollowup { .. }
-        | scheduler::CanonicalActivationScenario::ExactWaitResume { .. }
-        | scheduler::CanonicalActivationScenario::LifecycleExternalNudge { .. } => {
-            canonical_activation_trust(message)
-        }
+        crate::types::AuthorityClass::OperatorInstruction => ExecutionTrust::OperatorInstruction,
+        crate::types::AuthorityClass::RuntimeInstruction => ExecutionTrust::RuntimeInstruction,
+        crate::types::AuthorityClass::IntegrationSignal => ExecutionTrust::IntegrationSignal,
+        crate::types::AuthorityClass::ExternalEvidence => ExecutionTrust::ExternalEvidence,
     }
 }
 
@@ -2277,16 +2198,26 @@ fn canonical_execution_origin_for_scenario(
     scenario: &scheduler::CanonicalActivationScenario,
 ) -> crate::domain::execution_protocol::ExecutionOrigin {
     use crate::domain::execution_protocol::ExecutionOrigin;
-    match canonical_activation_origin_for_scenario(message, scenario) {
-        crate::domain::scheduler_protocol::ActivationOrigin::Operator => ExecutionOrigin::Operator,
-        crate::domain::scheduler_protocol::ActivationOrigin::Channel => ExecutionOrigin::Channel,
-        crate::domain::scheduler_protocol::ActivationOrigin::Webhook => ExecutionOrigin::Webhook,
-        crate::domain::scheduler_protocol::ActivationOrigin::Callback => ExecutionOrigin::Callback,
-        crate::domain::scheduler_protocol::ActivationOrigin::Timer => ExecutionOrigin::Timer,
-        crate::domain::scheduler_protocol::ActivationOrigin::System => ExecutionOrigin::System,
-        crate::domain::scheduler_protocol::ActivationOrigin::Task => ExecutionOrigin::Task,
-        crate::domain::scheduler_protocol::ActivationOrigin::RuntimeRecovery => {
+    match scenario {
+        scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation { .. } => {
+            ExecutionOrigin::System
+        }
+        scheduler::CanonicalActivationScenario::ProviderRecovery { .. } => {
             ExecutionOrigin::RuntimeRecovery
+        }
+        scheduler::CanonicalActivationScenario::InternalFollowup { .. }
+            if !scheduler::runtime_owned_internal_followup(message) =>
+        {
+            ExecutionOrigin::System
+        }
+        scheduler::CanonicalActivationScenario::ExactTaskRejoin { .. } => ExecutionOrigin::Task,
+        scheduler::CanonicalActivationScenario::ExplicitlyBoundOperatorInput { .. } => {
+            ExecutionOrigin::Operator
+        }
+        scheduler::CanonicalActivationScenario::InternalFollowup { .. }
+        | scheduler::CanonicalActivationScenario::ExactWaitResume { .. }
+        | scheduler::CanonicalActivationScenario::LifecycleExternalNudge { .. } => {
+            canonical_execution_origin(message)
         }
     }
 }
@@ -2296,18 +2227,24 @@ fn canonical_execution_trust_for_scenario(
     scenario: &scheduler::CanonicalActivationScenario,
 ) -> crate::domain::execution_protocol::ExecutionTrust {
     use crate::domain::execution_protocol::ExecutionTrust;
-    match canonical_activation_trust_for_scenario(message, scenario) {
-        crate::domain::scheduler_protocol::ActivationTrust::OperatorInstruction => {
-            ExecutionTrust::OperatorInstruction
-        }
-        crate::domain::scheduler_protocol::ActivationTrust::RuntimeInstruction => {
+    match scenario {
+        scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation { .. }
+        | scheduler::CanonicalActivationScenario::ProviderRecovery { .. }
+        | scheduler::CanonicalActivationScenario::ExactTaskRejoin { .. } => {
             ExecutionTrust::RuntimeInstruction
         }
-        crate::domain::scheduler_protocol::ActivationTrust::IntegrationSignal => {
-            ExecutionTrust::IntegrationSignal
+        scheduler::CanonicalActivationScenario::InternalFollowup { .. }
+            if !scheduler::runtime_owned_internal_followup(message) =>
+        {
+            ExecutionTrust::RuntimeInstruction
         }
-        crate::domain::scheduler_protocol::ActivationTrust::ExternalEvidence => {
-            ExecutionTrust::ExternalEvidence
+        scheduler::CanonicalActivationScenario::ExplicitlyBoundOperatorInput { .. } => {
+            ExecutionTrust::OperatorInstruction
+        }
+        scheduler::CanonicalActivationScenario::InternalFollowup { .. }
+        | scheduler::CanonicalActivationScenario::ExactWaitResume { .. }
+        | scheduler::CanonicalActivationScenario::LifecycleExternalNudge { .. } => {
+            canonical_execution_trust(message)
         }
     }
 }
