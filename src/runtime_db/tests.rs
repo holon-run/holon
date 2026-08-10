@@ -2566,8 +2566,6 @@ INSERT INTO scheduler_scenario_authorities (
                         operation: QueueOperation::Admit,
                         mutation: QueueMutation::Upsert(queue_record),
                         scheduler_claim_work_item: None,
-                        scheduler_protocol_bootstrap: None,
-                        scheduler_protocol_commands: Vec::new(),
                         agent_state: None,
                         message_evidence: Vec::new(),
                         transcript_entries: Vec::new(),

@@ -9,6 +9,8 @@ const SCHEDULER_DOMAIN_MODULES: &[&str] = &[
     "src/domain/scheduler.rs",
     "src/domain/scheduler_protocol.rs",
 ];
+const NORMAL_QUEUE_TRANSITION: &str = "pub(crate) struct QueueTransitionCommand";
+const LEGACY_QUEUE_TRANSITION: &str = "pub(crate) struct LegacySchedulerProtocolTransition";
 
 fn collect_rust_sources(directory: &Path, sources: &mut Vec<PathBuf>) {
     for entry in fs::read_dir(directory)
@@ -149,5 +151,29 @@ fn legacy_scheduler_protocol_reexports_neutral_types_without_wire_changes() {
     assert_eq!(
         serde_json::to_value(mode).unwrap(),
         serde_json::json!("authoritative")
+    );
+}
+
+#[test]
+fn normal_queue_transition_does_not_carry_legacy_scheduler_payload() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let source = fs::read_to_string(root.join("src/runtime_db/transitions.rs"))
+        .expect("read runtime transitions");
+    let normal_start = source
+        .find(NORMAL_QUEUE_TRANSITION)
+        .expect("normal queue transition definition");
+    let legacy_start = source[normal_start..]
+        .find(LEGACY_QUEUE_TRANSITION)
+        .map(|offset| normal_start + offset)
+        .expect("legacy queue transition definition");
+    let normal_definition = &source[normal_start..legacy_start];
+
+    assert!(
+        !normal_definition.contains("scheduler_protocol"),
+        "normal QueueTransitionCommand must not carry legacy scheduler protocol payload"
+    );
+    assert!(
+        source.contains("commit_queue_with_legacy_scheduler_protocol"),
+        "legacy queue and scheduler protocol commits must use an explicit compatibility boundary"
     );
 }

@@ -113,9 +113,6 @@ enum QueueHeadNoProgressCause {
     },
     HardBlocker(CanonicalClaimHardBlocker),
     AmbiguousWait,
-    ClaimContended {
-        scenario_class: Option<crate::domain::scheduler::SchedulerScenarioClass>,
-    },
     ReplanExhausted,
 }
 
@@ -124,7 +121,6 @@ impl QueueHeadNoProgressCause {
         match self {
             Self::RetainedAuthority { scenario_class, .. } => Some(*scenario_class),
             Self::HardBlocker(blocker) => Some(blocker.scenario_class),
-            Self::ClaimContended { scenario_class } => *scenario_class,
             Self::AmbiguousWait | Self::ReplanExhausted => None,
         }
     }
@@ -134,7 +130,6 @@ impl QueueHeadNoProgressCause {
             Self::RetainedAuthority { reason, .. } => reason,
             Self::HardBlocker(blocker) => blocker.blocker_code,
             Self::AmbiguousWait => "canonical_wait_ambiguous",
-            Self::ClaimContended { .. } => "canonical_claim_contended",
             Self::ReplanExhausted => "canonical_claim_replan_exhausted",
         }
     }
@@ -695,8 +690,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                             scheduler_claim_work_item: canonical_claim
                                 .as_ref()
                                 .and_then(|plan| plan.work_item_expectation.clone()),
-                            scheduler_protocol_bootstrap: None,
-                            scheduler_protocol_commands: Vec::new(),
                             agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
                                 expected: Some(Box::new(guard.state.clone())),
                                 record: Box::new(running_state.clone()),
@@ -736,22 +729,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                         continue;
                     }
                 };
-                if commit.scheduler_authority_blocked {
-                    commit.effects.agent_state = None;
-                    drop(guard);
-                    self.runtime.apply_transition_commit(commit).await;
-                    return Ok(PrepareMessageOutcome::Poll(
-                        self.defer_or_quarantine_queue_head(
-                            &candidate,
-                            QueueHeadNoProgressCause::ClaimContended {
-                                scenario_class: canonical_claim
-                                    .as_ref()
-                                    .map(|plan| plan.scenario_class),
-                            },
-                        )
-                        .await?,
-                    ));
-                }
                 if !commit.applied {
                     let _ = guard.queue.pop_if_next(&candidate.message.id);
                     guard.state.pending = guard.queue.len();
@@ -1508,8 +1485,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     record: dropped,
                 },
                 scheduler_claim_work_item: None,
-                scheduler_protocol_bootstrap: None,
-                scheduler_protocol_commands: Vec::new(),
                 agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
                     expected: Some(Box::new(guard.state.clone())),
                     record: Box::new(next_state.clone()),
@@ -2380,9 +2355,6 @@ mod tests {
                 })
             }
             "canonical_wait_ambiguous" => QueueHeadNoProgressCause::AmbiguousWait,
-            "canonical_claim_contended" => QueueHeadNoProgressCause::ClaimContended {
-                scenario_class: Some(SchedulerScenarioClass::WorkItemAutonomousContinuation),
-            },
             "canonical_claim_replan_exhausted" => QueueHeadNoProgressCause::ReplanExhausted,
             other => panic!("unknown queue-head no-progress test cause: {other}"),
         }
@@ -2441,13 +2413,6 @@ mod tests {
                 "canonical_wait_ambiguous",
             ),
             (
-                QueueHeadNoProgressCause::ClaimContended {
-                    scenario_class: Some(SchedulerScenarioClass::WorkItemAutonomousContinuation),
-                },
-                Some(SchedulerScenarioClass::WorkItemAutonomousContinuation),
-                "canonical_claim_contended",
-            ),
-            (
                 QueueHeadNoProgressCause::ReplanExhausted,
                 None,
                 "canonical_claim_replan_exhausted",
@@ -2469,7 +2434,6 @@ mod tests {
             "explicit_binding_work_item_missing",
             "canonical_activation_scenario_unresolved",
             "canonical_wait_ambiguous",
-            "canonical_claim_contended",
             "canonical_claim_replan_exhausted",
         ] {
             let dir = tempdir().unwrap();

@@ -14117,8 +14117,6 @@ async fn scheduler_repair_only_drops_wake_only_queue_entries_with_occ() {
             operation: crate::runtime_db::transitions::QueueOperation::Admit,
             mutation: crate::runtime_db::transitions::QueueMutation::Upsert(entry.clone()),
             scheduler_claim_work_item: None,
-            scheduler_protocol_bootstrap: None,
-            scheduler_protocol_commands: Vec::new(),
             agent_state: None,
             message_evidence: vec![wake_message],
             transcript_entries: Vec::new(),
@@ -14331,8 +14329,6 @@ async fn post_commit_agent_state_projection_does_not_overwrite_newer_memory() {
                 updated_at: Utc::now(),
             }),
             scheduler_claim_work_item: None,
-            scheduler_protocol_bootstrap: None,
-            scheduler_protocol_commands: Vec::new(),
             agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
                 expected: Some(Box::new(expected)),
                 record: Box::new(committed),

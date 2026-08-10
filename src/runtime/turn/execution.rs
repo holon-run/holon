@@ -516,8 +516,6 @@ impl RuntimeHandle {
                                 queue_record,
                             ),
                             scheduler_claim_work_item: None,
-                            scheduler_protocol_bootstrap: None,
-                            scheduler_protocol_commands: Vec::new(),
                             agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
                                 expected: Some(Box::new(expected_state)),
                                 record: Box::new(committed_state.clone()),
@@ -548,11 +546,6 @@ impl RuntimeHandle {
                             continue;
                         }
                     };
-                    if commit.scheduler_authority_blocked {
-                        drop(guard);
-                        self.apply_transition_commit(commit).await;
-                        break 'outer;
-                    }
                     if !commit.applied {
                         return Err(anyhow::anyhow!(
                             "interjection settlement made no durable progress"

@@ -217,8 +217,6 @@ impl RuntimeHandle {
                                     record: dropped,
                                 },
                             scheduler_claim_work_item: None,
-                            scheduler_protocol_bootstrap: None,
-                            scheduler_protocol_commands: Vec::new(),
                             agent_state: None,
                             message_evidence: Vec::new(),
                             transcript_entries: Vec::new(),

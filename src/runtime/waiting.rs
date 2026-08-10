@@ -674,8 +674,6 @@ impl RuntimeHandle {
                             queue_entry,
                         ),
                         scheduler_claim_work_item: None,
-                        scheduler_protocol_bootstrap: None,
-                        scheduler_protocol_commands: Vec::new(),
                         agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
                             expected: Some(Box::new(expected_state)),
                             record: Box::new(committed_state.clone()),

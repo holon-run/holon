@@ -206,8 +206,6 @@ pub(crate) struct QueueTransitionCommand {
     pub operation: QueueOperation,
     pub mutation: QueueMutation,
     pub scheduler_claim_work_item: Option<WorkItemRecord>,
-    pub scheduler_protocol_bootstrap: Option<crate::domain::scheduler_protocol::Snapshot>,
-    pub scheduler_protocol_commands: Vec<crate::domain::scheduler_protocol::ProtocolCommand>,
     pub agent_state: Option<AgentStateMutation>,
     pub message_evidence: Vec<MessageEnvelope>,
     pub transcript_entries: Vec<TranscriptEntry>,
@@ -216,6 +214,12 @@ pub(crate) struct QueueTransitionCommand {
     pub notify_scheduler: bool,
     pub fault: Option<TransitionFaultPoint>,
     pub brief_evidence: Vec<BriefRecord>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct LegacySchedulerProtocolTransition {
+    pub bootstrap: Option<crate::domain::scheduler_protocol::Snapshot>,
+    pub commands: Vec<crate::domain::scheduler_protocol::ProtocolCommand>,
 }
 
 #[derive(Debug, Clone)]
@@ -929,9 +933,10 @@ impl RuntimeTransitionRepository<'_> {
     }
 
     pub fn commit_queue(&self, command: &QueueTransitionCommand) -> Result<TransitionCommit> {
-        self.commit_queue_with_protocol_and_wait_trigger(
+        self.commit_queue_transaction(
             command,
             &ExecutionProtocolTransition::default(),
+            None,
             None,
             None,
         )
@@ -942,7 +947,7 @@ impl RuntimeTransitionRepository<'_> {
         command: &QueueTransitionCommand,
         execution_protocol: &ExecutionProtocolTransition,
     ) -> Result<TransitionCommit> {
-        self.commit_queue_with_protocol_and_wait_trigger(command, execution_protocol, None, None)
+        self.commit_queue_transaction(command, execution_protocol, None, None, None)
     }
 
     pub fn commit_queue_with_wait_trigger(
@@ -950,10 +955,11 @@ impl RuntimeTransitionRepository<'_> {
         command: &QueueTransitionCommand,
         wait_transition: Option<&QueueWaitTransition>,
     ) -> Result<TransitionCommit> {
-        self.commit_queue_with_protocol_and_wait_trigger(
+        self.commit_queue_transaction(
             command,
             &ExecutionProtocolTransition::default(),
             wait_transition,
+            None,
             None,
         )
     }
@@ -964,12 +970,7 @@ impl RuntimeTransitionRepository<'_> {
         execution_protocol: &ExecutionProtocolTransition,
         wait_transition: Option<&QueueWaitTransition>,
     ) -> Result<TransitionCommit> {
-        self.commit_queue_with_protocol_and_wait_trigger(
-            command,
-            execution_protocol,
-            wait_transition,
-            None,
-        )
+        self.commit_queue_transaction(command, execution_protocol, wait_transition, None, None)
     }
 
     pub fn commit_queue_with_execution_protocol_and_task_expectation(
@@ -978,20 +979,37 @@ impl RuntimeTransitionRepository<'_> {
         execution_protocol: &ExecutionProtocolTransition,
         task_expectation: &TaskExpectation,
     ) -> Result<TransitionCommit> {
-        self.commit_queue_with_protocol_and_wait_trigger(
+        self.commit_queue_transaction(
             command,
             execution_protocol,
             None,
             Some(task_expectation),
+            None,
         )
     }
 
-    fn commit_queue_with_protocol_and_wait_trigger(
+    #[allow(dead_code)] // Explicit compatibility boundary retained for legacy engines and migrations.
+    pub fn commit_queue_with_legacy_scheduler_protocol(
+        &self,
+        command: &QueueTransitionCommand,
+        scheduler_protocol: &LegacySchedulerProtocolTransition,
+    ) -> Result<TransitionCommit> {
+        self.commit_queue_transaction(
+            command,
+            &ExecutionProtocolTransition::default(),
+            None,
+            None,
+            Some(scheduler_protocol),
+        )
+    }
+
+    fn commit_queue_transaction(
         &self,
         command: &QueueTransitionCommand,
         execution_protocol: &ExecutionProtocolTransition,
         wait_transition: Option<&QueueWaitTransition>,
         task_expectation: Option<&TaskExpectation>,
+        legacy_scheduler_protocol: Option<&LegacySchedulerProtocolTransition>,
     ) -> Result<TransitionCommit> {
         self.db.transaction(|tx| {
             validate_queue_operation(command)?;
@@ -1029,52 +1047,58 @@ impl RuntimeTransitionRepository<'_> {
                 command.operation,
                 command.scheduler_claim_work_item.as_ref(),
             )?;
-            let scheduler_protocol = scheduler_protocol_repository::validate_protocol_commands_tx(
-                tx,
-                &command.agent_id,
-                command.scheduler_protocol_bootstrap.as_ref(),
-                &command.scheduler_protocol_commands,
-                &execution_protocol.commands,
-            );
-            let scheduler_protocol = match scheduler_protocol {
-                Ok(prepared) => prepared,
-                Err(error)
-                    if matches!(
-                        command.operation,
-                        QueueOperation::Claim | QueueOperation::Interject
-                    ) =>
-                {
-                    let Some(conflict) =
-                        scheduler_protocol_repository::scheduler_protocol_claim_contention(&error)
-                    else {
-                        return Err(error);
-                    };
-                    let event = AuditEvent::legacy(
-                        "scheduler_claim_contended",
-                        serde_json::json!({
-                            "agent_id": command.agent_id,
-                            "conflict_kind": conflict.kind,
-                            "conflict_code": conflict.code,
-                            "queue_operation": format!("{:?}", command.operation).to_lowercase(),
-                            "queue_disposition": "retained_queued",
-                        }),
-                    );
-                    let mut commit = finish_transition_tx(
+            let scheduler_protocol = match legacy_scheduler_protocol {
+                None => None,
+                Some(legacy_scheduler_protocol) => {
+                    match scheduler_protocol_repository::validate_protocol_commands_tx(
                         tx,
-                        true,
                         &command.agent_id,
-                        &[event],
-                        &[],
-                        command.fault,
-                        PostCommitEffects {
-                            notify_scheduler: command.notify_scheduler,
-                            ..PostCommitEffects::default()
-                        },
-                    )?;
-                    commit.scheduler_authority_blocked = true;
-                    return Ok(commit);
+                        legacy_scheduler_protocol.bootstrap.as_ref(),
+                        &legacy_scheduler_protocol.commands,
+                        &execution_protocol.commands,
+                    ) {
+                        Ok(prepared) => prepared,
+                        Err(error)
+                            if matches!(
+                                command.operation,
+                                QueueOperation::Claim | QueueOperation::Interject
+                            ) =>
+                        {
+                            let Some(conflict) =
+                                scheduler_protocol_repository::scheduler_protocol_claim_contention(
+                                    &error,
+                                )
+                            else {
+                                return Err(error);
+                            };
+                            let event = AuditEvent::legacy(
+                                "scheduler_claim_contended",
+                                serde_json::json!({
+                                    "agent_id": command.agent_id,
+                                    "conflict_kind": conflict.kind,
+                                    "conflict_code": conflict.code,
+                                    "queue_operation": format!("{:?}", command.operation).to_lowercase(),
+                                    "queue_disposition": "retained_queued",
+                                }),
+                            );
+                            let mut commit = finish_transition_tx(
+                                tx,
+                                true,
+                                &command.agent_id,
+                                &[event],
+                                &[],
+                                command.fault,
+                                PostCommitEffects {
+                                    notify_scheduler: command.notify_scheduler,
+                                    ..PostCommitEffects::default()
+                                },
+                            )?;
+                            commit.scheduler_authority_blocked = true;
+                            return Ok(commit);
+                        }
+                        Err(error) => return Err(error),
+                    }
                 }
-                Err(error) => return Err(error),
             };
             let execution_protocol = execution_protocol_repository::validate_execution_commands_tx(
                 tx,
@@ -1138,11 +1162,13 @@ impl RuntimeTransitionRepository<'_> {
             if !applied {
                 return Ok(TransitionCommit::default());
             }
-            scheduler_protocol_repository::persist_protocol_commands_tx(
-                tx,
-                &command.agent_id,
-                scheduler_protocol,
-            )?;
+            if scheduler_protocol.is_some() {
+                scheduler_protocol_repository::persist_protocol_commands_tx(
+                    tx,
+                    &command.agent_id,
+                    scheduler_protocol,
+                )?;
+            }
             execution_protocol_repository::persist_execution_commands_tx(tx, execution_protocol)?;
             for message in &command.message_evidence {
                 append_message_tx(tx, message)?;
@@ -2335,8 +2361,6 @@ mod tests {
                     operation: QueueOperation::Settle,
                     mutation: QueueMutation::Upsert(processed),
                     scheduler_claim_work_item: None,
-                    scheduler_protocol_bootstrap: None,
-                    scheduler_protocol_commands: Vec::new(),
                     agent_state: Some(AgentStateMutation {
                         expected: Some(Box::new(initial_state.clone())),
                         record: Box::new(settled_state),
@@ -2385,8 +2409,6 @@ mod tests {
                     operation: QueueOperation::Claim,
                     mutation: QueueMutation::Consume(claimed),
                     scheduler_claim_work_item: None,
-                    scheduler_protocol_bootstrap: None,
-                    scheduler_protocol_commands: Vec::new(),
                     agent_state: None,
                     message_evidence: Vec::new(),
                     transcript_entries: Vec::new(),
@@ -2455,8 +2477,6 @@ mod tests {
                         updated_at: now,
                     }),
                     scheduler_claim_work_item: None,
-                    scheduler_protocol_bootstrap: None,
-                    scheduler_protocol_commands: Vec::new(),
                     agent_state: None,
                     message_evidence: Vec::new(),
                     transcript_entries: Vec::new(),
@@ -2568,8 +2588,6 @@ mod tests {
                         updated_at: now,
                     }),
                     scheduler_claim_work_item: None,
-                    scheduler_protocol_bootstrap: None,
-                    scheduler_protocol_commands: Vec::new(),
                     agent_state: None,
                     message_evidence: Vec::new(),
                     transcript_entries: Vec::new(),
@@ -2632,8 +2650,6 @@ mod tests {
                 record: processed,
             },
             scheduler_claim_work_item: None,
-            scheduler_protocol_bootstrap: None,
-            scheduler_protocol_commands: Vec::new(),
             agent_state: None,
             message_evidence: Vec::new(),
             transcript_entries: Vec::new(),
@@ -2684,8 +2700,6 @@ mod tests {
                 operation: QueueOperation::Claim,
                 mutation: QueueMutation::Consume(claimed),
                 scheduler_claim_work_item: Some(work_item.clone()),
-                scheduler_protocol_bootstrap: None,
-                scheduler_protocol_commands: Vec::new(),
                 agent_state: None,
                 message_evidence: Vec::new(),
                 transcript_entries: Vec::new(),
@@ -2712,6 +2726,81 @@ mod tests {
             .transitions()
             .load_scheduler_protocol_snapshot_if_initialized("agent-a")?
             .is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_queue_and_scheduler_protocol_commit_atomically() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        let work_item = work_item("work-legacy-adoption");
+        db.work_items().insert_new(&work_item)?;
+        let adoption = db
+            .transitions()
+            .legacy_scheduler_adoption_candidates("agent-a")?
+            .into_iter()
+            .find(|candidate| candidate.work_item_id == work_item.id)
+            .and_then(|candidate| candidate.command)
+            .expect("eligible legacy adoption command");
+
+        let now = Utc::now();
+        let queued = QueueEntryRecord {
+            message_id: "message-legacy-adoption".into(),
+            agent_id: "agent-a".into(),
+            priority: Priority::Next,
+            status: QueueEntryStatus::Queued,
+            created_at: now,
+            updated_at: now,
+        };
+        db.queue_entries().upsert(&queued)?;
+        let mut claimed = queued;
+        claimed.status = QueueEntryStatus::Dequeued;
+        claimed.updated_at += chrono::Duration::seconds(1);
+        let bootstrap = Snapshot {
+            slot: ActivationSlot::Idle,
+            dispatch: AgentDispatchState::Open,
+            dispatch_revision: 0,
+            focus: None,
+            work: Default::default(),
+            waits: Default::default(),
+            activations: Default::default(),
+            activation_admissions: Default::default(),
+            settlements: Default::default(),
+            missing_settlements: Default::default(),
+            admitted_generations: Default::default(),
+            continuation_admissions: Default::default(),
+            activation_inputs: Default::default(),
+        };
+
+        let commit = db
+            .transitions()
+            .commit_queue_with_legacy_scheduler_protocol(
+                &QueueTransitionCommand {
+                    agent_id: "agent-a".into(),
+                    operation: QueueOperation::Claim,
+                    mutation: QueueMutation::Consume(claimed.clone()),
+                    scheduler_claim_work_item: None,
+                    agent_state: None,
+                    message_evidence: Vec::new(),
+                    transcript_entries: Vec::new(),
+                    turn_record: None,
+                    audit_events: Vec::new(),
+                    notify_scheduler: true,
+                    fault: None,
+                    brief_evidence: Vec::new(),
+                },
+                &LegacySchedulerProtocolTransition {
+                    bootstrap: Some(bootstrap),
+                    commands: vec![adoption],
+                },
+            )?;
+
+        assert!(commit.applied);
+        assert!(!commit.scheduler_authority_blocked);
+        assert_eq!(db.queue_entries().latest_all()?, vec![claimed]);
+        assert!(db
+            .transitions()
+            .load_scheduler_protocol_snapshot_if_initialized("agent-a")?
+            .is_some());
         Ok(())
     }
 
@@ -2763,22 +2852,28 @@ mod tests {
             activation_inputs: Default::default(),
         };
 
-        let commit = db.transitions().commit_queue(&QueueTransitionCommand {
-            agent_id: "agent-a".into(),
-            operation: QueueOperation::Claim,
-            mutation: QueueMutation::Consume(claimed),
-            scheduler_claim_work_item: None,
-            scheduler_protocol_bootstrap: Some(bootstrap),
-            scheduler_protocol_commands: vec![adoption.clone()],
-            agent_state: None,
-            message_evidence: Vec::new(),
-            transcript_entries: Vec::new(),
-            turn_record: None,
-            audit_events: Vec::new(),
-            notify_scheduler: true,
-            fault: None,
-            brief_evidence: Vec::new(),
-        })?;
+        let commit = db
+            .transitions()
+            .commit_queue_with_legacy_scheduler_protocol(
+                &QueueTransitionCommand {
+                    agent_id: "agent-a".into(),
+                    operation: QueueOperation::Claim,
+                    mutation: QueueMutation::Consume(claimed),
+                    scheduler_claim_work_item: None,
+                    agent_state: None,
+                    message_evidence: Vec::new(),
+                    transcript_entries: Vec::new(),
+                    turn_record: None,
+                    audit_events: Vec::new(),
+                    notify_scheduler: true,
+                    fault: None,
+                    brief_evidence: Vec::new(),
+                },
+                &LegacySchedulerProtocolTransition {
+                    bootstrap: Some(bootstrap),
+                    commands: vec![adoption.clone()],
+                },
+            )?;
 
         assert!(commit.scheduler_authority_blocked);
         assert_eq!(db.queue_entries().latest_all()?, vec![queued]);
