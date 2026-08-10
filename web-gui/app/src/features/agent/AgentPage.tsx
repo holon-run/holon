@@ -68,6 +68,14 @@ const COMPOSER_DRAFT_STORAGE_PREFIX = "holon.webGui.composerDraft.v1";
 const COMPOSER_TEXTAREA_MAX_HEIGHT = 320;
 const MESSAGE_LIST_BOTTOM_SAFE_SPACE = 96;
 
+export type HistoryLoadDecision = "expand-local" | "load-network" | "none";
+
+export function historyLoadDecision(hasHiddenTimelineItems: boolean, hasOlderEvents: boolean): HistoryLoadDecision {
+  if (hasHiddenTimelineItems) return "expand-local";
+  if (hasOlderEvents) return "load-network";
+  return "none";
+}
+
 export function storedComposerDraftKey(agentId: string): string {
   return `${COMPOSER_DRAFT_STORAGE_PREFIX}:${encodeURIComponent(agentId)}`;
 }
@@ -360,6 +368,8 @@ export function AgentPage({
     getItemKey: (index) => timelineTurns[index]?.id ?? `empty:${index}`,
   });
   const hasHiddenTimelineItems = timeline.length >= visibleTimelineItemLimit && sourceTimeline.length > visibleTimelineItemLimit;
+  const historyLoadAction = historyLoadDecision(hasHiddenTimelineItems, hasOlderEvents);
+  const loadingNetworkHistory = historyLoadAction === "load-network" && loadingOlderEvents;
   const groupedModelOptions = useMemo(() => groupModelOptionsByProvider(modelCatalog.options), [modelCatalog.options]);
   const activeModelOption = useMemo(() => modelCatalog.options.find((option) => option.routeRef === activeAgent.model), [activeAgent.model, modelCatalog.options]);
   const activeModelSupportsReasoning = activeModelOption?.supportsReasoningEffort ?? Boolean(activeAgent.modelReasoningEffort);
@@ -605,6 +615,7 @@ export function AgentPage({
   }
 
   async function handleLoadOlderEvents() {
+    if (historyLoadAction === "none") return;
     const list = messageListRef.current;
     if (list) {
       const contentOffset = virtualWrapperRef.current?.offsetTop ?? 0;
@@ -615,6 +626,10 @@ export function AgentPage({
           ? captureScrollAnchor([anchorItem], virtualScrollTop)
           : null;
       stickToBottomRef.current = false;
+    }
+    if (historyLoadAction === "expand-local") {
+      setVisibleTimelineItemLimit((limit) => limit + HISTORY_PAGE_VISIBLE_INCREMENT);
+      return;
     }
     try {
       await onLoadOlderEvents();
@@ -685,10 +700,10 @@ export function AgentPage({
       <div className="agent-workbench">
         <section className="conversation-pane">
           <div className="message-list" ref={messageListRef} onScroll={handleMessageListScroll}>
-            {hasOlderEvents || hasHiddenTimelineItems ? (
+            {historyLoadAction !== "none" ? (
               <div className="history-loader">
-                <Button type="button" size="sm" variant="secondary" disabled={loadingOlderEvents} onClick={handleLoadOlderEvents}>
-                  {loadingOlderEvents ? t("agent.loadingEarlier") : t("agent.loadEarlier")}
+                <Button type="button" size="sm" variant="secondary" disabled={loadingNetworkHistory} onClick={handleLoadOlderEvents}>
+                  {loadingNetworkHistory ? t("agent.loadingEarlier") : t("agent.loadEarlier")}
                 </Button>
               </div>
             ) : null}

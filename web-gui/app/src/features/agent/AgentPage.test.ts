@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   attachmentKindForFile,
   captureScrollAnchor,
+  historyLoadDecision,
   readStoredComposerDraft,
   resizeComposerTextarea,
   restoredScrollTop,
@@ -167,6 +168,21 @@ describe("timeline display levels", () => {
 
     expect(timelineForDisplayLevel([semanticItem, debugItem], "debug", 20).map((item) => item.id))
       .toEqual(["assistant-message", "runtime:debug"]);
+  });
+});
+
+describe("history loading", () => {
+  it("expands already loaded timeline items before requesting network history", () => {
+    expect(historyLoadDecision(true, true)).toBe("expand-local");
+    expect(historyLoadDecision(true, false)).toBe("expand-local");
+  });
+
+  it("requests network history only after the local timeline reaches its boundary", () => {
+    expect(historyLoadDecision(false, true)).toBe("load-network");
+  });
+
+  it("does nothing when neither local nor server history remains", () => {
+    expect(historyLoadDecision(false, false)).toBe("none");
   });
 });
 
