@@ -140,6 +140,49 @@ impl AgentProvider for AbandonCompletionReportProvider {
     }
 }
 
+struct RevisionChangeCompletionReportProvider {
+    work_item_id: String,
+    calls: Mutex<usize>,
+    followup_started: Arc<tokio::sync::Notify>,
+    release_followup: Arc<tokio::sync::Notify>,
+}
+
+#[async_trait]
+impl AgentProvider for RevisionChangeCompletionReportProvider {
+    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let mut calls = self.calls.lock().await;
+        *calls += 1;
+        let call = *calls;
+        drop(calls);
+        let blocks = if call == 1 {
+            vec![ModelBlock::ToolUse {
+                id: "complete-work".into(),
+                name: "CompleteWorkItem".into(),
+                input: serde_json::json!({
+                    "work_item_id": self.work_item_id.clone()
+                }),
+                kind: crate::provider::ModelToolCallKind::Function,
+            }]
+        } else {
+            self.followup_started.notify_one();
+            self.release_followup.notified().await;
+            vec![ModelBlock::Text {
+                text: "This report arrived after the WorkItem changed.".into(),
+            }]
+        };
+        Ok(ProviderTurnResponse {
+            blocks,
+            stop_reason: None,
+            input_tokens: 10,
+            output_tokens: 10,
+            cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
+            request_diagnostics: None,
+        })
+    }
+}
+
 struct CompleteThenExecProvider {
     work_item_id: String,
     calls: Mutex<usize>,
@@ -3818,6 +3861,16 @@ async fn abandoned_completion_report_protocol_interrupts_deferred_tool_atomicall
         .unwrap();
     assert_eq!(current.state, WorkItemState::Open);
     assert!(current.result_brief_id.is_none());
+    assert!(current.completion_intent.is_none());
+    assert!(
+        runtime
+            .recent_briefs(10)
+            .await
+            .unwrap()
+            .iter()
+            .all(|brief| brief.kind != BriefKind::Result),
+        "abandoned completion report protocol must not create a result brief"
+    );
 
     let tools = runtime.storage().read_recent_tool_executions(10).unwrap();
     let completion_tools = tools
@@ -3859,6 +3912,169 @@ async fn abandoned_completion_report_protocol_interrupts_deferred_tool_atomicall
     assert!(events
         .iter()
         .any(|event| event.kind == "completion_report_request_abandoned"));
+    assert!(events
+        .iter()
+        .all(|event| event.kind != "tool_execution_failed"));
+    runtime_task.abort();
+}
+
+#[tokio::test]
+async fn invalidated_completion_report_binding_interrupts_deferred_tool_atomically() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let seed_runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = seed_runtime
+        .create_work_item(
+            "invalidate completion report binding".into(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    seed_runtime
+        .pick_work_item(work_item.id.clone())
+        .await
+        .unwrap();
+
+    let followup_started = Arc::new(tokio::sync::Notify::new());
+    let release_followup = Arc::new(tokio::sync::Notify::new());
+    let provider = Arc::new(RevisionChangeCompletionReportProvider {
+        work_item_id: work_item.id.clone(),
+        calls: Mutex::new(0),
+        followup_started: followup_started.clone(),
+        release_followup: release_followup.clone(),
+    });
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider,
+        "default".into(),
+        continuation_context_config(),
+    )
+    .unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("control".into()),
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "finish the tracked work".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::HttpControlPrompt,
+        AdmissionContext::ControlAuthenticated,
+    );
+    message.work_item_id = Some(work_item.id.clone());
+
+    let runtime_task = tokio::spawn(runtime.clone().run());
+    runtime.enqueue(message).await.unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        followup_started.notified(),
+    )
+    .await
+    .expect("follow-up completion report round should start");
+    runtime
+        .update_work_item_fields(
+            work_item.id.clone(),
+            Some("changed while awaiting completion report".into()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    release_followup.notify_one();
+
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let interrupted_tool_id = runtime
+                .storage()
+                .read_recent_tool_executions(10)
+                .unwrap()
+                .into_iter()
+                .find(|tool| {
+                    tool.tool_name == "CompleteWorkItem"
+                        && tool.status == crate::types::ToolExecutionStatus::Interrupted
+                })
+                .map(|tool| tool.id);
+            if interrupted_tool_id.is_some_and(|tool_id| {
+                runtime
+                    .storage()
+                    .read_recent_turns(10)
+                    .unwrap()
+                    .iter()
+                    .any(|turn| {
+                        turn.tool_execution_ids.contains(&tool_id)
+                            && turn
+                                .terminal
+                                .as_ref()
+                                .is_some_and(|terminal| terminal.kind == TurnTerminalKind::Aborted)
+                    })
+            }) {
+                break;
+            }
+            assert!(
+                !runtime_task.is_finished(),
+                "runtime exited before invalidated completion report settlement"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("invalidated completion report should settle atomically");
+
+    let current = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.state, WorkItemState::Open);
+    assert!(current.result_brief_id.is_none());
+    assert!(current.completion_intent.is_none());
+    assert!(
+        runtime
+            .recent_briefs(10)
+            .await
+            .unwrap()
+            .iter()
+            .all(|brief| brief.kind != BriefKind::Result),
+        "invalidated completion report binding must not create a result brief"
+    );
+    let tools = runtime.storage().read_recent_tool_executions(10).unwrap();
+    let completion_tool = tools
+        .iter()
+        .find(|tool| tool.tool_name == "CompleteWorkItem")
+        .expect("completion tool execution");
+    assert_eq!(
+        completion_tool.status,
+        crate::types::ToolExecutionStatus::Interrupted
+    );
+    assert_eq!(
+        completion_tool.output["reason"],
+        "work_item_revision_changed"
+    );
+    let events = runtime.storage().read_recent_events(200).unwrap();
+    assert!(events
+        .iter()
+        .any(|event| event.kind == "completion_report_request_invalidated"));
     assert!(events
         .iter()
         .all(|event| event.kind != "tool_execution_failed"));

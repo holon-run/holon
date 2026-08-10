@@ -234,6 +234,56 @@ impl RuntimeHandle {
         }
         Ok(record)
     }
+
+    async fn interrupt_completion_report_protocol(
+        &self,
+        pending: &mut PendingCompletionReport,
+        reason: &str,
+        summary: &str,
+        last_assistant_message: Option<String>,
+        final_citations: Vec<Citation>,
+        final_text_source_assistant_round_id: Option<String>,
+        duration_ms: u64,
+        persist_terminal: bool,
+    ) -> Result<AgentLoopOutcome> {
+        let completed_at = Utc::now();
+        pending.tool_execution.status = ToolExecutionStatus::Interrupted;
+        pending.tool_execution.completed_at = Some(completed_at);
+        pending.tool_execution.duration_ms = completed_at
+            .signed_duration_since(pending.tool_execution.created_at)
+            .num_milliseconds()
+            .max(0) as u64;
+        pending.tool_execution.summary = summary.into();
+        pending.tool_execution.output = serde_json::json!({
+            "disposition": "interrupted",
+            "reason": reason,
+            "completion_request_id": pending.request_id,
+        });
+        let terminal = self
+            .persist_turn_terminal_record_with_tool_executions(
+                TurnTerminalKind::Aborted,
+                last_assistant_message.clone(),
+                duration_ms,
+                None,
+                persist_terminal,
+                vec![pending.tool_execution.clone()],
+            )
+            .await?;
+        Ok(AgentLoopOutcome {
+            final_text: last_assistant_message.unwrap_or_default(),
+            final_citations,
+            final_text_source_assistant_round_id,
+            turn_index: terminal.turn_index,
+            terminal,
+            should_sleep: false,
+            sleep_duration_ms: None,
+            allow_sleep_runnable_work_override: false,
+            terminal_kind: TurnTerminalKind::Aborted,
+            prepared_work_item_completion: None,
+            terminal_tool_executions: vec![pending.tool_execution.clone()],
+        })
+    }
+
     pub(super) async fn maybe_defer_provider_lineage_failure(
         &self,
         agent_id: &str,
@@ -1853,20 +1903,6 @@ impl TurnExecution<'_> {
                         pending_completion_report = Some(pending);
                         continue;
                     }
-                    let completed_at = Utc::now();
-                    pending.tool_execution.status = ToolExecutionStatus::Interrupted;
-                    pending.tool_execution.completed_at = Some(completed_at);
-                    pending.tool_execution.duration_ms = completed_at
-                        .signed_duration_since(pending.tool_execution.created_at)
-                        .num_milliseconds()
-                        .max(0) as u64;
-                    pending.tool_execution.summary =
-                        "Interrupted: completion report protocol abandoned".into();
-                    pending.tool_execution.output = serde_json::json!({
-                        "disposition": "interrupted",
-                        "reason": "report_protocol_abandoned",
-                        "completion_request_id": pending.request_id,
-                    });
                     runtime.inner.storage.append_event(&AuditEvent::legacy(
                         "completion_report_request_abandoned",
                         serde_json::json!({
@@ -1876,49 +1912,59 @@ impl TurnExecution<'_> {
                             "reason": reason,
                         }),
                     ))?;
-                    let terminal = runtime
-                        .persist_turn_terminal_record_with_tool_executions(
-                            TurnTerminalKind::Aborted,
+                    return runtime
+                        .interrupt_completion_report_protocol(
+                            &mut pending,
+                            "report_protocol_abandoned",
+                            "Interrupted: completion report protocol abandoned",
                             last_assistant_message.clone(),
+                            last_assistant_citations.clone(),
+                            last_assistant_round_id.clone(),
                             turn_started_at.elapsed().as_millis() as u64,
-                            None,
                             persist_terminal,
-                            vec![pending.tool_execution.clone()],
                         )
-                        .await?;
-                    return Ok(AgentLoopOutcome {
-                        final_text: last_assistant_message.clone().unwrap_or_default(),
-                        final_citations: last_assistant_citations.clone(),
-                        final_text_source_assistant_round_id: last_assistant_round_id.clone(),
-                        turn_index: terminal.turn_index,
-                        terminal,
-                        should_sleep: false,
-                        sleep_duration_ms: None,
-                        allow_sleep_runnable_work_override: false,
-                        terminal_kind: TurnTerminalKind::Aborted,
-                        prepared_work_item_completion: None,
-                        terminal_tool_executions: vec![pending.tool_execution],
-                    });
+                        .await;
                 }
 
                 let state = runtime.agent_state().await?;
-                anyhow::ensure!(
-                    state.current_execution_binding.as_ref() == Some(&pending.execution_binding),
-                    "completion report execution binding changed before commit"
-                );
-                let current = runtime
-                    .latest_work_item(&pending.work_item_id)
-                    .await?
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "work item {} not found while binding completion report",
-                            pending.work_item_id
+                let current = runtime.latest_work_item(&pending.work_item_id).await?;
+                let invalidation_reason = if state.current_execution_binding.as_ref()
+                    != Some(&pending.execution_binding)
+                {
+                    Some("execution_binding_changed")
+                } else if current.is_none() {
+                    Some("work_item_missing")
+                } else if current
+                    .as_ref()
+                    .is_some_and(|current| current.revision != pending.expected_work_revision)
+                {
+                    Some("work_item_revision_changed")
+                } else {
+                    None
+                };
+                if let Some(reason) = invalidation_reason {
+                    runtime.inner.storage.append_event(&AuditEvent::legacy(
+                        "completion_report_request_invalidated",
+                        serde_json::json!({
+                            "agent_id": agent_id,
+                            "completion_request_id": pending.request_id,
+                            "work_item_id": pending.work_item_id,
+                            "reason": reason,
+                        }),
+                    ))?;
+                    return runtime
+                        .interrupt_completion_report_protocol(
+                            &mut pending,
+                            reason,
+                            "Interrupted: completion report binding invalidated",
+                            last_assistant_message.clone(),
+                            last_assistant_citations.clone(),
+                            last_assistant_round_id.clone(),
+                            turn_started_at.elapsed().as_millis() as u64,
+                            persist_terminal,
                         )
-                    })?;
-                anyhow::ensure!(
-                    current.revision == pending.expected_work_revision,
-                    "completion report WorkItem revision changed before commit"
-                );
+                        .await;
+                }
                 let candidate = crate::tool::spec::CompletionReportCandidate {
                     text: combined_text.clone(),
                     citations: citation_blocks.clone(),
