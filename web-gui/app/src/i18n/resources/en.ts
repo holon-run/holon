@@ -873,6 +873,8 @@ const en = {
     conversationAria: "Agent conversation",
     conversationEmpty: "Send the first operator message, or switch to Verbose/Debug to inspect low-level runtime events.",
     noEventsYet: "No runtime events are available for this agent yet. Try refreshing the session or sending an operator message.",
+    syncRecoveryFailed: "Conversation sync recovery failed (attempt {{attempt}})",
+    retrySync: "Retry sync now",
     // Composer
     sendInputAria: "Send operator input to {{id}}",
     sendInputPlaceholder: "Send operator input to {{id}}…",

@@ -93,6 +93,7 @@ export function App() {
   const showTimelineEvents = useRuntimeStore((state) => state.showTimelineEvents);
   const refreshTimelineEvents = useRuntimeStore((state) => state.refreshTimelineEvents);
   const loadOlderTimelineEvents = useRuntimeStore((state) => state.loadOlderTimelineEvents);
+  const retryAgentSync = useRuntimeStore((state) => state.retryAgentSync);
   const showWorkItemDetail = useRuntimeStore((state) => state.showWorkItemDetail);
   const showTaskDetail = useRuntimeStore((state) => state.showTaskDetail);
   const showFileBrowser = useRuntimeStore((state) => state.showFileBrowser);
@@ -663,12 +664,15 @@ export function App() {
             hasOlderEvents={selectedSemanticHistory?.hasOlder ?? false}
             loadingOlderEvents={selectedSemanticHistory?.loading ?? false}
             historyError={selectedSemanticHistory?.error ?? selectedAgentSession?.targetEventError ?? selectedAgentSession?.error}
+            syncError={selectedAgentSession?.syncError}
+            syncRetryAttempt={selectedAgentSession?.syncRetryAttempt}
             targetEventSeq={selectedAgentSession?.targetEventSeq}
             resumeRevision={resumeRevision}
             onRefreshModels={refreshModelCatalog}
             onSetModel={(model, reasoningEffort) => setAgentModel(activeAgent.id, model, effectiveDisplayLevel, reasoningEffort)}
             onClearModel={() => clearAgentModel(activeAgent.id, effectiveDisplayLevel)}
             onLoadOlderEvents={() => loadOlderAgentEvents(activeAgent.id, effectiveDisplayLevel)}
+            onRetrySync={() => retryAgentSync(activeAgent.id)}
             onSendPrompt={(text, attachments) => sendOperatorPrompt(activeAgent.id, text, effectiveDisplayLevel, attachments)}
             onConversationRead={markSelectedAgentConversationRead}
             onOpenInspector={() => {

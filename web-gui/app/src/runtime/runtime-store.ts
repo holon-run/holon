@@ -410,6 +410,7 @@ export interface RuntimeStoreState {
   stopGlobalEventStream: () => void;
   registerAgentForEvents: (agentId: string) => void;
   unregisterAgentForEvents: (agentId: string) => void;
+  retryAgentSync: (agentId: string) => void;
 }
 
 export function resetTransientRuntimeStateForResume(
@@ -3269,6 +3270,26 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   unregisterAgentForEvents: (agentId) => {
     unregisterAgentForEvents(agentId);
   },
+  retryAgentSync: (agentId) => {
+    if (!agentId) return;
+    if (!globalStreamSubscribedAgents.has(agentId)) {
+      registerAgentForEvents(get, set, agentId);
+      return;
+    }
+    clearGlobalBackfillRetry(agentId);
+    setStreamState(set, agentId, "recovering", {
+      syncError: undefined,
+      syncRetryAttempt: undefined,
+      syncRetryAt: undefined,
+    });
+    if (!globalEventStream) {
+      startGlobalEventStream(get, set);
+      return;
+    }
+    globalStreamCatchUpPendingAgents.add(agentId);
+    set({ globalStreamStatus: "catching_up" });
+    void recoverRegisteredGlobalAgent(get, set, agentId, captureClientRequest());
+  },
 }));
 
 // Initialize session cache on first load.
@@ -3570,7 +3591,7 @@ function startGlobalEventStream(get: () => RuntimeStoreState, set: StoreSet): vo
     onEvent: (event) => {
       if (!isCurrentClientRequest(request)) return;
       scheduleGlobalStaleWatchdog(get, set);
-      dispatchGlobalStreamEvent(set, event);
+      dispatchGlobalStreamEvent(get, set, event);
     },
     onClose: () => {
       if (isCurrentClientRequest(request)) {
@@ -3692,13 +3713,10 @@ async function recoverRegisteredGlobalAgent(
   try {
     await ensureGlobalRecoveryBaseline(get, set, agentId);
     if (!isCurrentClientRequest(request) || !globalEventStream) return;
-    const recovered = await backfillAgentEvents(set, agentId, true);
+    const recovered = await backfillAgentEvents(get, set, agentId, true);
     if (recovered) completeGlobalStreamCatchUp(set, agentId);
   } catch (error) {
-    scheduleGlobalBackfillRetry(set, agentId);
-    setStreamState(set, agentId, "recovering", {
-      error: error instanceof Error ? error.message : String(error),
-    });
+    scheduleGlobalBackfillRetry(get, set, agentId, error);
   }
 }
 
@@ -3785,7 +3803,11 @@ function rebaseGlobalRecoveryFromSession(
   );
 }
 
-function dispatchGlobalStreamEvent(set: StoreSet, event: StreamEventEnvelopeDto): void {
+function dispatchGlobalStreamEvent(
+  get: () => RuntimeStoreState,
+  set: StoreSet,
+  event: StreamEventEnvelopeDto,
+): void {
   const agentId = event.agent_id;
   if (!agentId || !globalStreamSubscribedAgents.has(agentId)) return;
 
@@ -3799,14 +3821,19 @@ function dispatchGlobalStreamEvent(set: StoreSet, event: StreamEventEnvelopeDto)
     const recovery = globalEventRecovery.observe(agentId, seq, incomingEpoch);
     if (recovery.recovering) {
       setAgentLiveStatus(set, agentId, "recovering");
-      void backfillAgentEvents(set, agentId);
+      void backfillAgentEvents(get, set, agentId);
     }
   }
 
   enqueueStreamEvent(set, agentId, event);
 }
 
-async function backfillAgentEvents(set: StoreSet, agentId: string, force = false): Promise<boolean> {
+async function backfillAgentEvents(
+  get: () => RuntimeStoreState,
+  set: StoreSet,
+  agentId: string,
+  force = false,
+): Promise<boolean> {
   const generation = clientGeneration;
   const span = startRuntimeSpan(
     createRuntimeTrace("stream.reconnect", { agentId, trigger: "events.backfill" }),
@@ -3841,34 +3868,44 @@ async function backfillAgentEvents(set: StoreSet, agentId: string, force = false
       },
     });
     if (!result.complete) {
-      scheduleGlobalBackfillRetry(set, agentId);
-      setAgentLiveStatus(set, agentId, "recovering");
+      scheduleGlobalBackfillRetry(get, set, agentId);
       span.end("ok", { eventCount, incomplete: true });
       return false;
     }
     clearGlobalBackfillRetry(agentId);
+    setStreamState(set, agentId, "streaming", {
+      syncError: undefined,
+      syncRetryAttempt: undefined,
+      syncRetryAt: undefined,
+    });
     span.end("ok", { eventCount });
     return true;
   } catch (error) {
     span.end("error");
-    scheduleGlobalBackfillRetry(set, agentId);
-    setStreamState(set, agentId, "recovering", {
-      error: error instanceof Error ? error.message : String(error),
-    });
+    scheduleGlobalBackfillRetry(get, set, agentId, error);
     return false;
   }
 }
 
-function scheduleGlobalBackfillRetry(set: StoreSet, agentId: string): void {
+function scheduleGlobalBackfillRetry(
+  get: () => RuntimeStoreState,
+  set: StoreSet,
+  agentId: string,
+  error?: unknown,
+): void {
   if (!globalStreamSubscribedAgents.has(agentId) || globalBackfillRetryTimers.has(agentId)) return;
   const attempt = (globalBackfillRetryAttempts.get(agentId) ?? 0) + 1;
   globalBackfillRetryAttempts.set(agentId, attempt);
+  const delay = backfillRetryDelayMs(attempt);
+  setStreamState(set, agentId, "recovering", {
+    syncError: error == null ? undefined : error instanceof Error ? error.message : String(error),
+    syncRetryAttempt: attempt,
+    syncRetryAt: Date.now() + delay,
+  });
   const timer = window.setTimeout(() => {
     globalBackfillRetryTimers.delete(agentId);
-    void backfillAgentEvents(set, agentId, true).then((recovered) => {
-      if (recovered) completeGlobalStreamCatchUp(set, agentId);
-    });
-  }, reconnectDelayMs(attempt));
+    void recoverRegisteredGlobalAgent(get, set, agentId, captureClientRequest());
+  }, delay);
   globalBackfillRetryTimers.set(agentId, timer);
 }
 
@@ -4250,6 +4287,13 @@ function reconnectDelayMs(attempt: number): number {
   const exponential = Math.min(STREAM_RECONNECT_MAX_MS, STREAM_RECONNECT_BASE_MS * 2 ** Math.max(0, attempt - 1));
   const jitter = Math.floor(Math.random() * 500);
   return exponential + jitter;
+}
+
+export function backfillRetryDelayMs(attempt: number): number {
+  return Math.min(
+    STREAM_RECONNECT_MAX_MS,
+    STREAM_RECONNECT_BASE_MS * 2 ** Math.max(0, attempt - 1),
+  );
 }
 
 function setSessionModelError(set: StoreSet, agentId: string, error: string | undefined): void {

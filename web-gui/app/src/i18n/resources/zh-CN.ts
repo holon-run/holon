@@ -875,6 +875,8 @@ const zh: Record<string, any> = {
     conversationAria: "智能体对话",
     conversationEmpty: "发送第一条操作者消息，或切换到详细/调试模式查看底层运行时事件。",
     noEventsYet: "此智能体暂无运行时事件。尝试刷新会话或发送一条操作者消息。",
+    syncRecoveryFailed: "会话同步恢复失败（第 {{attempt}} 次）",
+    retrySync: "立即重试同步",
     // 输入框
     sendInputAria: "向 {{id}} 发送操作者消息",
     sendInputPlaceholder: "向 {{id}} 发送操作者消息…",

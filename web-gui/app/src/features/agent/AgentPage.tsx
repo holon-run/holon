@@ -45,12 +45,15 @@ interface AgentPageProps {
   modelCatalogLoading: boolean;
   modelCatalogError?: string;
   historyError?: string;
+  syncError?: string;
+  syncRetryAttempt?: number;
   targetEventSeq?: number;
   resumeRevision?: number;
   onRefreshModels: () => Promise<void>;
   onSetModel: (model: string, reasoningEffort?: string) => Promise<void>;
   onClearModel: () => Promise<void>;
   onLoadOlderEvents: () => Promise<void>;
+  onRetrySync: () => void;
   onSendPrompt: (text: string, attachments?: OperatorPromptAttachment[]) => Promise<void>;
   onConversationRead: () => void;
   onOpenInspector: () => void;
@@ -309,12 +312,15 @@ export function AgentPage({
   modelCatalogLoading,
   modelCatalogError,
   historyError,
+  syncError,
+  syncRetryAttempt,
   targetEventSeq,
   resumeRevision = 0,
   onRefreshModels,
   onSetModel,
   onClearModel,
   onLoadOlderEvents,
+  onRetrySync,
   onSendPrompt,
   onConversationRead,
   onOpenInspector,
@@ -712,6 +718,13 @@ export function AgentPage({
                 {historyError}
               </div>
             ) : null}
+            {syncError ? (
+              <SyncRecoveryStatus
+                error={syncError}
+                retryAttempt={syncRetryAttempt}
+                onRetry={onRetrySync}
+              />
+            ) : null}
             {timelineTurns.length > 0 ? (
               <div
                 ref={virtualWrapperRef}
@@ -1063,5 +1076,27 @@ function isAgentWorking(agent: AgentSummary, sendingPrompt: boolean, t: TFunctio
 function cssEscape(value: string): string {
   if (typeof CSS !== "undefined" && CSS.escape) return CSS.escape(value);
   return value.replace(/["\\]/g, "\\$&");
+}
+
+export function SyncRecoveryStatus({
+  error,
+  retryAttempt,
+  onRetry,
+}: {
+  error: string;
+  retryAttempt?: number;
+  onRetry: () => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="history-status history-status--recovering sync-recovery-status" role="alert">
+      <span>
+        {t("agent.syncRecoveryFailed", { attempt: retryAttempt ?? 1 })}: {error}
+      </span>
+      <Button type="button" size="sm" variant="secondary" onClick={onRetry}>
+        {t("agent.retrySync")}
+      </Button>
+    </div>
+  );
 }
 

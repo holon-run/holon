@@ -4,6 +4,7 @@ import {
   agentBriefPatchFromEvents,
   agentDetailErrorKind,
   applyStreamEvents,
+  backfillRetryDelayMs,
   buildResumeRefreshes,
   canUseRemoteRuntimeConnections,
   hasEventIdentityConflict,
@@ -83,6 +84,19 @@ describe("skillDetailCacheKey", () => {
     expect(skillDetailCacheKey("workspace:root:demo", "agent-a")).toBe(
       "agent-a\u0000workspace:root:demo",
     );
+  });
+});
+
+describe("backfillRetryDelayMs", () => {
+  it("uses deterministic capped exponential backoff", () => {
+    expect([1, 2, 3, 4, 5, 6].map(backfillRetryDelayMs)).toEqual([
+      1_000,
+      2_000,
+      4_000,
+      8_000,
+      15_000,
+      15_000,
+    ]);
   });
 });
 
@@ -1186,6 +1200,97 @@ describe("global event stream recovery", () => {
     }));
     await vi.waitFor(() => {
       expect(useRuntimeStore.getState().globalStreamStatus).toBe("streaming");
+    });
+  });
+
+  it("retries baseline initialization before declaring recovery complete", async () => {
+    const localStorage = new MemoryStorage();
+    const sessionStorage = new MemoryStorage();
+    const retryCallbacks: Array<() => void> = [];
+    vi.stubGlobal("window", {
+      localStorage,
+      sessionStorage,
+      setTimeout: (callback: () => void, delay?: number) => {
+        if (delay === 1_000) retryCallbacks.push(callback);
+        return retryCallbacks.length;
+      },
+      clearTimeout: () => undefined,
+      location: { hostname: "localhost", protocol: "http:" },
+    });
+    let baselineAttempts = 0;
+    const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname.endsWith("/handshake")) return Promise.resolve(jsonResponse({}));
+      if (url.pathname.endsWith("/agents/list")) return Promise.resolve(jsonResponse([]));
+      if (url.pathname.endsWith("/events/stream")) {
+        return Promise.resolve(new Response(new ReadableStream<Uint8Array>({
+          start(controller) {
+            init?.signal?.addEventListener("abort", () => controller.close());
+          },
+        }), {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        }));
+      }
+      if (url.pathname.endsWith("/agents/agent-a/events")) {
+        if (url.searchParams.get("order") === "desc") {
+          baselineAttempts += 1;
+          if (baselineAttempts === 1) return Promise.reject(new Error("baseline unavailable"));
+          return Promise.resolve(jsonResponse({
+            events: [{
+              id: "event-1",
+              event_seq: 1,
+              event_log_epoch: "epoch-1",
+              ts: "2026-08-10T00:00:00Z",
+              agent_id: "agent-a",
+              type: "legacy_event",
+              payload: {},
+            }],
+            event_log_epoch: "epoch-1",
+            has_older: false,
+            has_newer: false,
+            order: "desc",
+            limit: 100,
+          }));
+        }
+        return Promise.resolve(jsonResponse({
+          events: [],
+          event_log_epoch: "epoch-1",
+          has_older: false,
+          has_newer: false,
+          order: "asc",
+          limit: 100,
+        }));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    fetchMock.mockClear();
+
+    useRuntimeStore.getState().registerAgentForEvents("agent-a");
+
+    await vi.waitFor(() => {
+      expect(useRuntimeStore.getState().sessionsByAgentId["agent-a"]).toMatchObject({
+        liveStatus: "recovering",
+        syncError: "baseline unavailable",
+        syncRetryAttempt: 1,
+      });
+    });
+    expect(useRuntimeStore.getState().globalStreamStatus).toBe("catching_up");
+    expect(retryCallbacks).toHaveLength(1);
+
+    retryCallbacks.shift()?.();
+
+    await vi.waitFor(() => {
+      expect(useRuntimeStore.getState().globalStreamStatus).toBe("streaming");
+    });
+    expect(baselineAttempts).toBe(2);
+    expect(useRuntimeStore.getState().sessionsByAgentId["agent-a"]).toMatchObject({
+      eventSeqs: [1],
+      liveStatus: "streaming",
+      syncError: undefined,
+      syncRetryAttempt: undefined,
     });
   });
 });

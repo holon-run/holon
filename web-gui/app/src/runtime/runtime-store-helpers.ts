@@ -61,6 +61,9 @@ export interface AgentSessionState extends SessionProjectionState {
   lastStreamActivityAt?: string;
   reconnectAttempt?: number;
   error?: string;
+  syncError?: string;
+  syncRetryAttempt?: number;
+  syncRetryAt?: number;
   targetEventError?: string;
   promptError?: string;
   modelError?: string;

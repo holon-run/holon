@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import i18next from "i18next";
 
+import "../../i18n";
 import {
   attachmentKindForFile,
   captureScrollAnchor,
@@ -8,6 +12,7 @@ import {
   resizeComposerTextarea,
   restoredScrollTop,
   storedComposerDraftKey,
+  SyncRecoveryStatus,
   timelineForDisplayLevel,
   timelineLayoutRevision,
   writeStoredComposerDraft,
@@ -48,6 +53,23 @@ function installWindow(localStorage: Storage) {
     localStorage,
   });
 }
+
+describe("sync recovery status", () => {
+  it("renders the failure, retry attempt, and manual recovery action", async () => {
+    await i18next.changeLanguage("en");
+    const markup = renderToStaticMarkup(
+      createElement(SyncRecoveryStatus, {
+        error: "baseline unavailable",
+        retryAttempt: 3,
+        onRetry: () => undefined,
+      }),
+    );
+
+    expect(markup).toContain("Conversation sync recovery failed (attempt 3)");
+    expect(markup).toContain("baseline unavailable");
+    expect(markup).toContain("Retry sync now");
+  });
+});
 
 describe("composer draft storage", () => {
   afterEach(() => {
