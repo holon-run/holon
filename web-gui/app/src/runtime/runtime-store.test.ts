@@ -62,7 +62,8 @@ function sessionState(overrides: Partial<AgentSessionState> = {}): AgentSessionS
   return {
     ...createSessionProjectionState(),
     loading: false,
-    loadingOlder: false,
+    semanticHistoryByDisplayLevel: {},
+    targetEventLoading: false,
     liveStatus: "idle",
     cacheStatus: "unchecked",
     contentStatus: "unknown",
@@ -159,7 +160,10 @@ describe("resume session reset", () => {
     const reset = resetSessionsForResume({
       "agent-a": sessionState({
         loading: true,
-        loadingOlder: true,
+        semanticHistoryByDisplayLevel: {
+          info: { cursorSeq: 10, hasOlder: true, loading: true },
+        },
+        targetEventLoading: true,
         sendingPrompt: true,
         liveStatus: "recovering",
         reconnectAttempt: 4,
@@ -175,7 +179,10 @@ describe("resume session reset", () => {
 
     expect(reset["agent-a"]).toMatchObject({
       loading: false,
-      loadingOlder: false,
+      semanticHistoryByDisplayLevel: {
+        info: { cursorSeq: 10, hasOlder: true, loading: false },
+      },
+      targetEventLoading: false,
       sendingPrompt: false,
       liveStatus: "stale",
       reconnectAttempt: 0,
@@ -366,7 +373,9 @@ describe("runtime event epoch", () => {
       messagesById: { msg: { id: "msg" } },
       newestSeq: 7,
       oldestSeq: 7,
-      hasOlder: true,
+      semanticHistoryByDisplayLevel: {
+        info: { cursorSeq: 7, hasOlder: true, loading: false },
+      },
       detail: {
         agent: { id: "agent-1" } as NonNullable<AgentSessionState["detail"]>["agent"],
         source: "http",
@@ -385,7 +394,7 @@ describe("runtime event epoch", () => {
     expect(reset.messagesById).toEqual({});
     expect(reset.newestSeq).toBeUndefined();
     expect(reset.oldestSeq).toBeUndefined();
-    expect(reset.hasOlder).toBeUndefined();
+    expect(reset.semanticHistoryByDisplayLevel).toEqual({});
     expect(reset.detail?.eventCursorSeq).toBeUndefined();
     expect(reset.detail?.hasOlderEvents).toBeUndefined();
   });
@@ -877,7 +886,8 @@ describe("brief projection and hydration", () => {
     const session: AgentSessionState = {
       ...createSessionProjectionState(),
       loading: false,
-      loadingOlder: false,
+      semanticHistoryByDisplayLevel: {},
+      targetEventLoading: false,
       liveStatus: "idle",
       cacheStatus: "unchecked",
       contentStatus: "unknown",
@@ -1668,6 +1678,182 @@ describe("brief hydration retry limits", () => {
         .toMatchObject({ id: "message-123" });
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("semantic history pagination", () => {
+  afterEach(() => {
+    useRuntimeStore.setState({
+      sessionsByAgentId: {},
+      selectedAgentId: "",
+    });
+    vi.unstubAllGlobals();
+  });
+
+  it("continues across raw pages until the selected display level gains a timeline item", async () => {
+    const localStorage = new MemoryStorage();
+    const sessionStorage = new MemoryStorage();
+    vi.stubGlobal("window", {
+      localStorage,
+      sessionStorage,
+      setTimeout,
+      clearTimeout,
+      location: { hostname: "localhost", protocol: "http:" },
+    });
+    const event = (
+      eventSeq: number,
+      type: string,
+      payload: Record<string, unknown> = {},
+    ): StreamEventEnvelopeDto => ({
+      id: `event-${eventSeq}`,
+      event_seq: eventSeq,
+      event_log_epoch: "epoch-1",
+      ts: `2026-08-09T00:00:${String(eventSeq % 60).padStart(2, "0")}Z`,
+      agent_id: "agent-a",
+      type,
+      payload,
+    });
+    const fetchMock = vi.fn((input: string | URL | Request) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname.endsWith("/handshake")) return Promise.resolve(jsonResponse({}));
+      if (url.pathname.endsWith("/agents/list")) return Promise.resolve(jsonResponse([]));
+      if (url.pathname.endsWith("/agents/agent-a/messages:batchGet")) {
+        return Promise.resolve(jsonResponse({ messages: [], missing_message_ids: ["message-80"] }));
+      }
+      if (url.pathname.endsWith("/agents/agent-a/events")) {
+        const beforeSeq = Number(url.searchParams.get("before_seq"));
+        if (beforeSeq === 90) {
+          return Promise.resolve(jsonResponse({
+            events: [event(89, "legacy_event"), event(88, "legacy_event")],
+            event_log_epoch: "epoch-1",
+            oldest_seq: 88,
+            newest_seq: 89,
+            has_older: true,
+            has_newer: false,
+            order: "desc",
+            limit: 80,
+          }));
+        }
+        if (beforeSeq === 88) {
+          return Promise.resolve(jsonResponse({
+            events: [event(80, "message_enqueued", {
+              message_id: "message-80",
+              origin: { kind: "operator" },
+              body: "Older operator message",
+            })],
+            event_log_epoch: "epoch-1",
+            oldest_seq: 80,
+            newest_seq: 80,
+            has_older: false,
+            has_newer: false,
+            order: "desc",
+            limit: 80,
+          }));
+        }
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    fetchMock.mockClear();
+
+    useRuntimeStore.setState({
+      sessionsByAgentId: {
+        "agent-a": sessionState({
+          eventLogEpoch: "epoch-1",
+          detail: {
+            agent: agentSummary({ id: "agent-a" }),
+            source: "http",
+            timeline: [],
+          },
+          semanticHistoryByDisplayLevel: {
+            info: { eventLogEpoch: "epoch-1", cursorSeq: 90, hasOlder: true, loading: false },
+            verbose: { eventLogEpoch: "epoch-1", cursorSeq: 70, hasOlder: true, loading: false },
+          },
+        }),
+      },
+    });
+
+    await useRuntimeStore.getState().loadOlderAgentEvents("agent-a", "info");
+
+    const eventRequests = fetchMock.mock.calls
+      .map(([input]) => new URL(String(input), "http://localhost"))
+      .filter((url) => url.pathname.endsWith("/agents/agent-a/events"));
+    expect(eventRequests.map((url) => url.searchParams.get("before_seq"))).toEqual(["90", "88"]);
+    expect(eventRequests.every((url) => !url.searchParams.has("max_level"))).toBe(true);
+    expect(useRuntimeStore.getState().sessionsByAgentId["agent-a"]).toMatchObject({
+      oldestSeq: 80,
+      semanticHistoryByDisplayLevel: {
+        info: { cursorSeq: 80, hasOlder: false, loading: false },
+        verbose: { cursorSeq: 70, hasOlder: true, loading: false },
+      },
+    });
+  });
+
+  it("bounds a load when raw pages keep producing no semantic timeline items", async () => {
+    const localStorage = new MemoryStorage();
+    const sessionStorage = new MemoryStorage();
+    vi.stubGlobal("window", {
+      localStorage,
+      sessionStorage,
+      setTimeout,
+      clearTimeout,
+      location: { hostname: "localhost", protocol: "http:" },
+    });
+    const fetchMock = vi.fn((input: string | URL | Request) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname.endsWith("/handshake")) return Promise.resolve(jsonResponse({}));
+      if (url.pathname.endsWith("/agents/list")) return Promise.resolve(jsonResponse([]));
+      if (url.pathname.endsWith("/agents/agent-a/events")) {
+        const beforeSeq = Number(url.searchParams.get("before_seq"));
+        const nextSeq = beforeSeq - 1;
+        return Promise.resolve(jsonResponse({
+          events: [{
+            id: `event-${nextSeq}`,
+            event_seq: nextSeq,
+            event_log_epoch: "epoch-1",
+            agent_id: "agent-a",
+            type: "legacy_event",
+            payload: {},
+          }],
+          event_log_epoch: "epoch-1",
+          oldest_seq: nextSeq,
+          newest_seq: nextSeq,
+          has_older: true,
+          has_newer: false,
+          order: "desc",
+          limit: 80,
+        }));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    fetchMock.mockClear();
+    useRuntimeStore.setState({
+      sessionsByAgentId: {
+        "agent-a": sessionState({
+          eventLogEpoch: "epoch-1",
+          detail: {
+            agent: agentSummary({ id: "agent-a" }),
+            source: "http",
+            timeline: [],
+          },
+          semanticHistoryByDisplayLevel: {
+            info: { eventLogEpoch: "epoch-1", cursorSeq: 90, hasOlder: true, loading: false },
+          },
+        }),
+      },
+    });
+
+    await useRuntimeStore.getState().loadOlderAgentEvents("agent-a", "info");
+
+    const eventRequests = fetchMock.mock.calls
+      .map(([input]) => new URL(String(input), "http://localhost"))
+      .filter((url) => url.pathname.endsWith("/agents/agent-a/events"));
+    expect(eventRequests).toHaveLength(5);
+    expect(useRuntimeStore.getState().sessionsByAgentId["agent-a"]?.semanticHistoryByDisplayLevel.info)
+      .toMatchObject({ cursorSeq: 85, hasOlder: true, loading: false });
   });
 });
 

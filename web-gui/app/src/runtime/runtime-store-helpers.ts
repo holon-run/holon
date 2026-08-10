@@ -9,6 +9,7 @@ import type {
   RuntimeBriefRecord,
   RuntimeMessageEnvelope,
   RuntimeTranscriptEntry,
+  DisplayLevel,
   WorkItemDetailState,
   TaskDetailState,
   ToolExecutionDetailState,
@@ -22,6 +23,14 @@ export type AgentLiveStatus = "idle" | "connecting" | "streaming" | "reconnectin
 export type AgentCacheStatus = "unchecked" | "loading" | "hit" | "miss" | "unavailable";
 export type AgentContentStatus = "unknown" | "available" | "confirmed-empty";
 export type AgentSyncStatus = "idle" | "refreshing" | "streaming" | "recovering" | "stale" | "error";
+
+export interface SemanticHistoryState {
+  eventLogEpoch?: string;
+  cursorSeq?: number;
+  hasOlder: boolean;
+  loading: boolean;
+  error?: string;
+}
 
 export interface TimelineEventsState {
   eventLogEpoch?: string;
@@ -37,7 +46,8 @@ export interface TimelineEventsState {
 
 export interface AgentSessionState extends SessionProjectionState {
   loading: boolean;
-  loadingOlder: boolean;
+  semanticHistoryByDisplayLevel: Partial<Record<DisplayLevel, SemanticHistoryState>>;
+  targetEventLoading: boolean;
   liveStatus: AgentLiveStatus;
   cacheStatus: AgentCacheStatus;
   contentStatus: AgentContentStatus;
@@ -47,12 +57,11 @@ export interface AgentSessionState extends SessionProjectionState {
   eventsValidatedAt?: number;
   sendingPrompt: boolean;
   detail: AgentDetail | null;
-  hasOlder?: boolean;
   targetEventSeq?: number;
   lastStreamActivityAt?: string;
   reconnectAttempt?: number;
   error?: string;
-  historyError?: string;
+  targetEventError?: string;
   promptError?: string;
   modelError?: string;
   workItemDetailsById: Record<string, WorkItemDetailState>;

@@ -27,6 +27,7 @@ import type { AgentSessionState as AgentSessionStateBase } from "./runtime-store
 import {
   compactAgentTimelineItems,
   briefIdForPayload,
+  filterTimelineByDisplayLevel,
 } from "./session-reducer";
 import {
   briefIdsForProjectionHydration,
@@ -81,8 +82,16 @@ import type {
   ToolExecutionArtifactContent,
 } from "./types";
 
-import type { AgentLiveStatus, AgentSessionState, TimelineEventsState, WorkItemDetailState, TaskDetailState, ToolExecutionDetailState } from "./runtime-store-helpers";
-export type { AgentLiveStatus, AgentSessionState, TimelineEventsState };
+import type {
+  AgentLiveStatus,
+  AgentSessionState,
+  SemanticHistoryState,
+  TimelineEventsState,
+  WorkItemDetailState,
+  TaskDetailState,
+  ToolExecutionDetailState,
+} from "./runtime-store-helpers";
+export type { AgentLiveStatus, AgentSessionState, SemanticHistoryState, TimelineEventsState };
 
 export interface BootstrapRefreshOptions {
   background?: boolean;
@@ -202,6 +211,7 @@ export interface AgentRosterActivity {
 const OPTIMISTIC_OPERATOR_PROMPT_SOURCE = "pending-operator-prompt";
 const OPTIMISTIC_OPERATOR_CLIENT_PREFIX = "operator-prompt-client:";
 const OPTIMISTIC_OPERATOR_MESSAGE_PREFIX = "operator-prompt-message:";
+const MAX_SEMANTIC_HISTORY_PAGES_PER_LOAD = 5;
 
 function appendOptimisticOperatorPrompt(
   detail: AgentDetail | null,
@@ -662,7 +672,10 @@ export function resetSessionsForResume(
       {
         ...session,
         loading: false,
-        loadingOlder: false,
+        semanticHistoryByDisplayLevel: resetSemanticHistoryLoading(
+          session.semanticHistoryByDisplayLevel,
+        ),
+        targetEventLoading: false,
         sendingPrompt: false,
         liveStatus: "stale" as const,
         reconnectAttempt: 0,
@@ -676,6 +689,17 @@ export function resetSessionsForResume(
         taskDetailsById: resetDetailLoading(session.taskDetailsById),
         toolExecutionDetailsById: resetDetailLoading(session.toolExecutionDetailsById),
       },
+    ]),
+  );
+}
+
+function resetSemanticHistoryLoading(
+  histories: AgentSessionState["semanticHistoryByDisplayLevel"],
+): AgentSessionState["semanticHistoryByDisplayLevel"] {
+  return Object.fromEntries(
+    Object.entries(histories).map(([displayLevel, history]) => [
+      displayLevel,
+      history?.loading ? { ...history, loading: false } : history,
     ]),
   );
 }
@@ -1128,7 +1152,8 @@ export function mergeCachedSessionIntoCurrent(
     ...current,
     ...cached,
     loading: current.loading,
-    loadingOlder: current.loadingOlder,
+    semanticHistoryByDisplayLevel: current.semanticHistoryByDisplayLevel,
+    targetEventLoading: current.targetEventLoading,
     liveStatus: current.liveStatus,
     sendingPrompt: current.sendingPrompt,
   };
@@ -1211,7 +1236,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
                   ...emptyAgentSession(),
                   ...currentSession,
                   targetEventSeq,
-                  historyError: undefined,
+                  targetEventError: undefined,
                 },
               },
       };
@@ -2657,7 +2682,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
           !isCurrentClientRequest(request) ||
           agentDetailRequestSequence.get(agentId) !== sequence
         ) return;
-        set((state) => mergeAgentDetailIntoSession(state, agentId, detail));
+        set((state) => mergeAgentDetailIntoSession(state, agentId, detail, displayLevel));
         startRuntimeSpan(trace, "ui.session_state_transition", {
           state: `${get().sessionsByAgentId[agentId]?.contentStatus ?? "unknown"}/${
             get().sessionsByAgentId[agentId]?.syncStatus ?? "idle"
@@ -2761,7 +2786,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
           [agentId]: {
             ...emptyAgentSession(),
             ...state.sessionsByAgentId[agentId],
-            historyError: error instanceof Error ? error.message : String(error),
+            error: error instanceof Error ? error.message : String(error),
           },
         },
       }));
@@ -2926,41 +2951,62 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   loadOlderAgentEvents: async (agentId, displayLevel) => {
     if (!agentId) return;
     const session = get().sessionsByAgentId[agentId] ?? emptyAgentSession();
-    if (session.loadingOlder || !session.hasOlder || session.oldestSeq == null) return;
+    const history = semanticHistoryState(session, displayLevel);
+    if (history.loading || !history.hasOlder || history.cursorSeq == null) return;
 
     const request = captureClientRequest();
-    set((state) => ({
-      sessionsByAgentId: {
-        ...state.sessionsByAgentId,
-        [agentId]: {
-          ...emptyAgentSession(),
-          ...state.sessionsByAgentId[agentId],
-          loadingOlder: true,
-          historyError: undefined,
-        },
-      },
+    set((state) => updateSemanticHistoryState(state, agentId, displayLevel, {
+      ...semanticHistoryState(state.sessionsByAgentId[agentId], displayLevel),
+      loading: true,
+      error: undefined,
     }));
 
     try {
-      const page = await request.client.getAgentEvents(agentId, {
-        beforeSeq: session.oldestSeq,
-        limit: 80,
-        order: "desc",
-        displayLevel,
-      });
-      if (!isCurrentClientRequest(request)) return;
+      const initialTimelineItemIds = semanticTimelineItemIds(session, displayLevel);
+      let cursorSeq = history.cursorSeq;
+      for (let pageCount = 0; pageCount < MAX_SEMANTIC_HISTORY_PAGES_PER_LOAD; pageCount += 1) {
+        const page = await request.client.getAgentEvents(agentId, {
+          beforeSeq: cursorSeq,
+          limit: 80,
+          order: "desc",
+        });
+        if (!isCurrentClientRequest(request)) return;
 
-      set((state) =>
-        mergeEventPageIntoSession(
-          state,
-          agentId,
-          page.events ?? [],
-          page.oldest_seq ?? undefined,
-          page.has_older,
-          displayLevel,
-          { eventLogEpoch: page.event_log_epoch },
-        ),
-      );
+        const nextCursorSeq = page.oldest_seq ?? undefined;
+        if (page.has_older && (nextCursorSeq == null || nextCursorSeq >= cursorSeq)) {
+          throw new Error("Agent semantic history page did not advance its cursor.");
+        }
+        set((state) =>
+          mergeEventPageIntoSession(
+            state,
+            agentId,
+            page.events ?? [],
+            page.oldest_seq ?? undefined,
+            page.has_older,
+            displayLevel,
+            {
+              eventLogEpoch: page.event_log_epoch,
+              historyDisplayLevel: displayLevel,
+              historyLoading: true,
+            },
+          ),
+        );
+        const current = get().sessionsByAgentId[agentId];
+        if (
+          semanticTimelineHasNewItem(current, displayLevel, initialTimelineItemIds) ||
+          !page.has_older ||
+          nextCursorSeq == null
+        ) {
+          break;
+        }
+        cursorSeq = nextCursorSeq;
+      }
+      if (!isCurrentClientRequest(request)) return;
+      set((state) => updateSemanticHistoryState(state, agentId, displayLevel, {
+        ...semanticHistoryState(state.sessionsByAgentId[agentId], displayLevel),
+        loading: false,
+        error: undefined,
+      }));
       scheduleMessageHydration(get, set, agentId, displayLevel);
       scheduleTranscriptHydration(get, set, agentId, displayLevel);
       scheduleBriefHydration(get, set, agentId, displayLevel);
@@ -2972,8 +3018,14 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
           [agentId]: {
             ...emptyAgentSession(),
             ...state.sessionsByAgentId[agentId],
-            loadingOlder: false,
-            historyError: error instanceof Error ? error.message : String(error),
+            semanticHistoryByDisplayLevel: {
+              ...state.sessionsByAgentId[agentId]?.semanticHistoryByDisplayLevel,
+              [displayLevel]: {
+                ...semanticHistoryState(state.sessionsByAgentId[agentId], displayLevel),
+                loading: false,
+                error: error instanceof Error ? error.message : String(error),
+              },
+            },
           },
         },
       }));
@@ -3267,7 +3319,8 @@ function emptyAgentSession(): AgentSessionState {
   return {
     ...createSessionProjectionState(),
     loading: false,
-    loadingOlder: false,
+    semanticHistoryByDisplayLevel: {},
+    targetEventLoading: false,
     liveStatus: "idle",
     cacheStatus: "unchecked",
     contentStatus: "unknown",
@@ -3413,7 +3466,9 @@ export function sessionForEventLogEpoch(
   const reset = applyProjectionAction(current, { type: "reset", eventLogEpoch: incomingEpoch });
   return {
     ...reset,
-    hasOlder: undefined,
+    semanticHistoryByDisplayLevel: {},
+    targetEventLoading: false,
+    targetEventError: undefined,
     detail: reset.detail
       ? {
           ...reset.detail,
@@ -3442,7 +3497,8 @@ function resetSessionForEventConflict(
       reason: "event_identity_conflict",
     }),
     liveStatus: "stale",
-    hasOlder: undefined,
+    semanticHistoryByDisplayLevel: {},
+    targetEventLoading: false,
     error: "runtime event identity conflict; refreshing projection",
   };
 }
@@ -4627,7 +4683,12 @@ function updateAgentModelInState(
   };
 }
 
-function mergeAgentDetailIntoSession(state: RuntimeStoreState, agentId: string, detail: AgentDetail): Partial<RuntimeStoreState> {
+function mergeAgentDetailIntoSession(
+  state: RuntimeStoreState,
+  agentId: string,
+  detail: AgentDetail,
+  displayLevel: DisplayLevel,
+): Partial<RuntimeStoreState> {
   const epochSession = sessionForEventLogEpoch(
     state.sessionsByAgentId[agentId] ?? emptyAgentSession(),
     detail.eventLogEpoch,
@@ -4642,7 +4703,7 @@ function mergeAgentDetailIntoSession(state: RuntimeStoreState, agentId: string, 
     ...detail,
     agent,
     timeline: current.detail?.timeline ?? detail.timeline,
-    hasOlderEvents: detail.hasOlderEvents,
+    hasOlderEvents: undefined,
   };
   let projected = applyProjectionAction(current, {
     type: "events_received",
@@ -4689,7 +4750,15 @@ function mergeAgentDetailIntoSession(state: RuntimeStoreState, agentId: string, 
         detailValidatedAt: detail.error ? current.detailValidatedAt : Date.now(),
         newestSeq: newestSeq || undefined,
         oldestSeq: detail.oldestEventSeq ?? projected.oldestSeq,
-        hasOlder: detail.hasOlderEvents,
+        semanticHistoryByDisplayLevel: {
+          ...projected.semanticHistoryByDisplayLevel,
+          [displayLevel]: {
+            eventLogEpoch: detail.eventLogEpoch,
+            cursorSeq: detail.oldestEventSeq,
+            hasOlder: detail.hasOlderEvents ?? false,
+            loading: false,
+          },
+        },
         error: detail.error,
       },
     },
@@ -4790,6 +4859,7 @@ async function catchUpAgentEvents(
             newestSeq: displayTailConsumedSeq,
             append: true,
             eventLogEpoch: displayTailPage.event_log_epoch,
+            historyDisplayLevel: displayLevel,
           },
         ),
       );
@@ -5056,7 +5126,7 @@ function scheduleMessageHydration(
           ...state.sessionsByAgentId,
           [agentId]: {
             ...(state.sessionsByAgentId[agentId] ?? emptyAgentSession()),
-            historyError: error instanceof Error ? error.message : String(error),
+            error: error instanceof Error ? error.message : String(error),
           },
         },
       }));
@@ -5117,7 +5187,7 @@ function scheduleTranscriptHydration(
           ...state.sessionsByAgentId,
           [agentId]: {
             ...(state.sessionsByAgentId[agentId] ?? emptyAgentSession()),
-            historyError: error instanceof Error ? error.message : String(error),
+            error: error instanceof Error ? error.message : String(error),
           },
         },
       }));
@@ -5433,6 +5503,67 @@ function patchAgentDetail(
   };
 }
 
+function semanticHistoryState(
+  session: AgentSessionState | undefined,
+  displayLevel: DisplayLevel,
+): SemanticHistoryState {
+  return session?.semanticHistoryByDisplayLevel[displayLevel] ?? {
+    eventLogEpoch: session?.eventLogEpoch,
+    cursorSeq: undefined,
+    hasOlder: false,
+    loading: false,
+  };
+}
+
+function semanticTimelineItemIds(
+  session: AgentSessionState | undefined,
+  displayLevel: DisplayLevel,
+): Set<string> {
+  return new Set(semanticTimeline(session, displayLevel).map((item) => item.id));
+}
+
+function semanticTimelineHasNewItem(
+  session: AgentSessionState | undefined,
+  displayLevel: DisplayLevel,
+  initialItemIds: Set<string>,
+): boolean {
+  return semanticTimeline(session, displayLevel).some((item) => !initialItemIds.has(item.id));
+}
+
+function semanticTimeline(
+  session: AgentSessionState | undefined,
+  displayLevel: DisplayLevel,
+): AgentTimelineItem[] {
+  return session
+    ? filterTimelineByDisplayLevel(
+        deriveSessionTimeline(session, displayLevel),
+        displayLevel,
+        { itemLimit: Number.MAX_SAFE_INTEGER },
+      )
+    : [];
+}
+
+function updateSemanticHistoryState(
+  state: RuntimeStoreState,
+  agentId: string,
+  displayLevel: DisplayLevel,
+  history: SemanticHistoryState,
+): Partial<RuntimeStoreState> {
+  const session = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
+  return {
+    sessionsByAgentId: {
+      ...state.sessionsByAgentId,
+      [agentId]: {
+        ...session,
+        semanticHistoryByDisplayLevel: {
+          ...session.semanticHistoryByDisplayLevel,
+          [displayLevel]: history,
+        },
+      },
+    },
+  };
+}
+
 function mergeEventPageIntoSession(
   state: RuntimeStoreState,
   agentId: string,
@@ -5440,7 +5571,13 @@ function mergeEventPageIntoSession(
   pageOldestSeq: number | undefined,
   pageHasOlder: boolean | undefined,
   displayLevel: DisplayLevel,
-  options: { newestSeq?: number; append?: boolean; eventLogEpoch?: string } = {},
+  options: {
+    newestSeq?: number;
+    append?: boolean;
+    eventLogEpoch?: string;
+    historyDisplayLevel?: DisplayLevel;
+    historyLoading?: boolean;
+  } = {},
 ): Partial<RuntimeStoreState> {
   const epochSession = sessionForEventLogEpoch(
     state.sessionsByAgentId[agentId] ?? emptyAgentSession(),
@@ -5449,17 +5586,23 @@ function mergeEventPageIntoSession(
   const current = hasEventIdentityConflict(epochSession, pageEvents)
     ? resetSessionForEventConflict(epochSession, options.eventLogEpoch)
     : epochSession;
-  const detailBase = current.detail
-    ? {
-        ...current.detail,
-        hasOlderEvents: pageHasOlder,
-      }
-    : current.detail;
   const projected = applyProjectionAction(current, {
     type: "events_received",
     events: pageEvents,
     eventLogEpoch: options.eventLogEpoch,
-  }, displayLevel, detailBase);
+  }, displayLevel, current.detail);
+  const historyDisplayLevel = options.historyDisplayLevel;
+  const semanticHistoryByDisplayLevel = historyDisplayLevel
+    ? {
+        ...projected.semanticHistoryByDisplayLevel,
+        [historyDisplayLevel]: {
+          eventLogEpoch: options.eventLogEpoch ?? projected.eventLogEpoch,
+          cursorSeq: pageOldestSeq,
+          hasOlder: pageHasOlder ?? false,
+          loading: options.historyLoading ?? false,
+        },
+      }
+    : projected.semanticHistoryByDisplayLevel;
 
   return {
     sessionsByAgentId: {
@@ -5473,9 +5616,7 @@ function mergeEventPageIntoSession(
           pageOldestSeq != null && projected.oldestSeq != null
             ? Math.min(pageOldestSeq, projected.oldestSeq)
             : (pageOldestSeq ?? projected.oldestSeq),
-        hasOlder: pageHasOlder,
-        loadingOlder: false,
-        historyError: undefined,
+        semanticHistoryByDisplayLevel,
       },
     },
   };
@@ -5498,8 +5639,8 @@ async function loadTargetAgentEventWindow(
       [agentId]: {
         ...emptyAgentSession(),
         ...state.sessionsByAgentId[agentId],
-        loadingOlder: true,
-        historyError: undefined,
+        targetEventLoading: true,
+        targetEventError: undefined,
       },
     },
   }));
@@ -5527,6 +5668,17 @@ async function loadTargetAgentEventWindow(
         },
       ),
     );
+    set((state) => ({
+      sessionsByAgentId: {
+        ...state.sessionsByAgentId,
+        [agentId]: {
+          ...emptyAgentSession(),
+          ...state.sessionsByAgentId[agentId],
+          targetEventLoading: false,
+          targetEventError: undefined,
+        },
+      },
+    }));
   } catch (error) {
     if (!isCurrentClientGeneration(generation)) return;
     set((state) => ({
@@ -5535,8 +5687,8 @@ async function loadTargetAgentEventWindow(
         [agentId]: {
           ...emptyAgentSession(),
           ...state.sessionsByAgentId[agentId],
-          loadingOlder: false,
-          historyError: error instanceof Error ? error.message : String(error),
+          targetEventLoading: false,
+          targetEventError: error instanceof Error ? error.message : String(error),
         },
       },
     }));

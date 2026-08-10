@@ -213,6 +213,8 @@ export function App() {
     refresh: refreshAgentDetail,
   } = useAgentDetail(activeAgentId, effectiveDisplayLevel);
   const activeAgent = selectedAgent ?? selectedAgentDetail?.agent;
+  const selectedSemanticHistory =
+    selectedAgentSession?.semanticHistoryByDisplayLevel[effectiveDisplayLevel];
   const selectedAgentLiveStatus = selectedAgentSession?.liveStatus ?? "idle";
   const selectedAgentLiveTitle = liveStatusTitle(selectedAgentLiveStatus, t, selectedAgentSession?.lastStreamActivityAt, selectedAgentSession?.error);
   const selectedAgentStatus = route === "agent" && activeAgent ? deriveAgentDisplayStatus(activeAgent, t) : undefined;
@@ -658,9 +660,9 @@ export function App() {
             modelCatalog={modelCatalog}
             modelCatalogLoading={modelCatalogLoading}
             modelCatalogError={selectedAgentSession?.modelError ?? modelCatalogError}
-            hasOlderEvents={selectedAgentSession?.hasOlder ?? selectedAgentDetail?.hasOlderEvents ?? false}
-            loadingOlderEvents={selectedAgentSession?.loadingOlder ?? false}
-            historyError={selectedAgentSession?.historyError ?? selectedAgentSession?.error}
+            hasOlderEvents={selectedSemanticHistory?.hasOlder ?? false}
+            loadingOlderEvents={selectedSemanticHistory?.loading ?? false}
+            historyError={selectedSemanticHistory?.error ?? selectedAgentSession?.targetEventError ?? selectedAgentSession?.error}
             targetEventSeq={selectedAgentSession?.targetEventSeq}
             resumeRevision={resumeRevision}
             onRefreshModels={refreshModelCatalog}

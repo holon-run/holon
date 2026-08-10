@@ -20,6 +20,9 @@ export function useAgentDetail(agentId: string | undefined, displayLevel: Displa
   const syncStatus = useRuntimeStore((state) =>
     agentId ? state.sessionsByAgentId[agentId]?.syncStatus ?? "idle" : "idle",
   );
+  const hasDisplayHistory = useRuntimeStore((state) =>
+    agentId ? state.sessionsByAgentId[agentId]?.semanticHistoryByDisplayLevel[displayLevel] != null : false,
+  );
   const ensureAgentSession = useRuntimeStore((state) => state.ensureAgentSession);
   const refreshAgentDetail = useRuntimeStore((state) => state.refreshAgentDetail);
   const registerAgentForEvents = useRuntimeStore((state) => state.registerAgentForEvents);
@@ -39,11 +42,11 @@ export function useAgentDetail(agentId: string | undefined, displayLevel: Displa
     const levelRank: Record<DisplayLevel, number> = { info: 0, verbose: 1, debug: 2 };
     const levelIncreased = prevLevel != null && levelRank[displayLevel] > levelRank[prevLevel];
     void ensureAgentSession(agentId, displayLevel);
-    if (detail && !detail.error && levelIncreased) {
+    if (detail && !detail.error && (levelIncreased || !hasDisplayHistory)) {
       void refreshAgentDetail(agentId, displayLevel, { trigger: "display_level.increased" });
     }
     prevDisplayLevelRef.current = displayLevel;
-  }, [agentId, displayLevel, ensureAgentSession, refreshAgentDetail]);
+  }, [agentId, displayLevel, ensureAgentSession, refreshAgentDetail, hasDisplayHistory]);
 
   return { detail, loading, contentStatus, syncStatus, refresh };
 }
