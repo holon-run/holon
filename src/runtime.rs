@@ -60,7 +60,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use arc_swap::ArcSwap;
 use bootstrap::ConfigSnapshot;
 use chrono::Utc;
@@ -146,6 +146,23 @@ pub(super) struct WorkItemCompletionReportPromotion {
     pub(super) record: crate::types::WorkItemRecord,
     pub(super) brief_id: String,
     pub(super) continuation_resumed: Option<WorkItemContinuationSummary>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PreparedWorkItemCompletion {
+    pub(crate) record: crate::types::WorkItemRecord,
+    pub(crate) brief: crate::types::BriefRecord,
+    pub(crate) expected_execution_protocol_state:
+        Option<crate::domain::execution_protocol::ExecutionProtocolState>,
+    pub(crate) expected_agent_state: crate::types::AgentState,
+    pub(crate) committed_agent_state: crate::types::AgentState,
+    pub(crate) wait_conditions: Vec<crate::types::WaitConditionRecord>,
+    pub(crate) continuations: Vec<crate::types::WorkItemContinuationFrame>,
+    pub(crate) continuation_resumed: Option<WorkItemContinuationSummary>,
+    pub(crate) audit_events: Vec<crate::types::AuditEvent>,
+    pub(crate) index_changes: Vec<crate::runtime_db::RuntimeIndexChange>,
+    pub(crate) tool_execution: Option<crate::types::ToolExecutionRecord>,
+    pub(crate) transcript_entries: Vec<crate::types::TranscriptEntry>,
 }
 
 #[derive(Debug, Clone)]
@@ -416,6 +433,134 @@ fn canonical_command_batch_rejection(
         proposed = outcome.outcome.snapshot;
     }
     None
+}
+
+fn execution_protocol_completion_transition_from_prepared(
+    record: &QueueEntryRecord,
+    terminal_turn: &TurnRecord,
+    prepared: &PreparedWorkItemCompletion,
+) -> Result<crate::runtime_db::transitions::ExecutionProtocolTransition> {
+    use crate::domain::execution_protocol::{
+        CompleteWorkItemExecution, ConversationOutcome, ExecutionAttemptState, ExecutionBinding,
+        ExecutionOutcome, ExecutionOutcomeRecord, ExecutionProtocolCommand, SettleExecution,
+        WorkItemExecutionState, WorkItemOutcome,
+    };
+
+    anyhow::ensure!(
+        record.status == QueueEntryStatus::Processed,
+        "completion commit requires a processed source queue claim"
+    );
+    let state = prepared
+        .expected_execution_protocol_state
+        .as_ref()
+        .ok_or_else(|| anyhow!("completion commit requires canonical execution state"))?;
+    let intent = prepared
+        .record
+        .completion_intent
+        .as_ref()
+        .ok_or_else(|| anyhow!("completion commit intent is missing"))?;
+    let activation_id = intent
+        .source_activation_id
+        .as_deref()
+        .ok_or_else(|| anyhow!("completion commit activation identity is missing"))?;
+    let attempt = state
+        .attempts
+        .get(activation_id)
+        .ok_or_else(|| anyhow!("completion commit execution attempt is missing"))?;
+    anyhow::ensure!(
+        attempt.state == ExecutionAttemptState::Open,
+        "completion commit requires an open execution attempt"
+    );
+    let authoritative = state
+        .work_items
+        .get(&prepared.record.id)
+        .ok_or_else(|| anyhow!("completion commit WorkItem execution state is missing"))?;
+    anyhow::ensure!(
+        intent.work_item_id == prepared.record.id
+            && intent.source_activation_id.as_deref() == Some(attempt.attempt_id.as_str())
+            && intent.source_message_id.as_deref() == Some(record.message_id.as_str())
+            && intent.source_turn_id.as_deref() == Some(terminal_turn.turn_id.as_str())
+            && intent.result_brief_id.as_deref() == Some(prepared.brief.id.as_str())
+            && prepared.record.result_brief_id.as_deref() == Some(prepared.brief.id.as_str()),
+        "completion commit intent does not match the admitted execution"
+    );
+    anyhow::ensure!(
+        prepared.brief.kind.is_success()
+            && prepared.brief.work_item_id.as_deref() == Some(prepared.record.id.as_str())
+            && prepared.brief.turn_id.as_deref() == Some(terminal_turn.turn_id.as_str())
+            && prepared.brief.related_message_id.as_deref() == Some(record.message_id.as_str())
+            && !prepared.brief.text.trim().is_empty(),
+        "completion commit brief evidence is invalid"
+    );
+
+    let commands = match &attempt.binding {
+        ExecutionBinding::WorkItem { work_item_id } => {
+            anyhow::ensure!(
+                work_item_id == &prepared.record.id,
+                "completion commit WorkItem binding mismatch"
+            );
+            anyhow::ensure!(
+                matches!(
+                    &authoritative.state,
+                    WorkItemExecutionState::InFlight {
+                        attempt_id,
+                        generation,
+                    } if attempt_id == &attempt.attempt_id
+                        && Some(*generation) == attempt.admitted_fences.work_item_generation
+                ) && Some(intent.expected_work_revision)
+                    == attempt.admitted_fences.work_item_source_revision,
+                "completion commit execution attempt fence is stale"
+            );
+            vec![ExecutionProtocolCommand::Settle(SettleExecution {
+                outcome: ExecutionOutcomeRecord {
+                    outcome_id: format!("outcome:complete:{}", attempt.attempt_id),
+                    attempt_id: attempt.attempt_id.clone(),
+                    outcome: ExecutionOutcome::WorkItem(WorkItemOutcome::Complete {
+                        completion: prepared.brief.id.clone(),
+                    }),
+                    created_at: record.updated_at.to_rfc3339(),
+                },
+            })]
+        }
+        ExecutionBinding::AgentLifecycle { agent_id } => {
+            anyhow::ensure!(
+                agent_id == &record.agent_id
+                    && authoritative.source_revision == intent.expected_work_revision
+                    && !matches!(
+                        authoritative.state,
+                        WorkItemExecutionState::InFlight { .. }
+                            | WorkItemExecutionState::Terminal { .. }
+                    ),
+                "completion commit lifecycle WorkItem fence is stale"
+            );
+            vec![
+                ExecutionProtocolCommand::Settle(SettleExecution {
+                    outcome: ExecutionOutcomeRecord {
+                        outcome_id: format!("outcome:complete:{}", attempt.attempt_id),
+                        attempt_id: attempt.attempt_id.clone(),
+                        outcome: ExecutionOutcome::Conversation(ConversationOutcome::Replied),
+                        created_at: record.updated_at.to_rfc3339(),
+                    },
+                }),
+                ExecutionProtocolCommand::CompleteWorkItem(Box::new(CompleteWorkItemExecution {
+                    command_id: format!("completion:work_item:{}", attempt.attempt_id),
+                    work_item_id: prepared.record.id.clone(),
+                    expected: authoritative.clone(),
+                    completion: prepared.brief.id.clone(),
+                })),
+            ]
+        }
+        ExecutionBinding::Conversation { .. } | ExecutionBinding::Command => {
+            bail!("completion commit requires a WorkItem or agent-lifecycle execution")
+        }
+    };
+
+    Ok(
+        crate::runtime_db::transitions::ExecutionProtocolTransition {
+            bootstrap: None,
+            commands,
+        },
+    )
 }
 
 fn canonical_matching_terminal_turn(
@@ -4133,16 +4278,99 @@ impl RuntimeHandle {
         transcript_entries: Vec<TranscriptEntry>,
         brief_evidence: Vec<BriefRecord>,
     ) -> Result<bool> {
-        let execution_protocol = if self.inner.scheduler_engine.is_canonical() {
-            execution_protocol_settlement_transition_from_facts(
-                &self.inner.storage,
-                &self.inner.runtime_db,
-                &record,
-                terminal_transition.map(|transition| &transition.turn_record),
-            )?
+        let prepared_completion = terminal_transition
+            .and_then(|transition| transition.prepared_work_item_completion.as_ref());
+        let mut execution_protocol = if self.inner.scheduler_engine.is_canonical() {
+            if let Some(prepared) = prepared_completion {
+                execution_protocol_completion_transition_from_prepared(
+                    &record,
+                    terminal_transition
+                        .map(|transition| &transition.turn_record)
+                        .expect("prepared completion requires a terminal Turn"),
+                    prepared,
+                )?
+            } else {
+                execution_protocol_settlement_transition_from_facts(
+                    &self.inner.storage,
+                    &self.inner.runtime_db,
+                    &record,
+                    terminal_transition.map(|transition| &transition.turn_record),
+                )?
+            }
         } else {
             Default::default()
         };
+        if self.inner.scheduler_engine.is_canonical() {
+            if let Some(prepared) = prepared_completion {
+                let state = prepared
+                    .expected_execution_protocol_state
+                    .as_ref()
+                    .ok_or_else(|| {
+                        anyhow!("completion commit requires canonical execution state")
+                    })?;
+                for continuation in &prepared.continuations {
+                    if continuation.state != crate::types::WorkItemContinuationState::Resumed {
+                        continue;
+                    }
+                    let parent = state
+                        .work_items
+                        .get(&continuation.suspended_work_item_id)
+                        .ok_or_else(|| anyhow!("completion parent execution state is missing"))?;
+                    let parent_record = self
+                        .inner
+                        .runtime_db
+                        .work_items()
+                        .latest(&continuation.suspended_work_item_id)?
+                        .ok_or_else(|| anyhow!("completion parent WorkItem is missing"))?;
+                    let parent_waits = self
+                        .inner
+                        .storage
+                        .raw_active_wait_conditions_for_agent(&record.agent_id)?
+                        .into_iter()
+                        .filter(|wait| {
+                            wait.work_item_id.as_deref()
+                                == Some(continuation.suspended_work_item_id.as_str())
+                        })
+                        .collect::<Vec<_>>();
+                    let outcome = match parent_waits.as_slice() {
+                        [wait] => crate::domain::execution_protocol::WorkItemOutcome::Wait {
+                            wait: crate::domain::execution_protocol::WaitReference {
+                                wait_id: wait.id.clone(),
+                            },
+                        },
+                        [] if parent_record.blocked_by.is_some() => {
+                            crate::domain::execution_protocol::WorkItemOutcome::Pause {
+                                reason: parent_record
+                                    .blocked_by
+                                    .clone()
+                                    .expect("parent blocker checked above"),
+                            }
+                        }
+                        [] => crate::domain::execution_protocol::WorkItemOutcome::Continue,
+                        _ => crate::domain::execution_protocol::WorkItemOutcome::NeedsRepair {
+                            repair_id: format!(
+                                "work_item_waits_ambiguous:{}",
+                                continuation.suspended_work_item_id
+                            ),
+                        },
+                    };
+                    execution_protocol.commands.push(
+                        crate::domain::execution_protocol::ExecutionProtocolCommand::ResumeWorkItemContinuation(
+                            Box::new(
+                                crate::domain::execution_protocol::ResumeWorkItemContinuation {
+                                    command_id: format!("completion:resume:{}", continuation.id),
+                                    work_item_id: continuation.suspended_work_item_id.clone(),
+                                    active_work_item_id: continuation.active_work_item_id.clone(),
+                                    continuation_id: continuation.id.clone(),
+                                    expected: parent.clone(),
+                                    outcome,
+                                },
+                            ),
+                        ),
+                    );
+                }
+            }
+        }
         let original_audit_len = audit_events.len();
         let mut command = crate::runtime_db::transitions::QueueTransitionCommand {
             agent_id: record.agent_id.clone(),
@@ -4151,25 +4379,44 @@ impl RuntimeHandle {
             scheduler_claim_work_item: None,
             agent_state: None,
             message_evidence: Vec::new(),
-            transcript_entries: transcript_entries.clone(),
+            transcript_entries: transcript_entries
+                .into_iter()
+                .chain(
+                    prepared_completion
+                        .into_iter()
+                        .flat_map(|prepared| prepared.transcript_entries.clone()),
+                )
+                .collect(),
             turn_record: terminal_transition.map(|transition| transition.turn_record.clone()),
             audit_events: audit_events.clone(),
             notify_scheduler,
             fault: None,
-            brief_evidence: brief_evidence.clone(),
+            brief_evidence: brief_evidence
+                .into_iter()
+                .chain(
+                    prepared_completion
+                        .into_iter()
+                        .map(|prepared| prepared.brief.clone()),
+                )
+                .collect(),
         };
         for attempt in 0..ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
             // Rebuild guard-dependent fields from the current baseline.
             let agent_state = {
                 let guard = self.inner.agent.lock().await;
-                let mut state = committed_agent_state
-                    .clone()
+                let mut state = prepared_completion
+                    .map(|prepared| prepared.committed_agent_state.clone())
+                    .or_else(|| committed_agent_state.clone())
                     .unwrap_or_else(|| guard.state.clone());
                 let agent_state = if let Some(transition) = terminal_transition {
                     state.current_turn_id = Some(transition.terminal.turn_id.clone());
                     state.last_turn_terminal = Some(transition.terminal.clone());
                     Some(crate::runtime_db::transitions::AgentStateMutation {
-                        expected: Some(Box::new(guard.last_persisted_state.clone())),
+                        expected: Some(Box::new(
+                            prepared_completion
+                                .map(|prepared| prepared.expected_agent_state.clone())
+                                .unwrap_or_else(|| guard.last_persisted_state.clone()),
+                        )),
                         record: Box::new(state.clone()),
                     })
                 } else {
@@ -4189,13 +4436,44 @@ impl RuntimeHandle {
                     .audit_events
                     .push(Self::turn_record_audit_event(&transition.turn_record));
             }
+            if let Some(prepared) = prepared_completion {
+                command.audit_events.extend(prepared.audit_events.clone());
+            }
             command.fault = self.take_transition_fault();
-            match self
-                .inner
-                .runtime_db
-                .transitions()
-                .commit_queue_with_execution_protocol(&command, &execution_protocol)
-            {
+            let commit = if let Some(prepared) = prepared_completion {
+                let tool_execution = prepared.tool_execution.clone().ok_or_else(|| {
+                    anyhow!("completion commit is missing tool execution evidence")
+                })?;
+                self.inner
+                    .runtime_db
+                    .transitions()
+                    .commit_queue_with_completion(
+                        &command,
+                        &execution_protocol,
+                        &crate::runtime_db::transitions::CompletionTransition {
+                            requires_execution_continuation: self
+                                .inner
+                                .scheduler_engine
+                                .is_canonical(),
+                            work_items: vec![
+                                crate::runtime_db::transitions::WorkItemMutation::Update {
+                                    record: prepared.record.clone(),
+                                    expected_revision: prepared.record.revision - 1,
+                                },
+                            ],
+                            wait_conditions: prepared.wait_conditions.clone(),
+                            continuations: prepared.continuations.clone(),
+                            tool_execution,
+                            index_changes: prepared.index_changes.clone(),
+                        },
+                    )
+            } else {
+                self.inner
+                    .runtime_db
+                    .transitions()
+                    .commit_queue_with_execution_protocol(&command, &execution_protocol)
+            };
+            match commit {
                 Ok(commit) => {
                     return Ok(self.apply_transition_commit(commit).await.applied);
                 }
@@ -4624,6 +4902,7 @@ impl RuntimeHandle {
                     let terminal_transition = turn::TurnTerminalTransition {
                         terminal,
                         turn_record,
+                        prepared_work_item_completion: None,
                     };
                     let committed_state = {
                         let guard = self.inner.agent.lock().await;

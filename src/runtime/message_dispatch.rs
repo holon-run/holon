@@ -223,6 +223,13 @@ impl RuntimeHandle {
             MessageKind::BriefAck | MessageKind::BriefResult => {}
         }
 
+        if terminal_transition
+            .as_ref()
+            .is_some_and(|transition| transition.prepared_work_item_completion.is_some())
+        {
+            return Ok(terminal_transition);
+        }
+
         if let Some(resolution) = continuation_resolution.as_ref() {
             self.persist_last_continuation(resolution).await?;
             self.record_continuation_resolution_event(&message, resolution)

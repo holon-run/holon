@@ -4,9 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    runtime::{
-        RuntimeHandle, WorkItemCompletionAuthority, WorkItemCompletionReportPromotionOutcome,
-    },
+    runtime::{RuntimeHandle, WorkItemCompletionAuthority},
     runtime_error::RuntimeError,
     tool::helpers::{parse_tool_args, validate_non_empty},
     tool::spec::{typed_spec, ToolExecutionContext},
@@ -72,9 +70,9 @@ pub(crate) async fn execute(
                 "CompleteWorkItem requires an active agent execution binding",
             )
         })?;
-    let outcome = runtime
-        .complete_work_item_with_report(
-            work_item_id,
+    let prepared = runtime
+        .prepare_work_item_completion_with_report(
+            work_item_id.clone(),
             WorkItemCompletionAuthority::AgentExecution(execution_binding),
             candidate
                 .map(|candidate| candidate.text.clone())
@@ -92,17 +90,25 @@ pub(crate) async fn execute(
         )
         .await?;
     let (completed, completed_transition, completion_report_promoted, continuation_resumed) =
-        match outcome {
-            WorkItemCompletionReportPromotionOutcome::Promoted(promotion) => {
-                (promotion.record, true, true, promotion.continuation_resumed)
-            }
-            WorkItemCompletionReportPromotionOutcome::Unchanged(record) => {
-                (record, false, false, None)
-            }
+        match prepared.as_ref() {
+            Some(prepared) => (
+                prepared.record.clone(),
+                true,
+                true,
+                prepared.continuation_resumed.clone(),
+            ),
+            None => (
+                runtime
+                    .latest_work_item(&work_item_id)
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("work item {work_item_id} not found"))?,
+                false,
+                false,
+                None,
+            ),
         };
     let context = query_context(runtime).await?;
     let work_item = view_for_record(runtime, &context, completed, true, None, None).await?;
-    let terminal_transition = continuation_resumed.is_some();
     let mut result = serde_json::to_value(
         WorkItemMutationResult::with_completion_transition(
             work_item,
@@ -124,10 +130,9 @@ pub(crate) async fn execute(
         }
     }
     let mut result = serialize_success(NAME, &result)?;
-    if terminal_transition {
-        result.should_sleep = true;
-        result.terminal_transition = true;
-    }
+    result.should_sleep = true;
+    result.terminal_transition = true;
+    result.prepared_work_item_completion = prepared.map(Box::new);
     Ok(result)
 }
 

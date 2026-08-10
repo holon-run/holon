@@ -636,6 +636,7 @@ async fn seed_scheduler_waiting_work(
     let terminal_transition = super::turn::TurnTerminalTransition {
         terminal,
         turn_record,
+        prepared_work_item_completion: None,
     };
     let task_id = format!("scheduler-restart-task-{agent_id}");
     let registration = runtime
@@ -825,6 +826,7 @@ async fn scheduler_acceptance_terminal_transition(
     Ok(super::turn::TurnTerminalTransition {
         terminal,
         turn_record,
+        prepared_work_item_completion: None,
     })
 }
 

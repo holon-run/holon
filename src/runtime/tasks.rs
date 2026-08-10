@@ -15,8 +15,9 @@ use crate::types::{
     SpawnAgentResult, TaskHandle, TaskInputResult, TaskKind, TaskListEntry, TaskOutputResult,
     TaskOutputRetrievalStatus, TaskOutputSnapshot, TaskStatusSnapshot, TodoItem, ToolArtifactRef,
     WaitConditionStatus, WorkItemCompletionIntent, WorkItemContinuationFrame,
-    WorkItemContinuationReturnPolicy, WorkItemDelegationRecord, WorkItemDelegationState,
-    WorkItemPlanStatus, WorkItemReadiness, WorkItemRecord, WorkItemState, CHILD_AGENT_TASK_KIND,
+    WorkItemContinuationReturnPolicy, WorkItemContinuationState, WorkItemDelegationRecord,
+    WorkItemDelegationState, WorkItemPlanStatus, WorkItemReadiness, WorkItemRecord, WorkItemState,
+    CHILD_AGENT_TASK_KIND,
 };
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -2717,6 +2718,43 @@ impl RuntimeHandle {
         )
     }
 
+    fn plan_work_item_execution_continuation_suspend(
+        &self,
+        parent: &WorkItemRecord,
+        continuation: &WorkItemContinuationFrame,
+    ) -> Result<Option<crate::domain::execution_protocol::ExecutionProtocolCommand>> {
+        use crate::domain::execution_protocol::{
+            ExecutionProtocolCommand, SuspendWorkItemContinuation,
+        };
+
+        if !self.inner.scheduler_engine.is_canonical() {
+            return Ok(None);
+        }
+        let state = self
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized(&parent.agent_id)?
+            .ok_or_else(|| anyhow!("continuation suspension requires canonical execution state"))?;
+        let authoritative = state
+            .work_items
+            .get(&parent.id)
+            .ok_or_else(|| anyhow!("continuation suspension parent execution state is missing"))?;
+        anyhow::ensure!(
+            authoritative.source_revision == parent.revision,
+            "continuation suspension parent WorkItem fence is stale"
+        );
+        Ok(Some(ExecutionProtocolCommand::SuspendWorkItemContinuation(
+            Box::new(SuspendWorkItemContinuation {
+                command_id: format!("continuation:suspend:{}", continuation.id),
+                work_item_id: parent.id.clone(),
+                active_work_item_id: continuation.active_work_item_id.clone(),
+                continuation_id: continuation.id.clone(),
+                expected: authoritative.clone(),
+            }),
+        )))
+    }
+
     pub async fn pick_work_item(
         &self,
         work_item_id: String,
@@ -2962,11 +3000,29 @@ impl RuntimeHandle {
                 }]
             })
             .unwrap_or_default();
-        let execution_protocol = if blocker_cleared {
+        let mut execution_protocol = if blocker_cleared {
             self.plan_work_item_execution_clear_blocker(&record, &wait_conditions)?
         } else {
             Default::default()
         };
+        if yield_current && !terminal_transition {
+            let previous = previous
+                .as_ref()
+                .expect("yielding current focus requires the previous WorkItem");
+            let continuation = continuation_records
+                .iter()
+                .find(|frame| {
+                    frame.state == WorkItemContinuationState::Active
+                        && frame.suspended_work_item_id == previous.id
+                        && frame.active_work_item_id == record.id
+                })
+                .expect("yielding current focus creates an active continuation");
+            if let Some(command) =
+                self.plan_work_item_execution_continuation_suspend(previous, continuation)?
+            {
+                execution_protocol.commands.push(command);
+            }
+        }
         let commit = self.commit_work_item_focus_transition_with_execution(
             &crate::runtime_db::transitions::WorkItemFocusTransitionCommand {
                 agent_id: agent_id.clone(),
@@ -3501,6 +3557,90 @@ impl RuntimeHandle {
         ))
     }
 
+    pub(crate) async fn prepare_work_item_completion_with_report(
+        &self,
+        work_item_id: String,
+        authority: WorkItemCompletionAuthority,
+        report_text: String,
+        citations: Vec<crate::types::Citation>,
+        source_turn_index: Option<u64>,
+        source_round: Option<usize>,
+        source_turn_id: Option<String>,
+        source_message_id: Option<String>,
+        source_assistant_round_id: Option<String>,
+        source_tool_call_id: Option<String>,
+        warnings: Vec<serde_json::Value>,
+    ) -> Result<Option<PreparedWorkItemCompletion>> {
+        let agent_id = self.agent_id().await?;
+        let existing = self.validate_owned_work_item(&agent_id, &work_item_id)?;
+        if existing.state == WorkItemState::Completed {
+            return Ok(None);
+        }
+        if existing.state != WorkItemState::Open {
+            return Err(RuntimeError::new(
+                RuntimeErrorDomain::Conflict,
+                "work_item_completion_in_progress",
+                format!(
+                    "work item {work_item_id} already has a legacy completion intent in progress"
+                ),
+            )
+            .with_safe_context("work_item_id", work_item_id)
+            .with_recovery_hint(
+                "complete the existing legacy completion intent through the control completion API",
+            )
+            .into());
+        }
+        let report_text = report_text.trim();
+        if report_text.is_empty() {
+            return Err(RuntimeError::validation(
+                "missing_completion_report",
+                "CompleteWorkItem requires nearby preceding same-round operator-facing report text",
+            )
+            .with_safe_context("work_item_id", work_item_id)
+            .with_recovery_hint(
+                "write the concise operator-facing completion report immediately before CompleteWorkItem in the same assistant response",
+            )
+            .into());
+        }
+
+        let mut brief =
+            BriefRecord::new(agent_id.clone(), BriefKind::Result, report_text, None, None);
+        if !citations.is_empty() {
+            brief.citations = Some(citations);
+        }
+        brief.work_item_id = Some(existing.id.clone());
+        brief.workspace_id = existing.workspace_id.clone();
+        brief.turn_index = source_turn_index;
+        brief.turn_id = source_turn_id;
+        brief.related_message_id = source_message_id;
+        brief.finalizes_assistant_round_id = source_assistant_round_id.clone();
+
+        self.plan_work_item_completion_with_brief_mode(
+            &work_item_id,
+            Some(&authority),
+            &brief,
+            AuditEvent::legacy(
+                "work_item_completion_report_promoted",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "work_item_id": work_item_id,
+                    "source_turn_index": source_turn_index,
+                    "source_round": source_round,
+                    "source_assistant_round_id": source_assistant_round_id,
+                    "source_tool_call_id": source_tool_call_id,
+                    "source": "same_assistant_round_preceding_text",
+                    "text_preview": crate::tool::helpers::truncate_text(report_text, 600),
+                    "warnings": warnings.clone(),
+                    "warning_count": warnings.len(),
+                    "brief_id": brief.id.clone(),
+                }),
+            ),
+            true,
+            true,
+        )
+        .await
+    }
+
     pub(super) async fn promote_work_item_completion_report_with_metadata(
         &self,
         work_item_id: String,
@@ -3626,285 +3766,40 @@ impl RuntimeHandle {
         const MAX_ATTEMPTS: usize = 8;
 
         for attempt in 0..MAX_ATTEMPTS {
-            let agent_id = self.agent_id().await?;
-            let existing = self.validate_owned_work_item(&agent_id, work_item_id)?;
-            if existing.state == WorkItemState::Completed {
-                return Ok(None);
-            }
-            let expected_state = if require_open {
-                WorkItemState::Open
-            } else {
-                WorkItemState::Completing
-            };
-            if existing.state != expected_state {
-                return Err(anyhow!(
-                    "cannot finalize completion report for work item {} in state {:?}; expected {:?}",
+            let Some(prepared) = self
+                .plan_work_item_completion_with_brief_mode(
                     work_item_id,
-                    existing.state,
-                    expected_state,
-                ));
-            }
-            let now = Utc::now();
-            let mut state = self.agent_state().await?;
-            let expected_agent_state = state.clone();
-            let matching_execution_binding = match authority {
-                Some(WorkItemCompletionAuthority::AgentExecution(expected_binding)) => {
-                    if let Some(bound_work_item_id) = expected_binding.work_item_id.as_deref() {
-                        if bound_work_item_id != existing.id {
-                            return Err(RuntimeError::policy(
-                                "work_item_execution_binding_mismatch",
-                                format!(
-                                    "current execution is bound to work item {bound_work_item_id}, not {work_item_id}"
-                                ),
-                            )
-                            .with_safe_context("work_item_id", work_item_id)
-                            .with_recovery_hint(
-                                "complete the WorkItem from its own execution or from an agent-lifecycle execution without another WorkItem binding",
-                            )
-                            .into());
-                        }
-                    }
-                    let Some(current_binding) = state.current_execution_binding.as_ref() else {
-                        return Err(RuntimeError::policy(
-                            "work_item_execution_binding_missing",
-                            "the execution binding that authorized this completion is no longer active",
-                        )
-                        .with_safe_context("work_item_id", work_item_id)
-                        .into());
-                    };
-                    if current_binding != expected_binding {
-                        return Err(RuntimeError::policy(
-                            "work_item_execution_binding_stale",
-                            "the execution binding that authorized this completion changed before commit",
-                        )
-                        .with_safe_context("work_item_id", work_item_id)
-                        .with_recovery_hint(
-                            "retry completion from the WorkItem's current execution",
-                        )
-                        .into());
-                    }
-                    if Some(expected_binding.turn_id.as_str()) != brief.turn_id.as_deref()
-                        || Some(expected_binding.source_message_id.as_str())
-                            != brief.related_message_id.as_deref()
-                    {
-                        return Err(RuntimeError::policy(
-                            "work_item_completion_report_binding_mismatch",
-                            "the completion report does not belong to the authorizing execution",
-                        )
-                        .with_safe_context("work_item_id", work_item_id)
-                        .into());
-                    }
-                    (expected_binding.work_item_id.as_deref() == Some(existing.id.as_str()))
-                        .then_some(expected_binding)
-                }
-                Some(WorkItemCompletionAuthority::Control) | None => None,
+                    authority,
+                    brief,
+                    binding_event.clone(),
+                    require_open,
+                    false,
+                )
+                .await?
+            else {
+                return Ok(None);
             };
-            let mut completion_intent = if require_open {
-                WorkItemCompletionIntent {
-                    work_item_id: existing.id.clone(),
-                    source_activation_id: matching_execution_binding
-                        .and_then(|binding| binding.activation_id.clone()),
-                    source_message_id: brief.related_message_id.clone(),
-                    source_turn_id: brief.turn_id.clone(),
-                    expected_work_revision: matching_execution_binding
-                        .and_then(|binding| binding.claimed_work_revision)
-                        .unwrap_or(existing.revision),
-                    report_requirement: CompletionReportRequirement::Required,
-                    report_state: CompletionReportState::Pending,
-                    result_brief_id: None,
-                    created_at: now,
-                    updated_at: now,
-                }
-            } else {
-                let intent = existing.completion_intent.clone().ok_or_else(|| {
-                    anyhow!("completion brief binding requires a completion intent")
-                })?;
-                if intent.work_item_id != existing.id
-                    || intent.source_turn_id != brief.turn_id
-                    || intent.source_message_id != brief.related_message_id
-                {
-                    return Err(anyhow!(
-                        "completion brief identity does not match work item {} intent",
-                        work_item_id
-                    ));
-                }
-                intent
-            };
-            completion_intent.report_state = CompletionReportState::Bound;
-            completion_intent.result_brief_id = Some(brief.id.clone());
-            completion_intent.updated_at = now;
-            let mut record = WorkItemRecord {
-                revision: existing.revision + 1,
-                state: WorkItemState::Completed,
-                blocked_by: None,
-                recheck_at: None,
-                recheck_consumed_at: None,
-                result_brief_id: Some(brief.id.clone()),
-                completion_intent: Some(completion_intent),
-                updated_at: now,
-                ..existing
-            };
-            let plan_artifact_changed = crate::work_item_plan::refresh_plan_artifact_metadata(
-                self.agent_home().as_path(),
-                &mut record,
-            )?;
-
-            let active_waits = self
-                .inner
-                .storage
-                .raw_active_wait_conditions_for_agent(&agent_id)?
-                .into_iter()
-                .filter(|condition| condition.work_item_id.as_deref() == Some(record.id.as_str()))
-                .collect::<Vec<_>>();
-            let mut wait_conditions = Vec::with_capacity(active_waits.len());
-            let mut cancelled_wait_condition_ids = Vec::with_capacity(active_waits.len());
-            for condition in active_waits {
-                let mut cancelled = condition.clone();
-                cancelled.status = WaitConditionStatus::Cancelled;
-                cancelled.updated_at = now;
-                cancelled.cancelled_at = Some(now);
-                cancelled_wait_condition_ids.push(condition.id);
-                wait_conditions.push(cancelled);
-            }
-
-            state.last_brief_at = Some(brief.created_at);
-            let release_current = state.current_work_item_id.as_deref() == Some(record.id.as_str());
-            let release_turn =
-                state.current_turn_work_item_id.as_deref() == Some(record.id.as_str());
-            if release_current {
-                state.current_work_item_id = None;
-            }
-            if release_turn {
-                state.current_turn_work_item_id = None;
-            }
-
-            let mut audit_events = vec![
-                AuditEvent::typed(
-                    RuntimeEventKind::BriefCreated,
-                    &BriefCreatedAuditEvent::from_brief(brief),
-                )?,
-                binding_event.clone(),
-            ];
-            if plan_artifact_changed {
-                if let Some(event) = self.work_item_plan_artifact_refreshed_event(&record) {
-                    audit_events.push(event);
-                }
-            }
-            if release_current || release_turn {
-                audit_events.push(AuditEvent::legacy(
-                    "work_item_focus_released",
-                    serde_json::json!({
-                        "agent_id": agent_id,
-                        "work_item_id": record.id,
-                        "reason": "work_item_completed",
-                        "readiness": record.readiness(),
-                        "revision": record.revision,
-                    }),
-                ));
-            }
-
-            let mut continuation_records = Vec::new();
-            let mut continuation_resumed = None;
-            if let Some(frame) = self
-                .inner
-                .storage
-                .latest_active_work_item_continuation_for_active(&agent_id, &record.id)?
-            {
-                let suspended = self
-                    .inner
-                    .runtime_db
-                    .work_items()
-                    .latest(&frame.suspended_work_item_id)?;
-                match suspended {
-                    Some(suspended)
-                        if suspended.agent_id == agent_id
-                            && suspended.state == WorkItemState::Open =>
-                    {
-                        let resumed = frame.resume("active_work_item_completed");
-                        let summary = continuation_summary(&resumed, "active_work_item_completed");
-                        state.current_work_item_id = Some(suspended.id.clone());
-                        state.current_turn_work_item_id = Some(suspended.id.clone());
-                        audit_events.push(AuditEvent::legacy(
-                            "work_item_continuation_resumed",
-                            serde_json::json!({
-                                "agent_id": agent_id,
-                                "continuation": summary,
-                                "completed_work_item_id": record.id,
-                                "resumed_work_item_id": suspended.id,
-                            }),
-                        ));
-                        audit_events.push(AuditEvent::legacy(
-                            "work_item_continuation_scheduler_evidence",
-                            serde_json::json!({
-                                "agent_id": agent_id,
-                                "reason": "continuation_resumed",
-                                "work_item_id": suspended.id,
-                                "completed_work_item_id": record.id,
-                                "continuation_frame_id": summary.frame_id,
-                            }),
-                        ));
-                        continuation_resumed = Some(summary);
-                        continuation_records.push(resumed);
-                    }
-                    suspended => {
-                        let reason = if suspended.is_some() {
-                            "suspended_work_item_not_open"
-                        } else {
-                            "suspended_work_item_missing"
-                        };
-                        let cancelled = frame.cancel(reason);
-                        audit_events.push(AuditEvent::legacy(
-                            "work_item_continuation_cancelled",
-                            serde_json::json!({
-                                "agent_id": agent_id,
-                                "continuation": continuation_summary(&cancelled, reason),
-                                "suspended_work_item_state": suspended.map(|record| record.state),
-                            }),
-                        ));
-                        continuation_records.push(cancelled);
-                    }
-                }
-            }
-            if !cancelled_wait_condition_ids.is_empty() {
-                audit_events.push(AuditEvent::legacy(
-                    "wait_conditions_cancelled",
-                    serde_json::json!({
-                        "agent_id": agent_id,
-                        "work_item_id": record.id,
-                        "reason": "work_item_completed",
-                        "wait_condition_ids": cancelled_wait_condition_ids,
-                    }),
-                ));
-            }
-            audit_events.push(self.work_item_written_event(
-                "completed",
-                &record,
-                serde_json::json!({
-                    "continuation_resumed": continuation_resumed,
-                    "completion_intent": record.completion_intent,
-                    "brief_id": brief.id,
-                }),
-            ));
-
+            let record = prepared.record.clone();
+            let continuation_resumed = prepared.continuation_resumed.clone();
             #[cfg(test)]
             self.apply_completion_binding_replacement_before_commit()
                 .await?;
             let commit = self.commit_work_item_focus_transition(
                 &crate::runtime_db::transitions::WorkItemFocusTransitionCommand {
-                    agent_id: agent_id.clone(),
+                    agent_id: record.agent_id.clone(),
                     work_items: vec![crate::runtime_db::transitions::WorkItemMutation::Update {
                         record: record.clone(),
                         expected_revision: record.revision - 1,
                     }],
-                    wait_conditions,
-                    continuations: continuation_records,
+                    wait_conditions: prepared.wait_conditions,
+                    continuations: prepared.continuations,
                     agent_state: crate::runtime_db::transitions::AgentStateMutation {
-                        expected: Some(Box::new(expected_agent_state)),
-                        record: Box::new(state),
+                        expected: Some(Box::new(prepared.expected_agent_state)),
+                        record: Box::new(prepared.committed_agent_state),
                     },
-                    brief_evidence: vec![brief.clone()],
-                    audit_events,
-                    index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
+                    brief_evidence: vec![prepared.brief],
+                    audit_events: prepared.audit_events,
+                    index_changes: prepared.index_changes,
                     notify_scheduler: true,
                     fault: self.take_transition_fault(),
                 },
@@ -3931,6 +3826,381 @@ impl RuntimeHandle {
             }
         }
         unreachable!("completion finalization attempts return or continue")
+    }
+
+    async fn plan_work_item_completion_with_brief_mode(
+        &self,
+        work_item_id: &str,
+        authority: Option<&WorkItemCompletionAuthority>,
+        brief: &BriefRecord,
+        binding_event: AuditEvent,
+        require_open: bool,
+        require_completion_commit_attempt: bool,
+    ) -> Result<Option<PreparedWorkItemCompletion>> {
+        let agent_id = self.agent_id().await?;
+        let existing = self.validate_owned_work_item(&agent_id, work_item_id)?;
+        if existing.state == WorkItemState::Completed {
+            return Ok(None);
+        }
+        let expected_state = if require_open {
+            WorkItemState::Open
+        } else {
+            WorkItemState::Completing
+        };
+        if existing.state != expected_state {
+            return Err(anyhow!(
+                "cannot finalize completion report for work item {} in state {:?}; expected {:?}",
+                work_item_id,
+                existing.state,
+                expected_state,
+            ));
+        }
+        let now = Utc::now();
+        let mut state = self.agent_state().await?;
+        let expected_execution_protocol_state = if self.inner.scheduler_engine.is_canonical()
+            && require_completion_commit_attempt
+            && matches!(
+                authority,
+                Some(WorkItemCompletionAuthority::AgentExecution(_))
+            ) {
+            self.inner
+                .runtime_db
+                .transitions()
+                .load_execution_protocol_state_if_initialized(&agent_id)?
+        } else {
+            None
+        };
+        let expected_agent_state = state.clone();
+        let agent_execution_authority = matches!(
+            authority,
+            Some(WorkItemCompletionAuthority::AgentExecution(_))
+        );
+        let matching_execution_binding = match authority {
+            Some(WorkItemCompletionAuthority::AgentExecution(expected_binding)) => {
+                if let Some(bound_work_item_id) = expected_binding.work_item_id.as_deref() {
+                    if bound_work_item_id != existing.id {
+                        return Err(RuntimeError::policy(
+                                "work_item_execution_binding_mismatch",
+                                format!(
+                                    "current execution is bound to work item {bound_work_item_id}, not {work_item_id}"
+                                ),
+                            )
+                            .with_safe_context("work_item_id", work_item_id)
+                            .with_recovery_hint(
+                                "complete the WorkItem from its own execution or from an agent-lifecycle execution without another WorkItem binding",
+                            )
+                            .into());
+                    }
+                }
+                let Some(current_binding) = state.current_execution_binding.as_ref() else {
+                    return Err(RuntimeError::policy(
+                        "work_item_execution_binding_missing",
+                        "the execution binding that authorized this completion is no longer active",
+                    )
+                    .with_safe_context("work_item_id", work_item_id)
+                    .into());
+                };
+                if current_binding != expected_binding {
+                    return Err(RuntimeError::policy(
+                            "work_item_execution_binding_stale",
+                            "the execution binding that authorized this completion changed before commit",
+                        )
+                        .with_safe_context("work_item_id", work_item_id)
+                        .with_recovery_hint(
+                            "retry completion from the WorkItem's current execution",
+                        )
+                        .into());
+                }
+                if Some(expected_binding.turn_id.as_str()) != brief.turn_id.as_deref()
+                    || Some(expected_binding.source_message_id.as_str())
+                        != brief.related_message_id.as_deref()
+                {
+                    return Err(RuntimeError::policy(
+                        "work_item_completion_report_binding_mismatch",
+                        "the completion report does not belong to the authorizing execution",
+                    )
+                    .with_safe_context("work_item_id", work_item_id)
+                    .into());
+                }
+                (expected_binding.work_item_id.as_deref() == Some(existing.id.as_str()))
+                    .then_some(expected_binding)
+            }
+            Some(WorkItemCompletionAuthority::Control) | None => None,
+        };
+        let mut source_activation_id =
+            matching_execution_binding.and_then(|binding| binding.activation_id.clone());
+        if source_activation_id.is_none()
+            && agent_execution_authority
+            && require_completion_commit_attempt
+        {
+            if let Some(protocol_state) = expected_execution_protocol_state.as_ref() {
+                let mut matching_attempts = protocol_state.attempts.values().filter(|attempt| {
+                    attempt.state
+                        == crate::domain::execution_protocol::ExecutionAttemptState::Open
+                        && attempt.source_message_id.as_deref()
+                            == brief.related_message_id.as_deref()
+                        && match &attempt.binding {
+                            crate::domain::execution_protocol::ExecutionBinding::WorkItem {
+                                work_item_id,
+                            } => {
+                                work_item_id == &existing.id
+                                    && attempt.admitted_fences.work_item_source_revision
+                                        == matching_execution_binding
+                                            .and_then(|binding| binding.claimed_work_revision)
+                                            .or(Some(existing.revision))
+                                    && protocol_state
+                                        .work_items
+                                        .get(&existing.id)
+                                        .is_some_and(|work_item| {
+                                            matches!(
+                                                &work_item.state,
+                                                crate::domain::execution_protocol::WorkItemExecutionState::InFlight {
+                                                    attempt_id,
+                                                    generation,
+                                                } if attempt_id == &attempt.attempt_id
+                                                    && Some(*generation)
+                                                        == attempt
+                                                            .admitted_fences
+                                                            .work_item_generation
+                                            )
+                                        })
+                            }
+                            crate::domain::execution_protocol::ExecutionBinding::AgentLifecycle {
+                                agent_id: binding_agent_id,
+                            } => {
+                                binding_agent_id == &agent_id
+                                    && protocol_state
+                                        .work_items
+                                        .get(&existing.id)
+                                        .is_some_and(|work_item| {
+                                            work_item.source_revision == existing.revision
+                                                && !matches!(
+                                                    work_item.state,
+                                                    crate::domain::execution_protocol::WorkItemExecutionState::InFlight { .. }
+                                                        | crate::domain::execution_protocol::WorkItemExecutionState::Terminal { .. }
+                                                )
+                                        })
+                            }
+                            crate::domain::execution_protocol::ExecutionBinding::Conversation {
+                                ..
+                            }
+                            | crate::domain::execution_protocol::ExecutionBinding::Command => false,
+                        }
+                });
+                let matching_attempt = matching_attempts
+                    .next()
+                    .ok_or_else(|| anyhow!("completion commit execution attempt is missing"))?;
+                if matching_attempts.next().is_some() {
+                    return Err(anyhow!("completion commit execution attempt is ambiguous"));
+                }
+                source_activation_id = Some(matching_attempt.attempt_id.clone());
+            }
+        }
+        let mut completion_intent = if require_open {
+            WorkItemCompletionIntent {
+                work_item_id: existing.id.clone(),
+                source_activation_id,
+                source_message_id: brief.related_message_id.clone(),
+                source_turn_id: brief.turn_id.clone(),
+                expected_work_revision: matching_execution_binding
+                    .and_then(|binding| binding.claimed_work_revision)
+                    .unwrap_or(existing.revision),
+                report_requirement: CompletionReportRequirement::Required,
+                report_state: CompletionReportState::Pending,
+                result_brief_id: None,
+                created_at: now,
+                updated_at: now,
+            }
+        } else {
+            let intent = existing
+                .completion_intent
+                .clone()
+                .ok_or_else(|| anyhow!("completion brief binding requires a completion intent"))?;
+            if intent.work_item_id != existing.id
+                || intent.source_turn_id != brief.turn_id
+                || intent.source_message_id != brief.related_message_id
+            {
+                return Err(anyhow!(
+                    "completion brief identity does not match work item {} intent",
+                    work_item_id
+                ));
+            }
+            intent
+        };
+        completion_intent.report_state = CompletionReportState::Bound;
+        completion_intent.result_brief_id = Some(brief.id.clone());
+        completion_intent.updated_at = now;
+        let mut record = WorkItemRecord {
+            revision: existing.revision + 1,
+            state: WorkItemState::Completed,
+            blocked_by: None,
+            recheck_at: None,
+            recheck_consumed_at: None,
+            result_brief_id: Some(brief.id.clone()),
+            completion_intent: Some(completion_intent),
+            updated_at: now,
+            ..existing
+        };
+        let plan_artifact_changed = crate::work_item_plan::refresh_plan_artifact_metadata(
+            self.agent_home().as_path(),
+            &mut record,
+        )?;
+
+        let active_waits = self
+            .inner
+            .storage
+            .raw_active_wait_conditions_for_agent(&agent_id)?
+            .into_iter()
+            .filter(|condition| condition.work_item_id.as_deref() == Some(record.id.as_str()))
+            .collect::<Vec<_>>();
+        let mut wait_conditions = Vec::with_capacity(active_waits.len());
+        let mut cancelled_wait_condition_ids = Vec::with_capacity(active_waits.len());
+        for condition in active_waits {
+            let mut cancelled = condition.clone();
+            cancelled.status = WaitConditionStatus::Cancelled;
+            cancelled.updated_at = now;
+            cancelled.cancelled_at = Some(now);
+            cancelled_wait_condition_ids.push(condition.id);
+            wait_conditions.push(cancelled);
+        }
+
+        state.last_brief_at = Some(brief.created_at);
+        let release_current = state.current_work_item_id.as_deref() == Some(record.id.as_str());
+        let release_turn = state.current_turn_work_item_id.as_deref() == Some(record.id.as_str());
+        if release_current {
+            state.current_work_item_id = None;
+        }
+        if release_turn {
+            state.current_turn_work_item_id = None;
+        }
+        state.current_execution_binding = None;
+        state.current_run_id = None;
+        if !matches!(state.status, AgentStatus::Asleep | AgentStatus::Stopped) {
+            state.status = AgentStatus::AwakeIdle;
+        }
+
+        let mut audit_events = vec![
+            AuditEvent::typed(
+                RuntimeEventKind::BriefCreated,
+                &BriefCreatedAuditEvent::from_brief(brief),
+            )?,
+            binding_event.clone(),
+        ];
+        if plan_artifact_changed {
+            if let Some(event) = self.work_item_plan_artifact_refreshed_event(&record) {
+                audit_events.push(event);
+            }
+        }
+        if release_current || release_turn {
+            audit_events.push(AuditEvent::legacy(
+                "work_item_focus_released",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "work_item_id": record.id,
+                    "reason": "work_item_completed",
+                    "readiness": record.readiness(),
+                    "revision": record.revision,
+                }),
+            ));
+        }
+
+        let mut continuation_records = Vec::new();
+        let mut continuation_resumed = None;
+        if let Some(frame) = self
+            .inner
+            .storage
+            .latest_active_work_item_continuation_for_active(&agent_id, &record.id)?
+        {
+            let suspended = self
+                .inner
+                .runtime_db
+                .work_items()
+                .latest(&frame.suspended_work_item_id)?;
+            match suspended {
+                Some(suspended)
+                    if suspended.agent_id == agent_id && suspended.state == WorkItemState::Open =>
+                {
+                    let resumed = frame.resume("active_work_item_completed");
+                    let summary = continuation_summary(&resumed, "active_work_item_completed");
+                    state.current_work_item_id = Some(suspended.id.clone());
+                    state.current_turn_work_item_id = Some(suspended.id.clone());
+                    audit_events.push(AuditEvent::legacy(
+                        "work_item_continuation_resumed",
+                        serde_json::json!({
+                            "agent_id": agent_id,
+                            "continuation": summary,
+                            "completed_work_item_id": record.id,
+                            "resumed_work_item_id": suspended.id,
+                        }),
+                    ));
+                    audit_events.push(AuditEvent::legacy(
+                        "work_item_continuation_scheduler_evidence",
+                        serde_json::json!({
+                            "agent_id": agent_id,
+                            "reason": "continuation_resumed",
+                            "work_item_id": suspended.id,
+                            "completed_work_item_id": record.id,
+                            "continuation_frame_id": summary.frame_id,
+                        }),
+                    ));
+                    continuation_resumed = Some(summary);
+                    continuation_records.push(resumed);
+                }
+                suspended => {
+                    let reason = if suspended.is_some() {
+                        "suspended_work_item_not_open"
+                    } else {
+                        "suspended_work_item_missing"
+                    };
+                    let cancelled = frame.cancel(reason);
+                    audit_events.push(AuditEvent::legacy(
+                        "work_item_continuation_cancelled",
+                        serde_json::json!({
+                            "agent_id": agent_id,
+                            "continuation": continuation_summary(&cancelled, reason),
+                            "suspended_work_item_state": suspended.map(|record| record.state),
+                        }),
+                    ));
+                    continuation_records.push(cancelled);
+                }
+            }
+        }
+        if !cancelled_wait_condition_ids.is_empty() {
+            audit_events.push(AuditEvent::legacy(
+                "wait_conditions_cancelled",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "work_item_id": record.id,
+                    "reason": "work_item_completed",
+                    "wait_condition_ids": cancelled_wait_condition_ids,
+                }),
+            ));
+        }
+        audit_events.push(self.work_item_written_event(
+            "completed",
+            &record,
+            serde_json::json!({
+                "continuation_resumed": continuation_resumed,
+                "completion_intent": record.completion_intent,
+                "brief_id": brief.id,
+            }),
+        ));
+
+        let index_changes = self.inner.storage.index_changes_for_work_item(&record)?;
+        Ok(Some(PreparedWorkItemCompletion {
+            record,
+            brief: brief.clone(),
+            expected_execution_protocol_state,
+            expected_agent_state,
+            committed_agent_state: state,
+            wait_conditions,
+            continuations: continuation_records,
+            continuation_resumed,
+            audit_events,
+            index_changes,
+            tool_execution: None,
+            transcript_entries: Vec::new(),
+        }))
     }
 
     pub async fn record_work_item_completion_warning(

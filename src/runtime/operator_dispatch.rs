@@ -180,7 +180,11 @@ impl RuntimeHandle {
         crate::diagnostics::record_turn_total(context_build_started.elapsed());
         let cleanup_started = std::time::Instant::now();
 
-        if outcome.terminal_kind.is_failure() {
+        if outcome.prepared_work_item_completion.is_some() {
+            // The completion report brief, WorkItem transition, tool execution,
+            // Turn terminal, queue claim, and execution outcome are committed
+            // together by the outer canonical terminal settlement.
+        } else if outcome.terminal_kind.is_failure() {
             let mut brief =
                 brief::make_failure(&message.agent_id, message, outcome.final_text.clone());
             if !outcome.final_citations.is_empty() {
@@ -211,10 +215,32 @@ impl RuntimeHandle {
             );
             self.persist_brief(&brief).await?;
         }
-        let turn_record = self.build_turn_record(&outcome.terminal).await?;
+        let mut turn_record = self.build_turn_record(&outcome.terminal).await?;
+        if let Some(prepared) = outcome.prepared_work_item_completion.as_ref() {
+            if !turn_record.produced_brief_ids.contains(&prepared.brief.id) {
+                turn_record
+                    .produced_brief_ids
+                    .push(prepared.brief.id.clone());
+            }
+            if !turn_record
+                .completed_work_item_ids
+                .contains(&prepared.record.id)
+            {
+                turn_record
+                    .completed_work_item_ids
+                    .push(prepared.record.id.clone());
+            }
+            if let Some(tool_execution) = prepared.tool_execution.as_ref() {
+                if !turn_record.tool_execution_ids.contains(&tool_execution.id) {
+                    turn_record
+                        .tool_execution_ids
+                        .push(tool_execution.id.clone());
+                }
+            }
+        }
         self.promote_turn_active_skills().await?;
 
-        if outcome.should_sleep {
+        if outcome.should_sleep && outcome.prepared_work_item_completion.is_none() {
             if outcome.allow_sleep_runnable_work_override {
                 self.transition_to_sleep(outcome.sleep_duration_ms).await?;
             } else {
@@ -227,6 +253,7 @@ impl RuntimeHandle {
         Ok(TurnTerminalTransition {
             terminal: outcome.terminal,
             turn_record,
+            prepared_work_item_completion: outcome.prepared_work_item_completion,
         })
     }
 

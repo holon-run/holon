@@ -150,6 +150,7 @@ impl RuntimeHandle {
             sleep_duration_ms: None,
             allow_sleep_runnable_work_override: false,
             terminal_kind: TurnTerminalKind::Aborted,
+            prepared_work_item_completion: None,
         }))
     }
 
@@ -190,6 +191,7 @@ impl RuntimeHandle {
             let transition = super::TurnTerminalTransition {
                 turn_record: self.build_turn_record(&record).await?,
                 terminal: record.clone(),
+                prepared_work_item_completion: None,
             };
             self.persist_terminal_transition(&transition).await?;
         }
@@ -344,6 +346,7 @@ impl RuntimeHandle {
             sleep_duration_ms: None,
             allow_sleep_runnable_work_override: false,
             terminal_kind,
+            prepared_work_item_completion: None,
         }))
     }
     pub(super) async fn complete_turn_with_abort(
@@ -903,6 +906,7 @@ impl TurnExecution<'_> {
         let turn_started_at = Instant::now();
         let mut sleep_duration_ms = None;
         let mut completed_work_item_this_turn = false;
+        let mut prepared_work_item_completion = None;
         let mut round = 0usize;
         let mut truncated_text_history = Vec::new();
         let mut truncated_citation_history = Vec::<Citation>::new();
@@ -997,6 +1001,7 @@ impl TurnExecution<'_> {
                         sleep_duration_ms: None,
                         allow_sleep_runnable_work_override: false,
                         terminal_kind: TurnTerminalKind::Aborted,
+                        prepared_work_item_completion: None,
                     });
                 }
             }
@@ -1316,6 +1321,7 @@ impl TurnExecution<'_> {
                                 sleep_duration_ms: None,
                                 allow_sleep_runnable_work_override: false,
                                 terminal_kind: TurnTerminalKind::BaselineOverBudget,
+                                prepared_work_item_completion: None,
                             });
                         }
                     }
@@ -1953,6 +1959,7 @@ impl TurnExecution<'_> {
                     sleep_duration_ms,
                     allow_sleep_runnable_work_override: completed_work_item_this_turn,
                     terminal_kind: TurnTerminalKind::Completed,
+                    prepared_work_item_completion: None,
                 });
             }
 
@@ -2182,7 +2189,7 @@ impl TurnExecution<'_> {
                 };
                 crate::diagnostics::record_turn_tool_execution(tool_exec_started.elapsed());
                 match tool_execution {
-                    Ok((result, mut record)) => {
+                    Ok((mut result, mut record)) => {
                         let result_content =
                             crate::tool::tools::render_tool_result_for_model(&result)?;
                         let duration_ms = record.duration_ms;
@@ -2214,18 +2221,7 @@ impl TurnExecution<'_> {
                             all_tool_results_should_sleep = false;
                         }
                         tool_execution_refs.push((tool_call_id.clone(), record.id.clone()));
-                        runtime.persist_tool_execution_evidence(&record)?;
-                        if matches!(record.status, crate::types::ToolExecutionStatus::Success) {
-                            runtime
-                                .record_skill_tool_activation(
-                                    &record.tool_name,
-                                    &record.input,
-                                    &result,
-                                )
-                                .await?;
-                        }
-
-                        runtime.inner.storage.append_event(&AuditEvent::legacy(
+                        let tool_executed_event = AuditEvent::legacy(
                             "tool_executed",
                             to_json_value(&ToolExecutionAuditEvent {
                                 tool_call_id: tool_call_id.clone(),
@@ -2269,7 +2265,26 @@ impl TurnExecution<'_> {
                                 tool_error: result.tool_error().cloned(),
                                 reason: None,
                             }),
-                        ))?;
+                        );
+                        if let Some(mut prepared) = result.prepared_work_item_completion.take() {
+                            prepared.tool_execution = Some(record.clone());
+                            prepared.audit_events.push(tool_executed_event);
+                            prepared_work_item_completion = Some(prepared);
+                        } else {
+                            runtime.persist_tool_execution_evidence(&record)?;
+                            runtime.inner.storage.append_event(&tool_executed_event)?;
+                        }
+                        if prepared_work_item_completion.is_none()
+                            && matches!(record.status, crate::types::ToolExecutionStatus::Success)
+                        {
+                            runtime
+                                .record_skill_tool_activation(
+                                    &record.tool_name,
+                                    &record.input,
+                                    &result,
+                                )
+                                .await?;
+                        }
                         tool_result_envelopes.push(result.envelope.clone());
                         tool_results.push(ToolResultBlock {
                             tool_use_id: tool_call_id,
@@ -2423,13 +2438,18 @@ impl TurnExecution<'_> {
                     }
                 })
                 .collect();
-            runtime.persist_transcript_evidence(&TranscriptEntry::new(
+            let tool_results_transcript = TranscriptEntry::new(
                 agent_id.to_string(),
                 TranscriptEntryKind::ToolResults,
                 Some(round),
                 None,
                 to_json_value(&ToolResultData::RefsWithWrapper { refs }),
-            ))?;
+            );
+            if let Some(prepared) = prepared_work_item_completion.as_mut() {
+                prepared.transcript_entries.push(tool_results_transcript);
+            } else {
+                runtime.persist_transcript_evidence(&tool_results_transcript)?;
+            }
             let after_tool_results_interjections = runtime
                 .drain_operator_interjections(
                     agent_id,
@@ -2505,6 +2525,7 @@ impl TurnExecution<'_> {
                     sleep_duration_ms: sleep_duration_ms.or(legacy_sleep_duration_ms),
                     allow_sleep_runnable_work_override: completed_work_item_this_turn,
                     terminal_kind: TurnTerminalKind::Completed,
+                    prepared_work_item_completion: prepared_work_item_completion.take(),
                 });
             }
         }

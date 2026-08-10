@@ -127,6 +127,7 @@ pub(crate) fn terminal_transition(
     super::super::turn::TurnTerminalTransition {
         terminal,
         turn_record,
+        prepared_work_item_completion: None,
     }
 }
 

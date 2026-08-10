@@ -395,8 +395,17 @@ fn persist_execution_transition_only(
             ExecutionProtocolCommand::SetWorkItemReadiness(command) => {
                 crate::domain::execution_protocol::set_work_item_readiness(&state, &command)
             }
+            ExecutionProtocolCommand::SuspendWorkItemContinuation(command) => {
+                crate::domain::execution_protocol::suspend_work_item_continuation(&state, &command)
+            }
+            ExecutionProtocolCommand::ResumeWorkItemContinuation(command) => {
+                crate::domain::execution_protocol::resume_work_item_continuation(&state, &command)
+            }
             ExecutionProtocolCommand::SetWorkItemWaiting(command) => {
                 crate::domain::execution_protocol::set_work_item_waiting(&state, &command)
+            }
+            ExecutionProtocolCommand::CompleteWorkItem(command) => {
+                crate::domain::execution_protocol::complete_work_item_execution(&state, &command)
             }
             ExecutionProtocolCommand::Admit(command) => {
                 crate::domain::execution_protocol::admit_execution(&state, &command)
@@ -5971,6 +5980,367 @@ async fn authoritative_completion_terminalizes_canonical_work_and_binds_report()
                 completion: result_brief_id.to_string(),
             },
         )
+    );
+}
+
+#[tokio::test]
+async fn authoritative_completion_resumes_parent_canonically_and_writes_terminal_once() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let seed_runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let parent = seed_runtime
+        .create_work_item(
+            "resume canonical parent after child completion".into(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    seed_runtime
+        .pick_work_item(parent.id.clone())
+        .await
+        .unwrap();
+    let child = seed_runtime
+        .create_work_item("complete canonical child".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    seed_runtime.pick_work_item(child.id.clone()).await.unwrap();
+    let frame = seed_runtime
+        .storage()
+        .latest_work_item_continuations()
+        .unwrap()
+        .into_iter()
+        .find(|frame| {
+            frame.suspended_work_item_id == parent.id && frame.active_work_item_id == child.id
+        })
+        .expect("child pick should create a continuation frame");
+    let provider = Arc::new(CanonicalCompletionProvider {
+        work_item_id: child.id.clone(),
+        calls: Mutex::new(0),
+    });
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider.clone(),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let outbox_before = runtime
+        .inner
+        .runtime_db
+        .runtime_index_outbox()
+        .high_watermark_for_agent("default")
+        .unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "complete canonical child".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+    bind_autonomous_work_queue_tick(&mut message, &child, "queued_available");
+    let message = runtime.enqueue(message).await.unwrap();
+    let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+
+    let mut runner = tokio::spawn(runtime.clone().run());
+    tokio::select! {
+        result = &mut runner => {
+            panic!("runtime exited before canonical child completion settled: {result:?}");
+        }
+        result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let execution = runtime
+                    .inner
+                    .runtime_db
+                    .transitions()
+                    .load_execution_protocol_state_if_initialized("default")
+                    .unwrap();
+                if execution.as_ref().is_some_and(|execution| {
+                    execution
+                        .attempts
+                        .get(&activation_id)
+                        .is_some_and(|attempt| {
+                            attempt.state
+                                == crate::domain::execution_protocol::ExecutionAttemptState::Settled
+                        })
+                }) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        }) => {
+            result.expect("canonical child completion should settle");
+        }
+    }
+    runner.abort();
+
+    let child_record = runtime
+        .latest_work_item(&child.id)
+        .await
+        .unwrap()
+        .expect("completed child");
+    assert_eq!(child_record.state, WorkItemState::Completed);
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .expect("canonical execution state");
+    assert!(matches!(
+        execution.work_items[&child.id].state,
+        crate::domain::execution_protocol::WorkItemExecutionState::Terminal { .. }
+    ));
+    assert!(matches!(
+        execution.work_items[&parent.id].state,
+        crate::domain::execution_protocol::WorkItemExecutionState::Runnable { .. }
+    ));
+    assert_eq!(
+        runtime
+            .storage()
+            .latest_work_item_continuations()
+            .unwrap()
+            .into_iter()
+            .find(|candidate| candidate.id == frame.id)
+            .map(|candidate| candidate.state),
+        Some(crate::types::WorkItemContinuationState::Resumed)
+    );
+    let agent = runtime.agent_state().await.unwrap();
+    assert_eq!(
+        agent.current_work_item_id.as_deref(),
+        Some(parent.id.as_str())
+    );
+    assert_eq!(
+        agent.current_turn_work_item_id.as_deref(),
+        Some(parent.id.as_str())
+    );
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&message.id)
+            .unwrap()
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Processed)
+    );
+    let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
+    let turn_id = execution.attempts[&activation_id]
+        .turn_id
+        .as_deref()
+        .expect("settled attempt should retain Turn identity");
+    for kind in ["turn_terminal", "turn_record"] {
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.kind == kind && event.data["turn_id"] == turn_id)
+                .count(),
+            1,
+            "{kind} must be written exactly once"
+        );
+    }
+    assert_eq!(
+        runtime
+            .storage()
+            .read_recent_tool_executions(32)
+            .unwrap()
+            .into_iter()
+            .filter(|record| {
+                record.tool_name == "CompleteWorkItem"
+                    && record.work_item_id.as_deref() == Some(child.id.as_str())
+            })
+            .count(),
+        1
+    );
+    let outbox_changes = runtime
+        .inner
+        .runtime_db
+        .runtime_index_outbox()
+        .read_after("default", outbox_before, 16)
+        .unwrap()
+        .into_iter()
+        .filter(|change| change.source_kind == "work_item" && change.source_id == child.id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        outbox_changes.len(),
+        1,
+        "CompletionCommit should emit one WorkItem index change"
+    );
+}
+
+#[tokio::test]
+async fn legacy_completion_resumes_parent_without_canonical_execution_state() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let seed_runtime = RuntimeHandle::new_with_scheduler_engine(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+        crate::config::SchedulerEngineMode::Legacy,
+    )
+    .unwrap();
+    let parent = seed_runtime
+        .create_work_item(
+            "resume legacy parent after completion".into(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    seed_runtime
+        .pick_work_item(parent.id.clone())
+        .await
+        .unwrap();
+    let child = seed_runtime
+        .create_work_item("complete legacy child".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    seed_runtime.pick_work_item(child.id.clone()).await.unwrap();
+    let frame = seed_runtime
+        .storage()
+        .latest_work_item_continuations()
+        .unwrap()
+        .into_iter()
+        .find(|frame| {
+            frame.suspended_work_item_id == parent.id && frame.active_work_item_id == child.id
+        })
+        .expect("child pick should create a continuation frame");
+    drop(seed_runtime);
+
+    let provider = Arc::new(CanonicalCompletionProvider {
+        work_item_id: child.id.clone(),
+        calls: Mutex::new(0),
+    });
+    let runtime = RuntimeHandle::new_with_scheduler_engine(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider.clone(),
+        "default".into(),
+        context_config(),
+        crate::config::SchedulerEngineMode::Legacy,
+    )
+    .unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "complete legacy child".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+    bind_autonomous_work_queue_tick(&mut message, &child, "queued_available");
+    let message = runtime.enqueue(message).await.unwrap();
+
+    let runner = tokio::spawn(runtime.clone().run());
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if runtime
+                .latest_work_item(&child.id)
+                .await
+                .unwrap()
+                .is_some_and(|record| record.state == WorkItemState::Completed)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("legacy child completion should settle");
+    runner.abort();
+
+    assert!(
+        *provider.calls.lock().await >= 1,
+        "completion turn must reach the provider"
+    );
+    assert_eq!(
+        runtime
+            .storage()
+            .read_recent_tool_executions(32)
+            .unwrap()
+            .into_iter()
+            .filter(|record| {
+                record.tool_name == "CompleteWorkItem"
+                    && record.work_item_id.as_deref() == Some(child.id.as_str())
+            })
+            .count(),
+        1,
+        "parent resumption may start another provider turn, but completion must remain terminal-once"
+    );
+    assert!(runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        runtime
+            .storage()
+            .latest_work_item_continuations()
+            .unwrap()
+            .into_iter()
+            .find(|candidate| candidate.id == frame.id)
+            .map(|candidate| candidate.state),
+        Some(crate::types::WorkItemContinuationState::Resumed)
+    );
+    let agent = runtime.agent_state().await.unwrap();
+    assert_eq!(
+        agent.current_work_item_id.as_deref(),
+        Some(parent.id.as_str())
+    );
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&message.id)
+            .unwrap()
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Processed)
     );
 }
 

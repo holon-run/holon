@@ -193,26 +193,30 @@ fact is still an explicit continuation frame rather than a synthetic blocker.
 When `CompleteWorkItem(B)` succeeds, the following steps are one durable
 transition transaction:
 
-1. Complete `B` using the existing completion rules.
-2. Cancel or resolve active wait conditions owned by `B` as today.
+1. Terminalize the source queue claim, Turn, and current canonical execution
+   attempt with `WorkItemOutcome::Complete`.
+2. Complete legacy WorkItem `B`, bind its result brief, and cancel its active
+   waits.
 3. Find the active direct-caller continuation frame with
    `active_work_item_id = B`.
 4. If its return policy is satisfied:
    - mark the frame `resumed`;
+   - transition canonical `B` to `Terminal`;
+   - derive canonical `A` through the shared WorkItem outcome planner from its
+     exact `Paused(yielded_to:B)` state;
    - set `current_work_item_id` to `suspended_work_item_id`;
-   - set the current turn binding to `suspended_work_item_id` when continuing
-     inside the same runtime turn would otherwise require another model pick;
    - emit visible audit/scheduler evidence with reason
      `continuation_resumed`.
 
 This is an explicit stack return, not a queued WorkItem silently replacing
-current focus. The continuation frame is the evidence that authorizes the focus
-restore.
+current focus. The continuation frame is the typed cause that authorizes both
+the canonical parent transition and the legacy focus projection.
 
-After completing `B` and restoring `A`, the current model turn should close as
-continuable. The scheduler should then start the next pass anchored on the
-resumed WorkItem. The agent should not need to call `PickWorkItem(A)` merely to
-restore the stack.
+After completing `B` and restoring `A`, the current model turn closes
+immediately. The scheduler may then admit a new activation for `A` only when
+the committed canonical target is `Runnable`; an existing wait or blocker may
+instead leave it `Waiting`, `Paused`, or `NeedsRepair`. The agent should not
+need to call `PickWorkItem(A)` merely to restore the stack.
 
 ### Explicit Switching
 
@@ -448,9 +452,6 @@ A = Fix issue 1617
 
 ## Open Questions
 
-- When `CompleteWorkItem(B)` restores `A`, should the runtime always close the
-  current turn immediately, or only when the completion consumed the active
-  stack frame?
 - Should nested stack depth be capped in phase one to prevent accidental long
   chains?
 - Should clients receive `continuation_resumed` in tool results even though
@@ -467,7 +468,8 @@ Phase one should use stack semantics:
   `B` by default.
 - No public `PickWorkItem` mode is added in phase one.
 - `CompleteWorkItem(B)` resumes the direct caller `A`, restores current focus to
-  `A`, and lets the scheduler continue from that restored frame.
+  `A`, closes the current Turn, and lets the scheduler continue from the
+  canonical state committed with that restored frame.
 - Active frames form an acyclic single-caller/single-callee chain, not a general
   dependency graph.
 

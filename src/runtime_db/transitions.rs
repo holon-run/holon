@@ -18,7 +18,8 @@ use crate::{
     runtime_db::{
         evidence::{
             append_audit_event_tx, append_message_tx, append_transcript_entry_tx,
-            insert_brief_evidence_tx, insert_runtime_index_changes_tx, upsert_agent_state_tx,
+            insert_brief_evidence_tx, insert_runtime_index_changes_tx, insert_tool_evidence_tx,
+            upsert_agent_state_tx,
         },
         repositories::{
             compare_and_set_queue_entry_tx, insert_new_work_item_tx, queue_entry_transition,
@@ -32,8 +33,8 @@ use crate::{
     runtime_error::RuntimeError,
     types::{
         AgentState, AuditEvent, BriefRecord, MessageEnvelope, QueueEntryRecord, QueueEntryStatus,
-        TaskRecord, TranscriptEntry, TurnRecord, WaitConditionRecord, WorkItemContinuationFrame,
-        WorkItemRecord, WorkItemSchedulingState, WorkItemState,
+        TaskRecord, ToolExecutionRecord, TranscriptEntry, TurnRecord, WaitConditionRecord,
+        WorkItemContinuationFrame, WorkItemRecord, WorkItemSchedulingState, WorkItemState,
     },
 };
 
@@ -214,6 +215,16 @@ pub(crate) struct QueueTransitionCommand {
     pub notify_scheduler: bool,
     pub fault: Option<TransitionFaultPoint>,
     pub brief_evidence: Vec<BriefRecord>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CompletionTransition {
+    pub requires_execution_continuation: bool,
+    pub work_items: Vec<WorkItemMutation>,
+    pub wait_conditions: Vec<WaitConditionRecord>,
+    pub continuations: Vec<WorkItemContinuationFrame>,
+    pub tool_execution: ToolExecutionRecord,
+    pub index_changes: Vec<RuntimeIndexChange>,
 }
 
 #[derive(Debug, Clone)]
@@ -715,6 +726,7 @@ impl RuntimeTransitionRepository<'_> {
                 &execution_protocol.commands,
                 &command.work_items,
                 &command.wait_conditions,
+                &command.continuations,
             )?;
             inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
 
@@ -807,6 +819,7 @@ impl RuntimeTransitionRepository<'_> {
                 &execution_protocol.commands,
                 work_items,
                 &[],
+                &[],
             )?;
             inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
             let mut applied = apply_work_item_mutation_tx(tx, &command.mutation)?;
@@ -886,6 +899,7 @@ impl RuntimeTransitionRepository<'_> {
                 &execution_protocol.commands,
                 &command.work_items,
                 &command.wait_conditions,
+                &[],
             )?;
             inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
 
@@ -939,6 +953,7 @@ impl RuntimeTransitionRepository<'_> {
             None,
             None,
             None,
+            None,
         )
     }
 
@@ -947,7 +962,7 @@ impl RuntimeTransitionRepository<'_> {
         command: &QueueTransitionCommand,
         execution_protocol: &ExecutionProtocolTransition,
     ) -> Result<TransitionCommit> {
-        self.commit_queue_transaction(command, execution_protocol, None, None, None)
+        self.commit_queue_transaction(command, execution_protocol, None, None, None, None)
     }
 
     pub fn commit_queue_with_wait_trigger(
@@ -961,6 +976,7 @@ impl RuntimeTransitionRepository<'_> {
             wait_transition,
             None,
             None,
+            None,
         )
     }
 
@@ -970,7 +986,14 @@ impl RuntimeTransitionRepository<'_> {
         execution_protocol: &ExecutionProtocolTransition,
         wait_transition: Option<&QueueWaitTransition>,
     ) -> Result<TransitionCommit> {
-        self.commit_queue_transaction(command, execution_protocol, wait_transition, None, None)
+        self.commit_queue_transaction(
+            command,
+            execution_protocol,
+            wait_transition,
+            None,
+            None,
+            None,
+        )
     }
 
     pub fn commit_queue_with_execution_protocol_and_task_expectation(
@@ -985,6 +1008,23 @@ impl RuntimeTransitionRepository<'_> {
             None,
             Some(task_expectation),
             None,
+            None,
+        )
+    }
+
+    pub fn commit_queue_with_completion(
+        &self,
+        command: &QueueTransitionCommand,
+        execution_protocol: &ExecutionProtocolTransition,
+        completion: &CompletionTransition,
+    ) -> Result<TransitionCommit> {
+        self.commit_queue_transaction(
+            command,
+            execution_protocol,
+            None,
+            None,
+            None,
+            Some(completion),
         )
     }
 
@@ -1000,6 +1040,7 @@ impl RuntimeTransitionRepository<'_> {
             None,
             None,
             Some(scheduler_protocol),
+            None,
         )
     }
 
@@ -1010,6 +1051,7 @@ impl RuntimeTransitionRepository<'_> {
         wait_transition: Option<&QueueWaitTransition>,
         task_expectation: Option<&TaskExpectation>,
         legacy_scheduler_protocol: Option<&LegacySchedulerProtocolTransition>,
+        completion: Option<&CompletionTransition>,
     ) -> Result<TransitionCommit> {
         self.db.transaction(|tx| {
             validate_queue_operation(command)?;
@@ -1023,6 +1065,24 @@ impl RuntimeTransitionRepository<'_> {
             }
             if let Some(task_expectation) = task_expectation {
                 validate_task_expectation_tx(tx, task_expectation)?;
+            }
+            if let Some(completion) = completion {
+                validate_completion_transition_tx(tx, &command.agent_id, completion)?;
+                if completion.requires_execution_continuation {
+                    validate_completion_execution_commands(
+                        completion,
+                        &execution_protocol.commands,
+                    )?;
+                }
+                for work_item in &completion.work_items {
+                    validate_work_item_mutation_tx(tx, work_item)?;
+                }
+                for condition in &completion.wait_conditions {
+                    validate_wait_condition_tx(tx, condition)?;
+                }
+                for continuation in &completion.continuations {
+                    validate_work_item_continuation_tx(tx, continuation)?;
+                }
             }
             if let QueueMutation::Consume(record) = &command.mutation {
                 let include_interrupted = match command.operation {
@@ -1100,17 +1160,33 @@ impl RuntimeTransitionRepository<'_> {
                     }
                 }
             };
+            let execution_work_items = if let Some(work_item) =
+                wait_transition.and_then(|transition| transition.work_item.as_ref())
+            {
+                std::slice::from_ref(work_item)
+            } else {
+                completion
+                    .map(|completion| completion.work_items.as_slice())
+                    .unwrap_or_default()
+            };
+            let execution_wait_conditions = if let Some(wait_transition) = wait_transition {
+                std::slice::from_ref(&wait_transition.record)
+            } else {
+                completion
+                    .map(|completion| completion.wait_conditions.as_slice())
+                    .unwrap_or_default()
+            };
+            let execution_continuations = completion
+                .map(|completion| completion.continuations.as_slice())
+                .unwrap_or_default();
             let execution_protocol = execution_protocol_repository::validate_execution_commands_tx(
                 tx,
                 &command.agent_id,
                 execution_protocol.bootstrap.as_ref(),
                 &execution_protocol.commands,
-                wait_transition
-                    .and_then(|transition| transition.work_item.as_ref())
-                    .map_or(&[], std::slice::from_ref),
-                wait_transition
-                    .map(|transition| std::slice::from_ref(&transition.record))
-                    .unwrap_or_default(),
+                execution_work_items,
+                execution_wait_conditions,
+                execution_continuations,
             )?;
             inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
             let mutation_applied = match &command.mutation {
@@ -1153,12 +1229,51 @@ impl RuntimeTransitionRepository<'_> {
             } else {
                 false
             };
+            let mut completion_work_items = Vec::new();
+            let completion_applied = if let Some(completion) = completion {
+                let mut applied = false;
+                for work_item in &completion.work_items {
+                    if apply_work_item_mutation_tx(tx, work_item)? {
+                        completion_work_items.push(work_item.record().clone());
+                        applied = true;
+                    }
+                }
+                for condition in &completion.wait_conditions {
+                    applied |= upsert_wait_condition_tx(tx, condition)?;
+                }
+                for continuation in &completion.continuations {
+                    applied |= upsert_work_item_continuation_tx(tx, continuation)?;
+                }
+                let existing_tool_execution = tx
+                    .query_row(
+                        "SELECT payload_json FROM tool_executions WHERE evidence_id = ?1",
+                        [&completion.tool_execution.id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?
+                    .map(|payload| serde_json::from_str::<ToolExecutionRecord>(&payload))
+                    .transpose()?;
+                if let Some(existing) = existing_tool_execution {
+                    anyhow::ensure!(
+                        existing == completion.tool_execution,
+                        "conflicting CompleteWorkItem tool execution evidence for {}",
+                        completion.tool_execution.id
+                    );
+                } else {
+                    insert_tool_evidence_tx(tx, &completion.tool_execution)?;
+                    applied = true;
+                }
+                applied
+            } else {
+                false
+            };
             let applied = mutation_applied
                 || agent_state_applied
                 || protocol_applied
                 || execution_protocol_applied
                 || wait_transition_applied
-                || wait_work_item_applied;
+                || wait_work_item_applied
+                || completion_applied;
             if !applied {
                 return Ok(TransitionCommit::default());
             }
@@ -1188,13 +1303,19 @@ impl RuntimeTransitionRepository<'_> {
                 applied,
                 &command.agent_id,
                 &command.audit_events,
-                wait_transition.map_or(&[], |transition| transition.index_changes.as_slice()),
+                wait_transition
+                    .map(|transition| transition.index_changes.as_slice())
+                    .or_else(|| completion.map(|completion| completion.index_changes.as_slice()))
+                    .unwrap_or_default(),
                 command.fault,
                 PostCommitEffects {
                     agent_state: agent_state_applied
                         .then(|| command.agent_state.clone())
                         .flatten(),
-                    work_items: wait_work_items,
+                    work_items: wait_work_items
+                        .into_iter()
+                        .chain(completion_work_items)
+                        .collect(),
                     notify_scheduler: command.notify_scheduler,
                     ..PostCommitEffects::default()
                 },
@@ -1379,7 +1500,9 @@ fn validate_agent_state_mutation_tx(
     };
     if let Some(expected) = mutation.expected.as_ref() {
         let actual = agent_state_tx(tx, &mutation.record.id)?;
-        if actual.as_ref() != Some(expected.as_ref()) {
+        if actual.as_ref() != Some(expected.as_ref())
+            && actual.as_ref() != Some(mutation.record.as_ref())
+        {
             return Err(RuntimeStateTransitionConflict::concurrent_mutation(
                 "agent_state",
                 &mutation.record.id,
@@ -1537,6 +1660,70 @@ fn validate_work_item_continuation_tx(
                 incoming.id
             ));
         }
+    }
+    Ok(())
+}
+
+fn validate_completion_transition_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    completion: &CompletionTransition,
+) -> Result<()> {
+    anyhow::ensure!(
+        completion.tool_execution.agent_id == agent_id
+            && completion.tool_execution.tool_name == crate::tool::names::COMPLETE_WORK_ITEM
+            && completion.tool_execution.status == crate::types::ToolExecutionStatus::Success,
+        "completion transition requires the committed CompleteWorkItem tool execution"
+    );
+    anyhow::ensure!(
+        completion
+            .work_items
+            .iter()
+            .any(|mutation| mutation.record().state == WorkItemState::Completed),
+        "completion transition requires an atomic completed WorkItem mutation"
+    );
+    for continuation in &completion.continuations {
+        let existing = tx
+            .query_row(
+                "SELECT payload_json FROM work_item_continuations WHERE continuation_id = ?1",
+                [&continuation.id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|payload| serde_json::from_str::<WorkItemContinuationFrame>(&payload))
+            .transpose()?
+            .ok_or_else(|| anyhow!("completion continuation frame is missing"))?;
+        let matching_identity = existing.agent_id == agent_id
+            && existing.suspended_work_item_id == continuation.suspended_work_item_id
+            && existing.active_work_item_id == continuation.active_work_item_id;
+        let valid_transition = existing.state == crate::types::WorkItemContinuationState::Active
+            && continuation.state == crate::types::WorkItemContinuationState::Resumed;
+        anyhow::ensure!(
+            matching_identity && (valid_transition || existing == *continuation),
+            "completion continuation transition is stale or mismatched"
+        );
+    }
+    Ok(())
+}
+
+fn validate_completion_execution_commands(
+    completion: &CompletionTransition,
+    commands: &[crate::domain::execution_protocol::ExecutionProtocolCommand],
+) -> Result<()> {
+    for continuation in &completion.continuations {
+        if continuation.state != crate::types::WorkItemContinuationState::Resumed {
+            continue;
+        }
+        anyhow::ensure!(
+            commands.iter().any(|command| matches!(
+                command,
+                crate::domain::execution_protocol::ExecutionProtocolCommand::ResumeWorkItemContinuation(resume)
+                    if resume.continuation_id == continuation.id
+                        && resume.work_item_id == continuation.suspended_work_item_id
+                        && resume.active_work_item_id == continuation.active_work_item_id
+            )),
+            "completion continuation requires a matching canonical resume command"
+        );
     }
     Ok(())
 }
@@ -1877,9 +2064,10 @@ mod tests {
         runtime_db::{RuntimeIndexChange, RuntimeIndexOperation},
         types::{
             AgentIdentityRecord, AgentKind, AgentOwnership, AgentProfilePreset, AgentVisibility,
-            BriefKind, CompletionReportRequirement, CompletionReportState, Priority,
-            QueueEntryStatus, TaskKind, TaskStatus, WaitConditionKind, WaitConditionStatus,
-            WakeSource, WorkItemCompletionIntent, WorkItemContinuationState, WorkItemState,
+            AuthorityClass, BriefKind, CompletionReportRequirement, CompletionReportState,
+            Priority, QueueEntryStatus, TaskKind, TaskStatus, ToolExecutionStatus,
+            WaitConditionKind, WaitConditionStatus, WakeSource, WorkItemCompletionIntent,
+            WorkItemContinuationState, WorkItemState,
         },
     };
     use chrono::Utc;
@@ -2440,6 +2628,213 @@ mod tests {
         )?;
         assert_eq!(partitions, 0);
         assert_eq!(attempts, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn completion_commit_replay_is_a_noop_after_agent_state_advances() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        let now = Utc::now();
+        let mut open = work_item("work-completion-replay");
+        open.updated_at = now;
+        db.work_items().insert_new(&open)?;
+        db.agent_identities().upsert(&AgentIdentityRecord::new(
+            "agent-a",
+            AgentKind::Named,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        ))?;
+        let mut initial_state = AgentState::new("agent-a");
+        initial_state.current_work_item_id = Some(open.id.clone());
+        initial_state.current_turn_work_item_id = Some(open.id.clone());
+        db.agent_states().upsert(&initial_state)?;
+
+        let queued = QueueEntryRecord {
+            message_id: "message-completion-replay".into(),
+            agent_id: "agent-a".into(),
+            priority: Priority::Normal,
+            status: QueueEntryStatus::Queued,
+            created_at: now,
+            updated_at: now,
+        };
+        db.transitions().commit_queue_with_execution_protocol(
+            &QueueTransitionCommand {
+                agent_id: "agent-a".into(),
+                operation: QueueOperation::Admit,
+                mutation: QueueMutation::Upsert(queued.clone()),
+                scheduler_claim_work_item: None,
+                agent_state: None,
+                message_evidence: Vec::new(),
+                transcript_entries: Vec::new(),
+                turn_record: None,
+                audit_events: Vec::new(),
+                notify_scheduler: false,
+                fault: None,
+                brief_evidence: Vec::new(),
+            },
+            &execution_admission(&queued.message_id, "attempt-completion-replay", &open.id),
+        )?;
+        let mut dequeued = queued.clone();
+        dequeued.status = QueueEntryStatus::Dequeued;
+        dequeued.updated_at = now + chrono::Duration::seconds(1);
+        db.transitions().commit_queue(&QueueTransitionCommand {
+            agent_id: "agent-a".into(),
+            operation: QueueOperation::Claim,
+            mutation: QueueMutation::Consume(dequeued.clone()),
+            scheduler_claim_work_item: None,
+            agent_state: None,
+            message_evidence: Vec::new(),
+            transcript_entries: Vec::new(),
+            turn_record: None,
+            audit_events: Vec::new(),
+            notify_scheduler: false,
+            fault: None,
+            brief_evidence: Vec::new(),
+        })?;
+
+        let turn_id = "turn-completion-replay";
+        let mut brief = BriefRecord::new(
+            "agent-a",
+            BriefKind::Result,
+            "completion replay result",
+            None,
+            None,
+        );
+        brief.work_item_id = Some(open.id.clone());
+        brief.turn_id = Some(turn_id.into());
+        brief.related_message_id = Some(queued.message_id.clone());
+        let mut completed = open.clone();
+        completed.revision = 2;
+        completed.state = WorkItemState::Completed;
+        completed.result_brief_id = Some(brief.id.clone());
+        completed.result_summary = Some(brief.text.clone());
+        completed.completion_intent = Some(WorkItemCompletionIntent {
+            work_item_id: completed.id.clone(),
+            source_activation_id: Some("attempt-completion-replay".into()),
+            source_message_id: Some(queued.message_id.clone()),
+            source_turn_id: Some(turn_id.into()),
+            expected_work_revision: open.revision,
+            report_requirement: CompletionReportRequirement::Required,
+            report_state: CompletionReportState::Bound,
+            result_brief_id: Some(brief.id.clone()),
+            created_at: now,
+            updated_at: now,
+        });
+        completed.updated_at = now + chrono::Duration::seconds(2);
+        let tool_execution = ToolExecutionRecord {
+            id: "tool-completion-replay".into(),
+            agent_id: "agent-a".into(),
+            work_item_id: Some(open.id.clone()),
+            turn_index: 1,
+            turn_id: Some(turn_id.into()),
+            tool_name: crate::tool::names::COMPLETE_WORK_ITEM.into(),
+            created_at: now,
+            completed_at: Some(now + chrono::Duration::seconds(2)),
+            duration_ms: 1,
+            authority_class: AuthorityClass::RuntimeInstruction,
+            status: ToolExecutionStatus::Success,
+            input: serde_json::json!({"work_item_id": open.id}),
+            output: serde_json::json!({"status": "completed"}),
+            summary: "completed WorkItem".into(),
+            invocation_surface: None,
+        };
+        let mut turn = TurnRecord::new("agent-a", turn_id, 1);
+        turn.current_work_item_id = Some(open.id.clone());
+        turn.input_message_ids = vec![queued.message_id.clone()];
+        turn.tool_execution_ids = vec![tool_execution.id.clone()];
+        turn.produced_brief_ids = vec![brief.id.clone()];
+        turn.completed_work_item_ids = vec![open.id.clone()];
+        turn.created_at = now;
+        let mut processed = dequeued;
+        processed.status = QueueEntryStatus::Processed;
+        processed.updated_at = now + chrono::Duration::seconds(2);
+        let mut committed_state = initial_state.clone();
+        committed_state.current_work_item_id = None;
+        committed_state.current_turn_work_item_id = None;
+        committed_state.current_turn_id = Some(turn_id.into());
+        let audit = AuditEvent::legacy(
+            "completion_commit_replay",
+            serde_json::json!({"work_item_id": open.id}),
+        );
+        let index_change = index_change("work_item", &open.id);
+        let command = QueueTransitionCommand {
+            agent_id: "agent-a".into(),
+            operation: QueueOperation::Settle,
+            mutation: QueueMutation::Upsert(processed),
+            scheduler_claim_work_item: None,
+            agent_state: Some(AgentStateMutation {
+                expected: Some(Box::new(initial_state)),
+                record: Box::new(committed_state.clone()),
+            }),
+            message_evidence: Vec::new(),
+            transcript_entries: Vec::new(),
+            turn_record: Some(turn),
+            audit_events: vec![audit],
+            notify_scheduler: true,
+            fault: None,
+            brief_evidence: vec![brief.clone()],
+        };
+        let execution = ExecutionProtocolTransition {
+            bootstrap: None,
+            commands: vec![ExecutionProtocolCommand::Settle(SettleExecution {
+                outcome: ExecutionOutcomeRecord {
+                    outcome_id: "outcome-completion-replay".into(),
+                    attempt_id: "attempt-completion-replay".into(),
+                    outcome: ExecutionOutcome::WorkItem(WorkItemOutcome::Complete {
+                        completion: brief.id.clone(),
+                    }),
+                    created_at: now.to_rfc3339(),
+                },
+            })],
+        };
+        let completion = CompletionTransition {
+            requires_execution_continuation: true,
+            work_items: vec![WorkItemMutation::Update {
+                record: completed,
+                expected_revision: open.revision,
+            }],
+            wait_conditions: Vec::new(),
+            continuations: Vec::new(),
+            tool_execution,
+            index_changes: vec![index_change],
+        };
+
+        assert!(
+            db.transitions()
+                .commit_queue_with_completion(&command, &execution, &completion)?
+                .applied
+        );
+        assert!(
+            !db.transitions()
+                .commit_queue_with_completion(&command, &execution, &completion)?
+                .applied
+        );
+        assert_eq!(db.agent_states().latest("agent-a")?, Some(committed_state));
+        assert_eq!(db.audit_events().recent(Some("agent-a"), 10)?.len(), 1);
+        assert_eq!(
+            db.runtime_index_outbox()
+                .read_after("agent-a", 0, 10)?
+                .len(),
+            1
+        );
+        let connection = db.connection()?;
+        for (table, expected) in [
+            ("queue_entries", 1_i64),
+            ("work_items", 1),
+            ("turn_records", 1),
+            ("briefs", 1),
+            ("tool_executions", 1),
+            ("execution_protocol_outcomes", 1),
+        ] {
+            let count: i64 =
+                connection.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })?;
+            assert_eq!(count, expected, "{table} must remain exactly-once");
+        }
         Ok(())
     }
 

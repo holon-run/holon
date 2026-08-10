@@ -257,6 +257,15 @@ queue terminal state, Turn terminal record, attempt outcome, owner state, and
 wait/continuation mutations commits. A terminal tool returns success only
 after that commit and then ends the provider/tool loop.
 
+For `CompleteWorkItem`, this transaction is the `CompletionCommit`. It also
+binds the result brief, completes the legacy WorkItem, records the successful
+tool execution, cancels child waits, resumes or cancels the matching
+continuation frame, and applies the parent canonical transition through the
+same WorkItem outcome planner used by ordinary settlement. The committed
+terminal receipt is the only authority for success. A standalone Turn writer
+must reject a prepared completion, and replay of the same command must not
+duplicate Turn, queue, audit, brief, tool, or index-outbox facts.
+
 `WaitFor(task_result)` reads the task and rejoin authority inside the same
 transaction:
 

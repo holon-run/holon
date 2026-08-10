@@ -628,7 +628,7 @@ pub async fn work_item_mutation_routes_pick_update_and_complete() -> Result<()> 
         .await?;
     runtime.pick_work_item(first.id.clone()).await?;
 
-    let pick: serde_json::Value = client
+    let pick_response = client
         .post(format!(
             "{base}/api/control/agents/default/work-items/{second_id}/pick",
             second_id = second.id
@@ -638,9 +638,13 @@ pub async fn work_item_mutation_routes_pick_update_and_complete() -> Result<()> 
             "authority_class": "integration_signal"
         }))
         .send()
-        .await?
-        .json()
         .await?;
+    let pick_status = pick_response.status();
+    let pick: serde_json::Value = pick_response.json().await?;
+    assert!(
+        pick_status.is_success(),
+        "pick request failed with {pick_status}: {pick}"
+    );
     assert_eq!(pick["current_work_item_id"], second.id);
     assert_eq!(pick["previous_work_item"]["id"], first.id);
     assert_eq!(
@@ -675,7 +679,7 @@ pub async fn work_item_mutation_routes_pick_update_and_complete() -> Result<()> 
     assert!(update["recheck_at"].is_string());
     assert_eq!(update["todo_list"].as_array().expect("todo array").len(), 2);
 
-    let complete: serde_json::Value = client
+    let complete_response = client
         .post(format!(
             "{base}/api/control/agents/default/work-items/{second_id}/complete",
             second_id = second.id
@@ -685,9 +689,13 @@ pub async fn work_item_mutation_routes_pick_update_and_complete() -> Result<()> 
             "authority_class": "integration_signal"
         }))
         .send()
-        .await?
-        .json()
         .await?;
+    let complete_status = complete_response.status();
+    let complete: serde_json::Value = complete_response.json().await?;
+    assert!(
+        complete_status.is_success(),
+        "complete request failed with {complete_status}: {complete}"
+    );
     assert_eq!(complete["id"], second.id);
     assert_eq!(complete["state"], "completed");
     assert!(complete.get("blocked_by").is_none());

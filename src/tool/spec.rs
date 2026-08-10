@@ -60,6 +60,9 @@ pub struct ToolResult {
     pub terminal_transition: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sleep_duration_ms: Option<u64>,
+    #[serde(skip)]
+    pub(crate) prepared_work_item_completion:
+        Option<Box<crate::runtime::PreparedWorkItemCompletion>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -99,6 +102,7 @@ impl ToolResult {
             should_sleep: false,
             terminal_transition: false,
             sleep_duration_ms: None,
+            prepared_work_item_completion: None,
         }
     }
 
@@ -120,6 +124,7 @@ impl ToolResult {
             should_sleep: true,
             terminal_transition: false,
             sleep_duration_ms,
+            prepared_work_item_completion: None,
         }
     }
 
@@ -136,6 +141,7 @@ impl ToolResult {
             should_sleep: false,
             terminal_transition: false,
             sleep_duration_ms: None,
+            prepared_work_item_completion: None,
         }
     }
 

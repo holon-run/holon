@@ -44,12 +44,16 @@ pub(crate) struct AgentLoopOutcome {
     pub(super) sleep_duration_ms: Option<u64>,
     pub(super) allow_sleep_runnable_work_override: bool,
     pub(super) terminal_kind: TurnTerminalKind,
+    pub(super) prepared_work_item_completion:
+        Option<Box<crate::runtime::PreparedWorkItemCompletion>>,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct TurnTerminalTransition {
     pub(super) terminal: TurnTerminalRecord,
     pub(super) turn_record: TurnRecord,
+    pub(super) prepared_work_item_completion:
+        Option<Box<crate::runtime::PreparedWorkItemCompletion>>,
 }
 
 pub(crate) struct LoopControlOptions {
@@ -312,6 +316,10 @@ impl RuntimeHandle {
         &self,
         transition: &TurnTerminalTransition,
     ) -> Result<()> {
+        anyhow::ensure!(
+            transition.prepared_work_item_completion.is_none(),
+            "prepared WorkItem completion requires the canonical queue terminal settlement"
+        );
         self.commit_terminal_transition(transition, Vec::new())
             .await
             .map(|_| ())
@@ -361,6 +369,7 @@ impl RuntimeHandle {
             let transition = TurnTerminalTransition {
                 turn_record: self.build_turn_record(&record).await?,
                 terminal: record.clone(),
+                prepared_work_item_completion: None,
             };
             self.commit_terminal_transition(
                 &transition,

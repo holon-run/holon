@@ -16,12 +16,147 @@ pub struct ExecutionProtocolState {
     pub outcomes: BTreeMap<String, ExecutionOutcomeRecord>,
 }
 
+pub fn resume_work_item_continuation(
+    state: &ExecutionProtocolState,
+    command: &ResumeWorkItemContinuation,
+) -> Result<ExecutionTransition, String> {
+    assert_invariants(state)?;
+    if command.command_id.is_empty()
+        || command.work_item_id.is_empty()
+        || command.active_work_item_id.is_empty()
+        || command.continuation_id.is_empty()
+    {
+        return Err("continuation resume requires complete identity".into());
+    }
+    if state.work_items.get(&command.work_item_id) != Some(&command.expected) {
+        return Err("continuation resume WorkItem fence is stale".into());
+    }
+    if !matches!(
+        &command.expected.state,
+        WorkItemExecutionState::Paused { reason, .. }
+            if reason == &format!("yielded_to:{}", command.active_work_item_id)
+    ) {
+        return Err("continuation resume requires the exact yielded WorkItem state".into());
+    }
+    if matches!(
+        &command.outcome,
+        WorkItemOutcome::Complete { .. } | WorkItemOutcome::Yield { .. }
+    ) {
+        return Err("continuation resume cannot complete or yield the resumed WorkItem".into());
+    }
+    let mut next = state.clone();
+    let record = next
+        .work_items
+        .get_mut(&command.work_item_id)
+        .expect("continuation resume preserved WorkItem");
+    record.state = plan_work_item_outcome(record.generation(), &command.outcome)?;
+    assert_invariants(&next)?;
+    Ok(ExecutionTransition {
+        state: next,
+        references: vec![
+            format!("work_item:{}", command.work_item_id),
+            format!("work_item:{}", command.active_work_item_id),
+            format!("continuation:{}", command.continuation_id),
+        ],
+    })
+}
+
+pub fn suspend_work_item_continuation(
+    state: &ExecutionProtocolState,
+    command: &SuspendWorkItemContinuation,
+) -> Result<ExecutionTransition, String> {
+    assert_invariants(state)?;
+    if command.command_id.is_empty()
+        || command.work_item_id.is_empty()
+        || command.active_work_item_id.is_empty()
+        || command.continuation_id.is_empty()
+    {
+        return Err("continuation suspension requires complete identity".into());
+    }
+    if state.work_items.get(&command.work_item_id) != Some(&command.expected) {
+        return Err("continuation suspension WorkItem fence is stale".into());
+    }
+    let WorkItemExecutionState::Runnable { generation, .. } = command.expected.state else {
+        return Err("continuation suspension requires a Runnable WorkItem".into());
+    };
+    let next_generation = generation
+        .checked_add(1)
+        .ok_or_else(|| "WorkItem scheduling generation overflow".to_string())?;
+    let mut next = state.clone();
+    let record = next
+        .work_items
+        .get_mut(&command.work_item_id)
+        .expect("continuation suspension preserved WorkItem");
+    record.state = WorkItemExecutionState::Paused {
+        generation: next_generation,
+        reason: format!("yielded_to:{}", command.active_work_item_id),
+    };
+    assert_invariants(&next)?;
+    Ok(ExecutionTransition {
+        state: next,
+        references: vec![
+            format!("work_item:{}", command.work_item_id),
+            format!("work_item:{}", command.active_work_item_id),
+            format!("continuation:{}", command.continuation_id),
+        ],
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SetWorkItemWaiting {
     pub command_id: String,
     pub work_item_id: String,
     pub expected: Option<WorkItemExecutionRecord>,
     pub record: WorkItemExecutionRecord,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompleteWorkItemExecution {
+    pub command_id: String,
+    pub work_item_id: String,
+    pub expected: WorkItemExecutionRecord,
+    pub completion: String,
+}
+
+pub fn complete_work_item_execution(
+    state: &ExecutionProtocolState,
+    command: &CompleteWorkItemExecution,
+) -> Result<ExecutionTransition, String> {
+    assert_invariants(state)?;
+    if command.command_id.is_empty()
+        || command.work_item_id.is_empty()
+        || command.completion.is_empty()
+    {
+        return Err("WorkItem completion requires complete identity".into());
+    }
+    if state.work_items.get(&command.work_item_id) != Some(&command.expected) {
+        return Err("WorkItem completion fence is stale".into());
+    }
+    if matches!(
+        command.expected.state,
+        WorkItemExecutionState::InFlight { .. } | WorkItemExecutionState::Terminal { .. }
+    ) {
+        return Err("WorkItem is not eligible for lifecycle completion".into());
+    }
+    let mut next = state.clone();
+    let record = next
+        .work_items
+        .get_mut(&command.work_item_id)
+        .expect("WorkItem completion preserved WorkItem");
+    record.state = plan_work_item_outcome(
+        record.generation(),
+        &WorkItemOutcome::Complete {
+            completion: command.completion.clone(),
+        },
+    )?;
+    assert_invariants(&next)?;
+    Ok(ExecutionTransition {
+        state: next,
+        references: vec![
+            format!("work_item:{}", command.work_item_id),
+            format!("completion:{}", command.completion),
+        ],
+    })
 }
 
 impl ExecutionProtocolState {
@@ -338,6 +473,25 @@ pub struct SetWorkItemReadiness {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResumeWorkItemContinuation {
+    pub command_id: String,
+    pub work_item_id: String,
+    pub active_work_item_id: String,
+    pub continuation_id: String,
+    pub expected: WorkItemExecutionRecord,
+    pub outcome: WorkItemOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SuspendWorkItemContinuation {
+    pub command_id: String,
+    pub work_item_id: String,
+    pub active_work_item_id: String,
+    pub continuation_id: String,
+    pub expected: WorkItemExecutionRecord,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InterruptExecution {
     pub attempt_id: String,
     pub outcome_id: String,
@@ -351,7 +505,10 @@ pub enum ExecutionProtocolCommand {
     RegisterWorkItem(Box<RegisterWorkItemExecution>),
     AdvanceWorkItemSourceRevision(AdvanceWorkItemSourceRevision),
     SetWorkItemReadiness(Box<SetWorkItemReadiness>),
+    SuspendWorkItemContinuation(Box<SuspendWorkItemContinuation>),
+    ResumeWorkItemContinuation(Box<ResumeWorkItemContinuation>),
     SetWorkItemWaiting(Box<SetWorkItemWaiting>),
+    CompleteWorkItem(Box<CompleteWorkItemExecution>),
     Admit(Box<AdmitExecution>),
     Settle(SettleExecution),
     Interrupt(InterruptExecution),
@@ -753,7 +910,10 @@ pub fn settle_execution(
             } if attempt_id == &attempt.attempt_id => *generation,
             _ => return Err("WorkItem does not reference the settling attempt".into()),
         };
-        work_record.state = settle_work_item(generation, &outcome.outcome)?;
+        let ExecutionOutcome::WorkItem(work_item_outcome) = &outcome.outcome else {
+            unreachable!("WorkItem binding validated above");
+        };
+        work_record.state = plan_work_item_outcome(generation, work_item_outcome)?;
     }
 
     attempt.state = ExecutionAttemptState::Settled;
@@ -827,58 +987,46 @@ fn validate_outcome_binding(
     }
 }
 
-fn settle_work_item(
+fn plan_work_item_outcome(
     generation: u64,
-    outcome: &ExecutionOutcome,
+    outcome: &WorkItemOutcome,
 ) -> Result<WorkItemExecutionState, String> {
     let next_generation = generation
         .checked_add(1)
         .ok_or_else(|| "WorkItem scheduling generation overflow".to_string())?;
     match outcome {
-        ExecutionOutcome::WorkItem(WorkItemOutcome::Continue) => {
-            Ok(WorkItemExecutionState::Runnable {
-                generation: next_generation,
-                recovery_ref: None,
-            })
-        }
-        ExecutionOutcome::WorkItem(WorkItemOutcome::Interrupted { .. }) => {
-            Ok(WorkItemExecutionState::Runnable {
-                generation: next_generation,
-                recovery_ref: Some("interrupted".into()),
-            })
-        }
-        ExecutionOutcome::WorkItem(WorkItemOutcome::Wait { wait }) => {
-            Ok(WorkItemExecutionState::Waiting {
-                generation: next_generation,
-                wait: wait.clone(),
-            })
-        }
-        ExecutionOutcome::WorkItem(WorkItemOutcome::Pause { reason })
-        | ExecutionOutcome::WorkItem(WorkItemOutcome::Failed { policy: reason }) => {
+        WorkItemOutcome::Continue => Ok(WorkItemExecutionState::Runnable {
+            generation: next_generation,
+            recovery_ref: None,
+        }),
+        WorkItemOutcome::Interrupted { .. } => Ok(WorkItemExecutionState::Runnable {
+            generation: next_generation,
+            recovery_ref: Some("interrupted".into()),
+        }),
+        WorkItemOutcome::Wait { wait } => Ok(WorkItemExecutionState::Waiting {
+            generation: next_generation,
+            wait: wait.clone(),
+        }),
+        WorkItemOutcome::Pause { reason } | WorkItemOutcome::Failed { policy: reason } => {
             Ok(WorkItemExecutionState::Paused {
                 generation: next_generation,
                 reason: reason.clone(),
             })
         }
-        ExecutionOutcome::WorkItem(WorkItemOutcome::NeedsRepair { repair_id }) => {
-            Ok(WorkItemExecutionState::NeedsRepair {
-                generation: next_generation,
-                repair_id: repair_id.clone(),
-            })
-        }
-        ExecutionOutcome::WorkItem(WorkItemOutcome::Complete { completion }) => {
-            Ok(WorkItemExecutionState::Terminal {
-                generation: next_generation,
-                completion: completion.clone(),
-            })
-        }
-        ExecutionOutcome::WorkItem(WorkItemOutcome::Yield {
+        WorkItemOutcome::NeedsRepair { repair_id } => Ok(WorkItemExecutionState::NeedsRepair {
+            generation: next_generation,
+            repair_id: repair_id.clone(),
+        }),
+        WorkItemOutcome::Complete { completion } => Ok(WorkItemExecutionState::Terminal {
+            generation: next_generation,
+            completion: completion.clone(),
+        }),
+        WorkItemOutcome::Yield {
             target_work_item_id,
-        }) => Ok(WorkItemExecutionState::Paused {
+        } => Ok(WorkItemExecutionState::Paused {
             generation: next_generation,
             reason: format!("yielded_to:{target_work_item_id}"),
         }),
-        _ => Err("WorkItem settlement requires a WorkItem outcome".into()),
     }
 }
 
@@ -1110,6 +1258,88 @@ mod tests {
         assert!(set_work_item_readiness(&resumed.state, &stale)
             .unwrap_err()
             .contains("fence is stale"));
+    }
+
+    #[test]
+    fn continuation_resume_reuses_work_item_outcome_planner() {
+        let mut state = ExecutionProtocolState::empty("agent-a");
+        let paused = work_item_record(WorkItemExecutionState::Paused {
+            generation: 2,
+            reason: "yielded_to:work-b".into(),
+        });
+        state.work_items.insert("work-a".into(), paused.clone());
+
+        let resumed = resume_work_item_continuation(
+            &state,
+            &ResumeWorkItemContinuation {
+                command_id: "resume:continuation-a".into(),
+                work_item_id: "work-a".into(),
+                active_work_item_id: "work-b".into(),
+                continuation_id: "continuation-a".into(),
+                expected: paused.clone(),
+                outcome: WorkItemOutcome::Continue,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            resumed.state.work_items["work-a"].state,
+            WorkItemExecutionState::Runnable {
+                generation: 3,
+                recovery_ref: None,
+            }
+        );
+
+        let stale = ResumeWorkItemContinuation {
+            command_id: "resume:continuation-a:stale".into(),
+            work_item_id: "work-a".into(),
+            active_work_item_id: "work-b".into(),
+            continuation_id: "continuation-a".into(),
+            expected: paused,
+            outcome: WorkItemOutcome::Continue,
+        };
+        assert!(resume_work_item_continuation(&resumed.state, &stale)
+            .unwrap_err()
+            .contains("stale"));
+    }
+
+    #[test]
+    fn continuation_suspension_requires_runnable_parent_and_exact_fence() {
+        let mut state = ExecutionProtocolState::empty("agent-a");
+        let runnable = work_item_record(WorkItemExecutionState::Runnable {
+            generation: 2,
+            recovery_ref: None,
+        });
+        state.work_items.insert("work-a".into(), runnable.clone());
+
+        let suspended = suspend_work_item_continuation(
+            &state,
+            &SuspendWorkItemContinuation {
+                command_id: "suspend:continuation-a".into(),
+                work_item_id: "work-a".into(),
+                active_work_item_id: "work-b".into(),
+                continuation_id: "continuation-a".into(),
+                expected: runnable.clone(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            suspended.state.work_items["work-a"].state,
+            WorkItemExecutionState::Paused {
+                generation: 3,
+                reason: "yielded_to:work-b".into(),
+            }
+        );
+
+        let stale = SuspendWorkItemContinuation {
+            command_id: "suspend:continuation-a:stale".into(),
+            work_item_id: "work-a".into(),
+            active_work_item_id: "work-b".into(),
+            continuation_id: "continuation-a".into(),
+            expected: runnable,
+        };
+        assert!(suspend_work_item_continuation(&suspended.state, &stale)
+            .unwrap_err()
+            .contains("stale"));
     }
 
     #[test]

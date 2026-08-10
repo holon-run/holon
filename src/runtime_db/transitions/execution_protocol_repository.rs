@@ -43,6 +43,7 @@ pub(super) fn validate_execution_commands_tx(
     commands: &[ExecutionProtocolCommand],
     work_item_mutations: &[WorkItemMutation],
     wait_conditions: &[crate::types::WaitConditionRecord],
+    continuations: &[crate::types::WorkItemContinuationFrame],
 ) -> Result<Option<PreparedExecutionProtocolCommands>> {
     if commands.is_empty() {
         return Ok(None);
@@ -89,8 +90,17 @@ pub(super) fn validate_execution_commands_tx(
         if let ExecutionProtocolCommand::SetWorkItemReadiness(command) = command {
             validate_set_work_item_readiness(command, work_item_mutations, wait_conditions)?;
         }
+        if let ExecutionProtocolCommand::SuspendWorkItemContinuation(command) = command {
+            validate_suspend_work_item_continuation(tx, agent_id, command, continuations)?;
+        }
+        if let ExecutionProtocolCommand::ResumeWorkItemContinuation(command) = command {
+            validate_resume_work_item_continuation(tx, agent_id, command)?;
+        }
         if let ExecutionProtocolCommand::SetWorkItemWaiting(command) = command {
             validate_set_work_item_waiting(command, work_item_mutations, wait_conditions)?;
+        }
+        if let ExecutionProtocolCommand::CompleteWorkItem(command) = command {
+            validate_complete_work_item(command, work_item_mutations)?;
         }
         let transition = reduce(&state, command)
             .map_err(|error| anyhow!("execution protocol command rejected: {error}"))?;
@@ -136,6 +146,9 @@ pub(super) fn synchronize_work_item_revisions_tx(
                 command.work_item_id == record.id
             }
             ExecutionProtocolCommand::SetWorkItemReadiness(command) => {
+                command.work_item_id == record.id
+            }
+            ExecutionProtocolCommand::SuspendWorkItemContinuation(command) => {
                 command.work_item_id == record.id
             }
             ExecutionProtocolCommand::SetWorkItemWaiting(command) => {
@@ -267,8 +280,17 @@ fn reduce(
         ExecutionProtocolCommand::SetWorkItemReadiness(command) => {
             execution_protocol::set_work_item_readiness(state, command)
         }
+        ExecutionProtocolCommand::SuspendWorkItemContinuation(command) => {
+            execution_protocol::suspend_work_item_continuation(state, command)
+        }
+        ExecutionProtocolCommand::ResumeWorkItemContinuation(command) => {
+            execution_protocol::resume_work_item_continuation(state, command)
+        }
         ExecutionProtocolCommand::SetWorkItemWaiting(command) => {
             execution_protocol::set_work_item_waiting(state, command)
+        }
+        ExecutionProtocolCommand::CompleteWorkItem(command) => {
+            execution_protocol::complete_work_item_execution(state, command)
         }
         ExecutionProtocolCommand::Admit(command) => {
             execution_protocol::admit_execution(state, command)
@@ -293,8 +315,17 @@ fn command_identity(command: &ExecutionProtocolCommand) -> (&'static str, &str) 
         ExecutionProtocolCommand::SetWorkItemReadiness(command) => {
             ("set_work_item_readiness", &command.command_id)
         }
+        ExecutionProtocolCommand::SuspendWorkItemContinuation(command) => {
+            ("suspend_work_item_continuation", &command.command_id)
+        }
+        ExecutionProtocolCommand::ResumeWorkItemContinuation(command) => {
+            ("resume_work_item_continuation", &command.command_id)
+        }
         ExecutionProtocolCommand::SetWorkItemWaiting(command) => {
             ("set_work_item_waiting", &command.command_id)
+        }
+        ExecutionProtocolCommand::CompleteWorkItem(command) => {
+            ("complete_work_item_execution", &command.command_id)
         }
         ExecutionProtocolCommand::Admit(command) => {
             ("admit_execution", &command.attempt.attempt_id)
@@ -337,6 +368,26 @@ fn validate_set_work_item_waiting(
         })
     {
         bail!("WorkItem waiting transition does not match its atomic wait condition");
+    }
+    Ok(())
+}
+
+fn validate_complete_work_item(
+    command: &execution_protocol::CompleteWorkItemExecution,
+    mutations: &[WorkItemMutation],
+) -> Result<()> {
+    let Some(record) = mutations.iter().find_map(|mutation| match mutation {
+        WorkItemMutation::Update { record, .. } if record.id == command.work_item_id => {
+            Some(record)
+        }
+        _ => None,
+    }) else {
+        bail!("WorkItem completion transition requires an atomic WorkItem update");
+    };
+    if record.state != crate::types::WorkItemState::Completed
+        || record.result_brief_id.as_deref() != Some(command.completion.as_str())
+    {
+        bail!("WorkItem completion transition does not match its atomic WorkItem update");
     }
     Ok(())
 }
@@ -432,6 +483,75 @@ fn validate_set_work_item_readiness(
             }
         }
         _ => bail!("WorkItem readiness transition must target Runnable or Paused"),
+    }
+    Ok(())
+}
+
+fn validate_resume_work_item_continuation(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    command: &execution_protocol::ResumeWorkItemContinuation,
+) -> Result<()> {
+    let frame = tx
+        .query_row(
+            "SELECT payload_json
+             FROM work_item_continuations
+             WHERE continuation_id = ?1 AND agent_id = ?2",
+            [&command.continuation_id, agent_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|payload| {
+            serde_json::from_str::<crate::types::WorkItemContinuationFrame>(&payload)
+                .context("decoding continuation resume frame")
+        })
+        .transpose()?
+        .ok_or_else(|| anyhow!("continuation resume requires an existing frame"))?;
+    if frame.suspended_work_item_id != command.work_item_id
+        || frame.active_work_item_id != command.active_work_item_id
+        || !matches!(
+            frame.state,
+            crate::types::WorkItemContinuationState::Active
+                | crate::types::WorkItemContinuationState::Resumed
+        )
+    {
+        bail!("continuation resume command does not match its active frame");
+    }
+    Ok(())
+}
+
+fn validate_suspend_work_item_continuation(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    command: &execution_protocol::SuspendWorkItemContinuation,
+    continuations: &[crate::types::WorkItemContinuationFrame],
+) -> Result<()> {
+    let frame = continuations
+        .iter()
+        .find(|frame| frame.id == command.continuation_id)
+        .ok_or_else(|| anyhow!("continuation suspension requires an atomic continuation frame"))?;
+    if frame.agent_id != agent_id
+        || frame.suspended_work_item_id != command.work_item_id
+        || frame.active_work_item_id != command.active_work_item_id
+        || frame.state != crate::types::WorkItemContinuationState::Active
+    {
+        bail!("continuation suspension command does not match its active frame");
+    }
+    let parent = tx
+        .query_row(
+            "SELECT payload_json FROM work_items WHERE work_item_id = ?1",
+            [&command.work_item_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|payload| serde_json::from_str::<crate::types::WorkItemRecord>(&payload))
+        .transpose()?
+        .ok_or_else(|| anyhow!("continuation suspension parent WorkItem is missing"))?;
+    if parent.agent_id != agent_id
+        || parent.state != crate::types::WorkItemState::Open
+        || parent.revision != command.expected.source_revision
+    {
+        bail!("continuation suspension parent WorkItem fence is stale");
     }
     Ok(())
 }
