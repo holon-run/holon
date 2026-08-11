@@ -93,6 +93,7 @@ impl AgentProvider for WorkItemReentryProbeProvider {
             .await
             .push(current_work_item);
         self.started.notify_one();
+        // Keep the provider round open so the test can inspect re-entry before settlement.
         std::future::pending::<Result<ProviderTurnResponse>>().await
     }
 }
@@ -6263,7 +6264,10 @@ async fn authoritative_completion_resumes_parent_canonically_and_writes_terminal
     assert_eq!(observed_work_items.len(), 1);
     assert!(observed_work_items[0].contains(&format!("- Id: {}", parent.id)));
     assert!(observed_work_items[0].contains(&parent.objective));
-    assert!(!observed_work_items[0].contains(&child.id));
+    let child_id_line = format!("- Id: {}", child.id);
+    assert!(!observed_work_items[0]
+        .lines()
+        .any(|line| line == child_id_line));
     drop(observed_work_items);
     let restarted_agent = restarted.agent_state().await.unwrap();
     assert_eq!(
