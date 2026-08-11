@@ -436,6 +436,11 @@ fn persist_execution_transition_only(
             ExecutionProtocolCommand::ResumeWorkItemContinuation(command) => {
                 crate::domain::execution_protocol::resume_work_item_continuation(&state, &command)
             }
+            ExecutionProtocolCommand::ReconcileWorkItemContinuationYield(command) => {
+                crate::domain::execution_protocol::reconcile_work_item_continuation_yield(
+                    &state, &command,
+                )
+            }
             ExecutionProtocolCommand::SetWorkItemWaiting(command) => {
                 crate::domain::execution_protocol::set_work_item_waiting(&state, &command)
             }
@@ -11991,6 +11996,127 @@ async fn scheduler_recovery_converges_completed_work_item_lane_reservation() {
         .candidates
         .iter()
         .any(|candidate| candidate.kind == SchedulerRecoveryCandidateKind::AuthorityDrift));
+}
+
+#[tokio::test]
+async fn scheduler_recovery_reconciles_stale_continuation_yield_without_legacy_partition() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let parent = WorkItemRecord::new("default", "stale continuation parent", WorkItemState::Open);
+    let active = WorkItemRecord::new("default", "current continuation child", WorkItemState::Open);
+    let stale = WorkItemRecord::new(
+        "default",
+        "completed historical continuation child",
+        WorkItemState::Completed,
+    );
+    runtime.storage().append_work_item(&parent).unwrap();
+    runtime.storage().append_work_item(&active).unwrap();
+    runtime.storage().append_work_item(&stale).unwrap();
+    let frame = crate::types::WorkItemContinuationFrame::new_on_completed(
+        "default",
+        parent.id.clone(),
+        active.id.clone(),
+        None,
+    );
+    runtime
+        .storage()
+        .append_work_item_continuation(&frame)
+        .unwrap();
+    let execution = crate::domain::execution_protocol::ExecutionProtocolState {
+        agent_id: "default".into(),
+        attempts: Default::default(),
+        work_items: std::collections::BTreeMap::from([(
+            parent.id.clone(),
+            crate::domain::execution_protocol::WorkItemExecutionRecord {
+                source_revision: parent.revision,
+                state: crate::domain::execution_protocol::WorkItemExecutionState::Paused {
+                    generation: 7,
+                    reason: format!("yielded_to:{}", stale.id),
+                },
+            },
+        )]),
+        outcomes: Default::default(),
+    };
+    runtime
+        .inner
+        .runtime_db
+        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
+        .unwrap();
+
+    let report =
+        scheduler_recovery_report(&runtime.inner.storage, &runtime.inner.runtime_db, "default")
+            .unwrap();
+    assert!(!report.partition_initialized);
+    assert!(report.execution_partition_initialized);
+    let candidate = report
+        .continuation_reconciliations
+        .iter()
+        .find(|candidate| candidate.continuation_id == frame.id)
+        .expect("continuation reconciliation candidate");
+    assert!(
+        candidate.eligible,
+        "candidate rejected: {}",
+        candidate.reason
+    );
+    assert_eq!(
+        candidate.stale_active_work_item_id.as_deref(),
+        Some(stale.id.as_str())
+    );
+
+    let (changed, backup) = apply_scheduler_recovery_plan_with_backup_policy(
+        &runtime.inner.storage,
+        &runtime.inner.runtime_db,
+        "default",
+        &report,
+        SchedulerRecoveryBackupPolicy::SkipApproved,
+    )
+    .unwrap();
+    assert_eq!(changed, 1);
+    assert!(backup.is_none());
+    let repaired = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        repaired.work_items[&parent.id].state,
+        crate::domain::execution_protocol::WorkItemExecutionState::Paused {
+            generation: 8,
+            reason: format!("yielded_to:{}", active.id),
+        }
+    );
+    let after =
+        scheduler_recovery_report(&runtime.inner.storage, &runtime.inner.runtime_db, "default")
+            .unwrap();
+    let after_candidate = after
+        .continuation_reconciliations
+        .iter()
+        .find(|candidate| candidate.continuation_id == frame.id)
+        .unwrap();
+    assert!(!after_candidate.eligible);
+    assert_eq!(after_candidate.reason, "already_matched");
+    assert!(runtime
+        .storage()
+        .read_recent_events(64)
+        .unwrap()
+        .iter()
+        .any(|event| event.kind == "work_item_continuation_reconciled"
+            && event.data["continuation_id"] == frame.id));
 }
 
 #[tokio::test]

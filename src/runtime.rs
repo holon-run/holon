@@ -127,8 +127,9 @@ use crate::{
         SkillsRuntimeView, TaskKind, TaskLifecycleAuditEvent, TaskRecord, TaskRecoverySpec,
         TaskStatus, TimerRecord, TimerStatus, ToolExecutionRecord, TranscriptEntry,
         TranscriptEntryKind, TurnRecord, TurnTerminalKind, ViewImageObservation,
-        WaitConditionStatus, WaitingReason, WorkItemExecutionBinding, WorkItemLifecycleAuditEvent,
-        WorkItemState, WorkspaceEntry, AGENT_HOME_WORKSPACE_ID,
+        WaitConditionRecord, WaitConditionStatus, WaitingReason, WorkItemExecutionBinding,
+        WorkItemLifecycleAuditEvent, WorkItemRecord, WorkItemState, WorkspaceEntry,
+        AGENT_HOME_WORKSPACE_ID,
     },
     web::{WebConfig, WebProviderKind},
 };
@@ -457,6 +458,57 @@ fn canonical_command_batch_rejection(
         proposed = outcome.outcome.snapshot;
     }
     None
+}
+
+fn work_item_continuation_resume_source(
+    storage: &AppStorage,
+    runtime_db: &RuntimeDb,
+    agent_id: &str,
+    parent_work_item_id: &str,
+    projected_parent: Option<&WorkItemRecord>,
+    projected_wait_conditions: &[WaitConditionRecord],
+) -> Result<(
+    crate::domain::execution_protocol::WorkItemContinuationResumeSource,
+    crate::domain::execution_protocol::WorkItemOutcome,
+)> {
+    use crate::domain::execution_protocol::{
+        continuation_resume_outcome, WorkItemContinuationResumeSource,
+    };
+
+    let durable_parent = runtime_db
+        .work_items()
+        .latest(parent_work_item_id)?
+        .ok_or_else(|| anyhow!("continuation parent WorkItem is missing"))?;
+    let parent = projected_parent
+        .filter(|parent| parent.id == parent_work_item_id)
+        .unwrap_or(&durable_parent);
+    anyhow::ensure!(
+        parent.agent_id == agent_id && parent.state == WorkItemState::Open,
+        "continuation parent WorkItem is not open for this agent"
+    );
+    let mut parent_waits = storage
+        .raw_active_wait_conditions_for_agent(agent_id)?
+        .into_iter()
+        .filter(|wait| wait.work_item_id.as_deref() == Some(parent_work_item_id))
+        .map(|wait| (wait.id.clone(), wait))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for wait in projected_wait_conditions {
+        parent_waits.remove(&wait.id);
+        if wait.agent_id == agent_id
+            && wait.work_item_id.as_deref() == Some(parent_work_item_id)
+            && wait.status == WaitConditionStatus::Active
+        {
+            parent_waits.insert(wait.id.clone(), wait.clone());
+        }
+    }
+    let source = WorkItemContinuationResumeSource {
+        work_item_revision: parent.revision,
+        blocked_by: parent.blocked_by.clone(),
+        active_wait_ids: parent_waits.into_keys().collect(),
+    };
+    let outcome = continuation_resume_outcome(parent_work_item_id, &source)
+        .map_err(|error| anyhow!(error))?;
+    Ok((source, outcome))
 }
 
 fn execution_protocol_completion_transition_from_prepared(
@@ -1419,10 +1471,12 @@ fn execution_attempt_for_message<'a>(
 pub struct SchedulerRecoveryReport {
     pub agent_id: String,
     pub partition_initialized: bool,
+    pub execution_partition_initialized: bool,
     pub authority_inventory: Vec<SchedulerAuthorityInventoryEntry>,
     pub retired_rollout_metadata: SchedulerRetiredRolloutMetadata,
     pub candidates: Vec<SchedulerRecoveryCandidate>,
     pub legacy_adoptions: Vec<SchedulerLegacyAdoptionCandidate>,
+    pub continuation_reconciliations: Vec<SchedulerContinuationReconciliationCandidate>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1458,6 +1512,18 @@ pub struct SchedulerLegacyAdoptionCandidate {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct SchedulerContinuationReconciliationCandidate {
+    pub continuation_id: String,
+    pub work_item_id: String,
+    pub stale_active_work_item_id: Option<String>,
+    pub active_work_item_id: String,
+    pub eligible: bool,
+    pub reason: String,
+    pub evidence: Vec<String>,
+    pub proposed_command: Option<crate::domain::execution_protocol::ExecutionProtocolCommand>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct SchedulerRecoveryCandidate {
     pub kind: SchedulerRecoveryCandidateKind,
     pub message_id: String,
@@ -1478,6 +1544,167 @@ pub enum SchedulerRecoveryCandidateKind {
     NeedsSettlement,
     LegacyDequeued,
     AuthorityDrift,
+}
+
+fn scheduler_continuation_reconciliation_candidates(
+    runtime_db: &RuntimeDb,
+    agent_id: &str,
+    execution_state: Option<&crate::domain::execution_protocol::ExecutionProtocolState>,
+    active_continuations: &[crate::types::WorkItemContinuationFrame],
+) -> Result<Vec<SchedulerContinuationReconciliationCandidate>> {
+    use crate::domain::execution_protocol::{
+        ExecutionProtocolCommand, ReconcileWorkItemContinuationYield, WorkItemExecutionState,
+    };
+
+    let mut candidates = Vec::new();
+    for frame in active_continuations {
+        let mut candidate = SchedulerContinuationReconciliationCandidate {
+            continuation_id: frame.id.clone(),
+            work_item_id: frame.suspended_work_item_id.clone(),
+            stale_active_work_item_id: None,
+            active_work_item_id: frame.active_work_item_id.clone(),
+            eligible: false,
+            reason: "execution_partition_missing".into(),
+            evidence: vec![format!("continuation:{}", frame.id)],
+            proposed_command: None,
+        };
+        let Some(state) = execution_state else {
+            candidates.push(candidate);
+            continue;
+        };
+        if frame.id.is_empty()
+            || frame.suspended_work_item_id.is_empty()
+            || frame.active_work_item_id.is_empty()
+        {
+            candidate.reason = "identity_incomplete".into();
+            candidates.push(candidate);
+            continue;
+        }
+        let parent_edges = active_continuations
+            .iter()
+            .filter(|other| other.suspended_work_item_id == frame.suspended_work_item_id)
+            .count();
+        let child_edges = active_continuations
+            .iter()
+            .filter(|other| other.active_work_item_id == frame.active_work_item_id)
+            .count();
+        if parent_edges != 1 || child_edges != 1 {
+            candidate.reason = "competing_active_continuation".into();
+            candidates.push(candidate);
+            continue;
+        }
+        let mut cursor = frame.active_work_item_id.as_str();
+        let mut visited = HashSet::new();
+        let mut cycle = false;
+        while let Some(next) = active_continuations
+            .iter()
+            .find(|other| other.suspended_work_item_id == cursor)
+        {
+            if !visited.insert(next.id.as_str())
+                || next.active_work_item_id == frame.suspended_work_item_id
+            {
+                cycle = true;
+                break;
+            }
+            cursor = next.active_work_item_id.as_str();
+        }
+        if cycle {
+            candidate.reason = "active_continuation_cycle".into();
+            candidates.push(candidate);
+            continue;
+        }
+        let Some(parent_execution) = state.work_items.get(&frame.suspended_work_item_id) else {
+            candidate.reason = "parent_execution_missing".into();
+            candidates.push(candidate);
+            continue;
+        };
+        let WorkItemExecutionState::Paused { generation, reason } = &parent_execution.state else {
+            candidate.reason = "parent_not_paused".into();
+            candidates.push(candidate);
+            continue;
+        };
+        let Some(stale_target) = reason.strip_prefix("yielded_to:") else {
+            candidate.reason = "pause_not_yielded".into();
+            candidates.push(candidate);
+            continue;
+        };
+        candidate.stale_active_work_item_id = Some(stale_target.to_string());
+        candidate.evidence.extend([
+            format!("parent_generation:{generation}"),
+            format!(
+                "parent_source_revision:{}",
+                parent_execution.source_revision
+            ),
+            format!("canonical_target:{stale_target}"),
+            format!("frame_target:{}", frame.active_work_item_id),
+        ]);
+        if stale_target == frame.active_work_item_id {
+            candidate.reason = "already_matched".into();
+            candidates.push(candidate);
+            continue;
+        }
+        let Some(parent) = runtime_db
+            .work_items()
+            .latest(&frame.suspended_work_item_id)?
+        else {
+            candidate.reason = "parent_missing".into();
+            candidates.push(candidate);
+            continue;
+        };
+        let Some(active) = runtime_db.work_items().latest(&frame.active_work_item_id)? else {
+            candidate.reason = "active_target_missing".into();
+            candidates.push(candidate);
+            continue;
+        };
+        let Some(stale) = runtime_db.work_items().latest(stale_target)? else {
+            candidate.reason = "stale_target_missing".into();
+            candidates.push(candidate);
+            continue;
+        };
+        if parent.agent_id != agent_id || active.agent_id != agent_id || stale.agent_id != agent_id
+        {
+            candidate.reason = "cross_agent_identity".into();
+            candidates.push(candidate);
+            continue;
+        }
+        if parent.state != WorkItemState::Open
+            || parent.revision != parent_execution.source_revision
+        {
+            candidate.reason = "parent_source_fence_stale".into();
+            candidates.push(candidate);
+            continue;
+        }
+        if active.state != WorkItemState::Open {
+            candidate.reason = "active_target_not_open".into();
+            candidates.push(candidate);
+            continue;
+        }
+        if stale.state != WorkItemState::Completed {
+            candidate.reason = "stale_target_not_completed".into();
+            candidates.push(candidate);
+            continue;
+        }
+        candidate.eligible = true;
+        candidate.reason = "stale_yield_target_reconcilable".into();
+        candidate.proposed_command = Some(
+            ExecutionProtocolCommand::ReconcileWorkItemContinuationYield(Box::new(
+                ReconcileWorkItemContinuationYield {
+                    command_id: format!("continuation:reconcile:{}", frame.id),
+                    work_item_id: frame.suspended_work_item_id.clone(),
+                    continuation_id: frame.id.clone(),
+                    stale_active_work_item_id: stale.id.clone(),
+                    active_work_item_id: active.id.clone(),
+                    expected: parent_execution.clone(),
+                    expected_frame_updated_at: frame.updated_at.to_rfc3339(),
+                    active_work_item_source_revision: active.revision,
+                    stale_active_work_item_source_revision: stale.revision,
+                },
+            )),
+        );
+        candidates.push(candidate);
+    }
+    candidates.sort_by(|left, right| left.continuation_id.cmp(&right.continuation_id));
+    Ok(candidates)
 }
 
 fn canonical_settlement_recovery_commands(
@@ -1714,6 +1941,18 @@ pub fn scheduler_recovery_report(
         hard_blocker_count: retired.hard_blocker_count,
         command_result_count: retired.command_result_count,
     };
+    let execution_state = runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized(agent_id)?;
+    let active_continuations = runtime_db
+        .work_item_continuations()
+        .active_for_agent(agent_id)?;
+    let continuation_reconciliations = scheduler_continuation_reconciliation_candidates(
+        runtime_db,
+        agent_id,
+        execution_state.as_ref(),
+        &active_continuations,
+    )?;
     let Some(snapshot) = runtime_db
         .transitions()
         .load_scheduler_protocol_snapshot_if_initialized(agent_id)?
@@ -1721,6 +1960,7 @@ pub fn scheduler_recovery_report(
         return Ok(SchedulerRecoveryReport {
             agent_id: agent_id.to_string(),
             partition_initialized: false,
+            execution_partition_initialized: execution_state.is_some(),
             authority_inventory,
             retired_rollout_metadata,
             candidates: Vec::new(),
@@ -1735,17 +1975,12 @@ pub fn scheduler_recovery_report(
                     proposed_command: candidate.command,
                 })
                 .collect(),
+            continuation_reconciliations,
         });
     };
     let all_queue_entries = runtime_db
         .queue_entries()
         .recent(Some(agent_id), usize::MAX)?;
-    let execution_state = runtime_db
-        .transitions()
-        .load_execution_protocol_state_if_initialized(agent_id)?;
-    let active_continuations = runtime_db
-        .work_item_continuations()
-        .active_for_agent(agent_id)?;
     let mut candidates = Vec::new();
     if let Some(command) = canonical_authority_convergence_command(storage, &snapshot, agent_id)? {
         let crate::domain::scheduler_protocol::ProtocolCommand::ConvergeAuthority(repair) =
@@ -2101,6 +2336,7 @@ pub fn scheduler_recovery_report(
     Ok(SchedulerRecoveryReport {
         agent_id: agent_id.to_string(),
         partition_initialized: true,
+        execution_partition_initialized: execution_state.is_some(),
         authority_inventory,
         retired_rollout_metadata,
         candidates,
@@ -2115,6 +2351,7 @@ pub fn scheduler_recovery_report(
                 proposed_command: candidate.command,
             })
             .collect(),
+        continuation_reconciliations,
     })
 }
 
@@ -2217,9 +2454,16 @@ fn apply_scheduler_recovery_plan_with_options(
         })
         .flat_map(|candidate| candidate.proposed_commands.iter().cloned())
         .collect::<Vec<_>>();
+    let continuation_reconciliation = report
+        .continuation_reconciliations
+        .iter()
+        .filter(|candidate| candidate.eligible)
+        .filter_map(|candidate| candidate.proposed_command.clone())
+        .collect::<Vec<_>>();
     if legacy_adoptions.is_empty()
         && settlement_recovery.is_empty()
         && authority_recovery.is_empty()
+        && continuation_reconciliation.is_empty()
     {
         return Ok((0, None));
     }
@@ -2237,6 +2481,45 @@ fn apply_scheduler_recovery_plan_with_options(
         SchedulerRecoveryBackupPolicy::SkipApproved => None,
     };
     let mut applied = false;
+    if !continuation_reconciliation.is_empty() {
+        let audit_events = report
+            .continuation_reconciliations
+            .iter()
+            .filter(|candidate| candidate.eligible && candidate.proposed_command.is_some())
+            .map(|candidate| {
+                AuditEvent::legacy(
+                    "work_item_continuation_reconciled",
+                    serde_json::json!({
+                        "agent_id": agent_id,
+                        "continuation_id": candidate.continuation_id,
+                        "work_item_id": candidate.work_item_id,
+                        "stale_active_work_item_id": candidate.stale_active_work_item_id,
+                        "active_work_item_id": candidate.active_work_item_id,
+                        "reason": candidate.reason,
+                    }),
+                )
+            })
+            .collect::<Vec<_>>();
+        match runtime_db
+            .transitions()
+            .commit_execution_protocol_recovery_plan(
+                agent_id,
+                &continuation_reconciliation,
+                &audit_events,
+            )?
+        {
+            crate::runtime_db::transitions::execution_protocol_repository::ExecutionProtocolRecoveryCommitOutcome::Applied(
+                changed,
+            ) => applied |= changed,
+            crate::runtime_db::transitions::execution_protocol_repository::ExecutionProtocolRecoveryCommitOutcome::Rejected {
+                reason,
+            } => {
+                return Err(anyhow!(
+                    "continuation reconciliation unexpectedly rejected: {reason}"
+                ));
+            }
+        }
+    }
     if !authority_recovery.is_empty() {
         match runtime_db
             .transitions()
@@ -2312,6 +2595,7 @@ fn apply_scheduler_recovery_plan_with_options(
             "backup_created": backup_path.is_some(),
             "backup_path": backup_path,
             "authority_repair_included": include_authority_repair,
+            "continuation_reconciliation_count": continuation_reconciliation.len(),
         }),
     ))?;
     Ok((usize::from(applied), backup_path))
@@ -4341,44 +4625,14 @@ impl RuntimeHandle {
                         .work_items
                         .get(&continuation.suspended_work_item_id)
                         .ok_or_else(|| anyhow!("completion parent execution state is missing"))?;
-                    let parent_record = self
-                        .inner
-                        .runtime_db
-                        .work_items()
-                        .latest(&continuation.suspended_work_item_id)?
-                        .ok_or_else(|| anyhow!("completion parent WorkItem is missing"))?;
-                    let parent_waits = self
-                        .inner
-                        .storage
-                        .raw_active_wait_conditions_for_agent(&record.agent_id)?
-                        .into_iter()
-                        .filter(|wait| {
-                            wait.work_item_id.as_deref()
-                                == Some(continuation.suspended_work_item_id.as_str())
-                        })
-                        .collect::<Vec<_>>();
-                    let outcome = match parent_waits.as_slice() {
-                        [wait] => crate::domain::execution_protocol::WorkItemOutcome::Wait {
-                            wait: crate::domain::execution_protocol::WaitReference {
-                                wait_id: wait.id.clone(),
-                            },
-                        },
-                        [] if parent_record.blocked_by.is_some() => {
-                            crate::domain::execution_protocol::WorkItemOutcome::Pause {
-                                reason: parent_record
-                                    .blocked_by
-                                    .clone()
-                                    .expect("parent blocker checked above"),
-                            }
-                        }
-                        [] => crate::domain::execution_protocol::WorkItemOutcome::Continue,
-                        _ => crate::domain::execution_protocol::WorkItemOutcome::NeedsRepair {
-                            repair_id: format!(
-                                "work_item_waits_ambiguous:{}",
-                                continuation.suspended_work_item_id
-                            ),
-                        },
-                    };
+                    let (source, outcome) = work_item_continuation_resume_source(
+                        &self.inner.storage,
+                        &self.inner.runtime_db,
+                        &record.agent_id,
+                        &continuation.suspended_work_item_id,
+                        None,
+                        &prepared.wait_conditions,
+                    )?;
                     execution_protocol.commands.push(
                         crate::domain::execution_protocol::ExecutionProtocolCommand::ResumeWorkItemContinuation(
                             Box::new(
@@ -4388,6 +4642,7 @@ impl RuntimeHandle {
                                     active_work_item_id: continuation.active_work_item_id.clone(),
                                     continuation_id: continuation.id.clone(),
                                     expected: parent.clone(),
+                                    source,
                                     outcome,
                                 },
                             ),

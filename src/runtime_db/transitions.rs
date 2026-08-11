@@ -4,7 +4,7 @@
 // wiring begins; repository tests exercise it without granting scheduler authority.
 #[cfg(test)]
 mod execution_protocol_fixture_repository;
-mod execution_protocol_repository;
+pub(crate) mod execution_protocol_repository;
 pub(crate) use execution_protocol_repository::{authority_fences_tx, persist_state_tx};
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod scheduler_protocol_repository;

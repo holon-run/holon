@@ -2471,8 +2471,10 @@ fn print_scheduler_recovery_report(
         }));
     }
     println!(
-        "Scheduler recovery candidates for {} (partition initialized: {})",
-        report.agent_id, report.partition_initialized
+        "Scheduler recovery candidates for {} (scheduler partition initialized: {}, execution partition initialized: {})",
+        report.agent_id,
+        report.partition_initialized,
+        report.execution_partition_initialized
     );
     println!(
         "- retired rollout metadata: marked={} present={} mode={} stale_authoritative={}",
@@ -2508,6 +2510,17 @@ fn print_scheduler_recovery_report(
         println!(
             "- work_item:{}: adoption eligible={} reason={}",
             candidate.work_item_id, candidate.eligible, candidate.reason
+        );
+    }
+    for candidate in report.continuation_reconciliations {
+        println!(
+            "- continuation:{} parent={} stale_target={:?} active_target={} eligible={} reason={}",
+            candidate.continuation_id,
+            candidate.work_item_id,
+            candidate.stale_active_work_item_id,
+            candidate.active_work_item_id,
+            candidate.eligible,
+            candidate.reason,
         );
     }
     Ok(())

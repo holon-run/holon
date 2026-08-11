@@ -14,7 +14,7 @@ use crate::types::{
     SpawnAgentModelRequest, SpawnAgentModelResolution, SpawnAgentModelResolutionStatus,
     SpawnAgentResult, TaskHandle, TaskInputResult, TaskKind, TaskListEntry, TaskOutputResult,
     TaskOutputRetrievalStatus, TaskOutputSnapshot, TaskStatusSnapshot, TodoItem, ToolArtifactRef,
-    WaitConditionStatus, WorkItemCompletionIntent, WorkItemContinuationFrame,
+    WaitConditionRecord, WaitConditionStatus, WorkItemCompletionIntent, WorkItemContinuationFrame,
     WorkItemContinuationReturnPolicy, WorkItemContinuationState, WorkItemDelegationRecord,
     WorkItemDelegationState, WorkItemPlanStatus, WorkItemReadiness, WorkItemRecord, WorkItemState,
     CHILD_AGENT_TASK_KIND,
@@ -2755,6 +2755,52 @@ impl RuntimeHandle {
         )))
     }
 
+    fn plan_work_item_execution_continuation_resume(
+        &self,
+        agent_id: &str,
+        continuation: &WorkItemContinuationFrame,
+        command_reason: &str,
+        projected_parent: Option<&WorkItemRecord>,
+        projected_wait_conditions: &[WaitConditionRecord],
+    ) -> Result<Option<crate::domain::execution_protocol::ExecutionProtocolCommand>> {
+        use crate::domain::execution_protocol::{
+            ExecutionProtocolCommand, ResumeWorkItemContinuation,
+        };
+
+        if !self.inner.scheduler_engine.is_canonical() {
+            return Ok(None);
+        }
+        let state = self
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized(agent_id)?
+            .ok_or_else(|| anyhow!("continuation resume requires canonical execution state"))?;
+        let authoritative = state
+            .work_items
+            .get(&continuation.suspended_work_item_id)
+            .ok_or_else(|| anyhow!("continuation resume parent execution state is missing"))?;
+        let (source, outcome) = work_item_continuation_resume_source(
+            &self.inner.storage,
+            &self.inner.runtime_db,
+            agent_id,
+            &continuation.suspended_work_item_id,
+            projected_parent,
+            projected_wait_conditions,
+        )?;
+        Ok(Some(ExecutionProtocolCommand::ResumeWorkItemContinuation(
+            Box::new(ResumeWorkItemContinuation {
+                command_id: format!("continuation:{command_reason}:{}", continuation.id),
+                work_item_id: continuation.suspended_work_item_id.clone(),
+                active_work_item_id: continuation.active_work_item_id.clone(),
+                continuation_id: continuation.id.clone(),
+                expected: authoritative.clone(),
+                source,
+                outcome,
+            }),
+        )))
+    }
+
     pub async fn pick_work_item(
         &self,
         work_item_id: String,
@@ -2849,38 +2895,79 @@ impl RuntimeHandle {
         let mut continuation_created = None;
         let mut continuation_resolved = None;
         let mut continuation_records = Vec::new();
-        let target_yielded_frame = self
+        let active_continuations = self
             .inner
             .storage
-            .latest_active_work_item_continuation_for_suspended(&agent_id, &record.id)?;
-        let target_was_yielded = target_yielded_frame.is_some();
-        if let Some(frame) = target_yielded_frame {
-            let resolved = frame.resume("explicit_pick");
-            continuation_resolved = Some(continuation_summary(&resolved, "explicit_pick"));
-            audit_events.push(AuditEvent::legacy(
-                "work_item_continuation_resumed",
-                serde_json::json!({
-                    "agent_id": agent_id,
-                    "continuation": continuation_summary(&resolved, "explicit_pick"),
-                }),
-            ));
-            continuation_records.push(resolved);
-        }
-        if let Some(id) = current_id.as_deref() {
-            if let Some(frame) = self
-                .inner
-                .storage
-                .latest_active_work_item_continuation_for_suspended(&agent_id, id)?
-            {
-                let cancelled = frame.cancel("current_focus_reselected");
+            .latest_active_work_item_continuations_for_agent(&agent_id)?;
+        let by_suspended = active_continuations
+            .iter()
+            .map(|frame| (frame.suspended_work_item_id.as_str(), frame))
+            .collect::<BTreeMap<_, _>>();
+        let target_was_yielded = by_suspended.contains_key(record.id.as_str());
+        let mut resolved_frame_ids = std::collections::BTreeSet::new();
+        if target_was_yielded {
+            let mut parent_id = record.id.as_str();
+            let mut first = true;
+            loop {
+                let frame = by_suspended
+                    .get(parent_id)
+                    .copied()
+                    .ok_or_else(|| anyhow!("continuation unwind path is incomplete"))?;
+                anyhow::ensure!(
+                    resolved_frame_ids.insert(frame.id.clone()),
+                    "continuation unwind path contains a cycle"
+                );
+                let (resolved, reason, event_kind) = if first {
+                    (
+                        frame.clone().resume("explicit_pick"),
+                        "explicit_pick",
+                        "work_item_continuation_resumed",
+                    )
+                } else {
+                    (
+                        frame.clone().cancel("current_focus_reselected"),
+                        "current_focus_reselected",
+                        "work_item_continuation_cancelled",
+                    )
+                };
+                let summary = continuation_summary(&resolved, reason);
+                if first {
+                    continuation_resolved = Some(summary.clone());
+                }
+                audit_events.push(AuditEvent::legacy(
+                    event_kind,
+                    serde_json::json!({
+                        "agent_id": agent_id,
+                        "continuation": summary,
+                    }),
+                ));
+                continuation_records.push(resolved);
+                if current_id.as_deref() == Some(frame.active_work_item_id.as_str()) {
+                    break;
+                }
+                parent_id = frame.active_work_item_id.as_str();
+                first = false;
+            }
+        } else if let Some(id) = current_id.as_deref() {
+            let mut parent_id = id;
+            while let Some(frame) = by_suspended.get(parent_id).copied() {
+                anyhow::ensure!(
+                    resolved_frame_ids.insert(frame.id.clone()),
+                    "continuation cancellation path contains a cycle"
+                );
+                let cancelled = frame.clone().cancel("current_focus_reselected");
                 audit_events.push(AuditEvent::legacy(
                     "work_item_continuation_cancelled",
                     serde_json::json!({
                         "agent_id": agent_id,
-                        "continuation": continuation_summary(&cancelled, "current_focus_reselected"),
+                        "continuation": continuation_summary(
+                            &cancelled,
+                            "current_focus_reselected"
+                        ),
                     }),
                 ));
                 continuation_records.push(cancelled);
+                parent_id = frame.active_work_item_id.as_str();
             }
         }
         let yield_current = switching
@@ -3005,6 +3092,25 @@ impl RuntimeHandle {
         } else {
             Default::default()
         };
+        for continuation in &continuation_records {
+            if continuation.state == WorkItemContinuationState::Active {
+                continue;
+            }
+            let command_reason = match continuation.state {
+                WorkItemContinuationState::Resumed => "resume",
+                WorkItemContinuationState::Cancelled => "cancel",
+                WorkItemContinuationState::Active => unreachable!(),
+            };
+            if let Some(command) = self.plan_work_item_execution_continuation_resume(
+                &agent_id,
+                continuation,
+                command_reason,
+                (record.id == continuation.suspended_work_item_id).then_some(&record),
+                &wait_conditions,
+            )? {
+                execution_protocol.commands.push(command);
+            }
+        }
         if yield_current && !terminal_transition {
             let previous = previous
                 .as_ref()

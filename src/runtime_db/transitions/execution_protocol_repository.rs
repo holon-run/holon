@@ -23,6 +23,12 @@ pub(super) struct PreparedExecutionProtocolCommands {
     results: Vec<PreparedCommandResult>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ExecutionProtocolRecoveryCommitOutcome {
+    Applied(bool),
+    Rejected { reason: String },
+}
+
 impl PreparedExecutionProtocolCommands {
     pub(super) fn has_writes(&self) -> bool {
         self.initialized_partition || !self.results.is_empty()
@@ -94,7 +100,17 @@ pub(super) fn validate_execution_commands_tx(
             validate_suspend_work_item_continuation(tx, agent_id, command, continuations)?;
         }
         if let ExecutionProtocolCommand::ResumeWorkItemContinuation(command) = command {
-            validate_resume_work_item_continuation(tx, agent_id, command)?;
+            validate_resume_work_item_continuation(
+                tx,
+                agent_id,
+                command,
+                work_item_mutations,
+                wait_conditions,
+                continuations,
+            )?;
+        }
+        if let ExecutionProtocolCommand::ReconcileWorkItemContinuationYield(command) = command {
+            validate_reconcile_work_item_continuation_yield(tx, agent_id, command)?;
         }
         if let ExecutionProtocolCommand::SetWorkItemWaiting(command) = command {
             validate_set_work_item_waiting(command, work_item_mutations, wait_conditions)?;
@@ -149,6 +165,9 @@ pub(super) fn synchronize_work_item_revisions_tx(
                 command.work_item_id == record.id
             }
             ExecutionProtocolCommand::SuspendWorkItemContinuation(command) => {
+                command.work_item_id == record.id
+            }
+            ExecutionProtocolCommand::ResumeWorkItemContinuation(command) => {
                 command.work_item_id == record.id
             }
             ExecutionProtocolCommand::SetWorkItemWaiting(command) => {
@@ -286,6 +305,9 @@ fn reduce(
         ExecutionProtocolCommand::ResumeWorkItemContinuation(command) => {
             execution_protocol::resume_work_item_continuation(state, command)
         }
+        ExecutionProtocolCommand::ReconcileWorkItemContinuationYield(command) => {
+            execution_protocol::reconcile_work_item_continuation_yield(state, command)
+        }
         ExecutionProtocolCommand::SetWorkItemWaiting(command) => {
             execution_protocol::set_work_item_waiting(state, command)
         }
@@ -321,6 +343,10 @@ fn command_identity(command: &ExecutionProtocolCommand) -> (&'static str, &str) 
         ExecutionProtocolCommand::ResumeWorkItemContinuation(command) => {
             ("resume_work_item_continuation", &command.command_id)
         }
+        ExecutionProtocolCommand::ReconcileWorkItemContinuationYield(command) => (
+            "reconcile_work_item_continuation_yield",
+            &command.command_id,
+        ),
         ExecutionProtocolCommand::SetWorkItemWaiting(command) => {
             ("set_work_item_waiting", &command.command_id)
         }
@@ -491,6 +517,9 @@ fn validate_resume_work_item_continuation(
     tx: &Transaction<'_>,
     agent_id: &str,
     command: &execution_protocol::ResumeWorkItemContinuation,
+    mutations: &[WorkItemMutation],
+    wait_conditions: &[crate::types::WaitConditionRecord],
+    continuations: &[crate::types::WorkItemContinuationFrame],
 ) -> Result<()> {
     let frame = tx
         .query_row(
@@ -507,15 +536,79 @@ fn validate_resume_work_item_continuation(
         })
         .transpose()?
         .ok_or_else(|| anyhow!("continuation resume requires an existing frame"))?;
+    let resolved = continuations
+        .iter()
+        .find(|candidate| candidate.id == command.continuation_id)
+        .ok_or_else(|| anyhow!("continuation resume requires an atomic frame resolution"))?;
     if frame.suspended_work_item_id != command.work_item_id
         || frame.active_work_item_id != command.active_work_item_id
+        || frame.state != crate::types::WorkItemContinuationState::Active
+        || resolved.agent_id != agent_id
+        || resolved.suspended_work_item_id != command.work_item_id
+        || resolved.active_work_item_id != command.active_work_item_id
         || !matches!(
-            frame.state,
-            crate::types::WorkItemContinuationState::Active
-                | crate::types::WorkItemContinuationState::Resumed
+            resolved.state,
+            crate::types::WorkItemContinuationState::Resumed
+                | crate::types::WorkItemContinuationState::Cancelled
         )
     {
-        bail!("continuation resume command does not match its active frame");
+        bail!("continuation resume command does not match its atomic frame resolution");
+    }
+    let durable_parent = tx
+        .query_row(
+            "SELECT payload_json FROM work_items WHERE work_item_id = ?1",
+            [&command.work_item_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|payload| serde_json::from_str::<crate::types::WorkItemRecord>(&payload))
+        .transpose()?
+        .ok_or_else(|| anyhow!("continuation resume parent WorkItem is missing"))?;
+    let parent = mutations
+        .iter()
+        .find_map(|mutation| match mutation {
+            WorkItemMutation::Update { record, .. } if record.id == command.work_item_id => {
+                Some(record)
+            }
+            _ => None,
+        })
+        .unwrap_or(&durable_parent);
+    let mut active_wait_ids = {
+        let mut statement = tx.prepare(
+            "SELECT wait_condition_id
+             FROM wait_conditions
+             WHERE agent_id = ?1 AND work_item_id = ?2 AND status = 'active'
+             ORDER BY wait_condition_id ASC",
+        )?;
+        let wait_ids = statement
+            .query_map([agent_id, command.work_item_id.as_str()], |row| {
+                row.get::<_, String>(0)
+            })?
+            .collect::<std::result::Result<std::collections::BTreeSet<_>, _>>()?;
+        wait_ids
+    };
+    for wait in wait_conditions {
+        active_wait_ids.remove(&wait.id);
+        if wait.agent_id == agent_id
+            && wait.work_item_id.as_deref() == Some(command.work_item_id.as_str())
+            && wait.status == crate::types::WaitConditionStatus::Active
+        {
+            active_wait_ids.insert(wait.id.clone());
+        }
+    }
+    let source = execution_protocol::WorkItemContinuationResumeSource {
+        work_item_revision: parent.revision,
+        blocked_by: parent.blocked_by.clone(),
+        active_wait_ids: active_wait_ids.into_iter().collect(),
+    };
+    if parent.agent_id != agent_id
+        || parent.state != crate::types::WorkItemState::Open
+        || source != command.source
+        || execution_protocol::continuation_resume_outcome(&command.work_item_id, &source)
+            .map_err(anyhow::Error::msg)?
+            != command.outcome
+    {
+        bail!("continuation resume source fence is stale");
     }
     Ok(())
 }
@@ -552,6 +645,88 @@ fn validate_suspend_work_item_continuation(
         || parent.revision != command.expected.source_revision
     {
         bail!("continuation suspension parent WorkItem fence is stale");
+    }
+    Ok(())
+}
+
+fn validate_reconcile_work_item_continuation_yield(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    command: &execution_protocol::ReconcileWorkItemContinuationYield,
+) -> Result<()> {
+    let active_frames = {
+        let mut statement = tx.prepare(
+            "SELECT payload_json
+             FROM work_item_continuations
+             WHERE agent_id = ?1 AND state = 'active'
+             ORDER BY continuation_id ASC",
+        )?;
+        let records = statement
+            .query_map([agent_id], |row| row.get::<_, String>(0))?
+            .map(|row| {
+                serde_json::from_str::<crate::types::WorkItemContinuationFrame>(&row?)
+                    .context("decoding continuation reconciliation frame")
+            })
+            .collect::<Result<Vec<_>>>()?;
+        records
+    };
+    let frame = active_frames
+        .iter()
+        .find(|frame| frame.id == command.continuation_id)
+        .ok_or_else(|| anyhow!("continuation reconciliation requires an active frame"))?;
+    if frame.suspended_work_item_id != command.work_item_id
+        || frame.active_work_item_id != command.active_work_item_id
+        || frame.updated_at.to_rfc3339() != command.expected_frame_updated_at
+    {
+        bail!("continuation reconciliation frame fence is stale");
+    }
+    if active_frames
+        .iter()
+        .filter(|candidate| {
+            candidate.suspended_work_item_id == command.work_item_id
+                || candidate.active_work_item_id == command.active_work_item_id
+        })
+        .count()
+        != 1
+    {
+        bail!("continuation reconciliation has a competing active frame");
+    }
+    let mut cursor = command.active_work_item_id.as_str();
+    let mut visited = std::collections::BTreeSet::new();
+    while let Some(next) = active_frames
+        .iter()
+        .find(|candidate| candidate.suspended_work_item_id == cursor)
+    {
+        if !visited.insert(next.id.as_str()) || next.active_work_item_id == command.work_item_id {
+            bail!("continuation reconciliation active topology contains a cycle");
+        }
+        cursor = next.active_work_item_id.as_str();
+    }
+    let load_work_item = |work_item_id: &str| -> Result<crate::types::WorkItemRecord> {
+        tx.query_row(
+            "SELECT payload_json FROM work_items WHERE work_item_id = ?1",
+            [work_item_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|payload| serde_json::from_str(&payload).context("decoding reconciliation WorkItem"))
+        .transpose()?
+        .ok_or_else(|| anyhow!("continuation reconciliation WorkItem is missing"))
+    };
+    let parent = load_work_item(&command.work_item_id)?;
+    let active = load_work_item(&command.active_work_item_id)?;
+    let stale = load_work_item(&command.stale_active_work_item_id)?;
+    if parent.agent_id != agent_id
+        || parent.state != crate::types::WorkItemState::Open
+        || parent.revision != command.expected.source_revision
+        || active.agent_id != agent_id
+        || active.state != crate::types::WorkItemState::Open
+        || active.revision != command.active_work_item_source_revision
+        || stale.agent_id != agent_id
+        || stale.state != crate::types::WorkItemState::Completed
+        || stale.revision != command.stale_active_work_item_source_revision
+    {
+        bail!("continuation reconciliation WorkItem source fence is stale");
     }
     Ok(())
 }
@@ -668,6 +843,46 @@ impl RuntimeTransitionRepository<'_> {
         let state = load_state_tx(&transaction, agent_id)?;
         transaction.commit()?;
         Ok(Some(state))
+    }
+
+    pub(crate) fn commit_execution_protocol_recovery_plan(
+        &self,
+        agent_id: &str,
+        commands: &[ExecutionProtocolCommand],
+        audit_events: &[crate::types::AuditEvent],
+    ) -> Result<ExecutionProtocolRecoveryCommitOutcome> {
+        if commands.is_empty() {
+            return Ok(ExecutionProtocolRecoveryCommitOutcome::Applied(false));
+        }
+        if commands.iter().any(|command| {
+            !matches!(
+                command,
+                ExecutionProtocolCommand::ReconcileWorkItemContinuationYield(_)
+            )
+        }) {
+            bail!("execution protocol recovery plan contains a non-recovery command");
+        }
+        self.db.transaction(|tx| {
+            let prepared =
+                match validate_execution_commands_tx(tx, agent_id, None, commands, &[], &[], &[]) {
+                    Ok(prepared) => prepared,
+                    Err(error) => {
+                        return Ok(ExecutionProtocolRecoveryCommitOutcome::Rejected {
+                            reason: error.to_string(),
+                        });
+                    }
+                };
+            let changed = prepared
+                .as_ref()
+                .is_some_and(PreparedExecutionProtocolCommands::has_writes);
+            persist_execution_commands_tx(tx, prepared)?;
+            if changed {
+                for event in audit_events {
+                    crate::runtime_db::evidence::append_audit_event_tx(tx, Some(agent_id), event)?;
+                }
+            }
+            Ok(ExecutionProtocolRecoveryCommitOutcome::Applied(changed))
+        })
     }
 }
 

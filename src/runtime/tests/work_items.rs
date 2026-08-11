@@ -7018,4 +7018,94 @@ async fn explicit_pick_of_yielded_work_item_resolves_frame_without_new_yield() {
     let frames = runtime.storage().latest_work_item_continuations().unwrap();
     assert_eq!(frames.len(), 1);
     assert_eq!(frames[0].state, WorkItemContinuationState::Resumed);
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        execution.work_items[&current.id].state,
+        crate::domain::execution_protocol::WorkItemExecutionState::Runnable { .. }
+    ));
+
+    runtime.pick_work_item(next.id.clone()).await.unwrap();
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        &execution.work_items[&current.id].state,
+        crate::domain::execution_protocol::WorkItemExecutionState::Paused { reason, .. }
+            if reason == &format!("yielded_to:{}", next.id)
+    ));
+}
+
+#[tokio::test]
+async fn explicit_pick_unwinds_nested_continuations_and_canonical_parents() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let parent = runtime
+        .create_work_item("parent".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let child = runtime
+        .create_work_item("child".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let leaf = runtime
+        .create_work_item("leaf".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(parent.id.clone()).await.unwrap();
+    runtime.pick_work_item(child.id.clone()).await.unwrap();
+    runtime.pick_work_item(leaf.id.clone()).await.unwrap();
+
+    runtime.pick_work_item(parent.id.clone()).await.unwrap();
+
+    let active = runtime
+        .storage()
+        .latest_active_work_item_continuations_for_agent("default")
+        .unwrap();
+    assert!(active.is_empty());
+    let frames = runtime.storage().latest_work_item_continuations().unwrap();
+    assert_eq!(frames.len(), 2);
+    assert!(frames
+        .iter()
+        .any(|frame| frame.suspended_work_item_id == parent.id
+            && frame.state == WorkItemContinuationState::Resumed));
+    assert!(frames
+        .iter()
+        .any(|frame| frame.suspended_work_item_id == child.id
+            && frame.state == WorkItemContinuationState::Cancelled));
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        execution.work_items[&parent.id].state,
+        crate::domain::execution_protocol::WorkItemExecutionState::Runnable { .. }
+    ));
+    assert!(matches!(
+        execution.work_items[&child.id].state,
+        crate::domain::execution_protocol::WorkItemExecutionState::Runnable { .. }
+    ));
 }

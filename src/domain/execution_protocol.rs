@@ -44,6 +44,9 @@ pub fn resume_work_item_continuation(
     ) {
         return Err("continuation resume cannot complete or yield the resumed WorkItem".into());
     }
+    if continuation_resume_outcome(&command.work_item_id, &command.source)? != command.outcome {
+        return Err("continuation resume outcome does not match its source fence".into());
+    }
     let mut next = state.clone();
     let record = next
         .work_items
@@ -96,6 +99,56 @@ pub fn suspend_work_item_continuation(
         state: next,
         references: vec![
             format!("work_item:{}", command.work_item_id),
+            format!("work_item:{}", command.active_work_item_id),
+            format!("continuation:{}", command.continuation_id),
+        ],
+    })
+}
+
+pub fn reconcile_work_item_continuation_yield(
+    state: &ExecutionProtocolState,
+    command: &ReconcileWorkItemContinuationYield,
+) -> Result<ExecutionTransition, String> {
+    assert_invariants(state)?;
+    if command.command_id.is_empty()
+        || command.work_item_id.is_empty()
+        || command.continuation_id.is_empty()
+        || command.stale_active_work_item_id.is_empty()
+        || command.active_work_item_id.is_empty()
+        || command.expected_frame_updated_at.is_empty()
+        || command.active_work_item_source_revision == 0
+        || command.stale_active_work_item_source_revision == 0
+        || command.stale_active_work_item_id == command.active_work_item_id
+    {
+        return Err("continuation reconciliation requires complete distinct identity".into());
+    }
+    if state.work_items.get(&command.work_item_id) != Some(&command.expected) {
+        return Err("continuation reconciliation WorkItem fence is stale".into());
+    }
+    let WorkItemExecutionState::Paused { generation, reason } = &command.expected.state else {
+        return Err("continuation reconciliation requires a Paused WorkItem".into());
+    };
+    if reason != &format!("yielded_to:{}", command.stale_active_work_item_id) {
+        return Err("continuation reconciliation requires the exact stale yielded target".into());
+    }
+    let next_generation = generation
+        .checked_add(1)
+        .ok_or_else(|| "WorkItem scheduling generation overflow".to_string())?;
+    let mut next = state.clone();
+    let record = next
+        .work_items
+        .get_mut(&command.work_item_id)
+        .expect("continuation reconciliation preserved WorkItem");
+    record.state = WorkItemExecutionState::Paused {
+        generation: next_generation,
+        reason: format!("yielded_to:{}", command.active_work_item_id),
+    };
+    assert_invariants(&next)?;
+    Ok(ExecutionTransition {
+        state: next,
+        references: vec![
+            format!("work_item:{}", command.work_item_id),
+            format!("work_item:{}", command.stale_active_work_item_id),
             format!("work_item:{}", command.active_work_item_id),
             format!("continuation:{}", command.continuation_id),
         ],
@@ -479,7 +532,48 @@ pub struct ResumeWorkItemContinuation {
     pub active_work_item_id: String,
     pub continuation_id: String,
     pub expected: WorkItemExecutionRecord,
+    pub source: WorkItemContinuationResumeSource,
     pub outcome: WorkItemOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkItemContinuationResumeSource {
+    pub work_item_revision: u64,
+    pub blocked_by: Option<String>,
+    pub active_wait_ids: Vec<String>,
+}
+
+pub fn continuation_resume_outcome(
+    work_item_id: &str,
+    source: &WorkItemContinuationResumeSource,
+) -> Result<WorkItemOutcome, String> {
+    if work_item_id.is_empty()
+        || source.work_item_revision == 0
+        || source.active_wait_ids.iter().any(String::is_empty)
+        || source
+            .active_wait_ids
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+    {
+        return Err("continuation resume source fence is invalid".into());
+    }
+    Ok(match source.active_wait_ids.as_slice() {
+        [wait_id] => WorkItemOutcome::Wait {
+            wait: WaitReference {
+                wait_id: wait_id.clone(),
+            },
+        },
+        [] if source.blocked_by.is_some() => WorkItemOutcome::Pause {
+            reason: source
+                .blocked_by
+                .clone()
+                .expect("continuation resume blocker checked above"),
+        },
+        [] => WorkItemOutcome::Continue,
+        _ => WorkItemOutcome::NeedsRepair {
+            repair_id: format!("work_item_waits_ambiguous:{work_item_id}"),
+        },
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -489,6 +583,19 @@ pub struct SuspendWorkItemContinuation {
     pub active_work_item_id: String,
     pub continuation_id: String,
     pub expected: WorkItemExecutionRecord,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReconcileWorkItemContinuationYield {
+    pub command_id: String,
+    pub work_item_id: String,
+    pub continuation_id: String,
+    pub stale_active_work_item_id: String,
+    pub active_work_item_id: String,
+    pub expected: WorkItemExecutionRecord,
+    pub expected_frame_updated_at: String,
+    pub active_work_item_source_revision: u64,
+    pub stale_active_work_item_source_revision: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -507,6 +614,7 @@ pub enum ExecutionProtocolCommand {
     SetWorkItemReadiness(Box<SetWorkItemReadiness>),
     SuspendWorkItemContinuation(Box<SuspendWorkItemContinuation>),
     ResumeWorkItemContinuation(Box<ResumeWorkItemContinuation>),
+    ReconcileWorkItemContinuationYield(Box<ReconcileWorkItemContinuationYield>),
     SetWorkItemWaiting(Box<SetWorkItemWaiting>),
     CompleteWorkItem(Box<CompleteWorkItemExecution>),
     Admit(Box<AdmitExecution>),
@@ -1277,6 +1385,11 @@ mod tests {
                 active_work_item_id: "work-b".into(),
                 continuation_id: "continuation-a".into(),
                 expected: paused.clone(),
+                source: WorkItemContinuationResumeSource {
+                    work_item_revision: 1,
+                    blocked_by: None,
+                    active_wait_ids: Vec::new(),
+                },
                 outcome: WorkItemOutcome::Continue,
             },
         )
@@ -1295,6 +1408,11 @@ mod tests {
             active_work_item_id: "work-b".into(),
             continuation_id: "continuation-a".into(),
             expected: paused,
+            source: WorkItemContinuationResumeSource {
+                work_item_revision: 1,
+                blocked_by: None,
+                active_wait_ids: Vec::new(),
+            },
             outcome: WorkItemOutcome::Continue,
         };
         assert!(resume_work_item_continuation(&resumed.state, &stale)
@@ -1340,6 +1458,63 @@ mod tests {
         assert!(suspend_work_item_continuation(&suspended.state, &stale)
             .unwrap_err()
             .contains("stale"));
+    }
+
+    #[test]
+    fn continuation_reconciliation_advances_generation_and_preserves_source_revision() {
+        let expected = work_item_record(WorkItemExecutionState::Paused {
+            generation: 7,
+            reason: "yielded_to:old-child".into(),
+        });
+        let state = ExecutionProtocolState {
+            agent_id: "agent-a".into(),
+            attempts: BTreeMap::new(),
+            work_items: BTreeMap::from([("parent".into(), expected.clone())]),
+            outcomes: BTreeMap::new(),
+        };
+        let command = ReconcileWorkItemContinuationYield {
+            command_id: "reconcile:frame-a".into(),
+            work_item_id: "parent".into(),
+            continuation_id: "frame-a".into(),
+            stale_active_work_item_id: "old-child".into(),
+            active_work_item_id: "new-child".into(),
+            expected: expected.clone(),
+            expected_frame_updated_at: "2026-08-11T00:00:00Z".into(),
+            active_work_item_source_revision: 3,
+            stale_active_work_item_source_revision: 4,
+        };
+
+        let transition = reconcile_work_item_continuation_yield(&state, &command).unwrap();
+        assert_eq!(
+            transition.state.work_items["parent"],
+            WorkItemExecutionRecord {
+                source_revision: expected.source_revision,
+                state: WorkItemExecutionState::Paused {
+                    generation: 8,
+                    reason: "yielded_to:new-child".into(),
+                },
+            }
+        );
+        let stale = ReconcileWorkItemContinuationYield {
+            expected: WorkItemExecutionRecord {
+                source_revision: expected.source_revision,
+                state: WorkItemExecutionState::Paused {
+                    generation: 6,
+                    reason: "yielded_to:old-child".into(),
+                },
+            },
+            ..command.clone()
+        };
+        assert!(reconcile_work_item_continuation_yield(&state, &stale)
+            .unwrap_err()
+            .contains("fence is stale"));
+        let matched = ReconcileWorkItemContinuationYield {
+            stale_active_work_item_id: "new-child".into(),
+            ..command
+        };
+        assert!(reconcile_work_item_continuation_yield(&state, &matched)
+            .unwrap_err()
+            .contains("distinct identity"));
     }
 
     #[test]
