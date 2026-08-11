@@ -682,7 +682,16 @@ pub async fn wake_hint_coalesces_while_running_and_reenters_once() -> Result<()>
     provider.release_first_call();
 
     wait_until_async_for(Duration::from_secs(10), || async {
-        Ok(provider.calls().await == 2)
+        if provider.calls().await != 2 {
+            return Ok(false);
+        }
+        let state = runtime.storage().read_agent()?;
+        Ok(state
+            .and_then(|state| state.last_continuation)
+            .is_some_and(|continuation| {
+                continuation.class == holon::types::ContinuationClass::ResumeExpectedWait
+                    && continuation.model_reentry
+            }))
     })
     .await?;
 
