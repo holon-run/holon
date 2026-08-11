@@ -540,6 +540,8 @@ fn validate_resume_work_item_continuation(
         .iter()
         .find(|candidate| candidate.id == command.continuation_id)
         .ok_or_else(|| anyhow!("continuation resume requires an atomic frame resolution"))?;
+    // A resolved durable frame means its matching canonical resume already committed.
+    // Retries are fenced by the atomic batch rather than replayed from Resumed state.
     if frame.suspended_work_item_id != command.work_item_id
         || frame.active_work_item_id != command.active_work_item_id
         || frame.state != crate::types::WorkItemContinuationState::Active

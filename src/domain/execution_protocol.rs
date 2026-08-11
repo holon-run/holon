@@ -118,6 +118,8 @@ pub fn reconcile_work_item_continuation_yield(
         || command.expected_frame_updated_at.is_empty()
         || command.active_work_item_source_revision == 0
         || command.stale_active_work_item_source_revision == 0
+        || command.work_item_id == command.stale_active_work_item_id
+        || command.work_item_id == command.active_work_item_id
         || command.stale_active_work_item_id == command.active_work_item_id
     {
         return Err("continuation reconciliation requires complete distinct identity".into());
@@ -1510,11 +1512,20 @@ mod tests {
             .contains("fence is stale"));
         let matched = ReconcileWorkItemContinuationYield {
             stale_active_work_item_id: "new-child".into(),
-            ..command
+            ..command.clone()
         };
         assert!(reconcile_work_item_continuation_yield(&state, &matched)
             .unwrap_err()
             .contains("distinct identity"));
+        for aliased_child in ["old-child", "new-child"] {
+            let aliased = ReconcileWorkItemContinuationYield {
+                work_item_id: aliased_child.into(),
+                ..command.clone()
+            };
+            assert!(reconcile_work_item_continuation_yield(&state, &aliased)
+                .unwrap_err()
+                .contains("distinct identity"));
+        }
     }
 
     #[test]
