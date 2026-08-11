@@ -10,7 +10,7 @@ use holon::provider::{
     AgentProvider, ConversationMessage, ModelBlock, ProviderTurnRequest, ProviderTurnResponse,
 };
 use serde_json::json;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
 
 use tokio::time::{sleep, Duration};
 
@@ -576,27 +576,51 @@ impl AgentProvider for DelegatedBoundaryProvider {
 /// Provider that demonstrates wake hint functionality
 pub struct WakeHintProvider {
     calls: Mutex<usize>,
+    first_call_started: Semaphore,
+    release_first_call: Semaphore,
 }
 
 impl WakeHintProvider {
     pub fn new() -> Self {
         Self {
             calls: Mutex::new(0),
+            first_call_started: Semaphore::new(0),
+            release_first_call: Semaphore::new(0),
         }
     }
 
     pub async fn calls(&self) -> usize {
         *self.calls.lock().await
     }
+
+    pub async fn wait_for_first_call(&self) {
+        self.first_call_started
+            .acquire()
+            .await
+            .expect("wake hint provider semaphore should remain open")
+            .forget();
+    }
+
+    pub fn release_first_call(&self) {
+        self.release_first_call.add_permits(1);
+    }
 }
 
 #[async_trait]
 impl AgentProvider for WakeHintProvider {
     async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
-        let mut calls = self.calls.lock().await;
-        *calls += 1;
-        if *calls == 1 {
-            sleep(Duration::from_millis(250)).await;
+        let call = {
+            let mut calls = self.calls.lock().await;
+            *calls += 1;
+            *calls
+        };
+        if call == 1 {
+            self.first_call_started.add_permits(1);
+            self.release_first_call
+                .acquire()
+                .await
+                .expect("wake hint provider semaphore should remain open")
+                .forget();
             Ok(ProviderTurnResponse {
                 blocks: vec![
                     ModelBlock::Text {
