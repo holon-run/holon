@@ -7,13 +7,10 @@ import {
   backfillRetryDelayMs,
   buildResumeRefreshes,
   canUseRemoteRuntimeConnections,
-  hasEventIdentityConflict,
   isSessionCacheContextCurrent,
   isLoopbackWebHostname,
   materializeProjectionDetail,
   mergeBootstrapAgentState,
-  mergeCachedReadState,
-  mergeCachedSessionIntoCurrent,
   mergeTimelineEventPage,
   missingBriefIdsForHydration,
   readStoredRemoteConnectionProfiles,
@@ -21,7 +18,6 @@ import {
   resetTransientRuntimeStateForResume,
   readStoredRuntimeConnectionConfig,
   runWithConcurrencyLimit,
-  sessionForEventLogEpoch,
   skillDetailCacheKey,
   streamEventFromBackfill,
   useRuntimeStore,
@@ -380,68 +376,6 @@ describe("timeline events state", () => {
 });
 
 describe("runtime event epoch", () => {
-  it("drops seq-indexed history and hydration caches when the epoch changes", () => {
-    const current = sessionState({
-      eventLogEpoch: "epoch-old",
-      eventsBySeq: { 7: { id: "evt-old" } },
-      eventSeqs: [7],
-      messagesById: { msg: { id: "msg" } },
-      newestSeq: 7,
-      oldestSeq: 7,
-      semanticHistoryByDisplayLevel: {
-        info: { cursorSeq: 7, hasOlder: true, loading: false },
-      },
-      detail: {
-        agent: { id: "agent-1" } as NonNullable<AgentSessionState["detail"]>["agent"],
-        source: "http",
-        timeline: [],
-        events: [],
-        eventCursorSeq: 7,
-        hasOlderEvents: true,
-      },
-    });
-
-    const reset = sessionForEventLogEpoch(current, "epoch-new");
-
-    expect(reset.eventLogEpoch).toBe("epoch-new");
-    expect(reset.eventsBySeq).toEqual({});
-    expect(reset.eventSeqs).toEqual([]);
-    expect(reset.messagesById).toEqual({});
-    expect(reset.newestSeq).toBeUndefined();
-    expect(reset.oldestSeq).toBeUndefined();
-    expect(reset.semanticHistoryByDisplayLevel).toEqual({});
-    expect(reset.detail?.eventCursorSeq).toBeUndefined();
-    expect(reset.detail?.hasOlderEvents).toBeUndefined();
-  });
-
-  it("detects conflicting immutable content for the same epoch and sequence", () => {
-    const existing: StreamEventEnvelopeDto = {
-      id: "evt-1",
-      event_seq: 7,
-      event_log_epoch: "epoch-1",
-      contract_version: 1,
-      ts: "2026-07-16T00:00:00Z",
-      agent_id: "agent-1",
-      type: "legacy_event",
-      payload_schema: "holon.runtime_event.legacy",
-      payload_schema_version: 1,
-      provenance: {},
-      payload: { value: 1 },
-    };
-    const current = sessionState({
-      eventLogEpoch: "epoch-1",
-      eventsBySeq: { 7: existing },
-      eventSeqs: [7],
-    });
-
-    expect(hasEventIdentityConflict(current, [{ ...existing }])).toBe(false);
-    expect(
-      hasEventIdentityConflict(current, [
-        { ...existing, id: "evt-conflict", payload: { value: 2 } },
-      ]),
-    ).toBe(true);
-  });
-
   it("preserves typed contract metadata when rebuilding gap backfill events", () => {
     const provenance = {
       source: "runtime",
@@ -485,55 +419,6 @@ describe("session cache restoration", () => {
     expect(isSessionCacheContextCurrent(captured, "https://old.example", 8)).toBe(false);
   });
 
-  it("does not overwrite HTTP or SSE state that arrived while cache was loading", () => {
-    const current = sessionState({
-      eventLogEpoch: "epoch-live",
-      eventsBySeq: { 9: { id: "live-event", event_seq: 9 } },
-      eventSeqs: [9],
-      newestSeq: 9,
-      oldestSeq: 9,
-      liveStatus: "streaming",
-    });
-    const cached = {
-      ...createSessionProjectionState("epoch-cache"),
-      eventsBySeq: { 1: { id: "cached-event", event_seq: 1 } },
-      eventSeqs: [1],
-      newestSeq: 1,
-      oldestSeq: 1,
-    };
-
-    expect(mergeCachedSessionIntoCurrent(current, cached)).toBe(current);
-  });
-
-  it("restores cached projection into an empty session without changing UI state", () => {
-    const current = sessionState({ loading: true, liveStatus: "connecting" });
-    const cached = {
-      ...createSessionProjectionState("epoch-cache"),
-      eventsBySeq: { 1: { id: "cached-event", event_seq: 1 } },
-      eventSeqs: [1],
-      newestSeq: 1,
-      oldestSeq: 1,
-      semanticHistoryByDisplayLevel: {
-        info: {
-          eventLogEpoch: "epoch-cache",
-          cursorSeq: 1,
-          hasOlder: false,
-          loading: false,
-        },
-      },
-    };
-
-    const restored = mergeCachedSessionIntoCurrent(current, cached);
-
-    expect(restored.eventSeqs).toEqual([1]);
-    expect(restored.semanticHistoryByDisplayLevel.info).toMatchObject({
-      cursorSeq: 1,
-      hasOlder: false,
-      loading: false,
-    });
-    expect(restored.loading).toBe(true);
-    expect(restored.liveStatus).toBe("connecting");
-  });
 });
 
 function installWindow(localStorage: Storage, sessionStorage: Storage, hostname = "localhost") {
@@ -726,118 +611,6 @@ describe("agent deletion cache cleanup", () => {
 describe("roster activity unread state", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
-  });
-
-  it("hydrates persisted roster activity per remote key", async () => {
-    const sharedLocalStorage = new MemoryStorage();
-    installWindow(sharedLocalStorage, new MemoryStorage());
-    sharedLocalStorage.setItem(
-      "holon.webGui.rosterActivityByRemote.v1",
-      JSON.stringify({
-        local: {
-          localAgent: { unreadCount: 2, lastUnreadSeq: 12, lastReadSeq: 7, briefAt: "2026-01-01T00:00:00.000Z" },
-        },
-        "http://remote.example:7878": {
-          remoteAgent: { unreadCount: 4, lastUnreadSeq: 20 },
-        },
-      }),
-    );
-
-    const { readStoredRosterActivity } = await import("./runtime-store");
-
-    expect(readStoredRosterActivity("local")).toEqual({
-      localAgent: {
-        unreadCount: 2,
-        lastUnreadDeliverySeq: 12,
-        lastReadDeliverySeq: 7,
-        briefAt: "2026-01-01T00:00:00.000Z",
-      },
-    });
-    expect(readStoredRosterActivity("http://remote.example:7878")).toEqual({
-      remoteAgent: { unreadCount: 4, lastUnreadDeliverySeq: 20 },
-    });
-  });
-
-  it("uses IndexedDB read state only when localStorage has no read marker", () => {
-    const cached = {
-      unreadCount: 3,
-      lastUnreadDeliverySeq: 12,
-      lastReadDeliverySeq: 7,
-    };
-
-    expect(
-      mergeCachedReadState(
-        { operatorAt: "2026-01-01T00:00:00.000Z" },
-        cached,
-      ),
-    ).toEqual({
-      operatorAt: "2026-01-01T00:00:00.000Z",
-      ...cached,
-    });
-    const localStorageState = {
-      unreadCount: 1,
-      lastUnreadDeliverySeq: 20,
-      lastReadDeliverySeq: 19,
-    };
-    expect(mergeCachedReadState(localStorageState, cached)).toBe(localStorageState);
-  });
-
-  it("counts unread brief events once by seq, ignores non-operator messages", async () => {
-    const { touchRosterActivityFromEvent } = await import("./runtime-store");
-    const afterBrief = touchRosterActivityFromEvent(
-      {},
-      "agent-a",
-      { agent_id: "agent-a", event_seq: 10, ts: "2026-01-01T00:00:00.000Z", type: "brief_created", payload: {} },
-      "agent-b",
-    );
-    const afterDuplicate = touchRosterActivityFromEvent(
-      afterBrief,
-      "agent-a",
-      { agent_id: "agent-a", event_seq: 10, ts: "2026-01-01T00:00:01.000Z", type: "brief_created", payload: {} },
-      "agent-b",
-    );
-    const afterAgentMessage = touchRosterActivityFromEvent(
-      afterDuplicate,
-      "agent-a",
-      {
-        agent_id: "agent-a",
-        event_seq: 11,
-        ts: "2026-01-01T00:00:02.000Z",
-        type: "message_enqueued",
-        payload: { origin: { kind: "agent" } },
-      },
-      "agent-b",
-    );
-
-    expect(afterAgentMessage["agent-a"]).toMatchObject({
-      unreadCount: 1,
-      lastUnreadDeliverySeq: 10,
-    });
-  });
-
-  it("counts a selected brief until the conversation confirms it was viewed", async () => {
-    const { touchRosterActivityFromEvent } = await import("./runtime-store");
-    const afterSelectedBrief = touchRosterActivityFromEvent(
-      {},
-      "agent-a",
-      { agent_id: "agent-a", event_seq: 10, ts: "2026-01-01T00:00:00.000Z", type: "brief_created", payload: {} },
-      "agent-a",
-    );
-    const afterOperatorMessage = touchRosterActivityFromEvent(
-      afterSelectedBrief,
-      "agent-a",
-      {
-        agent_id: "agent-a",
-        event_seq: 11,
-        ts: "2026-01-01T00:00:01.000Z",
-        type: "message_enqueued",
-        payload: { origin: { kind: "operator" }, created_at: "2026-01-01T00:00:01.000Z" },
-      },
-      "agent-b",
-    );
-
-    expect(afterOperatorMessage["agent-a"]?.unreadCount).toBe(1);
-    expect(afterOperatorMessage["agent-a"]?.operatorAt).toBe("2026-01-01T00:00:01.000Z");
   });
 
   it("advances the delivery read marker only after the synchronized conversation is visible", async () => {

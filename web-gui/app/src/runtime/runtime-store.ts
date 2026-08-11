@@ -10,8 +10,36 @@ import {
 import { EventGapRecoveryTracker, recoverEventGap } from "./event-gap-recovery";
 import {
   cacheDeleteSession,
-  type CachedAgentReadState,
 } from "./idb-cache";
+import {
+  applyProjectionAction,
+  emptyAgentSession,
+  eventLogEpochFromEvents,
+  hasEventIdentityConflict,
+  materializeProjectionDetail,
+  mergeCachedSessionIntoCurrent,
+  mergeEventPageIntoConversation,
+  resetSessionForEventConflict,
+  semanticHistoryState,
+  semanticTimelineHasNewItem,
+  semanticTimelineItemIds,
+  sessionForEventLogEpoch,
+  shouldResetForEventLogEpoch,
+  withSemanticHistoryState,
+} from "./conversation-store";
+import {
+  cachedReadState,
+  canMarkConversationRead,
+  latestBriefDeliverySeq,
+  markAgentDeliveriesRead,
+  mergeCachedReadState,
+  mergeCachedReadStates,
+  readStoredRosterActivity,
+  touchRosterActivity,
+  touchRosterActivityFromEvent,
+  writeStoredRosterActivity,
+  type AgentRosterActivity,
+} from "./read-state";
 import { ResumeReconciliationCoordinator } from "./resume-reconciliation";
 import {
   currentRemoteKey,
@@ -28,21 +56,15 @@ import {
 } from "./runtime-trace";
 import type { AgentSessionState as AgentSessionStateBase } from "./runtime-store-helpers";
 import {
-  compactAgentTimelineItems,
   briefIdForPayload,
-  filterTimelineByDisplayLevel,
 } from "./session-reducer";
 import {
   briefIdsForProjectionHydration,
-  createSessionProjectionState,
   deriveSessionTimeline,
-  eventIdentityConflicts,
   messageIdsForProjectionHydration,
   projectionEvents,
-  reduceSessionProjection,
   transcriptEntryIdsForProjectionHydration,
   type SessionProjectionAction,
-  type SessionProjectionState,
 } from "./session-projection";
 import { canApplySessionEvent } from "./session-events";
 import type {
@@ -95,6 +117,18 @@ import type {
   ToolExecutionDetailState,
 } from "./runtime-store-helpers";
 export type { AgentLiveStatus, AgentSessionState, SemanticHistoryState, TimelineEventsState };
+export {
+  hasEventIdentityConflict,
+  materializeProjectionDetail,
+  mergeCachedSessionIntoCurrent,
+  sessionForEventLogEpoch,
+} from "./conversation-store";
+export {
+  mergeCachedReadState,
+  readStoredRosterActivity,
+  touchRosterActivityFromEvent,
+} from "./read-state";
+export type { AgentRosterActivity } from "./read-state";
 
 export interface BootstrapRefreshOptions {
   background?: boolean;
@@ -201,14 +235,6 @@ function rebuildProvisionalDetailsWithAgents(
     changed = true;
   }
   return changed ? updated : null;
-}
-
-export interface AgentRosterActivity {
-  operatorAt?: string;
-  briefAt?: string;
-  unreadCount?: number;
-  lastUnreadDeliverySeq?: number;
-  lastReadDeliverySeq?: number;
 }
 
 const OPTIMISTIC_OPERATOR_PROMPT_SOURCE = "pending-operator-prompt";
@@ -458,7 +484,6 @@ const LEGACY_RUNTIME_CONNECTION_STORAGE_KEY = "holon.webGui.runtimeConnection.v1
 const ACTIVE_RUNTIME_CONNECTION_STORAGE_KEY = "holon.webGui.activeRuntimeConnection.v1";
 const RUNTIME_CONNECTION_PROFILES_STORAGE_KEY = "holon.webGui.runtimeConnectionProfiles.v1";
 const DISPLAY_LEVEL_STORAGE_KEY = "holon.webGui.displayLevelsByAgentId.v1";
-const ROSTER_ACTIVITY_STORAGE_KEY = "holon.webGui.rosterActivityByRemote.v1";
 let runtimeConnectionConfig = readStoredRuntimeConnectionConfig();
 let runtimeClient = createRuntimeClient(runtimeClientOptions(runtimeConnectionConfig));
 const activeEventStreams = new Map<string, AgentEventStreamSubscription>();
@@ -935,63 +960,6 @@ function writeStoredDisplayLevels(displayLevelsByAgentId: Record<string, Display
   }
 }
 
-export function readStoredRosterActivity(remoteKey: string): Record<string, AgentRosterActivity> {
-  if (typeof window === "undefined") return {};
-  try {
-    const parsed = readStoredJson(window.localStorage, ROSTER_ACTIVITY_STORAGE_KEY);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    const byRemote = parsed as Record<string, unknown>;
-    const rawActivity = byRemote[remoteKey];
-    if (!rawActivity || typeof rawActivity !== "object" || Array.isArray(rawActivity)) return {};
-    const activityByAgentId: Record<string, AgentRosterActivity> = {};
-    for (const [agentId, value] of Object.entries(rawActivity)) {
-      if (typeof agentId !== "string" || !agentId || !value || typeof value !== "object" || Array.isArray(value)) continue;
-      const activity = coerceRosterActivity(value);
-      if (activity) activityByAgentId[agentId] = activity;
-    }
-    return activityByAgentId;
-  } catch {
-    return {};
-  }
-}
-
-function writeStoredRosterActivity(remoteKey: string, activityByAgentId: Record<string, AgentRosterActivity>): void {
-  if (typeof window === "undefined") return;
-  try {
-    const parsed = readStoredJson(window.localStorage, ROSTER_ACTIVITY_STORAGE_KEY);
-    const byRemote =
-      parsed && typeof parsed === "object" && !Array.isArray(parsed)
-        ? (parsed as Record<string, Record<string, AgentRosterActivity>>)
-        : {};
-    byRemote[remoteKey] = activityByAgentId;
-    window.localStorage.setItem(ROSTER_ACTIVITY_STORAGE_KEY, JSON.stringify(byRemote));
-  } catch {
-    // Ignore storage failures; unread state falls back to memory-only.
-  }
-}
-
-function coerceRosterActivity(value: unknown): AgentRosterActivity | undefined {
-  const parsed = value as Partial<AgentRosterActivity> & {
-    lastUnreadSeq?: number;
-    lastReadSeq?: number;
-  };
-  const activity: AgentRosterActivity = {};
-  if (typeof parsed.operatorAt === "string") activity.operatorAt = parsed.operatorAt;
-  if (typeof parsed.briefAt === "string") activity.briefAt = parsed.briefAt;
-  if (typeof parsed.unreadCount === "number" && Number.isFinite(parsed.unreadCount) && parsed.unreadCount > 0) {
-    activity.unreadCount = Math.floor(parsed.unreadCount);
-  }
-  const lastUnreadDeliverySeq = parsed.lastUnreadDeliverySeq ?? parsed.lastUnreadSeq;
-  if (typeof lastUnreadDeliverySeq === "number" && Number.isFinite(lastUnreadDeliverySeq)) {
-    activity.lastUnreadDeliverySeq = Math.floor(lastUnreadDeliverySeq);
-  }
-  const lastReadDeliverySeq = parsed.lastReadDeliverySeq ?? parsed.lastReadSeq;
-  if (typeof lastReadDeliverySeq === "number" && Number.isFinite(lastReadDeliverySeq)) {
-    activity.lastReadDeliverySeq = Math.floor(lastReadDeliverySeq);
-  }
-  return Object.keys(activity).length ? activity : undefined;
-}
-
 function isDisplayLevel(value: unknown): value is DisplayLevel {
   return value === "info" || value === "verbose" || value === "debug";
 }
@@ -1150,63 +1118,6 @@ function initSessionCacheForRemote(set: StoreSet, get?: () => RuntimeStoreState)
   );
 }
 
-export function mergeCachedSessionIntoCurrent(
-  current: AgentSessionState,
-  cached: Partial<AgentSessionState>,
-): AgentSessionState {
-  if (
-    current.detail ||
-    current.eventSeqs.length > 0 ||
-    Object.keys(current.messagesById).length > 0 ||
-    Object.keys(current.transcriptEntriesById).length > 0 ||
-    Object.keys(current.briefRecordsById).length > 0
-  ) {
-    return current;
-  }
-  return {
-    ...current,
-    ...cached,
-    loading: current.loading,
-    semanticHistoryByDisplayLevel:
-      Object.keys(current.semanticHistoryByDisplayLevel).length > 0
-        ? current.semanticHistoryByDisplayLevel
-        : (cached.semanticHistoryByDisplayLevel ?? {}),
-    targetEventLoading: current.targetEventLoading,
-    liveStatus: current.liveStatus,
-    sendingPrompt: current.sendingPrompt,
-  };
-}
-
-export function mergeCachedReadState(
-  current: AgentRosterActivity | undefined,
-  cached: CachedAgentReadState | undefined,
-): AgentRosterActivity | undefined {
-  if (!cached) return current;
-  const currentHasReadState =
-    current?.unreadCount != null ||
-    current?.lastUnreadDeliverySeq != null ||
-    current?.lastReadDeliverySeq != null;
-  if (currentHasReadState) return current;
-  return {
-    ...current,
-    ...cached,
-  };
-}
-
-function mergeCachedReadStates(
-  current: Record<string, AgentRosterActivity>,
-  cached: Record<string, CachedAgentReadState>,
-): Record<string, AgentRosterActivity> {
-  let merged = current;
-  for (const [agentId, readState] of Object.entries(cached)) {
-    const activity = mergeCachedReadState(merged[agentId], readState);
-    if (!activity || activity === merged[agentId]) continue;
-    if (merged === current) merged = { ...current };
-    merged[agentId] = activity;
-  }
-  return merged;
-}
-
 export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   route: "dashboard",
   selectedAgentId: "",
@@ -1292,25 +1203,12 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   markAgentConversationRead: (agentId) => {
     const state = get();
     const session = state.sessionsByAgentId[agentId];
-    if (
-      state.route !== "agent" ||
-      state.selectedAgentId !== agentId ||
-      typeof document === "undefined" ||
-      document.visibilityState !== "visible" ||
-      !session ||
-      session.loading ||
-      session.gaps.length > 0 ||
-      session.syncStatus === "refreshing" ||
-      session.syncStatus === "recovering" ||
-      session.syncStatus === "stale" ||
-      session.syncStatus === "error" ||
-      session.liveStatus === "connecting" ||
-      session.liveStatus === "reconnecting" ||
-      session.liveStatus === "recovering" ||
-      session.liveStatus === "stale" ||
-      session.liveStatus === "error" ||
-      missingBriefIdsForHydration(session).length > 0
-    ) {
+    if (!session || !canMarkConversationRead({
+      route: state.route,
+      selectedAgentId: state.selectedAgentId,
+      documentVisible: typeof document !== "undefined" && document.visibilityState === "visible",
+      session,
+    }, agentId)) {
       return;
     }
     const deliverySeq = latestBriefDeliverySeq(session);
@@ -3423,24 +3321,6 @@ function installResumeReconciliationListeners(): ResumeReconciliationCoordinator
   return coordinator;
 }
 
-function emptyAgentSession(): AgentSessionState {
-  return {
-    ...createSessionProjectionState(),
-    loading: false,
-    semanticHistoryByDisplayLevel: {},
-    targetEventLoading: false,
-    liveStatus: "idle",
-    cacheStatus: "unchecked",
-    contentStatus: "unknown",
-    syncStatus: "idle",
-    sendingPrompt: false,
-    detail: null,
-    workItemDetailsById: {},
-    taskDetailsById: {},
-    toolExecutionDetailsById: {},
-  };
-}
-
 function emptyTimelineEventsState(): TimelineEventsState {
   return {
     eventsBySeq: {},
@@ -3492,125 +3372,6 @@ function timelineEventIdentity(event: { id?: string; type?: string; event_seq?: 
   return `${event.event_seq ?? ""}:${event.id ?? ""}:${event.type ?? ""}`;
 }
 
-function applyProjectionAction(
-  current: AgentSessionState,
-  action: SessionProjectionAction,
-  displayLevel: DisplayLevel = "debug",
-  detailBase: AgentDetail | null = current.detail,
-): AgentSessionState {
-  const projection = reduceSessionProjection(current, action);
-  return {
-    ...current,
-    ...projection,
-    detail: materializeProjectionDetail(detailBase, projection, displayLevel),
-  };
-}
-
-export function materializeProjectionDetail(
-  detail: AgentDetail | null,
-  projection: SessionProjectionState,
-  displayLevel: DisplayLevel,
-): AgentDetail | null {
-  if (!detail) return null;
-  const projectedTimeline = deriveSessionTimeline(projection, displayLevel);
-  const projectedMessageIds = new Set(
-    projectedTimeline.flatMap((item) =>
-      item.kind === "operator" && item.id.startsWith("message:")
-        ? [item.id.slice("message:".length)]
-        : [],
-    ),
-  );
-  const optimisticItems = detail.timeline.filter((item) => {
-    if (!item.sourceIds.includes(OPTIMISTIC_OPERATOR_PROMPT_SOURCE)) return false;
-    const canonicalMessageId = item.sourceIds
-      .find((sourceId) => sourceId.startsWith(OPTIMISTIC_OPERATOR_MESSAGE_PREFIX))
-      ?.slice(OPTIMISTIC_OPERATOR_MESSAGE_PREFIX.length);
-    return !canonicalMessageId || !projectedMessageIds.has(canonicalMessageId);
-  });
-  const timeline = compactAgentTimelineItems([
-    ...projectedTimeline,
-    ...optimisticItems,
-  ]).sort((left, right) => sortableTime(left.timestamp) - sortableTime(right.timestamp));
-  return {
-    ...detail,
-    timeline,
-    events: projectionEvents(projection),
-    eventLogEpoch: projection.eventLogEpoch,
-    newestEventSeq: projection.newestSeq,
-    oldestEventSeq: projection.oldestSeq,
-    briefRecordsById: projection.briefRecordsById,
-  };
-}
-
-function eventLogEpochFromEvents(events: StreamEventEnvelopeDto[]): string | undefined {
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const epoch = events[index]?.event_log_epoch;
-    if (epoch) return epoch;
-  }
-  return undefined;
-}
-
-function shouldResetForEventLogEpoch(
-  current: AgentSessionState,
-  incomingEpoch: string | undefined,
-): boolean {
-  if (!incomingEpoch) return false;
-  return (
-    (current.eventLogEpoch != null || current.eventSeqs.length > 0) &&
-    current.eventLogEpoch !== incomingEpoch
-  );
-}
-
-export function sessionForEventLogEpoch(
-  current: AgentSessionState,
-  incomingEpoch: string | undefined,
-): AgentSessionState {
-  if (!incomingEpoch) return current;
-  if (!shouldResetForEventLogEpoch(current, incomingEpoch)) {
-    return current.eventLogEpoch === incomingEpoch
-      ? current
-      : { ...current, eventLogEpoch: incomingEpoch };
-  }
-  const reset = applyProjectionAction(current, { type: "reset", eventLogEpoch: incomingEpoch });
-  return {
-    ...reset,
-    semanticHistoryByDisplayLevel: {},
-    targetEventLoading: false,
-    targetEventError: undefined,
-    detail: reset.detail
-      ? {
-          ...reset.detail,
-          eventCursorSeq: undefined,
-          hasOlderEvents: undefined,
-        }
-      : null,
-  };
-}
-
-export function hasEventIdentityConflict(
-  current: AgentSessionState,
-  incomingEvents: StreamEventEnvelopeDto[],
-): boolean {
-  return eventIdentityConflicts(current, incomingEvents);
-}
-
-function resetSessionForEventConflict(
-  current: AgentSessionState,
-  eventLogEpoch?: string,
-): AgentSessionState {
-  return {
-    ...applyProjectionAction(current, {
-      type: "reset",
-      eventLogEpoch: eventLogEpoch ?? current.eventLogEpoch,
-      reason: "event_identity_conflict",
-    }),
-    liveStatus: "stale",
-    semanticHistoryByDisplayLevel: {},
-    targetEventLoading: false,
-    error: "runtime event identity conflict; refreshing projection",
-  };
-}
-
 type StoreSet = (
   partial:
     | Partial<RuntimeStoreState>
@@ -3633,21 +3394,6 @@ function scheduleCacheWrite(get: () => RuntimeStoreState, agentId: string): void
     session,
     cachedReadState(state.rosterActivityByAgentId[agentId]),
   );
-}
-
-function cachedReadState(
-  activity: AgentRosterActivity | undefined,
-): CachedAgentReadState | undefined {
-  if (!activity) return undefined;
-  const readState: CachedAgentReadState = {};
-  if (activity.unreadCount != null) readState.unreadCount = activity.unreadCount;
-  if (activity.lastUnreadDeliverySeq != null) {
-    readState.lastUnreadDeliverySeq = activity.lastUnreadDeliverySeq;
-  }
-  if (activity.lastReadDeliverySeq != null) {
-    readState.lastReadDeliverySeq = activity.lastReadDeliverySeq;
-  }
-  return Object.keys(readState).length ? readState : undefined;
 }
 
 function scheduleAgentDetailRetry(
@@ -4667,115 +4413,6 @@ function compareIsoDesc(left: string | undefined, right: string | undefined): nu
   return rightTime - leftTime;
 }
 
-function touchRosterActivity(
-  current: Record<string, AgentRosterActivity>,
-  agentId: string,
-  kind: "operator" | "brief",
-  timestamp: string | undefined,
-): Record<string, AgentRosterActivity> {
-  if (!timestamp) return current;
-  const existing = current[agentId];
-  const field = kind === "operator" ? "operatorAt" : "briefAt";
-  if (sortableTime(existing?.[field] ?? "") >= sortableTime(timestamp)) return current;
-  return {
-    ...current,
-    [agentId]: {
-      ...existing,
-      [field]: timestamp,
-    },
-  };
-}
-
-function markAgentDeliveriesRead(
-  current: Record<string, AgentRosterActivity>,
-  agentId: string,
-  deliverySeq: number,
-): Record<string, AgentRosterActivity> {
-  const existing = current[agentId];
-  if (!existing?.unreadCount && existing?.lastReadDeliverySeq === deliverySeq) return current;
-  return {
-    ...current,
-    [agentId]: {
-      ...existing,
-      unreadCount: 0,
-      lastReadDeliverySeq: Math.max(
-        deliverySeq,
-        existing?.lastUnreadDeliverySeq ?? 0,
-        existing?.lastReadDeliverySeq ?? 0,
-      ),
-    },
-  };
-}
-
-export function touchRosterActivityFromEvent(
-  current: Record<string, AgentRosterActivity>,
-  agentId: string,
-  event: StreamEventEnvelopeDto,
-  _selectedAgentId: string,
-): Record<string, AgentRosterActivity> {
-  if (!canApplySessionEvent(event)) return current;
-  let next = current;
-  if (event.type === "brief_created") {
-    next = touchRosterActivity(next, agentId, "brief", eventTimestamp(event));
-  }
-  if (event.type === "message_enqueued" && messageOrigin(event.payload) === "operator") {
-    next = touchRosterActivity(next, agentId, "operator", eventTimestamp(event));
-  }
-  if (isUnreadEvent(event)) {
-    next = incrementUnreadFromEvent(next, agentId, event);
-  }
-  return next;
-}
-
-function isUnreadEvent(event: StreamEventEnvelopeDto): boolean {
-  return event.type === "brief_created";
-}
-
-function incrementUnreadFromEvent(
-  current: Record<string, AgentRosterActivity>,
-  agentId: string,
-  event: StreamEventEnvelopeDto,
-): Record<string, AgentRosterActivity> {
-  const existing = current[agentId];
-  const seq = event.event_seq;
-  if (
-    seq != null &&
-    existing?.lastReadDeliverySeq != null &&
-    seq <= existing.lastReadDeliverySeq
-  ) return current;
-  if (
-    seq != null &&
-    existing?.lastUnreadDeliverySeq != null &&
-    seq <= existing.lastUnreadDeliverySeq
-  ) return current;
-  return {
-    ...current,
-    [agentId]: {
-      ...existing,
-      unreadCount: (existing?.unreadCount ?? 0) + 1,
-      lastUnreadDeliverySeq: seq ?? existing?.lastUnreadDeliverySeq,
-    },
-  };
-}
-
-function latestBriefDeliverySeq(session: AgentSessionState): number | undefined {
-  for (let index = session.eventSeqs.length - 1; index >= 0; index -= 1) {
-    const seq = session.eventSeqs[index];
-    if (session.eventsBySeq[seq]?.type === "brief_created") return seq;
-  }
-  return undefined;
-}
-
-function eventTimestamp(event: StreamEventEnvelopeDto): string | undefined {
-  const payload = asRecord(event.payload);
-  return stringField(payload, "created_at") ?? event.ts;
-}
-
-function messageOrigin(payload: unknown): string | undefined {
-  const origin = asRecord(asRecord(payload)?.origin);
-  return stringField(origin, "kind") ?? stringField(origin, "role") ?? stringField(asRecord(payload), "origin");
-}
-
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
 }
@@ -5654,63 +5291,16 @@ function patchAgentDetail(
   };
 }
 
-function semanticHistoryState(
-  session: AgentSessionState | undefined,
-  displayLevel: DisplayLevel,
-): SemanticHistoryState {
-  return session?.semanticHistoryByDisplayLevel[displayLevel] ?? {
-    eventLogEpoch: session?.eventLogEpoch,
-    cursorSeq: undefined,
-    hasOlder: false,
-    loading: false,
-  };
-}
-
-function semanticTimelineItemIds(
-  session: AgentSessionState | undefined,
-  displayLevel: DisplayLevel,
-): Set<string> {
-  return new Set(semanticTimeline(session, displayLevel).map((item) => item.id));
-}
-
-function semanticTimelineHasNewItem(
-  session: AgentSessionState | undefined,
-  displayLevel: DisplayLevel,
-  initialItemIds: Set<string>,
-): boolean {
-  return semanticTimeline(session, displayLevel).some((item) => !initialItemIds.has(item.id));
-}
-
-function semanticTimeline(
-  session: AgentSessionState | undefined,
-  displayLevel: DisplayLevel,
-): AgentTimelineItem[] {
-  return session
-    ? filterTimelineByDisplayLevel(
-        deriveSessionTimeline(session, displayLevel),
-        displayLevel,
-        { itemLimit: Number.MAX_SAFE_INTEGER },
-      )
-    : [];
-}
-
 function updateSemanticHistoryState(
   state: RuntimeStoreState,
   agentId: string,
   displayLevel: DisplayLevel,
   history: SemanticHistoryState,
 ): Partial<RuntimeStoreState> {
-  const session = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
   return {
     sessionsByAgentId: {
       ...state.sessionsByAgentId,
-      [agentId]: {
-        ...session,
-        semanticHistoryByDisplayLevel: {
-          ...session.semanticHistoryByDisplayLevel,
-          [displayLevel]: history,
-        },
-      },
+      [agentId]: withSemanticHistoryState(state.sessionsByAgentId[agentId], displayLevel, history),
     },
   };
 }
@@ -5730,45 +5320,17 @@ function mergeEventPageIntoSession(
     historyLoading?: boolean;
   } = {},
 ): Partial<RuntimeStoreState> {
-  const epochSession = sessionForEventLogEpoch(
-    state.sessionsByAgentId[agentId] ?? emptyAgentSession(),
-    options.eventLogEpoch,
-  );
-  const current = hasEventIdentityConflict(epochSession, pageEvents)
-    ? resetSessionForEventConflict(epochSession, options.eventLogEpoch)
-    : epochSession;
-  const projected = applyProjectionAction(current, {
-    type: "events_received",
-    events: pageEvents,
-    eventLogEpoch: options.eventLogEpoch,
-  }, displayLevel, current.detail);
-  const historyDisplayLevel = options.historyDisplayLevel;
-  const semanticHistoryByDisplayLevel = historyDisplayLevel
-    ? {
-        ...projected.semanticHistoryByDisplayLevel,
-        [historyDisplayLevel]: {
-          eventLogEpoch: options.eventLogEpoch ?? projected.eventLogEpoch,
-          cursorSeq: pageOldestSeq,
-          hasOlder: pageHasOlder ?? false,
-          loading: options.historyLoading ?? false,
-        },
-      }
-    : projected.semanticHistoryByDisplayLevel;
-
   return {
     sessionsByAgentId: {
       ...state.sessionsByAgentId,
-      [agentId]: {
-        ...projected,
-        newestSeq: Math.max(options.newestSeq ?? 0, projected.newestSeq ?? 0) || undefined,
-        // Take the true oldest across all events (cached + new page) so
-        // descending-order pages don't clobber the cached oldest seq.
-        oldestSeq:
-          pageOldestSeq != null && projected.oldestSeq != null
-            ? Math.min(pageOldestSeq, projected.oldestSeq)
-            : (pageOldestSeq ?? projected.oldestSeq),
-        semanticHistoryByDisplayLevel,
-      },
+      [agentId]: mergeEventPageIntoConversation(
+        state.sessionsByAgentId[agentId],
+        pageEvents,
+        pageOldestSeq,
+        pageHasOlder,
+        displayLevel,
+        options,
+      ),
     },
   };
 }
