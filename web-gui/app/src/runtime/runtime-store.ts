@@ -7,7 +7,6 @@ import {
   type OperatorPromptAttachment,
   type StreamEventEnvelopeDto,
 } from "./client";
-import { EventGapRecoveryTracker, recoverEventGap } from "./event-gap-recovery";
 import {
   cacheDeleteSession,
 } from "./idb-cache";
@@ -24,9 +23,14 @@ import {
   semanticTimelineHasNewItem,
   semanticTimelineItemIds,
   sessionForEventLogEpoch,
-  shouldResetForEventLogEpoch,
   withSemanticHistoryState,
 } from "./conversation-store";
+import {
+  backfillRetryDelayMs,
+  GlobalSyncCoordinator,
+  runWithConcurrencyLimit,
+  streamEventFromBackfill,
+} from "./global-sync-coordinator";
 import {
   cachedReadState,
   canMarkConversationRead,
@@ -128,6 +132,11 @@ export {
   readStoredRosterActivity,
   touchRosterActivityFromEvent,
 } from "./read-state";
+export {
+  backfillRetryDelayMs,
+  runWithConcurrencyLimit,
+  streamEventFromBackfill,
+} from "./global-sync-coordinator";
 export type { AgentRosterActivity } from "./read-state";
 
 export interface BootstrapRefreshOptions {
@@ -536,20 +545,8 @@ function saveSkillInstallJobs(jobs: SkillInstallJob[]): void {
   }
 }
 
-const pendingStreamEvents = new Map<string, StreamEventEnvelopeDto[]>();
-const streamFlushTimers = new Map<string, number>();
 const reconnectTimers = new Map<string, number>();
 const staleTimers = new Map<string, number>();
-let globalEventStream: AgentEventStreamSubscription | undefined;
-let globalStreamReconnectTimer: number | undefined;
-let globalStreamStaleTimer: number | undefined;
-let globalStreamReconnectAttempt = 0;
-const globalStreamSubscribedAgents = new Set<string>();
-const globalStreamCatchUpPendingAgents = new Set<string>();
-const globalEventRecovery = new EventGapRecoveryTracker();
-const globalBackfillRetryTimers = new Map<string, number>();
-const globalBackfillRetryAttempts = new Map<string, number>();
-const globalRecoveryBaselineInFlight = new Map<string, Promise<void>>();
 const messageHydrationInFlight = new Map<string, Set<string>>();
 const transcriptHydrationInFlight = new Map<string, Set<string>>();
 const briefHydrationInFlight = new Map<string, Set<string>>();
@@ -571,14 +568,9 @@ let bootstrapRefreshTimer: number | undefined;
 let clientGeneration = 0;
 let resumeReconciliationInFlight: Promise<void> | undefined;
 let resumeReconciliationCoordinator: ResumeReconciliationCoordinator | undefined;
-const STREAM_FLUSH_INTERVAL_MS = 100;
 const STREAM_STALE_TIMEOUT_MS = 45_000;
 const STREAM_RECONNECT_BASE_MS = 1_000;
 const STREAM_RECONNECT_MAX_MS = 15_000;
-const GLOBAL_STREAM_STALE_TIMEOUT_MS = 45_000;
-const GLOBAL_BACKFILL_LIMIT = 100;
-const GLOBAL_BACKFILL_MAX_PAGES = 10;
-const GLOBAL_BACKFILL_CONCURRENCY = 4;
 const AGENT_VALIDATION_TTL_MS = 60_000;
 const RESUME_RECONCILIATION_THRESHOLD_MS = 60_000;
 const BRIEF_HYDRATION_RETRY_DELAYS_MS = [1_000, 2_000] as const;
@@ -635,36 +627,13 @@ function cancelClientGenerationWork(): void {
   for (const timer of agentDetailRetryTimers.values()) window.clearTimeout(timer);
   agentDetailRetryTimers.clear();
   agentDetailRetryAttempts.clear();
-  for (const timer of globalBackfillRetryTimers.values()) window.clearTimeout(timer);
-  globalBackfillRetryTimers.clear();
-  globalBackfillRetryAttempts.clear();
-  globalRecoveryBaselineInFlight.clear();
-  globalStreamCatchUpPendingAgents.clear();
+  globalSyncCoordinator.cancelClientGenerationWork();
   inspectorDetailInFlight.clear();
   workItemRefreshInFlight.clear();
   workItemDetailInFlight.clear();
   taskDetailInFlight.clear();
   toolExecutionDetailInFlight.clear();
   clearInFlightHydration();
-}
-
-export async function runWithConcurrencyLimit<T>(
-  values: readonly T[],
-  limit: number,
-  run: (value: T) => Promise<void>,
-  shouldContinue: () => boolean = () => true,
-): Promise<void> {
-  const workerCount = Math.min(values.length, Math.max(1, Math.floor(limit)));
-  let nextIndex = 0;
-  const worker = async () => {
-    while (shouldContinue()) {
-      const index = nextIndex;
-      nextIndex += 1;
-      if (index >= values.length) return;
-      await run(values[index]);
-    }
-  };
-  await Promise.all(Array.from({ length: workerCount }, worker));
 }
 
 export function buildResumeRefreshes(
@@ -677,19 +646,14 @@ export function buildResumeRefreshes(
 }
 
 function closeEventStreamsForResume(set: StoreSet): void {
-  stopGlobalEventStream(set);
+  globalSyncCoordinator.closeForResume(set);
   for (const agentId of Array.from(activeEventStreams.keys())) {
     stopAgentEventStream(agentId, set);
   }
-  for (const timer of streamFlushTimers.values()) window.clearTimeout(timer);
-  streamFlushTimers.clear();
-  pendingStreamEvents.clear();
   for (const timer of reconnectTimers.values()) window.clearTimeout(timer);
   reconnectTimers.clear();
   for (const timer of staleTimers.values()) window.clearTimeout(timer);
   staleTimers.clear();
-  globalStreamSubscribedAgents.clear();
-  globalEventRecovery.clear();
 }
 
 export function resetSessionsForResume(
@@ -1097,7 +1061,10 @@ function initSessionCacheForRemote(set: StoreSet, get?: () => RuntimeStoreState)
         const displayLevel = get().displayLevel;
         const selectedAgentId = get().selectedAgentId;
         for (const agentId of restoredAgentIds) {
-          rebaseGlobalRecoveryFromSession(agentId, get().sessionsByAgentId[agentId]);
+          globalSyncCoordinator.rebaseRecoveryFromSession(
+            agentId,
+            get().sessionsByAgentId[agentId],
+          );
         }
         if (selectedAgentId && restoredAgentIds.includes(selectedAgentId)) {
           reconcileSelectedSessionHydration(get, set, selectedAgentId, displayLevel);
@@ -1117,6 +1084,14 @@ function initSessionCacheForRemote(set: StoreSet, get?: () => RuntimeStoreState)
     },
   );
 }
+
+const globalSyncCoordinator = new GlobalSyncCoordinator<RuntimeStoreState>({
+  applyStreamEvents,
+  captureClientRequest,
+  isCurrentClientRequest,
+  setAgentLiveStatus,
+  setStreamState,
+});
 
 export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   route: "dashboard",
@@ -1527,28 +1502,13 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     resumeReconciliationInFlight = undefined;
     for (const subscription of activeEventStreams.values()) subscription.close();
     activeEventStreams.clear();
-    pendingStreamEvents.clear();
-    globalEventStream?.close();
-    globalEventStream = undefined;
-    if (globalStreamReconnectTimer != null) {
-      window.clearTimeout(globalStreamReconnectTimer);
-      globalStreamReconnectTimer = undefined;
-    }
-    if (globalStreamStaleTimer != null) {
-      window.clearTimeout(globalStreamStaleTimer);
-      globalStreamStaleTimer = undefined;
-    }
-    globalStreamSubscribedAgents.clear();
-    globalEventRecovery.clear();
-    globalStreamReconnectAttempt = 0;
+    globalSyncCoordinator.resetForClientChange();
     messageHydrationInFlight.clear();
     transcriptHydrationInFlight.clear();
     briefHydrationInFlight.clear();
     inspectorDetailInFlight.clear();
-    for (const timer of streamFlushTimers.values()) window.clearTimeout(timer);
     for (const timer of reconnectTimers.values()) window.clearTimeout(timer);
     for (const timer of staleTimers.values()) window.clearTimeout(timer);
-    streamFlushTimers.clear();
     reconnectTimers.clear();
     staleTimers.clear();
     // Flush pending cache writes for the old remote before switching.
@@ -1664,7 +1624,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
           return updated ? { sessionsByAgentId: updated } : {};
         });
         if (options.syncEvents !== false) {
-          syncGlobalEventRoster(get, set);
+          globalSyncCoordinator.syncRoster(get, set);
         }
         span.end("ok", { agentCount: bootstrap.agents.length });
       } catch (error) {
@@ -1732,7 +1692,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
           () => isCurrentClientGeneration(generation),
         );
         if (!isCurrentClientGeneration(generation)) return;
-        syncGlobalEventRoster(get, set);
+        globalSyncCoordinator.syncRoster(get, set);
       } finally {
         if (isCurrentClientGeneration(generation)) {
           // Then remeasure once more after the reconciled projections and hydration are scheduled.
@@ -2529,7 +2489,10 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
               },
             };
           });
-          rebaseGlobalRecoveryFromSession(agentId, get().sessionsByAgentId[agentId]);
+          globalSyncCoordinator.rebaseRecoveryFromSession(
+            agentId,
+            get().sessionsByAgentId[agentId],
+          );
           startRuntimeSpan(trace, "ui.session_state_transition", {
             state: cached ? "cache_hit/stale" : "cache_miss/refreshing",
           }).end("ok");
@@ -3151,7 +3114,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       if (!isCurrentClientRequest(request)) return;
       sessionCacheWriter?.discard(agentId);
       await cacheDeleteSession(currentRemoteKey(runtimeConnectionConfig), agentId);
-      unregisterAgentForEvents(agentId);
+      globalSyncCoordinator.unregister(agentId);
       stopAgentEventStream(agentId, set);
       set((state) => {
         const sessionsByAgentId = { ...state.sessionsByAgentId };
@@ -3219,7 +3182,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       onEvent: (event) => {
         if (!isCurrentClientRequest(request)) return;
         markStreamActivity(set, agentId);
-        enqueueStreamEvent(set, agentId, event);
+        globalSyncCoordinator.enqueueStreamEvent(set, agentId, event);
       },
       onClose: () => {
         if (isCurrentClientRequest(request)) {
@@ -3244,36 +3207,20 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     stopAgentEventStream(agentId, set);
   },
   startGlobalEventStream: () => {
-    startGlobalEventStream(get, set);
+    globalSyncCoordinator.start(get, set);
   },
   stopGlobalEventStream: () => {
-    stopGlobalEventStream(set);
+    globalSyncCoordinator.stop(set);
   },
   registerAgentForEvents: (agentId) => {
-    registerAgentForEvents(get, set, agentId);
+    globalSyncCoordinator.register(get, set, agentId);
   },
   unregisterAgentForEvents: (agentId) => {
-    unregisterAgentForEvents(agentId);
+    globalSyncCoordinator.unregister(agentId);
   },
   retryAgentSync: (agentId) => {
     if (!agentId) return;
-    if (!globalStreamSubscribedAgents.has(agentId)) {
-      registerAgentForEvents(get, set, agentId);
-      return;
-    }
-    clearGlobalBackfillRetry(agentId);
-    setStreamState(set, agentId, "recovering", {
-      syncError: undefined,
-      syncRetryAttempt: undefined,
-      syncRetryAt: undefined,
-    });
-    if (!globalEventStream) {
-      startGlobalEventStream(get, set);
-      return;
-    }
-    globalStreamCatchUpPendingAgents.add(agentId);
-    set({ globalStreamStatus: "catching_up" });
-    void recoverRegisteredGlobalAgent(get, set, agentId, captureClientRequest());
+    globalSyncCoordinator.retryAgentSync(get, set, agentId);
   },
 }));
 
@@ -3420,421 +3367,11 @@ function clearAgentDetailRetry(agentId: string): void {
   agentDetailRetryAttempts.delete(agentId);
 }
 
-// ─── Global event stream ────────────────────────────────────────────
-
-function startGlobalEventStream(get: () => RuntimeStoreState, set: StoreSet): void {
-  if (globalEventStream) return;
-
-  set({ globalStreamStatus: "connecting" });
-  const trace = createRuntimeTrace("stream.connect", { trigger: "stream.connect" });
-  const connectSpan = startRuntimeSpan(trace, "sse.connect");
-  const request = captureClientRequest();
-  const subscription = request.client.streamGlobalEvents({
-    onOpen: () => {
-      if (!isCurrentClientRequest(request)) return;
-      globalStreamReconnectAttempt = 0;
-      connectSpan.end("ok");
-      scheduleGlobalStaleWatchdog(get, set);
-      void Promise.resolve().then(() => catchUpGlobalEventStream(get, set, request));
-    },
-    onActivity: () => {
-      if (!isCurrentClientRequest(request)) return;
-      scheduleGlobalStaleWatchdog(get, set);
-    },
-    onEvent: (event) => {
-      if (!isCurrentClientRequest(request)) return;
-      scheduleGlobalStaleWatchdog(get, set);
-      dispatchGlobalStreamEvent(get, set, event);
-    },
-    onClose: () => {
-      if (isCurrentClientRequest(request)) {
-        scheduleGlobalStreamReconnect(get, set, "global event stream closed");
-      }
-    },
-    onError: (error) => {
-      if (isCurrentClientRequest(request)) {
-        scheduleGlobalStreamReconnect(get, set, error.message);
-      }
-    },
-  });
-  if (!subscription) return;
-  globalEventStream = subscription;
-}
-
-function stopGlobalEventStream(set: StoreSet): void {
-  globalEventStream?.close();
-  globalEventStream = undefined;
-  if (globalStreamReconnectTimer != null) {
-    window.clearTimeout(globalStreamReconnectTimer);
-    globalStreamReconnectTimer = undefined;
-  }
-  if (globalStreamStaleTimer != null) {
-    window.clearTimeout(globalStreamStaleTimer);
-    globalStreamStaleTimer = undefined;
-  }
-  globalStreamReconnectAttempt = 0;
-  globalStreamCatchUpPendingAgents.clear();
-  for (const agentId of Array.from(globalBackfillRetryTimers.keys())) {
-    clearGlobalBackfillRetry(agentId);
-  }
-  set({ globalStreamStatus: "idle" });
-  // Flush any pending events for all agents.
-  for (const agentId of globalStreamSubscribedAgents) {
-    flushStreamEvents(set, agentId);
-  }
-}
-
-function registerAgentForEvents(
-  get: () => RuntimeStoreState,
-  set: StoreSet,
-  agentId: string,
-): void {
-  const wasSubscribed = globalStreamSubscribedAgents.has(agentId);
-  globalStreamSubscribedAgents.add(agentId);
-  if (!wasSubscribed && !globalEventRecovery.snapshotFor(agentId)) {
-    const session = get().sessionsByAgentId[agentId];
-    globalEventRecovery.register(
-      agentId,
-      contiguousEventSeq(session),
-      session?.eventLogEpoch,
-      observedEventSeq(session),
-    );
-  }
-  // Start global stream if not running.
-  startGlobalEventStream(get, set);
-  const globalStreamStatus = get().globalStreamStatus;
-  if (
-    !wasSubscribed &&
-    (
-      globalStreamStatus === "streaming" ||
-      globalStreamStatus === "catching_up"
-    )
-  ) {
-    void catchUpRegisteredAgent(get, set, agentId);
-  }
-}
-
-function unregisterAgentForEvents(agentId: string): void {
-  globalStreamSubscribedAgents.delete(agentId);
-  globalStreamCatchUpPendingAgents.delete(agentId);
-  globalRecoveryBaselineInFlight.delete(agentId);
-  clearGlobalBackfillRetry(agentId);
-  globalEventRecovery.unregister(agentId);
-}
-
-async function catchUpGlobalEventStream(
-  get: () => RuntimeStoreState,
-  set: StoreSet,
-  request: ClientRequest,
-): Promise<void> {
-  const agentIds = Array.from(globalStreamSubscribedAgents);
-  globalStreamCatchUpPendingAgents.clear();
-  agentIds.forEach((agentId) => globalStreamCatchUpPendingAgents.add(agentId));
-  set({ globalStreamStatus: "catching_up" });
-  await runWithConcurrencyLimit(
-    agentIds,
-    GLOBAL_BACKFILL_CONCURRENCY,
-    async (agentId) => {
-      if (!isCurrentClientRequest(request) || !globalEventStream) return;
-      await recoverRegisteredGlobalAgent(get, set, agentId, request);
-    },
-    () => isCurrentClientRequest(request) && Boolean(globalEventStream),
-  );
-  if (isCurrentClientRequest(request) && globalEventStream && globalStreamCatchUpPendingAgents.size === 0) {
-    set({ globalStreamStatus: "streaming" });
-  }
-}
-
-function catchUpRegisteredAgent(
-  get: () => RuntimeStoreState,
-  set: StoreSet,
-  agentId: string,
-): Promise<void> {
-  if (globalStreamCatchUpPendingAgents.has(agentId)) return Promise.resolve();
-  const request = captureClientRequest();
-  globalStreamCatchUpPendingAgents.add(agentId);
-  set({ globalStreamStatus: "catching_up" });
-  return recoverRegisteredGlobalAgent(get, set, agentId, request);
-}
-
-async function recoverRegisteredGlobalAgent(
-  get: () => RuntimeStoreState,
-  set: StoreSet,
-  agentId: string,
-  request: ClientRequest,
-): Promise<void> {
-  try {
-    await ensureGlobalRecoveryBaseline(get, set, agentId);
-    if (!isCurrentClientRequest(request) || !globalEventStream) return;
-    const recovered = await backfillAgentEvents(get, set, agentId, true);
-    if (recovered) completeGlobalStreamCatchUp(set, agentId);
-  } catch (error) {
-    scheduleGlobalBackfillRetry(get, set, agentId, error);
-  }
-}
-
-function completeGlobalStreamCatchUp(set: StoreSet, agentId: string): void {
-  globalStreamCatchUpPendingAgents.delete(agentId);
-  if (globalEventStream && globalStreamCatchUpPendingAgents.size === 0) {
-    set({ globalStreamStatus: "streaming" });
-  }
-}
-
-async function ensureGlobalRecoveryBaseline(
-  get: () => RuntimeStoreState,
-  set: StoreSet,
-  agentId: string,
-): Promise<void> {
-  const session = get().sessionsByAgentId[agentId];
-  if (session?.eventSeqs.length) {
-    rebaseGlobalRecoveryFromSession(agentId, session);
-    return;
-  }
-  const existing = globalRecoveryBaselineInFlight.get(agentId);
-  if (existing) return existing;
-  const generation = clientGeneration;
-  let initialization!: Promise<void>;
-  initialization = (async () => {
-    const page = await runtimeClient.getAgentEvents(agentId, {
-      order: "desc",
-      limit: GLOBAL_BACKFILL_LIMIT,
-    });
-    if (
-      !isCurrentClientGeneration(generation) ||
-      globalRecoveryBaselineInFlight.get(agentId) !== initialization ||
-      !globalStreamSubscribedAgents.has(agentId)
-    ) return;
-    const events = (page.events ?? [])
-      .filter((event) => event.event_seq != null)
-      .map((event) => streamEventFromBackfill(event, agentId, page.event_log_epoch));
-    const seqs = eventSeqs(events);
-    const baselineSeq = seqs.length ? Math.max(0, seqs[0] - 1) : 0;
-    globalEventRecovery.rebase(agentId, baselineSeq, page.event_log_epoch);
-    for (const seq of seqs) {
-      globalEventRecovery.observe(agentId, seq, page.event_log_epoch);
-    }
-    if (events.length) applyStreamEvents(set, agentId, events);
-  })().finally(() => {
-    if (globalRecoveryBaselineInFlight.get(agentId) === initialization) {
-      globalRecoveryBaselineInFlight.delete(agentId);
-    }
-  });
-  globalRecoveryBaselineInFlight.set(agentId, initialization);
-  return initialization;
-}
-
-function syncGlobalEventRoster(get: () => RuntimeStoreState, set: StoreSet): void {
-  const agentIds = new Set(get().bootstrap.agents.map((agent) => agent.id));
-  for (const agentId of Array.from(globalStreamSubscribedAgents)) {
-    if (!agentIds.has(agentId)) unregisterAgentForEvents(agentId);
-  }
-  for (const agentId of agentIds) {
-    registerAgentForEvents(get, set, agentId);
-  }
-}
-
-function contiguousEventSeq(session: AgentSessionState | undefined): number {
-  if (!session) return 0;
-  return session.gaps[0]?.afterSeq ?? highestSeq(session.eventSeqs) ?? session.newestSeq ?? 0;
-}
-
-function observedEventSeq(session: AgentSessionState | undefined): number {
-  return session ? highestSeq(session.eventSeqs) ?? session.newestSeq ?? 0 : 0;
-}
-
-function rebaseGlobalRecoveryFromSession(
-  agentId: string,
-  session: AgentSessionState | undefined,
-): void {
-  if (!globalStreamSubscribedAgents.has(agentId)) return;
-  globalRecoveryBaselineInFlight.delete(agentId);
-  globalEventRecovery.rebase(
-    agentId,
-    contiguousEventSeq(session),
-    session?.eventLogEpoch,
-    observedEventSeq(session),
-  );
-}
-
-function dispatchGlobalStreamEvent(
-  get: () => RuntimeStoreState,
-  set: StoreSet,
-  event: StreamEventEnvelopeDto,
-): void {
-  const agentId = event.agent_id;
-  if (!agentId || !globalStreamSubscribedAgents.has(agentId)) return;
-
-  const incomingEpoch = event.event_log_epoch || undefined;
-  const session = useRuntimeStore.getState().sessionsByAgentId[agentId];
-  if (session && shouldResetForEventLogEpoch(session, incomingEpoch)) {
-    pendingStreamEvents.delete(agentId);
-  }
-  const seq = event.event_seq;
-  if (seq != null) {
-    const recovery = globalEventRecovery.observe(agentId, seq, incomingEpoch);
-    if (recovery.recovering) {
-      setAgentLiveStatus(set, agentId, "recovering");
-      void backfillAgentEvents(get, set, agentId);
-    }
-  }
-
-  enqueueStreamEvent(set, agentId, event);
-}
-
-async function backfillAgentEvents(
-  get: () => RuntimeStoreState,
-  set: StoreSet,
-  agentId: string,
-  force = false,
-): Promise<boolean> {
-  const generation = clientGeneration;
-  const span = startRuntimeSpan(
-    createRuntimeTrace("stream.reconnect", { agentId, trigger: "events.backfill" }),
-    "events.backfill",
-    { force },
-  );
-  let eventCount = 0;
-  try {
-    const result = await recoverEventGap(globalEventRecovery, agentId, {
-      force,
-      limit: GLOBAL_BACKFILL_LIMIT,
-      maxPages: GLOBAL_BACKFILL_MAX_PAGES,
-      fetchPage: async (afterSeq) => {
-        const page = await runtimeClient.getAgentEvents(agentId, {
-          afterSeq,
-          order: "asc",
-          limit: GLOBAL_BACKFILL_LIMIT,
-        });
-        if (!isCurrentClientGeneration(generation)) return { eventLogEpoch: page.event_log_epoch, events: [] };
-        return {
-          eventLogEpoch: page.event_log_epoch,
-          events: (page.events ?? [])
-            .filter((event) => event.event_seq != null)
-            .map((event) => streamEventFromBackfill(event, agentId, page.event_log_epoch)),
-        };
-      },
-      applyEvents: (events) => {
-        eventCount += events.length;
-        if (isCurrentClientGeneration(generation)) {
-          applyStreamEvents(set, agentId, events);
-        }
-      },
-    });
-    if (!result.complete) {
-      scheduleGlobalBackfillRetry(get, set, agentId);
-      span.end("ok", { eventCount, incomplete: true });
-      return false;
-    }
-    clearGlobalBackfillRetry(agentId);
-    setStreamState(set, agentId, "streaming", {
-      syncError: undefined,
-      syncRetryAttempt: undefined,
-      syncRetryAt: undefined,
-    });
-    span.end("ok", { eventCount });
-    return true;
-  } catch (error) {
-    span.end("error");
-    scheduleGlobalBackfillRetry(get, set, agentId, error);
-    return false;
-  }
-}
-
-function scheduleGlobalBackfillRetry(
-  get: () => RuntimeStoreState,
-  set: StoreSet,
-  agentId: string,
-  error?: unknown,
-): void {
-  if (!globalStreamSubscribedAgents.has(agentId) || globalBackfillRetryTimers.has(agentId)) return;
-  const attempt = (globalBackfillRetryAttempts.get(agentId) ?? 0) + 1;
-  globalBackfillRetryAttempts.set(agentId, attempt);
-  const delay = backfillRetryDelayMs(attempt);
-  setStreamState(set, agentId, "recovering", {
-    syncError: error == null ? undefined : error instanceof Error ? error.message : String(error),
-    syncRetryAttempt: attempt,
-    syncRetryAt: Date.now() + delay,
-  });
-  const timer = window.setTimeout(() => {
-    globalBackfillRetryTimers.delete(agentId);
-    void recoverRegisteredGlobalAgent(get, set, agentId, captureClientRequest());
-  }, delay);
-  globalBackfillRetryTimers.set(agentId, timer);
-}
-
-function clearGlobalBackfillRetry(agentId: string): void {
-  const timer = globalBackfillRetryTimers.get(agentId);
-  if (timer != null) window.clearTimeout(timer);
-  globalBackfillRetryTimers.delete(agentId);
-  globalBackfillRetryAttempts.delete(agentId);
-}
-
-export function streamEventFromBackfill(
-  event: StreamEventEnvelopeDto,
-  agentId: string,
-  pageEventLogEpoch: string,
-): StreamEventEnvelopeDto {
-  return {
-    ...event,
-    event_log_epoch: event.event_log_epoch || pageEventLogEpoch,
-    agent_id: agentId,
-  };
-}
-
-function scheduleGlobalStaleWatchdog(get: () => RuntimeStoreState, set: StoreSet): void {
-  if (globalStreamStaleTimer != null) window.clearTimeout(globalStreamStaleTimer);
-  globalStreamStaleTimer = window.setTimeout(() => {
-    if (!globalEventStream) return;
-    for (const agentId of globalStreamSubscribedAgents) {
-      flushStreamEvents(set, agentId);
-    }
-    scheduleGlobalStreamReconnect(get, set, "global event stream idle timeout");
-  }, GLOBAL_STREAM_STALE_TIMEOUT_MS);
-}
-
-function scheduleGlobalStreamReconnect(
-  get: () => RuntimeStoreState,
-  set: StoreSet,
-  reason: string,
-): void {
-  globalEventStream?.close();
-  globalEventStream = undefined;
-  globalStreamCatchUpPendingAgents.clear();
-  for (const agentId of Array.from(globalBackfillRetryTimers.keys())) {
-    clearGlobalBackfillRetry(agentId);
-  }
-  if (globalStreamStaleTimer != null) {
-    window.clearTimeout(globalStreamStaleTimer);
-    globalStreamStaleTimer = undefined;
-  }
-  if (globalStreamReconnectTimer != null) return;
-
-  globalStreamReconnectAttempt += 1;
-  set({ globalStreamStatus: "reconnecting" });
-  const delay = reconnectDelayMs(globalStreamReconnectAttempt);
-  for (const agentId of globalStreamSubscribedAgents) {
-    setStreamState(set, agentId, "reconnecting", {
-      reconnectAttempt: globalStreamReconnectAttempt,
-      error: reason,
-    });
-  }
-  globalStreamReconnectTimer = window.setTimeout(() => {
-    globalStreamReconnectTimer = undefined;
-    startGlobalEventStream(get, set);
-  }, delay);
-}
-
-// ─── End global event stream ────────────────────────────────────────
 
 function stopAgentEventStream(agentId: string, set?: StoreSet): void {
-  if (set) flushStreamEvents(set, agentId);
+  if (set) globalSyncCoordinator.stopBatchingAgent(set, agentId);
   activeEventStreams.get(agentId)?.close();
   activeEventStreams.delete(agentId);
-  const flushTimer = streamFlushTimers.get(agentId);
-  if (flushTimer != null) {
-    window.clearTimeout(flushTimer);
-    streamFlushTimers.delete(agentId);
-  }
   const timer = reconnectTimers.get(agentId);
   if (timer != null) {
     window.clearTimeout(timer);
@@ -4022,35 +3559,6 @@ function firstStringField(record: Record<string, unknown> | undefined, keys: str
   return undefined;
 }
 
-function enqueueStreamEvent(set: StoreSet, agentId: string, event: StreamEventEnvelopeDto): void {
-  const pending = pendingStreamEvents.get(agentId);
-  const incomingEpoch = event.event_log_epoch || undefined;
-  const pendingEpoch = pending ? eventLogEpochFromEvents(pending) : undefined;
-  if (pending && incomingEpoch && pendingEpoch && incomingEpoch !== pendingEpoch) {
-    pendingStreamEvents.set(agentId, [event]);
-    return;
-  }
-  if (pending) {
-    pending.push(event);
-  } else {
-    pendingStreamEvents.set(agentId, [event]);
-  }
-
-  if (streamFlushTimers.has(agentId)) return;
-  const timer = window.setTimeout(() => {
-    streamFlushTimers.delete(agentId);
-    flushStreamEvents(set, agentId);
-  }, STREAM_FLUSH_INTERVAL_MS);
-  streamFlushTimers.set(agentId, timer);
-}
-
-function flushStreamEvents(set: StoreSet, agentId: string): void {
-  const events = pendingStreamEvents.get(agentId);
-  if (!events?.length) return;
-  pendingStreamEvents.delete(agentId);
-  applyStreamEvents(set, agentId, events);
-}
-
 function setAgentLiveStatus(set: StoreSet, agentId: string, liveStatus: AgentLiveStatus): void {
   setStreamState(set, agentId, liveStatus);
 }
@@ -4097,7 +3605,7 @@ function scheduleStaleWatchdog(
   if (existing != null) window.clearTimeout(existing);
   const timer = window.setTimeout(() => {
     if (!activeEventStreams.has(agentId)) return;
-    flushStreamEvents(set, agentId);
+    globalSyncCoordinator.flushStreamEvents(set, agentId);
     setStreamState(set, agentId, "stale", { error: "event stream is stale; reconnecting" });
     activeEventStreams.get(agentId)?.close();
     activeEventStreams.delete(agentId);
@@ -4113,7 +3621,7 @@ function scheduleStreamReconnect(
   displayLevel: DisplayLevel,
   reason: string,
 ): void {
-  flushStreamEvents(set, agentId);
+  globalSyncCoordinator.flushStreamEvents(set, agentId);
   activeEventStreams.get(agentId)?.close();
   activeEventStreams.delete(agentId);
   const staleTimer = staleTimers.get(agentId);
@@ -4140,13 +3648,6 @@ function reconnectDelayMs(attempt: number): number {
   const exponential = Math.min(STREAM_RECONNECT_MAX_MS, STREAM_RECONNECT_BASE_MS * 2 ** Math.max(0, attempt - 1));
   const jitter = Math.floor(Math.random() * 500);
   return exponential + jitter;
-}
-
-export function backfillRetryDelayMs(attempt: number): number {
-  return Math.min(
-    STREAM_RECONNECT_MAX_MS,
-    STREAM_RECONNECT_BASE_MS * 2 ** Math.max(0, attempt - 1),
-  );
 }
 
 function setSessionModelError(set: StoreSet, agentId: string, error: string | undefined): void {
@@ -4742,8 +4243,8 @@ export function applyStreamEvents(set: StoreSet, agentId: string, events: Stream
   if (!incomingEvents.length) return;
   const currentSnapshot = useRuntimeStore.getState().sessionsByAgentId[agentId];
   if (currentSnapshot && hasEventIdentityConflict(currentSnapshot, incomingEvents)) {
-    pendingStreamEvents.delete(agentId);
-    globalEventRecovery.unregister(agentId);
+    globalSyncCoordinator.discardPendingEvents(agentId);
+    globalSyncCoordinator.unregisterRecovery(agentId);
     set((state) => ({
       sessionsByAgentId: {
         ...state.sessionsByAgentId,
@@ -4756,7 +4257,7 @@ export function applyStreamEvents(set: StoreSet, agentId: string, events: Stream
     void useRuntimeStore.getState().refreshAgentDetail(agentId, useRuntimeStore.getState().displayLevel);
     return;
   }
-  const liveStatus = globalEventRecovery.snapshotFor(agentId)?.recovering ? "recovering" : "streaming";
+  const liveStatus = globalSyncCoordinator.isRecovering(agentId) ? "recovering" : "streaming";
 
   set((state) => {
     const current = sessionForEventLogEpoch(
