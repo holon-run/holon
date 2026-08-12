@@ -161,6 +161,11 @@ export interface AgentSessionRepositoryDependencies<State extends AgentSessionRe
     displayLevel: DisplayLevel,
   ) => Partial<State>;
   markHydrationError: (state: State, agentId: string, error: string) => Partial<State>;
+  updateTargetEventState: (
+    state: State,
+    agentId: string,
+    update: { loading: boolean; error?: string },
+  ) => Partial<State>;
   missingMessageIds: (session: AgentSessionState | undefined) => string[];
   missingTranscriptIds: (session: AgentSessionState | undefined) => string[];
   missingBriefIds: (session: AgentSessionState | undefined) => string[];
@@ -227,8 +232,9 @@ export class AgentSessionRepository<State extends AgentSessionRepositoryState> {
       if (state.selectedAgentId && restoredAgentIds.includes(state.selectedAgentId)) {
         this.hydrateSelected(state.selectedAgentId, state.displayLevel);
       }
-    } catch {
+    } catch (error) {
       if (this.cacheContextIsCurrent(context)) this.cacheWriter = null;
+      console.warn("Failed to initialize the agent session cache.", error);
     }
   }
 
@@ -311,6 +317,16 @@ export class AgentSessionRepository<State extends AgentSessionRepositoryState> {
     this.scheduleBriefHydration(agentId, displayLevel);
   }
 
+  hydrateSelectedContent(agentId: string, displayLevel: DisplayLevel): void {
+    if (this.dependencies.get().selectedAgentId !== agentId) return;
+    this.scheduleMessageHydration(agentId, displayLevel);
+    this.scheduleTranscriptHydration(agentId, displayLevel);
+  }
+
+  hydrateBriefs(agentId: string, displayLevel: DisplayLevel): void {
+    this.scheduleBriefHydration(agentId, displayLevel);
+  }
+
   retryBriefHydration(
     agentId: string,
     briefId: string,
@@ -330,16 +346,9 @@ export class AgentSessionRepository<State extends AgentSessionRepositoryState> {
     const targetEventSeq = session?.targetEventSeq;
     if (targetEventSeq == null || session?.eventsBySeq[targetEventSeq]) return;
 
-    this.dependencies.set((state) => ({
-      sessionsByAgentId: {
-        ...state.sessionsByAgentId,
-        [agentId]: {
-          ...state.sessionsByAgentId[agentId],
-          targetEventLoading: true,
-          targetEventError: undefined,
-        },
-      },
-    } as Partial<State>));
+    this.dependencies.set((state) =>
+      this.dependencies.updateTargetEventState(state, agentId, { loading: true }),
+    );
 
     try {
       const page = await this.dependencies.getClient().getAgentEvents(agentId, {
@@ -364,28 +373,17 @@ export class AgentSessionRepository<State extends AgentSessionRepositoryState> {
           },
         ),
       );
-      this.dependencies.set((state) => ({
-        sessionsByAgentId: {
-          ...state.sessionsByAgentId,
-          [agentId]: {
-            ...state.sessionsByAgentId[agentId],
-            targetEventLoading: false,
-            targetEventError: undefined,
-          },
-        },
-      } as Partial<State>));
+      this.dependencies.set((state) =>
+        this.dependencies.updateTargetEventState(state, agentId, { loading: false }),
+      );
     } catch (error) {
       if (!this.dependencies.isCurrentGeneration(generation)) return;
-      this.dependencies.set((state) => ({
-        sessionsByAgentId: {
-          ...state.sessionsByAgentId,
-          [agentId]: {
-            ...state.sessionsByAgentId[agentId],
-            targetEventLoading: false,
-            targetEventError: error instanceof Error ? error.message : String(error),
-          },
-        },
-      } as Partial<State>));
+      this.dependencies.set((state) =>
+        this.dependencies.updateTargetEventState(state, agentId, {
+          loading: false,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
     }
   }
 
@@ -424,6 +422,8 @@ export class AgentSessionRepository<State extends AgentSessionRepositoryState> {
   ): Promise<void> {
     const generation = this.dependencies.getGeneration();
     const session = this.dependencies.get().sessionsByAgentId[agentId];
+    // When cached or streamed events leave a gap, newestSeq is ahead of the
+    // contiguous range. Resume from the gap cursor so catch-up fills it.
     const gaps = session?.gaps ?? [];
     const initialAfterSeq = gaps.length > 0 ? gaps[0].afterSeq : session?.newestSeq;
     let eventCount = 0;
@@ -455,6 +455,8 @@ export class AgentSessionRepository<State extends AgentSessionRepositoryState> {
       refreshAgentState ||= events.some(this.dependencies.isAgentStateInvalidationEvent);
     };
 
+    // Fetch the newest tail first so current activity appears immediately
+    // while any older gap is filled in the background.
     const tailPage = await client.getAgentEvents(agentId, { limit: 100, order: "desc" });
     if (!this.dependencies.isCurrentGeneration(generation)) {
       span.end("cancelled");
@@ -474,6 +476,8 @@ export class AgentSessionRepository<State extends AgentSessionRepositoryState> {
       this.hydrateSession(agentId, "debug");
     }
 
+    // The unfiltered tail can be entirely debug-level for active agents.
+    // Fetch a filtered tail so the visible timeline has meaningful content.
     if (displayLevel) {
       const displayTailPage = await client.getAgentEvents(agentId, {
         limit: 80,
@@ -500,6 +504,7 @@ export class AgentSessionRepository<State extends AgentSessionRepositoryState> {
       );
     }
 
+    // Backfill ascending until the cursor overlaps the tail's oldest event.
     const hasGap =
       tailHasOlder &&
       tailOldestSeq != null &&

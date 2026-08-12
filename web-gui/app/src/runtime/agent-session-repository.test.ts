@@ -140,6 +140,17 @@ function createHarness(session: AgentSessionState = emptyAgentSession()) {
       };
     },
     markHydrationError: () => ({}),
+    updateTargetEventState: (current, agentId, update) => ({
+      sessionsByAgentId: {
+        ...current.sessionsByAgentId,
+        [agentId]: {
+          ...emptyAgentSession(),
+          ...current.sessionsByAgentId[agentId],
+          targetEventLoading: update.loading,
+          targetEventError: update.error,
+        },
+      },
+    }),
     missingMessageIds: (current) => Object.keys(current?.referencedMessageIds ?? {}),
     missingTranscriptIds: () => [],
     missingBriefIds: (current) => Object.keys(current?.referencedBriefIds ?? {}),
@@ -243,6 +254,42 @@ describe("AgentSessionRepository", () => {
     await Promise.resolve();
 
     expect(harness.getState().sessionsByAgentId["agent-a"].messagesById).toEqual({});
+  });
+
+  it("hydrates selected content without requiring the agent route", () => {
+    const harness = createHarness({
+      ...emptyAgentSession(),
+      referencedMessageIds: { "message-1": true },
+      referencedBriefIds: { "brief-1": true },
+    });
+    harness.dependencies.set({ route: "dashboard" });
+
+    harness.repository.hydrateSelectedContent("agent-a", "info");
+
+    expect(harness.client.getAgentMessagesBatch).toHaveBeenCalledWith(
+      "agent-a",
+      ["message-1"],
+    );
+    expect(harness.client.getAgentBriefsById).not.toHaveBeenCalled();
+  });
+
+  it("hydrates briefs without loading background agent content", () => {
+    const harness = createHarness({
+      ...emptyAgentSession(),
+      referencedMessageIds: { "message-1": true },
+      referencedBriefIds: { "brief-1": true },
+    });
+    harness.dependencies.set({ selectedAgentId: "agent-b" });
+
+    harness.repository.hydrateSelectedContent("agent-a", "info");
+    harness.repository.hydrateBriefs("agent-a", "info");
+
+    expect(harness.client.getAgentMessagesBatch).not.toHaveBeenCalled();
+    expect(harness.client.getAgentTranscriptEntriesBatch).not.toHaveBeenCalled();
+    expect(harness.client.getAgentBriefsById).toHaveBeenCalledWith(
+      "agent-a",
+      ["brief-1"],
+    );
   });
 
   it("retries failed brief hydration after the configured delay", async () => {

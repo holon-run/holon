@@ -1057,6 +1057,17 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
         },
       },
     }),
+    updateTargetEventState: (state, agentId, update) => ({
+      sessionsByAgentId: {
+        ...state.sessionsByAgentId,
+        [agentId]: {
+          ...emptyAgentSession(),
+          ...state.sessionsByAgentId[agentId],
+          targetEventLoading: update.loading,
+          targetEventError: update.error,
+        },
+      },
+    }),
     missingMessageIds: missingMessageIdsForHydration,
     missingTranscriptIds: missingTranscriptEntryIdsForHydration,
     missingBriefIds: missingBriefIdsForHydration,
@@ -4036,17 +4047,9 @@ export function applyStreamEvents(set: StoreSet, agentId: string, events: Stream
       },
     };
   });
-  if (useRuntimeStore.getState().selectedAgentId === agentId) {
-    agentSessionRepository.hydrateSelected(
-      agentId,
-      useRuntimeStore.getState().displayLevel,
-    );
-  } else {
-    agentSessionRepository.hydrateSession(
-      agentId,
-      useRuntimeStore.getState().displayLevel,
-    );
-  }
+  const displayLevel = useRuntimeStore.getState().displayLevel;
+  agentSessionRepository.hydrateSelectedContent(agentId, displayLevel);
+  agentSessionRepository.hydrateBriefs(agentId, displayLevel);
   agentSessionRepository.scheduleCacheWrite(agentId);
   if (events.some((event) => canApplySessionEvent(event) && isWorkItemCacheInvalidationEvent(event))) {
     void useRuntimeStore.getState().refreshAgentWorkItems(agentId);
