@@ -93,6 +93,9 @@ pub(super) fn validate_execution_commands_tx(
         if let ExecutionProtocolCommand::AdvanceWorkItemSourceRevision(command) = command {
             validate_work_item_source_revision_advance(command, work_item_mutations)?;
         }
+        if let ExecutionProtocolCommand::RecoverInterruptedTaskResultClaim(command) = command {
+            validate_recover_interrupted_task_result_claim(tx, agent_id, command)?;
+        }
         if let ExecutionProtocolCommand::SetWorkItemReadiness(command) = command {
             validate_set_work_item_readiness(command, work_item_mutations, wait_conditions)?;
         }
@@ -323,6 +326,9 @@ fn reduce(
         ExecutionProtocolCommand::Interrupt(command) => {
             execution_protocol::interrupt_execution(state, command)
         }
+        ExecutionProtocolCommand::RecoverInterruptedTaskResultClaim(command) => {
+            execution_protocol::recover_interrupted_task_result_claim(state, command)
+        }
     }
 }
 
@@ -362,7 +368,122 @@ fn command_identity(command: &ExecutionProtocolCommand) -> (&'static str, &str) 
         ExecutionProtocolCommand::Interrupt(command) => {
             ("interrupt_execution", &command.outcome_id)
         }
+        ExecutionProtocolCommand::RecoverInterruptedTaskResultClaim(command) => {
+            ("recover_interrupted_task_result_claim", &command.command_id)
+        }
     }
+}
+
+fn validate_recover_interrupted_task_result_claim(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    command: &execution_protocol::RecoverInterruptedTaskResultClaim,
+) -> Result<()> {
+    let work_item = tx
+        .query_row(
+            "SELECT payload_json
+             FROM work_items
+             WHERE work_item_id = ?1 AND agent_id = ?2",
+            [&command.work_item_id, agent_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|payload| serde_json::from_str::<crate::types::WorkItemRecord>(&payload))
+        .transpose()?
+        .ok_or_else(|| anyhow!("TaskResult claim recovery WorkItem is missing"))?;
+    if work_item.state != crate::types::WorkItemState::Open
+        || work_item.revision != command.source_revision
+        || work_item.blocked_by.is_some()
+    {
+        bail!("TaskResult claim recovery durable WorkItem fence is stale");
+    }
+    let task = tx
+        .query_row(
+            "SELECT payload_json FROM tasks WHERE task_id = ?1",
+            [&command.task_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|payload| serde_json::from_str::<crate::types::TaskRecord>(&payload))
+        .transpose()?
+        .ok_or_else(|| anyhow!("TaskResult claim recovery task is missing"))?;
+    if task.agent_id != agent_id
+        || task.work_item_id.as_deref() != Some(command.work_item_id.as_str())
+        || task.parent_message_id.as_deref() != Some(command.result_message_id.as_str())
+        || !matches!(
+            task.status,
+            crate::types::TaskStatus::Completed
+                | crate::types::TaskStatus::Failed
+                | crate::types::TaskStatus::Cancelled
+                | crate::types::TaskStatus::Interrupted
+        )
+        || task.rejoin_fence().as_ref() != Ok(&command.rejoin)
+    {
+        bail!("TaskResult claim recovery durable task fence is stale");
+    }
+    let message = tx
+        .query_row(
+            "SELECT payload_json
+             FROM messages
+             WHERE agent_id = ?1 AND message_id = ?2",
+            [agent_id, command.result_message_id.as_str()],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|payload| serde_json::from_str::<crate::types::MessageEnvelope>(&payload))
+        .transpose()?
+        .ok_or_else(|| anyhow!("TaskResult claim recovery message is missing"))?;
+    if message.kind != crate::types::MessageKind::TaskResult
+        || message.authority_class != crate::types::AuthorityClass::RuntimeInstruction
+        || message.admission_context != Some(crate::types::AdmissionContext::RuntimeOwned)
+        || message.delivery_surface != Some(crate::types::MessageDeliverySurface::TaskRejoin)
+        || message.task_id.as_deref() != Some(command.task_id.as_str())
+        || message.work_item_id.as_deref() != Some(command.work_item_id.as_str())
+        || !matches!(
+            &message.origin,
+            crate::types::MessageOrigin::Task { task_id } if task_id == &command.task_id
+        )
+    {
+        bail!("TaskResult claim recovery message provenance is invalid");
+    }
+    let matching_waits = {
+        let mut statement = tx.prepare(
+            "SELECT payload_json
+             FROM wait_conditions
+             WHERE agent_id = ?1
+               AND work_item_id = ?2
+               AND status = 'resolved'",
+        )?;
+        let count = statement
+            .query_map([agent_id, command.work_item_id.as_str()], |row| {
+                row.get::<_, String>(0)
+            })?
+            .map(|row| {
+                Ok(serde_json::from_str::<crate::types::WaitConditionRecord>(
+                    &row?,
+                )?)
+            })
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .filter(|wait| {
+                wait.id == command.wait_id
+                    && wait.kind == crate::types::WaitConditionKind::Task
+                    && wait.trigger_message_id() == Some(command.result_message_id.as_str())
+                    && wait.wake_sources.iter().any(|source| {
+                        matches!(
+                            source,
+                            crate::types::WakeSource::TaskResult { task_id }
+                                if task_id == &command.task_id
+                        )
+                    })
+            })
+            .count();
+        count
+    };
+    if matching_waits != 1 {
+        bail!("TaskResult claim recovery requires one exact resolved task wait");
+    }
+    Ok(())
 }
 
 fn validate_set_work_item_waiting(
@@ -860,6 +981,7 @@ impl RuntimeTransitionRepository<'_> {
             !matches!(
                 command,
                 ExecutionProtocolCommand::ReconcileWorkItemContinuationYield(_)
+                    | ExecutionProtocolCommand::RecoverInterruptedTaskResultClaim(_)
             )
         }) {
             bail!("execution protocol recovery plan contains a non-recovery command");

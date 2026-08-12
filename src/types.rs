@@ -2807,6 +2807,39 @@ pub struct TaskRecord {
 }
 
 impl TaskRecord {
+    pub fn rejoin_fence(
+        &self,
+    ) -> std::result::Result<crate::domain::execution_protocol::RejoinFence, String> {
+        let detail = self
+            .detail
+            .as_ref()
+            .and_then(serde_json::Value::as_object)
+            .ok_or_else(|| "task rejoin contract is missing task detail".to_string())?;
+        let obligation_id = detail
+            .get("rejoin_obligation_id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "task rejoin contract is missing obligation identity".to_string())?;
+        if obligation_id != self.id {
+            return Err("task rejoin obligation identity does not match task identity".into());
+        }
+        let generation = detail
+            .get("rejoin_generation")
+            .and_then(serde_json::Value::as_u64)
+            .filter(|generation| *generation > 0)
+            .ok_or_else(|| "task rejoin contract is missing generation".to_string())?;
+        let parent_turn_id = detail
+            .get("parent_turn_id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "task rejoin contract is missing parent turn identity".to_string())?;
+        Ok(crate::domain::execution_protocol::RejoinFence {
+            obligation_id: obligation_id.to_string(),
+            generation,
+            parent_turn_id: parent_turn_id.to_string(),
+        })
+    }
+
     pub fn wait_policy(&self) -> TaskWaitPolicy {
         // Active tasks are never scheduler-blocking; terminal results drive re-entry.
         TaskWaitPolicy::Background

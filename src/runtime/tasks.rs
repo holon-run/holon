@@ -119,36 +119,7 @@ fn copy_task_rejoin_contract(task: &TaskRecord, detail: &mut serde_json::Value) 
 pub(super) fn task_rejoin_fence(
     task: &TaskRecord,
 ) -> Result<crate::domain::execution_protocol::RejoinFence> {
-    let detail = task
-        .detail
-        .as_ref()
-        .and_then(serde_json::Value::as_object)
-        .ok_or_else(|| anyhow!("task rejoin contract is missing task detail"))?;
-    let obligation_id = detail
-        .get(REJOIN_OBLIGATION_ID_DETAIL)
-        .and_then(serde_json::Value::as_str)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| anyhow!("task rejoin contract is missing obligation identity"))?;
-    if obligation_id != task.id {
-        return Err(anyhow!(
-            "task rejoin obligation identity does not match task identity"
-        ));
-    }
-    let generation = detail
-        .get(REJOIN_GENERATION_DETAIL)
-        .and_then(serde_json::Value::as_u64)
-        .filter(|generation| *generation > 0)
-        .ok_or_else(|| anyhow!("task rejoin contract is missing generation"))?;
-    let parent_turn_id = detail
-        .get(PARENT_TURN_ID_DETAIL)
-        .and_then(serde_json::Value::as_str)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| anyhow!("task rejoin contract is missing parent turn identity"))?;
-    Ok(crate::domain::execution_protocol::RejoinFence {
-        obligation_id: obligation_id.to_string(),
-        generation,
-        parent_turn_id: parent_turn_id.to_string(),
-    })
+    task.rejoin_fence().map_err(anyhow::Error::msg)
 }
 
 fn spawn_agent_task_label(initial_message: &str) -> String {

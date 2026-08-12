@@ -2506,6 +2506,20 @@ fn print_scheduler_recovery_report(
             candidate.target_queue_status
         );
     }
+    for candidate in report.task_result_claim_recoveries {
+        println!(
+            "- task_result_claim:{} attempt={} work_item={} eligible={} reason={} target={:?}",
+            candidate.message_id,
+            candidate.activation_id,
+            candidate.work_item_id,
+            candidate.eligible,
+            candidate.reason,
+            candidate
+                .proposed_queue_entry
+                .as_ref()
+                .map(|entry| &entry.status),
+        );
+    }
     for candidate in report.legacy_adoptions {
         println!(
             "- work_item:{}: adoption eligible={} reason={}",

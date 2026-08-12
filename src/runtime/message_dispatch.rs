@@ -18,9 +18,38 @@ impl RuntimeHandle {
         scheduler_state: &AgentState,
     ) -> Result<MessageDispatchPlan> {
         let task = match message.kind {
-            MessageKind::TaskStatus | MessageKind::TaskResult => {
+            MessageKind::TaskStatus => {
                 tasks::task_from_message(message, &message.agent_id).map(Some)
             }
+            MessageKind::TaskResult => tasks::task_from_message(message, &message.agent_id)
+                .or_else(|error| {
+                    let durable_task = message
+                        .task_id
+                        .as_deref()
+                        .filter(|task_id| {
+                            message.authority_class == AuthorityClass::RuntimeInstruction
+                                && message.admission_context == Some(AdmissionContext::RuntimeOwned)
+                                && message.delivery_surface
+                                    == Some(MessageDeliverySurface::TaskRejoin)
+                                && matches!(
+                                    &message.origin,
+                                    MessageOrigin::Task {
+                                        task_id: origin_task_id
+                                    } if origin_task_id == *task_id
+                                )
+                        })
+                        .map(|task_id| self.inner.storage.latest_task_record(task_id))
+                        .transpose()?
+                        .flatten()
+                        .filter(|task| {
+                            task.agent_id == message.agent_id
+                                && task.work_item_id == message.work_item_id
+                                && task.parent_message_id.as_deref() == Some(message.id.as_str())
+                                && task.terminal_reentry()
+                        });
+                    durable_task.ok_or(error)
+                })
+                .map(Some),
             _ => Ok(None),
         };
         let continuation_trigger =

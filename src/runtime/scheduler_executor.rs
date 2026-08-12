@@ -1187,6 +1187,38 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         let authoritative_work = existing_execution
             .as_ref()
             .and_then(|state| state.work_items.get(work_item_id));
+        let interrupted_task_result_attempt = if matches!(
+            scenario,
+            scheduler::CanonicalActivationScenario::ExactTaskRejoin { .. }
+        ) {
+            existing_execution.as_ref().and_then(|state| {
+                let matching = state
+                    .attempts
+                    .values()
+                    .filter(|attempt| {
+                        attempt.state
+                            == crate::domain::execution_protocol::ExecutionAttemptState::Interrupted
+                            && execution_attempt_matches_scenario(attempt, message, &scenario)
+                    })
+                    .collect::<Vec<_>>();
+                let [attempt] = matching.as_slice() else {
+                    return None;
+                };
+                Some((*attempt).clone())
+            })
+        } else {
+            None
+        };
+        let interrupted_task_result_replay = interrupted_task_result_attempt.is_some()
+            && authoritative_work.is_some_and(|record| {
+                matches!(
+                    &record.state,
+                    crate::domain::execution_protocol::WorkItemExecutionState::Runnable {
+                        recovery_ref: Some(recovery_ref),
+                        ..
+                    } if recovery_ref == "interrupted"
+                )
+            });
         if let scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation {
             expected_work_item_revision,
             ..
@@ -1205,7 +1237,9 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 });
             }
         }
-        let recovery_of_attempt_id = if matches!(
+        let recovery_of_attempt_id = if interrupted_task_result_replay {
+            interrupted_task_result_attempt.map(|attempt| attempt.attempt_id)
+        } else if matches!(
             scenario,
             scheduler::CanonicalActivationScenario::ProviderRecovery { .. }
         ) {
@@ -1269,7 +1303,8 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 &authoritative_work.state,
                 crate::domain::execution_protocol::WorkItemExecutionState::Waiting { wait, .. }
                     if wait.wait_id == wait_id
-            ) {
+            ) && !interrupted_task_result_replay
+            {
                 return Ok(CanonicalClaimOutcome::RejectQueued {
                     scenario_class,
                     reason: "canonical_wait_execution_authority_mismatch",
@@ -1278,12 +1313,14 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         } else if !matches!(
             scenario,
             scheduler::CanonicalActivationScenario::ProviderRecovery { .. }
-        ) && authoritative_work.is_some_and(|record| {
-            !matches!(
-                record.state,
-                crate::domain::execution_protocol::WorkItemExecutionState::Runnable { .. }
-            )
-        }) {
+        ) && !interrupted_task_result_replay
+            && authoritative_work.is_some_and(|record| {
+                !matches!(
+                    record.state,
+                    crate::domain::execution_protocol::WorkItemExecutionState::Runnable { .. }
+                )
+            })
+        {
             return Ok(CanonicalClaimOutcome::RejectQueued {
                 scenario_class,
                 reason: "canonical_work_item_execution_not_runnable",

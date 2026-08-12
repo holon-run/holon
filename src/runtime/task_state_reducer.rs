@@ -301,8 +301,8 @@ impl RuntimeHandle {
             })
             .into_iter()
             .collect();
-        let commit = self.inner.runtime_db.transitions().commit_task(
-            &crate::runtime_db::transitions::TaskTransitionCommand {
+        let commit =
+            self.commit_task_transition(&crate::runtime_db::transitions::TaskTransitionCommand {
                 agent_id,
                 task: persisted_task,
                 work_items,
@@ -316,8 +316,7 @@ impl RuntimeHandle {
                     && !task_will_change
                     && is_terminal_task_status(&task.status),
                 fault: self.take_transition_fault(),
-            },
-        )?;
+            })?;
         self.apply_transition_commit(commit).await;
         Ok(())
     }

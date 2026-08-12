@@ -102,6 +102,7 @@ pub(crate) enum QueueOperation {
     Admit,
     Claim,
     Interject,
+    Requeue,
     Settle,
     RepairDrop,
 }
@@ -1135,7 +1136,10 @@ impl RuntimeTransitionRepository<'_> {
                 let include_interrupted = match command.operation {
                     QueueOperation::Claim => true,
                     QueueOperation::Interject => false,
-                    QueueOperation::Admit | QueueOperation::Settle | QueueOperation::RepairDrop => {
+                    QueueOperation::Admit
+                    | QueueOperation::Requeue
+                    | QueueOperation::Settle
+                    | QueueOperation::RepairDrop => {
                         unreachable!("queue operation validation rejects this combination")
                     }
                 };
@@ -1240,7 +1244,10 @@ impl RuntimeTransitionRepository<'_> {
                 QueueMutation::Consume(record) => match command.operation {
                     QueueOperation::Claim => try_claim_queued_message_tx(tx, record)?,
                     QueueOperation::Interject => try_interject_queued_message_tx(tx, record)?,
-                    QueueOperation::Admit | QueueOperation::Settle | QueueOperation::RepairDrop => {
+                    QueueOperation::Admit
+                    | QueueOperation::Requeue
+                    | QueueOperation::Settle
+                    | QueueOperation::RepairDrop => {
                         unreachable!("queue operation validation rejects this combination")
                     }
                 },
@@ -1404,6 +1411,23 @@ impl RuntimeTransitionRepository<'_> {
     }
 
     pub fn commit_task(&self, command: &TaskTransitionCommand) -> Result<TransitionCommit> {
+        self.commit_task_internal(command, &ExecutionProtocolTransition::default(), false)
+    }
+
+    pub fn commit_task_with_execution_protocol(
+        &self,
+        command: &TaskTransitionCommand,
+        execution_protocol: &ExecutionProtocolTransition,
+    ) -> Result<TransitionCommit> {
+        self.commit_task_internal(command, execution_protocol, true)
+    }
+
+    fn commit_task_internal(
+        &self,
+        command: &TaskTransitionCommand,
+        execution_protocol: &ExecutionProtocolTransition,
+        synchronize_execution_protocol: bool,
+    ) -> Result<TransitionCommit> {
         self.db.transaction(|tx| {
             validate_task_tx(tx, &command.task)?;
             for work_item in &command.work_items {
@@ -1413,6 +1437,25 @@ impl RuntimeTransitionRepository<'_> {
                 validate_wait_condition_tx(tx, condition)?;
             }
             validate_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
+            let execution_protocol = if synchronize_execution_protocol {
+                execution_protocol_repository::synchronize_work_item_revisions_tx(
+                    tx,
+                    &command.agent_id,
+                    execution_protocol,
+                    &command.work_items,
+                )?
+            } else {
+                execution_protocol.clone()
+            };
+            let execution_protocol = execution_protocol_repository::validate_execution_commands_tx(
+                tx,
+                &command.agent_id,
+                execution_protocol.bootstrap.as_ref(),
+                &execution_protocol.commands,
+                &command.work_items,
+                &command.wait_conditions,
+                &[],
+            )?;
             inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
 
             let task_applied = upsert_task_tx(tx, &command.task)?;
@@ -1435,9 +1478,13 @@ impl RuntimeTransitionRepository<'_> {
                 append_message_tx(tx, message)?;
             }
             applied |= command.commit_on_idempotent;
+            applied |= execution_protocol
+                .as_ref()
+                .is_some_and(|prepared| prepared.has_writes());
             if !applied {
                 return Ok(TransitionCommit::default());
             }
+            execution_protocol_repository::persist_execution_commands_tx(tx, execution_protocol)?;
             inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
 
             finish_transition_tx(
@@ -2152,6 +2199,18 @@ fn validate_queue_operation(command: &QueueTransitionCommand) -> Result<()> {
                 status: QueueEntryStatus::Interjected,
                 ..
             })
+        ) | (
+            QueueOperation::Requeue,
+            QueueMutation::CompareAndSet {
+                expected: QueueEntryRecord {
+                    status: QueueEntryStatus::Dequeued | QueueEntryStatus::Interrupted,
+                    ..
+                },
+                record: QueueEntryRecord {
+                    status: QueueEntryStatus::Queued,
+                    ..
+                },
+            }
         ) | (
             QueueOperation::Settle,
             QueueMutation::Upsert(QueueEntryRecord {
@@ -3725,6 +3784,101 @@ mod tests {
                 .len(),
             2
         );
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_task_wait_release_rolls_back_execution_revision_with_durable_facts() -> Result<()> {
+        for fault in [
+            TransitionFaultPoint::AfterValidation,
+            TransitionFaultPoint::AfterCanonicalWrites,
+            TransitionFaultPoint::AfterAuditWrites,
+            TransitionFaultPoint::BeforeCommit,
+        ] {
+            let (_dir, db) = runtime_db()?;
+            let mut initial_work = work_item("work-task");
+            initial_work.blocked_by = Some("waiting for task".into());
+            db.work_items().insert_new(&initial_work)?;
+            let active_wait = wait_condition("wait-task", &initial_work.id, "task-1");
+            db.wait_conditions().upsert(&active_wait)?;
+            let running = task("task-1", TaskStatus::Running);
+            db.tasks().upsert(&running)?;
+
+            let mut execution = ExecutionProtocolState::empty("agent-a");
+            execution.work_items.insert(
+                initial_work.id.clone(),
+                WorkItemExecutionRecord {
+                    source_revision: initial_work.revision,
+                    state: WorkItemExecutionState::Waiting {
+                        generation: initial_work.revision,
+                        wait: WaitReference {
+                            wait_id: active_wait.id.clone(),
+                        },
+                    },
+                },
+            );
+            db.transaction(|tx| persist_state_tx(tx, &execution))?;
+
+            let mut terminal = running.clone();
+            terminal.status = TaskStatus::Completed;
+            terminal.updated_at += chrono::Duration::seconds(1);
+            let mut resolved = active_wait.clone();
+            resolved.status = WaitConditionStatus::Resolved;
+            resolved.updated_at = terminal.updated_at;
+            resolved.resolved_at = Some(terminal.updated_at);
+            let mut cleared = initial_work.clone();
+            cleared.revision += 1;
+            cleared.blocked_by = None;
+            cleared.updated_at = terminal.updated_at;
+            let command = TaskTransitionCommand {
+                agent_id: "agent-a".into(),
+                task: terminal,
+                work_items: vec![WorkItemMutation::Update {
+                    record: cleared,
+                    expected_revision: initial_work.revision,
+                }],
+                wait_conditions: vec![resolved],
+                agent_state: None,
+                message_evidence: Vec::new(),
+                audit_events: Vec::new(),
+                index_changes: Vec::new(),
+                notify_scheduler: true,
+                commit_on_idempotent: false,
+                fault: Some(fault),
+            };
+
+            db.transitions()
+                .commit_task_with_execution_protocol(
+                    &command,
+                    &ExecutionProtocolTransition::default(),
+                )
+                .unwrap_err();
+
+            assert_eq!(
+                db.tasks().latest(&running.id)?.unwrap().status,
+                TaskStatus::Running
+            );
+            assert_eq!(
+                db.work_items().latest(&initial_work.id)?.unwrap(),
+                initial_work
+            );
+            assert_eq!(
+                db.wait_conditions().latest_all()?[0].status,
+                WaitConditionStatus::Active
+            );
+            let persisted = db
+                .transitions()
+                .load_execution_protocol_state_if_initialized("agent-a")?
+                .expect("execution authority");
+            assert_eq!(
+                persisted.work_items[&initial_work.id].source_revision,
+                initial_work.revision
+            );
+            assert!(matches!(
+                persisted.work_items[&initial_work.id].state,
+                WorkItemExecutionState::Waiting { .. }
+            ));
+        }
         Ok(())
     }
 }

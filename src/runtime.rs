@@ -1467,6 +1467,200 @@ fn execution_attempt_for_message<'a>(
         })
 }
 
+fn exact_task_result_claim_recovery(
+    storage: &AppStorage,
+    runtime_db: &RuntimeDb,
+    message: &MessageEnvelope,
+    attempt: &crate::domain::execution_protocol::ExecutionAttempt,
+    work_item_id: &str,
+    interrupted_at: chrono::DateTime<Utc>,
+) -> Result<Option<crate::runtime_db::transitions::ExecutionProtocolTransition>> {
+    use crate::domain::execution_protocol::{
+        ExecutionSourceIdentity, RecoverInterruptedTaskResultClaim,
+    };
+
+    let ExecutionSourceIdentity::TaskResult {
+        task_id,
+        result_message_id,
+    } = &attempt.source.identity
+    else {
+        return Ok(None);
+    };
+    if result_message_id != &message.id
+        || message.kind != MessageKind::TaskResult
+        || message.authority_class != AuthorityClass::RuntimeInstruction
+        || message.admission_context != Some(AdmissionContext::RuntimeOwned)
+        || message.delivery_surface != Some(MessageDeliverySurface::TaskRejoin)
+        || message.task_id.as_deref() != Some(task_id.as_str())
+        || message.work_item_id.as_deref() != Some(work_item_id)
+        || !matches!(&message.origin, MessageOrigin::Task { task_id: origin } if origin == task_id)
+    {
+        return Ok(None);
+    }
+    let Some(task) = storage.latest_task_record(task_id)? else {
+        return Ok(None);
+    };
+    let Ok(rejoin) = task.rejoin_fence() else {
+        return Ok(None);
+    };
+    if task.agent_id != message.agent_id
+        || task.work_item_id.as_deref() != Some(work_item_id)
+        || task.parent_message_id.as_deref() != Some(message.id.as_str())
+        || !task.terminal_reentry()
+        || attempt.admitted_fences.rejoin.as_ref() != Some(&rejoin)
+    {
+        return Ok(None);
+    }
+    let matching_waits = storage
+        .latest_wait_conditions()?
+        .into_iter()
+        .filter(|wait| {
+            wait.agent_id == message.agent_id
+                && wait.work_item_id.as_deref() == Some(work_item_id)
+                && wait.status == WaitConditionStatus::Resolved
+                && wait.kind == crate::types::WaitConditionKind::Task
+                && wait.trigger_message_id() == Some(message.id.as_str())
+                && wait.wake_sources.iter().any(|source| {
+                    matches!(
+                        source,
+                        crate::types::WakeSource::TaskResult { task_id: expected }
+                            if expected == task_id
+                    )
+                })
+        })
+        .collect::<Vec<_>>();
+    let [wait] = matching_waits.as_slice() else {
+        return Ok(None);
+    };
+    let Some(work_item) = runtime_db.work_items().latest(work_item_id)? else {
+        return Ok(None);
+    };
+    let Some(expected_source_revision) = attempt.admitted_fences.work_item_source_revision else {
+        return Ok(None);
+    };
+    if work_item.state != WorkItemState::Open
+        || work_item.blocked_by.is_some()
+        || work_item.revision <= expected_source_revision
+    {
+        return Ok(None);
+    }
+    Ok(Some(
+        crate::runtime_db::transitions::ExecutionProtocolTransition {
+            bootstrap: None,
+            commands: vec![
+                crate::domain::execution_protocol::ExecutionProtocolCommand::
+                    RecoverInterruptedTaskResultClaim(Box::new(
+                        RecoverInterruptedTaskResultClaim {
+                            command_id: format!(
+                                "recover_task_result_claim:{}:{}",
+                                attempt.attempt_id, work_item.revision
+                            ),
+                            attempt_id: attempt.attempt_id.clone(),
+                            outcome_id: format!("outcome:interrupted:{}", attempt.attempt_id),
+                            work_item_id: work_item_id.to_string(),
+                            task_id: task_id.clone(),
+                            result_message_id: message.id.clone(),
+                            wait_id: wait.id.clone(),
+                            rejoin,
+                            expected_source_revision,
+                            source_revision: work_item.revision,
+                            interrupted_at: interrupted_at.to_rfc3339(),
+                        },
+                    )),
+            ],
+        },
+    ))
+}
+
+fn scheduler_task_result_claim_recovery_candidates(
+    storage: &AppStorage,
+    runtime_db: &RuntimeDb,
+    agent_id: &str,
+    execution_state: Option<&crate::domain::execution_protocol::ExecutionProtocolState>,
+) -> Result<Vec<SchedulerTaskResultClaimRecoveryCandidate>> {
+    let queue_entries = runtime_db
+        .queue_entries()
+        .recent(Some(agent_id), usize::MAX)?;
+    execution_state
+        .into_iter()
+        .flat_map(|state| state.attempts.values())
+        .filter(|attempt| {
+            attempt.state == crate::domain::execution_protocol::ExecutionAttemptState::Open
+        })
+        .filter_map(|attempt| {
+            let crate::domain::execution_protocol::ExecutionBinding::WorkItem { work_item_id } =
+                &attempt.binding
+            else {
+                return None;
+            };
+            let message_id = attempt.source_message_id.as_deref()?;
+            let entry = queue_entries.iter().find(|entry| {
+                entry.message_id == message_id && entry.status == QueueEntryStatus::Dequeued
+            })?;
+            Some((attempt, work_item_id, entry))
+        })
+        .map(|(attempt, work_item_id, entry)| {
+            let mut candidate = SchedulerTaskResultClaimRecoveryCandidate {
+                message_id: entry.message_id.clone(),
+                activation_id: attempt.attempt_id.clone(),
+                work_item_id: work_item_id.clone(),
+                queue_status: entry.status.clone(),
+                expected_queue_entry: None,
+                eligible: false,
+                reason: "task_result_claim_evidence_incomplete".into(),
+                evidence: vec![
+                    format!("work_item:{work_item_id}"),
+                    format!("open_execution_attempt:{}", attempt.attempt_id),
+                    format!(
+                        "admitted_work_item_revision:{}",
+                        attempt
+                            .admitted_fences
+                            .work_item_source_revision
+                            .unwrap_or_default()
+                    ),
+                ],
+                proposed_queue_entry: None,
+                proposed_command: None,
+            };
+            let Some(message) = storage.read_message_by_id(&entry.message_id)? else {
+                candidate.reason = "message_missing".into();
+                return Ok(candidate);
+            };
+            let Some(transition) = exact_task_result_claim_recovery(
+                storage,
+                runtime_db,
+                &message,
+                attempt,
+                work_item_id,
+                Utc::now(),
+            )?
+            else {
+                return Ok(candidate);
+            };
+            let [command] = transition.commands.as_slice() else {
+                return Ok(candidate);
+            };
+            let mut proposed_entry = entry.clone();
+            proposed_entry.status = QueueEntryStatus::Queued;
+            proposed_entry.updated_at = Utc::now();
+            candidate.eligible = true;
+            candidate.reason = "stale_task_result_claim_revision".into();
+            candidate.evidence.push(format!(
+                "durable_work_item_revision:{}",
+                runtime_db
+                    .work_items()
+                    .latest(work_item_id)?
+                    .map(|work| work.revision)
+                    .unwrap_or_default()
+            ));
+            candidate.proposed_queue_entry = Some(proposed_entry);
+            candidate.expected_queue_entry = Some(entry.clone());
+            candidate.proposed_command = Some(command.clone());
+            Ok(candidate)
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SchedulerRecoveryReport {
     pub agent_id: String,
@@ -1475,8 +1669,23 @@ pub struct SchedulerRecoveryReport {
     pub authority_inventory: Vec<SchedulerAuthorityInventoryEntry>,
     pub retired_rollout_metadata: SchedulerRetiredRolloutMetadata,
     pub candidates: Vec<SchedulerRecoveryCandidate>,
+    pub task_result_claim_recoveries: Vec<SchedulerTaskResultClaimRecoveryCandidate>,
     pub legacy_adoptions: Vec<SchedulerLegacyAdoptionCandidate>,
     pub continuation_reconciliations: Vec<SchedulerContinuationReconciliationCandidate>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SchedulerTaskResultClaimRecoveryCandidate {
+    pub message_id: String,
+    pub activation_id: String,
+    pub work_item_id: String,
+    pub queue_status: QueueEntryStatus,
+    pub expected_queue_entry: Option<QueueEntryRecord>,
+    pub eligible: bool,
+    pub reason: String,
+    pub evidence: Vec<String>,
+    pub proposed_queue_entry: Option<QueueEntryRecord>,
+    pub proposed_command: Option<crate::domain::execution_protocol::ExecutionProtocolCommand>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1953,6 +2162,12 @@ pub fn scheduler_recovery_report(
         execution_state.as_ref(),
         &active_continuations,
     )?;
+    let task_result_claim_recoveries = scheduler_task_result_claim_recovery_candidates(
+        storage,
+        runtime_db,
+        agent_id,
+        execution_state.as_ref(),
+    )?;
     let Some(snapshot) = runtime_db
         .transitions()
         .load_scheduler_protocol_snapshot_if_initialized(agent_id)?
@@ -1964,6 +2179,7 @@ pub fn scheduler_recovery_report(
             authority_inventory,
             retired_rollout_metadata,
             candidates: Vec::new(),
+            task_result_claim_recoveries,
             legacy_adoptions: runtime_db
                 .transitions()
                 .legacy_scheduler_adoption_candidates(agent_id)?
@@ -2026,6 +2242,12 @@ pub fn scheduler_recovery_report(
             attempt.state == crate::domain::execution_protocol::ExecutionAttemptState::Open
         })
     {
+        if task_result_claim_recoveries
+            .iter()
+            .any(|candidate| candidate.activation_id == attempt.attempt_id)
+        {
+            continue;
+        }
         let crate::domain::execution_protocol::ExecutionBinding::WorkItem { work_item_id } =
             &attempt.binding
         else {
@@ -2340,6 +2562,7 @@ pub fn scheduler_recovery_report(
         authority_inventory,
         retired_rollout_metadata,
         candidates,
+        task_result_claim_recoveries,
         legacy_adoptions: runtime_db
             .transitions()
             .legacy_scheduler_adoption_candidates(agent_id)?
@@ -2368,6 +2591,7 @@ pub fn apply_scheduler_recovery_plan(
         report,
         SchedulerRecoveryBackupPolicy::Required,
         true,
+        None,
         |_| Ok(()),
     )
 }
@@ -2393,6 +2617,7 @@ pub fn apply_scheduler_recovery_plan_with_backup_policy(
         report,
         backup_policy,
         true,
+        None,
         |_| Ok(()),
     )
 }
@@ -2412,7 +2637,28 @@ fn apply_scheduler_recovery_plan_with_hook(
         report,
         SchedulerRecoveryBackupPolicy::Required,
         true,
+        None,
         &mut before_legacy_adoption_commit,
+    )
+}
+
+#[cfg(test)]
+fn apply_scheduler_recovery_plan_with_task_result_fault(
+    storage: &AppStorage,
+    runtime_db: &RuntimeDb,
+    agent_id: &str,
+    report: &SchedulerRecoveryReport,
+    fault: crate::runtime_db::transitions::TransitionFaultPoint,
+) -> Result<(usize, Option<std::path::PathBuf>)> {
+    apply_scheduler_recovery_plan_with_options(
+        storage,
+        runtime_db,
+        agent_id,
+        report,
+        SchedulerRecoveryBackupPolicy::SkipApproved,
+        true,
+        Some(fault),
+        |_| Ok(()),
     )
 }
 
@@ -2423,6 +2669,7 @@ fn apply_scheduler_recovery_plan_with_options(
     report: &SchedulerRecoveryReport,
     backup_policy: SchedulerRecoveryBackupPolicy,
     include_authority_repair: bool,
+    task_result_fault: Option<crate::runtime_db::transitions::TransitionFaultPoint>,
     mut before_legacy_adoption_commit: impl FnMut(&str) -> Result<()>,
 ) -> Result<(usize, Option<std::path::PathBuf>)> {
     let legacy_adoptions = report
@@ -2460,10 +2707,24 @@ fn apply_scheduler_recovery_plan_with_options(
         .filter(|candidate| candidate.eligible)
         .filter_map(|candidate| candidate.proposed_command.clone())
         .collect::<Vec<_>>();
+    let task_result_claim_recovery = report
+        .task_result_claim_recoveries
+        .iter()
+        .filter(|candidate| candidate.eligible)
+        .filter_map(|candidate| {
+            Some((
+                candidate,
+                candidate.expected_queue_entry.as_ref()?,
+                candidate.proposed_queue_entry.as_ref()?,
+                candidate.proposed_command.as_ref()?,
+            ))
+        })
+        .collect::<Vec<_>>();
     if legacy_adoptions.is_empty()
         && settlement_recovery.is_empty()
         && authority_recovery.is_empty()
         && continuation_reconciliation.is_empty()
+        && task_result_claim_recovery.is_empty()
     {
         return Ok((0, None));
     }
@@ -2481,6 +2742,63 @@ fn apply_scheduler_recovery_plan_with_options(
         SchedulerRecoveryBackupPolicy::SkipApproved => None,
     };
     let mut applied = false;
+    for (candidate, expected_entry, proposed_entry, command) in task_result_claim_recovery {
+        let Some(current_entry) = runtime_db
+            .queue_entries()
+            .recent(Some(agent_id), usize::MAX)?
+            .into_iter()
+            .find(|entry| entry.message_id == candidate.message_id)
+        else {
+            return Err(anyhow!(
+                "TaskResult claim recovery queue entry disappeared: {}",
+                candidate.message_id
+            ));
+        };
+        if &current_entry == proposed_entry {
+            continue;
+        }
+        if &current_entry != expected_entry {
+            return Err(anyhow!(
+                "TaskResult claim recovery queue fence changed: {}",
+                candidate.message_id
+            ));
+        }
+        let commit = runtime_db
+            .transitions()
+            .commit_queue_with_execution_protocol(
+                &crate::runtime_db::transitions::QueueTransitionCommand {
+                    agent_id: agent_id.to_string(),
+                    operation: crate::runtime_db::transitions::QueueOperation::Requeue,
+                    mutation: crate::runtime_db::transitions::QueueMutation::CompareAndSet {
+                        expected: expected_entry.clone(),
+                        record: proposed_entry.clone(),
+                    },
+                    scheduler_claim_work_item: None,
+                    agent_state: None,
+                    message_evidence: Vec::new(),
+                    transcript_entries: Vec::new(),
+                    turn_record: None,
+                    audit_events: vec![AuditEvent::legacy(
+                        "scheduler_task_result_claim_recovered",
+                        serde_json::json!({
+                            "agent_id": agent_id,
+                            "message_id": candidate.message_id,
+                            "activation_id": candidate.activation_id,
+                            "work_item_id": candidate.work_item_id,
+                            "reason": candidate.reason,
+                        }),
+                    )],
+                    notify_scheduler: true,
+                    fault: task_result_fault,
+                    brief_evidence: Vec::new(),
+                },
+                &crate::runtime_db::transitions::ExecutionProtocolTransition {
+                    bootstrap: None,
+                    commands: vec![command.clone()],
+                },
+            )?;
+        applied |= commit.applied;
+    }
     if !continuation_reconciliation.is_empty() {
         let audit_events = report
             .continuation_reconciliations
@@ -2596,6 +2914,11 @@ fn apply_scheduler_recovery_plan_with_options(
             "backup_path": backup_path,
             "authority_repair_included": include_authority_repair,
             "continuation_reconciliation_count": continuation_reconciliation.len(),
+            "task_result_claim_recovery_count": report
+                .task_result_claim_recoveries
+                .iter()
+                .filter(|candidate| candidate.eligible)
+                .count(),
         }),
     ))?;
     Ok((usize::from(applied), backup_path))
@@ -3113,6 +3436,23 @@ impl RuntimeHandle {
                 .runtime_db
                 .transitions()
                 .commit_work_item_focus(command)
+        }
+    }
+
+    pub(super) fn commit_task_transition(
+        &self,
+        command: &crate::runtime_db::transitions::TaskTransitionCommand,
+    ) -> Result<crate::runtime_db::transitions::TransitionCommit> {
+        if self.inner.scheduler_engine.is_canonical() {
+            self.inner
+                .runtime_db
+                .transitions()
+                .commit_task_with_execution_protocol(
+                    command,
+                    &crate::runtime_db::transitions::ExecutionProtocolTransition::default(),
+                )
+        } else {
+            self.inner.runtime_db.transitions().commit_task(command)
         }
     }
 
@@ -5447,16 +5787,27 @@ impl RuntimeHandle {
                     continue;
                 }
             };
-            if let Some(work_item_id) = work_item_id.as_deref() {
-                if !matches!(
+            let task_result_recovery = if let Some(work_item_id) = work_item_id.as_deref() {
+                let work_queue_claim = matches!(
                     (&message.kind, &message.origin),
                     (MessageKind::SystemTick, MessageOrigin::System { subsystem })
                         if subsystem == "work_queue"
-                ) || message.work_item_id.as_deref() != Some(work_item_id)
-                {
+                ) && message.work_item_id.as_deref() == Some(work_item_id);
+                let task_result_recovery = exact_task_result_claim_recovery(
+                    &self.inner.storage,
+                    &self.inner.runtime_db,
+                    &message,
+                    &attempt,
+                    work_item_id,
+                    self.now(),
+                )?;
+                if !work_queue_claim && task_result_recovery.is_none() {
                     continue;
                 }
-            }
+                task_result_recovery
+            } else {
+                None
+            };
 
             let terminal_turn = turns.iter().find(|turn| {
                 turn.terminal.is_some()
@@ -5473,6 +5824,59 @@ impl RuntimeHandle {
                     terminal.kind == crate::types::TurnTerminalKind::Completed
                 })
             });
+            if attempt.state == crate::domain::execution_protocol::ExecutionAttemptState::Open
+                && terminal_turn.is_none()
+                && task_result_recovery.is_some()
+            {
+                entry.status = QueueEntryStatus::Queued;
+                entry.updated_at = self.now();
+                let message_id = entry.message_id.clone();
+                let execution_protocol =
+                    task_result_recovery.expect("TaskResult recovery was checked");
+                let commit = self
+                    .inner
+                    .runtime_db
+                    .transitions()
+                    .commit_queue_with_execution_protocol(
+                        &crate::runtime_db::transitions::QueueTransitionCommand {
+                            agent_id: agent_id.clone(),
+                            operation: crate::runtime_db::transitions::QueueOperation::Requeue,
+                            mutation:
+                                crate::runtime_db::transitions::QueueMutation::CompareAndSet {
+                                    expected: expected_entry,
+                                    record: entry,
+                                },
+                            scheduler_claim_work_item: None,
+                            agent_state: None,
+                            message_evidence: Vec::new(),
+                            transcript_entries: Vec::new(),
+                            turn_record: None,
+                            audit_events: vec![AuditEvent::legacy(
+                                "scheduler_bootstrap_claim_recovered",
+                                serde_json::json!({
+                                    "agent_id": agent_id,
+                                    "message_id": message_id,
+                                    "activation_id": activation_id,
+                                    "work_item_id": work_item_id,
+                                    "queue_status": QueueEntryStatus::Queued,
+                                    "recovery_outcome": "task_result_attempt_requeued_for_reentry",
+                                    "provenance": "bootstrap_reconciliation",
+                                }),
+                            )],
+                            notify_scheduler: true,
+                            fault: self.take_transition_fault(),
+                            brief_evidence: Vec::new(),
+                        },
+                        &execution_protocol,
+                    )?;
+                if commit.applied {
+                    recovered += 1;
+                    guard.restore_bootstrap_replay_message(&self.inner.storage, &message)?;
+                }
+                drop(guard);
+                self.apply_transition_commit(commit).await;
+                continue;
+            }
             // Execution attempt state is authoritative. Terminal attempts only
             // reconcile the retained legacy queue claim.
             if attempt.state == crate::domain::execution_protocol::ExecutionAttemptState::Settled {

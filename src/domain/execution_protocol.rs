@@ -609,6 +609,21 @@ pub struct InterruptExecution {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecoverInterruptedTaskResultClaim {
+    pub command_id: String,
+    pub attempt_id: String,
+    pub outcome_id: String,
+    pub work_item_id: String,
+    pub task_id: String,
+    pub result_message_id: String,
+    pub wait_id: String,
+    pub rejoin: RejoinFence,
+    pub expected_source_revision: u64,
+    pub source_revision: u64,
+    pub interrupted_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "command", content = "payload", rename_all = "snake_case")]
 pub enum ExecutionProtocolCommand {
     RegisterWorkItem(Box<RegisterWorkItemExecution>),
@@ -622,6 +637,7 @@ pub enum ExecutionProtocolCommand {
     Admit(Box<AdmitExecution>),
     Settle(SettleExecution),
     Interrupt(InterruptExecution),
+    RecoverInterruptedTaskResultClaim(Box<RecoverInterruptedTaskResultClaim>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1079,6 +1095,86 @@ pub fn interrupt_execution(
         .expect("settlement preserved attempt");
     attempt.state = ExecutionAttemptState::Interrupted;
     assert_invariants(&transition.state)?;
+    Ok(transition)
+}
+
+pub fn recover_interrupted_task_result_claim(
+    state: &ExecutionProtocolState,
+    command: &RecoverInterruptedTaskResultClaim,
+) -> Result<ExecutionTransition, String> {
+    assert_invariants(state)?;
+    if command.command_id.is_empty()
+        || command.attempt_id.is_empty()
+        || command.outcome_id.is_empty()
+        || command.work_item_id.is_empty()
+        || command.task_id.is_empty()
+        || command.result_message_id.is_empty()
+        || command.wait_id.is_empty()
+        || command.expected_source_revision == 0
+        || command.source_revision <= command.expected_source_revision
+    {
+        return Err("TaskResult claim recovery requires complete monotonic identity".into());
+    }
+    let attempt = state
+        .attempts
+        .get(&command.attempt_id)
+        .ok_or_else(|| "TaskResult claim recovery references an unknown attempt".to_string())?;
+    if attempt.state != ExecutionAttemptState::Open
+        || attempt.source_message_id.as_deref() != Some(command.result_message_id.as_str())
+        || attempt.source.identity
+            != (ExecutionSourceIdentity::TaskResult {
+                task_id: command.task_id.clone(),
+                result_message_id: command.result_message_id.clone(),
+            })
+        || attempt.binding
+            != (ExecutionBinding::WorkItem {
+                work_item_id: command.work_item_id.clone(),
+            })
+        || attempt.admitted_fences.work_item_source_revision
+            != Some(command.expected_source_revision)
+        || attempt.admitted_fences.rejoin.as_ref() != Some(&command.rejoin)
+    {
+        return Err("TaskResult claim recovery attempt fence is stale".into());
+    }
+    let work = state
+        .work_items
+        .get(&command.work_item_id)
+        .ok_or_else(|| "TaskResult claim recovery WorkItem authority is missing".to_string())?;
+    if !matches!(
+        work.source_revision,
+        revision
+            if revision == command.expected_source_revision
+                || revision == command.source_revision
+    ) || !matches!(
+        &work.state,
+        WorkItemExecutionState::InFlight { attempt_id, generation }
+            if attempt_id == &command.attempt_id
+                && Some(*generation) == attempt.admitted_fences.work_item_generation
+    ) {
+        return Err("TaskResult claim recovery WorkItem fence is stale".into());
+    }
+    let mut transition = interrupt_execution(
+        state,
+        &InterruptExecution {
+            attempt_id: command.attempt_id.clone(),
+            outcome_id: command.outcome_id.clone(),
+            reason: "runtime_interrupted".into(),
+            interrupted_at: command.interrupted_at.clone(),
+        },
+    )?;
+    transition
+        .state
+        .work_items
+        .get_mut(&command.work_item_id)
+        .expect("interruption preserved WorkItem authority")
+        .source_revision = command.source_revision;
+    assert_invariants(&transition.state)?;
+    transition.references.extend([
+        format!("task:{}", command.task_id),
+        format!("message:{}", command.result_message_id),
+        format!("wait:{}", command.wait_id),
+        format!("work_item:{}", command.work_item_id),
+    ]);
     Ok(transition)
 }
 
