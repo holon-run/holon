@@ -2153,7 +2153,7 @@ async fn bootstrap_recovery_replays_task_result_claim_after_canonical_revision_s
         work_item_id: Some(work_item.id.clone()),
         summary: Some("task-stale-bootstrap completed".into()),
         detail: Some(serde_json::json!({
-            "terminal_reentry": true,
+            "terminal_reentry": false,
             "rejoin_obligation_id": rejoin.obligation_id,
             "rejoin_generation": rejoin.generation,
             "parent_turn_id": rejoin.parent_turn_id,
@@ -2168,6 +2168,7 @@ async fn bootstrap_recovery_replays_task_result_claim_after_canonical_revision_s
     result.work_item_id = Some(work_item.id.clone());
     result.turn_id = Some("turn-stale-bootstrap-result".into());
     terminal_task.parent_message_id = Some(result.id.clone());
+    assert!(!terminal_task.terminal_reentry());
     runtime
         .persist_task_transition_with_message(&terminal_task, "task_completed", &result)
         .await
@@ -2431,7 +2432,7 @@ async fn stale_task_result_claim_fixture(task_id: &str) -> StaleTaskResultClaimF
         work_item_id: Some(work_item.id.clone()),
         summary: Some(format!("{task_id} completed")),
         detail: Some(serde_json::json!({
-            "terminal_reentry": true,
+            "terminal_reentry": false,
             "rejoin_obligation_id": rejoin.obligation_id,
             "rejoin_generation": rejoin.generation,
             "parent_turn_id": rejoin.parent_turn_id,
@@ -2446,6 +2447,7 @@ async fn stale_task_result_claim_fixture(task_id: &str) -> StaleTaskResultClaimF
     result.work_item_id = Some(work_item.id.clone());
     result.turn_id = Some(format!("turn-{task_id}-result"));
     terminal_task.parent_message_id = Some(result.id.clone());
+    assert!(!terminal_task.terminal_reentry());
     runtime
         .persist_task_transition_with_message(&terminal_task, "task_completed", &result)
         .await
@@ -10452,6 +10454,12 @@ async fn resolved_task_result_uses_unified_wait_when_legacy_wait_is_stale() {
         &resumed.id,
         "turn-unified-wait",
     );
+    assert!(!runtime
+        .storage()
+        .latest_task_record("task-unified-wait")
+        .unwrap()
+        .unwrap()
+        .terminal_reentry());
     result.work_item_id = Some(resumed.id.clone());
     result.metadata.as_mut().unwrap()["work_item_id"] =
         serde_json::Value::String(resumed.id.clone());
@@ -10465,6 +10473,11 @@ async fn resolved_task_result_uses_unified_wait_when_legacy_wait_is_stale() {
         panic!("unified waiting authority should admit the resolved task result");
     };
     assert_eq!(scheduled.message.id, result.id);
+    assert!(scheduled.scheduler_decision.model_reentry);
+    assert!(matches!(
+        scheduled.dispatch_plan.execution_admission_provenance,
+        crate::types::ExecutionAdmissionProvenance::Canonical { .. }
+    ));
     let execution = runtime
         .inner
         .runtime_db

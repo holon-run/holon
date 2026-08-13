@@ -1467,6 +1467,36 @@ fn execution_attempt_for_message<'a>(
         })
 }
 
+fn exact_resolved_task_result_wait(
+    storage: &AppStorage,
+    message: &MessageEnvelope,
+    task_id: &str,
+    work_item_id: &str,
+) -> Result<Option<WaitConditionRecord>> {
+    let matching_waits = storage
+        .latest_wait_conditions()?
+        .into_iter()
+        .filter(|wait| {
+            wait.agent_id == message.agent_id
+                && wait.work_item_id.as_deref() == Some(work_item_id)
+                && wait.status == WaitConditionStatus::Resolved
+                && wait.kind == crate::types::WaitConditionKind::Task
+                && wait.trigger_message_id() == Some(message.id.as_str())
+                && wait.wake_sources.iter().any(|source| {
+                    matches!(
+                        source,
+                        crate::types::WakeSource::TaskResult { task_id: expected }
+                            if expected == task_id
+                    )
+                })
+        })
+        .collect::<Vec<_>>();
+    let [wait] = matching_waits.as_slice() else {
+        return Ok(None);
+    };
+    Ok(Some(wait.clone()))
+}
+
 fn exact_task_result_claim_recovery(
     storage: &AppStorage,
     runtime_db: &RuntimeDb,
@@ -1506,30 +1536,12 @@ fn exact_task_result_claim_recovery(
     if task.agent_id != message.agent_id
         || task.work_item_id.as_deref() != Some(work_item_id)
         || task.parent_message_id.as_deref() != Some(message.id.as_str())
-        || !task.terminal_reentry()
         || attempt.admitted_fences.rejoin.as_ref() != Some(&rejoin)
     {
         return Ok(None);
     }
-    let matching_waits = storage
-        .latest_wait_conditions()?
-        .into_iter()
-        .filter(|wait| {
-            wait.agent_id == message.agent_id
-                && wait.work_item_id.as_deref() == Some(work_item_id)
-                && wait.status == WaitConditionStatus::Resolved
-                && wait.kind == crate::types::WaitConditionKind::Task
-                && wait.trigger_message_id() == Some(message.id.as_str())
-                && wait.wake_sources.iter().any(|source| {
-                    matches!(
-                        source,
-                        crate::types::WakeSource::TaskResult { task_id: expected }
-                            if expected == task_id
-                    )
-                })
-        })
-        .collect::<Vec<_>>();
-    let [wait] = matching_waits.as_slice() else {
+    let Some(wait) = exact_resolved_task_result_wait(storage, message, task_id, work_item_id)?
+    else {
         return Ok(None);
     };
     let Some(work_item) = runtime_db.work_items().latest(work_item_id)? else {
@@ -1560,7 +1572,7 @@ fn exact_task_result_claim_recovery(
                             work_item_id: work_item_id.to_string(),
                             task_id: task_id.clone(),
                             result_message_id: message.id.clone(),
-                            wait_id: wait.id.clone(),
+                            wait_id: wait.id,
                             rejoin,
                             expected_source_revision,
                             source_revision: work_item.revision,

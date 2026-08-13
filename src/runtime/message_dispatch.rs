@@ -45,9 +45,27 @@ impl RuntimeHandle {
                             task.agent_id == message.agent_id
                                 && task.work_item_id == message.work_item_id
                                 && task.parent_message_id.as_deref() == Some(message.id.as_str())
-                                && task.terminal_reentry()
                         });
-                    durable_task.ok_or(error)
+                    let Some(task) = durable_task else {
+                        return Err(error);
+                    };
+                    let resolved_wait_authority =
+                        if let Some(work_item_id) = task.work_item_id.as_deref() {
+                            exact_resolved_task_result_wait(
+                                &self.inner.storage,
+                                message,
+                                &task.id,
+                                work_item_id,
+                            )?
+                            .is_some()
+                        } else {
+                            false
+                        };
+                    if task.terminal_reentry() || resolved_wait_authority {
+                        Ok(task)
+                    } else {
+                        Err(error)
+                    }
                 })
                 .map(Some),
             _ => Ok(None),
