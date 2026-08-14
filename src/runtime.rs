@@ -1467,11 +1467,12 @@ fn execution_attempt_for_message<'a>(
         })
 }
 
-fn exact_resolved_task_result_wait(
+fn exact_task_result_wait_with_status(
     storage: &AppStorage,
     message: &MessageEnvelope,
     task_id: &str,
     work_item_id: &str,
+    status_matches: impl Fn(&WaitConditionStatus) -> bool,
 ) -> Result<Option<WaitConditionRecord>> {
     let matching_waits = storage
         .latest_wait_conditions()?
@@ -1479,7 +1480,7 @@ fn exact_resolved_task_result_wait(
         .filter(|wait| {
             wait.agent_id == message.agent_id
                 && wait.work_item_id.as_deref() == Some(work_item_id)
-                && wait.status == WaitConditionStatus::Resolved
+                && status_matches(&wait.status)
                 && wait.kind == crate::types::WaitConditionKind::Task
                 && wait.trigger_message_id() == Some(message.id.as_str())
                 && wait.wake_sources.iter().any(|source| {
@@ -1495,6 +1496,31 @@ fn exact_resolved_task_result_wait(
         return Ok(None);
     };
     Ok(Some(wait.clone()))
+}
+
+fn exact_triggered_or_resolved_task_result_wait(
+    storage: &AppStorage,
+    message: &MessageEnvelope,
+    task_id: &str,
+    work_item_id: &str,
+) -> Result<Option<WaitConditionRecord>> {
+    exact_task_result_wait_with_status(storage, message, task_id, work_item_id, |status| {
+        matches!(
+            status,
+            WaitConditionStatus::Triggered | WaitConditionStatus::Resolved
+        )
+    })
+}
+
+fn exact_resolved_task_result_wait(
+    storage: &AppStorage,
+    message: &MessageEnvelope,
+    task_id: &str,
+    work_item_id: &str,
+) -> Result<Option<WaitConditionRecord>> {
+    exact_task_result_wait_with_status(storage, message, task_id, work_item_id, |status| {
+        status == &WaitConditionStatus::Resolved
+    })
 }
 
 fn exact_task_result_claim_recovery(
@@ -6056,7 +6082,6 @@ impl RuntimeHandle {
     }
 
     async fn bootstrap_recovery(&self) -> Result<()> {
-        let mut interrupted_for_delivery = self.missing_interrupted_task_results().await?;
         if let Some(tasks) = self.inner.recovered_tasks.lock().await.take() {
             if self.agent_state().await?.status == AgentStatus::Stopped {
                 self.interrupt_active_tasks_for_lifecycle_stop(tasks)
@@ -6074,14 +6099,8 @@ impl RuntimeHandle {
                         }),
                     ))?;
                 }
-                interrupted_for_delivery.extend(interrupted);
+                drop(interrupted);
             }
-        }
-        interrupted_for_delivery.sort_by(|left, right| left.id.cmp(&right.id));
-        interrupted_for_delivery.dedup_by(|left, right| left.id == right.id);
-        if !interrupted_for_delivery.is_empty() {
-            self.emit_task_results_from_interrupted_tasks(&interrupted_for_delivery)
-                .await?;
         }
         if let Some(timers) = self.inner.recovered_timers.lock().await.take() {
             self.recover_active_timers(timers).await?;

@@ -800,18 +800,6 @@ impl RuntimeHandle {
             Some(&result_message),
         )
         .await?;
-        let enqueue_result = self.enqueue(result_message).await;
-        if let Err(err) = enqueue_result {
-            self.inner
-                .storage
-                .append_event(&crate::types::AuditEvent::legacy(
-                    "command_task_result_enqueue_failed",
-                    serde_json::json!({
-                        "task_id": task_record.id,
-                        "error": err.to_string(),
-                    }),
-                ))?;
-        }
 
         self.inner.task_handles.lock().await.remove(&task_record.id);
         Ok(())
@@ -962,12 +950,20 @@ impl RuntimeHandle {
             detail: Some(self.task_detail_preserving_rejoin_contract(task_record, detail)),
             recovery: task_record.recovery.clone(),
         };
-        let mut transition =
-            task_state_reducer::TaskTransition::new(&fallback, "command_task_terminal_persisted");
         if let Some(message_evidence) = message_evidence {
-            transition = transition.with_message_evidence(message_evidence);
+            self.commit_terminal_task_result(
+                &fallback,
+                "command_task_terminal_persisted",
+                message_evidence,
+            )
+            .await?;
+        } else {
+            self.apply_task_transition_silent(task_state_reducer::TaskTransition::new(
+                &fallback,
+                "command_task_terminal_persisted",
+            ))
+            .await?;
         }
-        self.apply_task_transition_silent(transition).await?;
         Ok(())
     }
 
@@ -1795,9 +1791,11 @@ mod tests {
             .contains("failed to query command status"));
 
         let events = runtime.inner.storage.read_recent_events(20).unwrap();
-        assert!(!events
-            .iter()
-            .any(|event| event.kind == "command_task_terminal_persisted"));
+        assert!(events.iter().any(|event| {
+            event.kind == "command_task_terminal_persisted"
+                && event.data["task_id"].as_str() == Some(task.id.as_str())
+                && event.data["status"].as_str() == Some("failed")
+        }));
         assert!(!events
             .iter()
             .any(|event| event.kind == "command_task_running_persisted"));

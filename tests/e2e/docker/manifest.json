@@ -194,7 +194,7 @@
       "tier": "extended",
       "tags": ["scheduler", "workitem", "task-result", "yield", "wait", "restart", "replay", "delivery"],
       "timeout_seconds": 120,
-      "description": "Verify one WorkItem crosses autonomous scheduling, promoted task-result rejoin, external wait-resume, exact completion delivery, and process restart.",
+      "description": "Verify one WorkItem crosses autonomous scheduling, an in-flight promoted command interrupted by a real daemon crash/restart, exact task-result rejoin, external wait-resume, and completion delivery.",
       "phases": [
         {
           "id": "task-result-wait-complete",

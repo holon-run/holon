@@ -216,6 +216,68 @@ pub(super) fn restart_task_result_message_id(task_id: &str) -> String {
     format!("message:task-restart:{task_id}")
 }
 
+fn interrupted_task_result_message(
+    task: &TaskRecord,
+    interrupted_reason: &'static str,
+) -> MessageEnvelope {
+    let status_before = task
+        .detail
+        .as_ref()
+        .and_then(|detail| {
+            detail
+                .get("status_before_restart")
+                .or_else(|| detail.get("status_before_stop"))
+        })
+        .and_then(|value| value.as_str())
+        .unwrap_or("running");
+    let mut message = MessageEnvelope {
+        id: if interrupted_reason == "runtime_restarted" {
+            restart_task_result_message_id(&task.id)
+        } else {
+            crate::ids::message_id()
+        },
+        turn_id: Some(crate::ids::turn_id()),
+        work_item_id: task.effective_work_item_id().map(ToString::to_string),
+        metadata: Some(serde_json::json!({
+            "task_id": task.id,
+            "task_kind": task.kind,
+            "task_status": "interrupted",
+            "task_summary": task.summary,
+            "task_detail": task.detail,
+            "task_recovery": task.recovery,
+            "work_item_id": task.effective_work_item_id(),
+            "status_before_restart": status_before,
+            "interrupted_reason": interrupted_reason,
+        })),
+        ..MessageEnvelope::new(
+            task.agent_id.clone(),
+            MessageKind::TaskResult,
+            MessageOrigin::Task {
+                task_id: task.id.clone(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Next,
+            MessageBody::Text {
+                text: format!(
+                    "task {} was interrupted because the {}",
+                    task.id,
+                    if interrupted_reason == "runtime_restarted" {
+                        "runtime restarted"
+                    } else {
+                        "agent stopped"
+                    }
+                ),
+            },
+        )
+        .with_admission(
+            MessageDeliverySurface::TaskRejoin,
+            AdmissionContext::RuntimeOwned,
+        )
+    };
+    message.task_id = Some(task.id.clone());
+    message
+}
+
 impl RuntimeHandle {
     pub(super) async fn task_creation_detail(
         &self,
@@ -428,11 +490,7 @@ impl RuntimeHandle {
             let terminal_task =
                 task_with_result_message(&task_record, status, Some(task_detail), &result_message);
             if let Err(error) = runtime
-                .persist_task_transition_with_message(
-                    &terminal_task,
-                    "task_status_updated",
-                    &result_message,
-                )
+                .commit_terminal_task_result(&terminal_task, "task_status_updated", &result_message)
                 .await
             {
                 tracing::warn!(
@@ -441,7 +499,7 @@ impl RuntimeHandle {
                     "failed to persist terminal task status before task result"
                 );
             }
-            let _ = runtime.enqueue(result_message).await;
+
             runtime
                 .inner
                 .task_handles
@@ -941,11 +999,7 @@ impl RuntimeHandle {
             let terminal_task =
                 task_with_result_message(&task_record, status, Some(task_detail), &result_message);
             if let Err(error) = runtime
-                .persist_task_transition_with_message(
-                    &terminal_task,
-                    "task_status_updated",
-                    &result_message,
-                )
+                .commit_terminal_task_result(&terminal_task, "task_status_updated", &result_message)
                 .await
             {
                 tracing::warn!(
@@ -954,7 +1008,7 @@ impl RuntimeHandle {
                     "failed to persist terminal task status before task result"
                 );
             }
-            let _ = runtime.enqueue(result_message).await;
+
             runtime
                 .inner
                 .task_handles
@@ -1085,7 +1139,7 @@ impl RuntimeHandle {
                         &result_message,
                     );
                     if let Err(error) = runtime
-                        .persist_task_transition_with_message(
+                        .commit_terminal_task_result(
                             &failed_task,
                             "task_status_updated",
                             &result_message,
@@ -1098,7 +1152,7 @@ impl RuntimeHandle {
                             "failed to persist terminal task status before task result"
                         );
                     }
-                    let _ = runtime.enqueue(result_message).await;
+
                     runtime
                         .inner
                         .task_handles
@@ -1402,11 +1456,7 @@ impl RuntimeHandle {
         let terminal_task =
             task_with_result_message(&task_record, status, Some(task_detail), &result_message);
         if let Err(error) = self
-            .persist_task_transition_with_message(
-                &terminal_task,
-                "task_status_updated",
-                &result_message,
-            )
+            .commit_terminal_task_result(&terminal_task, "task_status_updated", &result_message)
             .await
         {
             tracing::warn!(
@@ -1415,7 +1465,7 @@ impl RuntimeHandle {
                 "failed to persist terminal task status before task result"
             );
         }
-        let _ = self.enqueue(result_message).await;
+
         Ok(())
     }
 
@@ -1569,43 +1619,29 @@ impl RuntimeHandle {
                 status: TaskStatus::Interrupted,
                 created_at: task.created_at,
                 updated_at: Utc::now(),
-                parent_message_id: Some(restart_task_result_message_id(&task.id)),
+                parent_message_id: None,
                 work_item_id: task.work_item_id.clone(),
                 summary: task.summary.clone(),
                 detail: Some(detail),
                 recovery: task.recovery.clone(),
             };
-            self.persist_task_status_direct(&interrupted_task, "task_interrupted_on_restart")
-                .await?;
+            let result_message =
+                interrupted_task_result_message(&interrupted_task, "runtime_restarted");
+            let interrupted_task = task_with_result_message(
+                &interrupted_task,
+                TaskStatus::Interrupted,
+                interrupted_task.detail.clone(),
+                &result_message,
+            );
+            self.commit_terminal_task_result(
+                &interrupted_task,
+                "task_interrupted_on_restart",
+                &result_message,
+            )
+            .await?;
             interrupted.push(interrupted_task);
         }
         Ok(interrupted)
-    }
-
-    pub(super) async fn missing_interrupted_task_results(&self) -> Result<Vec<TaskRecord>> {
-        let agent_id = self.agent_id().await?;
-        let mut missing = Vec::new();
-        for task in self
-            .inner
-            .runtime_db
-            .tasks()
-            .latest_for_agent(&agent_id, usize::MAX)?
-        {
-            if task.status != TaskStatus::Interrupted {
-                continue;
-            }
-            let Some(message_id) = task
-                .parent_message_id
-                .as_deref()
-                .filter(|message_id| message_id.starts_with("message:task-restart:"))
-            else {
-                continue;
-            };
-            if self.inner.storage.read_message_by_id(message_id)?.is_none() {
-                missing.push(task);
-            }
-        }
-        Ok(missing)
     }
 
     pub(super) async fn interrupt_active_tasks_for_lifecycle_stop(
@@ -1666,8 +1702,20 @@ impl RuntimeHandle {
                 detail: Some(detail),
                 recovery: task.recovery.clone(),
             };
-            self.persist_task_status_direct(&interrupted_task, "task_interrupted_on_agent_stop")
-                .await?;
+            let result_message =
+                interrupted_task_result_message(&interrupted_task, "agent_stopped");
+            let interrupted_task = task_with_result_message(
+                &interrupted_task,
+                TaskStatus::Interrupted,
+                interrupted_task.detail.clone(),
+                &result_message,
+            );
+            self.commit_terminal_task_result(
+                &interrupted_task,
+                "task_interrupted_on_agent_stop",
+                &result_message,
+            )
+            .await?;
             interrupted.push(interrupted_task);
         }
         Ok(interrupted)

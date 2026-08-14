@@ -6116,7 +6116,18 @@ mod tests {
                 .and_then(|detail| detail["interrupted_reason"].as_str()),
             Some("agent_stopped")
         );
-        assert!(task.parent_message_id.is_none());
+        let result_message_id = task
+            .parent_message_id
+            .as_deref()
+            .expect("agent stop should atomically persist a TaskResult");
+        assert_eq!(
+            storage
+                .read_message_by_id(result_message_id)
+                .unwrap()
+                .expect("agent stop TaskResult")
+                .kind,
+            MessageKind::TaskResult
+        );
         assert!(storage
             .read_message_by_id("message:task-restart:task-stopped-owner")
             .unwrap()

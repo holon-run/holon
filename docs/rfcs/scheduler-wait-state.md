@@ -679,9 +679,11 @@ resource
 
 External ingress, timer, operator input, and system tick should enqueue
 continuation that asks the agent to reconcile the wait, rather than implicitly
-resolving the wait. Terminal task results are the exception: a matching
-`task_result` wait is resolved because the awaited runtime-owned task has
-reached a terminal state.
+resolving the wait. A terminal task result atomically admits its structured
+message and changes the exact matching `task_result` wait from `Active` to
+`Triggered(message_id)`. The canonical activation claim changes that wait to
+`Resolved(message_id)`; terminal task state alone is not sufficient evidence
+that a continuation consumed the result.
 
 ### 5. Add external wait audit
 

@@ -1,4 +1,6 @@
 use super::super::support::*;
+use crate::runtime::WaitForWakeKind;
+use crate::types::WaitConditionStatus;
 
 #[tokio::test]
 async fn task_runtime_path_rolls_back_each_pre_commit_fault() {
@@ -104,6 +106,93 @@ async fn task_post_commit_fault_recovers_active_projection_after_restart() {
             .unwrap()
             .iter()
             .any(|record| record.id == task.id));
+    }
+}
+
+#[tokio::test]
+async fn terminal_task_result_rolls_back_task_wait_message_and_queue_together() {
+    for fault in PRE_COMMIT_FAULTS {
+        let harness = LifecycleHarness::new();
+        let work_item = harness
+            .runtime()
+            .create_work_item(
+                "terminal task result fault contract".into(),
+                None,
+                None,
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        let now = harness.now();
+        let running = TaskRecord {
+            id: "task-terminal-result-fault".into(),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Running,
+            created_at: now,
+            updated_at: now,
+            parent_message_id: None,
+            work_item_id: Some(work_item.id.clone()),
+            summary: Some("terminal task result fault".into()),
+            detail: None,
+            recovery: None,
+        };
+        harness.runtime().storage().append_task(&running).unwrap();
+        let registration = harness
+            .runtime()
+            .register_wait_for(
+                "default",
+                Some(work_item.id),
+                WaitForWakeKind::TaskResult,
+                Some(running.id.clone()),
+                "waiting for terminal task result".into(),
+                None,
+            )
+            .await
+            .unwrap();
+        let before = harness.snapshot();
+        harness.arm_fault(fault);
+
+        let error = harness
+            .runtime()
+            .interrupt_active_tasks(vec![running.clone()])
+            .await
+            .unwrap_err();
+
+        assert_injected_transition_fault(&error);
+        harness.assert_unchanged(&before);
+
+        let interrupted = harness
+            .runtime()
+            .interrupt_active_tasks(vec![running])
+            .await
+            .unwrap();
+        assert_eq!(interrupted.len(), 1);
+        let result_message_id =
+            super::super::super::tasks::restart_task_result_message_id(&interrupted[0].id);
+        let after = harness.snapshot();
+        assert_eq!(after.tasks.last().unwrap().status, TaskStatus::Interrupted);
+        assert_eq!(
+            after.tasks.last().unwrap().parent_message_id.as_deref(),
+            Some(result_message_id.as_str())
+        );
+        assert!(after
+            .messages
+            .iter()
+            .any(|message| message.id == result_message_id));
+        assert!(after.queue_entries.iter().any(|entry| {
+            entry.message_id == result_message_id && entry.status == QueueEntryStatus::Queued
+        }));
+        let triggered = after
+            .wait_conditions
+            .iter()
+            .find(|condition| condition.id == registration.condition.id)
+            .unwrap();
+        assert_eq!(triggered.status, WaitConditionStatus::Triggered);
+        assert_eq!(
+            triggered.trigger_message_id(),
+            Some(result_message_id.as_str())
+        );
     }
 }
 
@@ -289,7 +378,7 @@ async fn task_restart_interrupts_inflight_task_once() {
 }
 
 #[tokio::test]
-async fn task_restart_recovers_interrupted_task_with_missing_result_message() {
+async fn task_restart_does_not_repair_legacy_interrupted_task_with_missing_result_message() {
     let mut harness = LifecycleHarness::new();
     let now = harness.now();
     harness
@@ -318,33 +407,13 @@ async fn task_restart_recovers_interrupted_task_with_missing_result_message() {
     harness.restart();
     let runtime = harness.runtime().clone();
     let runtime_task = tokio::spawn(runtime.clone().run());
-    wait_for_audit_events(
-        &runtime,
-        100,
-        |events| {
-            events
-                .iter()
-                .any(|event| event.kind == "task_restart_results_emitted")
-        },
-        "missing interrupted task result recovery",
-    )
-    .await;
+    tokio::task::yield_now().await;
     runtime_task.abort();
 
-    let message = harness
-        .snapshot()
-        .messages
-        .into_iter()
-        .find(|message| {
-            message.id
-                == super::super::super::tasks::restart_task_result_message_id(
-                    "task-restart-missing-result",
-                )
-        })
-        .expect("restart should recover the missing interrupted task result");
-    assert_eq!(message.kind, MessageKind::TaskResult);
-    assert_eq!(
-        message.work_item_id.as_deref(),
-        Some("work-restart-missing-result")
-    );
+    assert!(harness.snapshot().messages.into_iter().all(|message| {
+        message.id
+            != super::super::super::tasks::restart_task_result_message_id(
+                "task-restart-missing-result",
+            )
+    }));
 }

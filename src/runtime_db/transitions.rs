@@ -284,7 +284,9 @@ pub(crate) struct ExecutionAuthorityFences {
 pub(crate) struct TaskTransitionCommand {
     pub agent_id: String,
     pub task: TaskRecord,
+    pub queue_entry: Option<QueueEntryRecord>,
     pub work_items: Vec<WorkItemMutation>,
+    pub expected_wait_conditions: Vec<WaitConditionExpectation>,
     pub wait_conditions: Vec<WaitConditionRecord>,
     pub agent_state: Option<AgentStateMutation>,
     pub message_evidence: Vec<MessageEnvelope>,
@@ -1430,8 +1432,14 @@ impl RuntimeTransitionRepository<'_> {
     ) -> Result<TransitionCommit> {
         self.db.transaction(|tx| {
             validate_task_tx(tx, &command.task)?;
+            if let Some(queue_entry) = command.queue_entry.as_ref() {
+                validate_queue_mutation_tx(tx, &QueueMutation::Upsert(queue_entry.clone()))?;
+            }
             for work_item in &command.work_items {
                 validate_work_item_mutation_tx(tx, work_item)?;
+            }
+            for expected in &command.expected_wait_conditions {
+                validate_wait_condition_expectation_tx(tx, expected)?;
             }
             for condition in &command.wait_conditions {
                 validate_wait_condition_tx(tx, condition)?;
@@ -1460,6 +1468,9 @@ impl RuntimeTransitionRepository<'_> {
 
             let task_applied = upsert_task_tx(tx, &command.task)?;
             let mut applied = task_applied;
+            if let Some(queue_entry) = command.queue_entry.as_ref() {
+                applied |= upsert_queue_entry_tx(tx, queue_entry)?;
+            }
             let mut work_items = Vec::new();
             for work_item in &command.work_items {
                 let work_item_applied = apply_work_item_mutation_tx(tx, work_item)?;
@@ -3723,10 +3734,12 @@ mod tests {
         let command = TaskTransitionCommand {
             agent_id: "agent-a".into(),
             task: terminal.clone(),
+            queue_entry: None,
             work_items: vec![WorkItemMutation::Update {
                 record: cleared.clone(),
                 expected_revision: 1,
             }],
+            expected_wait_conditions: Vec::new(),
             wait_conditions: vec![resolved],
             agent_state: None,
             message_evidence: Vec::new(),
@@ -3833,10 +3846,12 @@ mod tests {
             let command = TaskTransitionCommand {
                 agent_id: "agent-a".into(),
                 task: terminal,
+                queue_entry: None,
                 work_items: vec![WorkItemMutation::Update {
                     record: cleared,
                     expected_revision: initial_work.revision,
                 }],
+                expected_wait_conditions: Vec::new(),
                 wait_conditions: vec![resolved],
                 agent_state: None,
                 message_evidence: Vec::new(),

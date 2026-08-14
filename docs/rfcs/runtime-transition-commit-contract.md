@@ -219,15 +219,18 @@ audit is absent because of a later transaction failure.
 | --- | --- | --- | --- |
 | create/running/cancelling | monotonic task phase/revision | Task, lifecycle audit, index outbox | cache Task, publish audit, notify indexer and scheduler |
 | terminal without wait | non-terminal task or equivalent replay | terminal Task, lifecycle audit, index outbox | cache Task, publish audit, notify indexer and scheduler |
-| terminal with wait | non-terminal task, active matching wait, expected WorkItem blocker | terminal Task, resolved waits, optional WorkItem blocker revision, lifecycle audits, Task and WorkItem index outbox | cache Task and WorkItem, publish audits, notify indexer and scheduler |
+| terminal result | non-terminal task or equivalent replay, result message, optional active exact task wait | terminal Task, result message, queued message row, optional `Triggered(message_id)` wait, lifecycle/message/wait audits, Task index outbox, AgentState pending projection | cache Task, append the result to the in-memory queue, publish audits, notify indexer and scheduler |
 
-Terminal task persistence and wait release are one transition. A restart cannot
-observe a terminal task with an otherwise matching active task wait solely
-because the runtime crashed between repository calls.
+Terminal task persistence, result admission, and exact wait trigger are one
+transition. A terminal task fact without result-message evidence does not
+trigger or resolve a task wait. The canonical activation claim later changes
+the exact `Triggered(message_id)` wait to `Resolved(message_id)` and clears any
+matching WorkItem blocker while creating the execution attempt.
 
-An equivalent terminal replay may commit only residual wait and WorkItem
-repairs. It reuses stable lifecycle audit identity and does not rewrite the
-terminal Task or enqueue another Task index change.
+Normal completion, failure, cancellation, daemon-restart interruption, and
+agent-stop interruption use the same typed terminal-result transition. An
+equivalent replay reuses stable message and lifecycle identities and does not
+duplicate queue rows, wait triggers, or Task index changes.
 
 ## Commit And Effect Ordering
 

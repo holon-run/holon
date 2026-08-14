@@ -49,19 +49,18 @@ impl RuntimeHandle {
                     let Some(task) = durable_task else {
                         return Err(error);
                     };
-                    let resolved_wait_authority =
-                        if let Some(work_item_id) = task.work_item_id.as_deref() {
-                            exact_resolved_task_result_wait(
-                                &self.inner.storage,
-                                message,
-                                &task.id,
-                                work_item_id,
-                            )?
-                            .is_some()
-                        } else {
-                            false
-                        };
-                    if task.terminal_reentry() || resolved_wait_authority {
+                    let wait_authority = if let Some(work_item_id) = task.work_item_id.as_deref() {
+                        exact_triggered_or_resolved_task_result_wait(
+                            &self.inner.storage,
+                            message,
+                            &task.id,
+                            work_item_id,
+                        )?
+                        .is_some()
+                    } else {
+                        false
+                    };
+                    if task.terminal_reentry() || wait_authority {
                         Ok(task)
                     } else {
                         Err(error)

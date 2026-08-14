@@ -17,7 +17,7 @@ implicitly.
 
 | Scenario ID | Case ID | Description | Key Assertions |
 |---|---|---|---|
-| SCHED-E2E-001 | `scheduler-task-wait-resume` | Autonomous task-result and external-wait continuity | brief binding; task yield/rejoin; wait resolved; restart persistence |
+| SCHED-E2E-001 | `scheduler-task-wait-resume` | Autonomous task-result and external-wait continuity across an in-flight daemon crash | promoted command interruption; deterministic restart TaskResult; exact rejoin; brief binding; waits resolved |
 | SCHED-E2E-002 | `scheduler-multi-workitem-scheduling` | Multi-WorkItem concurrent scheduling | both complete; no conflicts; 2 activations; 2 settlements; restart persistence |
 | SCHED-E2E-003 | `scheduler-provider-failure-work-queue-retry` | Provider failure recovery | recovery turn scheduled; final brief; no death loop; idempotency key preserved |
 | SCHED-E2E-005 | `scheduler-external-wait-resume` | WaitFor external trigger + resume | wait state correct; external callback wakes; WorkItem resumes; wait resolved |

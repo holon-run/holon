@@ -133,16 +133,14 @@ impl RuntimeHandle {
         &self,
         message: &MessageEnvelope,
     ) -> Result<Option<crate::runtime_db::transitions::QueueWaitTransition>> {
-        let Some(condition) = self
+        let unresolved = self
             .inner
             .storage
-            .raw_unresolved_wait_conditions_for_agent(&message.agent_id)?
-            .into_iter()
-            .find(|condition| {
-                condition.status == WaitConditionStatus::Triggered
-                    && condition.trigger_message_id() == Some(message.id.as_str())
-            })
-        else {
+            .raw_unresolved_wait_conditions_for_agent(&message.agent_id)?;
+        let Some(condition) = unresolved.into_iter().find(|condition| {
+            condition.status == WaitConditionStatus::Triggered
+                && condition.trigger_message_id() == Some(message.id.as_str())
+        }) else {
             return Ok(None);
         };
         let now = self.now();

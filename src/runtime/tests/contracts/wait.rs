@@ -784,11 +784,8 @@ async fn terminal_task_replay_repairs_wait_once_across_restart() {
         .create_work_item("repair task wait".into(), None, None, Vec::new())
         .await
         .unwrap();
-    harness
-        .runtime()
-        .storage()
-        .append_task(&running_task("task-replay", &work.id, harness.now()))
-        .unwrap();
+    let running = running_task("task-replay", &work.id, harness.now());
+    harness.runtime().storage().append_task(&running).unwrap();
     let registration = harness
         .runtime()
         .register_wait_for(
@@ -801,19 +798,14 @@ async fn terminal_task_replay_repairs_wait_once_across_restart() {
         )
         .await
         .unwrap();
-    let terminal = TaskRecord {
-        id: "task-replay".into(),
-        agent_id: "default".into(),
-        kind: TaskKind::CommandTask,
-        status: TaskStatus::Completed,
-        created_at: harness.now(),
-        updated_at: harness.now(),
-        parent_message_id: Some("message-replay".into()),
-        work_item_id: Some(work.id.clone()),
-        summary: Some("task-replay".into()),
-        detail: None,
-        recovery: None,
-    };
+    persist_waiting_work_execution(&harness, &work.id, &registration.condition.id).await;
+    let mut message = task_result_message("task-replay").with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    message.task_id = Some("task-replay".into());
+    message.work_item_id = Some(work.id.clone());
+    let terminal = terminal_task_with_result(&running, &message, harness.now());
     harness.runtime().storage().append_task(&terminal).unwrap();
     let before = harness
         .runtime()
@@ -823,21 +815,59 @@ async fn terminal_task_replay_repairs_wait_once_across_restart() {
         .high_watermark_for_agent("default")
         .unwrap();
 
-    let mut message = task_result_message("task-replay");
-    message.task_id = Some("task-replay".into());
-    message.work_item_id = Some(work.id.clone());
     harness
         .runtime()
-        .reduce_task_result_message(&message, terminal.clone(), false, None)
+        .commit_terminal_task_result(&terminal, "task_result_received", &message)
         .await
         .unwrap();
     let repaired = harness.snapshot();
+    let triggered = repaired
+        .wait_conditions
+        .iter()
+        .find(|condition| condition.id == registration.condition.id)
+        .unwrap();
+    assert_eq!(triggered.status, WaitConditionStatus::Triggered);
+    assert_eq!(triggered.trigger_message_id(), Some(message.id.as_str()));
+    assert_eq!(
+        repaired.work_items[0].blocked_by.as_deref(),
+        Some("waiting for task-replay")
+    );
     harness.restart();
     harness
         .runtime()
-        .reduce_task_result_message(&message, terminal, false, None)
+        .commit_terminal_task_result(&terminal, "task_result_received", &message)
         .await
         .unwrap();
+    let replayed = harness.snapshot();
+    assert_eq!(replayed.tasks, repaired.tasks);
+    assert_eq!(replayed.messages, repaired.messages);
+    assert_eq!(replayed.wait_conditions, repaired.wait_conditions);
+    assert_eq!(replayed.audit_events, repaired.audit_events);
+    assert_eq!(replayed.queue_entries.len(), 1);
+    assert_eq!(replayed.queue_entries[0].message_id, message.id);
+    assert_eq!(
+        replayed.queue_entries[0].status,
+        repaired.queue_entries[0].status
+    );
+    let wait_transition = harness
+        .runtime()
+        .wait_resolution_transition_for_message(&message)
+        .unwrap()
+        .expect("replayed TaskResult should plan exact wait settlement");
+    assert_eq!(wait_transition.record.status, WaitConditionStatus::Resolved);
+    assert!(
+        wait_transition.work_item.is_some(),
+        "exact wait settlement should clear the matching WorkItem blocker"
+    );
+    let poll =
+        super::super::super::scheduler_executor::SchedulerDecisionExecutor::new(harness.runtime())
+            .poll()
+            .await
+            .unwrap();
+    let super::super::super::scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("replayed task result should be claimed after restart");
+    };
+    assert_eq!(scheduled.message.id, message.id);
 
     let latest = harness
         .runtime()
@@ -873,5 +903,4 @@ async fn terminal_task_replay_repairs_wait_once_across_restart() {
             .count(),
         1
     );
-    assert_eq!(harness.snapshot(), repaired);
 }

@@ -2170,9 +2170,16 @@ async fn bootstrap_recovery_replays_task_result_claim_after_canonical_revision_s
     terminal_task.parent_message_id = Some(result.id.clone());
     assert!(!terminal_task.terminal_reentry());
     runtime
-        .persist_task_transition_with_message(&terminal_task, "task_completed", &result)
+        .commit_terminal_task_result(&terminal_task, "task_completed", &result)
         .await
         .unwrap();
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Message(_)
+    ));
     let result = runtime
         .storage()
         .read_message_by_id(&result.id)
@@ -2449,9 +2456,16 @@ async fn stale_task_result_claim_fixture(task_id: &str) -> StaleTaskResultClaimF
     terminal_task.parent_message_id = Some(result.id.clone());
     assert!(!terminal_task.terminal_reentry());
     runtime
-        .persist_task_transition_with_message(&terminal_task, "task_completed", &result)
+        .commit_terminal_task_result(&terminal_task, "task_completed", &result)
         .await
         .unwrap();
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Message(_)
+    ));
     let result = runtime
         .storage()
         .read_message_by_id(&result.id)
@@ -4850,21 +4864,17 @@ async fn lifecycle_wait_handoff_to_work_item_wait_is_atomic_idempotent_and_resta
     }));
     rejoin.turn_id = Some("turn-lifecycle-handoff-rejoin".into());
     reopened
-        .persist_task_transition_with_message(&terminal_task, "task_completed", &rejoin)
+        .commit_terminal_task_result(&terminal_task, "task_completed", &rejoin)
         .await
         .unwrap();
-    assert!(reopened
+    let triggered = reopened
         .storage()
-        .active_wait_conditions_for_work_item("default", &work_item.id)
+        .latest_wait_conditions()
         .unwrap()
-        .is_empty());
-    let resolved_work_item = reopened
-        .latest_work_item(&work_item.id)
-        .await
-        .unwrap()
-        .expect("task result should retain the WorkItem");
-    assert!(resolved_work_item.revision > work_generation);
-    let rejoin = reopened.enqueue(rejoin).await.unwrap();
+        .into_iter()
+        .find(|condition| condition.id == work_wait.condition.id)
+        .expect("triggered task wait");
+    assert_eq!(triggered.status, WaitConditionStatus::Triggered);
     assert!(matches!(
         scheduler_executor::SchedulerDecisionExecutor::new(&reopened)
             .poll()
@@ -4872,6 +4882,12 @@ async fn lifecycle_wait_handoff_to_work_item_wait_is_atomic_idempotent_and_resta
             .unwrap(),
         scheduler_executor::RunLoopPoll::Message(_)
     ));
+    let resolved_work_item = reopened
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .expect("task result should retain the WorkItem");
+    assert!(resolved_work_item.revision > work_generation);
     let rejoined = reopened
         .inner
         .runtime_db
@@ -5024,9 +5040,14 @@ async fn exact_task_rejoin_prefers_canonical_wait_when_legacy_revision_advanced(
     }));
     rejoin.turn_id = Some("turn-stale-legacy-rejoin".into());
     runtime
-        .persist_task_transition_with_message(&terminal_task, "task_completed", &rejoin)
+        .commit_terminal_task_result(&terminal_task, "task_completed", &rejoin)
         .await
         .unwrap();
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    assert!(matches!(poll, scheduler_executor::RunLoopPoll::Message(_)));
     let resolved_work = runtime
         .latest_work_item(&work_item.id)
         .await
@@ -5044,14 +5065,6 @@ async fn exact_task_rejoin_prefers_canonical_wait_when_legacy_revision_advanced(
         resolved_execution.work_items[&work_item.id].source_revision,
         resolved_work.revision
     );
-
-    let rejoin = runtime.enqueue(rejoin).await.unwrap();
-
-    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-        .poll()
-        .await
-        .unwrap();
-    assert!(matches!(poll, scheduler_executor::RunLoopPoll::Message(_)));
     let claimed = runtime
         .inner
         .runtime_db
@@ -5345,6 +5358,15 @@ async fn pre_cutover_task_rejoin_without_execution_owner_is_dropped() {
     runtime
         .persist_task_transition_with_message(&terminal, "task_status_updated", &stale)
         .await
+        .unwrap();
+    let mut legacy_resolved = registration.condition.clone();
+    legacy_resolved.status = WaitConditionStatus::Resolved;
+    legacy_resolved.trigger_message_id = Some(stale.id.clone());
+    legacy_resolved.resolved_at = Some(Utc::now());
+    legacy_resolved.updated_at = Utc::now();
+    runtime
+        .storage()
+        .append_wait_condition(&legacy_resolved)
         .unwrap();
     let completing = runtime
         .complete_work_item(work_item.id.clone(), Vec::new())
@@ -5972,13 +5994,27 @@ async fn terminal_task_result_resumes_exact_agent_lifecycle_task_wait() {
             .unwrap()
     };
     runtime
-        .persist_task_transition_with_message(
-            &terminal,
-            "command_task_terminal_persisted",
-            &message,
-        )
+        .commit_terminal_task_result(&terminal, "command_task_terminal_persisted", &message)
         .await
         .unwrap();
+    let triggered = runtime
+        .storage()
+        .latest_wait_conditions()
+        .unwrap()
+        .into_iter()
+        .find(|condition| condition.id == registration.condition.id)
+        .unwrap();
+    assert_eq!(triggered.status, WaitConditionStatus::Triggered);
+    assert_eq!(triggered.trigger_message_id(), Some(message.id.as_str()));
+
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("exact lifecycle task wait should resume into the model");
+    };
+    assert_eq!(scheduled.message.id, message.id);
     let resolved = runtime
         .storage()
         .latest_wait_conditions()
@@ -5988,16 +6024,6 @@ async fn terminal_task_result_resumes_exact_agent_lifecycle_task_wait() {
         .unwrap();
     assert_eq!(resolved.status, WaitConditionStatus::Resolved);
     assert_eq!(resolved.trigger_message_id(), Some(message.id.as_str()));
-
-    let queued = runtime.enqueue(message).await.unwrap();
-    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-        .poll()
-        .await
-        .unwrap();
-    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
-        panic!("exact lifecycle task wait should resume into the model");
-    };
-    assert_eq!(scheduled.message.id, queued.id);
     let execution = runtime
         .inner
         .runtime_db
@@ -6005,13 +6031,13 @@ async fn terminal_task_result_resumes_exact_agent_lifecycle_task_wait() {
         .load_execution_protocol_state_if_initialized("default")
         .unwrap()
         .unwrap();
-    let attempt = &execution.attempts[&scheduler_executor::canonical_activation_id(&queued.id)];
+    let attempt = &execution.attempts[&scheduler_executor::canonical_activation_id(&message.id)];
     assert!(matches!(
         &attempt.source.identity,
         crate::domain::execution_protocol::ExecutionSourceIdentity::TriggeredWait {
             wait_id,
             trigger_message_id,
-        } if wait_id == &registration.condition.id && trigger_message_id == &queued.id
+        } if wait_id == &registration.condition.id && trigger_message_id == &message.id
     ));
 }
 
@@ -6082,14 +6108,9 @@ async fn exact_agent_lifecycle_task_wait_runs_one_model_continuation() {
             .unwrap()
     };
     runtime
-        .persist_task_transition_with_message(
-            &terminal,
-            "command_task_terminal_persisted",
-            &message,
-        )
+        .commit_terminal_task_result(&terminal, "command_task_terminal_persisted", &message)
         .await
         .unwrap();
-    runtime.enqueue(message).await.unwrap();
 
     let runner = tokio::spawn(runtime.clone().run());
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -10289,7 +10310,7 @@ async fn register_wait_for_external_recheck_sets_recoverable_work_item_deadline(
 }
 
 #[tokio::test]
-async fn task_result_resolves_wait_for_task_condition_and_clears_matching_blocker() {
+async fn canonical_task_result_claim_resolves_wait_and_clears_matching_blocker() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -10310,7 +10331,7 @@ async fn task_result_resolves_wait_for_task_condition_and_clears_matching_blocke
         .await
         .unwrap();
     append_running_rejoin_task(&runtime, "task-1", &work.id);
-    runtime
+    let registration = runtime
         .register_wait_for(
             "default",
             Some(work.id.clone()),
@@ -10321,7 +10342,15 @@ async fn task_result_resolves_wait_for_task_condition_and_clears_matching_blocke
         )
         .await
         .unwrap();
+    let work = runtime.latest_work_item(&work.id).await.unwrap().unwrap();
+    persist_waiting_work_execution(&runtime, &work, &registration.condition.id);
 
+    let mut message = task_result_message("task-1").with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    message.task_id = Some("task-1".into());
+    message.work_item_id = Some(work.id.clone());
     let task = TaskRecord {
         id: "task-1".into(),
         agent_id: "default".into(),
@@ -10329,31 +10358,67 @@ async fn task_result_resolves_wait_for_task_condition_and_clears_matching_blocke
         status: TaskStatus::Completed,
         created_at: Utc::now(),
         updated_at: Utc::now(),
-        parent_message_id: None,
+        parent_message_id: Some(message.id.clone()),
         work_item_id: Some(work.id.clone()),
         summary: Some("task-1".into()),
-        detail: None,
+        detail: Some(serde_json::json!({
+            "rejoin_obligation_id": "task-1",
+            "rejoin_generation": 1,
+            "parent_turn_id": "turn-task-1-parent",
+        })),
         recovery: None,
     };
-    let mut message = task_result_message("task-1");
-    message.task_id = Some("task-1".into());
-    message.work_item_id = Some(work.id.clone());
     runtime
-        .reduce_task_result_message(&message, task, false, None)
+        .commit_terminal_task_result(&task, "task_status_updated", &message)
         .await
         .unwrap();
 
     let latest = runtime.latest_work_item(&work.id).await.unwrap().unwrap();
-    assert_eq!(latest.blocked_by, None);
-    let active_conditions = runtime
+    assert_eq!(latest.blocked_by.as_deref(), Some("waiting for task-1"));
+    let triggered = runtime
         .storage()
-        .active_wait_conditions_for_work_item("default", &work.id)
+        .latest_wait_conditions()
+        .unwrap()
+        .into_iter()
+        .find(|condition| condition.work_item_id.as_deref() == Some(work.id.as_str()))
+        .expect("triggered task wait");
+    assert_eq!(triggered.status, WaitConditionStatus::Triggered);
+    let planned_wait_resolution = runtime
+        .wait_resolution_transition_for_message(&message)
+        .unwrap()
+        .expect("triggered task wait should plan claim-time resolution");
+    assert!(
+        planned_wait_resolution.work_item.is_some(),
+        "claim-time wait resolution should clear the matching WorkItem blocker"
+    );
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
         .unwrap();
-    assert!(active_conditions.is_empty());
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("canonical task result should be claimed");
+    };
+    assert_eq!(scheduled.message.id, message.id);
+    let latest = runtime.latest_work_item(&work.id).await.unwrap().unwrap();
+    let resolved = runtime
+        .storage()
+        .latest_wait_conditions()
+        .unwrap()
+        .into_iter()
+        .find(|condition| condition.id == triggered.id)
+        .expect("resolved task wait");
+    assert_eq!(
+        (
+            resolved.status,
+            latest.revision,
+            latest.blocked_by.as_deref()
+        ),
+        (WaitConditionStatus::Resolved, work.revision + 1, None)
+    );
     let events = runtime.storage().read_recent_events(100).unwrap();
     assert!(events
         .iter()
-        .any(|event| event.kind == "wait_conditions_resolved"));
+        .any(|event| event.kind == "wait_condition_triggered"));
 }
 
 #[tokio::test]

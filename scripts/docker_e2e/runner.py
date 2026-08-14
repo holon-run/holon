@@ -695,6 +695,56 @@ class CaseHarness:
         self.stop()
         self.start(wait_idle=wait_idle)
 
+    def crash_restart(self, *, wait_idle: bool = True) -> None:
+        # Kill the container directly with SIGKILL.  This avoids the
+        # SIGSTOP/SIGKILL race where the daemon could detect child-process
+        # death and record a terminal TaskResult before being stopped.
+        crash = self.docker(
+            "kill",
+            "--signal",
+            "KILL",
+            self.container,
+            check=False,
+            timeout=DOCKER_CONTROL_TIMEOUT_SECONDS,
+        )
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            state = self.docker(
+                "inspect",
+                "--format",
+                "{{.State.Running}}",
+                self.container,
+                check=False,
+            )
+            if state.returncode != 0 or state.stdout.strip() == "false":
+                break
+            time.sleep(0.25)
+        require(
+            state.returncode != 0 or state.stdout.strip() == "false",
+            "Holon container did not stop after Docker SIGKILL: "
+            + (crash.stderr or crash.stdout).strip(),
+        )
+        self.capture_logs()
+        self.docker("rm", "-f", self.container, check=False)
+        # Clean up stale daemon state files (socket, pid, metadata) left
+        # behind by SIGKILL.  Without this, the replacement container's
+        # PID 1 matches the dead daemon's recorded PID, causing probe_runtime
+        # to falsely report "runtime is already running".
+        self.docker(
+            "run",
+            "--rm",
+            "--volume",
+            f"{self.volume}:/var/lib/holon",
+            "--entrypoint",
+            "bash",
+            self.image,
+            "-c",
+            "rm -rf /var/lib/holon/run",
+            check=False,
+        )
+        self.base_url = ""
+        self.start(wait_idle=wait_idle)
+
     def restart_with_image(self, image: str, *, wait_idle: bool = True) -> None:
         self.stop()
         self.image = image
@@ -2649,6 +2699,7 @@ def run_scheduler_task_wait_resume_case(
         expected_scheduling_state="waiting_task",
         label="scheduler-task-wait-task",
     )
+    harness.crash_restart(wait_idle=False)
     external_waiting = harness.wait_work_item_scheduling_state(
         objective_marker=objective_marker,
         expected_scheduling_state="waiting_external",
@@ -2781,13 +2832,33 @@ def run_scheduler_task_wait_resume_case(
         work_item_id=work_item_id,
         wait_ids={wait["wait_condition_id"] for wait in waits},
     )
-    harness.restart()
-    restarted_items = harness.work_items("scheduler-task-wait-after-restart")
-    restarted = next(item for item in restarted_items if item["id"] == work_item_id)
+    restart_messages = [
+        row
+        for row in snapshot["messages"]
+        if row["kind"] == "task_result"
+        and row["message_id"].startswith("message:task-restart:")
+    ]
     require(
-        restarted["state"] == "completed"
-        and restarted.get("result_brief_id") == result_brief_id,
-        f"task/wait WorkItem did not survive restart: {restarted}",
+        len(restart_messages) == 1,
+        f"canonical rejoin did not use the deterministic restart TaskResult: {restart_messages}",
+    )
+    restart_message_id = restart_messages[0]["message_id"]
+    task_result_turns = [
+        row for row in turns if row["trigger_message_id"] == restart_message_id
+    ]
+    require(
+        len(task_result_turns) == 1,
+        f"restart task result did not create exactly one model rejoin: {task_result_turns}",
+    )
+    restart_task_waits = [
+        wait
+        for wait in task_waits
+        if wait.get("trigger_message_id") == restart_message_id
+    ]
+    require(
+        len(restart_task_waits) == 1,
+        "restart TaskResult did not resolve the exact task wait with message provenance: "
+        f"{task_waits}",
     )
 
 

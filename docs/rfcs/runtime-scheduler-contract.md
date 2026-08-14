@@ -703,7 +703,10 @@ same final projection.
 
 Coverage:
 
-- terminal task persisted before task result enqueue;
+- terminal task, TaskResult admission, queued row, and exact wait trigger
+  commit atomically or all roll back;
+- restart replay of an already committed terminal-result transition does not
+  duplicate the message, queue row, or wait trigger;
 - Dequeued message replay after restart;
 - pending wake hint recovery;
 - current work item with queued follow-up;

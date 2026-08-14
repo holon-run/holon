@@ -932,68 +932,6 @@ impl RuntimeHandle {
         let _ = self.enqueue(message).await?;
         Ok(())
     }
-
-    pub(super) async fn emit_task_results_from_interrupted_tasks(
-        &self,
-        tasks: &[TaskRecord],
-    ) -> Result<()> {
-        let agent_id = self.agent_id().await?;
-        let mut message_ids = Vec::with_capacity(tasks.len());
-        for task in tasks {
-            let status_before_restart = task
-                .detail
-                .as_ref()
-                .and_then(|detail| detail.get("status_before_restart"))
-                .and_then(|value| value.as_str())
-                .unwrap_or("running");
-            let message = MessageEnvelope {
-                id: super::tasks::restart_task_result_message_id(&task.id),
-                turn_id: Some(crate::ids::turn_id()),
-                work_item_id: task.effective_work_item_id().map(ToString::to_string),
-                metadata: Some(serde_json::json!({
-                    "task_id": task.id,
-                    "task_kind": task.kind,
-                    "task_status": "interrupted",
-                    "task_summary": task.summary,
-                    "task_detail": task.detail,
-                    "task_recovery": task.recovery,
-                    "work_item_id": task.effective_work_item_id(),
-                    "status_before_restart": status_before_restart,
-                    "interrupted_reason": "runtime_restarted"
-                })),
-                ..MessageEnvelope::new(
-                    agent_id.clone(),
-                    MessageKind::TaskResult,
-                    MessageOrigin::Task {
-                        task_id: task.id.clone(),
-                    },
-                    AuthorityClass::RuntimeInstruction,
-                    Priority::Next,
-                    MessageBody::Text {
-                        text: format!(
-                            "task {} was interrupted because the runtime restarted",
-                            task.id
-                        ),
-                    },
-                )
-                .with_admission(
-                    MessageDeliverySurface::TaskRejoin,
-                    AdmissionContext::RuntimeOwned,
-                )
-            };
-            message_ids.push(message.id.clone());
-            let _ = self.enqueue(message).await?;
-        }
-        self.inner.storage.append_event(&AuditEvent::legacy(
-            "task_restart_results_emitted",
-            serde_json::json!({
-                "agent_id": agent_id,
-                "task_ids": tasks.iter().map(|task| task.id.clone()).collect::<Vec<_>>(),
-                "message_ids": message_ids,
-            }),
-        ))?;
-        Ok(())
-    }
 }
 
 fn latest_nonempty_result_brief_for_work_item<'a>(

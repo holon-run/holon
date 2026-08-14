@@ -1544,6 +1544,66 @@ class DockerE2ERunnerTests(unittest.TestCase):
             )
             self.assertNotIn("HOLON_SCHEDULER", case.get("runtime_env", {}))
 
+    def test_scheduler_task_wait_crashes_daemon_before_task_result_rejoin(self) -> None:
+        source = inspect.getsource(runner.run_scheduler_task_wait_resume_case)
+        self.assertLess(
+            source.index('expected_scheduling_state="waiting_task"'),
+            source.index("harness.crash_restart(wait_idle=False)"),
+        )
+        self.assertLess(
+            source.index("harness.crash_restart(wait_idle=False)"),
+            source.index('expected_scheduling_state="waiting_external"'),
+        )
+        self.assertNotIn(
+            'harness.work_items("scheduler-task-wait-after-restart")',
+            source,
+        )
+
+    def test_crash_restart_uses_docker_sigkill(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            harness = runner.CaseHarness(
+                case_id="crash-restart-test",
+                image="holon:test",
+                model="deepseek/deepseek-v4-flash",
+                credential_envs=[],
+                env_file=None,
+                runtime_env={},
+                evidence_root=Path(directory),
+                timeout_seconds=1,
+                keep=False,
+            )
+            commands: list[tuple[str, ...]] = []
+
+            def fake_docker(
+                *args: str, **_: object
+            ) -> subprocess.CompletedProcess[str]:
+                commands.append(args)
+                if args[:2] == ("inspect", "--format"):
+                    return subprocess.CompletedProcess(
+                        ["docker", *args], 0, "false\n", ""
+                    )
+                return subprocess.CompletedProcess(["docker", *args], 0, "", "")
+
+            harness.docker = fake_docker
+            harness.capture_logs = lambda: None
+            harness.start = lambda *, wait_idle=True: commands.append(
+                ("start", str(wait_idle))
+            )
+
+            harness.crash_restart(wait_idle=False)
+
+            self.assertEqual(
+                commands[0],
+                (
+                    "kill",
+                    "--signal",
+                    "KILL",
+                    harness.container,
+                ),
+            )
+            self.assertIn(("rm", "-f", harness.container), commands)
+            self.assertEqual(commands[-1], ("start", "False"))
+
     def test_scheduler_matrix_expands_only_scheduler_cases(self) -> None:
         selected = runner.select_cases(
             self.manifest, requested=None, suite="core", tags=[]

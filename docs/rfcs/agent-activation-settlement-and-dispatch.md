@@ -846,10 +846,11 @@ callback capability does not make one semantic wait reusable.
 
 External and operator events trigger waits but do not resolve them. The
 consuming activation must resolve, cancel, or rearm. A matching runtime-owned
-terminal task result may persist the task/message evidence and exact resolved
-wait binding in one transaction, then atomically consume that same wait
-generation during canonical activation claim while retaining all logical audit
-facts.
+terminal task result persists the terminal task, message evidence, queued
+message row, and exact `Triggered(message_id)` wait binding in one transaction.
+Canonical activation claim then atomically changes that same wait generation to
+`Resolved(message_id)` while creating the execution attempt and retaining all
+logical audit facts.
 
 `recheck_after_ms` is a fallback wake source for the same wait generation, not
 a separate generic blocker timer.
@@ -1566,12 +1567,14 @@ commands and never edits scheduler tables directly.
 #### Restart Task Rejoin
 
 Daemon restart marks each non-reattached in-flight task `interrupted` exactly
-once and enqueues one standard runtime-owned `TaskResult` per task. The
-message preserves the original task id and effective WorkItem binding and
-uses the ordinary `TaskRejoin` delivery surface. Tasks from different
-WorkItems never share an aggregate model turn. The former unbound
-`task_restart` content message is not an execution or scheduling mechanism;
-restart aggregation may remain only as audit evidence.
+once through the ordinary typed terminal-result transaction. That transaction
+atomically persists one standard runtime-owned `TaskResult`, its queued row,
+and any exact `Triggered(message_id)` wait. The message preserves the original
+task id and effective WorkItem binding and uses the ordinary `TaskRejoin`
+delivery surface. Tasks from different WorkItems never share an aggregate
+model turn. The former unbound `task_restart` content message is not an
+execution or scheduling mechanism; restart aggregation may remain only as
+audit evidence.
 
 #### Pre-claim Authority Failure
 
