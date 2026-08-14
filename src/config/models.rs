@@ -420,13 +420,7 @@ impl RuntimeModelCatalog {
             endpoint.provider.as_str() == "deepseek"
                 && endpoint.endpoint == ProviderEndpointId::default_endpoint()
         }) {
-            let mut runtime_config = default.runtime_config.clone();
-            runtime_config.route_endpoint =
-                ProviderEndpointId::parse("responses").expect("valid built-in endpoint");
-            runtime_config.transport = ProviderTransportKind::OpenAiResponses;
-            runtime_config.base_url = "https://api.deepseek.com/v1".to_string();
-            runtime_config.context_management = Default::default();
-            runtime_config.builtin_web_search = None;
+            let runtime_config = deepseek_responses_runtime_config(&default.runtime_config);
             provider_endpoints.push(ResolvedProviderEndpointConfig {
                 provider: default.provider.clone(),
                 endpoint: runtime_config.route_endpoint.clone(),
@@ -853,6 +847,35 @@ impl RuntimeModelCatalog {
             pending_fallback_model,
         )
         .map(|route| route.route_ref)
+    }
+}
+
+fn deepseek_responses_runtime_config(default: &ProviderRuntimeConfig) -> ProviderRuntimeConfig {
+    ProviderRuntimeConfig {
+        id: default.id.clone(),
+        route_provider: default.route_provider.clone(),
+        route_endpoint: ProviderEndpointId::parse("responses").expect("valid built-in endpoint"),
+        transport: ProviderTransportKind::OpenAiResponses,
+        base_url: deepseek_responses_base_url(&default.base_url),
+        auth: default.auth.clone(),
+        credential: default.credential.clone(),
+        credential_store_path: default.credential_store_path.clone(),
+        codex_home: None,
+        originator: None,
+        reasoning_effort: default.reasoning_effort.clone(),
+        context_management: Default::default(),
+        builtin_web_search: None,
+    }
+}
+
+fn deepseek_responses_base_url(default_base_url: &str) -> String {
+    let base_url = default_base_url.trim_end_matches('/');
+    if let Some(prefix) = base_url.strip_suffix("/anthropic") {
+        format!("{prefix}/v1")
+    } else if base_url.ends_with("/v1") {
+        base_url.to_string()
+    } else {
+        format!("{base_url}/v1")
     }
 }
 

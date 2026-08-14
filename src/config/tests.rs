@@ -2953,6 +2953,36 @@ fn runtime_model_catalog_exposes_deepseek_responses_without_changing_default_rou
 }
 
 #[test]
+fn runtime_model_catalog_derives_deepseek_responses_from_an_explicit_allowlist() {
+    let mut fixture = test_app_config("deepseek/deepseek-v4-pro", &[]);
+    let built_ins = built_in_provider_registry_with_settings(&HashMap::new()).unwrap();
+    let deepseek = ProviderId::parse("deepseek").unwrap();
+    let mut runtime = built_ins.get(&deepseek).unwrap().clone();
+    runtime.base_url = "https://proxy.example/deepseek/anthropic/".into();
+    runtime.reasoning_effort = Some("high".into());
+    runtime.codex_home = Some(PathBuf::from("/should-not-leak"));
+    runtime.originator = Some("anthropic-only-originator".into());
+    runtime.context_management.enabled = true;
+    fixture.config.providers.insert(deepseek, runtime);
+
+    let catalog = RuntimeModelCatalog::from_config(&fixture.config);
+    let responses_route = catalog
+        .resolve_explicit_model_route(
+            &ContextConfig::default(),
+            &route_ref("deepseek@responses/deepseek-v4-pro"),
+            ModelRouteCapability::Turn,
+        )
+        .unwrap();
+    let runtime = &responses_route.endpoint.runtime_config;
+
+    assert_eq!(runtime.base_url, "https://proxy.example/deepseek/v1");
+    assert_eq!(runtime.reasoning_effort.as_deref(), Some("high"));
+    assert!(runtime.codex_home.is_none());
+    assert!(runtime.originator.is_none());
+    assert!(!runtime.context_management.enabled);
+}
+
+#[test]
 fn runtime_model_catalog_routes_opencode_go_models_by_published_transport() {
     let mut fixture = test_app_config("opencode-go/minimax-m3", &[]);
     let built_ins = built_in_provider_registry_with_settings(&HashMap::new()).unwrap();
