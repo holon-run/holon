@@ -31,6 +31,7 @@ import {
   orderPairedRunners,
   parseClaudeCliJsonl,
   parseCodexJsonl,
+  resolveDriverHolonBinary,
   selectHolonFinalMessage,
   shouldRunManifestVerifier,
   summarizeHolonTokenOptimization,
@@ -43,6 +44,31 @@ import {
   prTitleForTask,
   worktreeNameForTask
 } from "../lib/naming.mjs";
+
+test("resolveDriverHolonBinary always selects the benchmark driver repository", () => {
+  const originalOverride = process.env.HOLON_BENCHMARK_BINARY;
+  const driverRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+
+  try {
+    delete process.env.HOLON_BENCHMARK_BINARY;
+    assert.equal(
+      resolveDriverHolonBinary(),
+      path.join(driverRoot, "target", "release", "holon")
+    );
+
+    process.env.HOLON_BENCHMARK_BINARY = "target/benchmark/holon";
+    assert.equal(
+      resolveDriverHolonBinary(),
+      path.join(driverRoot, "target", "benchmark", "holon")
+    );
+  } finally {
+    if (originalOverride === undefined) {
+      delete process.env.HOLON_BENCHMARK_BINARY;
+    } else {
+      process.env.HOLON_BENCHMARK_BINARY = originalOverride;
+    }
+  }
+});
 
 test("validateRealTaskManifest accepts a phase-1 manifest", () => {
   const manifest = validateRealTaskManifest({

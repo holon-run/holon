@@ -112,7 +112,7 @@ async function main() {
 async function runFixtureCommand(args, runnerEnv) {
   const runners = args.runners.length > 0 ? args.runners : ["holon", "claude_sdk"];
   if (runners.some((runner) => runner === "holon")) {
-    await ensureHolonBuilt();
+    await ensureDriverHolonBuilt();
   }
 
   const label = args.label ?? `run-${new Date().toISOString().replace(/[:.]/g, "-")}`;
@@ -1389,8 +1389,8 @@ async function runHolonRealTask({
   const homeDir = path.join(taskDir, "holon-home");
   const agentId = `${manifest.task_id}-${runnerConfig.runner_id}-run-${String(repetition).padStart(2, "0")}`;
   const env = buildHolonBenchmarkEnv(runnerEnv, runnerConfig, manifest);
-  await ensureHolonBuilt(worktreePath);
-  const holonBinary = resolveHolonBinary(worktreePath);
+  await ensureDriverHolonBuilt();
+  const holonBinary = resolveDriverHolonBinary();
   const args = [
     "run",
     prompt,
@@ -2443,7 +2443,7 @@ async function runHolonTask({ task, taskDir, workspaceDir, runnerEnv }) {
     HOLON_HOME: homeDir,
     HOLON_WORKSPACE_DIR: workspaceDir
   };
-  const holonBinary = resolveHolonBinary();
+  const holonBinary = resolveDriverHolonBinary();
   const agentDir = path.join(homeDir, "agents", agentId);
 
   const startedAt = Date.now();
@@ -2869,17 +2869,17 @@ async function prepareWorkspace(task, destination) {
   throw new Error(`unsupported workspace type ${task.workspace.type}`);
 }
 
-async function ensureHolonBuilt(buildRoot = repoRoot) {
+async function ensureDriverHolonBuilt() {
   if (process.env.HOLON_BENCHMARK_BINARY) {
     return;
   }
-  await runCommand("cargo", ["build", "--release", "--quiet"], buildRoot, process.env);
+  await runCommand("cargo", ["build", "--release", "--quiet"], repoRoot, process.env);
 }
 
-function resolveHolonBinary(buildRoot = repoRoot) {
+export function resolveDriverHolonBinary() {
   const override = process.env.HOLON_BENCHMARK_BINARY;
   if (!override) {
-    return path.join(buildRoot, "target", "release", "holon");
+    return path.join(repoRoot, "target", "release", "holon");
   }
   return path.isAbsolute(override) ? override : path.resolve(repoRoot, override);
 }
