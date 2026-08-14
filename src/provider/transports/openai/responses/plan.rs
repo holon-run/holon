@@ -15,10 +15,11 @@ pub(crate) fn build_openai_responses_request(
         .tools
         .iter()
         .map(|tool| {
+            let name = contract.wire_tool_name(&tool.name);
             if let Some(grammar) = tool.freeform_grammar.as_ref() {
                 Ok(json!({
                     "type": "custom",
-                    "name": tool.name,
+                    "name": name,
                     "description": tool.description,
                     "format": {
                         "type": "grammar",
@@ -29,7 +30,7 @@ pub(crate) fn build_openai_responses_request(
             } else {
                 Ok(json!({
                     "type": "function",
-                    "name": tool.name,
+                    "name": name,
                     "description": tool.description,
                     "parameters": emitted_tool_json_schema(&tool.input_schema, tool_schema_contract)?,
                     "strict": matches!(tool_schema_contract, ToolSchemaContract::Strict),
@@ -44,7 +45,7 @@ pub(crate) fn build_openai_responses_request(
     let mut body = json!({
         "model": model,
         "instructions": request.prompt_frame.system_prompt,
-        "input": build_openai_input(&request.conversation)?,
+        "input": build_openai_input_for_contract(&request.conversation, contract)?,
         "store": false,
     });
     if !tools.is_empty() {
@@ -395,7 +396,15 @@ fn openai_append_match_lowering_mode(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn build_openai_input(conversation: &[ConversationMessage]) -> Result<Vec<Value>> {
+    build_openai_input_for_contract(conversation, OpenAiResponsesTransportContract::StandardJson)
+}
+
+fn build_openai_input_for_contract(
+    conversation: &[ConversationMessage],
+    contract: OpenAiResponsesTransportContract,
+) -> Result<Vec<Value>> {
     let mut items = Vec::new();
     let mut tool_call_kinds = HashMap::<String, ModelToolCallKind>::new();
     for message in conversation {
@@ -445,7 +454,7 @@ pub(crate) fn build_openai_input(conversation: &[ConversationMessage]) -> Result
                                 ModelToolCallKind::Function => items.push(json!({
                                     "type": "function_call",
                                     "call_id": id,
-                                    "name": name,
+                                    "name": contract.wire_tool_name(name),
                                     "arguments": canonical_json(
                                         &normalize_openai_function_arguments(Some(input))
                                     ),
@@ -453,7 +462,7 @@ pub(crate) fn build_openai_input(conversation: &[ConversationMessage]) -> Result
                                 ModelToolCallKind::Custom => items.push(json!({
                                     "type": "custom_tool_call",
                                     "call_id": id,
-                                    "name": name,
+                                    "name": contract.wire_tool_name(name),
                                     "input": openai_custom_tool_input(input)?,
                                 })),
                             }

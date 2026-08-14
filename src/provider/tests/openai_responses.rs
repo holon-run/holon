@@ -311,10 +311,10 @@ fn deepseek_reasoning_and_tool_call_sse_response(response_id: &str) -> String {
                 "text": "inspect the workspace first"
             }]
         }, {
-            "type": "function_call",
-            "call_id": "exec-1",
-            "name": "ExecCommand",
-            "arguments": "{\"cmd\":\"printf ok\"}"
+            "type": "custom_tool_call",
+            "call_id": "patch-1",
+            "name": "apply_patch",
+            "input": "*** Begin Patch\n*** Add File: note.txt\n+ok\n*** End Patch\n"
         }]
     });
     format!(
@@ -511,6 +511,13 @@ async fn deepseek_responses_streams_and_replays_full_history_across_provider_res
     )
     .unwrap();
     let mut first_request = provider_turn_request_with_prompt_frame();
+    first_request.tools = vec![
+        crate::tool::tools::apply_patch_tool::definition_for_surface(
+            crate::tool::apply_patch::ApplyPatchSurface::CodexDslFreeform,
+        )
+        .unwrap()
+        .spec,
+    ];
     first_request.native_web_search = Some(ProviderNativeWebSearchRequest {
         kind: ProviderNativeWebSearchKind::DeepSeek,
         provider_id: "deepseek".into(),
@@ -526,7 +533,10 @@ async fn deepseek_responses_streams_and_replays_full_history_across_provider_res
     ));
     assert!(matches!(
         &first.blocks[1],
-        ModelBlock::ToolUse { id, name, .. } if id == "exec-1" && name == "ExecCommand"
+        ModelBlock::ToolUse { id, name, kind, .. }
+            if id == "patch-1"
+                && name == "ApplyPatch"
+                && *kind == crate::provider::ModelToolCallKind::Custom
     ));
     let diagnostics = first
         .request_diagnostics
@@ -557,10 +567,17 @@ async fn deepseek_responses_streams_and_replays_full_history_across_provider_res
     let restored_blocks: Vec<ModelBlock> = serde_json::from_slice(&persisted_blocks).unwrap();
 
     let mut followup = provider_turn_request_with_prompt_frame();
+    followup.tools = vec![
+        crate::tool::tools::apply_patch_tool::definition_for_surface(
+            crate::tool::apply_patch::ApplyPatchSurface::CodexDslFreeform,
+        )
+        .unwrap()
+        .spec,
+    ];
     followup.conversation.extend([
         ConversationMessage::AssistantBlocks(restored_blocks),
         ConversationMessage::UserToolResults(vec![ToolResultBlock {
-            tool_use_id: "exec-1".into(),
+            tool_use_id: "patch-1".into(),
             content: "ok".into(),
             is_error: false,
             error: None,
@@ -595,18 +612,27 @@ async fn deepseek_responses_streams_and_replays_full_history_across_provider_res
         .expect("DeepSeek tools")
         .iter()
         .any(|tool| tool == &json!({ "type": "web_search" })));
+    assert!(bodies.iter().all(|body| {
+        body["tools"]
+            .as_array()
+            .expect("DeepSeek tools")
+            .iter()
+            .any(|tool| tool["type"] == "custom" && tool["name"] == "apply_patch")
+    }));
     let replayed = bodies[1]["input"].as_array().unwrap();
     assert!(replayed.iter().any(|item| {
         item["type"] == "reasoning"
             && item["content"][0]["type"] == "reasoning_text"
             && item["content"][0]["text"] == "inspect the workspace first"
     }));
-    assert!(replayed
-        .iter()
-        .any(|item| item["type"] == "function_call" && item["call_id"] == "exec-1"));
     assert!(replayed.iter().any(|item| {
-        item["type"] == "function_call_output"
-            && item["call_id"] == "exec-1"
+        item["type"] == "custom_tool_call"
+            && item["call_id"] == "patch-1"
+            && item["name"] == "apply_patch"
+    }));
+    assert!(replayed.iter().any(|item| {
+        item["type"] == "custom_tool_call_output"
+            && item["call_id"] == "patch-1"
             && item["output"] == "ok"
     }));
     assert_eq!(compact_attempts.load(Ordering::SeqCst), 0);

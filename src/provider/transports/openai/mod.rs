@@ -178,6 +178,24 @@ pub(crate) enum OpenAiResponsesTransportContract {
     DeepSeekStreaming,
 }
 
+impl OpenAiResponsesTransportContract {
+    fn wire_tool_name<'a>(self, name: &'a str) -> &'a str {
+        if self == Self::DeepSeekStreaming && name == "ApplyPatch" {
+            "apply_patch"
+        } else {
+            name
+        }
+    }
+
+    fn internal_tool_name<'a>(self, name: &'a str) -> &'a str {
+        if self == Self::DeepSeekStreaming && name == "apply_patch" {
+            "ApplyPatch"
+        } else {
+            name
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum OpenAiResponsesContinuationContract {
     Standard,
@@ -249,7 +267,7 @@ async fn send_openai_responses_for_contract(
     provider: &str,
     model_ref: &str,
 ) -> Result<ParsedOpenAiResponse> {
-    match contract {
+    let parsed = match contract {
         OpenAiResponsesTransportContract::StandardJson => {
             send_openai_responses_request(
                 client, url, body, headers, trace, agent_id, provider, model_ref,
@@ -263,7 +281,8 @@ async fn send_openai_responses_for_contract(
             )
             .await
         }
-    }
+    }?;
+    Ok(parsed.with_internal_tool_names(contract))
 }
 
 #[derive(Debug)]
@@ -1183,6 +1202,15 @@ impl ProviderTurnResponse {
 impl ParsedOpenAiResponse {
     fn with_provider_request_id(mut self, provider_request_id: Option<String>) -> Self {
         self.response.provider_request_id = provider_request_id;
+        self
+    }
+
+    fn with_internal_tool_names(mut self, contract: OpenAiResponsesTransportContract) -> Self {
+        for block in &mut self.response.blocks {
+            if let ModelBlock::ToolUse { name, .. } = block {
+                *name = contract.internal_tool_name(name).to_string();
+            }
+        }
         self
     }
 }

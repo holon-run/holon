@@ -478,6 +478,7 @@ fn deepseek_responses_request_uses_custom_apply_patch_tool_shape() {
     let apply_patch = apply_patch_tool::definition_for_surface(ApplyPatchSurface::CodexDslFreeform)
         .unwrap()
         .spec;
+    assert_eq!(apply_patch.name, "ApplyPatch");
     let request = provider_turn_request_with_tools(vec![apply_patch]);
     let body = build_openai_responses_request(
         "deepseek-v4-pro",
@@ -491,7 +492,7 @@ fn deepseek_responses_request_uses_custom_apply_patch_tool_shape() {
     .unwrap();
 
     assert_eq!(body["tools"][0]["type"], "custom");
-    assert_eq!(body["tools"][0]["name"], "ApplyPatch");
+    assert_eq!(body["tools"][0]["name"], "apply_patch");
     assert_eq!(body["tools"][0]["format"]["type"], "grammar");
     assert_eq!(body["reasoning"], json!({ "effort": "high" }));
 }
