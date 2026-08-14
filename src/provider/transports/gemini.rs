@@ -347,7 +347,9 @@ fn conversation_message_to_gemini_content(message: &ConversationMessage) -> Opti
                         }),
                         function_response: None,
                     },
-                    ModelBlock::Thinking { .. } | ModelBlock::RedactedThinking { .. } => {
+                    ModelBlock::Thinking { .. }
+                    | ModelBlock::ReasoningText { .. }
+                    | ModelBlock::RedactedThinking { .. } => {
                         GeminiPart {
                             text: None,
                             function_call: None,

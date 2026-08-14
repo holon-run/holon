@@ -441,6 +441,11 @@ pub enum ModelBlock {
         /// Must be passed back verbatim in subsequent requests.
         signature: String,
     },
+    ReasoningText {
+        /// Plain provider reasoning that must be replayed as reasoning, never
+        /// rendered as user-visible assistant text.
+        text: String,
+    },
     RedactedThinking {
         /// Opaque encrypted/redacted thinking payload returned by the provider.
         /// Must be passed back verbatim in subsequent requests.

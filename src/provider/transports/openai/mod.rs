@@ -118,7 +118,7 @@ pub struct OpenAiProvider {
     model: String,
     max_output_tokens: u32,
     reasoning_effort: Option<String>,
-    continuation_contract: OpenAiResponsesContinuationContract,
+    endpoint_contract: OpenAiResponsesEndpointContract,
     builtin_web_search: Option<ProviderBuiltinWebSearchConfig>,
     compaction_policy: OpenAiCompactionPolicy,
     trace_home_dir: PathBuf,
@@ -173,12 +173,27 @@ pub struct OpenAiChatCompletionsProvider {
 pub(crate) enum OpenAiResponsesTransportContract {
     StandardJson,
     CodexStreaming,
+    DeepSeekStreaming,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum OpenAiResponsesContinuationContract {
     Standard,
     StoreResponsesAndOmitInstructionsWithPreviousResponseId,
+    FullHistoryOnly,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OpenAiResponsesRemoteCompactionContract {
+    Supported,
+    Unsupported,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct OpenAiResponsesEndpointContract {
+    transport: OpenAiResponsesTransportContract,
+    continuation: OpenAiResponsesContinuationContract,
+    remote_compaction: OpenAiResponsesRemoteCompactionContract,
 }
 
 const OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND: &str = "responses_compact";
@@ -219,6 +234,27 @@ fn openai_codex_responses_url(base_url: &str) -> String {
 
 fn openai_codex_responses_compact_url(base_url: &str) -> String {
     format!("{}/responses/compact", openai_codex_api_base_url(base_url))
+}
+
+async fn send_openai_responses_for_contract(
+    contract: OpenAiResponsesTransportContract,
+    client: &Client,
+    url: String,
+    body: Value,
+    headers: Vec<(&str, String)>,
+    trace: Option<&ProviderHttpTrace>,
+    agent_id: Option<&str>,
+) -> Result<ParsedOpenAiResponse> {
+    match contract {
+        OpenAiResponsesTransportContract::StandardJson => {
+            send_openai_responses_request(client, url, body, headers, trace, agent_id).await
+        }
+        OpenAiResponsesTransportContract::CodexStreaming
+        | OpenAiResponsesTransportContract::DeepSeekStreaming => {
+            send_openai_responses_streaming_request(client, url, body, headers, trace, agent_id)
+                .await
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -282,10 +318,26 @@ impl OpenAiProvider {
             model: model.to_string(),
             max_output_tokens,
             reasoning_effort: provider_config.reasoning_effort.clone(),
-            continuation_contract: if provider_config.id.as_str() == "xai" {
-                OpenAiResponsesContinuationContract::StoreResponsesAndOmitInstructionsWithPreviousResponseId
+            endpoint_contract: if provider_config.route_provider.as_str() == "deepseek"
+                && provider_config.route_endpoint.as_str() == "responses"
+            {
+                OpenAiResponsesEndpointContract {
+                    transport: OpenAiResponsesTransportContract::DeepSeekStreaming,
+                    continuation: OpenAiResponsesContinuationContract::FullHistoryOnly,
+                    remote_compaction: OpenAiResponsesRemoteCompactionContract::Unsupported,
+                }
+            } else if provider_config.id.as_str() == "xai" {
+                OpenAiResponsesEndpointContract {
+                    transport: OpenAiResponsesTransportContract::StandardJson,
+                    continuation: OpenAiResponsesContinuationContract::StoreResponsesAndOmitInstructionsWithPreviousResponseId,
+                    remote_compaction: OpenAiResponsesRemoteCompactionContract::Supported,
+                }
             } else {
-                OpenAiResponsesContinuationContract::Standard
+                OpenAiResponsesEndpointContract {
+                    transport: OpenAiResponsesTransportContract::StandardJson,
+                    continuation: OpenAiResponsesContinuationContract::Standard,
+                    remote_compaction: OpenAiResponsesRemoteCompactionContract::Supported,
+                }
             },
             builtin_web_search: provider_config.builtin_web_search.clone(),
             compaction_policy,
@@ -386,7 +438,7 @@ impl AgentProvider for OpenAiProvider {
             &self.model,
             self.max_output_tokens,
             &request,
-            OpenAiResponsesTransportContract::StandardJson,
+            self.endpoint_contract.transport,
             ToolSchemaContract::Relaxed,
             self.reasoning_effort.as_deref(),
             None,
@@ -395,32 +447,39 @@ impl AgentProvider for OpenAiProvider {
             body,
             &request,
             &self.continuation,
-            true,
-            self.continuation_contract,
+            self.endpoint_contract.continuation
+                != OpenAiResponsesContinuationContract::FullHistoryOnly,
+            self.endpoint_contract.continuation,
         )?;
         let mut sent_diagnostics = plan.diagnostics.clone();
         let plan_scope = plan.scope.clone();
         let plan_request_shape = plan.request_shape.clone();
         let mut headers = self.resolve_auth_headers().await?;
         let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
-        if let Some(remote_compaction) = maybe_compact_openai_request_plan(
-            &self.continuation,
-            &mut plan,
-            self.compaction_policy,
-            &self.client,
-            openai_responses_compact_url(&self.base_url),
-            headers.clone(),
-            trace.as_ref(),
-            request_agent_id(&request),
-        )
-        .await
+        if self.endpoint_contract.remote_compaction
+            == OpenAiResponsesRemoteCompactionContract::Supported
         {
-            sent_diagnostics.openai_remote_compaction = Some(remote_compaction);
-            sent_diagnostics.request_lowering_mode = plan.diagnostics.request_lowering_mode.clone();
+            if let Some(remote_compaction) = maybe_compact_openai_request_plan(
+                &self.continuation,
+                &mut plan,
+                self.compaction_policy,
+                &self.client,
+                openai_responses_compact_url(&self.base_url),
+                headers.clone(),
+                trace.as_ref(),
+                request_agent_id(&request),
+            )
+            .await
+            {
+                sent_diagnostics.openai_remote_compaction = Some(remote_compaction);
+                sent_diagnostics.request_lowering_mode =
+                    plan.diagnostics.request_lowering_mode.clone();
+            }
         }
         let mut final_provider_input = plan.provider_input.clone();
         let mut final_replay_loss_reason = plan.replay_loss_reason.clone();
-        let parsed = match send_openai_responses_request(
+        let parsed = match send_openai_responses_for_contract(
+            self.endpoint_contract.transport,
             &self.client,
             openai_responses_url(&self.base_url),
             plan.body.clone(),
@@ -436,7 +495,8 @@ impl AgentProvider for OpenAiProvider {
                     self.refresh_auth_headers_after_failure(&error).await?
                 {
                     headers = refreshed_headers;
-                    send_openai_responses_request(
+                    send_openai_responses_for_contract(
+                        self.endpoint_contract.transport,
                         &self.client,
                         openai_responses_url(&self.base_url),
                         plan.body.clone(),
@@ -450,26 +510,38 @@ impl AgentProvider for OpenAiProvider {
                 };
                 match retried {
                     Ok(parsed) => parsed,
-                    Err(error) => match retry_openai_responses_with_lossless_replay(
-                        &self.client,
-                        openai_responses_url(&self.base_url),
-                        &plan,
-                        headers.clone(),
-                        trace.as_ref(),
-                        request_agent_id(&request),
-                        error,
-                        &mut sent_diagnostics,
-                        &mut final_provider_input,
-                        &mut final_replay_loss_reason,
-                    )
-                    .await
+                    Err(error)
+                        if self.endpoint_contract.transport
+                            == OpenAiResponsesTransportContract::StandardJson =>
                     {
-                        Ok(parsed) => parsed,
-                        Err(error) => {
-                            invalidate_openai_continuation(&self.continuation, plan.scope.as_ref());
-                            return Err(error);
+                        match retry_openai_responses_with_lossless_replay(
+                            &self.client,
+                            openai_responses_url(&self.base_url),
+                            &plan,
+                            headers.clone(),
+                            trace.as_ref(),
+                            request_agent_id(&request),
+                            error,
+                            &mut sent_diagnostics,
+                            &mut final_provider_input,
+                            &mut final_replay_loss_reason,
+                        )
+                        .await
+                        {
+                            Ok(parsed) => parsed,
+                            Err(error) => {
+                                invalidate_openai_continuation(
+                                    &self.continuation,
+                                    plan.scope.as_ref(),
+                                );
+                                return Err(error);
+                            }
                         }
-                    },
+                    }
+                    Err(error) => {
+                        invalidate_openai_continuation(&self.continuation, plan.scope.as_ref());
+                        return Err(error);
+                    }
                 }
             }
         };
@@ -482,7 +554,10 @@ impl AgentProvider for OpenAiProvider {
             final_replay_loss_reason,
             &parsed,
         );
-        if sent_diagnostics.openai_remote_compaction.is_none() {
+        if self.endpoint_contract.remote_compaction
+            == OpenAiResponsesRemoteCompactionContract::Supported
+            && sent_diagnostics.openai_remote_compaction.is_none()
+        {
             sent_diagnostics.openai_remote_compaction = maybe_compact_openai_provider_window(
                 &self.continuation,
                 plan_scope.as_ref(),

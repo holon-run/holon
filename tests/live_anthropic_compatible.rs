@@ -158,6 +158,7 @@ async fn provider_accepts_context_management(provider_id: &str, model: &str) -> 
             ModelBlock::Text { text } => Some(text.as_str()),
             ModelBlock::ToolUse { .. } => None,
             ModelBlock::Thinking { .. }
+            | ModelBlock::ReasoningText { .. }
             | ModelBlock::RedactedThinking { .. }
             | ModelBlock::Citations { .. } => None,
         })

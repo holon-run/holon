@@ -2893,6 +2893,66 @@ fn runtime_model_catalog_materializes_legacy_provider_as_default_route_endpoint(
 }
 
 #[test]
+fn runtime_model_catalog_exposes_deepseek_responses_without_changing_default_route() {
+    let mut fixture = test_app_config("deepseek/deepseek-v4-pro", &[]);
+    let built_ins = built_in_provider_registry_with_settings(&HashMap::new()).unwrap();
+    let deepseek = ProviderId::parse("deepseek").unwrap();
+    fixture
+        .config
+        .providers
+        .insert(deepseek.clone(), built_ins.get(&deepseek).unwrap().clone());
+    let catalog = RuntimeModelCatalog::from_config(&fixture.config);
+
+    let default_route = catalog
+        .resolve_explicit_model_route(
+            &ContextConfig::default(),
+            &route_ref("deepseek@default/deepseek-v4-pro"),
+            ModelRouteCapability::Turn,
+        )
+        .unwrap();
+    assert_eq!(
+        default_route.endpoint.runtime_config.transport,
+        ProviderTransportKind::AnthropicMessages
+    );
+    assert_eq!(
+        default_route.endpoint.runtime_config.base_url,
+        "https://api.deepseek.com/anthropic"
+    );
+
+    let responses_route = catalog
+        .resolve_explicit_model_route(
+            &ContextConfig::default(),
+            &route_ref("deepseek@responses/deepseek-v4-pro"),
+            ModelRouteCapability::Turn,
+        )
+        .unwrap();
+    assert_eq!(
+        responses_route.route_ref.as_string(),
+        "deepseek@responses/deepseek-v4-pro"
+    );
+    assert_eq!(
+        responses_route.endpoint.runtime_config.transport,
+        ProviderTransportKind::OpenAiResponses
+    );
+    assert_eq!(
+        responses_route.endpoint.runtime_config.base_url,
+        "https://api.deepseek.com/v1"
+    );
+    assert!(responses_route
+        .endpoint
+        .runtime_config
+        .builtin_web_search
+        .is_none());
+
+    assert_eq!(
+        ModelRouteRef::parse_compatible("deepseek/deepseek-v4-pro")
+            .unwrap()
+            .as_string(),
+        "deepseek@default/deepseek-v4-pro"
+    );
+}
+
+#[test]
 fn runtime_model_catalog_routes_opencode_go_models_by_published_transport() {
     let mut fixture = test_app_config("opencode-go/minimax-m3", &[]);
     let built_ins = built_in_provider_registry_with_settings(&HashMap::new()).unwrap();

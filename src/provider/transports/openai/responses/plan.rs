@@ -77,6 +77,13 @@ pub(crate) fn build_openai_responses_request(
                 body["include"] = Value::Array(Vec::new());
             }
         }
+        OpenAiResponsesTransportContract::DeepSeekStreaming => {
+            body["stream"] = Value::Bool(true);
+            body["max_output_tokens"] = Value::from(max_output_tokens);
+            body.as_object_mut()
+                .expect("OpenAI Responses request body should be an object")
+                .remove("prompt_cache_key");
+        }
     }
     Ok(body)
 }
@@ -441,6 +448,16 @@ pub(crate) fn build_openai_input(conversation: &[ConversationMessage]) -> Result
                                     "input": openai_custom_tool_input(input)?,
                                 })),
                             }
+                        }
+                        ModelBlock::ReasoningText { text } => {
+                            flush_assistant_text(&mut items, &mut pending_text);
+                            items.push(json!({
+                                "type": "reasoning",
+                                "content": [{
+                                    "type": "reasoning_text",
+                                    "text": text,
+                                }],
+                            }));
                         }
                         ModelBlock::Thinking { .. }
                         | ModelBlock::RedactedThinking { .. }

@@ -329,6 +329,7 @@ impl RuntimeHandle {
                     ModelBlock::Text { text } => Some(text),
                     ModelBlock::ToolUse { .. } => None,
                     ModelBlock::Thinking { .. }
+                    | ModelBlock::ReasoningText { .. }
                     | ModelBlock::RedactedThinking { .. }
                     | ModelBlock::Citations { .. } => None,
                 })

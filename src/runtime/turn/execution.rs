@@ -1608,7 +1608,9 @@ impl TurnExecution<'_> {
                     ModelBlock::Citations { citations } => {
                         extend_unique_citations(&mut citation_blocks, citations.iter().cloned());
                     }
-                    ModelBlock::Thinking { .. } | ModelBlock::RedactedThinking { .. } => {
+                    ModelBlock::Thinking { .. }
+                    | ModelBlock::ReasoningText { .. }
+                    | ModelBlock::RedactedThinking { .. } => {
                         thinking_block_count += 1;
                     }
                 }

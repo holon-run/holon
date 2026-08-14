@@ -302,6 +302,7 @@ pub(crate) fn build_chat_completion_messages(
                             }));
                         }
                         ModelBlock::Thinking { .. }
+                        | ModelBlock::ReasoningText { .. }
                         | ModelBlock::RedactedThinking { .. }
                         | ModelBlock::Citations { .. } => {}
                     }

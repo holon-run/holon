@@ -172,7 +172,9 @@ pub(super) fn completion_report_texts_by_tool_id(
                     }
                 }
             }
-            ModelBlock::Thinking { .. } | ModelBlock::RedactedThinking { .. } => {}
+            ModelBlock::Thinking { .. }
+            | ModelBlock::ReasoningText { .. }
+            | ModelBlock::RedactedThinking { .. } => {}
         }
     }
     reports

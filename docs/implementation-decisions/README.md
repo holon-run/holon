@@ -110,3 +110,4 @@ Current decision notes:
 - [097 Storage-Backed Agent State Projection](./097-storage-backed-agent-state-projection.md)
 - [098 Scheduler Protocol Transition Wraps Legacy Boundaries Atomically](./098-scheduler-protocol-transition-wraps-legacy-boundaries-atomically.md)
 - [101 Scheduler Authority Convergence](./101-scheduler-authority-convergence.md)
+- [103 DeepSeek Responses Endpoint Dialect](./103-deepseek-responses-endpoint-dialect.md)

@@ -399,7 +399,7 @@ pub struct RuntimeModelCatalog {
     pub image_generation_model: Option<ModelRouteRef>,
     pub vision_candidate_models: Vec<ModelRouteRef>,
     pub disable_provider_fallback: bool,
-    pub provider_endpoints: HashMap<ProviderId, ResolvedProviderEndpointConfig>,
+    pub provider_endpoints: Vec<ResolvedProviderEndpointConfig>,
     pub built_in_catalog: BuiltInModelCatalog,
     pub discovered_models: HashMap<ModelRef, BuiltInModelMetadata>,
     pub model_overrides: HashMap<ModelRef, ModelRuntimeOverride>,
@@ -409,6 +409,30 @@ pub struct RuntimeModelCatalog {
 
 impl RuntimeModelCatalog {
     pub fn from_config(config: &AppConfig) -> Self {
+        let mut provider_endpoints = config
+            .providers
+            .iter()
+            .filter_map(|(provider, config)| {
+                resolved_provider_endpoint_config(provider.clone(), config.clone()).ok()
+            })
+            .collect::<Vec<_>>();
+        if let Some(default) = provider_endpoints.iter().find(|endpoint| {
+            endpoint.provider.as_str() == "deepseek"
+                && endpoint.endpoint == ProviderEndpointId::default_endpoint()
+        }) {
+            let mut runtime_config = default.runtime_config.clone();
+            runtime_config.route_endpoint =
+                ProviderEndpointId::parse("responses").expect("valid built-in endpoint");
+            runtime_config.transport = ProviderTransportKind::OpenAiResponses;
+            runtime_config.base_url = "https://api.deepseek.com/v1".to_string();
+            runtime_config.context_management = Default::default();
+            runtime_config.builtin_web_search = None;
+            provider_endpoints.push(ResolvedProviderEndpointConfig {
+                provider: default.provider.clone(),
+                endpoint: runtime_config.route_endpoint.clone(),
+                runtime_config,
+            });
+        }
         Self {
             default_model: config.default_model.clone(),
             fallback_models: config.fallback_models.clone(),
@@ -416,15 +440,7 @@ impl RuntimeModelCatalog {
             image_generation_model: config.image_generation_model.clone(),
             vision_candidate_models: config.vision_candidate_models.clone(),
             disable_provider_fallback: config.provider_fallback_disabled(),
-            provider_endpoints: config
-                .providers
-                .iter()
-                .filter_map(|(provider, config)| {
-                    resolved_provider_endpoint_config(provider.clone(), config.clone())
-                        .ok()
-                        .map(|endpoint| (provider.clone(), endpoint))
-                })
-                .collect(),
+            provider_endpoints,
             built_in_catalog: BuiltInModelCatalog::default(),
             discovered_models: config
                 .model_discovery_cache
@@ -499,7 +515,7 @@ impl RuntimeModelCatalog {
             route_ref.endpoint.clone(),
             canonical_model_ref.model.clone(),
         );
-        let endpoint = self.provider_endpoints.values().find(|endpoint| {
+        let endpoint = self.provider_endpoints.iter().find(|endpoint| {
             endpoint.provider == canonical_route_ref.provider
                 && endpoint.endpoint == canonical_route_ref.endpoint
         })?;
@@ -531,10 +547,14 @@ impl RuntimeModelCatalog {
             // Model declares a specific non-default endpoint: find by (provider, endpoint)
             Some(endpoint) => self
                 .provider_endpoints
-                .values()
+                .iter()
                 .find(|e| e.provider == model_ref.provider && e.endpoint == endpoint),
-            // Default endpoint or no catalog metadata: direct key lookup
-            None => self.provider_endpoints.get(&model_ref.provider),
+            // Default endpoint or no catalog metadata: resolve the canonical
+            // default endpoint explicitly.
+            None => self.provider_endpoints.iter().find(|endpoint| {
+                endpoint.provider == model_ref.provider
+                    && endpoint.endpoint == ProviderEndpointId::default_endpoint()
+            }),
         }
     }
 
@@ -846,7 +866,7 @@ impl Default for RuntimeModelCatalog {
             image_generation_model: None,
             vision_candidate_models: Vec::new(),
             disable_provider_fallback: false,
-            provider_endpoints: HashMap::new(),
+            provider_endpoints: Vec::new(),
             built_in_catalog: BuiltInModelCatalog::default(),
             discovered_models: HashMap::new(),
             model_overrides: HashMap::new(),

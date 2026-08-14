@@ -415,6 +415,22 @@ pub(in super::super) fn parse_openai_response_with_transport_state(
                     kind: ModelToolCallKind::Function,
                 });
             }
+            Some("reasoning") => {
+                saw_nonempty_wire_item = true;
+                if let Some(content) = item.get("content").and_then(Value::as_array) {
+                    for content_item in content {
+                        if content_item.get("type").and_then(Value::as_str)
+                            == Some("reasoning_text")
+                        {
+                            if let Some(text) = content_item.get("text").and_then(Value::as_str) {
+                                blocks.push(ModelBlock::ReasoningText {
+                                    text: text.to_string(),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
             Some("custom_tool_call") => {
                 saw_nonempty_wire_item = true;
                 let id = item

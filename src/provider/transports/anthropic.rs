@@ -1453,7 +1453,12 @@ fn conversation_message_to_api(
             content: Value::Array(
                 blocks
                     .iter()
-                    .filter(|block| !matches!(block, ModelBlock::Citations { .. }))
+                    .filter(|block| {
+                        !matches!(
+                            block,
+                            ModelBlock::ReasoningText { .. } | ModelBlock::Citations { .. }
+                        )
+                    })
                     .enumerate()
                     .map(|(block_index, block)| {
                         maybe_mark_cache_control(
@@ -1486,6 +1491,9 @@ fn conversation_message_to_api(
                                     "type": "redacted_thinking",
                                     "data": data,
                                 }),
+                                ModelBlock::ReasoningText { .. } => unreachable!(
+                                    "reasoning text blocks are filtered before Anthropic encoding"
+                                ),
                                 ModelBlock::Citations { .. } => unreachable!(
                                     "citation blocks are filtered before Anthropic encoding"
                                 ),
@@ -2155,6 +2163,7 @@ fn model_block_kind(block: &ModelBlock) -> &'static str {
         ModelBlock::Text { .. } => "assistant_text",
         ModelBlock::ToolUse { .. } => "tool_use",
         ModelBlock::Thinking { .. } => "thinking",
+        ModelBlock::ReasoningText { .. } => "reasoning_text",
         ModelBlock::RedactedThinking { .. } => "redacted_thinking",
         ModelBlock::Citations { .. } => "citations",
     }
@@ -2169,6 +2178,10 @@ fn hash_model_block(block: &ModelBlock) -> String {
         ModelBlock::Thinking { text, .. } => {
             // Include a stable prefix so thinking blocks hash differently from text blocks
             let value = json!({ "type": "thinking", "thinking": text });
+            sha256_hex(canonical_json(&value).as_bytes())
+        }
+        ModelBlock::ReasoningText { text } => {
+            let value = json!({ "type": "reasoning", "text": text });
             sha256_hex(canonical_json(&value).as_bytes())
         }
         ModelBlock::RedactedThinking { data } => {
@@ -2208,6 +2221,7 @@ fn estimate_model_block_tokens(block: &ModelBlock) -> u64 {
         ModelBlock::Text { text } => estimate_tokens_from_chars(text.len()),
         ModelBlock::ToolUse { .. } => 50,
         ModelBlock::Thinking { text, .. } => estimate_tokens_from_chars(text.len()),
+        ModelBlock::ReasoningText { text } => estimate_tokens_from_chars(text.len()),
         ModelBlock::RedactedThinking { data } => estimate_tokens_from_chars(data.len()),
         ModelBlock::Citations { citations } => citations
             .iter()

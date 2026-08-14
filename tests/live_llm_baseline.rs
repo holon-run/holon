@@ -40,6 +40,7 @@ fn response_text(blocks: &[ModelBlock]) -> String {
             ModelBlock::Text { text } => Some(text.as_str()),
             ModelBlock::ToolUse { .. }
             | ModelBlock::Thinking { .. }
+            | ModelBlock::ReasoningText { .. }
             | ModelBlock::RedactedThinking { .. }
             | ModelBlock::Citations { .. } => None,
         })

@@ -1973,6 +1973,20 @@ mod tests {
                 &metadata.capabilities,
             )
             .is_empty());
+            assert!(catalog
+                .get_route(&ModelRouteRef::new(
+                    provider_id("deepseek"),
+                    ProviderEndpointId::parse("responses").unwrap(),
+                    model,
+                ))
+                .is_some());
+            assert_eq!(
+                catalog
+                    .preferred_route_for_model(&metadata.model_ref)
+                    .unwrap()
+                    .endpoint,
+                ProviderEndpointId::default_endpoint()
+            );
         }
 
         for removed_model in ["deepseek-chat", "deepseek-reasoner"] {

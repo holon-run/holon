@@ -7,10 +7,12 @@ use std::sync::{
 
 use super::support::*;
 use super::*;
-use crate::config::{ModelRef, ProviderId};
+use crate::config::{ModelRef, ProviderEndpointId, ProviderId, ProviderTransportKind};
 use crate::model_catalog::ModelRuntimeOverride;
 use crate::provider::retry::{classify_provider_error, ProviderFailureKind, RetryDisposition};
-use crate::provider::transports::set_stream_idle_timeout_override_for_tests;
+use crate::provider::transports::{
+    set_stream_idle_timeout_override_for_tests, OpenAiCompactionPolicy,
+};
 use crate::provider::{
     ContinuationScopeId, ProviderNativeWebSearchKind, ProviderNativeWebSearchRequest,
 };
@@ -297,6 +299,70 @@ fn openai_reasoning_and_tool_call_sse_response(response_id: &str) -> String {
     )
 }
 
+fn deepseek_reasoning_and_tool_call_sse_response(response_id: &str) -> String {
+    let response = json!({
+        "id": response_id,
+        "status": "completed",
+        "usage": { "input_tokens": 12, "output_tokens": 4 },
+        "output": [{
+            "type": "reasoning",
+            "content": [{
+                "type": "reasoning_text",
+                "text": "inspect the workspace first"
+            }]
+        }, {
+            "type": "function_call",
+            "call_id": "exec-1",
+            "name": "ExecCommand",
+            "arguments": "{\"cmd\":\"printf ok\"}"
+        }]
+    });
+    format!(
+        "event: response.completed\ndata: {}\n\n",
+        json!({
+            "type": "response.completed",
+            "response": response,
+        })
+    )
+}
+
+#[test]
+fn reasoning_text_round_trips_without_becoming_assistant_text() {
+    let encoded = serde_json::to_value(ModelBlock::ReasoningText {
+        text: "durable provider reasoning".into(),
+    })
+    .unwrap();
+    assert_eq!(
+        encoded,
+        json!({
+            "type": "reasoning_text",
+            "text": "durable provider reasoning",
+        })
+    );
+
+    let decoded: ModelBlock = serde_json::from_value(encoded).unwrap();
+    assert!(matches!(
+        decoded,
+        ModelBlock::ReasoningText { text } if text == "durable provider reasoning"
+    ));
+
+    let input = build_openai_input(&[ConversationMessage::AssistantBlocks(vec![
+        ModelBlock::Text {
+            text: "visible".into(),
+        },
+        ModelBlock::ReasoningText {
+            text: "durable provider reasoning".into(),
+        },
+    ])])
+    .unwrap();
+    assert_eq!(input[0]["content"][0]["text"], json!("visible"));
+    assert_eq!(input[1]["type"], json!("reasoning"));
+    assert_eq!(
+        input[1]["content"][0]["text"],
+        json!("durable provider reasoning")
+    );
+}
+
 fn openai_unicode_text_and_tool_call_sse_response(response_id: &str) -> String {
     let response = json!({
         "id": response_id,
@@ -371,6 +437,143 @@ async fn openai_from_config_uses_resolved_max_output_override_on_the_wire() {
 
     let response_bodies = response_bodies.lock().unwrap();
     assert_eq!(response_bodies[0]["max_output_tokens"], json!(1_234));
+}
+
+#[tokio::test]
+async fn deepseek_responses_streams_and_replays_full_history_across_provider_restart() {
+    let captured_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let captured_for_server = captured_bodies.clone();
+    let response_attempts = Arc::new(AtomicUsize::new(0));
+    let response_attempts_for_server = response_attempts.clone();
+    let compact_attempts = Arc::new(AtomicUsize::new(0));
+    let compact_attempts_for_server = compact_attempts.clone();
+    let base_url = spawn_test_server(
+        Router::new()
+            .route(
+                "/responses",
+                post(move |Json(body): Json<Value>| {
+                    let captured = captured_for_server.clone();
+                    let attempts = response_attempts_for_server.clone();
+                    async move {
+                        captured.lock().unwrap().push(body);
+                        let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                        let response = if attempt == 0 {
+                            deepseek_reasoning_and_tool_call_sse_response("resp_1")
+                        } else {
+                            openai_text_sse_response("resp_2", "done")
+                        };
+                        ([("content-type", "text/event-stream")], response)
+                    }
+                }),
+            )
+            .route(
+                "/responses/compact",
+                post(move |Json(_body): Json<Value>| {
+                    let attempts = compact_attempts_for_server.clone();
+                    async move {
+                        attempts.fetch_add(1, Ordering::SeqCst);
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    }
+                }),
+            ),
+    )
+    .await;
+    let fixture = test_config(
+        "deepseek/deepseek-v4-pro",
+        &[],
+        Some("deepseek-key"),
+        None,
+        false,
+    );
+    let mut provider_config = fixture
+        .config
+        .providers
+        .get(&ProviderId::openai())
+        .unwrap()
+        .clone();
+    let deepseek = ProviderId::parse("deepseek").unwrap();
+    provider_config.id = deepseek.clone();
+    provider_config.route_provider = deepseek;
+    provider_config.route_endpoint = ProviderEndpointId::parse("responses").unwrap();
+    provider_config.transport = ProviderTransportKind::OpenAiResponses;
+    provider_config.base_url = base_url;
+    provider_config.builtin_web_search = None;
+
+    let first_provider = OpenAiProvider::from_runtime_config_with_compaction_policy(
+        &provider_config,
+        "deepseek-v4-pro",
+        384_000,
+        fixture.config.home_dir.as_path(),
+        OpenAiCompactionPolicy {
+            trigger_input_tokens: 1,
+        },
+    )
+    .unwrap();
+    let first = first_provider
+        .complete_turn(provider_turn_request_with_prompt_frame())
+        .await
+        .unwrap();
+    assert!(matches!(
+        &first.blocks[0],
+        ModelBlock::ReasoningText { text } if text == "inspect the workspace first"
+    ));
+    assert!(matches!(
+        &first.blocks[1],
+        ModelBlock::ToolUse { id, name, .. } if id == "exec-1" && name == "ExecCommand"
+    ));
+
+    let persisted_blocks = serde_json::to_vec(&first.blocks).unwrap();
+    drop(first_provider);
+    let restored_blocks: Vec<ModelBlock> = serde_json::from_slice(&persisted_blocks).unwrap();
+
+    let mut followup = provider_turn_request_with_prompt_frame();
+    followup.conversation.extend([
+        ConversationMessage::AssistantBlocks(restored_blocks),
+        ConversationMessage::UserToolResults(vec![ToolResultBlock {
+            tool_use_id: "exec-1".into(),
+            content: "ok".into(),
+            is_error: false,
+            error: None,
+        }]),
+    ]);
+    let restarted_provider = OpenAiProvider::from_runtime_config_with_compaction_policy(
+        &provider_config,
+        "deepseek-v4-pro",
+        384_000,
+        fixture.config.home_dir.as_path(),
+        OpenAiCompactionPolicy {
+            trigger_input_tokens: 1,
+        },
+    )
+    .unwrap();
+    let second = restarted_provider.complete_turn(followup).await.unwrap();
+    assert!(matches!(
+        &second.blocks[0],
+        ModelBlock::Text { text } if text == "done"
+    ));
+
+    let bodies = captured_bodies.lock().unwrap();
+    assert_eq!(bodies.len(), 2);
+    for body in bodies.iter() {
+        assert_eq!(body["stream"], json!(true));
+        assert!(body.get("previous_response_id").is_none());
+        assert!(body.get("prompt_cache_key").is_none());
+    }
+    let replayed = bodies[1]["input"].as_array().unwrap();
+    assert!(replayed.iter().any(|item| {
+        item["type"] == "reasoning"
+            && item["content"][0]["type"] == "reasoning_text"
+            && item["content"][0]["text"] == "inspect the workspace first"
+    }));
+    assert!(replayed
+        .iter()
+        .any(|item| item["type"] == "function_call" && item["call_id"] == "exec-1"));
+    assert!(replayed.iter().any(|item| {
+        item["type"] == "function_call_output"
+            && item["call_id"] == "exec-1"
+            && item["output"] == "ok"
+    }));
+    assert_eq!(compact_attempts.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
