@@ -474,6 +474,8 @@ impl RuntimeHandle {
                 #[cfg(test)]
                 task_transition_conflicts_remaining: AtomicUsize::new(0),
                 #[cfg(test)]
+                terminal_task_transition_conflicts_remaining: AtomicUsize::new(0),
+                #[cfg(test)]
                 fail_after_next_runtime_claim: AtomicBool::new(false),
                 #[cfg(test)]
                 claim_work_item_plan_status_before_commit: StdMutex::new(None),

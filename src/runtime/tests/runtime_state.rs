@@ -6862,10 +6862,20 @@ async fn authoritative_completion_resumes_parent_canonically_and_writes_terminal
         execution.work_items[&child.id].state,
         crate::domain::execution_protocol::WorkItemExecutionState::Terminal { .. }
     ));
-    assert!(matches!(
-        execution.work_items[&parent.id].state,
-        crate::domain::execution_protocol::WorkItemExecutionState::Runnable { .. }
-    ));
+    match &execution.work_items[&parent.id].state {
+        crate::domain::execution_protocol::WorkItemExecutionState::Runnable { .. } => {}
+        crate::domain::execution_protocol::WorkItemExecutionState::InFlight {
+            attempt_id, ..
+        } => {
+            assert!(matches!(
+                execution.attempts[attempt_id].binding,
+                crate::domain::execution_protocol::ExecutionBinding::WorkItem {
+                    ref work_item_id
+                } if work_item_id == &parent.id
+            ));
+        }
+        state => panic!("resumed parent execution state: {state:?}"),
+    }
     assert_eq!(
         runtime
             .storage()

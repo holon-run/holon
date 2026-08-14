@@ -343,6 +343,8 @@ struct RuntimeInner {
     #[cfg(test)]
     task_transition_conflicts_remaining: AtomicUsize,
     #[cfg(test)]
+    terminal_task_transition_conflicts_remaining: AtomicUsize,
+    #[cfg(test)]
     fail_after_next_runtime_claim: AtomicBool,
     #[cfg(test)]
     claim_work_item_plan_status_before_commit:

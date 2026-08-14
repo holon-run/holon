@@ -114,6 +114,8 @@ impl RuntimeHandle {
                         && attempt + 1 < TASK_TRANSITION_MAX_ATTEMPTS =>
                 {
                     if transition.admit_result_message {
+                        // The attempt future has returned, so its local agent
+                        // guard is dropped before this refresh re-locks it.
                         let agent_id = transition.task.agent_id.as_str();
                         if !self.refresh_enqueue_agent_state_baseline(agent_id).await? {
                             return Err(error);
@@ -235,6 +237,8 @@ impl RuntimeHandle {
         }
         #[cfg(test)]
         self.inject_task_transition_conflict_if_armed().await?;
+        #[cfg(test)]
+        self.inject_terminal_task_transition_conflict_if_armed()?;
         let existing_queue_entry = transition
             .message_evidence
             .filter(|_| transition.admit_result_message)
@@ -400,6 +404,48 @@ impl RuntimeHandle {
     pub(crate) fn inject_task_transition_conflicts(&self, count: usize) {
         self.inner
             .task_transition_conflicts_remaining
+            .store(count, Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    fn inject_terminal_task_transition_conflict_if_armed(&self) -> Result<()> {
+        let remaining = match self
+            .inner
+            .terminal_task_transition_conflicts_remaining
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                remaining.checked_sub(1)
+            }) {
+            Ok(remaining) => remaining,
+            Err(_) => return Ok(()),
+        };
+        let mut state = self
+            .inner
+            .runtime_db
+            .agent_states()
+            .latest(&self.inner.default_agent_id)?
+            .expect("test runtime agent state");
+        state.pending_wake_hint = Some(crate::types::PendingWakeHint {
+            reason: "test_terminal_conflict".into(),
+            description: Some(format!(
+                "concurrent terminal task transition test attempt {remaining}"
+            )),
+            source: Some("test".into()),
+            scope: None,
+            external_trigger_id: None,
+            resource: None,
+            body: None,
+            content_type: None,
+            correlation_id: None,
+            causation_id: None,
+            created_at: Utc::now(),
+        });
+        self.inner.storage.write_agent(&state)
+    }
+
+    #[cfg(test)]
+    fn inject_terminal_task_transition_conflicts(&self, count: usize) {
+        self.inner
+            .terminal_task_transition_conflicts_remaining
             .store(count, Ordering::SeqCst);
     }
 
@@ -900,6 +946,44 @@ mod tests {
                 .as_ref()
                 .and_then(|hint| hint.description.as_deref()),
             Some("concurrent task transition test attempt 1")
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_task_result_retry_releases_agent_lock_before_refresh() {
+        let runtime = runtime();
+        runtime.inject_terminal_task_transition_conflicts(1);
+        let message = task_result_message("task-1");
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            runtime.commit_terminal_task_result(
+                &task("task-1", TaskStatus::Completed, true),
+                "task_completed",
+                &message,
+            ),
+        )
+        .await
+        .expect("terminal task transition retry should not deadlock")
+        .unwrap();
+
+        assert_eq!(
+            runtime
+                .agent_state()
+                .await
+                .unwrap()
+                .pending_wake_hint
+                .as_ref()
+                .map(|hint| hint.reason.as_str()),
+            Some("test_terminal_conflict")
+        );
+        assert_eq!(
+            runtime
+                .storage()
+                .read_message_by_id(&message.id)
+                .unwrap()
+                .map(|stored| stored.id),
+            Some(message.id)
         );
     }
 
