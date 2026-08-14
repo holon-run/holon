@@ -1,7 +1,7 @@
 suite_id: deepseek-transport-pilot
 label_prefix: deepseek-transport-pilot
 tasks:
-  - ../tasks/holon-0015-tool-guidance-registry.yaml
+  - ../tasks/holon-1611-tool-guidance-markdown.yaml
 repetitions: 5
 execution:
   runner_order: paired_randomized

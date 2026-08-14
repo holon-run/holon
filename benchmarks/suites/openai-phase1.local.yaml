@@ -1,7 +1,7 @@
 suite_id: openai-phase1-local
 label_prefix: openai-phase1
 tasks:
-  - ../tasks/holon-0015-tool-guidance-registry.yaml
+  - ../tasks/holon-1611-tool-guidance-markdown.yaml
 runners:
   - runner_id: holon-openai
     driver: holon

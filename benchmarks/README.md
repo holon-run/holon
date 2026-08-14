@@ -46,7 +46,7 @@ Repo-local layout:
 Use:
 
 ```bash
-node benchmark/run.mjs validate-manifest --manifest benchmarks/tasks/holon-0015-tool-guidance-registry.yaml
+node benchmark/run.mjs validate-manifest --manifest benchmarks/tasks/holon-1611-tool-guidance-markdown.yaml
 node benchmark/run.mjs validate-manifest --manifest benchmarks/tasks/holon-1764-runtime-performance-diagnostics.yaml
 node benchmark/run.mjs real --manifest /absolute/path/to/workspace/projects/holon-run/holon/benchmarks/tasks/holon-0050-runtime-result-closure.yaml --runner holon-openai --runner codex-openai --label bench-live-0050
 node benchmark/run.mjs suite --suite benchmarks/suites/openai-phase1.local.yaml --label bench-openai-phase1

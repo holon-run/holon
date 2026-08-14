@@ -1,0 +1,37 @@
+schema_version: 1
+task_id: holon-1611-tool-guidance-markdown
+repo:
+  name: holon-run/holon
+  local_path: ../..
+issue:
+  number: 1611
+  title: "Refactor tool prompt guidance into per-tool Markdown files"
+base:
+  branch: main
+  sha: f57c4f197e1da654ae7253b1b718573cb2290e4f
+benchmark:
+  mode: live
+task:
+  kind: implementation
+verification:
+  commands:
+    - "cargo test --manifest-path Cargo.toml prompt::tools"
+evaluation:
+  summary: |
+    Selected tool guidance is stored in per-tool Markdown files and loaded with
+    include_str!, prompt behavior remains stable, and targeted tests pass.
+  expected_outcome: change_required
+  scope_policy: soft
+  allowed_paths:
+    - src/prompt
+  forbidden_paths:
+    - src/runtime
+budget:
+  max_minutes: 90
+  max_operator_followups: 0
+review:
+  mode: standardized
+  expected_comment_count: 2
+metadata:
+  difficulty: medium
+  benchmark_group: prompt-system

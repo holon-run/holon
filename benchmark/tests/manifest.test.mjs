@@ -4,9 +4,13 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 import {
   ensureBaseShaExists,
+  loadBenchmarkSuite,
+  loadRealTaskManifest,
+  resolveRepoPath,
   validateBenchmarkSuite,
   validateRealTaskManifest
 } from "../lib/manifest.mjs";
@@ -43,7 +47,7 @@ import {
 test("validateRealTaskManifest accepts a phase-1 manifest", () => {
   const manifest = validateRealTaskManifest({
     schema_version: 1,
-    task_id: "holon-0015-tool-guidance-registry",
+    task_id: "holon-1611-tool-guidance-markdown",
     repo: { name: "holon-run/holon", local_path: "." },
     issue: { number: 15, title: "Dogfood task" },
     base: { branch: "main", sha: "abc123" },
@@ -67,13 +71,13 @@ test("validateRealTaskManifest accepts a phase-1 manifest", () => {
     metadata: { difficulty: "medium", benchmark_group: "prompt-system" }
   });
 
-  assert.equal(manifest.task_id, "holon-0015-tool-guidance-registry");
+  assert.equal(manifest.task_id, "holon-1611-tool-guidance-markdown");
 });
 
 test("validateRealTaskManifest allows issue-driven tasks without operator_prompt", () => {
   const manifest = validateRealTaskManifest({
     schema_version: 1,
-    task_id: "holon-0015-tool-guidance-registry",
+    task_id: "holon-1611-tool-guidance-markdown",
     repo: { name: "holon-run/holon", local_path: "." },
     issue: { number: 15, title: "Dogfood task" },
     base: { branch: "main", sha: "abc123" },
@@ -104,7 +108,7 @@ test("validateRealTaskManifest rejects unsupported keys and followups", () => {
     () =>
       validateRealTaskManifest({
         schema_version: 1,
-        task_id: "holon-0015-tool-guidance-registry",
+        task_id: "holon-1611-tool-guidance-markdown",
         repo: { name: "holon-run/holon", local_path: "." },
         issue: { number: 15, title: "Dogfood task" },
         base: { branch: "main", sha: "abc123" },
@@ -136,7 +140,7 @@ test("validateRealTaskManifest rejects empty verification commands and invalid p
     () =>
       validateRealTaskManifest({
         schema_version: 1,
-        task_id: "holon-0015-tool-guidance-registry",
+        task_id: "holon-1611-tool-guidance-markdown",
         repo: { name: "holon-run/holon", local_path: "." },
         issue: { number: 15, title: "Dogfood task" },
         base: { branch: "main", sha: "abc123" },
@@ -166,7 +170,7 @@ test("validateRealTaskManifest rejects empty verification commands and invalid p
 test("validateRealTaskManifest accepts structured verification commands", () => {
   const manifest = validateRealTaskManifest({
     schema_version: 1,
-    task_id: "holon-0015-tool-guidance-registry",
+    task_id: "holon-1611-tool-guidance-markdown",
     repo: { name: "holon-run/holon", local_path: "." },
     issue: { number: 15, title: "Dogfood task" },
     base: { branch: "main", sha: "abc123" },
@@ -201,7 +205,7 @@ test("validateRealTaskManifest accepts structured verification commands", () => 
 test("validateRealTaskManifest defaults absent verification for real PR benchmarks", () => {
   const manifest = validateRealTaskManifest({
     schema_version: 1,
-    task_id: "holon-0015-tool-guidance-registry",
+    task_id: "holon-1611-tool-guidance-markdown",
     repo: { name: "holon-run/holon", local_path: "." },
     issue: { number: 15, title: "Dogfood task" },
     base: { branch: "main", sha: "abc123" },
@@ -227,7 +231,7 @@ test("buildOperatorPrompt uses an issue-driven template with PR policy", () => {
   const prompt = buildOperatorPrompt(
     validateRealTaskManifest({
       schema_version: 1,
-      task_id: "holon-0015-tool-guidance-registry",
+      task_id: "holon-1611-tool-guidance-markdown",
       repo: { name: "holon-run/holon", local_path: "." },
       issue: { number: 15, title: "Dogfood task" },
       base: { branch: "main", sha: "abc123" },
@@ -431,7 +435,7 @@ test("buildOperatorPrompt preserves legacy push-only PR policy", () => {
   const prompt = buildOperatorPrompt(
     validateRealTaskManifest({
       schema_version: 1,
-      task_id: "holon-0015-tool-guidance-registry",
+      task_id: "holon-1611-tool-guidance-markdown",
       repo: { name: "holon-run/holon", local_path: "." },
       issue: { number: 15, title: "Dogfood task" },
       base: { branch: "main", sha: "abc123" },
@@ -909,12 +913,12 @@ test("validateBenchmarkSuite accepts anthropic holon and claude-cli runners", ()
 test("naming helpers follow canonical conventions", () => {
   assert.equal(
     branchNameForTask(
-      "holon-0015-tool-guidance-registry",
+      "holon-1611-tool-guidance-markdown",
       "holon-openai",
       1,
       "OpenAI Phase 1"
     ),
-    "bench/openai-phase-1/holon-0015-tool-guidance-registry/holon-openai/run-01"
+    "bench/openai-phase-1/holon-1611-tool-guidance-markdown/holon-openai/run-01"
   );
   assert.equal(
     worktreeNameForTask(15, "codex-openai", 3),
@@ -1833,6 +1837,34 @@ test("ensureBaseShaExists verifies commits in a git repo", async () => {
   assert.equal(resolved, sha);
 
   await fs.rm(repoDir, { recursive: true, force: true });
+});
+
+test("checked-in suites reference valid tasks with reachable base commits", async () => {
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+  const suiteDir = path.join(repoRoot, "benchmarks", "suites");
+  const suiteFiles = (await fs.readdir(suiteDir))
+    .filter((entry) => entry.endsWith(".yaml"))
+    .sort();
+
+  assert.ok(suiteFiles.length > 0);
+
+  for (const suiteFile of suiteFiles) {
+    const suitePath = path.join(suiteDir, suiteFile);
+    const suite = await loadBenchmarkSuite(suitePath);
+
+    for (const taskEntry of suite.tasks) {
+      const taskPath = path.resolve(path.dirname(suitePath), taskEntry);
+      const manifest = await loadRealTaskManifest(taskPath);
+      const taskRepoPath = resolveRepoPath(manifest.repo.local_path, path.dirname(taskPath));
+      const resolved = await ensureBaseShaExists(
+        taskRepoPath,
+        manifest.base.sha,
+        execCommand
+      );
+
+      assert.equal(resolved, manifest.base.sha);
+    }
+  }
 });
 
 async function execCommand(command, args, cwd, env) {
