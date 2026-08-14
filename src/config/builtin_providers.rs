@@ -1252,8 +1252,17 @@ pub(crate) fn bigmodel_builtin_web_search_config() -> ProviderBuiltinWebSearchCo
 pub(crate) fn deepseek_builtin_web_search_config() -> ProviderBuiltinWebSearchConfig {
     ProviderBuiltinWebSearchConfig {
         enabled: true,
-        kind: ProviderNativeWebSearchKind::Anthropic,
+        kind: ProviderNativeWebSearchKind::DeepSeek,
         advertised_tool_type: "web_search_20250305".to_string(),
+        backend_kind: "deepseek_web_search".to_string(),
+    }
+}
+
+pub(crate) fn deepseek_responses_builtin_web_search_config() -> ProviderBuiltinWebSearchConfig {
+    ProviderBuiltinWebSearchConfig {
+        enabled: true,
+        kind: ProviderNativeWebSearchKind::DeepSeek,
+        advertised_tool_type: "web_search".to_string(),
         backend_kind: "deepseek_web_search".to_string(),
     }
 }
@@ -1416,6 +1425,29 @@ pub(crate) fn validate_provider_builtin_web_search(
             } else {
                 Err(anyhow!(
                     "providers.{}.builtin_web_search.advertised_tool_type must be web_search_20250305 for Anthropic Messages native search",
+                    provider_id.as_str()
+                ))
+            }
+        }
+        (ProviderTransportKind::AnthropicMessages, ProviderNativeWebSearchKind::DeepSeek) => {
+            if search.advertised_tool_type == "web_search_20250305" {
+                Ok(())
+            } else {
+                Err(anyhow!(
+                    "providers.{}.builtin_web_search.advertised_tool_type must be web_search_20250305 for DeepSeek Anthropic-compatible native search",
+                    provider_id.as_str()
+                ))
+            }
+        }
+        (ProviderTransportKind::OpenAiResponses, ProviderNativeWebSearchKind::DeepSeek) => {
+            if matches!(
+                search.advertised_tool_type.as_str(),
+                "web_search" | "web_search_2025_08_26"
+            ) {
+                Ok(())
+            } else {
+                Err(anyhow!(
+                    "providers.{}.builtin_web_search.advertised_tool_type must be web_search or web_search_2025_08_26 for DeepSeek Responses native search",
                     provider_id.as_str()
                 ))
             }

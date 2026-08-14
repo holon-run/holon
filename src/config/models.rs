@@ -358,7 +358,7 @@ impl ResolvedModelRoute {
         &self,
         value: &str,
     ) -> Result<(), ReasoningEffortValidationError> {
-        if self.provider_config().transport == ProviderTransportKind::OpenAiCodexResponses {
+        if !self.policy.reasoning_effort_options.is_empty() {
             return self.policy.validate_reasoning_effort(value);
         }
 
@@ -864,7 +864,9 @@ fn deepseek_responses_runtime_config(default: &ProviderRuntimeConfig) -> Provide
         originator: None,
         reasoning_effort: default.reasoning_effort.clone(),
         context_management: Default::default(),
-        builtin_web_search: None,
+        builtin_web_search: Some(
+            super::builtin_providers::deepseek_responses_builtin_web_search_config(),
+        ),
     }
 }
 

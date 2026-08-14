@@ -1140,7 +1140,10 @@ async fn openai_provider_fails_fast_on_contract_errors() {
         .expect("status failures should carry transport diagnostics");
     assert_eq!(transport.stage, "response_status");
     assert_eq!(transport.provider.as_deref(), Some("openai"));
-    assert_eq!(transport.model_ref.as_deref(), Some("openai/gpt-5.4"));
+    assert_eq!(
+        transport.model_ref.as_deref(),
+        Some("openai@default/gpt-5.4")
+    );
     assert_eq!(transport.status, Some(400));
     assert_eq!(transport.reqwest, None);
     if let Some(http_trace) = transport.http_trace.as_ref() {
@@ -1445,7 +1448,7 @@ async fn anthropic_status_errors_preserve_transport_diagnostics() {
     assert_eq!(transport.provider.as_deref(), Some("anthropic"));
     assert_eq!(
         transport.model_ref.as_deref(),
-        Some("anthropic/claude-sonnet-4-6")
+        Some("anthropic@default/claude-sonnet-4-6")
     );
     assert_eq!(transport.status, Some(401));
     assert!(transport

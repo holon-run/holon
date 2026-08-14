@@ -187,6 +187,18 @@ pub struct ProviderCacheUsage {
 pub struct ProviderRequestDiagnostics {
     pub request_lowering_mode: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_model_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_transport: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint_dialect: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub streaming: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anthropic_cache: Option<AnthropicPromptCacheDiagnostics>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anthropic_context_management: Option<serde_json::Value>,
@@ -207,6 +219,7 @@ pub struct ProviderRequestDiagnostics {
 pub enum ProviderNativeWebSearchKind {
     OpenAi,
     Anthropic,
+    DeepSeek,
     Gemini,
     Xai,
 }

@@ -103,6 +103,9 @@ fn openai_native_web_search_tool(request: &ProviderTurnRequest) -> Option<Value>
     let native = request.native_web_search.as_ref()?;
     match native.kind {
         ProviderNativeWebSearchKind::OpenAi => Some(json!({ "type": native.advertised_tool_type })),
+        ProviderNativeWebSearchKind::DeepSeek => {
+            Some(json!({ "type": native.advertised_tool_type }))
+        }
         ProviderNativeWebSearchKind::Xai => Some(json!({ "type": native.advertised_tool_type })),
         _ => None,
     }
@@ -336,6 +339,12 @@ pub(in super::super) fn plan_openai_responses_request(
                 replay_is_compacted,
                 continuation_contract,
             ),
+            provider_id: None,
+            provider_model_ref: None,
+            provider_transport: None,
+            endpoint_dialect: None,
+            streaming: None,
+            reasoning_effort: None,
             anthropic_cache: None,
             anthropic_context_management: None,
             openai_request_controls: request_controls,

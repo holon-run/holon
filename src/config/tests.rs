@@ -1038,7 +1038,7 @@ fn built_in_provider_registry_declares_provider_specific_builtin_search() {
         .get(&ProviderId::parse("deepseek").unwrap())
         .unwrap();
     let deepseek_search = deepseek.builtin_web_search.as_ref().unwrap();
-    assert_eq!(deepseek_search.kind, ProviderNativeWebSearchKind::Anthropic);
+    assert_eq!(deepseek_search.kind, ProviderNativeWebSearchKind::DeepSeek);
     assert_eq!(deepseek_search.advertised_tool_type, "web_search_20250305");
     assert_eq!(deepseek_search.backend_kind, "deepseek_web_search");
 
@@ -2938,11 +2938,14 @@ fn runtime_model_catalog_exposes_deepseek_responses_without_changing_default_rou
         responses_route.endpoint.runtime_config.base_url,
         "https://api.deepseek.com/v1"
     );
-    assert!(responses_route
+    let responses_search = responses_route
         .endpoint
         .runtime_config
         .builtin_web_search
-        .is_none());
+        .as_ref()
+        .expect("DeepSeek Responses should advertise native web search");
+    assert_eq!(responses_search.kind, ProviderNativeWebSearchKind::DeepSeek);
+    assert_eq!(responses_search.advertised_tool_type, "web_search");
 
     assert_eq!(
         ModelRouteRef::parse_compatible("deepseek/deepseek-v4-pro")

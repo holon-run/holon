@@ -474,6 +474,29 @@ fn openai_codex_request_uses_custom_codex_dsl_tool_shape_for_apply_patch() {
 }
 
 #[test]
+fn deepseek_responses_request_uses_custom_apply_patch_tool_shape() {
+    let apply_patch = apply_patch_tool::definition_for_surface(ApplyPatchSurface::CodexDslFreeform)
+        .unwrap()
+        .spec;
+    let request = provider_turn_request_with_tools(vec![apply_patch]);
+    let body = build_openai_responses_request(
+        "deepseek-v4-pro",
+        256,
+        &request,
+        OpenAiResponsesTransportContract::DeepSeekStreaming,
+        ToolSchemaContract::Relaxed,
+        Some("high"),
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(body["tools"][0]["type"], "custom");
+    assert_eq!(body["tools"][0]["name"], "ApplyPatch");
+    assert_eq!(body["tools"][0]["format"]["type"], "grammar");
+    assert_eq!(body["reasoning"], json!({ "effort": "high" }));
+}
+
+#[test]
 fn built_in_tool_source_schemas_remain_valid() {
     for spec in trusted_tool_specs() {
         crate::tool::schema::validate_source_tool_schema(&spec.input_schema)

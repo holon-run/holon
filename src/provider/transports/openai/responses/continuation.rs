@@ -194,7 +194,9 @@ pub(in super::super) fn native_web_search_diagnostics(
     let native = request.native_web_search.as_ref()?;
     let lowered = matches!(
         native.kind,
-        ProviderNativeWebSearchKind::OpenAi | ProviderNativeWebSearchKind::Xai
+        ProviderNativeWebSearchKind::OpenAi
+            | ProviderNativeWebSearchKind::DeepSeek
+            | ProviderNativeWebSearchKind::Xai
     );
     Some(ProviderNativeWebSearchDiagnostics {
         kind: native.kind,
@@ -204,7 +206,7 @@ pub(in super::super) fn native_web_search_diagnostics(
         backend_kind: native.backend_kind.clone(),
         lowered,
         fallback_reason: (!lowered).then(|| {
-            "openai responses transport only supports OpenAI/xAI-native web search".into()
+            "responses transport only supports OpenAI/DeepSeek/xAI-native web search".into()
         }),
     })
 }

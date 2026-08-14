@@ -545,7 +545,7 @@ impl RuntimeHandle {
         let route_ref = self
             .selected_model_ref_for_state(state, fallback_model)
             .unwrap_or_else(|| self.model_state_for(state).effective_model);
-        ApplyPatchSurface::for_model_ref(&route_ref.model_ref().as_string())
+        ApplyPatchSurface::for_model_route_ref(&route_ref.as_string())
     }
 
     fn selected_model_ref_for_state(

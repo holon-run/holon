@@ -28,8 +28,11 @@ pub enum ApplyPatchSurface {
 }
 
 impl ApplyPatchSurface {
-    pub(crate) fn for_model_ref(model_ref: &str) -> Self {
-        if model_ref.starts_with("openai-codex/") {
+    pub(crate) fn for_model_route_ref(model_ref: &str) -> Self {
+        if model_ref.starts_with("openai-codex/")
+            || model_ref.starts_with("openai-codex@")
+            || model_ref.starts_with("deepseek@responses/")
+        {
             Self::CodexDslFreeform
         } else {
             Self::UnifiedDiffJson
@@ -1852,6 +1855,22 @@ fn resolve_patch_path(workspace_root: &Path, path: &str) -> Result<PathBuf> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn apply_patch_surface_is_route_specific_for_deepseek_responses() {
+        assert_eq!(
+            ApplyPatchSurface::for_model_route_ref("deepseek@responses/deepseek-v4-pro"),
+            ApplyPatchSurface::CodexDslFreeform
+        );
+        assert_eq!(
+            ApplyPatchSurface::for_model_route_ref("deepseek@default/deepseek-v4-pro"),
+            ApplyPatchSurface::UnifiedDiffJson
+        );
+        assert_eq!(
+            ApplyPatchSurface::for_model_route_ref("deepseek/deepseek-v4-pro"),
+            ApplyPatchSurface::UnifiedDiffJson
+        );
+    }
 
     async fn apply_patch(workspace_root: &Path, input: &str) -> Result<ApplyPatchOutcome> {
         super::apply_patch(workspace_root, input, ApplyPatchSurface::UnifiedDiffJson).await

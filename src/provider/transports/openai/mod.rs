@@ -113,6 +113,8 @@ use http::{
 pub struct OpenAiProvider {
     client: Client,
     provider_id: String,
+    route_provider: String,
+    route_endpoint: String,
     base_url: String,
     auth: OpenAiBearerAuth,
     model: String,
@@ -244,15 +246,22 @@ async fn send_openai_responses_for_contract(
     headers: Vec<(&str, String)>,
     trace: Option<&ProviderHttpTrace>,
     agent_id: Option<&str>,
+    provider: &str,
+    model_ref: &str,
 ) -> Result<ParsedOpenAiResponse> {
     match contract {
         OpenAiResponsesTransportContract::StandardJson => {
-            send_openai_responses_request(client, url, body, headers, trace, agent_id).await
+            send_openai_responses_request(
+                client, url, body, headers, trace, agent_id, provider, model_ref,
+            )
+            .await
         }
         OpenAiResponsesTransportContract::CodexStreaming
         | OpenAiResponsesTransportContract::DeepSeekStreaming => {
-            send_openai_responses_streaming_request(client, url, body, headers, trace, agent_id)
-                .await
+            send_openai_responses_streaming_request(
+                client, url, body, headers, trace, agent_id, provider, model_ref,
+            )
+            .await
         }
     }
 }
@@ -313,6 +322,8 @@ impl OpenAiProvider {
         Ok(Self {
             client,
             provider_id: provider_config.id.as_str().to_string(),
+            route_provider: provider_config.route_provider.as_str().to_string(),
+            route_endpoint: provider_config.route_endpoint.as_str().to_string(),
             base_url: provider_config.base_url.trim_end_matches('/').to_string(),
             auth,
             model: model.to_string(),
@@ -452,6 +463,18 @@ impl AgentProvider for OpenAiProvider {
             self.endpoint_contract.continuation,
         )?;
         let mut sent_diagnostics = plan.diagnostics.clone();
+        let model_ref = format!(
+            "{}@{}/{}",
+            self.route_provider, self.route_endpoint, self.model
+        );
+        sent_diagnostics.provider_id = Some(self.route_provider.clone());
+        sent_diagnostics.provider_model_ref = Some(model_ref.clone());
+        sent_diagnostics.provider_transport = Some("openai_responses".into());
+        sent_diagnostics.endpoint_dialect = Some(self.route_endpoint.clone());
+        sent_diagnostics.streaming = Some(
+            self.endpoint_contract.transport != OpenAiResponsesTransportContract::StandardJson,
+        );
+        sent_diagnostics.reasoning_effort = self.reasoning_effort.clone();
         let plan_scope = plan.scope.clone();
         let plan_request_shape = plan.request_shape.clone();
         let mut headers = self.resolve_auth_headers().await?;
@@ -468,6 +491,8 @@ impl AgentProvider for OpenAiProvider {
                 headers.clone(),
                 trace.as_ref(),
                 request_agent_id(&request),
+                &self.route_provider,
+                &model_ref,
             )
             .await
             {
@@ -486,6 +511,8 @@ impl AgentProvider for OpenAiProvider {
             headers.clone(),
             trace.as_ref(),
             request_agent_id(&request),
+            &self.route_provider,
+            &model_ref,
         )
         .await
         {
@@ -503,6 +530,8 @@ impl AgentProvider for OpenAiProvider {
                         headers.clone(),
                         trace.as_ref(),
                         request_agent_id(&request),
+                        &self.route_provider,
+                        &model_ref,
                     )
                     .await
                 } else {
@@ -525,6 +554,8 @@ impl AgentProvider for OpenAiProvider {
                             &mut sent_diagnostics,
                             &mut final_provider_input,
                             &mut final_replay_loss_reason,
+                            &self.route_provider,
+                            &model_ref,
                         )
                         .await
                         {
@@ -568,6 +599,8 @@ impl AgentProvider for OpenAiProvider {
                 headers,
                 trace.as_ref(),
                 request_agent_id(&request),
+                &self.route_provider,
+                &model_ref,
             )
             .await;
         }
@@ -663,6 +696,10 @@ impl AgentProvider for OpenAiProvider {
         )?;
         let mut headers = self.resolve_auth_headers().await?;
         let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
+        let model_ref = format!(
+            "{}@{}/{}",
+            self.route_provider, self.route_endpoint, self.model
+        );
         match send_openai_responses_request(
             &self.client,
             openai_responses_url(&self.base_url),
@@ -670,6 +707,8 @@ impl AgentProvider for OpenAiProvider {
             headers.clone(),
             trace.as_ref(),
             None,
+            &self.route_provider,
+            &model_ref,
         )
         .await
         {
@@ -688,6 +727,8 @@ impl AgentProvider for OpenAiProvider {
                     headers,
                     trace.as_ref(),
                     None,
+                    &self.route_provider,
+                    &model_ref,
                 )
                 .await?;
             }
@@ -764,6 +805,8 @@ impl AgentProvider for OpenAiCodexProvider {
             headers.clone(),
             trace.as_ref(),
             request_agent_id(&request),
+            "openai-codex",
+            &model_ref,
         )
         .await
         {
@@ -777,6 +820,8 @@ impl AgentProvider for OpenAiCodexProvider {
             headers.clone(),
             trace.as_ref(),
             request_agent_id(&request),
+            "openai-codex",
+            &model_ref,
         )
         .await
         {
@@ -807,6 +852,8 @@ impl AgentProvider for OpenAiCodexProvider {
                             headers.clone(),
                             trace.as_ref(),
                             request_agent_id(&request),
+                            "openai-codex",
+                            &model_ref,
                         )
                         .await
                         {
@@ -849,6 +896,8 @@ impl AgentProvider for OpenAiCodexProvider {
                 headers,
                 trace.as_ref(),
                 request_agent_id(&request),
+                "openai-codex",
+                &model_ref,
             )
             .await;
         }
@@ -996,6 +1045,7 @@ impl AgentProvider for OpenAiCodexProvider {
         )?;
         let headers = openai_codex_headers(&credential, &self.originator);
         let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
+        let model_ref = format!("openai-codex@default/{}", self.model);
         send_openai_responses_streaming_request(
             &self.client,
             openai_codex_responses_url(&self.base_url),
@@ -1003,6 +1053,8 @@ impl AgentProvider for OpenAiCodexProvider {
             headers,
             trace.as_ref(),
             None,
+            "openai-codex",
+            &model_ref,
         )
         .await?;
         Ok(())

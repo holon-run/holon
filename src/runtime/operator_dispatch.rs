@@ -574,6 +574,9 @@ async fn probe_builtin_web_search_capability(
     ) {
         (ProviderNativeWebSearchKind::OpenAi, "openai_responses", "web_search_preview")
         | (ProviderNativeWebSearchKind::OpenAi, "openai_codex_responses", "web_search")
+        | (ProviderNativeWebSearchKind::DeepSeek, "openai_responses", "web_search")
+        | (ProviderNativeWebSearchKind::DeepSeek, "openai_responses", "web_search_2025_08_26")
+        | (ProviderNativeWebSearchKind::DeepSeek, "anthropic_messages", "web_search_20250305")
         | (ProviderNativeWebSearchKind::Anthropic, "anthropic_messages", "web_search_20250305") => {
             true
         }

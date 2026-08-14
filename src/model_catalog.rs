@@ -1629,6 +1629,10 @@ fn reasoning_effort_options(
         }
         ("openai-codex", "gpt-5.6-luna") => &["low", "medium", "high", "xhigh", "max"][..],
         ("openai", _) | ("openai-codex", _) => &["low", "medium", "high", "xhigh"][..],
+        ("deepseek", _) if endpoint.is_some_and(|endpoint| endpoint.as_str() == "responses") => {
+            &["none", "minimal", "low", "medium", "high", "xhigh", "max"][..]
+        }
+        ("deepseek", _) => &["low", "high", "max"][..],
         ("xai", "grok-4.3") => &["none", "low", "medium", "high"][..],
         ("xai", "grok-4.5") => &["low", "medium", "high"][..],
         ("stepfun", "step-3.7-flash") => &["low", "medium", "high"][..],
@@ -1967,19 +1971,34 @@ mod tests {
             assert_eq!(metadata.max_output_tokens_upper_limit, Some(384_000));
             assert!(metadata.capabilities.supports_reasoning);
             assert!(!metadata.capabilities.image_input);
-            assert!(reasoning_effort_options(
-                &metadata.model_ref,
-                metadata.endpoint.as_ref(),
-                &metadata.capabilities,
-            )
-            .is_empty());
-            assert!(catalog
-                .get_route(&ModelRouteRef::new(
-                    provider_id("deepseek"),
-                    ProviderEndpointId::parse("responses").unwrap(),
-                    model,
-                ))
-                .is_some());
+            assert_eq!(
+                reasoning_effort_options(
+                    &metadata.model_ref,
+                    metadata.endpoint.as_ref(),
+                    &metadata.capabilities,
+                ),
+                ["low", "high", "max"]
+            );
+            let responses_route = ModelRouteRef::new(
+                provider_id("deepseek"),
+                ProviderEndpointId::parse("responses").unwrap(),
+                model,
+            );
+            catalog
+                .get_route(&responses_route)
+                .unwrap_or_else(|| panic!("{model}@responses should be registered"));
+            let responses_policy = catalog.resolve_route_policy(
+                &responses_route,
+                &HashMap::new(),
+                &HashMap::new(),
+                None,
+                &base_context(),
+                8192,
+            );
+            assert_eq!(
+                responses_policy.reasoning_effort_options,
+                ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+            );
             assert_eq!(
                 catalog
                     .preferred_route_for_model(&metadata.model_ref)

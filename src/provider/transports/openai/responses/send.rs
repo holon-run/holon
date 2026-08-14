@@ -9,13 +9,14 @@ pub(in super::super) async fn send_openai_responses_request(
     headers: Vec<(&str, String)>,
     trace: Option<&ProviderHttpTrace>,
     agent_id: Option<&str>,
+    provider: &str,
+    model_ref: &str,
 ) -> Result<ParsedOpenAiResponse> {
-    let model_ref = provider_model_ref("openai", &body);
     let request_trace = trace.and_then(|trace| {
         trace.begin_request(
             agent_id,
-            "openai",
-            Some(&model_ref),
+            provider,
+            Some(model_ref),
             url.as_str(),
             "responses",
             &headers,
@@ -31,8 +32,8 @@ pub(in super::super) async fn send_openai_responses_request(
         request.json(&body),
         "OpenAI-style request failed",
         "request_send",
-        "openai",
-        Some(&model_ref),
+        provider,
+        Some(model_ref),
         Some(url.as_str()),
         true,
         request_trace.as_ref(),
@@ -55,8 +56,8 @@ pub(in super::super) async fn send_openai_responses_request(
         return Err(classify_status_error_with_trace(
             "OpenAI-style request failed",
             "response_status",
-            Some("openai"),
-            Some(&model_ref),
+            Some(provider),
+            Some(model_ref),
             Some(url.as_str()),
             status,
             body,
@@ -70,8 +71,8 @@ pub(in super::super) async fn send_openai_responses_request(
             return Err(classify_reqwest_transport_error_with_trace(
                 "OpenAI-style response body failed",
                 "response_body",
-                "openai",
-                Some(&model_ref),
+                provider,
+                Some(model_ref),
                 Some(url.as_str()),
                 error,
                 request_trace.as_ref(),
@@ -81,8 +82,8 @@ pub(in super::super) async fn send_openai_responses_request(
             return Err(timeout_transport_error_with_trace(
                 "OpenAI-style response body read timed out",
                 "response_body",
-                "openai",
-                Some(&model_ref),
+                provider,
+                Some(model_ref),
                 Some(url.as_str()),
                 format!("timed out after {:?}", response_body_timeout()),
                 request_trace.as_ref(),
@@ -107,6 +108,8 @@ pub(in super::super) async fn retry_openai_responses_with_lossless_replay(
     diagnostics: &mut ProviderRequestDiagnostics,
     final_provider_input: &mut Vec<Value>,
     final_replay_loss_reason: &mut Option<String>,
+    provider: &str,
+    model_ref: &str,
 ) -> Result<ParsedOpenAiResponse> {
     if !matches!(error_status(&error), Some(400..=499))
         || plan.body.get("previous_response_id").is_none()
@@ -131,7 +134,17 @@ pub(in super::super) async fn retry_openai_responses_with_lossless_replay(
         continuation.fallback_reason = Some("previous_response_id_rejected".into());
         continuation.server_side_context_may_be_lost = None;
     }
-    send_openai_responses_request(client, url, fallback_body, headers, trace, agent_id).await
+    send_openai_responses_request(
+        client,
+        url,
+        fallback_body,
+        headers,
+        trace,
+        agent_id,
+        provider,
+        model_ref,
+    )
+    .await
 }
 
 pub(in super::super) async fn send_openai_responses_streaming_request(
@@ -141,13 +154,14 @@ pub(in super::super) async fn send_openai_responses_streaming_request(
     headers: Vec<(&str, String)>,
     trace: Option<&ProviderHttpTrace>,
     agent_id: Option<&str>,
+    provider: &str,
+    model_ref: &str,
 ) -> Result<ParsedOpenAiResponse> {
-    let model_ref = provider_model_ref("openai-codex", &body);
     let request_trace = trace.and_then(|trace| {
         trace.begin_request(
             agent_id,
-            "openai-codex",
-            Some(&model_ref),
+            provider,
+            Some(model_ref),
             url.as_str(),
             "responses_streaming",
             &headers,
@@ -163,8 +177,8 @@ pub(in super::super) async fn send_openai_responses_streaming_request(
         request.json(&body),
         "OpenAI-style streaming request failed",
         "streaming_request_send",
-        "openai-codex",
-        Some(&model_ref),
+        provider,
+        Some(model_ref),
         Some(url.as_str()),
         false,
         request_trace.as_ref(),
@@ -185,10 +199,14 @@ pub(in super::super) async fn send_openai_responses_streaming_request(
         };
         trace_response_body(request_trace.as_ref(), &body);
         return Err(classify_status_error_with_trace(
-            openai_codex_status_error_context(status),
+            if provider == "openai-codex" {
+                openai_codex_status_error_context(status)
+            } else {
+                "OpenAI-style streaming request failed"
+            },
             "response_status",
-            Some("openai-codex"),
-            Some(&model_ref),
+            Some(provider),
+            Some(model_ref),
             Some(url.as_str()),
             status,
             body,

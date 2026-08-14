@@ -498,6 +498,7 @@ async fn deepseek_responses_streams_and_replays_full_history_across_provider_res
     provider_config.transport = ProviderTransportKind::OpenAiResponses;
     provider_config.base_url = base_url;
     provider_config.builtin_web_search = None;
+    provider_config.reasoning_effort = Some("high".into());
 
     let first_provider = OpenAiProvider::from_runtime_config_with_compaction_policy(
         &provider_config,
@@ -509,10 +510,16 @@ async fn deepseek_responses_streams_and_replays_full_history_across_provider_res
         },
     )
     .unwrap();
-    let first = first_provider
-        .complete_turn(provider_turn_request_with_prompt_frame())
-        .await
-        .unwrap();
+    let mut first_request = provider_turn_request_with_prompt_frame();
+    first_request.native_web_search = Some(ProviderNativeWebSearchRequest {
+        kind: ProviderNativeWebSearchKind::DeepSeek,
+        provider_id: "deepseek".into(),
+        provider_model_ref: "deepseek@responses/deepseek-v4-pro".into(),
+        advertised_tool_type: "web_search".into(),
+        backend_kind: "deepseek_web_search".into(),
+        max_results: None,
+    });
+    let first = first_provider.complete_turn(first_request).await.unwrap();
     assert!(matches!(
         &first.blocks[0],
         ModelBlock::ReasoningText { text } if text == "inspect the workspace first"
@@ -521,6 +528,29 @@ async fn deepseek_responses_streams_and_replays_full_history_across_provider_res
         &first.blocks[1],
         ModelBlock::ToolUse { id, name, .. } if id == "exec-1" && name == "ExecCommand"
     ));
+    let diagnostics = first
+        .request_diagnostics
+        .as_ref()
+        .expect("DeepSeek request diagnostics");
+    assert_eq!(diagnostics.provider_id.as_deref(), Some("deepseek"));
+    assert_eq!(
+        diagnostics.provider_model_ref.as_deref(),
+        Some("deepseek@responses/deepseek-v4-pro")
+    );
+    assert_eq!(
+        diagnostics.provider_transport.as_deref(),
+        Some("openai_responses")
+    );
+    assert_eq!(diagnostics.endpoint_dialect.as_deref(), Some("responses"));
+    assert_eq!(diagnostics.streaming, Some(true));
+    assert_eq!(diagnostics.reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(
+        diagnostics
+            .native_web_search
+            .as_ref()
+            .map(|search| search.lowered),
+        Some(true)
+    );
 
     let persisted_blocks = serde_json::to_vec(&first.blocks).unwrap();
     drop(first_provider);
@@ -556,9 +586,15 @@ async fn deepseek_responses_streams_and_replays_full_history_across_provider_res
     assert_eq!(bodies.len(), 2);
     for body in bodies.iter() {
         assert_eq!(body["stream"], json!(true));
+        assert_eq!(body["reasoning"], json!({ "effort": "high" }));
         assert!(body.get("previous_response_id").is_none());
         assert!(body.get("prompt_cache_key").is_none());
     }
+    assert!(bodies[0]["tools"]
+        .as_array()
+        .expect("DeepSeek tools")
+        .iter()
+        .any(|tool| tool == &json!({ "type": "web_search" })));
     let replayed = bodies[1]["input"].as_array().unwrap();
     assert!(replayed.iter().any(|item| {
         item["type"] == "reasoning"

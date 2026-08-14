@@ -19,6 +19,8 @@ pub(in super::super) async fn maybe_compact_openai_provider_window(
     headers: Vec<(&str, String)>,
     trace: Option<&ProviderHttpTrace>,
     agent_id: Option<&str>,
+    provider: &str,
+    model_ref: &str,
 ) -> Option<ProviderOpenAiRemoteCompactionDiagnostics> {
     let Some(scope) = scope else {
         return None;
@@ -79,6 +81,8 @@ pub(in super::super) async fn maybe_compact_openai_provider_window(
         headers,
         trace,
         agent_id,
+        provider,
+        model_ref,
     )
     .await
     {
@@ -256,6 +260,8 @@ pub(in super::super) async fn maybe_compact_openai_request_plan(
     headers: Vec<(&str, String)>,
     trace: Option<&ProviderHttpTrace>,
     agent_id: Option<&str>,
+    provider: &str,
+    model_ref: &str,
 ) -> Option<ProviderOpenAiRemoteCompactionDiagnostics> {
     if plan.diagnostics.request_lowering_mode != "incremental_continuation" {
         return None;
@@ -331,6 +337,8 @@ pub(in super::super) async fn maybe_compact_openai_request_plan(
         headers,
         trace,
         agent_id,
+        provider,
+        model_ref,
     )
     .await
     {
@@ -800,13 +808,14 @@ pub(in super::super) async fn send_openai_compact_request(
     headers: Vec<(&str, String)>,
     trace: Option<&ProviderHttpTrace>,
     agent_id: Option<&str>,
+    provider: &str,
+    model_ref: &str,
 ) -> Result<Vec<Value>> {
-    let model_ref = provider_model_ref("openai", &body);
     let request_trace = trace.and_then(|trace| {
         trace.begin_request(
             agent_id,
-            "openai",
-            Some(&model_ref),
+            provider,
+            Some(model_ref),
             url.as_str(),
             OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND,
             &headers,
@@ -822,8 +831,8 @@ pub(in super::super) async fn send_openai_compact_request(
         request.json(&body),
         "OpenAI compact request failed",
         "request_send",
-        "openai",
-        Some(&model_ref),
+        provider,
+        Some(model_ref),
         Some(url.as_str()),
         true,
         request_trace.as_ref(),
@@ -845,8 +854,8 @@ pub(in super::super) async fn send_openai_compact_request(
         return Err(classify_status_error_with_trace(
             "OpenAI compact request failed",
             "response_status",
-            Some("openai"),
-            Some(&model_ref),
+            Some(provider),
+            Some(model_ref),
             Some(url.as_str()),
             status,
             body,
@@ -860,8 +869,8 @@ pub(in super::super) async fn send_openai_compact_request(
             return Err(classify_reqwest_transport_error_with_trace(
                 "OpenAI compact response body failed",
                 "response_body",
-                "openai",
-                Some(&model_ref),
+                provider,
+                Some(model_ref),
                 Some(url.as_str()),
                 error,
                 request_trace.as_ref(),
@@ -871,8 +880,8 @@ pub(in super::super) async fn send_openai_compact_request(
             return Err(timeout_transport_error_with_trace(
                 "OpenAI compact response body read timed out",
                 "response_body",
-                "openai",
-                Some(&model_ref),
+                provider,
+                Some(model_ref),
                 Some(url.as_str()),
                 format!("timed out after {:?}", response_body_timeout()),
                 request_trace.as_ref(),

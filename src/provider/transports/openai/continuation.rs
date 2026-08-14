@@ -112,6 +112,12 @@ pub(super) fn incremental_diagnostics(
     let mismatch = mismatch.unwrap_or_default();
     ProviderRequestDiagnostics {
         request_lowering_mode: request_lowering_mode.into(),
+        provider_id: None,
+        provider_model_ref: None,
+        provider_transport: None,
+        endpoint_dialect: None,
+        streaming: None,
+        reasoning_effort: None,
         anthropic_cache: None,
         anthropic_context_management: None,
         openai_request_controls,

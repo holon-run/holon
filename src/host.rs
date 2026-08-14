@@ -1982,8 +1982,7 @@ impl RuntimeHost {
             .clone()
             .map(Ok)
             .unwrap_or_else(|| build_provider_from_config(&config))?;
-        let apply_patch_surface =
-            ApplyPatchSurface::for_model_ref(&model_ref.model_ref().as_string());
+        let apply_patch_surface = ApplyPatchSurface::for_model_route_ref(&model_ref.as_string());
         let registry = ToolRegistry::new(execution.execution_root.clone());
         let available_tools = registry
             .tool_specs_with_families_for_apply_patch_surface(apply_patch_surface)?

@@ -427,6 +427,12 @@ fn gemini_response_to_provider_turn_response(
         provider_request_id: None,
         request_diagnostics: Some(ProviderRequestDiagnostics {
             request_lowering_mode: "gemini_generate_content".to_string(),
+            provider_id: Some("gemini".to_string()),
+            provider_model_ref: None,
+            provider_transport: Some("gemini_generate_content".to_string()),
+            endpoint_dialect: Some("gemini".to_string()),
+            streaming: Some(false),
+            reasoning_effort: None,
             anthropic_cache: None,
             anthropic_context_management: None,
             openai_request_controls: None,
