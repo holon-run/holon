@@ -1029,6 +1029,7 @@ test("summarizeHolonTokenOptimization reports Anthropic cache miss rounds safely
         kind: "provider_round_completed",
         data: {
           round: 7,
+          reasoning_tokens: null,
           input_tokens: 35_000,
           output_tokens: 120,
           provider_cache_usage: {

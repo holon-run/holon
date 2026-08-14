@@ -621,7 +621,10 @@ export function orderPairedRunners({
 }) {
   const ordered = [...runnerConfigs];
   if (runnerOrder === "alternating") {
-    return repetition % 2 === 0 ? ordered.reverse() : ordered;
+    if (repetition % 2 === 0) {
+      ordered.reverse();
+    }
+    return ordered;
   }
   if (runnerOrder !== "paired_randomized") {
     return ordered;
@@ -3597,7 +3600,7 @@ function reasoningTokenCount(data) {
       ?.reasoning_tokens
   ];
   for (const candidate of candidates) {
-    const value = Number(candidate);
+    const value = Number(candidate ?? Number.NaN);
     if (Number.isFinite(value)) {
       return value;
     }
