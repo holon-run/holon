@@ -16,10 +16,21 @@ Real-repo benchmarks are modeled as issue-driven operator assignments:
   - `draft_pr`
   - `push_branch`
 - The runner renders PR policy into natural language in the issue template.
-- Live head-to-head runs currently compare:
-  - `holon-openai`
-  - `codex-openai`
-- These two runners are executed in parallel for each task; tasks themselves still advance in suite order.
+- Runner IDs are suite-defined unique lowercase slugs. Optional `transport` and
+  `endpoint` fields label route-specific comparisons.
+- Suites may set `repetitions` and deterministic `execution` controls:
+  - `runner_order: configured | paired_randomized | alternating`
+  - `random_seed`
+  - `max_parallel_runners`
+  - `cooldown_ms`
+- Every task/repetition is one paired group. Paired order modes require serial
+  runner execution. Run, branch, worktree, artifact,
+  and Holon agent identities include the repetition so state cannot leak
+  between samples.
+- Non-PR runs execute the manifest verifier after the runner. PR runs continue
+  to use GitHub CI as their verification source.
+- Raw per-run summaries remain under each `run-NN` directory. Suites also emit
+  `paired-summary.json` and `paired-summary.md`.
 - `holon-openai` live benchmark runs now set `HOLON_DISABLE_PROVIDER_FALLBACK=1` so deterministic live comparisons do not silently switch to a fallback provider/model.
 - Codex live runs now use the configured or default shared `CODEX_HOME`/user environment by default rather than an isolated benchmark-specific home.
 
@@ -41,6 +52,17 @@ node benchmark/run.mjs real --manifest /absolute/path/to/workspace/projects/holo
 node benchmark/run.mjs suite --suite benchmarks/suites/openai-phase1.local.yaml --label bench-openai-phase1
 node benchmark/run.mjs suite --suite benchmarks/suites/performance-diagnostics.local.yaml --label bench-perf-diagnostics
 ```
+
+The checked-in DeepSeek pilot suite compares the two canonical routes with five
+seeded, serial repetitions:
+
+```bash
+node benchmark/run.mjs suite --suite benchmarks/suites/deepseek-transport-pilot.local.yaml --label deepseek-transport-pilot
+```
+
+This command uses paid provider traffic. Run it only with operator authorization
+and required credentials. The suite disables provider fallback and does not
+create PRs or change the default DeepSeek route.
 
 To push benchmark branches and create draft PRs, either:
 

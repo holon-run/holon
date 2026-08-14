@@ -11,6 +11,7 @@ import {
   validateRealTaskManifest
 } from "../lib/manifest.mjs";
 import {
+  buildPairedSummary,
   buildHolonBenchmarkEnv,
   buildOperatorPrompt,
   classifyVerificationResult,
@@ -23,13 +24,16 @@ import {
   codexBenchmarkConfigToml,
   detectScopeViolation,
   evaluateRealTaskSuccess,
+  orderPairedRunners,
   parseClaudeCliJsonl,
   parseCodexJsonl,
   selectHolonFinalMessage,
+  shouldRunManifestVerifier,
   summarizeHolonTokenOptimization,
   tokenOptimizationEvents
 } from "../run.mjs";
 import {
+  artifactDirForTask,
   benchmarkLabelsForTask,
   branchNameForTask,
   prTitleForTask,
@@ -752,18 +756,94 @@ test("github ci summary classifies check buckets", () => {
   );
 });
 
-test("validateBenchmarkSuite rejects unknown runner ids", () => {
+test("validateBenchmarkSuite rejects invalid and duplicate runner ids", () => {
   assert.throws(
     () =>
       validateBenchmarkSuite({
         suite_id: "openai-phase1",
         label_prefix: "openai-phase1",
         tasks: ["benchmarks/tasks/task.yaml"],
-        runners: [{ runner_id: "not-a-runner", driver: "holon", model_ref: "openai-codex/gpt-5.3-codex-spark" }],
+        runners: [{ runner_id: "Not_A_Runner", driver: "holon", model_ref: "openai-codex/gpt-5.3-codex-spark" }],
         pr: { submit_pr: true, draft_pr: true, push_branch: true },
         timeouts: { ci_poll_minutes: 30 }
       }),
-    /runner_id must be one of/
+    /runner_id must be a stable lowercase slug/
+  );
+  assert.throws(
+    () =>
+      validateBenchmarkSuite({
+        suite_id: "deepseek-pilot",
+        label_prefix: "deepseek-pilot",
+        tasks: ["benchmarks/tasks/task.yaml"],
+        runners: [
+          { runner_id: "deepseek", driver: "holon", model_ref: "deepseek/model-a" },
+          { runner_id: "deepseek", driver: "holon", model_ref: "deepseek/model-b" }
+        ],
+        pr: { submit_pr: false },
+        timeouts: { ci_poll_minutes: 30 }
+      }),
+    /runner_id must be unique/
+  );
+});
+
+test("validateBenchmarkSuite accepts repeated paired execution metadata", () => {
+  const suite = validateBenchmarkSuite({
+    suite_id: "deepseek-pilot",
+    label_prefix: "deepseek-pilot",
+    tasks: ["benchmarks/tasks/task.yaml"],
+    repetitions: 5,
+    execution: {
+      runner_order: "paired_randomized",
+      random_seed: 20260814,
+      max_parallel_runners: 1,
+      cooldown_ms: 5000
+    },
+    runners: [
+      {
+        runner_id: "deepseek-anthropic-messages",
+        driver: "holon",
+        model_ref: "deepseek@default/deepseek-v4-flash",
+        transport: "anthropic_messages",
+        endpoint: "default"
+      },
+      {
+        runner_id: "deepseek-openai-responses",
+        driver: "holon",
+        model_ref: "deepseek@responses/deepseek-v4-flash",
+        transport: "openai_responses",
+        endpoint: "responses"
+      }
+    ],
+    pr: { submit_pr: false },
+    timeouts: { ci_poll_minutes: 30 }
+  });
+
+  assert.equal(suite.repetitions, 5);
+  assert.equal(suite.execution.max_parallel_runners, 1);
+  assert.equal(suite.runners[1].endpoint, "responses");
+});
+
+test("validateBenchmarkSuite requires serial execution for paired ordering", () => {
+  assert.throws(
+    () =>
+      validateBenchmarkSuite({
+        suite_id: "deepseek-pilot",
+        label_prefix: "deepseek-pilot",
+        tasks: ["benchmarks/tasks/task.yaml"],
+        execution: {
+          runner_order: "paired_randomized",
+          random_seed: 1,
+          max_parallel_runners: 2,
+          cooldown_ms: 0
+        },
+        runners: [
+          { runner_id: "one", driver: "holon", model_ref: "deepseek/model-a" },
+          { runner_id: "two", driver: "holon", model_ref: "deepseek/model-b" }
+        ],
+        pr: { submit_pr: false },
+        timeouts: { ci_poll_minutes: 30 }
+      }),
+    /max_parallel_runners must be 1/
   );
 });
 
@@ -828,10 +908,22 @@ test("validateBenchmarkSuite accepts anthropic holon and claude-cli runners", ()
 
 test("naming helpers follow canonical conventions", () => {
   assert.equal(
-    branchNameForTask("holon-0015-tool-guidance-registry", "holon-openai"),
-    "bench/holon-0015-tool-guidance-registry/holon-openai"
+    branchNameForTask(
+      "holon-0015-tool-guidance-registry",
+      "holon-openai",
+      1,
+      "OpenAI Phase 1"
+    ),
+    "bench/openai-phase-1/holon-0015-tool-guidance-registry/holon-openai/run-01"
   );
-  assert.equal(worktreeNameForTask(15, "codex-openai"), "bench-0015-codex-openai");
+  assert.equal(
+    worktreeNameForTask(15, "codex-openai", 3),
+    "bench-0015-codex-openai-run-03"
+  );
+  assert.deepEqual(
+    artifactDirForTask("/results", "suite", "task", "runner", 3),
+    { runId: "run-03", path: "/results/suite/task/runner/run-03" }
+  );
   assert.equal(
     prTitleForTask(15, "Dogfood: tool guidance", "holon-openai"),
     "[bench][holon-openai][#15] Dogfood: tool guidance"
@@ -841,6 +933,87 @@ test("naming helpers follow canonical conventions", () => {
     "bench:task-15",
     "runner:holon-openai"
   ]);
+});
+
+test("orderPairedRunners is deterministic and alternating reverses even repetitions", () => {
+  const runners = [
+    { runner_id: "one" },
+    { runner_id: "two" },
+    { runner_id: "three" }
+  ];
+  const first = orderPairedRunners({
+    runnerConfigs: runners,
+    runnerOrder: "paired_randomized",
+    randomSeed: 20260814,
+    taskId: "task-a",
+    repetition: 1
+  });
+  const second = orderPairedRunners({
+    runnerConfigs: runners,
+    runnerOrder: "paired_randomized",
+    randomSeed: 20260814,
+    taskId: "task-a",
+    repetition: 1
+  });
+  assert.deepEqual(first, second);
+  assert.deepEqual(
+    orderPairedRunners({
+      runnerConfigs: runners,
+      runnerOrder: "alternating",
+      taskId: "task-a",
+      repetition: 2
+    }).map((runner) => runner.runner_id),
+    ["three", "two", "one"]
+  );
+  assert.deepEqual(runners.map((runner) => runner.runner_id), ["one", "two", "three"]);
+});
+
+test("buildPairedSummary preserves execution order and emits metric deltas", () => {
+  const entries = buildPairedSummary(
+    [
+      {
+        task_id: "task-a",
+        repetition: 1,
+        runner: "responses",
+        pair_order: 1,
+        transport: "openai_responses",
+        success: true,
+        duration_ms: 80,
+        input_tokens: 90,
+        output_tokens: 20,
+        provider_duration_ms: 50,
+        provider_retry_count: 0,
+        reasoning_tokens: 8,
+        cache_read_input_tokens: 4
+      },
+      {
+        task_id: "task-a",
+        repetition: 1,
+        runner: "anthropic",
+        pair_order: 2,
+        transport: "anthropic_messages",
+        success: false,
+        duration_ms: 100,
+        input_tokens: 100,
+        output_tokens: 30,
+        provider_duration_ms: 70,
+        provider_retry_count: 1,
+        reasoning_tokens: 5,
+        cache_read_input_tokens: 10
+      }
+    ],
+    [{ runner_id: "anthropic" }, { runner_id: "responses" }]
+  );
+
+  assert.deepEqual(entries[0].scheduled_runner_order, ["responses", "anthropic"]);
+  assert.equal(entries[0].complete, true);
+  assert.equal(entries[0].comparisons[0].duration_ms_delta, -20);
+  assert.equal(entries[0].comparisons[0].provider_retry_count_delta, -1);
+});
+
+test("manifest verifier runs only when GitHub CI is not the verification source", () => {
+  assert.equal(shouldRunManifestVerifier({ pr: { submit_pr: false } }), true);
+  assert.equal(shouldRunManifestVerifier({ pr: { submit_pr: true } }), false);
 });
 
 test("summarizeHolonTokenOptimization reports Anthropic cache miss rounds safely", () => {
@@ -870,9 +1043,21 @@ test("summarizeHolonTokenOptimization reports Anthropic cache miss rounds safely
               {
                 provider: "anthropic",
                 model_ref: "anthropic/claude-sonnet-4-6",
-                outcome: "succeeded"
+                outcome: "failed",
+                duration_ms: 25
+              },
+              {
+                provider: "anthropic",
+                model_ref: "anthropic/claude-sonnet-4-6",
+                outcome: "succeeded",
+                duration_ms: 75
               }
             ],
+            aggregated_token_usage: {
+              output_tokens_details: {
+                reasoning_tokens: 40
+              }
+            },
             winning_model_ref: "anthropic/claude-sonnet-4-6"
           }
         }
@@ -895,6 +1080,11 @@ test("summarizeHolonTokenOptimization reports Anthropic cache miss rounds safely
   assert.equal(diagnostics.secret_safe, true);
   assert.equal(diagnostics.summary.high_input_zero_cache_read_rounds, 1);
   assert.equal(diagnostics.summary.request_lowering_modes.prompt_cache_blocks, 1);
+  assert.equal(diagnostics.summary.provider_duration_ms, 100);
+  assert.equal(diagnostics.summary.provider_attempt_count, 2);
+  assert.equal(diagnostics.summary.provider_retry_count, 1);
+  assert.equal(diagnostics.summary.provider_error_count, 1);
+  assert.equal(diagnostics.summary.reasoning_tokens, 40);
   assert.equal(diagnostics.rounds[0].request_lowering_mode, "prompt_cache_blocks");
   assert.equal(diagnostics.rounds[0].previous_tool.name, "ExecCommand");
   assert.equal(typeof diagnostics.rounds[0].previous_tool.input_bytes, "number");

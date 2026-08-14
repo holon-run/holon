@@ -1,16 +1,9 @@
-export const CANONICAL_RUNNER_IDS = [
-  "holon-openai",
-  "codex-openai",
-  "holon-anthropic",
-  "claude-cli"
-];
-
-export function branchNameForTask(taskId, runnerId) {
-  return `bench/${taskId}/${runnerId}`;
+export function branchNameForTask(taskId, runnerId, repetition = 1, suiteLabel = "adhoc") {
+  return `bench/${stableSlug(suiteLabel)}/${taskId}/${runnerId}/run-${String(repetition).padStart(2, "0")}`;
 }
 
-export function worktreeNameForTask(issueNumber, runnerId) {
-  return `bench-${String(issueNumber).padStart(4, "0")}-${runnerId}`;
+export function worktreeNameForTask(issueNumber, runnerId, repetition = 1) {
+  return `bench-${String(issueNumber).padStart(4, "0")}-${runnerId}-run-${String(repetition).padStart(2, "0")}`;
 }
 
 export function prTitleForTask(issueNumber, issueTitle, runnerId) {
@@ -24,4 +17,13 @@ export function benchmarkLabelsForTask(issueNumber, runnerId) {
 export function artifactDirForTask(resultsRoot, suiteLabel, taskId, runnerId, repetition = 1) {
   const runId = `run-${String(repetition).padStart(2, "0")}`;
   return { runId, path: `${resultsRoot}/${suiteLabel}/${taskId}/${runnerId}/${runId}` };
+}
+
+function stableSlug(value) {
+  return (
+    String(value)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "run"
+  );
 }

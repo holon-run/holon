@@ -1,8 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
-import { CANONICAL_RUNNER_IDS } from "./naming.mjs";
-
 let yamlModulePromise = null;
 
 const TASK_ALLOWED_KEYS = {
@@ -33,8 +31,18 @@ const TASK_ALLOWED_KEYS = {
 };
 
 const SUITE_ALLOWED_KEYS = {
-  root: ["suite_id", "label_prefix", "tasks", "runners", "pr", "timeouts"],
-  runner: ["runner_id", "driver", "model_ref", "model", "env"],
+  root: [
+    "suite_id",
+    "label_prefix",
+    "tasks",
+    "runners",
+    "repetitions",
+    "execution",
+    "pr",
+    "timeouts"
+  ],
+  runner: ["runner_id", "driver", "model_ref", "model", "env", "transport", "endpoint"],
+  execution: ["runner_order", "random_seed", "max_parallel_runners", "cooldown_ms"],
   pr: ["create_draft", "push_branch", "submit_pr", "draft_pr"],
   timeouts: ["ci_poll_minutes"]
 };
@@ -246,6 +254,14 @@ export function validateBenchmarkSuite(suite, { filePath = "<memory>" } = {}) {
   requireKeys(suite, ["suite_id", "label_prefix", "tasks", "runners", "pr", "timeouts"], `${filePath}`);
   ensureObject(suite.pr, `${filePath}.pr`);
   ensureObject(suite.timeouts, `${filePath}.timeouts`);
+  if ("execution" in suite) {
+    ensureObject(suite.execution, `${filePath}.execution`);
+    assertAllowedKeys(
+      suite.execution,
+      SUITE_ALLOWED_KEYS.execution,
+      `${filePath}.execution`
+    );
+  }
   assertAllowedKeys(suite.pr, SUITE_ALLOWED_KEYS.pr, `${filePath}.pr`);
   assertAllowedKeys(suite.timeouts, SUITE_ALLOWED_KEYS.timeouts, `${filePath}.timeouts`);
   requireKeys(suite.timeouts, SUITE_ALLOWED_KEYS.timeouts, `${filePath}.timeouts`);
@@ -258,15 +274,18 @@ export function validateBenchmarkSuite(suite, { filePath = "<memory>" } = {}) {
     throw new Error(`${filePath}.runners must be a non-empty array`);
   }
 
+  const runnerIds = new Set();
   for (const runner of suite.runners) {
     ensureObject(runner, `${filePath}.runners[]`);
     assertAllowedKeys(runner, SUITE_ALLOWED_KEYS.runner, `${filePath}.runners[]`);
     requireKeys(runner, ["runner_id", "driver"], `${filePath}.runners[]`);
-    if (!CANONICAL_RUNNER_IDS.includes(runner.runner_id)) {
-      throw new Error(
-        `${filePath}.runners[] runner_id must be one of ${CANONICAL_RUNNER_IDS.join(", ")}`
-      );
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(String(runner.runner_id))) {
+      throw new Error(`${filePath}.runners[] runner_id must be a stable lowercase slug`);
     }
+    if (runnerIds.has(runner.runner_id)) {
+      throw new Error(`${filePath}.runners[] runner_id must be unique`);
+    }
+    runnerIds.add(runner.runner_id);
     if (!["holon", "codex", "claude_cli"].includes(runner.driver)) {
       throw new Error(`${filePath}.runners[] driver must be holon, codex, or claude_cli`);
     }
@@ -301,6 +320,63 @@ export function validateBenchmarkSuite(suite, { filePath = "<memory>" } = {}) {
           throw new Error(`${filePath}.runners[].env.${key} must be a string`);
         }
       }
+    }
+    for (const field of ["transport", "endpoint"]) {
+      if (
+        field in runner &&
+        (typeof runner[field] !== "string" || !runner[field].trim())
+      ) {
+        throw new Error(
+          `${filePath}.runners[].${field} must be a non-empty string when present`
+        );
+      }
+    }
+  }
+
+  if (
+    "repetitions" in suite &&
+    (!Number.isInteger(suite.repetitions) || suite.repetitions <= 0)
+  ) {
+    throw new Error(`${filePath}.repetitions must be a positive integer`);
+  }
+
+  if (suite.execution) {
+    if (
+      "runner_order" in suite.execution &&
+      !["configured", "paired_randomized", "alternating"].includes(
+        suite.execution.runner_order
+      )
+    ) {
+      throw new Error(
+        `${filePath}.execution.runner_order must be configured, paired_randomized, or alternating`
+      );
+    }
+    if (
+      "random_seed" in suite.execution &&
+      !Number.isInteger(suite.execution.random_seed)
+    ) {
+      throw new Error(`${filePath}.execution.random_seed must be an integer`);
+    }
+    for (const field of ["max_parallel_runners", "cooldown_ms"]) {
+      if (
+        field in suite.execution &&
+        (!Number.isInteger(suite.execution[field]) ||
+          suite.execution[field] < (field === "cooldown_ms" ? 0 : 1))
+      ) {
+        throw new Error(
+          `${filePath}.execution.${field} must be a ${
+            field === "cooldown_ms" ? "non-negative" : "positive"
+          } integer`
+        );
+      }
+    }
+    if (
+      ["paired_randomized", "alternating"].includes(suite.execution.runner_order) &&
+      suite.execution.max_parallel_runners !== 1
+    ) {
+      throw new Error(
+        `${filePath}.execution.max_parallel_runners must be 1 for paired runner ordering`
+      );
     }
   }
 

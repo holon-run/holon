@@ -13,6 +13,7 @@ import {
 } from "./lib/manifest.mjs";
 import { loadProjectionEvalSuite } from "./lib/projection-eval.mjs";
 import {
+  artifactDirForTask,
   benchmarkLabelsForTask,
   branchNameForTask,
   prTitleForTask,
@@ -199,7 +200,10 @@ async function compareSuites(args) {
   const candidate = await readJson(path.join(resultsRoot, args.candidate, "summary.json"));
   const byKey = (entries) =>
     new Map(
-      entries.map((entry) => [`${entry.task_id ?? entry.task_name}:${entry.runner}`, entry])
+      entries.map((entry) => [
+        `${entry.task_id ?? entry.task_name}:${entry.runner}:${entry.repetition ?? 1}`,
+        entry
+      ])
     );
 
   const baselineMap = byKey(baseline);
@@ -532,7 +536,7 @@ async function runRealManifestCommand(args, runnerEnv) {
     )
   );
 
-  await finalizeRealSuite(suiteLabel, results);
+  await finalizeRealSuite(suiteLabel, results, suiteConfig);
   return { label: suiteLabel, results };
 }
 
@@ -573,8 +577,21 @@ async function runRealSuiteCommand(args, runnerEnv) {
   const results = [];
   for (const manifestPath of taskPaths) {
     const manifest = await loadRealTaskManifest(manifestPath);
-    const taskResults = await Promise.all(
-      runnerConfigs.map((runnerConfig) =>
+    for (let repetition = 1; repetition <= (effectiveSuite.repetitions ?? 1); repetition += 1) {
+      const orderedRunners = orderPairedRunners({
+        runnerConfigs,
+        runnerOrder: effectiveSuite.execution?.runner_order ?? "configured",
+        randomSeed: effectiveSuite.execution?.random_seed ?? 0,
+        taskId: manifest.task_id,
+        repetition
+      }).map((runnerConfig, pairIndex) => ({
+        ...runnerConfig,
+        pair_order: pairIndex + 1
+      }));
+      const taskResults = await runWithConcurrency(
+        orderedRunners,
+        effectiveSuite.execution?.max_parallel_runners ?? orderedRunners.length,
+        (runnerConfig) =>
         runRealBenchmarkTask({
           manifest,
           manifestPath,
@@ -582,15 +599,62 @@ async function runRealSuiteCommand(args, runnerEnv) {
           suiteConfig: effectiveSuite,
           suiteLabel,
           runnerEnv,
+          repetition,
           worktreeRootOverride: args.worktreeRoot
-        })
-      )
-    );
-    results.push(...taskResults);
+        }),
+        effectiveSuite.execution?.cooldown_ms ?? 0
+      );
+      results.push(...taskResults);
+    }
   }
 
-  await finalizeRealSuite(suiteLabel, results);
+  await finalizeRealSuite(suiteLabel, results, effectiveSuite);
   return { label: suiteLabel, results };
+}
+
+export function orderPairedRunners({
+  runnerConfigs,
+  runnerOrder = "configured",
+  randomSeed = 0,
+  taskId,
+  repetition
+}) {
+  const ordered = [...runnerConfigs];
+  if (runnerOrder === "alternating") {
+    return repetition % 2 === 0 ? ordered.reverse() : ordered;
+  }
+  if (runnerOrder !== "paired_randomized") {
+    return ordered;
+  }
+
+  let state = stableSeed(`${randomSeed}:${taskId}:${repetition}`);
+  for (let index = ordered.length - 1; index > 0; index -= 1) {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    const swapIndex = state % (index + 1);
+    [ordered[index], ordered[swapIndex]] = [ordered[swapIndex], ordered[index]];
+  }
+  return ordered;
+}
+
+function stableSeed(value) {
+  let hash = 2166136261;
+  for (const byte of Buffer.from(String(value), "utf8")) {
+    hash ^= byte;
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+async function runWithConcurrency(items, maxParallel, execute, cooldownMs = 0) {
+  const results = [];
+  for (let index = 0; index < items.length; index += maxParallel) {
+    const batch = items.slice(index, index + maxParallel);
+    results.push(...(await Promise.all(batch.map(execute))));
+    if (cooldownMs > 0 && index + maxParallel < items.length) {
+      await sleep(cooldownMs);
+    }
+  }
+  return results;
 }
 
 async function runProjectionEvalCommand(args) {
@@ -773,11 +837,135 @@ function shellEscape(value) {
   return `'${String(value).split("'").join(`'"'"'`)}'`;
 }
 
-async function finalizeRealSuite(suiteLabel, results) {
+async function finalizeRealSuite(suiteLabel, results, suiteConfig = null) {
   const suiteDir = path.join(resultsRoot, suiteLabel);
+  const pairedSummary = buildPairedSummary(results, suiteConfig?.runners ?? []);
   await mkdir(suiteDir, { recursive: true });
   await writeJson(path.join(suiteDir, "summary.json"), results);
   await writeFile(path.join(suiteDir, "summary.md"), renderSuiteSummary(results), "utf8");
+  await writeJson(path.join(suiteDir, "paired-summary.json"), pairedSummary);
+  await writeFile(
+    path.join(suiteDir, "paired-summary.md"),
+    renderPairedSummary(pairedSummary),
+    "utf8"
+  );
+}
+
+export function buildPairedSummary(results, runnerConfigs = []) {
+  const configuredOrder = new Map(
+    runnerConfigs.map((runner, index) => [runner.runner_id, index])
+  );
+  const expectedRunnerIds = new Set(runnerConfigs.map((runner) => runner.runner_id));
+  const groups = new Map();
+  for (const result of results) {
+    const key = `${result.task_id}#${result.repetition}`;
+    const group = groups.get(key) ?? {
+      task_id: result.task_id,
+      repetition: result.repetition,
+      runs: []
+    };
+    group.runs.push(result);
+    groups.set(key, group);
+  }
+
+  return [...groups.values()]
+    .sort(
+      (left, right) =>
+        left.task_id.localeCompare(right.task_id) ||
+        left.repetition - right.repetition
+    )
+    .map((group) => {
+      const runs = [...group.runs].sort(
+        (left, right) =>
+          (configuredOrder.get(left.runner) ?? Number.MAX_SAFE_INTEGER) -
+            (configuredOrder.get(right.runner) ?? Number.MAX_SAFE_INTEGER) ||
+          left.runner.localeCompare(right.runner)
+      );
+      const comparisons = [];
+      for (let leftIndex = 0; leftIndex < runs.length; leftIndex += 1) {
+        for (let rightIndex = leftIndex + 1; rightIndex < runs.length; rightIndex += 1) {
+          comparisons.push(comparePairedRuns(runs[leftIndex], runs[rightIndex]));
+        }
+      }
+      return {
+        task_id: group.task_id,
+        repetition: group.repetition,
+        complete:
+          runnerConfigs.length === 0 ||
+          (runs.length === expectedRunnerIds.size &&
+            runs.every((run) => expectedRunnerIds.has(run.runner))),
+        scheduled_runner_order: [...runs]
+          .sort((left, right) => (left.pair_order ?? 0) - (right.pair_order ?? 0))
+          .map((run) => run.runner),
+        runs: runs.map(compactPairedRun),
+        comparisons
+      };
+    });
+}
+
+function compactPairedRun(run) {
+  return {
+    runner: run.runner,
+    transport: run.transport ?? null,
+    endpoint: run.endpoint ?? null,
+    pair_order: run.pair_order ?? null,
+    success: run.success,
+    duration_ms: run.duration_ms,
+    input_tokens: run.input_tokens ?? 0,
+    output_tokens: run.output_tokens ?? 0,
+    provider_duration_ms: run.provider_duration_ms ?? 0,
+    provider_retry_count: run.provider_retry_count ?? 0,
+    provider_error_count: run.provider_error_count ?? 0,
+    reasoning_tokens: run.reasoning_tokens ?? 0,
+    cache_read_input_tokens: run.cache_read_input_tokens ?? 0,
+    cache_creation_input_tokens: run.cache_creation_input_tokens ?? 0,
+    error_kind: run.error_kind ?? null
+  };
+}
+
+function comparePairedRuns(left, right) {
+  return {
+    runner_a: left.runner,
+    runner_b: right.runner,
+    success_delta: Number(Boolean(right.success)) - Number(Boolean(left.success)),
+    duration_ms_delta: (right.duration_ms ?? 0) - (left.duration_ms ?? 0),
+    total_tokens_delta:
+      (right.input_tokens ?? 0) +
+      (right.output_tokens ?? 0) -
+      (left.input_tokens ?? 0) -
+      (left.output_tokens ?? 0),
+    provider_duration_ms_delta:
+      (right.provider_duration_ms ?? 0) - (left.provider_duration_ms ?? 0),
+    provider_retry_count_delta:
+      (right.provider_retry_count ?? 0) - (left.provider_retry_count ?? 0),
+    provider_error_count_delta:
+      (right.provider_error_count ?? 0) - (left.provider_error_count ?? 0),
+    reasoning_tokens_delta:
+      (right.reasoning_tokens ?? 0) - (left.reasoning_tokens ?? 0),
+    cache_read_input_tokens_delta:
+      (right.cache_read_input_tokens ?? 0) - (left.cache_read_input_tokens ?? 0),
+    cache_creation_input_tokens_delta:
+      (right.cache_creation_input_tokens ?? 0) -
+      (left.cache_creation_input_tokens ?? 0)
+  };
+}
+
+function renderPairedSummary(entries) {
+  const lines = ["# Paired Benchmark Summary", ""];
+  for (const entry of entries) {
+    lines.push(`## ${entry.task_id} (run ${entry.repetition})`, "");
+    lines.push(
+      "| Runner | Transport | Success | Duration | Provider | Retries | Reasoning | Cache read/create |"
+    );
+    lines.push("|---|---|---:|---:|---:|---:|---:|---:|");
+    for (const run of entry.runs) {
+      lines.push(
+        `| ${run.runner} | ${run.transport ?? "-"} | ${boolWord(run.success)} | ${formatMs(run.duration_ms)} | ${formatMs(run.provider_duration_ms)} | ${run.provider_retry_count} | ${run.reasoning_tokens} | ${run.cache_read_input_tokens}/${run.cache_creation_input_tokens} |`
+      );
+    }
+    lines.push("");
+  }
+  return lines.join("\n");
 }
 
 async function runRealBenchmarkTask({
@@ -787,13 +975,19 @@ async function runRealBenchmarkTask({
   suiteConfig,
   suiteLabel,
   runnerEnv,
+  repetition = 1,
   worktreeRootOverride
 }) {
   const manifestDir = path.dirname(manifestPath);
   const repoPath = resolveRepoPath(manifest.repo.local_path, manifestDir);
   await ensureBaseShaExists(repoPath, manifest.base.sha, runCommand);
   const runnerId = runnerConfig.runner_id;
-  const branchName = branchNameForTask(manifest.task_id, runnerId);
+  const branchName = branchNameForTask(
+    manifest.task_id,
+    runnerId,
+    repetition,
+    suiteLabel
+  );
   const worktreeRoot =
     worktreeRootOverride ??
     path.join(
@@ -804,10 +998,15 @@ async function runRealBenchmarkTask({
     );
   const worktreePath = path.join(
     worktreeRoot,
-    worktreeNameForTask(manifest.issue.number, runnerId)
+    worktreeNameForTask(manifest.issue.number, runnerId, repetition)
   );
-  const runId = "run-01";
-  const taskDir = path.join(resultsRoot, suiteLabel, manifest.task_id, runnerId, runId);
+  const { runId, path: taskDir } = artifactDirForTask(
+    resultsRoot,
+    suiteLabel,
+    manifest.task_id,
+    runnerId,
+    repetition
+  );
   await mkdir(taskDir, { recursive: true });
   await copyFile(manifestPath, path.join(taskDir, "manifest.yaml"));
 
@@ -840,7 +1039,8 @@ async function runRealBenchmarkTask({
       worktreePath,
       taskDir,
       runnerEnv,
-      manifest
+      manifest,
+      repetition
     });
   } catch (error) {
     await writeFile(path.join(taskDir, "runner-error.log"), `${error?.stack ?? error}\n`, "utf8");
@@ -859,6 +1059,13 @@ async function runRealBenchmarkTask({
     };
   }
 
+  const verifier = shouldRunManifestVerifier(suiteConfig)
+    ? await runVerificationCommands(manifest.verification.commands, worktreePath, runnerEnv)
+    : null;
+  if (verifier) {
+    await writeFile(path.join(taskDir, "verify.log"), verifier.log, "utf8");
+    await writeJson(path.join(taskDir, "verification.json"), verifier);
+  }
   const changedFiles = await diffAgainstBase(repoPath, worktreePath, manifest.base.sha, taskDir);
   await writeJson(path.join(taskDir, "changed-files.json"), changedFiles);
   const scopeViolation = detectScopeViolation(changedFiles, manifest.evaluation);
@@ -916,7 +1123,10 @@ async function runRealBenchmarkTask({
     issue_number: manifest.issue.number,
     issue_title: manifest.issue.title,
     runner: runnerId,
-    repetition: 1,
+    transport: runnerConfig.transport ?? null,
+    endpoint: runnerConfig.endpoint ?? null,
+    pair_order: runnerConfig.pair_order ?? null,
+    repetition,
     success:
       evaluateRealTaskSuccess({
         runnerResult,
@@ -924,9 +1134,11 @@ async function runRealBenchmarkTask({
         scopeViolation,
         scopePolicy: manifest.evaluation.scope_policy,
         expectedOutcome: manifest.evaluation.expected_outcome ?? "change_required"
-      }) && githubCi.success !== false,
-    verify_success: null,
-    verify_status: "not_run_github_ci_source",
+      }) &&
+      githubCi.success !== false &&
+      verifier?.success !== false,
+    verify_success: verifier?.success ?? null,
+    verify_status: verifier?.status ?? "not_run_github_ci_source",
     scope_violation: scopeViolation,
     scope_policy: manifest.evaluation.scope_policy,
     expected_outcome: manifest.evaluation.expected_outcome ?? "change_required",
@@ -940,7 +1152,7 @@ async function runRealBenchmarkTask({
     error_kind: runnerResult.errorKind ?? null,
     completion_classification: runnerResult.completionClassification ?? null,
     completion_terminal_state: runnerResult.terminalState ?? null,
-    verify_exit_code: null,
+    verify_exit_code: verifier?.exitCode ?? null,
     github_ci_status: githubCi.status,
     github_ci_success: githubCi.success,
     github_ci_pending: githubCi.pending,
@@ -954,6 +1166,20 @@ async function runRealBenchmarkTask({
     total_tool_latency_ms: runnerResult.totalToolLatencyMs ?? 0,
     per_tool_latency_ms: runnerResult.perToolLatencyMs ?? {},
     token_optimization: compactTokenOptimization(runnerResult.tokenOptimization),
+    provider_duration_ms:
+      runnerResult.tokenOptimization?.summary?.provider_duration_ms ?? 0,
+    provider_attempt_count:
+      runnerResult.tokenOptimization?.summary?.provider_attempt_count ?? 0,
+    provider_retry_count:
+      runnerResult.tokenOptimization?.summary?.provider_retry_count ?? 0,
+    provider_error_count:
+      runnerResult.tokenOptimization?.summary?.provider_error_count ?? 0,
+    reasoning_tokens:
+      runnerResult.tokenOptimization?.summary?.reasoning_tokens ?? 0,
+    cache_read_input_tokens:
+      runnerResult.tokenOptimization?.summary?.cache_read_input_tokens ?? 0,
+    cache_creation_input_tokens:
+      runnerResult.tokenOptimization?.summary?.cache_creation_input_tokens ?? 0,
     base_sha: manifest.base.sha,
     benchmark_mode: manifest.benchmark.mode,
     branch: branchName,
@@ -1033,6 +1259,10 @@ function normalizePrPolicy(pr = {}) {
     submit_pr: submitPr,
     draft_pr: submitPr ? draftPr : false
   };
+}
+
+export function shouldRunManifestVerifier(suiteConfig) {
+  return !suiteConfig?.pr?.submit_pr;
 }
 
 async function withRepoSideEffectLock(repoPath, fn) {
@@ -1115,9 +1345,25 @@ export function buildHolonBenchmarkEnv(runnerEnv, runnerConfig, manifest) {
   return env;
 }
 
-async function executeRealRunner({ runnerConfig, prompt, worktreePath, taskDir, runnerEnv, manifest }) {
+async function executeRealRunner({
+  runnerConfig,
+  prompt,
+  worktreePath,
+  taskDir,
+  runnerEnv,
+  manifest,
+  repetition
+}) {
   if (runnerConfig.driver === "holon") {
-    return runHolonRealTask({ runnerConfig, prompt, worktreePath, taskDir, runnerEnv, manifest });
+    return runHolonRealTask({
+      runnerConfig,
+      prompt,
+      worktreePath,
+      taskDir,
+      runnerEnv,
+      manifest,
+      repetition
+    });
   }
   if (runnerConfig.driver === "codex") {
     return runCodexRealTask({ runnerConfig, prompt, worktreePath, taskDir, runnerEnv });
@@ -1128,9 +1374,17 @@ async function executeRealRunner({ runnerConfig, prompt, worktreePath, taskDir, 
   throw new Error(`unsupported real runner driver ${runnerConfig.driver}`);
 }
 
-async function runHolonRealTask({ runnerConfig, prompt, worktreePath, taskDir, runnerEnv, manifest }) {
+async function runHolonRealTask({
+  runnerConfig,
+  prompt,
+  worktreePath,
+  taskDir,
+  runnerEnv,
+  manifest,
+  repetition
+}) {
   const homeDir = path.join(taskDir, "holon-home");
-  const agentId = manifest.task_id;
+  const agentId = `${manifest.task_id}-${runnerConfig.runner_id}-run-${String(repetition).padStart(2, "0")}`;
   const env = buildHolonBenchmarkEnv(runnerEnv, runnerConfig, manifest);
   await ensureHolonBuilt(worktreePath);
   const holonBinary = resolveHolonBinary(worktreePath);
@@ -2948,6 +3202,9 @@ export function summarizeHolonTokenOptimization(events, toolExecutions = [], opt
       null;
     const provider = attempt?.provider ?? providerFromModelRef(modelRef);
     const cacheUsage = data?.provider_cache_usage ?? {};
+    const attempts = Array.isArray(data?.provider_attempt_timeline?.attempts)
+      ? data.provider_attempt_timeline.attempts
+      : [];
     const inputTokens = Number(data?.input_tokens ?? data?.token_usage?.input_tokens ?? 0);
     const cacheReadInputTokens = Number(cacheUsage.read_input_tokens ?? 0);
     const cacheCreationInputTokens = Number(cacheUsage.creation_input_tokens ?? 0);
@@ -2989,6 +3246,16 @@ export function summarizeHolonTokenOptimization(events, toolExecutions = [], opt
       request_lowering_mode: requestLoweringMode,
       input_tokens: inputTokens,
       output_tokens: Number(data?.output_tokens ?? data?.token_usage?.output_tokens ?? 0),
+      reasoning_tokens: reasoningTokenCount(data),
+      provider_duration_ms: attempts.reduce(
+        (sum, providerAttempt) => sum + Number(providerAttempt?.duration_ms ?? 0),
+        0
+      ),
+      provider_attempt_count: attempts.length,
+      provider_retry_count: Math.max(0, attempts.length - 1),
+      provider_error_count: attempts.filter(
+        (providerAttempt) => providerAttempt?.outcome !== "succeeded"
+      ).length,
       cache_read_input_tokens: cacheReadInputTokens,
       cache_creation_input_tokens: cacheCreationInputTokens,
       high_input_zero_cache_read: highInputZeroCacheRead,
@@ -3318,6 +3585,24 @@ function providerFromModelRef(modelRef) {
     return "openai";
   }
   return "unknown";
+}
+
+function reasoningTokenCount(data) {
+  const candidates = [
+    data?.reasoning_tokens,
+    data?.token_usage?.reasoning_tokens,
+    data?.token_usage?.output_tokens_details?.reasoning_tokens,
+    data?.provider_attempt_timeline?.aggregated_token_usage?.reasoning_tokens,
+    data?.provider_attempt_timeline?.aggregated_token_usage?.output_tokens_details
+      ?.reasoning_tokens
+  ];
+  for (const candidate of candidates) {
+    const value = Number(candidate);
+    if (Number.isFinite(value)) {
+      return value;
+    }
+  }
+  return 0;
 }
 
 function isProviderRoundEvent(event) {
@@ -3887,6 +4172,11 @@ function summarizeTokenOptimizationRounds(rounds) {
   const requestLoweringModes = {};
   let cacheReadInputTokens = 0;
   let cacheCreationInputTokens = 0;
+  let reasoningTokens = 0;
+  let providerDurationMs = 0;
+  let providerAttemptCount = 0;
+  let providerRetryCount = 0;
+  let providerErrorCount = 0;
   let highInputZeroCacheReadRounds = 0;
   const incrementalFallbackReasons = {};
   let contextManagementEnabledRounds = 0;
@@ -3918,6 +4208,11 @@ function summarizeTokenOptimizationRounds(rounds) {
       (requestLoweringModes[round.request_lowering_mode] ?? 0) + 1;
     cacheReadInputTokens += round.cache_read_input_tokens;
     cacheCreationInputTokens += round.cache_creation_input_tokens;
+    reasoningTokens += round.reasoning_tokens;
+    providerDurationMs += round.provider_duration_ms;
+    providerAttemptCount += round.provider_attempt_count;
+    providerRetryCount += round.provider_retry_count;
+    providerErrorCount += round.provider_error_count;
     if (round.high_input_zero_cache_read) {
       highInputZeroCacheReadRounds += 1;
     }
@@ -4005,6 +4300,11 @@ function summarizeTokenOptimizationRounds(rounds) {
     request_lowering_modes: requestLoweringModes,
     cache_read_input_tokens: cacheReadInputTokens,
     cache_creation_input_tokens: cacheCreationInputTokens,
+    reasoning_tokens: reasoningTokens,
+    provider_duration_ms: providerDurationMs,
+    provider_attempt_count: providerAttemptCount,
+    provider_retry_count: providerRetryCount,
+    provider_error_count: providerErrorCount,
     high_input_zero_cache_read_rounds: highInputZeroCacheReadRounds,
     incremental_fallback_reasons: incrementalFallbackReasons,
     incremental_mismatch_kinds: incrementalMismatchKinds,

@@ -34,3 +34,18 @@ This route does not change the legacy DeepSeek default, introduce a model
 alias, or change the OpenAI and xAI endpoint contracts. Endpoint dialect is
 selected from the resolved canonical `(provider, endpoint)` identity rather
 than from the model name.
+
+## Benchmark protocol
+
+Route comparisons use repeated task-level pairs rather than one aggregate run.
+Each task/repetition runs both canonical routes with a deterministic seeded
+order and isolated branch, worktree, artifact, and agent identities. Raw
+per-run results remain authoritative; the harness additionally emits a paired
+summary with success, duration, provider-attempt, retry/error, reasoning-token,
+and transport-specific cache-token fields. Pair deltas use `runner_b - runner_a`.
+
+The checked-in pilot suite uses `deepseek-v4-flash`, five repetitions, serial
+runner execution, cooldown, and disabled provider fallback. Running that paid
+suite and using `deepseek-v4-pro` for route confirmation/default-route evidence
+remain separate operator-authorized steps. Benchmark infrastructure does not
+change `deepseek@default`.

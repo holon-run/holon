@@ -1,0 +1,31 @@
+suite_id: deepseek-transport-pilot
+label_prefix: deepseek-transport-pilot
+tasks:
+  - ../tasks/holon-0015-tool-guidance-registry.yaml
+repetitions: 5
+execution:
+  runner_order: paired_randomized
+  random_seed: 20260814
+  max_parallel_runners: 1
+  cooldown_ms: 5000
+runners:
+  - runner_id: deepseek-anthropic-messages
+    driver: holon
+    model_ref: deepseek@default/deepseek-v4-flash
+    transport: anthropic_messages
+    endpoint: default
+    env:
+      HOLON_DISABLE_PROVIDER_FALLBACK: "1"
+  - runner_id: deepseek-openai-responses
+    driver: holon
+    model_ref: deepseek@responses/deepseek-v4-flash
+    transport: openai_responses
+    endpoint: responses
+    env:
+      HOLON_DISABLE_PROVIDER_FALLBACK: "1"
+pr:
+  submit_pr: false
+  draft_pr: false
+  push_branch: false
+timeouts:
+  ci_poll_minutes: 30
