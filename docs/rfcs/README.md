@@ -79,7 +79,7 @@ implementation and tests.
 ## Eventing And Client Surface
 
 - [Event Stream Interface Design](./event-stream-interface.md)
-- [Observer Sync, Canonical Agent Summary, and Monotonic Read Markers](./observer-sync-agent-summary-and-read-markers.md)
+- [Event-Ledger Web Synchronization and Browser-Local Read State](./observer-sync-agent-summary-and-read-markers.md)
 - [Debug Prompt JSON Envelope](./debug-prompt-json-envelope.md)
 - [Operator Display Levels and Event Presentation](./operator-display-levels-and-event-presentation.md)
 

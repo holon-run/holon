@@ -1,16 +1,936 @@
 ---
-title: RFC: Observer Sync, Canonical Agent Summary, and Monotonic Read Markers
-date: 2026-08-12
+title: RFC: Event-Ledger Web Synchronization and Browser-Local Read State
+date: 2026-08-14
 status: proposed
 handle: rfc-observer-sync-agent-summary-read-markers
 ---
 
-# RFC: Observer Sync, Canonical Agent Summary, and Monotonic Read Markers
+# RFC: Event-Ledger Web Synchronization and Browser-Local Read State
 
 ## Summary
 
-Holon should add a durable observer synchronization surface for first-party
-clients:
+Holon should treat the Web GUI as an independent consumer of the existing
+per-Agent runtime event ledger. The canonical replay identity remains:
+
+```text
+(event_log_epoch, agent_id, event_seq)
+```
+
+Phase 3 does not introduce a second delivery sequence, an observer change
+ledger, or server-owned browser read state. Instead it adds two strict recovery
+surfaces around the event ledger:
+
+```http
+GET /api/agents/snapshot
+GET /api/agents/{agent_id}/projection-snapshot
+```
+
+The authoritative roster snapshot discovers all Agents visible to the current
+authorization scope and reports each Agent's event recovery window. The
+per-Agent projection snapshot supplies one consistency boundary from which a
+client can resume raw events. Existing event pages and streams continue to
+carry the incremental log.
+
+The browser stores raw events, pending hydration, derived info/verbose/debug
+projections, unread baselines, and read markers in IndexedDB. Unread is a local
+product state for one browser profile. It is derived from hydrated
+`brief_created` events and is not a server-owned fact.
+
+This design reuses the event ordering that is already implemented, supports
+both compact and verbose views, and makes roster discovery, retention gaps,
+epoch resets, authorization changes, and hydration failure explicit.
+
+## Status And Implementation Boundary
+
+This RFC replaces the previous design in this file. The previous design
+proposed an observer-scoped sync token, `observer_change_seq`, Agent
+incarnations, a separate `delivery_seq`, a delivery metadata API, and
+server-owned read markers. Those mechanisms are not adopted.
+
+This RFC is still a design decision. It does not implement the new endpoints,
+storage constraints, migrations, event metadata, or Web GUI cutover.
+Implementation must proceed in separately reviewable server and client slices.
+
+## Current Contract
+
+Holon already has the following relevant structure:
+
+- per-Agent audit events have durable, immutable identity
+  `(event_log_epoch, agent_id, event_seq)`;
+- `event_seq` is allocated independently for each Agent and persists across
+  ordinary daemon restarts;
+- `GET /api/agents/{agent_id}/events` supports bounded durable replay with
+  `before_seq` and `after_seq`;
+- `GET /api/agents/{agent_id}/events/stream` uses `event_seq` as its SSE id and
+  rejects a missing retained cursor with `cursor_not_found`;
+- `GET /api/events/stream` is a live-only watcher with no durable global
+  cursor;
+- `GET /api/agents/list` returns lightweight Agent entries, but is not a strict
+  all-or-nothing recovery snapshot;
+- canonical Brief, Message, Transcript, WorkItem, task, and Agent state records
+  are available through dedicated APIs;
+- events commonly act as invalidations or stable entity references rather than
+  complete copies of those canonical records; and
+- the Web GUI already recovers known Agents by `event_seq` and locally derives
+  timeline and unread state.
+
+The existing ordering is sufficient for info, verbose, and debug projections.
+The remaining gaps are discovery of Agents changed while the browser was
+offline, a consistent projection bootstrap, durable hydration bookkeeping,
+retention reset semantics, and explicit local unread ownership.
+
+## Problem
+
+The global event stream deliberately does not replay history. A browser that is
+closed cannot learn from that stream that an Agent was created, deleted, or
+made inaccessible. The current bootstrap list also does not provide a strict
+snapshot contract or per-Agent event-window anchors.
+
+For an already known Agent, raw event replay is durable, but a client cannot
+safely claim that several independently fetched canonical APIs form one
+continuous projection at a specific `event_seq`. A retention gap therefore
+cannot be repaired by simply joining `/agents/list`, state, briefs, transcript,
+and WorkItem responses and assigning the result an event cursor.
+
+Hydration is also distinct from ingestion. Persisting an event envelope is
+enough to advance the network replay cursor, but not necessarily enough to
+render it or classify it for unread. If pending hydration is only held in
+memory, a browser crash after cursor advancement can permanently omit data from
+its projection.
+
+Finally, unread differs by browser profile. A marker associated with an account
+or authorization principal would merge reading performed on different devices.
+A marker associated with an SSE connection or tab would not survive reconnect.
+The service cannot infer a stable physical device identity from a request.
+
+## Goals
+
+- preserve the existing event identity and ordering contract;
+- make Agent discovery authoritative after startup, reconnect, and
+  authorization change;
+- provide a real per-Agent projection consistency boundary for bootstrap and
+  retention recovery;
+- let info, verbose, and debug views share one raw event cache and cursor;
+- make event ingestion and canonical-record hydration independently durable;
+- define exact browser-local unread behavior when event history is complete;
+- represent retention truncation honestly when exact historical unread cannot
+  be reconstructed;
+- keep the global SSE stream as a low-latency hint rather than a correctness
+  boundary;
+- preserve authorization and cache partitioning explicitly; and
+- define capabilities and migration rules before client cutover.
+
+## Non-goals
+
+- redesigning or globally ordering `event_seq`;
+- making the event ledger a complete event-sourced database;
+- introducing `delivery_seq`, `observer_change_seq`, or another replay ledger;
+- storing per-browser read markers on the server;
+- sharing unread state across devices or browser profiles;
+- putting full conversation history in the roster response;
+- making filtered event pages safe as raw ingestion cursors;
+- hiding retention loss behind a fabricated exact unread count;
+- replacing canonical Brief, Message, Transcript, WorkItem, task, or Agent
+  state APIs; or
+- implementing the server or Web GUI changes in this RFC revision.
+
+## Core Decisions
+
+### Reuse The Existing Event Sequence
+
+The event ledger is the only incremental ordering domain used by Phase 3.
+Info, verbose, and debug views differ in presentation policy, not replay
+identity.
+
+A client stores one contiguous raw cursor per Agent. Display filters such as
+`max_level` may reduce a history response for a user-visible view, but the
+highest sequence in a filtered response must never be treated as proof that all
+raw events through that sequence were ingested.
+
+### Use Snapshot Discovery Instead Of An Observer Ledger
+
+Phase 3 does not add a durable global change cursor. On every initial
+connection and every successful global SSE reconnect, the client obtains an
+authoritative roster snapshot. The global stream only causes earlier refresh
+or per-Agent catch-up.
+
+This intentionally pays the cost of reading a complete roster. A future
+observer change ledger is justified only after measured Agent counts make the
+strict roster snapshot a bottleneck.
+
+### Keep Read State In The Browser
+
+The reader boundary is the browser profile. IndexedDB state is shared by tabs
+of that profile and remains independent across devices, browsers, profiles,
+and private sessions.
+
+Clearing site data removes the reading history. A fresh profile establishes an
+explicit unread baseline instead of pretending that the service can recover
+what that browser previously read.
+
+### Hydrate Canonical Records
+
+Events establish change order and stable references. Canonical records remain
+owned by their domain stores and APIs. The client persists hydration work so
+advancing its raw replay cursor cannot lose a referenced record.
+
+### Require A Real Projection Snapshot
+
+Normal first bootstrap and retention-gap recovery use the same per-Agent
+projection snapshot. Its records and `snapshot_through_seq` must come from one
+provable consistency boundary. Multiple ordinary API calls cannot be relabeled
+as a snapshot.
+
+## Terminology
+
+### Runtime connection
+
+The browser configuration that identifies one Holon server endpoint and its
+authorization material. It is part of the local cache key but is not sent as a
+client-selected authority identifier.
+
+### Event log epoch
+
+The durable identity of one runtime event database generation. Reopening the
+same database preserves `event_log_epoch`; replacing or rebuilding it creates a
+new epoch.
+
+### Visibility scope
+
+The effective set of Agents visible under the server-resolved authorization
+context. The server represents it with an opaque `visibility_scope_id` for
+cache partitioning. It is not a credential and does not grant access.
+
+### Ingested-through cursor
+
+The greatest raw `event_seq` such that every event through that sequence has
+been durably stored locally without an identity conflict.
+
+### Projection-ready cursor
+
+The greatest `event_seq` through which all display-affecting events have been
+classified and their required canonical records have been hydrated or
+terminated by an explicit tombstone.
+
+### Unread baseline
+
+A local product boundary before which Brief events do not participate in the
+current unread generation. It does not claim that the user read older content.
+
+### Read marker
+
+A raw event boundary through which the current browser profile has marked every
+qualifying `brief_created` event read, subject to projection readiness. The
+boundary may name a non-qualifying event; unread calculation still counts only
+qualifying Brief events after it.
+
+## Ownership Boundary
+
+The server owns these canonical facts:
+
+- `event_log_epoch` and immutable event identities;
+- Agent identity, lifecycle, and authorization visibility;
+- each Agent's committed event head and retained event floor;
+- canonical Agent, Brief, Message, Transcript, WorkItem, task, and related
+  records;
+- the stable relationship between a Brief and its unique `brief_created`
+  event; and
+- strict roster and projection snapshot consistency.
+
+The browser owns these derived facts:
+
+- roster sorting, selection, and presentation state;
+- the local raw event cache and info/verbose/debug projections;
+- pending hydration and projection readiness;
+- cached latest preview data;
+- unread baseline, read marker, and truncation acknowledgement; and
+- reset and stale-state presentation.
+
+The server does not own a delivery ledger, observer read state, or exact unread
+count in Phase 3.
+
+## Agent Identity
+
+Within one `event_log_epoch`, an `agent_id` is a durable identity and must not be
+reused for a different Agent. This follows the existing Agent deletion
+contract: deletion is irreversible and deleted Agent ids remain reserved.
+
+The service must enforce this with the existing persistent Agent identity
+record or an equivalent tombstone that Agent deletion does not remove:
+
+- normal creation rejects an `agent_id` that was previously retired in the
+  same epoch;
+- deletion removes current availability but not the identity reservation; and
+- migration backfills the registry from current Agent records and historical
+  Agent audit scopes.
+
+If an existing database cannot establish this invariant, it must rotate
+`event_log_epoch` or remain on a legacy capability path. Phase 3 does not add an
+Agent incarnation field to compensate for ambiguous identity reuse, and it does
+not add an Agent restore operation.
+
+## Capability Advertisement
+
+The handshake must advertise the new contracts independently:
+
+```text
+agents.roster-snapshot.v1
+agents.projection-snapshot.v1
+events.projection-effect.v1
+briefs.atomic-created-event.v1
+```
+
+A capability is advertised only after its storage and consistency invariants
+are active for the current database. Merely registering a route is not enough.
+
+Complete Phase 3 exact mode requires all four capabilities. The Web GUI must
+not enable authoritative discovery without `agents.roster-snapshot.v1`, must
+not install a recovery watermark without `agents.projection-snapshot.v1`, and
+must not advance projection readiness through unknown events without
+`events.projection-effect.v1`. Exact local unread requires
+`briefs.atomic-created-event.v1` in addition to the other three. If any
+required capability is absent, the affected behavior remains on an explicit
+legacy or uncertain path rather than partially claiming the new contract.
+
+## Authoritative Roster Snapshot
+
+### Endpoint
+
+```http
+GET /api/agents/snapshot
+```
+
+Suggested response model:
+
+```rust
+struct AgentRosterSnapshot {
+    contract_version: u32,
+    runtime_id: String,
+    event_log_epoch: String,
+    visibility_scope_id: String,
+    agents: Vec<AgentRosterEntry>,
+}
+
+struct AgentRosterEntry {
+    agent: AgentListEntry,
+    event_window: AgentEventWindow,
+    latest_brief: Option<AgentLatestBrief>,
+}
+
+struct AgentEventWindow {
+    event_head_seq: u64,
+    oldest_retained_seq: Option<u64>,
+}
+
+struct AgentLatestBrief {
+    brief_id: String,
+    created_event_seq: Option<u64>,
+    created_at: DateTime<Utc>,
+    preview: String,
+}
+```
+
+The browser combines this response with its runtime connection identity when
+forming local cache keys.
+
+### Field Semantics
+
+`runtime_id` is the stable public identity of the runtime installation. It
+distinguishes a replaced server at the same configured URL from an ordinary
+restart and is also returned by the projection snapshot. It is not a secret.
+
+`visibility_scope_id` is generated by the server from stable runtime identity,
+the server-resolved principal or authority, normalized visibility entitlement,
+and a visibility policy generation. Credential rotation with unchanged
+entitlement should keep it stable. A principal, entitlement, or policy change
+must rotate it. Local unauthenticated mode uses a runtime-local public scope.
+
+`event_head_seq` is the greatest committed `event_seq` visible in the response
+read view. It must not come from an in-memory watcher or the next value in a
+sequence allocator.
+
+`oldest_retained_seq` is the first raw event still replayable in that same read
+view. An Agent with no events has `event_head_seq = 0` and
+`oldest_retained_seq = None`. Retention may advance after the response, so the
+event page's `cursor_not_found` response remains authoritative.
+
+`latest_brief` is derived from canonical Brief storage, not a second UI-summary
+table. `preview` has a documented length limit. Full Brief content remains
+available from the canonical Brief APIs.
+
+Historical Briefs that cannot be linked to a unique retained
+`brief_created.event_seq` use `created_event_seq = None`. Such records do not
+participate in exact unread calculation.
+
+### Consistency
+
+The roster snapshot is authoritative for membership, authorization visibility,
+and event-window anchors. In Phase 3 its visibility set is the same set of
+active public Agents exposed by the existing remote-access Agent list and
+global event stream. Private child Agents are not added to the Web roster.
+Future expansion to a broader authorized visibility model requires an explicit
+contract revision and visibility policy generation change. The roster is not a
+conversation projection snapshot and does not allow the client to skip event
+replay.
+
+The following must be read under one consistent database view or an equivalent
+pinned snapshot:
+
+- the identity registry;
+- authorization-filtered Agent membership;
+- each Agent's event head and retained floor; and
+- latest Brief identity and bounded preview.
+
+The response is all or nothing. Failure to assemble one Agent must fail the
+whole request. Returning a partial list would cause a client to interpret
+omitted Agents as deleted or inaccessible.
+
+The first implementation defines an explicit maximum Agent count, response
+size, and request timeout. If pagination later becomes necessary, pages must be
+bound to a server-pinned snapshot token. Independently read pages cannot form an
+authoritative roster.
+
+`GET /api/agents/list` remains available during migration but is not a recovery
+contract.
+
+## Per-Agent Projection Snapshot
+
+### Endpoint
+
+```http
+GET /api/agents/{agent_id}/projection-snapshot
+```
+
+Suggested response model:
+
+```rust
+struct AgentProjectionSnapshot {
+    contract_version: u32,
+    runtime_id: String,
+    event_log_epoch: String,
+    visibility_scope_id: String,
+    agent_id: String,
+    snapshot_through_seq: u64,
+    event_head_seq: u64,
+    oldest_retained_seq: Option<u64>,
+    projection: AgentCanonicalProjection,
+}
+```
+
+`AgentCanonicalProjection` contains the current canonical facts and stable
+revision anchors required to build the compact Agent card and current info
+projection. It includes at least:
+
+- Agent lifecycle and posture state;
+- current WorkItem and conversation revision anchors;
+- latest Brief identity and bounded preview;
+- tombstones or absence markers needed to terminate hydration; and
+- stable references for any full records that remain available through batch
+  APIs.
+
+It need not contain an unbounded verbose timeline or full Brief text. The
+snapshot explicitly marks raw timeline history at or before
+`snapshot_through_seq` as outside the incremental projection baseline. A
+selected conversation may separately load bounded retained history for display,
+but that history page neither changes the snapshot watermark nor proves raw
+cursor continuity.
+
+### Consistency Boundary
+
+The projection and `snapshot_through_seq` must represent one consistency
+boundary. Every event with `event_seq <= snapshot_through_seq` that affects
+current canonical state must already be reflected by the projection or one of
+its revision anchors. Historical-only timeline entries before the boundary are
+not reconstructed by this invariant; their omission is represented by the
+explicit history boundary above.
+
+The service may implement this with:
+
+- one SQLite read transaction over canonical records and audit events;
+- a persisted projection generation committed atomically with the event
+  watermark; or
+- a durable outbox that provides an equivalent ordered visibility boundary.
+
+If current canonical state spans memory and storage without such a boundary,
+the endpoint capability must remain disabled until the boundary exists.
+
+`event_head_seq` may be greater than `snapshot_through_seq`, but it must name a
+committed event available through the event page. The client atomically installs
+the projection at `snapshot_through_seq`, then replays
+`(snapshot_through_seq, event_head_seq]` and all later events.
+
+## Event Envelope Requirements
+
+Each event family that can affect the Web projection must provide:
+
+- a stable entity reference;
+- a create, update, delete, or invalidation operation;
+- a revision or version anchor when the canonical record supports one; and
+- a projection effect classification.
+
+Suggested projection effect values are:
+
+```text
+none
+display_invalidation
+```
+
+`projection_effect` is an additive top-level field on `StreamEventEnvelope`,
+published by OpenAPI and shared by event pages and SSE. The runtime event
+registry descriptor is its source of truth. Enabling
+`events.projection-effect.v1` means every served envelope has the field,
+including historical records: typed events derive it from the registry, while
+legacy or otherwise unclassified events default conservatively to
+`display_invalidation`. Introducing the field increments the envelope contract
+version; clients still accept older envelopes under the compatibility rules
+below.
+
+A known self-contained event may be applied directly. A reference event creates
+or updates durable hydration work. A delete event must include enough tombstone
+identity to complete projection without fetching a record that no longer
+exists.
+
+Unknown events remain stored as diagnostic evidence. An unknown event marked
+`none` does not block projection readiness. An unknown event marked
+`display_invalidation` blocks readiness until a supported snapshot or newer
+client resolves it. If an older envelope omits `projection_effect`, a client
+may use its static registry only for a known schema and version; an unknown
+event without the field is treated as `display_invalidation`. An unknown
+envelope contract version is not safely classifiable and therefore blocks the
+Agent projection.
+
+## Canonical Record And Event Commit Order
+
+A canonical record referenced by an observable event must not become readable
+after that event.
+
+The preferred write boundary is one transaction that:
+
+1. writes the canonical record;
+2. allocates the Agent's `event_seq`;
+3. writes the event or durable outbox item; and
+4. commits both visibility changes together.
+
+If the record and event use different stores, a durable outbox may publish the
+event only after the record is readable.
+
+### Brief Linkage
+
+For each Brief, this relationship is unique and immutable:
+
+```text
+(agent_id, brief_id) -> created_event_seq
+```
+
+The Brief record, sequence allocation, and unique `brief_created` event must be
+committed atomically or through an equivalent idempotent outbox. Retrying Brief
+publication must not allocate a second sequence.
+
+This field is event ordering metadata, not `delivery_seq`, and it does not
+create a separate delivery ledger.
+
+Existing Briefs may be backfilled from a unique historical `brief_created`
+event. If no unique event can be proved, `created_event_seq` remains absent and
+the Agent stays in legacy or uncertain unread mode for that history.
+
+## Discovery State Machine
+
+The browser uses the following startup and reconnect sequence:
+
+1. open the global `GET /api/events/stream` connection and buffer hints;
+2. after the stream reports open, request `GET /api/agents/snapshot`;
+3. validate runtime identity, epoch, and visibility scope;
+4. atomically apply the complete roster snapshot;
+5. purge cached Agents omitted from the authoritative snapshot;
+6. register or refresh per-Agent recovery work;
+7. if any hint arrived while the snapshot was in flight, mark the roster dirty
+   and perform one coalesced refresh; and
+8. mark discovery fresh only after that refresh state is settled.
+
+Every successful global SSE reconnect repeats the snapshot step. Agent-created,
+Agent-deleted, visibility, and ordinary Agent event notifications are all hints;
+none is individually required for correctness.
+
+Heartbeat and timeout behavior must detect silent half-open streams. A low-rate
+full reconciliation may be used as a safety net, but high-frequency polling is
+not the primary protocol.
+
+If the roster request fails, the browser keeps the previous roster but marks it
+stale. It must not delete Agents based on an incomplete or failed response.
+
+## Per-Agent Synchronization State Machine
+
+The local raw cursor key is:
+
+```text
+(runtime connection, runtime_id, visibility_scope_id, event_log_epoch, agent_id)
+    -> ingested_through_seq
+```
+
+For a newly visible Agent without cache:
+
+1. fetch the per-Agent projection snapshot;
+2. atomically install the projection and set
+   `ingested_through_seq = snapshot_through_seq` and
+   `projection_ready_through_seq = snapshot_through_seq`;
+3. establish a fresh unread baseline at `snapshot_through_seq`;
+4. replay raw events after the snapshot boundary; and
+5. connect or continue the per-Agent live stream after contiguous catch-up.
+
+For an Agent with an existing contiguous cache:
+
+1. compare the roster event window with the local cursor;
+2. replay raw events with `after_seq=ingested_through_seq`;
+3. persist each immutable envelope before advancing the cursor;
+4. continue until at least the roster's observed `event_head_seq` is reached;
+   and
+5. process later live events in the same order.
+
+Info, verbose, and debug views use the same raw cache. Switching view level only
+changes projection and hydration demand. Selected conversation history may load
+additional bounded records, but those pages do not establish the raw cursor.
+
+Duplicate immutable events are idempotent. Different content for the same
+`(event_log_epoch, agent_id, event_seq)` is a protocol error that stops the
+Agent projection and triggers reset.
+
+## Durable Hydration
+
+The browser stores these items in one IndexedDB transaction where applicable:
+
+- the event envelope;
+- its identity and classification;
+- pending canonical-record references;
+- the updated contiguous ingestion cursor; and
+- any directly applicable projection changes.
+
+Network ingestion may advance after the envelope and pending hydration are
+durable. The independent `projection_ready_through_seq` advances only when all
+display-affecting events through that point are resolved.
+
+If a canonical API returns a newer revision than the event reference, the
+client applies the newer record. Events are invalidations, not demands to
+reconstruct an obsolete revision.
+
+A referenced create or update record that remains missing after bounded retry
+is projection divergence. The client refreshes the per-Agent projection
+snapshot. If the mismatch remains, it displays a synchronization error rather
+than silently dropping the event.
+
+A browser restart scans durable pending hydration before declaring the
+projection ready.
+
+## Browser-Local Unread State
+
+### Storage Model
+
+The local reader key is:
+
+```text
+(runtime connection, runtime_id, visibility_scope_id, event_log_epoch, agent_id)
+```
+
+Suggested value:
+
+```rust
+struct LocalReadState {
+    unread_baseline_seq: u64,
+    read_through_event_seq: Option<u64>,
+    certainty: ReadCertainty,
+    history_truncated_before_seq: Option<u64>,
+    acknowledged_truncation_before_seq: Option<u64>,
+    updated_at: DateTime<Utc>,
+}
+
+enum ReadCertainty {
+    Exact,
+    Truncated,
+}
+```
+
+Only successfully hydrated, user-facing `brief_created` events qualify as
+unread. Operator messages, progress, tool calls, scheduler diagnostics, and
+other internal events do not.
+
+The unread set is:
+
+```text
+qualifying brief events where
+  event_seq > max(unread_baseline_seq, read_through_event_seq or 0)
+```
+
+The result is a count of qualifying events, not the difference between two raw
+sequences.
+
+### Fresh Browser Policy
+
+A fresh browser profile sets:
+
+```text
+unread_baseline_seq = projection_snapshot.snapshot_through_seq
+read_through_event_seq = None
+certainty = Exact
+```
+
+This means older history does not start as unread. It does not claim that the
+user read that history.
+
+### Advancing The Marker
+
+The browser may advance `read_through_event_seq` only when:
+
+- the Agent conversation is selected;
+- the document is visible;
+- the projection has no gap;
+- catch-up has reached the current observed event head; and
+- `projection_ready_through_seq` covers the candidate marker.
+
+The update is a monotonic maximum. It may cross non-qualifying internal events,
+but it may not cross an unresolved display invalidation.
+
+Tabs in one browser profile merge marker updates through IndexedDB transactions
+and BroadcastChannel or an equivalent local notification mechanism. Different
+profiles do not merge.
+
+No marker is sent to the server. A connection id, tab id, User-Agent, IP
+address, or inferred physical device id is not a valid reader identity.
+
+### Future Cross-Device State
+
+If Holon later needs account-wide read state, it should be designed as a
+separate product feature with the explicit meaning "read on any device." That
+meaning differs from per-browser unread.
+
+If server persistence for browser profiles is ever required, the browser must
+generate an opaque durable `reader_id`, and the server key would be:
+
+```text
+(server-resolved authority, reader_id, event_log_epoch, agent_id)
+```
+
+That feature would also require reader registration, revocation, expiration,
+and privacy-mode behavior. It is outside Phase 3.
+
+## Retention And Reset
+
+### Normal Catch-Up
+
+If the epoch matches and the local cursor is at or after
+`oldest_retained_seq - 1`, the client replays `after_seq` normally. Offline
+Brief events remain available for exact unread calculation.
+
+### Rich Cursor Error
+
+`cursor_not_found` should include:
+
+```text
+event_log_epoch
+oldest_retained_seq
+event_head_seq
+```
+
+This lets the client distinguish a retained-prefix gap from an epoch change and
+select the correct reset path.
+
+### Per-Agent Retention Gap
+
+An Agent-local reset begins when:
+
+- the local cursor is less than `oldest_retained_seq - 1`;
+- the event page or SSE endpoint returns `cursor_not_found`;
+- one immutable event identity has conflicting content; or
+- projection divergence cannot be repaired by bounded hydration retry.
+
+Recovery is:
+
+1. preserve the local read-state record temporarily;
+2. discard the Agent's raw event and derived projection cache;
+3. fetch and atomically install a per-Agent projection snapshot;
+4. set `ingested_through_seq = snapshot_through_seq` and
+   `projection_ready_through_seq = snapshot_through_seq`;
+5. replay all events after that boundary;
+6. record `history_truncated_before_seq`; and
+7. resume live synchronization after contiguous catch-up.
+
+If the effective local read boundary
+`max(unread_baseline_seq, read_through_event_seq or 0)` is less than
+`oldest_retained_seq - 1`, exact historical unread is unknowable. The client
+retains any visible retained unread as a lower bound, changes `certainty` to
+`Truncated`, and displays a truncation indicator instead of an exact badge.
+
+The user may explicitly acknowledge the unknown history after opening and
+catching up the conversation. That action records:
+
+```text
+acknowledged_truncation_before_seq = current_head
+unread_baseline_seq = current_head
+certainty = Exact
+```
+
+`Exact` then applies only to the new local generation after that boundary. The
+client retains truncation metadata and does not claim to have reconstructed the
+lost interval.
+
+### Runtime Epoch Reset
+
+When `event_log_epoch` changes, the browser:
+
+- stops all per-Agent projections for the old epoch;
+- clears the runtime scope's roster and session projection cache;
+- does not migrate read markers to the new epoch;
+- obtains a new authoritative roster;
+- bootstraps each Agent from a projection snapshot;
+- establishes fresh unread baselines; and
+- displays one runtime-history-reset indication.
+
+Old-epoch browser data may be garbage-collected asynchronously, but must never
+be joined with the new epoch.
+
+### Visibility Change
+
+When `visibility_scope_id` changes, the browser clears the old scope's
+accessible cache before exposing the new scope. An Agent omitted from an
+authoritative roster is removed locally whether the cause is deletion or loss
+of permission. The client must not retain inaccessible content while trying to
+infer the reason.
+
+If the Agent becomes visible later, it is bootstrapped as a fresh visible
+Agent.
+
+## Authorization And Privacy
+
+Both snapshot endpoints use the same server-resolved remote-access
+authorization as the canonical Agent APIs. Phase 3 lists only active public
+Agents, matching `/api/agents/list`; the global `/api/events/stream` remains a
+live hint channel rather than a roster authority. A requested per-Agent
+snapshot must also pass the existing public-Agent authorization boundary.
+Clients cannot request an arbitrary visibility scope.
+
+Roster membership, latest Brief preview, event-window metadata, projection
+records, errors, counts, and timing behavior must not reveal inaccessible
+Agents.
+
+An authorization failure is different from a transient snapshot failure. On
+authentication or authorization failure, the Web GUI stops presenting old
+cache as currently authorized data and requires reauthentication. On a
+transient server error, it may present old data marked stale.
+
+`visibility_scope_id` is opaque and non-secret. It is a cache partition, not a
+bearer capability.
+
+## Failure Behavior
+
+### Roster Snapshot Failure
+
+Keep the last complete roster, mark discovery stale, and retry with bounded
+backoff. Never apply deletions from a partial response.
+
+### Per-Agent Not Found
+
+Refresh the authoritative roster. If the Agent is absent, purge its cache. If
+it remains present, treat the error as a race or transient projection failure
+and retry according to bounded policy.
+
+### Unknown Event
+
+Preserve the envelope. A known `projection_effect = none` allows readiness to
+advance. An unresolved display invalidation blocks readiness and read-marker
+advancement.
+
+### Hydration Failure
+
+Keep the envelope and pending hydration durable. Do not advance the relevant
+projection-ready cursor or read marker. Retry, then use projection snapshot
+repair, then expose a synchronization error if divergence remains.
+
+### Local Transaction Failure
+
+Do not advance the raw cursor unless envelope and pending hydration writes
+commit. Replaying an already received event is safe because identity is
+immutable and application is idempotent.
+
+### Snapshot Assembly Failure
+
+Fail the whole HTTP request. Neither endpoint may return a response that claims
+a consistency boundary when one record or watermark failed to load.
+
+## Migration
+
+### Phase 0: Contract And Fixtures
+
+- replace the old observer/delivery design with this RFC;
+- add OpenAPI shapes and JSON fixtures for both snapshots;
+- define projection-effect metadata and rich `cursor_not_found`; and
+- add capability names to the handshake contract.
+
+### Phase 1: Server Consistency Foundation
+
+- add the durable Agent identity registry or tombstones;
+- persist a stable public `runtime_id`;
+- backfill identity history from Agent records and audit scopes;
+- add immutable Brief-to-created-event linkage;
+- make canonical record and event visibility atomic through a transaction or
+  durable outbox; and
+- keep capabilities disabled until migration verification succeeds.
+
+### Phase 2: Recovery Endpoints
+
+- implement the strict roster snapshot;
+- implement the per-Agent projection snapshot;
+- expose committed event head and retained floor metadata;
+- enrich cursor errors; and
+- enable capabilities only after consistency and authorization tests pass.
+
+### Phase 3: Web Local State
+
+- key IndexedDB by runtime connection, runtime identity, visibility scope,
+  epoch, and Agent;
+- persist raw envelopes, pending hydration, ingestion cursor, projection-ready
+  cursor, and local read state;
+- share marker updates across tabs; and
+- expose legacy, exact, stale, and truncated UI states.
+
+Existing `holon.webGui.rosterActivityByRemote.v1` localStorage values and legacy
+IndexedDB fields such as `lastReadDeliverySeq` and `lastUnreadDeliverySeq` are
+not imported as exact Phase 3 markers because they are not partitioned by
+`runtime_id`, `visibility_scope_id`, and `event_log_epoch`, and their counters
+cannot prove retained event completeness. On first successful Phase 3
+bootstrap, the client may preserve timestamps as non-authoritative sorting
+hints, establishes a fresh unread baseline from the projection snapshot, and
+then deletes the legacy read fields for that remote. This one-time reset is
+shown as a local unread-state migration, not as a runtime history reset.
+
+### Phase 4: Discovery And Recovery Cutover
+
+- adopt global SSE open/reconnect plus authoritative roster refresh;
+- share one raw ledger across info, verbose, and debug views;
+- use projection snapshots for new Agents and retention reset;
+- handle epoch and visibility reset; and
+- retain old `/agents/list` clients during the compatibility window.
+
+### Phase 5: Acceptance And Cleanup
+
+- pass offline, multi-tab, retention, epoch, authorization, and hydration fault
+  tests;
+- remove any unimplemented observer sync, delivery API, and server read-marker
+  descriptions from generated client plans; and
+- delete legacy Web paths only after supported server/client combinations are
+  explicit.
+
+## Compatibility
+
+During migration:
+
+- old servers continue to expose `/agents/list`, state, Brief, and event APIs;
+- new fields on existing event and Brief records are additive;
+- new Web clients inspect handshake capabilities before using exact recovery;
+- a new Web client against an old server remains in legacy or uncertain mode;
+- an old Web client against a new server continues using existing endpoints;
+- epoch changes force bootstrap rather than field-by-field migration; and
+- no client assumes that route existence proves snapshot consistency.
+
+The unimplemented endpoints from the superseded design are not compatibility
+obligations:
 
 ```text
 POST /api/observer/sync
@@ -18,1336 +938,190 @@ PUT  /api/observer/agents/{agent_id}/read-marker
 GET  /api/agents/{agent_id}/deliveries
 ```
 
-The sync response returns a coherent roster of canonical agent summaries
-composed with observer-scoped read state. It uses an opaque, runtime-scoped sync
-token and returns either a full snapshot or all agent summaries changed since
-the previous token.
-
-User-facing conversation delivery is a separate append-only domain from raw
-runtime events. Each delivery receives a per-agent `delivery_seq`. The latest
-delivery, its bounded preview, the observer's monotonic read marker, and the
-exact unread count are server-owned facts.
-
-This contract fixes the first-party Web GUI case where the browser is offline
-while briefs are delivered. A reconnecting client no longer has to infer roster
-previews or unread counts from a live-only global SSE stream, browser-local
-counters, or partial raw event replay.
-
-## Status And Implementation Boundary
-
-This RFC is a design decision only. It does not implement the endpoints,
-storage tables, migrations, or Web GUI cutover.
-
-The first implementation should be reviewed as separate server, client, and
-frontend slices after this RFC is accepted.
-
-## Problem
-
-Holon currently exposes three useful but different surfaces:
-
-- `GET /api/agents/list` returns lightweight public agent entries;
-- `GET /api/agents/{agent_id}/state` returns an agent bootstrap snapshot; and
-- raw per-agent event pages and streams use
-  `(event_log_epoch, agent_id, event_seq)` for replay.
-
-The global `GET /api/events/stream` endpoint is deliberately live-only. It has
-no global replay cursor. If it disconnects or the client is offline, the client
-must recover each agent separately from its last contiguous `event_seq`.
-
-The Web GUI currently derives roster activity and unread state locally:
-
-- `brief_created` events increment a browser-local unread counter;
-- a local read marker stores the last observed brief event sequence;
-- the counter and marker are persisted in browser storage;
-- the latest preview is hydrated by joining event payloads to brief records;
-- agent list presentation is assembled from list, state, work-item, and brief
-  requests.
-
-This works as an online optimization but is not a complete synchronization
-contract.
-
-When the browser is closed or offline:
-
-1. it does not receive global SSE events;
-2. `/agents/list` does not expose a latest delivery cursor or preview;
-3. there is no server-owned observer read marker;
-4. an empty or retained raw event window cannot prove how many user-facing
-   deliveries occurred; and
-5. a second browser cannot share the first browser's local read state.
-
-The client can backfill raw events, but raw event completeness is not the same
-as a canonical user-facing delivery summary. Raw events include debug and
-lifecycle records, are subject to event retention, and require payload
-projection plus brief hydration before they become a conversation delivery.
-
-## Goals
-
-- restore exact unread state and latest preview after arbitrary client offline
-  periods, subject only to explicit delivery retention policy;
-- define one canonical, lightweight agent summary for roster clients;
-- define observer identity and read-state ownership without trusting a
-  client-supplied observer id;
-- make read-marker updates atomic, idempotent, and monotonic;
-- use an opaque sync token that can evolve independently of event cursors;
-- preserve raw per-agent events as the diagnostic and runtime replay surface;
-- let global SSE remain a low-latency wake hint rather than the source of
-  synchronization truth;
-- keep authorization, trust, and public-agent visibility explicit;
-- specify reset, retention, migration, and acceptance behavior before server
-  implementation.
-
-## Non-goals
-
-- do not replace the raw runtime event stream;
-- do not expose the runtime-wide raw audit sequence as an observer sync cursor
-  or treat an agent-filtered `event_seq` view as a conversation delivery
-  sequence;
-- do not define the full semantic conversation item API or anchor pagination;
-- do not include full transcript, message, brief, task, or WorkItem payloads in
-  the roster sync response;
-- do not make browser local storage authoritative;
-- do not permit read markers to create ingress, wake an agent, or change agent
-  lifecycle;
-- do not infer observer identity from an arbitrary request body field;
-- do not expose private or inaccessible agents through sync tombstones,
-  counts, or timing side channels;
-- do not require AG-UI or another third-party protocol for the first-party
-  contract.
-
-## Terminology
-
-### Observer principal
-
-The authenticated principal whose view and read state are being synchronized.
-It is derived by the server from the authorization context.
-
-Examples:
-
-- the configured control credential in the current single-operator model;
-- a future authenticated operator account;
-- the deployment-local operator principal when control authentication is
-  explicitly disabled.
-
-An observer principal is not supplied as `observer_id` by the client.
-
-### Observer scope
-
-The stable authorization identity whose view and read state are synchronized:
-
-```text
-(observer_principal, tenant_or_workspace_authority)
-```
-
-The current single-operator runtime has no additional tenant or workspace
-component. Runtime identity and visibility-policy generation are token
-validation fields, not parts of observer scope: changing either may require a
-reset snapshot for the same authenticated scope.
-
-### Agent incarnation
-
-A durable opaque generation for one logical creation of an `agent_id`.
-
-Deleting and recreating the same `agent_id` creates a new
-`agent_incarnation`. Delivery sequences and read markers do not cross
-incarnations.
-
-### Conversation delivery
-
-A compact, durable record saying that Holon produced one user-facing
-conversation delivery for an agent.
-
-The initial source is a persisted user-facing `BriefRecord`. A raw
-`brief_created` audit event is evidence about that delivery, but its
-`event_seq` is not the delivery cursor.
-
-### Delivery sequence
-
-`delivery_seq` is a per-agent-incarnation append sequence assigned by the
-storage transaction that commits the delivery.
-
-It is independent from:
-
-- `event_seq`, which orders raw audit events;
-- `brief_id`, which identifies brief content;
-- `turn_index`, which orders agent turns; and
-- timestamps, which are for display rather than cursor identity.
-
-### Read marker
-
-The highest conversation delivery the observer has acknowledged as read for
-one agent incarnation.
-
-The marker advances monotonically and is represented as:
-
-```text
-read_through_delivery_seq
-```
-
-### Observer change sequence
-
-`observer_change_seq` is a runtime-wide append sequence used only to invalidate
-and synchronize compact observer-visible state.
-
-It is not a raw event cursor and is never presented as a domain object id.
-
-### Sync token
-
-An opaque server-issued token binding an observer scope to a completed sync
-watermark and token format version.
-
-Clients persist and replay the token verbatim. They do not parse or synthesize
-it.
-
-## Existing Contract Boundaries
-
-The new API complements rather than changes these accepted contracts:
-
-- raw event identity remains
-  `(event_log_epoch, agent_id, event_seq)`;
-- an `event_log_epoch` change invalidates cached raw-event projections;
-- `/api/events/stream` remains live-only and has no global cursor;
-- `/api/agents/{agent_id}/events` remains the bounded raw replay surface;
-- `/api/agents/{agent_id}/state` remains an agent-detail bootstrap surface;
-- brief, message, and transcript batch-get endpoints remain content hydration
-  surfaces; and
-- event retention may make an old raw cursor return `cursor_not_found`.
-
-Observer sync does not claim that raw history is complete. It claims that its
-returned canonical summaries and observer read states are complete at the
-returned sync watermark.
-
-## Canonical Data Model
-
-### Agent Incarnation
-
-The runtime stores:
-
-```rust
-struct AgentIncarnation {
-    agent_id: String,
-    incarnation: String,
-    created_at: DateTime<Utc>,
-}
-```
-
-The exact table layout is an implementation choice. Required behavior:
-
-- an existing agent keeps the same incarnation across daemon restarts;
-- importing or reopening the same runtime database preserves it;
-- deleting and recreating an agent id creates a different incarnation;
-- migration assigns one incarnation to every existing agent; and
-- clients treat an incarnation change as replacement, not an in-place update.
-
-### Conversation Delivery
-
-The canonical delivery row is observer-independent:
-
-```rust
-struct CanonicalConversationDelivery {
-    agent_id: String,
-    agent_incarnation: String,
-    delivery_seq: u64,
-    delivery_id: String,
-    brief_id: String,
-    kind: BriefKind,
-    created_at: DateTime<Utc>,
-    work_item_id: Option<String>,
-    turn_id: Option<String>,
-    related_message_id: Option<String>,
-    related_task_id: Option<String>,
-}
-```
-
-Required policy:
-
-- `delivery_seq` starts at `1` within an agent incarnation;
-- it increases for each committed user-facing delivery;
-- the append owner assigns it; callers do not;
-- `(agent_incarnation, delivery_seq)` is unique and immutable;
-- `delivery_id` remains an opaque reference and does not encode order;
-- `brief_id` resolves full delivery content through the existing brief API;
-- a delivery and its sequence are committed atomically with the corresponding
-  durable brief evidence and observer invalidation; and
-- retries with the same canonical brief identity are idempotent and must not
-  allocate another delivery sequence.
-
-The observer-visible projection is:
-
-```rust
-struct ObserverConversationDelivery {
-    delivery_seq: u64,
-    delivery_id: String,
-    brief_id: String,
-    kind: BriefKind,
-    created_at: DateTime<Utc>,
-    preview: String,
-    preview_truncated: bool,
-    work_item_id: Option<String>,
-}
-```
-
-It is returned only when the observer may fetch the referenced brief.
-`preview` is derived at read time or from an equivalently scoped cache using
-the same content authorization and redaction policy as brief fetch. It is not
-stored in or shared through the canonical agent summary.
-
-The initial implementation creates deliveries only for briefs that are valid
-user-facing deliveries. Internal progress, debug traces, tool results, and
-assistant execution narration do not become deliveries merely because they
-exist in an event payload.
-
-If a later product surface introduces another user-facing delivery type, it
-must define its relationship to `BriefRecord` and preserve the one-sequence-per-
-visible-delivery invariant.
-
-### Canonical Agent Summary
-
-`CanonicalAgentSummary` is a compact server projection from canonical runtime
-facts:
-
-```rust
-struct CanonicalAgentSummary {
-    agent_id: String,
-    agent_incarnation: String,
-    summary_revision: u64,
-    changed_at: DateTime<Utc>,
-
-    identity: AgentIdentityView,
-    status: AgentStatus,
-    lifecycle: AgentLifecycleHint,
-    scheduling_posture: AgentPostureProjection,
-    waiting_reason: Option<WaitingReason>,
-    pending_count: u64,
-    active_task_count: u64,
-
-    current_work: Option<AgentCurrentWorkSummary>,
-    active_workspace: Option<AgentWorkspaceSummary>,
-    model: AgentListModelSummary,
-
-    latest_operator_activity_at: Option<DateTime<Utc>>,
-
-    event_log_epoch: String,
-    latest_event_seq: Option<u64>,
-}
-```
-
-`AgentCurrentWorkSummary` contains only the canonical current WorkItem id,
-objective, scheduling state, readiness, and reason code. It does not copy plan
-text, todo lists, or full WorkItem records.
-
-The summary projection follows these rules:
-
-- current work comes from canonical WorkItem focus and the shared scheduling
-  read model;
-- status, lifecycle, posture, pending count, task count, workspace, and model
-  use the same canonical projections already consumed by HTTP/TUI;
-- latest operator activity is a bounded display fact and is not a read marker;
-- `event_log_epoch` and `latest_event_seq` allow existing clients to decide
-  whether their per-agent raw-event cache needs catch-up or reset;
-- `summary_revision` advances for semantic summary changes, not for reads; and
-- the summary must not contain full brief text, transcript, messages, task
-  output, WorkItem plan bodies, secrets, private agent state, or runtime-global
-  model availability.
-
-The server should expose one pure lifecycle/status summary projection used by
-observer sync and any future replacement for `/agents/list`. Clients must not
-recreate its precedence rules by joining multiple endpoints. Observer-visible
-delivery data is composed around that core rather than embedded in it.
-
-### Observer Read State
-
-Read state is keyed by:
-
-```text
-(observer_scope_id, agent_id, agent_incarnation)
-```
-
-`observer_scope_id` is the durable identifier for the complete observer scope
-`(observer_principal, tenant_or_workspace_authority)`. It must not be reduced
-to the principal alone, even when the current deployment has only one
-authority.
-
-The durable record is:
-
-```rust
-struct ObserverReadState {
-    observer_scope_id: String,
-    agent_id: String,
-    agent_incarnation: String,
-    read_through_delivery_seq: u64,
-    revision: u64,
-    updated_at: DateTime<Utc>,
-}
-```
-
-Each incarnation has a durable read-state lower bound. It is zero for an
-ordinary newly created incarnation and `cutover_baseline_seq` for a migrated
-incarnation. An absent row is equivalent to that lower bound, never
-unconditionally to zero. Materializing observer membership and initializing
-its marker to the incarnation lower bound must be atomic; projections must not
-observe visible membership with an uninitialized marker.
-
-The public projection is:
-
-```rust
-struct ObserverAgentReadProjection {
-    read_through_delivery_seq: u64,
-    latest_delivery_seq: Option<u64>,
-    unread_count: u64,
-    updated_at: Option<DateTime<Utc>>,
-}
-```
-
-`unread_count` is the exact number of authorized delivery rows in the current
-agent incarnation whose `delivery_seq` is greater than the read marker. It is
-not computed as `latest_delivery_seq - read_through_delivery_seq`, because a
-policy may exclude, redact, or retain delivery classes differently.
-`latest_delivery_seq` is the greatest sequence currently visible to this
-observer, not the canonical latest sequence.
-
-Read state is observer-specific. It is never stored inside
-`CanonicalAgentSummary`.
-
-### Observer Agent Summary
-
-The sync wire object composes the two projections:
-
-```rust
-struct ObserverAgentSummary {
-    agent: CanonicalAgentSummary,
-    latest_delivery: Option<ObserverConversationDelivery>,
-    read: ObserverAgentReadProjection,
-}
-```
-
-This distinction keeps agent lifecycle facts canonical while making unread
-state explicitly relative to the authenticated observer.
-
-### Observer Change Ledger
-
-Every transaction that may change an observer-visible summary appends an
-invalidation under a runtime-wide `observer_change_seq`. Each row records:
-
-```rust
-struct ObserverChange {
-    observer_change_seq: u64,
-    audience: ChangeAudience,
-    agent_id: String,
-    agent_incarnation: String,
-    reason: ObserverChangeReason,
-}
-
-enum ChangeAudience {
-    ObserverScope(ObserverScopeId),
-}
-```
-
-`ObserverScopeId` is an internal non-secret identifier for the stable scope
-defined above. A read-marker change is always targeted to exactly one scope.
-Canonical changes produce one scoped row per materialized membership that can
-see the incarnation. Delta selection filters rows by audience before
-coalescing. The coalescing key is
-`(observer_scope_id, agent_id, agent_incarnation)`; one observer's private
-read-state update must neither wake nor appear in another observer's delta.
-
-Change reasons include:
-
-- agent creation, visibility change, or deletion;
-- canonical agent summary change;
-- conversation delivery append;
-- observer read-marker advancement; and
-- materialized visibility transition.
-
-The ledger is an invalidation and synchronization index, not a second raw audit
-feed. One sync delta returns the latest complete summary for every affected
-agent rather than every intermediate mutation.
-
-The append must occur in the same database transaction as the canonical
-mutation or through the existing transactional index-outbox pattern with a
-durable divergence repair path. A committed canonical change without a durable
-observer invalidation is a contract failure.
-
-## Observer Identity And Authorization
-
-### Principal Derivation
-
-The HTTP authentication layer derives a stable internal
-`ObserverPrincipalId`. The derivation must:
-
-- be stable for the lifetime of the credential or operator identity;
-- never expose the raw bearer token;
-- use a one-way keyed or cryptographic fingerprint when the current control
-  token is the only identity source;
-- use a fixed deployment-local operator principal only when authentication is
-  explicitly disabled; and
-- rotate scope when authorization is revoked or materially changed.
-
-The client cannot select another observer by sending a header, query parameter,
-or JSON field.
-
-### Visibility
-
-Sync includes only agents authorized by the current observer scope.
-
-For the current runtime this means public agents accepted by
-`public_agent_identity`. Future private or multi-user agents must use the same
-authorization policy as their direct read endpoints.
-
-When an agent becomes inaccessible:
-
-- the authorization mutation transaction consults a materialized visibility
-  membership keyed by `(observer_scope_id, agent_id, agent_incarnation)`;
-- it appends a scoped `visibility_removed` change only for memberships that
-  existed immediately before the mutation, then removes those memberships;
-- the client receives a tombstone only from that scoped transition record;
-- a newly authenticated principal must not learn that the agent exists;
-- read-marker endpoints return the same not-found boundary as direct agent
-  reads; and
-- sync tokens from a different stable scope are rejected rather than
-  silently narrowed.
-
-Granting visibility records membership and appends a scoped
-`visibility_added` change. The membership table is canonical synchronization
-state, not a reconstruction from the current policy. This makes removals
-precise without embedding a full historical visible-agent set in every token.
-Policy migration must materialize old and new membership in one transaction or
-use a resumable generation switch that exposes neither mixed membership nor
-unscoped tombstones.
-
-### Sync Token Security
-
-A sync token:
-
-- is opaque;
-- has a small version-neutral envelope whose stable observer scope, runtime
-  instance id, token format discriminator, and integrity key id can be
-  authenticated before format-specific payload decoding;
-- is integrity protected; format-specific payload may additionally reference
-  server-side token state;
-- contains or references token format version, stable observer scope, runtime
-  instance id, visibility-policy generation, projection generation, and
-  `observer_change_seq` watermark;
-- is not an authentication credential;
-- is useless without matching request authorization;
-- must not be accepted across observer scopes; and
-- may be rotated without changing the endpoint shape.
-
-Clients may log only a bounded token fingerprint, never the full token.
-
-The deployment must retain a reset-verification keyring and the version-neutral
-envelope decoder independently of the replaceable runtime database. Every key
-that signed a token still within the documented reset compatibility horizon
-must remain available after database replacement. Retiring a payload format
-must retain enough envelope parsing and verification support to authenticate
-its stable scope and return `token_version_retired`. Operators must not
-advertise `observer.sync.v1` across a database replacement unless this reset
-verifier survives the replacement. A token outside that explicit compatibility
-horizon may fail as a generic invalid token, but the server must not guess its
-scope or return roster data.
-
-Validation order is normative:
-
-1. authenticate and derive the current stable observer scope;
-2. parse the version-neutral envelope and validate its integrity with the
-   reset-verification keyring;
-3. if the token's stable observer scope differs, return an authorization error
-   with no roster data;
-4. if the stable scope matches but the runtime instance differs, return a
-   successful `runtime_replaced` reset snapshot without resolving old
-   database-local token state;
-5. if the token payload format is retired, return a successful
-   `token_version_retired` reset snapshot; and
-6. otherwise decode or resolve the format-specific payload and, when
-   visibility-policy generation, projection generation, or retained watermark
-   differs, return the corresponding successful reset snapshot.
-
-This ordering makes `runtime_replaced` and `policy_changed` reachable without
-allowing a credential or tenant boundary to reset into another scope.
-
-## Sync API
-
-### Request
-
-```http
-POST /api/observer/sync
-Authorization: Bearer ...
-Content-Type: application/json
-```
-
-```json
-{
-  "since": "opaque-token-or-null"
-}
-```
-
-`since` is optional. Omitting it requests a snapshot.
-
-The first version intentionally has no client-supplied agent list, observer id,
-raw event cursor, or pagination limit. The response is compact and coalesced by
-agent. If deployments later need roster pagination, it must preserve one
-snapshot watermark across pages rather than returning mixed-time slices.
-
-### Snapshot Response
-
-```json
-{
-  "mode": "snapshot",
-  "sync_token": "opaque-token",
-  "reset_reason": null,
-  "agents": [
-    {
-      "agent": {
-        "agent_id": "holon-web",
-        "agent_incarnation": "agent_gen_...",
-        "summary_revision": 42,
-        "changed_at": "2026-08-12T03:20:00Z",
-        "identity": {},
-        "status": "idle",
-        "lifecycle": {},
-        "scheduling_posture": {},
-        "waiting_reason": null,
-        "pending_count": 0,
-        "active_task_count": 0,
-        "current_work": null,
-        "active_workspace": {},
-        "model": {},
-        "latest_operator_activity_at": "2026-08-12T03:10:00Z",
-        "event_log_epoch": "epoch_...",
-        "latest_event_seq": 847
-      },
-      "latest_delivery": {
-          "delivery_seq": 19,
-          "delivery_id": "delivery_...",
-          "brief_id": "brief_...",
-          "kind": "success",
-          "created_at": "2026-08-12T03:19:59Z",
-          "preview": "PR merged and verification passed.",
-          "preview_truncated": false
-      },
-      "read": {
-        "read_through_delivery_seq": 17,
-        "latest_delivery_seq": 19,
-        "unread_count": 2,
-        "updated_at": "2026-08-12T02:00:00Z"
-      }
-    }
-  ],
-  "removed_agents": []
-}
-```
-
-The exact nested DTOs should be generated from Rust/OpenAPI. The example is
-illustrative, not a second schema source.
-
-### Delta Response
-
-For a valid `since` token:
-
-```json
-{
-  "mode": "delta",
-  "sync_token": "new-opaque-token",
-  "reset_reason": null,
-  "agents": [
-    {
-      "agent": {},
-      "read": {}
-    }
-  ],
-  "removed_agents": [
-    {
-      "agent_id": "retired-agent",
-      "agent_incarnation": "agent_gen_old"
-    }
-  ]
-}
-```
-
-The response includes:
-
-- the latest complete `ObserverAgentSummary` for every authorized agent changed
-  after the old token and at or before the new token watermark;
-- scoped tombstones carrying the removed incarnation for agents deleted or
-  made inaccessible after previously being visible in this scope; and
-- a new token even when no summaries changed.
-
-Intermediate revisions may be coalesced. A client that needs raw transition
-history uses the per-agent event API.
-
-The client keys cached summaries by `(agent_id, agent_incarnation)`. It applies
-all tombstones to that exact key, then upserts returned summaries. A tombstone
-for an old incarnation cannot remove a simultaneously returned replacement
-incarnation with the same `agent_id`.
-
-### Snapshot Consistency
-
-The server builds a response from one database read snapshot:
-
-1. authorize and derive observer scope;
-2. begin a consistent read transaction;
-3. validate or resolve `since`;
-4. capture the observer change high watermark visible to that transaction;
-5. select visible agents or affected agent ids;
-6. project canonical summary and observer read state from the same snapshot;
-7. include same-scope tombstones;
-8. issue a token for the captured high watermark; and
-9. commit/close the read transaction before writing the response.
-
-A summary must not describe state newer than the returned token watermark.
-
-If projection spans asynchronous runtime-only state, that state must first have
-a canonical durable read projection. Sync must not mix a durable token with
-unversioned in-memory facts.
-
-### Empty Delta And Wake Hints
-
-An empty delta is valid:
-
-```json
-{
-  "mode": "delta",
-  "sync_token": "new-or-equivalent-opaque-token",
-  "reset_reason": null,
-  "agents": [],
-  "removed_agents": []
-}
-```
-
-The global SSE stream may continue to wake the Web GUI early. On any relevant
-global event, reconnect, lag, visibility resume, network resume, or periodic
-staleness check, the client calls `/observer/sync` with its last token.
-
-The client never increments unread directly from global SSE. SSE is a hint;
-sync is authority.
-
-Long polling may be added later as an optional `timeout_ms` request field. It
-is not required for the first implementation.
-
-### Reset Behavior
-
-A token may require a full snapshot when:
-
-- the token format is no longer supported;
-- the token watermark is older than the retained observer change prefix;
-- the runtime database was replaced or rebuilt;
-- visibility-policy version changed in a way that cannot be represented as a
-  safe delta; or
-- durable divergence repair invalidated the prior watermark.
-
-For a token from the same stable authenticated scope, the endpoint returns a
-successful snapshot with:
-
-```json
-{
-  "mode": "snapshot",
-  "reset_reason": "token_expired"
-}
-```
-
-Allowed reset reasons are stable machine-readable values:
-
-- `token_expired`
-- `runtime_replaced`
-- `policy_changed`
-- `projection_rebuilt`
-- `token_version_retired`
-
-Scope mismatch is not a reset. It is an authorization error because returning a
-snapshot could leak another scope's existence or permit accidental credential
-mixing.
-
-## Delivery Metadata API
-
-```http
-GET /api/agents/{agent_id}/deliveries
-    ?before_delivery_seq=<seq>
-    &after_delivery_seq=<seq>
-    &limit=<n>
-    &order=asc|desc
-```
-
-This endpoint returns compact observer-visible delivery records only. It
-supports:
-
-- inspecting the exact delivery cursor named by a read marker;
-- hydrating roster or notification history without scanning raw events;
-- verifying unread-count behavior in tests; and
-- future notification-center UI.
-
-It does not replace the semantic conversation API planned separately. Full
-content remains available from the referenced brief endpoint.
-
-The endpoint applies the current observer's delivery authorization and returns
-`ObserverConversationDelivery`, including an observer-authorized preview. It
-does not expose canonical rows that the observer cannot fetch.
-
-The response includes:
-
-```rust
-struct DeliveryPageResponse {
-    agent_id: String,
-    agent_incarnation: String,
-    deliveries: Vec<ObserverConversationDelivery>,
-    oldest_delivery_seq: Option<u64>,
-    newest_delivery_seq: Option<u64>,
-    latest_delivery_seq: Option<u64>,
-    has_older: bool,
-    has_newer: bool,
-    order: DeliveryPageOrder,
-    limit: usize,
-}
-```
-
-Delivery paging cursors are not sync tokens.
-
-## Read-Marker API
-
-### Request
-
-```http
-PUT /api/observer/agents/{agent_id}/read-marker
-Authorization: Bearer ...
-Content-Type: application/json
-```
-
-```json
-{
-  "agent_incarnation": "agent_gen_...",
-  "read_through_delivery_seq": 19
-}
-```
-
-The incarnation is required to prevent a delayed request from marking a newly
-recreated agent as read.
-
-### Mutation Semantics
-
-The read marker is a monotonic position in the canonical per-incarnation
-delivery sequence. A requested non-zero marker must name a delivery currently
-visible to the observer, but it acknowledges every sequence position `<= N`,
-including invisible rows between previously visible deliveries. Thus an
-observer that can see delivery `19` may mark `19` even if delivery `18` is
-invisible. A later authorization grant for `18` does not turn it into unread
-content. Authorization changes may reveal historical content, but they do not
-move the marker backward.
-
-In one transaction, the server:
-
-1. authorizes the agent and derives observer principal;
-2. verifies that `agent_incarnation` is current;
-3. verifies that the requested sequence is `0` or identifies a currently
-   authorized delivery in that incarnation, without exposing whether a failed
-   lookup was absent, unauthorized, beyond the canonical head, or pruned;
-4. reads the current marker;
-5. stores `max(current, requested)`;
-6. increments read-state revision only if the marker advances;
-7. appends observer invalidation only if visible read state changes; and
-8. returns the updated observer summary or read projection.
-
-Concurrent writes therefore satisfy:
-
-```text
-stored_marker_after >= stored_marker_before
-stored_marker_after >= every successfully acknowledged requested marker
-```
-
-Sending the same marker twice is idempotent. Sending an older marker succeeds
-as a no-op and returns the current higher marker. It does not produce a
-conflict, decrement unread, or append redundant invalidations.
-
-### Validation
-
-The server rejects:
-
-- an unknown or inaccessible agent;
-- a stale or foreign agent incarnation;
-- a negative or malformed sequence;
-- a non-zero sequence that is not available as a currently authorized
-  delivery, including an absent, unauthorized, beyond-head, or pruned
-  canonical sequence;
-- credentials that cannot own observer read state.
-
-Stable machine-readable errors:
-
-| HTTP | Code | Meaning |
-| --- | --- | --- |
-| 400 | `invalid_read_marker` | Malformed marker request. |
-| 403 | `auth_required` | No valid observer authentication. |
-| 404 | `agent_not_found` | Unknown or inaccessible agent. |
-| 409 | `agent_incarnation_changed` | Agent id names another incarnation. |
-| 409 | `delivery_marker_unavailable` | Sequence cannot be accepted for this observer. |
-
-`delivery_marker_unavailable` intentionally combines absent, beyond-head,
-unauthorized, and non-retained cases. The response body, headers, and
-documented behavior must not reveal which case occurred or expose the
-canonical latest sequence. Implementations should avoid materially distinct
-lookup paths that create a practical sequence-boundary timing oracle.
-
-An `event_log_epoch` change does not by itself reset a delivery read marker.
-Raw events and conversation deliveries have independent identities.
-
-## Client State Machine
-
-The first-party Web GUI uses:
-
-```text
-bootstrap:
-    restore cached sync token and summaries
-    POST /observer/sync { since: cached_token }
-    replace or merge roster from response
-    persist response atomically
-    open global SSE as wake hint
-
-global SSE event:
-    debounce POST /observer/sync { since: token }
-    apply returned complete summaries
-
-SSE reconnect / browser online / visibility resume:
-    sync first
-    then treat live stream as current
-
-open conversation:
-    continue per-agent raw event/session recovery for conversation content
-    do not mark read until current delivery is rendered and acknowledged
-
-mark read:
-    PUT read-marker with current agent incarnation and visible delivery_seq
-    apply server response
-    never decrement or locally overwrite a higher marker
-```
-
-The local cache is stale-while-revalidate display state. It may render cached
-summaries immediately, but it must expose a syncing/stale state until a server
-sync succeeds.
-
-The client must stop:
-
-- incrementing unread solely from `brief_created` SSE events;
-- treating global SSE continuity as proof of offline completeness;
-- storing the only authoritative read marker in localStorage or IndexedDB;
-- using raw `newest_event_seq` as the delivery read marker; and
-- constructing roster preview by racing multiple detail requests.
-
-IndexedDB may continue to cache sync token, canonical summaries, read
-projections, and per-agent conversation state for fast startup.
-
-## Relationship To Raw Event Recovery
-
-Observer sync and raw event recovery have separate jobs:
-
-| Surface | Cursor | Purpose |
-| --- | --- | --- |
-| `/observer/sync` | opaque sync token | Compact roster and observer read state. |
-| `/agents/{id}/deliveries` | `delivery_seq` | Delivery/read domain. |
-| `/agents/{id}/events` | event epoch and seq | Raw replay and catch-up. |
-| `/agents/{id}/state` | none | Agent-detail bootstrap snapshot. |
-| `/events/stream` | none | Low-latency global wake hint. |
-
-A client may receive a canonical summary saying `latest_event_seq = 900` while
-its local raw session is contiguous only through `850`. It should:
-
-- trust sync for unread and roster preview;
-- show the conversation as recovering if selected;
-- backfill raw events after `850`; and
-- mark delivery read only after the corresponding visible delivery has been
-  rendered or explicitly acknowledged.
-
-## Retention
-
-### Delivery Metadata
-
-Conversation delivery metadata is compact canonical product state, not ordinary
-audit-event evidence. The first implementation does not delete it under
-`runtime.retention.audit_events_days`.
-
-If delivery retention is introduced later, it must define:
-
-- the minimum retained prefix per agent incarnation;
-- whether unread counts include non-retained deliveries;
-- how an old read marker is represented;
-- how non-retained marker attempts remain folded into
-  `delivery_marker_unavailable`;
-- whether a bounded preview survives full brief-content retention; and
-- how exact unread semantics remain possible.
-
-The system must not silently turn exact unread into an estimate.
-
-### Observer Change Ledger
-
-The change ledger may be compacted because sync returns current summaries rather
-than mutation history.
-
-Compaction must retain a watermark floor. A token older than that floor resets
-to a full snapshot with `reset_reason = token_expired`.
-
-Compaction does not change agent incarnations, delivery sequences, read
-markers, or raw `event_log_epoch`.
-
-### Read State
-
-Read state remains while both observer scope and agent incarnation remain
-valid. Credential revocation or authority removal may retain
-encrypted/internal rows for audit or delete them according to security policy,
-but a new principal or authority scope must not inherit them accidentally.
-
-Agent deletion closes the incarnation. Recreating the id creates an ordinary
-new incarnation whose read-state lower bound is zero for every observer scope.
-
-## Failure And Recovery
-
-### Transaction Failure
-
-If delivery append, summary mutation, read-marker mutation, or observer
-invalidation cannot commit atomically, the whole semantic mutation should fail
-or enter an explicit durable repair state. The server must not acknowledge a
-read-marker write that was not durably stored.
-
-### Projection Divergence
-
-The implementation provides a deterministic rebuild command or startup repair
-for:
-
-- agent summary revisions;
-- conversation delivery metadata from retained canonical briefs and typed
-  brief-created evidence;
-- observer invalidation watermarks; and
-- unread projections from deliveries plus read markers.
-
-A rebuild rotates the observer sync projection generation and forces
-`reset_reason = projection_rebuilt`. It does not invent new delivery sequences
-for already mapped briefs.
-
-### Partial Response Failure
-
-The server serializes the response only after the consistent projection is
-complete. It does not return a token for a partially projected roster.
-
-The client persists a new token only after it has durably applied the complete
-response. A crash between response receipt and cache commit replays the old
-token and receives an idempotent delta or snapshot.
-
-## Migration
-
-### Phase 0: Contract And Fixtures
-
-- accept this RFC;
-- define Rust/OpenAPI DTOs and machine-readable errors;
-- add checked JSON fixtures for snapshot, delta, reset, and read-marker cases;
-- define one pure canonical agent summary projection; and
-- add storage invariants before exposing routes.
-
-### Phase 1: Durable Delivery And Read State
-
-- add agent incarnation records;
-- add per-incarnation delivery sequence allocation;
-- add conversation delivery metadata;
-- add observer principal derivation;
-- add observer read-marker records;
-- add observer change sequence and invalidation writes; and
-- provide rebuild and divergence diagnostics.
-
-Existing briefs migrate deterministically:
-
-1. group by agent incarnation;
-2. order by the corresponding typed `brief_created.event_seq` when available;
-3. otherwise order by `(created_at, brief_id)`;
-4. assign delivery sequences in that deterministic order;
-5. persist the source relation so rerunning migration is idempotent; and
-6. before advertising `observer.sync.v1`, persist on every migrated agent
-   incarnation its greatest migrated canonical delivery sequence as the
-   `cutover_baseline_seq`, using zero when it has no migrated deliveries;
-7. initialize every currently materialized observer scope's marker to that
-   incarnation baseline, unless an explicitly authorized one-time import
-   supplies a higher valid marker;
-8. whenever an observer scope first materializes membership after cutover,
-   initialize its absent marker to the persisted incarnation baseline rather
-   than zero; and
-9. commit incarnation baselines, existing visibility membership, initialized
-   markers, and capability activation as one cutover generation.
-
-For migrated incarnations, `cutover_baseline_seq` remains the semantic lower
-bound even if a marker row is absent during repair or lazy materialization.
-No read or sync transaction may expose membership while interpreting that
-absence as zero.
-
-Browser-local markers are not silently uploaded. They are untrusted,
-device-local, may refer to raw event sequences, and cannot safely identify the
-observer principal or agent incarnation.
-
-The deliberate UX is: migrated history is initially considered read, and only
-deliveries committed after the server cutover baseline become unread. This
-does not claim to reconstruct the exact pre-upgrade device-local boundary; it
-provides one deterministic server boundary and avoids manufacturing unread
-history. The incarnation baseline remains durable for scopes first
-materialized after cutover. It may name a canonical sequence the scope could
-not see at cutover; server initialization is permitted to establish that
-internal floor, while client marker writes remain limited to currently
-authorized deliveries. The baseline and its reason must be observable for
-rollout diagnosis.
-
-An optional Web GUI migration action may still offer:
-
-```text
-Mark currently visible deliveries read on this server
-```
-
-after the first successful sync. It uses the normal monotonic API and clearly
-states that older local counters are being retired. It is useful only when new
-deliveries arrived between server cutover and the user's first upgraded-client
-sync; it does not upload the old browser marker.
-
-### Phase 2: Read APIs
-
-- expose `/observer/sync`;
-- expose the read-marker mutation;
-- expose delivery metadata paging;
-- add OpenAPI and local/unix client parity;
-- add auth, visibility, reset, retention, and concurrency tests; and
-- keep existing routes unchanged.
-
-### Phase 3: Web GUI Cutover
-
-- cache sync token and observer summaries in IndexedDB;
-- use cached summary for immediate roster rendering;
-- sync on bootstrap, reconnect, online, and visibility resume;
-- use global SSE only as an invalidation hint;
-- replace local unread increments with server projections;
-- replace local authoritative read-marker writes with the monotonic API;
-- present migrated history as read at the documented server cutover baseline;
-- preserve current per-agent raw-event recovery for conversation detail; and
-- delete obsolete localStorage read-state migration code after one
-  compatibility release.
-
-### Phase 4: Follow-up Conversation API
-
-The later semantic conversation API may use `delivery_seq` as a notification
-and read boundary, but it should define its own item identity and anchor paging.
-It must not reinterpret raw `event_seq` as a semantic conversation cursor.
-
-## Cutover And Compatibility
-
-During one compatibility release:
-
-- old clients continue using `/agents/list`, per-agent state/events, and local
-  unread behavior;
-- new clients prefer observer sync when the handshake advertises capability
-  `observer.sync.v1`;
-- the server writes delivery and observer invalidation state regardless of
-  whether a new client is connected;
-- new clients do not double-count local SSE and server unread;
-- read-marker mutation is enabled only after the client has received a current
-  agent incarnation; and
-- metrics compare local legacy projections to canonical summaries without
-  changing user-visible state.
-
-After acceptance:
-
-- remove local unread authority;
-- keep `/agents/list` as a compatibility view or make it consume the same
-  canonical summary core;
-- retain raw event APIs for Debug and recovery; and
-- do not remove global SSE unless another wake mechanism replaces it.
+They should not be implemented as aliases for the new contract.
 
 ## Invariants
 
-The implementation must enforce:
-
-1. one active incarnation per existing agent id;
-2. unique immutable `(agent_incarnation, delivery_seq)`;
-3. one delivery sequence per canonical user-facing delivery;
-4. delivery append and observer invalidation are atomic;
-5. read marker never decreases;
-6. successful marker acknowledgement never points beyond a committed delivery;
-7. unread count equals the authorized delivery-row count after the marker;
-8. canonical summary is observer-independent and never contains authorized
-   preview or unread state;
-9. sync token never crosses observer scope; the independently retained reset
-   verifier makes supported runtime, token-format, or projection generation
-   mismatches produce an explicit reset snapshot;
-10. a returned token covers every summary included in its response;
-11. inaccessible agents do not leak through snapshot, delta, tombstone, count,
-    or error detail;
-12. raw event retention does not change delivery or read-marker identity;
-13. agent id reuse does not inherit old deliveries or read state;
-14. a tombstone identifies one exact agent incarnation;
-15. observer-private invalidations never appear in another scope's delta;
-16. visibility removal tombstones come only from prior materialized membership;
-17. a durable per-incarnation migration baseline prevents pre-cutover history
-    from becoming unread for both existing and later-materialized scopes; and
-18. replaying the same sync or marker request is idempotent.
+1. Event identity is `(event_log_epoch, agent_id, event_seq)`.
+2. One event identity has immutable content.
+3. `agent_id` is not reused for a different Agent within one epoch.
+4. A roster snapshot is complete for the active-public visibility scope or
+   fails entirely.
+5. Roster event head and retained floor name committed events in one read view.
+6. A projection snapshot and `snapshot_through_seq` share one consistency
+   boundary.
+7. A client applies only events greater than an installed snapshot boundary.
+8. Raw ingestion cursor advances only after durable envelope persistence.
+9. Projection readiness advances only after display invalidations are resolved.
+10. One Brief links to at most one immutable `brief_created.event_seq`.
+11. Unread counts hydrated qualifying Brief events, not raw sequence distance.
+12. Browser read markers are monotonic within one local reader key.
+13. Read markers never cross unresolved display invalidations.
+14. Retention loss is represented as truncation, not fabricated exact history.
+15. Epoch and visibility changes partition or clear local state before reuse.
+16. Global SSE is a hint and never the sole correctness source.
 
 ## Acceptance Matrix
 
-### Storage And Projection
+### Identity And Storage
 
-- appending two briefs allocates increasing delivery sequences;
-- retrying the same brief append does not allocate twice;
-- concurrent delivery appends produce unique ordered sequences;
-- observer latest delivery matches the greatest authorized delivery ledger row;
-- unread projection counts rows, including any allowed sequence gaps;
-- agent recreation rotates incarnation and resets observer overlay;
-- projection rebuild is deterministic and rotates sync projection generation.
+- ordinary daemon restart preserves epoch and event identities;
+- database replacement rotates the epoch;
+- normal creation cannot reuse a retired Agent id in the same epoch;
+- deletion remains irreversible and the deleted Agent id stays reserved;
+- a duplicate Brief publication does not allocate another created-event
+  sequence; and
+- a record is readable no later than its referencing event becomes observable.
 
-### Sync
+### Roster Discovery
 
-- initial sync returns every authorized public agent exactly once;
-- empty roster returns a valid snapshot token;
-- valid delta returns every changed agent with its latest complete summary;
-- multiple mutations of one agent are coalesced without losing final state;
-- empty delta is valid and advances or preserves a usable token;
-- agent deletion returns a same-scope tombstone;
-- delete and same-id recreate returns an old-incarnation tombstone plus the new
-  incarnation summary without deleting the replacement;
-- visibility removal returns a tombstone only to scopes with prior materialized
-  membership;
-- one observer's marker update is absent from another observer's delta;
-- expired token returns a reset snapshot;
-- runtime replacement returns a reset snapshot;
-- after database replacement, an old token within the verifier compatibility
-  horizon returns `runtime_replaced`;
-- a retired payload-format token whose envelope remains verifiable returns
-  `token_version_retired`;
-- policy generation change for the same stable scope returns a reset snapshot;
-- scope mismatch takes precedence over reset classification and returns no
-  roster data;
-- response state and token watermark come from one read snapshot;
-- unix socket and TCP HTTP return equivalent DTOs.
+- an Agent created while the browser is offline appears after reconnect;
+- a deleted or newly inaccessible Agent is purged after a complete snapshot;
+- a partial assembly failure does not remove any cached Agent;
+- a hint received during snapshot assembly causes one coalesced refresh;
+- global SSE reconnect always precedes a fresh discovery state; and
+- inaccessible Agents do not leak through metadata or errors.
 
-### Read Marker
+### Per-Agent Recovery
 
-- first marker write advances from the incarnation's durable read-state lower
-  bound, which is zero for an ordinary new incarnation;
-- duplicate write is a no-op;
-- lower write is a no-op and returns the higher value;
-- two concurrent writes store the maximum;
-- unavailable delivery sequence is rejected without distinguishing
-  beyond-head, hidden, absent, or pruned cases;
-- unavailable-sequence failures use the same HTTP status, body shape, and
-  response headers, and practical timing-oracle tests cannot reliably classify
-  beyond-head, hidden, absent, or pruned cases;
-- marker may advance to a visible delivery across intervening unauthorized
-  sequence rows;
-- later authorization of a delivery below the marker does not make it unread;
-- stale incarnation is rejected;
-- inaccessible agent is not disclosed;
-- successful write appears in the next sync delta;
-- marker update does not enqueue, wake, or mutate the agent.
+- a cached Agent catches up all raw events after its contiguous cursor;
+- a new Agent installs a projection snapshot then replays only later events;
+- info and verbose views share one cursor without losing verbose events;
+- filtered history is never accepted as proof of raw continuity;
+- duplicate immutable events are idempotent; and
+- conflicting immutable content stops projection and resets.
 
-### Offline Web GUI
+### Hydration
 
-- client A closes at delivery 10, deliveries 11-13 occur, and restart shows
-  exact unread `3` plus delivery 13 preview without raw global replay;
-- client A loses global SSE for several minutes and one sync restores the same
-  result;
-- client B using the same observer principal sees the same server read marker;
-- client with a different observer principal starts with independent read
-  state;
-- cached roster renders immediately but remains visibly stale until sync;
-- sync reset replaces cached roster and removes stale agents;
-- selected conversation may still recover raw events while roster unread and
-  preview remain correct;
-- marking read waits for rendered/explicitly acknowledged delivery and survives
-  reload;
-- migration advertises sync only after baseline commit, shows zero unread for
-  pre-cutover history, and counts the first post-baseline delivery as one;
-- a scope first materialized after cutover inherits the durable incarnation
-  baseline and does not manufacture unread pre-cutover history;
+- a browser crash after event persistence but before hydration resumes pending
+  work on restart;
+- a newer canonical revision satisfies an older invalidation;
+- an unexplained missing record triggers retry and snapshot repair;
+- a delete tombstone completes without fetching a deleted record;
+- diagnostic unknown events do not block readiness; and
+- unknown display invalidations do block readiness and read advancement.
 
-### Authorization And Privacy
+### Local Read State
 
-- raw control token is never persisted in observer tables or sync tokens;
-- token logs contain only bounded fingerprints;
-- private/inaccessible agents never appear in deltas or tombstones;
-- credential rotation invalidates or changes observer scope as configured;
-- local unauthenticated mode uses one documented deployment-local principal;
-- canonical summary bytes are identical across observers with access to the
-  same agent lifecycle facts;
-- observer latest delivery and preview apply the same authorization and
-  redaction as brief fetch.
+- a fresh profile starts with no historical unread before its baseline;
+- two tabs in one profile converge by monotonic maximum;
+- different profiles and devices retain independent unread state;
+- only hydrated user-facing Brief events produce unread;
+- internal events may be crossed but do not increment unread; and
+- a hidden or stale conversation does not advance the marker.
+
+### Retention And Reset
+
+- a retained cursor catches up exactly;
+- `cursor_not_found` supplies `event_log_epoch`, `oldest_retained_seq`, and
+  `event_head_seq`;
+- a retention gap installs a canonical projection snapshot;
+- lost history produces truncated certainty rather than an exact count;
+- explicit acknowledgement starts a new exact generation without rewriting the
+  historical claim;
+- epoch reset discards old projection and read state; and
+- visibility-scope rotation clears inaccessible cache before display.
+
+### Compatibility
+
+- new Web plus old server selects legacy or uncertain mode;
+- old Web plus new server continues through old endpoints;
+- capabilities remain disabled until migrations and consistency checks pass;
+- route presence without capability does not enable the new state machine; and
+- no delivery or server read-marker endpoint is required for cutover.
 
 ## Observability
 
-Metrics and structured diagnostics should include:
+The server should report:
 
-- sync request mode, duration, agent count, reset reason, and response bytes;
-- observer change high watermark and retained floor;
-- delivery allocation conflicts or idempotent retries;
-- read-marker advance/no-op/rejection counts;
-- unread projection latency;
-- summary projection divergence;
-- token scope/version rejection; and
-- Web GUI sync age and last reset reason.
+- roster snapshot duration, Agent count, response bytes, and failure reason;
+- projection snapshot duration, boundary, head distance, and failure reason;
+- capability enablement and migration verification status;
+- cursor-not-found counts by Agent scope without exposing private identifiers;
+- record/event outbox lag or transaction failure; and
+- identity-registry or Brief-linkage invariant violations.
 
-Logs must not include full sync tokens, bearer credentials, full brief text, or
-private agent identifiers outside the authorized diagnostic boundary.
+The Web GUI should report locally diagnosable state for:
+
+- discovery fresh or stale;
+- ingested-through and projection-ready cursors;
+- pending hydration count;
+- exact, truncated, or legacy unread certainty;
+- last reset reason; and
+- current epoch and visibility cache partition.
+
+Logs and diagnostics must not include credentials, capability secrets, full
+private Brief text, or inaccessible Agent metadata.
 
 ## Rejected Alternatives
 
-### Use global SSE as the sync log
+### Add `delivery_seq`
 
-Rejected because the current stream is live-only and has no durable global
-cursor. Its events expose a runtime audit sequence through agent-filtered
-views, but that sequence is neither a global observer-state cursor nor a
-conversation delivery cursor.
+A separate delivery sequence would order only user-facing Briefs. The verbose
+view would still require `event_seq`, creating two recovery domains and an
+additional linkage and migration problem. Exact unread only needs stable Brief
+to event linkage, not a new sequence allocator or delivery ledger.
 
-### Backfill every agent's raw events on every startup
+### Use `delivery_seq` As The Only Cursor
 
-Rejected as the roster authority. It is expensive, depends on retained event
-history, requires event projection and brief hydration, and still does not
-provide shared observer read state.
+This loses progress, tool, lifecycle, diagnostic, and other verbose events.
+Info and verbose would no longer be projections over the same recovered input.
 
-Per-agent raw backfill remains necessary for selected conversation recovery.
+### Add An Observer Change Ledger Now
 
-### Use `event_seq` as `delivery_seq`
+A durable global delta cursor would reduce roster snapshot cost, but adds
+projection generation, compaction, authorization tombstones, token security,
+and another recovery protocol. Phase 3 should first use complete snapshots and
+add deltas only after measured scale requires them.
 
-Rejected because raw audit events and user-facing deliveries are different
-domains. Event retention, debug events, filtered events, and future delivery
-sources would make the marker ambiguous.
+### Store Read Markers By Observer Principal
 
-### Store unread count directly
+This merges all devices for one principal and contradicts the desired
+per-browser unread behavior. It also cannot distinguish browser profiles.
 
-Rejected as the sole authority because concurrent delivery and read mutations
-make counters easy to drift. The canonical facts are delivery rows and a
-monotonic marker. A cached/materialized count is allowed only if it is
-transactionally maintained and rebuildable from those facts.
+### Store Read Markers By Connection Or User-Agent
 
-### Keep read state only in the browser
+Connections are ephemeral and User-Agent values are neither unique nor stable.
+Neither is a durable reader identity.
 
-Rejected because offline recovery and cross-device consistency are impossible,
-and clearing browser storage loses the only marker.
+### Make The Event Ledger Fully Event-Sourced
 
-### Accept a client-generated observer id
+Re-encoding every canonical record into replay-complete events would greatly
+expand the migration and retention contract. Stable references plus durable
+hydration preserve domain ownership while keeping event ordering explicit.
 
-Rejected because it permits state confusion and unauthorized marker access.
-Observer identity comes from authentication.
+### Reuse `/agents/list` As The Snapshot
 
-### Put full conversation history in `/observer/sync`
+The current list path permits placeholder behavior and does not promise one
+all-or-nothing visibility and event-window read boundary. Changing it in place
+would silently strengthen a compatibility endpoint. A strict endpoint makes
+the recovery contract explicit.
 
-Rejected because roster synchronization should remain compact and bounded.
-Conversation history needs separate semantic item and anchor-pagination
-contracts.
+### Compose Ordinary APIs Into A Projection Snapshot
 
-### Reuse `/agents/list` and add more optional fields
+Independent calls may observe different commits. Assigning their joined result
+a cursor can skip events whose effects are absent from the composition. A
+snapshot watermark is valid only with a proven consistency boundary.
 
-Rejected as the complete solution because list polling has no durable delta
-token, no observer-scoped state, no reset contract, and no atomic read-marker
-mutation. The canonical summary core may still be shared with that endpoint.
+### Treat Retained History As Exact
+
+After a gap, the client cannot know which qualifying Brief events were deleted.
+Showing an exact count would be a false statement. Truncation must remain
+visible until the user starts a new acknowledged generation.
 
 ## Proposed Decision
 
-Accept the following contract:
+Adopt the existing per-Agent event ledger as the Phase 3 synchronization
+backbone.
 
-1. add a durable per-agent-incarnation conversation delivery ledger with
-   `delivery_seq`;
-2. define one canonical compact agent summary plus an observer-scoped latest
-   delivery/read overlay, while keeping raw-event head metadata canonical;
-3. derive observer identity from authorization and store read markers by
-   complete observer scope plus agent incarnation;
-4. update read markers by atomic monotonic maximum;
-5. expose exact unread count as an observer overlay;
-6. add an opaque-token `/api/observer/sync` snapshot/delta endpoint;
-7. keep global SSE as a wake hint and raw per-agent events as the diagnostic
-   replay surface;
-8. require explicit snapshot reset, retention, migration, and authorization
-   behavior; and
-9. pause server implementation until this RFC is reviewed and accepted.
+1. Keep `(event_log_epoch, agent_id, event_seq)` as the only incremental replay
+   identity.
+2. Add a strict authoritative roster snapshot for discovery.
+3. Add a consistent per-Agent projection snapshot for bootstrap and reset.
+4. Make canonical-record hydration durable and ordered relative to observable
+   events.
+5. Link Briefs immutably to their unique `brief_created.event_seq`.
+6. Store unread baselines and read markers in the browser profile.
+7. Represent retention, epoch, and authorization reset explicitly.
+8. Do not implement `delivery_seq`, observer deltas, Agent incarnations, or
+   server-owned browser read markers in Phase 3.
