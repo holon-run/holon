@@ -922,13 +922,16 @@ fn validate_admission_authority_tx(
     admitted: &execution_protocol::AdmittedFences,
 ) -> Result<()> {
     let current = authority_fences_tx(tx, agent_id)?;
-    if admitted.agent_control_revision != current.agent_control_revision {
-        bail!(
-            "execution admission agent control fence is stale: admitted {}, current {}",
-            admitted.agent_control_revision,
-            current.agent_control_revision
-        );
-    }
+    // The agent_control_revision is incremented by every persist_state()
+    // call, including benign wake_hint coalescing while the agent is
+    // AwakeRunning. authority_fences_tx already validates that the agent
+    // is not Stopped and the host identity is Active — the authority-
+    // relevant invariants. Comparing control_revision here would race
+    // against concurrent persist_state() calls that run between the fence
+    // read (plan_execution_protocol_claim, separate transaction) and this
+    // validation (inside the commit transaction). The host_registry_revision
+    // comparison is retained because it reads from agent_identities, which
+    // is not touched by persist_state().
     if admitted.host_registry_revision != current.host_registry_revision {
         bail!(
             "execution admission host registry fence is stale: admitted {}, current {}",
@@ -1202,6 +1205,10 @@ fn to_i64(value: u64) -> Result<i64> {
 mod tests {
     use super::*;
     use crate::domain::execution_protocol::{ExecutionOutcome, WaitReference, WorkItemOutcome};
+    use crate::runtime_db::RuntimeDb;
+    use crate::types::AgentState;
+    use crate::types::{AgentKind, AgentOwnership, AgentProfilePreset, AgentVisibility};
+    use tempfile::tempdir;
 
     fn wait_outcome(wait_id: &str) -> ExecutionOutcomeRecord {
         ExecutionOutcomeRecord {
@@ -1235,5 +1242,113 @@ mod tests {
         });
         assert!(stored_outcome_matches(&existing.to_string(), &wait_outcome("wait-1")).unwrap());
         assert!(!stored_outcome_matches(&existing.to_string(), &wait_outcome("wait-2")).unwrap());
+    }
+
+    fn setup_agent(db: &RuntimeDb, agent_id: &str) -> Result<()> {
+        db.agent_states().upsert(&AgentState::new(agent_id))?;
+        let mut identity = AgentIdentityRecord::new(
+            agent_id,
+            AgentKind::Named,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        identity.status = AgentRegistryStatus::Active;
+        db.agent_identities().upsert(&identity)?;
+        Ok(())
+    }
+
+    /// When `control_revision` changes between the fence read (in
+    /// `plan_execution_protocol_claim`) and validation (inside the commit
+    /// transaction), the admission must not be rejected. This can happen
+    /// when a concurrent `persist_state()` call (e.g. wake_hint coalescing)
+    /// increments `control_revision` in the TOCTOU window.
+    #[test]
+    fn admission_accepts_stale_control_revision_after_concurrent_persist() -> Result<()> {
+        let temp_dir = tempdir()?;
+        let db = RuntimeDb::open_and_migrate(
+            temp_dir.path().join("state/runtime.sqlite"),
+            temp_dir.path().join("state/runtime.lock"),
+        )?;
+        let agent_id = "agent-race";
+        setup_agent(&db, agent_id)?;
+
+        // Read authority fences (simulates plan_execution_protocol_claim).
+        let fences = db.transitions().load_execution_authority_fences(agent_id)?;
+        let admitted_revision = fences.agent_control_revision;
+
+        // Simulate a concurrent persist_state() that increments control_revision
+        // (e.g. wake_hint coalescing setting pending_wake_hint).
+        db.agent_states().upsert(&AgentState::new(agent_id))?;
+
+        // The current control_revision should now differ from the admitted one.
+        let current = db.transitions().load_execution_authority_fences(agent_id)?;
+        assert_ne!(admitted_revision, current.agent_control_revision);
+
+        // Validation inside the commit transaction must accept the stale
+        // control_revision instead of bailing.
+        let connection = db.connection()?;
+        let tx = Transaction::new_unchecked(&connection, rusqlite::TransactionBehavior::Deferred)?;
+        validate_admission_authority_tx(
+            &tx,
+            agent_id,
+            &execution_protocol::AdmittedFences {
+                source_revision: 1,
+                work_item_source_revision: None,
+                work_item_generation: None,
+                rejoin: None,
+                agent_control_revision: admitted_revision,
+                host_registry_revision: fences.host_registry_revision,
+            },
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// A stopped agent must still be rejected even when control_revision is relaxed.
+    #[test]
+    fn admission_rejects_stopped_agent_regardless_of_control_revision() -> Result<()> {
+        let temp_dir = tempdir()?;
+        let db = RuntimeDb::open_and_migrate(
+            temp_dir.path().join("state/runtime.sqlite"),
+            temp_dir.path().join("state/runtime.lock"),
+        )?;
+        let agent_id = "agent-stopped";
+        setup_agent(&db, agent_id)?;
+
+        let fences = db.transitions().load_execution_authority_fences(agent_id)?;
+
+        // Stop the agent.
+        let mut stopped = AgentState::new(agent_id);
+        stopped.status = crate::types::AgentStatus::Stopped;
+        db.agent_states().upsert(&stopped)?;
+
+        let connection = db.connection()?;
+        let tx = Transaction::new_unchecked(&connection, rusqlite::TransactionBehavior::Deferred)?;
+        let result = validate_admission_authority_tx(
+            &tx,
+            agent_id,
+            &execution_protocol::AdmittedFences {
+                source_revision: 1,
+                work_item_source_revision: None,
+                work_item_generation: None,
+                rejoin: None,
+                agent_control_revision: fences.agent_control_revision,
+                host_registry_revision: fences.host_registry_revision,
+            },
+        );
+        tx.commit()?;
+        assert!(
+            result.is_err(),
+            "admission of a stopped agent must be rejected"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("stopped"),
+            "expected stopped rejection, got: {err}"
+        );
+        Ok(())
     }
 }
