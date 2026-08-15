@@ -3371,7 +3371,6 @@ export function summarizeHolonTokenOptimization(events, toolExecutions = [], opt
       transport: options.transport,
       pricing: options.pricing
     });
-    const cacheUsage = data?.provider_cache_usage ?? {};
     const inputTokens = usage.raw_input_tokens;
     const cacheReadInputTokens = usage.cache_read_input_tokens;
     const cacheCreationInputTokens = usage.cache_creation_input_tokens;
@@ -3382,7 +3381,10 @@ export function summarizeHolonTokenOptimization(events, toolExecutions = [], opt
       modelRef,
       round,
       promptCacheKey: data?.prompt_cache_key,
-      cacheUsage,
+      cacheUsage: {
+        read_input_tokens: cacheReadInputTokens,
+        creation_input_tokens: cacheCreationInputTokens
+      },
       requestDiagnostics
     });
     const highInputZeroCacheRead =
@@ -4806,6 +4808,12 @@ export async function readHolonAuditEvents({
       { ...env, HOLON_HOME: homeDir },
       false
     );
+    if (result.exitCode !== 0) {
+      const detail = String(result.stderr ?? result.stdout ?? "").trim();
+      throw new Error(
+        `holon DB event export failed with exit code ${result.exitCode}${detail ? `: ${detail}` : ""}`
+      );
+    }
     let page;
     try {
       page = JSON.parse(result.stdout);

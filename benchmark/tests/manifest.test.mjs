@@ -1208,6 +1208,22 @@ test("DB event export failures are explicit", async () => {
       homeDir: "/tmp/home",
       cwd: "/tmp/repo",
       env: {},
+      execute: async () => ({
+        stdout: "{\"events\":[]}",
+        stderr: "runtime DB unavailable",
+        exitCode: 2
+      })
+    }),
+    /holon DB event export failed with exit code 2: runtime DB unavailable/
+  );
+
+  await assert.rejects(
+    readHolonAuditEvents({
+      holonBinary: "holon",
+      agentId: "agent",
+      homeDir: "/tmp/home",
+      cwd: "/tmp/repo",
+      env: {},
       execute: async () => ({ stdout: "not-json", stderr: "", exitCode: 0 })
     }),
     /failed to parse holon DB event export/
