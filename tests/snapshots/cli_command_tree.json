@@ -1048,6 +1048,16 @@
         "required": false
       },
       {
+        "long": "offline",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
         "long": "order",
         "short": null,
         "default_value": "desc",
