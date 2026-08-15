@@ -96,6 +96,9 @@ pub(super) fn validate_execution_commands_tx(
         if let ExecutionProtocolCommand::RecoverInterruptedTaskResultClaim(command) = command {
             validate_recover_interrupted_task_result_claim(tx, agent_id, command)?;
         }
+        if let ExecutionProtocolCommand::RecoverUnadvancedTaskResultClaim(command) = command {
+            validate_recover_unadvanced_task_result_claim(tx, agent_id, command)?;
+        }
         if let ExecutionProtocolCommand::SetWorkItemReadiness(command) = command {
             validate_set_work_item_readiness(command, work_item_mutations, wait_conditions)?;
         }
@@ -329,6 +332,9 @@ fn reduce(
         ExecutionProtocolCommand::RecoverInterruptedTaskResultClaim(command) => {
             execution_protocol::recover_interrupted_task_result_claim(state, command)
         }
+        ExecutionProtocolCommand::RecoverUnadvancedTaskResultClaim(command) => {
+            execution_protocol::recover_unadvanced_task_result_claim(state, command)
+        }
     }
 }
 
@@ -370,6 +376,9 @@ fn command_identity(command: &ExecutionProtocolCommand) -> (&'static str, &str) 
         }
         ExecutionProtocolCommand::RecoverInterruptedTaskResultClaim(command) => {
             ("recover_interrupted_task_result_claim", &command.command_id)
+        }
+        ExecutionProtocolCommand::RecoverUnadvancedTaskResultClaim(command) => {
+            ("recover_unadvanced_task_result_claim", &command.command_id)
         }
     }
 }
@@ -484,6 +493,30 @@ fn validate_recover_interrupted_task_result_claim(
         bail!("TaskResult claim recovery requires one exact resolved task wait");
     }
     Ok(())
+}
+
+fn validate_recover_unadvanced_task_result_claim(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    command: &execution_protocol::RecoverUnadvancedTaskResultClaim,
+) -> Result<()> {
+    validate_recover_interrupted_task_result_claim(
+        tx,
+        agent_id,
+        &execution_protocol::RecoverInterruptedTaskResultClaim {
+            command_id: command.command_id.clone(),
+            attempt_id: command.attempt_id.clone(),
+            outcome_id: command.outcome_id.clone(),
+            work_item_id: command.work_item_id.clone(),
+            task_id: command.task_id.clone(),
+            result_message_id: command.result_message_id.clone(),
+            wait_id: command.wait_id.clone(),
+            rejoin: command.rejoin.clone(),
+            expected_source_revision: command.expected_source_revision,
+            source_revision: command.expected_source_revision,
+            interrupted_at: command.interrupted_at.clone(),
+        },
+    )
 }
 
 fn validate_set_work_item_waiting(
@@ -985,6 +1018,7 @@ impl RuntimeTransitionRepository<'_> {
                 command,
                 ExecutionProtocolCommand::ReconcileWorkItemContinuationYield(_)
                     | ExecutionProtocolCommand::RecoverInterruptedTaskResultClaim(_)
+                    | ExecutionProtocolCommand::RecoverUnadvancedTaskResultClaim(_)
             )
         }) {
             bail!("execution protocol recovery plan contains a non-recovery command");

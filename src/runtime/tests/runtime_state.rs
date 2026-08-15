@@ -461,6 +461,11 @@ fn persist_execution_transition_only(
                     &state, &command,
                 )
             }
+            ExecutionProtocolCommand::RecoverUnadvancedTaskResultClaim(command) => {
+                crate::domain::execution_protocol::recover_unadvanced_task_result_claim(
+                    &state, &command,
+                )
+            }
         }
         .expect("test execution transition should be valid")
         .state;
@@ -2565,6 +2570,41 @@ async fn stale_task_result_claim_fixture(task_id: &str) -> StaleTaskResultClaimF
     }
 }
 
+async fn unadvanced_task_result_claim_fixture(task_id: &str) -> StaleTaskResultClaimFixture {
+    use crate::domain::execution_protocol::WorkItemExecutionState;
+
+    let fixture = stale_task_result_claim_fixture(task_id).await;
+    let mut state = fixture
+        .runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .expect("TaskResult fixture execution partition");
+    let attempt = state
+        .attempts
+        .get_mut(&fixture.attempt_id)
+        .expect("TaskResult fixture attempt");
+    attempt.admitted_fences.work_item_source_revision = Some(fixture.current_revision);
+    attempt.admitted_fences.work_item_generation = Some(fixture.current_revision);
+    state
+        .work_items
+        .get_mut(&fixture.work_item_id)
+        .expect("TaskResult fixture WorkItem")
+        .state = WorkItemExecutionState::InFlight {
+        generation: fixture.current_revision,
+        attempt_id: fixture.attempt_id.clone(),
+    };
+    fixture
+        .runtime
+        .inner
+        .runtime_db
+        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &state))
+        .unwrap();
+    fixture
+}
+
 fn isolated_task_result_claim_report(runtime: &RuntimeHandle) -> SchedulerRecoveryReport {
     let mut report =
         scheduler_recovery_report(&runtime.inner.storage, &runtime.inner.runtime_db, "default")
@@ -2573,6 +2613,72 @@ fn isolated_task_result_claim_report(runtime: &RuntimeHandle) -> SchedulerRecove
     report.legacy_adoptions.clear();
     report.continuation_reconciliations.clear();
     report
+}
+
+#[tokio::test]
+async fn bootstrap_recovers_unadvanced_task_result_claim_but_diagnostic_apply_does_not() {
+    use crate::domain::execution_protocol::{ExecutionAttemptState, WorkItemExecutionState};
+
+    let fixture = unadvanced_task_result_claim_fixture("task-bootstrap-unadvanced-recovery").await;
+    let report = isolated_task_result_claim_report(&fixture.runtime);
+    let [candidate] = report.task_result_claim_recoveries.as_slice() else {
+        panic!("expected one unadvanced TaskResult claim candidate: {report:#?}");
+    };
+    assert!(!candidate.eligible);
+    assert_eq!(candidate.reason, "requires_inactive_runtime_recovery");
+    assert!(candidate.proposed_command.is_none());
+
+    assert_eq!(
+        fixture
+            .runtime
+            .recover_scheduler_bootstrap_claims()
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        fixture
+            .runtime
+            .recover_scheduler_bootstrap_claims()
+            .await
+            .unwrap(),
+        0
+    );
+    let recovered = fixture
+        .runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .expect("recovered execution partition");
+    assert_eq!(
+        recovered.attempts[&fixture.attempt_id].state,
+        ExecutionAttemptState::Interrupted
+    );
+    assert_eq!(
+        recovered.work_items[&fixture.work_item_id].source_revision,
+        fixture.current_revision
+    );
+    assert!(matches!(
+        recovered.work_items[&fixture.work_item_id].state,
+        WorkItemExecutionState::Runnable {
+            recovery_ref: Some(ref recovery_ref),
+            ..
+        } if recovery_ref == "interrupted"
+    ));
+    assert_eq!(
+        fixture
+            .runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&fixture.result.id)
+            .unwrap()
+            .expect("requeued TaskResult")
+            .status,
+        QueueEntryStatus::Queued
+    );
 }
 
 #[tokio::test]

@@ -1536,6 +1536,21 @@ fn exact_resolved_task_result_wait(
     })
 }
 
+enum TaskResultClaimRecovery {
+    Eligible {
+        transition: crate::runtime_db::transitions::ExecutionProtocolTransition,
+        reason: &'static str,
+    },
+    RequiresInactiveRuntime,
+    Ineligible,
+}
+
+#[derive(Clone, Copy)]
+enum TaskResultClaimRecoveryAuthority {
+    Diagnostic,
+    RuntimeTerminatedBootstrap,
+}
+
 fn exact_task_result_claim_recovery(
     storage: &AppStorage,
     runtime_db: &RuntimeDb,
@@ -1543,9 +1558,11 @@ fn exact_task_result_claim_recovery(
     attempt: &crate::domain::execution_protocol::ExecutionAttempt,
     work_item_id: &str,
     interrupted_at: chrono::DateTime<Utc>,
-) -> Result<Option<crate::runtime_db::transitions::ExecutionProtocolTransition>> {
+    authority: TaskResultClaimRecoveryAuthority,
+) -> Result<TaskResultClaimRecovery> {
     use crate::domain::execution_protocol::{
         ExecutionSourceIdentity, RecoverInterruptedTaskResultClaim,
+        RecoverUnadvancedTaskResultClaim,
     };
 
     let ExecutionSourceIdentity::TaskResult {
@@ -1553,7 +1570,7 @@ fn exact_task_result_claim_recovery(
         result_message_id,
     } = &attempt.source.identity
     else {
-        return Ok(None);
+        return Ok(TaskResultClaimRecovery::Ineligible);
     };
     if result_message_id != &message.id
         || message.kind != MessageKind::TaskResult
@@ -1564,46 +1581,67 @@ fn exact_task_result_claim_recovery(
         || message.work_item_id.as_deref() != Some(work_item_id)
         || !matches!(&message.origin, MessageOrigin::Task { task_id: origin } if origin == task_id)
     {
-        return Ok(None);
+        return Ok(TaskResultClaimRecovery::Ineligible);
     }
     let Some(task) = storage.latest_task_record(task_id)? else {
-        return Ok(None);
+        return Ok(TaskResultClaimRecovery::Ineligible);
     };
     let Ok(rejoin) = task.rejoin_fence() else {
-        return Ok(None);
+        return Ok(TaskResultClaimRecovery::Ineligible);
     };
     if task.agent_id != message.agent_id
         || task.work_item_id.as_deref() != Some(work_item_id)
         || task.parent_message_id.as_deref() != Some(message.id.as_str())
         || attempt.admitted_fences.rejoin.as_ref() != Some(&rejoin)
     {
-        return Ok(None);
+        return Ok(TaskResultClaimRecovery::Ineligible);
     }
     let Some(wait) = exact_resolved_task_result_wait(storage, message, task_id, work_item_id)?
     else {
-        return Ok(None);
+        return Ok(TaskResultClaimRecovery::Ineligible);
     };
     let Some(work_item) = runtime_db.work_items().latest(work_item_id)? else {
-        return Ok(None);
+        return Ok(TaskResultClaimRecovery::Ineligible);
     };
     let Some(expected_source_revision) = attempt.admitted_fences.work_item_source_revision else {
-        return Ok(None);
+        return Ok(TaskResultClaimRecovery::Ineligible);
     };
-    if work_item.state != WorkItemState::Open
-        || work_item.blocked_by.is_some()
-        || work_item.revision <= expected_source_revision
-    {
-        return Ok(None);
+    if work_item.state != WorkItemState::Open || work_item.blocked_by.is_some() {
+        return Ok(TaskResultClaimRecovery::Ineligible);
     }
-    Ok(Some(
-        crate::runtime_db::transitions::ExecutionProtocolTransition {
-            bootstrap: None,
-            commands: vec![
+    let (command, reason) = match work_item.revision.cmp(&expected_source_revision) {
+        std::cmp::Ordering::Greater => (
+            crate::domain::execution_protocol::ExecutionProtocolCommand::
+                RecoverInterruptedTaskResultClaim(Box::new(
+                    RecoverInterruptedTaskResultClaim {
+                        command_id: format!(
+                            "recover_task_result_claim:{}:{}",
+                            attempt.attempt_id, work_item.revision
+                        ),
+                        attempt_id: attempt.attempt_id.clone(),
+                        outcome_id: format!("outcome:interrupted:{}", attempt.attempt_id),
+                        work_item_id: work_item_id.to_string(),
+                        task_id: task_id.clone(),
+                        result_message_id: message.id.clone(),
+                        wait_id: wait.id,
+                        rejoin,
+                        expected_source_revision,
+                        source_revision: work_item.revision,
+                        interrupted_at: interrupted_at.to_rfc3339(),
+                    },
+                )),
+            "stale_task_result_claim_revision",
+        ),
+        std::cmp::Ordering::Equal => {
+            if matches!(authority, TaskResultClaimRecoveryAuthority::Diagnostic) {
+                return Ok(TaskResultClaimRecovery::RequiresInactiveRuntime);
+            }
+            (
                 crate::domain::execution_protocol::ExecutionProtocolCommand::
-                    RecoverInterruptedTaskResultClaim(Box::new(
-                        RecoverInterruptedTaskResultClaim {
+                    RecoverUnadvancedTaskResultClaim(Box::new(
+                        RecoverUnadvancedTaskResultClaim {
                             command_id: format!(
-                                "recover_task_result_claim:{}:{}",
+                                "recover_unadvanced_task_result_claim:{}:{}",
                                 attempt.attempt_id, work_item.revision
                             ),
                             attempt_id: attempt.attempt_id.clone(),
@@ -1614,13 +1652,21 @@ fn exact_task_result_claim_recovery(
                             wait_id: wait.id,
                             rejoin,
                             expected_source_revision,
-                            source_revision: work_item.revision,
                             interrupted_at: interrupted_at.to_rfc3339(),
                         },
                     )),
-            ],
+                "unadvanced_task_result_claim",
+            )
+        }
+        std::cmp::Ordering::Less => return Ok(TaskResultClaimRecovery::Ineligible),
+    };
+    Ok(TaskResultClaimRecovery::Eligible {
+        transition: crate::runtime_db::transitions::ExecutionProtocolTransition {
+            bootstrap: None,
+            commands: vec![command],
         },
-    ))
+        reason,
+    })
 }
 
 fn scheduler_task_result_claim_recovery_candidates(
@@ -1677,16 +1723,22 @@ fn scheduler_task_result_claim_recovery_candidates(
                 candidate.reason = "message_missing".into();
                 return Ok(candidate);
             };
-            let Some(transition) = exact_task_result_claim_recovery(
+            let recovery = exact_task_result_claim_recovery(
                 storage,
                 runtime_db,
                 &message,
                 attempt,
                 work_item_id,
                 Utc::now(),
-            )?
-            else {
-                return Ok(candidate);
+                TaskResultClaimRecoveryAuthority::Diagnostic,
+            )?;
+            let (transition, reason) = match recovery {
+                TaskResultClaimRecovery::Eligible { transition, reason } => (transition, reason),
+                TaskResultClaimRecovery::RequiresInactiveRuntime => {
+                    candidate.reason = "requires_inactive_runtime_recovery".into();
+                    return Ok(candidate);
+                }
+                TaskResultClaimRecovery::Ineligible => return Ok(candidate),
             };
             let [command] = transition.commands.as_slice() else {
                 return Ok(candidate);
@@ -1695,7 +1747,7 @@ fn scheduler_task_result_claim_recovery_candidates(
             proposed_entry.status = QueueEntryStatus::Queued;
             proposed_entry.updated_at = Utc::now();
             candidate.eligible = true;
-            candidate.reason = "stale_task_result_claim_revision".into();
+            candidate.reason = reason.into();
             candidate.evidence.push(format!(
                 "durable_work_item_revision:{}",
                 runtime_db
@@ -5851,11 +5903,16 @@ impl RuntimeHandle {
                     &attempt,
                     work_item_id,
                     self.now(),
+                    TaskResultClaimRecoveryAuthority::RuntimeTerminatedBootstrap,
                 )?;
-                if !work_queue_claim && task_result_recovery.is_none() {
-                    continue;
+                match task_result_recovery {
+                    TaskResultClaimRecovery::Eligible { transition, .. } => Some(transition),
+                    TaskResultClaimRecovery::RequiresInactiveRuntime => {
+                        unreachable!("bootstrap authority permits equal-revision recovery")
+                    }
+                    TaskResultClaimRecovery::Ineligible if !work_queue_claim => continue,
+                    TaskResultClaimRecovery::Ineligible => None,
                 }
-                task_result_recovery
             } else {
                 None
             };
