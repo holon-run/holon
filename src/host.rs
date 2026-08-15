@@ -12,8 +12,8 @@ use anyhow::{anyhow, bail, Result};
 use chrono::Utc;
 use serde_json::{json, Value};
 use tokio::{
-    sync::{watch, Notify, RwLock},
-    task::{spawn_blocking, JoinHandle},
+    sync::{mpsc, watch, Notify, RwLock},
+    task::{spawn_blocking, JoinHandle, JoinSet},
 };
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
@@ -39,6 +39,7 @@ use crate::{
         SchedulerRepairInspection,
     },
     runtime_db::RuntimeDb,
+    runtime_error::describe_runtime_error,
     skills::{
         effective_skill_root_registrations, skills_runtime_view_from_catalog, SkillVisibility,
         SkillsRegistry,
@@ -107,6 +108,21 @@ const TEMP_CHILD_AGENT_PREFIX: &str = "tmp_child_";
 const HOST_SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
 #[cfg(test)]
 const HOST_SHUTDOWN_GRACE: Duration = Duration::from_millis(50);
+#[cfg(not(test))]
+const RUNTIME_RECOVERY_BACKOFF: &[Duration] = &[
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(5),
+    Duration::from_secs(10),
+    Duration::from_secs(30),
+    Duration::from_secs(60),
+];
+#[cfg(test)]
+const RUNTIME_RECOVERY_BACKOFF: &[Duration] = &[
+    Duration::from_millis(10),
+    Duration::from_millis(20),
+    Duration::from_millis(50),
+];
 
 #[derive(Debug)]
 pub enum PublicAgentError {
@@ -158,12 +174,17 @@ pub(crate) struct HostInner {
     skills_registry: Arc<RwLock<SkillsRegistry>>,
     static_provider: Option<Arc<dyn AgentProvider>>,
     runtimes: RwLock<HostRuntimeRegistry>,
+    runtime_recovery_tx: mpsc::UnboundedSender<RuntimeRecoveryNotice>,
+    runtime_recovery_rx: Mutex<Option<mpsc::UnboundedReceiver<RuntimeRecoveryNotice>>>,
+    runtime_recovery_token: CancellationToken,
+    runtime_recovery_handle: Mutex<Option<JoinHandle<()>>>,
 }
 
 struct AgentEntry {
     runtime: RuntimeHandle,
     task: JoinHandle<()>,
     phase: watch::Receiver<AgentRuntimePhase>,
+    generation: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,6 +215,22 @@ enum HostRuntimePhase {
 struct HostRuntimeRegistry {
     phase: HostRuntimePhase,
     agents: HashMap<String, AgentEntry>,
+    next_generation: u64,
+    recovering: HashMap<String, RuntimeRecoveryClaim>,
+}
+
+#[derive(Debug, Clone)]
+struct RuntimeRecoveryClaim {
+    generation: u64,
+    retryable: bool,
+    notify: Arc<Notify>,
+}
+
+#[derive(Debug)]
+struct RuntimeRecoveryNotice {
+    agent_id: String,
+    generation: u64,
+    retryable: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -334,6 +371,7 @@ impl RuntimeHost {
         let runtime_db =
             RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
         let registry = RuntimeRegistry::new(config, runtime_db.clone())?;
+        let (runtime_recovery_tx, runtime_recovery_rx) = mpsc::unbounded_channel();
         let host = Self {
             inner: Arc::new(HostInner {
                 registry,
@@ -351,7 +389,13 @@ impl RuntimeHost {
                 runtimes: RwLock::new(HostRuntimeRegistry {
                     phase: HostRuntimePhase::Open,
                     agents: HashMap::new(),
+                    next_generation: 1,
+                    recovering: HashMap::new(),
                 }),
+                runtime_recovery_tx,
+                runtime_recovery_rx: Mutex::new(Some(runtime_recovery_rx)),
+                runtime_recovery_token: CancellationToken::new(),
+                runtime_recovery_handle: Mutex::new(None),
             }),
         };
         host.ensure_default_agent_identity()?;
@@ -482,6 +526,323 @@ impl RuntimeHost {
             .lock()
             .unwrap()
             .take();
+    }
+
+    fn ensure_runtime_recovery_coordinator(&self) {
+        if self.inner.runtime_recovery_handle.lock().unwrap().is_some() {
+            return;
+        }
+        let Some(receiver) = self.inner.runtime_recovery_rx.lock().unwrap().take() else {
+            return;
+        };
+        let host = self.clone();
+        let handle = tokio::spawn(async move {
+            host.run_runtime_recovery_coordinator(receiver).await;
+        });
+        *self.inner.runtime_recovery_handle.lock().unwrap() = Some(handle);
+    }
+
+    async fn shutdown_runtime_recovery_coordinator(&self) {
+        self.inner.runtime_recovery_token.cancel();
+        let handle = self.inner.runtime_recovery_handle.lock().unwrap().take();
+        if let Some(handle) = handle {
+            let _ = handle.await;
+        }
+    }
+
+    async fn run_runtime_recovery_coordinator(
+        self,
+        mut receiver: mpsc::UnboundedReceiver<RuntimeRecoveryNotice>,
+    ) {
+        let mut recoveries = JoinSet::new();
+        loop {
+            tokio::select! {
+                _ = self.inner.runtime_recovery_token.cancelled() => break,
+                Some(notice) = receiver.recv() => {
+                    if self.claim_runtime_recovery(&notice).await {
+                        let host = self.clone();
+                        recoveries.spawn(async move {
+                            host.recover_runtime_after_failure(notice).await;
+                        });
+                    }
+                }
+                Some(result) = recoveries.join_next(), if !recoveries.is_empty() => {
+                    if let Err(error) = result {
+                        tracing::warn!(error = %error, "runtime recovery task failed");
+                    }
+                }
+            }
+        }
+        recoveries.abort_all();
+        while recoveries.join_next().await.is_some() {}
+    }
+
+    async fn claim_runtime_recovery(&self, notice: &RuntimeRecoveryNotice) -> bool {
+        let mut registry = self.inner.runtimes.write().await;
+        if registry.phase != HostRuntimePhase::Open
+            || !registry.agents.get(&notice.agent_id).is_some_and(|entry| {
+                entry.generation == notice.generation
+                    && *entry.phase.borrow() == AgentRuntimePhase::Terminated
+            })
+        {
+            return false;
+        }
+        if let Some(claim) = registry.recovering.get_mut(&notice.agent_id) {
+            if notice.generation >= claim.generation {
+                claim.generation = notice.generation;
+                claim.retryable = notice.retryable;
+                if !notice.retryable {
+                    claim.notify.notify_one();
+                }
+            }
+            return false;
+        }
+        if !notice.retryable {
+            tracing::warn!(
+                agent_id = notice.agent_id,
+                generation = notice.generation,
+                "runtime failure is not retryable; automatic recovery disabled"
+            );
+            return false;
+        }
+        registry.recovering.insert(
+            notice.agent_id.clone(),
+            RuntimeRecoveryClaim {
+                generation: notice.generation,
+                retryable: true,
+                notify: Arc::new(Notify::new()),
+            },
+        );
+        true
+    }
+
+    async fn clear_runtime_recovery(&self, agent_id: &str, generation: u64) {
+        let mut registry = self.inner.runtimes.write().await;
+        if registry
+            .recovering
+            .get(agent_id)
+            .is_some_and(|claim| claim.generation == generation)
+        {
+            registry.recovering.remove(agent_id);
+        }
+    }
+
+    async fn notify_runtime_recovery(&self, agent_id: &str) {
+        let notify = self
+            .inner
+            .runtimes
+            .read()
+            .await
+            .recovering
+            .get(agent_id)
+            .map(|claim| claim.notify.clone());
+        if let Some(notify) = notify {
+            notify.notify_one();
+        }
+    }
+
+    async fn recover_runtime_after_failure(&self, notice: RuntimeRecoveryNotice) {
+        let mut generation: u64;
+        let mut attempt = 0usize;
+        loop {
+            let claim = {
+                self.inner
+                    .runtimes
+                    .read()
+                    .await
+                    .recovering
+                    .get(&notice.agent_id)
+                    .cloned()
+            };
+            let Some(claim) = claim else {
+                return;
+            };
+            generation = claim.generation;
+            if !claim.retryable {
+                tracing::warn!(
+                    agent_id = notice.agent_id,
+                    generation,
+                    "runtime failure is not retryable; automatic recovery disabled"
+                );
+                self.clear_runtime_recovery(&notice.agent_id, generation)
+                    .await;
+                return;
+            }
+            let delay = RUNTIME_RECOVERY_BACKOFF
+                [attempt.min(RUNTIME_RECOVERY_BACKOFF.len().saturating_sub(1))];
+            tokio::select! {
+                _ = self.inner.runtime_recovery_token.cancelled() => {
+                    self.clear_runtime_recovery(&notice.agent_id, generation).await;
+                    return;
+                }
+                _ = tokio::time::sleep(delay) => {}
+                _ = claim.notify.notified() => {}
+            }
+            attempt = attempt.saturating_add(1);
+
+            match self.active_agent_identity(&notice.agent_id) {
+                Ok(_) => {}
+                Err(PublicAgentError::Runtime(error)) => {
+                    tracing::warn!(
+                        agent_id = notice.agent_id,
+                        error = %error,
+                        "runtime recovery identity check failed"
+                    );
+                    continue;
+                }
+                Err(_) => {
+                    self.clear_runtime_recovery(&notice.agent_id, generation)
+                        .await;
+                    return;
+                }
+            }
+            let state = match self
+                .agent_storage_read_only(&notice.agent_id)
+                .and_then(|storage| storage.read_agent())
+            {
+                Ok(state) => state.unwrap_or_else(|| AgentState::new(&notice.agent_id)),
+                Err(error) => {
+                    tracing::warn!(
+                        agent_id = notice.agent_id,
+                        error = %error,
+                        "runtime recovery state check failed"
+                    );
+                    continue;
+                }
+            };
+            if state.status == AgentStatus::Stopped {
+                self.clear_runtime_recovery(&notice.agent_id, generation)
+                    .await;
+                return;
+            }
+
+            let existing_runtime = {
+                let mut registry = self.inner.runtimes.write().await;
+                if registry.phase != HostRuntimePhase::Open {
+                    registry.recovering.remove(&notice.agent_id);
+                    return;
+                }
+                let Some(claim) = registry.recovering.get(&notice.agent_id) else {
+                    return;
+                };
+                if !claim.retryable {
+                    continue;
+                }
+                generation = claim.generation;
+                let Some(entry) = registry.agents.get(&notice.agent_id) else {
+                    registry.recovering.remove(&notice.agent_id);
+                    return;
+                };
+                let entry_generation = entry.generation;
+                let entry_terminated = entry.task.is_finished()
+                    || *entry.phase.borrow() == AgentRuntimePhase::Terminated;
+                let accessible_runtime = entry.accepts_host_access().then(|| entry.runtime.clone());
+                if entry_generation != generation {
+                    if accessible_runtime.is_some() {
+                        registry.recovering.remove(&notice.agent_id);
+                        return;
+                    }
+                    continue;
+                } else if entry_terminated {
+                    registry.agents.remove(&notice.agent_id);
+                    None
+                } else {
+                    accessible_runtime
+                }
+            };
+
+            let runtime = match existing_runtime {
+                Some(runtime) => runtime,
+                None => match self
+                    .activate_agent(&notice.agent_id, RuntimeActivationReason::StartupRecovery)
+                    .await
+                {
+                    Ok(runtime) => runtime,
+                    Err(error) => {
+                        tracing::warn!(
+                            agent_id = notice.agent_id,
+                            attempt,
+                            error = %error,
+                            "runtime automatic recovery activation failed"
+                        );
+                        continue;
+                    }
+                },
+            };
+            {
+                let mut registry = self.inner.runtimes.write().await;
+                if let Some(entry) = registry.agents.get(&notice.agent_id) {
+                    let previous_generation = generation;
+                    generation = entry.generation;
+                    if registry
+                        .recovering
+                        .get(&notice.agent_id)
+                        .is_some_and(|claim| claim.generation == previous_generation)
+                    {
+                        if let Some(claim) = registry.recovering.get_mut(&notice.agent_id) {
+                            claim.generation = generation;
+                        }
+                    }
+                }
+            }
+
+            match runtime.wait_for_bootstrap().await {
+                Ok(()) => {
+                    let recovered = {
+                        let mut registry = self.inner.runtimes.write().await;
+                        let claim_matches = registry
+                            .recovering
+                            .get(&notice.agent_id)
+                            .is_some_and(|claim| claim.generation == generation && claim.retryable);
+                        let runtime_is_healthy =
+                            registry.agents.get(&notice.agent_id).is_some_and(|entry| {
+                                entry.generation == generation && entry.accepts_host_access()
+                            });
+                        if claim_matches && runtime_is_healthy {
+                            registry.recovering.remove(&notice.agent_id);
+                            true
+                        } else {
+                            false
+                        }
+                    };
+                    if !recovered {
+                        continue;
+                    }
+                    let _ = runtime
+                        .storage()
+                        .append_event(&crate::types::AuditEvent::legacy(
+                            "runtime_loop_recovered",
+                            json!({
+                                "agent_id": notice.agent_id,
+                                "failed_generation": notice.generation,
+                                "recovered_generation": generation,
+                                "attempt": attempt,
+                            }),
+                        ));
+                    tracing::info!(
+                        agent_id = notice.agent_id,
+                        attempt,
+                        "agent runtime loop recovered automatically"
+                    );
+                    return;
+                }
+                Err(error) => {
+                    let descriptor = describe_runtime_error(&error);
+                    tracing::warn!(
+                        agent_id = notice.agent_id,
+                        attempt,
+                        retryable = descriptor.retryable,
+                        error = %error,
+                        "runtime automatic recovery bootstrap failed"
+                    );
+                    if !descriptor.retryable {
+                        self.clear_runtime_recovery(&notice.agent_id, generation)
+                            .await;
+                        return;
+                    }
+                }
+            }
+        }
     }
 
     /// Signal the deletion coordinator to stop.
@@ -683,6 +1044,7 @@ impl RuntimeHost {
                 HostRuntimePhase::Closing | HostRuntimePhase::Closed => return Ok(()),
             }
         };
+        self.shutdown_runtime_recovery_coordinator().await;
         self.shutdown_daemon_runtime_db_retention().await;
         self.shutdown_daemon_memory_indexer().await;
         self.shutdown_daemon_deletion_coordinator().await;
@@ -712,6 +1074,7 @@ impl RuntimeHost {
 
     pub(crate) async fn unload_runtime(&self, agent_id: &str) {
         let entry = self.inner.runtimes.write().await.agents.remove(agent_id);
+        self.notify_runtime_recovery(agent_id).await;
         if let Some(entry) = entry {
             entry.task.abort();
             let _ = entry.task.await;
@@ -1425,6 +1788,7 @@ impl RuntimeHost {
             .control(action.clone())
             .await
             .map_err(PublicAgentError::Runtime)?;
+        self.notify_runtime_recovery(agent_id).await;
         if action.is_start() && was_stopped {
             return self.get_public_agent(agent_id).await;
         }
@@ -1569,6 +1933,7 @@ impl RuntimeHost {
         reason: RuntimeActivationReason,
     ) -> Pin<Box<dyn Future<Output = Result<RuntimeHandle>> + Send + 'a>> {
         Box::pin(async move {
+            self.ensure_runtime_recovery_coordinator();
             self.validate_agent_id(agent_id)?;
             if agent_id == self.config().default_agent_id {
                 self.ensure_default_agent_identity()?;
@@ -1609,7 +1974,10 @@ impl RuntimeHost {
                     }
                     continue;
                 }
-                let (runtime, runtime_task, phase) = self.spawn_runtime(agent_id)?;
+                let generation = registry.next_generation;
+                registry.next_generation = registry.next_generation.saturating_add(1);
+                let (runtime, runtime_task, phase) =
+                    self.spawn_runtime(agent_id, Some(generation))?;
                 tracing::debug!(
                     agent_id,
                     activation_reason = reason.as_str(),
@@ -1621,6 +1989,7 @@ impl RuntimeHost {
                         runtime: runtime.clone(),
                         task: runtime_task,
                         phase,
+                        generation,
                     },
                 );
                 drop(registry);
@@ -1652,7 +2021,7 @@ impl RuntimeHost {
         );
         identity.durability = Some(AgentDurability::Ephemeral);
         self.append_agent_identity(&identity)?;
-        let (runtime, runtime_task, _phase) = match self.spawn_runtime(&agent_id) {
+        let (runtime, runtime_task, _phase) = match self.spawn_runtime(&agent_id, None) {
             Ok(spawned) => spawned,
             Err(error) => {
                 let _ = self.archive_temporary_runtime_identity(&agent_id);
@@ -2736,6 +3105,7 @@ impl RuntimeHost {
     fn spawn_runtime(
         &self,
         agent_id: &str,
+        recovery_generation: Option<u64>,
     ) -> Result<(
         RuntimeHandle,
         JoinHandle<()>,
@@ -2773,6 +3143,7 @@ impl RuntimeHost {
         };
         runtime.enable_memory_index_notify(self.inner.memory_index_notify.clone());
         let (phase_tx, phase_rx) = watch::channel(AgentRuntimePhase::Bootstrapping);
+        let runtime_recovery_tx = self.inner.runtime_recovery_tx.clone();
         let runtime_task = tokio::spawn({
             let runtime = runtime.clone();
             let agent_id = agent_id.to_string();
@@ -2793,15 +3164,28 @@ impl RuntimeHost {
                         run.await
                     }
                 };
+                let retryable_failure = result
+                    .as_ref()
+                    .err()
+                    .map(|error| describe_runtime_error(error).retryable);
                 if let Err(error) = result {
                     phase_tx.send_replace(AgentRuntimePhase::FailedCleaning);
                     runtime.record_runtime_loop_failure(&error).await;
                     tracing::warn!(
                         agent_id,
-                        "agent runtime loop stopped; the next host access will rebuild it"
+                        "agent runtime loop stopped; host recovery will rebuild it when safe"
                     );
                 }
                 phase_tx.send_replace(AgentRuntimePhase::Terminated);
+                if let (Some(generation), Some(retryable)) =
+                    (recovery_generation, retryable_failure)
+                {
+                    let _ = runtime_recovery_tx.send(RuntimeRecoveryNotice {
+                        agent_id,
+                        generation,
+                        retryable,
+                    });
+                }
             }
         });
         Ok((runtime, runtime_task, phase_rx))
@@ -5487,7 +5871,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runtime_loop_failure_reconciles_and_replays_canonical_claim_on_next_host_access() {
+    async fn runtime_loop_failure_recovers_and_replays_canonical_claim_without_host_access() {
         let (_home, host) = canonical_test_host();
         let agent_id = host.config().default_agent_id.clone();
         let runtime = host.default_runtime().await.unwrap();
@@ -5556,11 +5940,9 @@ mod tests {
                     || event.data["message_id"] != message.id
             }));
 
-        let rebuilt = host.get_or_create_agent(&agent_id).await.unwrap();
-        assert_eq!(rebuilt.agent_state().await.unwrap().id, agent_id);
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         loop {
-            let queue_replayed = rebuilt
+            let queue_replayed = runtime
                 .storage()
                 .latest_queue_entries()
                 .unwrap()
@@ -5568,7 +5950,7 @@ mod tests {
                 .any(|entry| {
                     entry.message_id == message.id && entry.status == QueueEntryStatus::Processed
                 });
-            let events = rebuilt.storage().read_recent_events(64).unwrap();
+            let events = runtime.storage().read_recent_events(64).unwrap();
             let recovery_recorded = events.iter().any(|event| {
                 event.kind == "scheduler_bootstrap_claim_recovered"
                     && event.data["message_id"].as_str() == Some(message.id.as_str())
@@ -5579,18 +5961,24 @@ mod tests {
                 event.kind == "turn_replay_started"
                     && event.data["message_id"].as_str() == Some(message.id.as_str())
             });
-            let brief_delivered = rebuilt
+            let recovered = events.iter().any(|event| {
+                event.kind == "runtime_loop_recovered"
+                    && event.data["failed_generation"].as_u64() == Some(1)
+                    && event.data["recovered_generation"].as_u64() == Some(2)
+            });
+            let brief_delivered = runtime
                 .storage()
                 .read_recent_briefs(10)
                 .unwrap()
                 .iter()
                 .any(|brief| brief.related_message_id.as_deref() == Some(message.id.as_str()));
-            if queue_replayed && recovery_recorded && replay_started && brief_delivered {
+            if queue_replayed && recovery_recorded && replay_started && recovered && brief_delivered
+            {
                 break;
             }
             if tokio::time::Instant::now() >= deadline {
-                let queue = rebuilt.storage().latest_queue_entries().unwrap();
-                let briefs = rebuilt.storage().read_recent_briefs(10).unwrap();
+                let queue = runtime.storage().latest_queue_entries().unwrap();
+                let briefs = runtime.storage().read_recent_briefs(10).unwrap();
                 let task_finished = host
                     .inner
                     .runtimes
@@ -5600,7 +5988,7 @@ mod tests {
                     .get(&agent_id)
                     .is_none_or(|entry| entry.task.is_finished());
                 panic!(
-                    "timed out waiting for canonical claim reconciliation and replay: \
+                    "timed out waiting for automatic canonical claim reconciliation and replay: \
                      queue={queue:?}, events={events:?}, briefs={briefs:?}, \
                      task_finished={task_finished}"
                 );
@@ -5614,8 +6002,69 @@ mod tests {
             .expect("rebuilt runtime should be registered");
         assert!(
             !entry.task.is_finished(),
-            "next host access should start a fresh runtime loop"
+            "automatic recovery should start a fresh runtime loop"
         );
+    }
+
+    #[tokio::test]
+    async fn non_retryable_runtime_loop_failure_does_not_trigger_automatic_recovery() {
+        let (_home, host) = canonical_test_host();
+        let agent_id = host.config().default_agent_id.clone();
+        let runtime = host.default_runtime().await.unwrap();
+        runtime.inject_non_retryable_runtime_loop_failure_after_next_claim();
+        runtime
+            .enqueue(MessageEnvelope::new(
+                &agent_id,
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator { actor_id: None },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "do not automatically recover".into(),
+                },
+            ))
+            .await
+            .unwrap();
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let finished = host
+                .inner
+                .runtimes
+                .read()
+                .await
+                .agents
+                .get(&agent_id)
+                .is_some_and(|entry| entry.task.is_finished());
+            if finished {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for non-retryable runtime failure"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let registry = host.inner.runtimes.read().await;
+        let entry = registry
+            .agents
+            .get(&agent_id)
+            .expect("failed runtime entry should remain registered");
+        assert_eq!(entry.generation, 1);
+        assert!(
+            entry.task.is_finished(),
+            "non-retryable failures should not spawn a fresh runtime"
+        );
+        assert!(!registry.recovering.contains_key(&agent_id));
+        drop(registry);
+        assert!(runtime
+            .storage()
+            .read_recent_events(64)
+            .unwrap()
+            .iter()
+            .all(|event| event.kind != "runtime_loop_recovered"));
     }
 
     #[test]

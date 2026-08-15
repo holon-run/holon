@@ -478,6 +478,8 @@ impl RuntimeHandle {
                 #[cfg(test)]
                 fail_after_next_runtime_claim: AtomicBool::new(false),
                 #[cfg(test)]
+                fail_non_retryable_after_next_runtime_claim: AtomicBool::new(false),
+                #[cfg(test)]
                 claim_work_item_plan_status_before_commit: StdMutex::new(None),
                 transition_warnings: StdMutex::new(Vec::new()),
             }),

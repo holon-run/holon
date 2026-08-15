@@ -72,6 +72,8 @@ use tracing::{error, info};
 
 #[cfg(test)]
 use crate::provider::{ConversationMessage, ProviderTurnRequest};
+#[cfg(test)]
+use crate::runtime_error::{RuntimeError, RuntimeErrorDomain};
 use crate::{
     agent_memory::load_agent_memory,
     agent_template::discover_agent_templates_catalog,
@@ -357,6 +359,8 @@ struct RuntimeInner {
     terminal_task_transition_conflicts_remaining: AtomicUsize,
     #[cfg(test)]
     fail_after_next_runtime_claim: AtomicBool,
+    #[cfg(test)]
+    fail_non_retryable_after_next_runtime_claim: AtomicBool,
     #[cfg(test)]
     claim_work_item_plan_status_before_commit:
         StdMutex<Option<(String, crate::types::WorkItemPlanStatus)>>,
@@ -3629,6 +3633,14 @@ impl RuntimeHandle {
     }
 
     #[cfg(test)]
+    pub(crate) fn inject_non_retryable_runtime_loop_failure_after_next_claim(&self) {
+        self.inner
+            .fail_non_retryable_after_next_runtime_claim
+            .store(true, Ordering::SeqCst);
+        self.inner.notify.notify_one();
+    }
+
+    #[cfg(test)]
     pub(crate) fn inject_claim_work_item_plan_status_before_commit(
         &self,
         work_item_id: String,
@@ -5523,9 +5535,24 @@ impl RuntimeHandle {
                 .fail_after_next_runtime_claim
                 .swap(false, Ordering::SeqCst)
             {
-                return Err(anyhow!(
-                    "injected agent runtime loop failure after queue claim"
-                ));
+                return Err(anyhow!(RuntimeError::new(
+                    RuntimeErrorDomain::Storage,
+                    "injected_runtime_storage_failure",
+                    "injected agent runtime loop failure after queue claim",
+                )
+                .with_retryable(true)));
+            }
+            #[cfg(test)]
+            if self
+                .inner
+                .fail_non_retryable_after_next_runtime_claim
+                .swap(false, Ordering::SeqCst)
+            {
+                return Err(anyhow!(RuntimeError::new(
+                    RuntimeErrorDomain::Runtime,
+                    "injected_non_retryable_runtime_failure",
+                    "injected non-retryable agent runtime loop failure after queue claim",
+                )));
             }
             self.append_state_changed_events(&scheduled.running_state)?;
 
