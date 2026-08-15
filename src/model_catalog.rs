@@ -1648,7 +1648,8 @@ fn reasoning_effort_options(
         ("venice", "zai-org-glm-4.7" | "qwen3-235b-a22b-thinking-2507") => {
             &["low", "medium", "high"][..]
         }
-        ("zai" | "bigmodel", "glm-5.2" | "glm-5.3") => &["high", "max"][..],
+        ("zai" | "bigmodel", "glm-5.2") => &["high", "max"][..],
+        ("zai" | "bigmodel", "glm-5.3") => &["low", "high", "max"][..],
         ("moonshot", "kimi-k3") => &["low", "high", "max"][..],
         ("xiaomi", "mimo-v2.5-pro" | "mimo-v2.5")
             if endpoint
@@ -2242,6 +2243,20 @@ mod tests {
         assert_eq!(bigmodel.reasoning_effort_options, ["high", "max"]);
         assert_eq!(bigmodel.source, ModelMetadataSource::BuiltInCatalog);
 
+        let zai_53 = catalog.resolve_policy(
+            &ModelRef::parse("zai/glm-5.3").unwrap(),
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &base_context(),
+            8192,
+        );
+        assert_eq!(zai_53.display_name, "GLM-5.3");
+        assert_eq!(zai_53.context_window_tokens, Some(1_000_000));
+        assert_eq!(zai_53.runtime_max_output_tokens, 131_072);
+        assert_eq!(zai_53.reasoning_effort_options, ["low", "high", "max"]);
+        assert_eq!(zai_53.source, ModelMetadataSource::BuiltInCatalog);
+
         assert_eq!(
             catalog
                 .preferred_model_for_provider(&ProviderId::parse("zai").unwrap())
@@ -2719,7 +2734,7 @@ mod tests {
             .filter(|entry| entry.model_ref.provider == synthetic)
             .collect::<Vec<_>>();
 
-        assert_eq!(models.len(), 12);
+        assert_eq!(models.len(), 11);
         for model in &models {
             assert!(model.capabilities.supports_reasoning);
             assert_eq!(
@@ -3043,7 +3058,6 @@ mod tests {
             "dashscope@token-plan/qwen3.8-max",
             "dashscope@token-plan/deepseek-v4-flash-0731",
             "dashscope@token-plan/kimi-k2.7-code",
-            "dashscope@token-plan/glm-5.3",
             "dashscope@token-plan/glm-5.2",
             "dashscope@token-plan/MiniMax-M2.5",
             "dashscope@coding-plan/qwen3-coder-plus",
@@ -3063,7 +3077,6 @@ mod tests {
             "dashscope@token-plan/ZHIPU/GLM-5.2",
             "dashscope@token-plan/MiniMax/MiniMax-M3",
             "dashscope@coding-plan/glm-5.2",
-            "dashscope@coding-plan/glm-5.3",
             "dashscope@coding-plan/kimi-k2.7-code",
         ] {
             assert!(
@@ -3550,7 +3563,7 @@ mod tests {
             );
         }
 
-        for route_ref in ["volcengine@plan/glm-5.2", "volcengine@plan/glm-5.3"] {
+        for route_ref in ["volcengine@plan/glm-5.2"] {
             let policy = catalog.resolve_route_policy(
                 &ModelRouteRef::parse(route_ref).unwrap(),
                 &HashMap::new(),
@@ -3571,9 +3584,7 @@ mod tests {
         for route_ref in [
             "volcengine@default/doubao-seed-2-0-pro-260215",
             "volcengine@coding/glm-5.2",
-            "volcengine@coding/glm-5.3",
             "volcengine@plan/glm-5.2",
-            "volcengine@plan/glm-5.3",
         ] {
             let policy = catalog.resolve_route_policy(
                 &ModelRouteRef::parse(route_ref).unwrap(),
@@ -3830,7 +3841,7 @@ mod tests {
             .filter(|model| model.model_ref.provider == provider)
             .collect::<Vec<_>>();
 
-        assert_eq!(models.len(), 15);
+        assert_eq!(models.len(), 14);
         for model in &models {
             assert!(model.capabilities.supports_reasoning);
             assert!(model.reasoning_effort_options.is_empty());
@@ -3840,7 +3851,6 @@ mod tests {
         for model in [
             "deepseek-v4-pro",
             "deepseek-v4-flash",
-            "glm-5.3",
             "glm-5.2",
             "glm-5.1",
             "kimi-k2.7-code",
@@ -3910,7 +3920,7 @@ mod tests {
             .filter(|model| model.model_ref.provider == provider)
             .collect::<Vec<_>>();
 
-        assert_eq!(models.len(), 28);
+        assert_eq!(models.len(), 27);
         for model in &models {
             assert_eq!(model.source, ModelMetadataSource::ConservativeBuiltin);
             assert!(model.reasoning_effort_options.is_empty());
