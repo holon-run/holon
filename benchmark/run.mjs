@@ -3312,6 +3312,9 @@ function turnLocalCompactionDiagnostic(data) {
     degraded_rounds: numberOrNull(compaction.degraded_rounds),
     compacted_tool_results: numberOrNull(compaction.compacted_tool_results),
     preserved_artifact_refs: numberOrNull(compaction.preserved_artifact_refs),
+    trigger_budget_fallback_applied: Boolean(
+      compaction.trigger_budget_fallback_applied
+    ),
     strict_fallback_applied: Boolean(compaction.strict_fallback_applied)
   };
 }

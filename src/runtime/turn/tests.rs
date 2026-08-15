@@ -1111,6 +1111,48 @@ fn build_turn_local_projection_compacts_at_trigger_before_hard_budget() {
         compaction.projected_estimated_tokens
             <= trigger_budget.saturating_sub(CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS)
     );
+    assert!(!compaction.trigger_budget_fallback_applied);
+}
+
+#[test]
+fn build_turn_local_projection_reports_zero_trigger_budget_fallback() {
+    let rounds = vec![
+        fixture_round_with_tool(
+            1,
+            "inspect command",
+            "ExecCommand",
+            serde_json::json!({"cmd": "printf ok"}),
+        ),
+        fixture_round_with_tool(
+            2,
+            "inspect command",
+            "ExecCommand",
+            serde_json::json!({"cmd": "printf ok"}),
+        ),
+    ];
+    let prompt_frame = fixture_prompt_frame();
+    let projection = build_turn_local_projection_with_runtime_reminder(
+        &prompt_frame,
+        &rounds,
+        &[],
+        &TurnLocalCheckpointState::default(),
+        Some("req-trigger-fallback".into()),
+        4_000,
+        CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS,
+        100,
+        usize::MAX,
+        None,
+    );
+
+    let TurnLocalProjectionOutcome::Projection(projection) = projection else {
+        panic!("expected projection outcome");
+    };
+    let compaction = projection.compaction.expect("repeated rounds should fold");
+    assert!(compaction.trigger_budget_fallback_applied);
+    assert_eq!(
+        compaction.effective_budget_estimated_tokens,
+        4_000 - CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS
+    );
 }
 
 #[test]
@@ -1131,7 +1173,8 @@ fn compacted_tool_result_projection_uses_canonical_recoverable_receipt() {
             "stdout_ref": "tool_execution:tool_123:stdout",
             "truncated": true,
             "artifacts": [{"path": "/tmp/full-output.log"}],
-            "task_handle": {"task_id": "task_123", "status": "completed"}
+            "task_handle": {"task_id": "task_123", "status": "completed"},
+            "details": {"path": "/tmp/not-an-artifact"}
         })),
         error: None,
     };
@@ -1186,7 +1229,7 @@ fn compacted_tool_result_projection_uses_canonical_recoverable_receipt() {
     let compaction = projection.compaction.expect("tool result should compact");
     assert_eq!(stats.compacted_tool_results, 1);
     assert_eq!(compaction.compacted_tool_results, 1);
-    assert!(compaction.preserved_artifact_refs >= 3);
+    assert_eq!(compaction.preserved_artifact_refs, 3);
     let rendered = format!("{:?}", projection.conversation);
     assert!(rendered.contains("completed exit_status=0 truncated=true"));
     assert!(rendered.contains("tool_execution:tool_123:output"));

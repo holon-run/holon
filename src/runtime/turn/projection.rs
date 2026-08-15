@@ -39,6 +39,7 @@ pub(super) struct TurnLocalCompactionStats {
     pub(super) tool_overhead_estimated_tokens: usize,
     pub(super) compacted_tool_results: usize,
     pub(super) preserved_artifact_refs: usize,
+    pub(super) trigger_budget_fallback_applied: bool,
     pub(super) strict_fallback_applied: bool,
     pub(super) checkpoint_request_id: Option<String>,
     pub(super) checkpoint_mode: Option<TurnLocalCheckpointMode>,
@@ -321,20 +322,27 @@ fn recoverable_result_value(value: &Value) -> Option<Value> {
     }
 }
 
-fn count_artifact_refs(value: &Value) -> usize {
+fn count_artifact_refs_at(value: &Value, allow_path: bool) -> usize {
     match value {
         Value::Object(map) => map
             .iter()
             .map(|(key, value)| {
                 usize::from(
-                    (key == "path" || key.ends_with("_ref"))
+                    ((allow_path && key == "path") || key.ends_with("_ref"))
                         && value.as_str().is_some_and(|value| !value.is_empty()),
-                ) + count_artifact_refs(value)
+                ) + count_artifact_refs_at(value, key == "artifacts")
             })
             .sum(),
-        Value::Array(values) => values.iter().map(count_artifact_refs).sum(),
+        Value::Array(values) => values
+            .iter()
+            .map(|value| count_artifact_refs_at(value, allow_path))
+            .sum(),
         _ => 0,
     }
+}
+
+fn count_artifact_refs(value: &Value) -> usize {
+    count_artifact_refs_at(value, true)
 }
 
 fn compact_tool_result_envelope(
@@ -554,6 +562,7 @@ fn fold_repeated_tool_call_rounds(
     tool_output_budget_estimated_tokens: usize,
     effective_budget_estimated_tokens: usize,
     tool_overhead_estimated_tokens: usize,
+    trigger_budget_fallback_applied: bool,
 ) -> Option<TurnLocalProjectionOutcome> {
     // Detect if there are any consecutive identical rounds to fold.
     let has_repeats = rounds
@@ -622,6 +631,7 @@ fn fold_repeated_tool_call_rounds(
                 tool_overhead_estimated_tokens,
                 compacted_tool_results: tool_stats.compacted_tool_results,
                 preserved_artifact_refs: tool_stats.preserved_artifact_refs,
+                trigger_budget_fallback_applied,
                 strict_fallback_applied: false,
                 checkpoint_request_id: None,
                 checkpoint_mode: None,
@@ -833,6 +843,7 @@ pub(super) fn build_turn_local_projection_with_runtime_reminder(
                     tool_overhead_estimated_tokens,
                     compacted_tool_results: tool_bounded_stats.compacted_tool_results,
                     preserved_artifact_refs: tool_bounded_stats.preserved_artifact_refs,
+                    trigger_budget_fallback_applied: false,
                     strict_fallback_applied: false,
                     checkpoint_request_id: None,
                     checkpoint_mode: None,
@@ -849,7 +860,8 @@ pub(super) fn build_turn_local_projection_with_runtime_reminder(
             });
         }
     }
-    let effective_budget_estimated_tokens = if trigger_effective_budget_estimated_tokens == 0 {
+    let trigger_budget_fallback_applied = trigger_effective_budget_estimated_tokens == 0;
+    let effective_budget_estimated_tokens = if trigger_budget_fallback_applied {
         hard_effective_budget_estimated_tokens
     } else {
         trigger_effective_budget_estimated_tokens
@@ -867,6 +879,7 @@ pub(super) fn build_turn_local_projection_with_runtime_reminder(
         tool_output_budget,
         effective_budget_estimated_tokens,
         tool_overhead_estimated_tokens,
+        trigger_budget_fallback_applied,
     );
     if let Some(outcome) = folded {
         return outcome;
@@ -932,6 +945,7 @@ pub(super) fn build_turn_local_projection_with_runtime_reminder(
                             tool_overhead_estimated_tokens,
                             compacted_tool_results: tool_stats.compacted_tool_results,
                             preserved_artifact_refs: tool_stats.preserved_artifact_refs,
+                            trigger_budget_fallback_applied,
                             strict_fallback_applied: true,
                             checkpoint_request_id: None,
                             checkpoint_mode: None,
@@ -992,6 +1006,7 @@ pub(super) fn build_turn_local_projection_with_runtime_reminder(
                         tool_overhead_estimated_tokens,
                         compacted_tool_results: 0,
                         preserved_artifact_refs: 0,
+                        trigger_budget_fallback_applied,
                         strict_fallback_applied: true,
                         checkpoint_request_id: None,
                         checkpoint_mode: None,
@@ -1105,6 +1120,7 @@ pub(super) fn build_turn_local_projection_with_runtime_reminder(
                     tool_overhead_estimated_tokens,
                     compacted_tool_results: tool_stats.compacted_tool_results,
                     preserved_artifact_refs: tool_stats.preserved_artifact_refs,
+                    trigger_budget_fallback_applied,
                     strict_fallback_applied,
                     checkpoint_request_id: checkpoint_request
                         .as_ref()
@@ -1163,6 +1179,7 @@ pub(super) fn build_turn_local_projection_with_runtime_reminder(
             tool_overhead_estimated_tokens,
             compacted_tool_results: 0,
             preserved_artifact_refs: 0,
+            trigger_budget_fallback_applied,
             strict_fallback_applied: minimum_tail_start > preferred_tail_start,
             checkpoint_request_id: None,
             checkpoint_mode: None,

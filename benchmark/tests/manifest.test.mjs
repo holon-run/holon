@@ -1375,6 +1375,7 @@ test("summarizeHolonTokenOptimization reports local compaction and cache warm-up
           degraded_rounds: 0,
           compacted_tool_results: 1,
           preserved_artifact_refs: 3,
+          trigger_budget_fallback_applied: true,
           strict_fallback_applied: false
         }
       }
@@ -1401,6 +1402,10 @@ test("summarizeHolonTokenOptimization reports local compaction and cache warm-up
   assert.equal(diagnostics.summary.turn_local_compaction_cache_warmup_observed, 1);
   assert.equal(diagnostics.summary.turn_local_compaction_cache_warmup_hits, 1);
   assert.equal(diagnostics.rounds[0].turn_local_compaction.status, "applied");
+  assert.equal(
+    diagnostics.rounds[0].turn_local_compaction.trigger_budget_fallback_applied,
+    true
+  );
   assert.equal(diagnostics.rounds[1].turn_local_compaction.status, "not_applied");
 });
 
