@@ -103,6 +103,7 @@ pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
             ("kimi-k2.7-code", None, Some(65_536)),
             ("kimi-k2.6", None, Some(65_536)),
             ("kimi-k2.5", None, None),
+            ("glm-5.3", Some(1_000_000), Some(65_536)),
             ("glm-5.2", Some(1_000_000), Some(65_536)),
             ("glm-5.1", None, Some(65_536)),
             ("glm-5", None, None),
@@ -173,6 +174,7 @@ pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
             ("deepseek-v4-flash", None),
             ("kimi-k2.6", None),
             ("kimi-k2.7-code", None),
+            ("glm-5.3", None),
             ("glm-5.2", None),
         ]
         .into_iter()
@@ -489,6 +491,15 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
         ),
         catalog_model(
             "volcengine-coding",
+            "glm-5.3",
+            "GLM-5.3",
+            204_800,
+            128_000,
+            true,
+            false,
+        ),
+        catalog_model(
+            "volcengine-coding",
             "glm-5.2",
             "GLM-5.2",
             204_800,
@@ -598,6 +609,7 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
             source: ModelMetadataSource::BuiltInCatalog,
             endpoint: None,
         },
+        catalog_model("zai", "glm-5.3", "GLM-5.3", 1_000_000, 131_072, true, false),
         catalog_model("zai", "glm-5.2", "GLM-5.2", 1_000_000, 131_072, true, false),
         catalog_model("zai", "glm-5.1", "GLM-5.1", 202_800, 131_072, true, false),
         catalog_model("zai", "glm-5", "GLM-5", 202_800, 131_072, true, false),
@@ -707,6 +719,9 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
         ),
     ];
     entries.extend([
+        catalog_model(
+            "bigmodel", "glm-5.3", "GLM-5.3", 1_000_000, 131_072, true, false,
+        ),
         catalog_model(
             "bigmodel", "glm-5.2", "GLM-5.2", 1_000_000, 131_072, true, false,
         ),
@@ -878,10 +893,28 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
         ),
         catalog_model(
             "dashscope",
+            "ZHIPU/GLM-5.3",
+            "ZHIPU/GLM-5.3",
+            1_000_000,
+            131_072,
+            true,
+            false,
+        ),
+        catalog_model(
+            "dashscope",
             "ZHIPU/GLM-5.2",
             "ZHIPU/GLM-5.2",
             1_000_000,
             131_072,
+            true,
+            false,
+        ),
+        catalog_model(
+            "dashscope",
+            "glm-5.3",
+            "glm-5.3",
+            204_800,
+            128_000,
             true,
             false,
         ),

@@ -91,6 +91,14 @@ const TENCENT_TOKENHUB_MODELS: &[TencentTokenHubModelSpec] = &[
         false,
     ),
     (
+        "glm-5.3",
+        "GLM-5.3",
+        Some(1_000_000),
+        Some(131_072),
+        true,
+        false,
+    ),
+    (
         "glm-5.2",
         "GLM-5.2",
         Some(1_000_000),

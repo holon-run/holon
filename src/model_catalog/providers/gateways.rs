@@ -120,6 +120,15 @@ pub(super) fn opencode_entries() -> Vec<BuiltInModelMetadata> {
             None,
         ),
         opencode_go_model(
+            "glm-5.3",
+            "GLM-5.3",
+            1_000_000,
+            Some(131_072),
+            true,
+            false,
+            None,
+        ),
+        opencode_go_model(
             "glm-5.2",
             "GLM-5.2",
             1_000_000,

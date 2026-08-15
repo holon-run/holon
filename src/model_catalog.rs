@@ -1648,7 +1648,7 @@ fn reasoning_effort_options(
         ("venice", "zai-org-glm-4.7" | "qwen3-235b-a22b-thinking-2507") => {
             &["low", "medium", "high"][..]
         }
-        ("zai" | "bigmodel", "glm-5.2") => &["high", "max"][..],
+        ("zai" | "bigmodel", "glm-5.2" | "glm-5.3") => &["high", "max"][..],
         ("moonshot", "kimi-k3") => &["low", "high", "max"][..],
         ("xiaomi", "mimo-v2.5-pro" | "mimo-v2.5")
             if endpoint
@@ -2247,17 +2247,19 @@ mod tests {
                 .preferred_model_for_provider(&ProviderId::parse("zai").unwrap())
                 .unwrap()
                 .as_string(),
-            "zai/glm-5.2"
+            "zai/glm-5.3"
         );
         assert_eq!(
             catalog
                 .preferred_model_for_provider(&ProviderId::parse("bigmodel").unwrap())
                 .unwrap()
                 .as_string(),
-            "bigmodel/glm-5.2"
+            "bigmodel/glm-5.3"
         );
 
-        for model in ["glm-5.2", "glm-5.1", "glm-5", "glm-4.7", "glm-4.6"] {
+        for model in [
+            "glm-5.3", "glm-5.2", "glm-5.1", "glm-5", "glm-4.7", "glm-4.6",
+        ] {
             assert!(catalog
                 .get(&ModelRef::new(ProviderId::parse("zai").unwrap(), model))
                 .is_some());
@@ -2717,7 +2719,7 @@ mod tests {
             .filter(|entry| entry.model_ref.provider == synthetic)
             .collect::<Vec<_>>();
 
-        assert_eq!(models.len(), 11);
+        assert_eq!(models.len(), 12);
         for model in &models {
             assert!(model.capabilities.supports_reasoning);
             assert_eq!(
@@ -3041,6 +3043,7 @@ mod tests {
             "dashscope@token-plan/qwen3.8-max",
             "dashscope@token-plan/deepseek-v4-flash-0731",
             "dashscope@token-plan/kimi-k2.7-code",
+            "dashscope@token-plan/glm-5.3",
             "dashscope@token-plan/glm-5.2",
             "dashscope@token-plan/MiniMax-M2.5",
             "dashscope@coding-plan/qwen3-coder-plus",
@@ -3060,6 +3063,7 @@ mod tests {
             "dashscope@token-plan/ZHIPU/GLM-5.2",
             "dashscope@token-plan/MiniMax/MiniMax-M3",
             "dashscope@coding-plan/glm-5.2",
+            "dashscope@coding-plan/glm-5.3",
             "dashscope@coding-plan/kimi-k2.7-code",
         ] {
             assert!(
@@ -3546,7 +3550,7 @@ mod tests {
             );
         }
 
-        for route_ref in ["volcengine@plan/glm-5.2"] {
+        for route_ref in ["volcengine@plan/glm-5.2", "volcengine@plan/glm-5.3"] {
             let policy = catalog.resolve_route_policy(
                 &ModelRouteRef::parse(route_ref).unwrap(),
                 &HashMap::new(),
@@ -3567,7 +3571,9 @@ mod tests {
         for route_ref in [
             "volcengine@default/doubao-seed-2-0-pro-260215",
             "volcengine@coding/glm-5.2",
+            "volcengine@coding/glm-5.3",
             "volcengine@plan/glm-5.2",
+            "volcengine@plan/glm-5.3",
         ] {
             let policy = catalog.resolve_route_policy(
                 &ModelRouteRef::parse(route_ref).unwrap(),
@@ -3824,7 +3830,7 @@ mod tests {
             .filter(|model| model.model_ref.provider == provider)
             .collect::<Vec<_>>();
 
-        assert_eq!(models.len(), 14);
+        assert_eq!(models.len(), 15);
         for model in &models {
             assert!(model.capabilities.supports_reasoning);
             assert!(model.reasoning_effort_options.is_empty());
@@ -3834,6 +3840,7 @@ mod tests {
         for model in [
             "deepseek-v4-pro",
             "deepseek-v4-flash",
+            "glm-5.3",
             "glm-5.2",
             "glm-5.1",
             "kimi-k2.7-code",
@@ -3903,7 +3910,7 @@ mod tests {
             .filter(|model| model.model_ref.provider == provider)
             .collect::<Vec<_>>();
 
-        assert_eq!(models.len(), 27);
+        assert_eq!(models.len(), 28);
         for model in &models {
             assert_eq!(model.source, ModelMetadataSource::ConservativeBuiltin);
             assert!(model.reasoning_effort_options.is_empty());
