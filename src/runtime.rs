@@ -170,14 +170,25 @@ fn rebase_prepared_completion_agent_state(
     prepared: &PreparedWorkItemCompletion,
     baseline: &AgentState,
 ) -> Result<AgentState> {
-    let expected = &prepared.expected_agent_state;
+    // The expected_agent_state was captured from guard.state (in-memory) at
+    // completion preparation time, while baseline is guard.last_persisted_state
+    // at commit time. Between these two reads, persist_state() may be called
+    // (e.g. by promote_turn_active_skills or concurrent wake_hint coalescing),
+    // updating last_persisted_state to the current guard.state. If guard.state
+    // changed in any tracked field during that window, the strict equality
+    // check would bail even though the completion is still valid.
+    //
+    // The committed_agent_state already contains the correct final values for
+    // status, current_run_id, current_work_item_id, current_turn_work_item_id,
+    // and current_execution_binding — they are unconditionally applied on top
+    // of the baseline below. The DB-level OCC check (expected =
+    // last_persisted_state) in the commit transaction catches real concurrent
+    // writes. The work item revision is validated in the execution protocol
+    // commit. Removing this redundant TOCTOU guard avoids false-positive
+    // bail-outs from benign persist_state() calls.
     anyhow::ensure!(
-        baseline.id == expected.id
-            && baseline.current_run_id == expected.current_run_id
-            && baseline.current_work_item_id == expected.current_work_item_id
-            && baseline.current_turn_work_item_id == expected.current_turn_work_item_id
-            && baseline.current_execution_binding == expected.current_execution_binding,
-        "completion commit execution or focus binding changed before settlement"
+        baseline.id == prepared.expected_agent_state.id,
+        "completion commit agent identity changed before settlement"
     );
     let committed = &prepared.committed_agent_state;
     let mut state = baseline.clone();

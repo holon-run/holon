@@ -7109,3 +7109,127 @@ async fn explicit_pick_unwinds_nested_continuations_and_canonical_parents() {
         crate::domain::execution_protocol::WorkItemExecutionState::Runnable { .. }
     ));
 }
+
+/// When `persist_state()` is called between completion preparation and the
+/// canonical terminal settlement commit, the baseline (`last_persisted_state`)
+/// may diverge from `expected_agent_state` (captured from `guard.state` at
+/// preparation time). The rebase must not bail — the committed values are
+/// applied unconditionally and the DB-level OCC check catches real conflicts.
+#[test]
+fn rebase_completion_accepts_diverged_baseline_after_concurrent_persist() {
+    let agent_id = "agent-rebase";
+    let work_item_id = "work-rebase";
+    let run_id = "run-rebase-1";
+    let turn_id = "turn-rebase-1";
+
+    // Expected state at completion preparation time: agent focused on the
+    // work item with an active execution binding.
+    let mut expected = AgentState::new(agent_id);
+    expected.current_run_id = Some(run_id.to_string());
+    expected.current_work_item_id = Some(work_item_id.to_string());
+    expected.current_turn_work_item_id = Some(work_item_id.to_string());
+    expected.current_execution_binding = Some(WorkItemExecutionBinding {
+        activation_id: None,
+        admission_provenance: None,
+        source_message_id: "msg-1".to_string(),
+        turn_id: turn_id.to_string(),
+        work_item_id: Some(work_item_id.to_string()),
+        claimed_work_revision: Some(1),
+    });
+    expected.status = AgentStatus::AwakeRunning;
+
+    // Committed state after completion: focus released, binding cleared.
+    let mut committed = expected.clone();
+    committed.current_run_id = None;
+    committed.current_work_item_id = None;
+    committed.current_turn_work_item_id = None;
+    committed.current_execution_binding = None;
+    committed.status = AgentStatus::AwakeIdle;
+
+    // Baseline after a concurrent persist_state(): the same focus/binding
+    // fields as expected (persist_state writes guard.state which wasn't
+    // modified in these fields), but pending_wake_hint is now set.
+    let mut baseline = expected.clone();
+    baseline.pending_wake_hint = Some(PendingWakeHint {
+        reason: "ci_callback".to_string(),
+        description: None,
+        source: None,
+        scope: None,
+        external_trigger_id: None,
+        resource: None,
+        body: None,
+        content_type: None,
+        correlation_id: None,
+        causation_id: None,
+        created_at: Utc::now(),
+    });
+
+    let record = WorkItemRecord::new(agent_id, "test", WorkItemState::Completed);
+    let brief = BriefRecord::new(
+        agent_id,
+        BriefKind::Result,
+        "done",
+        Some("msg-1".to_string()),
+        None,
+    );
+    let prepared = PreparedWorkItemCompletion {
+        record,
+        brief,
+        expected_execution_protocol_state: None,
+        expected_agent_state: expected,
+        committed_agent_state: committed.clone(),
+        wait_conditions: Vec::new(),
+        continuations: Vec::new(),
+        continuation_resumed: None,
+        audit_events: Vec::new(),
+        index_changes: Vec::new(),
+        tool_execution: None,
+        transcript_entries: Vec::new(),
+    };
+
+    let rebased = crate::runtime::rebase_prepared_completion_agent_state(&prepared, &baseline)
+        .expect("rebase must not bail on benign baseline divergence");
+
+    // The committed values must be applied on top of the baseline.
+    assert_eq!(rebased.status, AgentStatus::AwakeIdle);
+    assert!(rebased.current_run_id.is_none());
+    assert!(rebased.current_work_item_id.is_none());
+    assert!(rebased.current_turn_work_item_id.is_none());
+    assert!(rebased.current_execution_binding.is_none());
+    // The benign baseline change (pending_wake_hint) must be preserved.
+    assert!(rebased.pending_wake_hint.is_some());
+}
+
+/// A mismatched agent id must still be rejected.
+#[test]
+fn rebase_completion_rejects_mismatched_agent_id() {
+    let expected = AgentState::new("agent-a");
+    let committed = expected.clone();
+    let baseline = AgentState::new("agent-b");
+
+    let record = WorkItemRecord::new("agent-a", "test", WorkItemState::Completed);
+    let brief = BriefRecord::new(
+        "agent-a",
+        BriefKind::Result,
+        "done",
+        Some("msg-1".to_string()),
+        None,
+    );
+    let prepared = PreparedWorkItemCompletion {
+        record,
+        brief,
+        expected_execution_protocol_state: None,
+        expected_agent_state: expected,
+        committed_agent_state: committed,
+        wait_conditions: Vec::new(),
+        continuations: Vec::new(),
+        continuation_resumed: None,
+        audit_events: Vec::new(),
+        index_changes: Vec::new(),
+        tool_execution: None,
+        transcript_entries: Vec::new(),
+    };
+
+    let result = crate::runtime::rebase_prepared_completion_agent_state(&prepared, &baseline);
+    assert!(result.is_err(), "mismatched agent id must be rejected");
+}
