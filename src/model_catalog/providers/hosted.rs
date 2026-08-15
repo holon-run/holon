@@ -793,7 +793,6 @@ pub(super) fn middle_entries() -> Vec<BuiltInModelMetadata> {
             false,
         ),
         nvidia_model("minimaxai/minimax-m3", "MiniMax M3", 1_000_000, true, true),
-        nvidia_model("z-ai/glm-5.3", "GLM-5.3", 1_000_000, true, false),
         nvidia_model("z-ai/glm-5.2", "GLM-5.2", 1_000_000, true, false),
     ]
 }
@@ -841,15 +840,6 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
             "hf:openai/gpt-oss-120b",
             "OpenAI GPT OSS 120B",
             131_072,
-            65_536,
-            true,
-            false,
-        ),
-        catalog_model(
-            "synthetic",
-            "hf:zai-org/GLM-5.3",
-            "Z.ai GLM-5.3",
-            524_288,
             65_536,
             true,
             false,
@@ -925,7 +915,6 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
             true,
         ),
         together_model("moonshotai/Kimi-K2.6", "Kimi K2.6", 262_144, true, true),
-        together_model("zai-org/GLM-5.3", "GLM-5.3", 262_144, false, false),
         together_model("zai-org/GLM-5.2", "GLM-5.2", 262_144, false, false),
         together_model("openai/gpt-oss-120b", "GPT-OSS 120B", 128_000, true, false),
         together_model(
