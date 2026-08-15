@@ -12,7 +12,7 @@ use anyhow::{anyhow, bail, Result};
 use chrono::Utc;
 use serde_json::{json, Value};
 use tokio::{
-    sync::{Notify, RwLock},
+    sync::{watch, Notify, RwLock},
     task::{spawn_blocking, JoinHandle},
 };
 use tokio_util::sync::CancellationToken;
@@ -163,6 +163,25 @@ pub(crate) struct HostInner {
 struct AgentEntry {
     runtime: RuntimeHandle,
     task: JoinHandle<()>,
+    phase: watch::Receiver<AgentRuntimePhase>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentRuntimePhase {
+    Bootstrapping,
+    Running,
+    FailedCleaning,
+    Terminated,
+}
+
+impl AgentEntry {
+    fn accepts_host_access(&self) -> bool {
+        !self.task.is_finished()
+            && matches!(
+                *self.phase.borrow(),
+                AgentRuntimePhase::Bootstrapping | AgentRuntimePhase::Running
+            )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -804,7 +823,7 @@ impl RuntimeHost {
         registry
             .agents
             .get(agent_id)
-            .filter(|entry| !entry.task.is_finished())
+            .filter(|entry| entry.accepts_host_access())
             .map(|entry| entry.runtime.clone())
     }
 
@@ -1118,9 +1137,15 @@ impl RuntimeHost {
         agent_id: &str,
     ) -> std::result::Result<RuntimeHandle, PublicAgentError> {
         self.public_agent_identity(agent_id)?;
-        self.activate_agent(agent_id, RuntimeActivationReason::OperatorControl)
+        let runtime = self
+            .activate_agent(agent_id, RuntimeActivationReason::OperatorControl)
             .await
-            .map_err(Self::public_activation_error)
+            .map_err(Self::public_activation_error)?;
+        runtime
+            .wait_for_bootstrap()
+            .await
+            .map_err(PublicAgentError::Runtime)?;
+        Ok(runtime)
     }
 
     pub async fn begin_public_agent_deletion(
@@ -1214,7 +1239,7 @@ impl RuntimeHost {
             registry
                 .agents
                 .get(agent_id)
-                .filter(|entry| !entry.task.is_finished())
+                .filter(|entry| entry.accepts_host_access())
                 .map(|entry| entry.runtime.clone())
         };
 
@@ -1368,9 +1393,15 @@ impl RuntimeHost {
                 agent_id: agent_id.to_string(),
             });
         }
-        self.activate_agent(agent_id, RuntimeActivationReason::ExternalIngress)
+        let runtime = self
+            .activate_agent(agent_id, RuntimeActivationReason::ExternalIngress)
             .await
-            .map_err(Self::public_activation_error)
+            .map_err(Self::public_activation_error)?;
+        runtime
+            .wait_for_bootstrap()
+            .await
+            .map_err(PublicAgentError::Runtime)?;
+        Ok(runtime)
     }
 
     pub async fn control_public_agent(
@@ -1547,38 +1578,57 @@ impl RuntimeHost {
             if agent_id == self.config().default_agent_id {
                 self.ensure_default_agent_home_initialized().await?;
             }
-            let mut stale_entry = None;
-            let mut registry = self.inner.runtimes.write().await;
-            if registry.phase != HostRuntimePhase::Open {
-                return Err(anyhow::Error::new(RuntimeAdmissionClosed));
-            }
-            if let Err(error) = self.active_agent_identity(agent_id) {
-                return Err(anyhow::Error::new(error));
-            }
-            if let Some(entry) = registry.agents.get(agent_id) {
-                if !entry.task.is_finished() {
-                    return Ok(entry.runtime.clone());
+            loop {
+                let mut stale_entry = None;
+                let mut failed_runtime_phase = None;
+                let mut registry = self.inner.runtimes.write().await;
+                if registry.phase != HostRuntimePhase::Open {
+                    return Err(anyhow::Error::new(RuntimeAdmissionClosed));
                 }
-                stale_entry = registry.agents.remove(agent_id);
+                if let Err(error) = self.active_agent_identity(agent_id) {
+                    return Err(anyhow::Error::new(error));
+                }
+                if let Some(entry) = registry.agents.get(agent_id) {
+                    if entry.accepts_host_access() {
+                        return Ok(entry.runtime.clone());
+                    }
+                    if !entry.task.is_finished()
+                        && *entry.phase.borrow() == AgentRuntimePhase::FailedCleaning
+                    {
+                        failed_runtime_phase = Some(entry.phase.clone());
+                    } else {
+                        stale_entry = registry.agents.remove(agent_id);
+                    }
+                }
+                if let Some(mut phase) = failed_runtime_phase {
+                    drop(registry);
+                    while *phase.borrow_and_update() != AgentRuntimePhase::Terminated {
+                        if phase.changed().await.is_err() {
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                let (runtime, runtime_task, phase) = self.spawn_runtime(agent_id)?;
+                tracing::debug!(
+                    agent_id,
+                    activation_reason = reason.as_str(),
+                    "activating agent runtime"
+                );
+                registry.agents.insert(
+                    agent_id.to_string(),
+                    AgentEntry {
+                        runtime: runtime.clone(),
+                        task: runtime_task,
+                        phase,
+                    },
+                );
+                drop(registry);
+                if let Some(entry) = stale_entry {
+                    let _ = entry.task.await;
+                }
+                return Ok(runtime);
             }
-            let (runtime, runtime_task) = self.spawn_runtime(agent_id)?;
-            tracing::debug!(
-                agent_id,
-                activation_reason = reason.as_str(),
-                "activating agent runtime"
-            );
-            registry.agents.insert(
-                agent_id.to_string(),
-                AgentEntry {
-                    runtime: runtime.clone(),
-                    task: runtime_task,
-                },
-            );
-            drop(registry);
-            if let Some(entry) = stale_entry {
-                let _ = entry.task.await;
-            }
-            Ok(runtime)
         })
     }
 
@@ -1602,7 +1652,7 @@ impl RuntimeHost {
         );
         identity.durability = Some(AgentDurability::Ephemeral);
         self.append_agent_identity(&identity)?;
-        let (runtime, runtime_task) = match self.spawn_runtime(&agent_id) {
+        let (runtime, runtime_task, _phase) = match self.spawn_runtime(&agent_id) {
             Ok(spawned) => spawned,
             Err(error) => {
                 let _ = self.archive_temporary_runtime_identity(&agent_id);
@@ -2683,7 +2733,14 @@ impl RuntimeHost {
         RuntimeModelCatalog::from_config(&config).resolved_context_config(&base, None)
     }
 
-    fn spawn_runtime(&self, agent_id: &str) -> Result<(RuntimeHandle, JoinHandle<()>)> {
+    fn spawn_runtime(
+        &self,
+        agent_id: &str,
+    ) -> Result<(
+        RuntimeHandle,
+        JoinHandle<()>,
+        watch::Receiver<AgentRuntimePhase>,
+    )> {
         let config = self.config();
         let runtime = if let Some(provider) = self.inner.static_provider.as_ref() {
             RuntimeHandle::new_static_with_host_bridge(
@@ -2715,20 +2772,39 @@ impl RuntimeHost {
             )?
         };
         runtime.enable_memory_index_notify(self.inner.memory_index_notify.clone());
+        let (phase_tx, phase_rx) = watch::channel(AgentRuntimePhase::Bootstrapping);
         let runtime_task = tokio::spawn({
             let runtime = runtime.clone();
             let agent_id = agent_id.to_string();
             async move {
-                if let Err(error) = runtime.clone().run().await {
+                let run = runtime.clone().run();
+                tokio::pin!(run);
+                let result = tokio::select! {
+                    result = &mut run => result,
+                    bootstrap = runtime.wait_for_bootstrap() => {
+                        match bootstrap {
+                            Ok(()) => {
+                                phase_tx.send_replace(AgentRuntimePhase::Running);
+                            }
+                            Err(_) => {
+                                phase_tx.send_replace(AgentRuntimePhase::FailedCleaning);
+                            }
+                        }
+                        run.await
+                    }
+                };
+                if let Err(error) = result {
+                    phase_tx.send_replace(AgentRuntimePhase::FailedCleaning);
                     runtime.record_runtime_loop_failure(&error).await;
                     tracing::warn!(
                         agent_id,
                         "agent runtime loop stopped; the next host access will rebuild it"
                     );
                 }
+                phase_tx.send_replace(AgentRuntimePhase::Terminated);
             }
         });
-        Ok((runtime, runtime_task))
+        Ok((runtime, runtime_task, phase_rx))
     }
 
     async fn detect_changed_files_for_worktree(
