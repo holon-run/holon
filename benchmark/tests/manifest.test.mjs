@@ -15,6 +15,7 @@ import {
   validateRealTaskManifest
 } from "../lib/manifest.mjs";
 import {
+  assertHolonProviderRoundTelemetry,
   buildPairedSummary,
   buildHolonBenchmarkEnv,
   buildOperatorPrompt,
@@ -29,9 +30,12 @@ import {
   detectScopeViolation,
   evaluateRealTaskSuccess,
   orderPairedRunners,
+  normalizeHolonEventEnvelope,
+  normalizeProviderRoundUsage,
   parseClaudeCliJsonl,
   parseCodexJsonl,
   resolveDriverHolonBinary,
+  readHolonAuditEvents,
   selectHolonFinalMessage,
   shouldRunManifestVerifier,
   summarizeHolonTokenOptimization,
@@ -841,7 +845,16 @@ test("validateBenchmarkSuite accepts repeated paired execution metadata", () => 
         driver: "holon",
         model_ref: "deepseek@responses/deepseek-v4-flash",
         transport: "openai_responses",
-        endpoint: "responses"
+        endpoint: "responses",
+        pricing: {
+          currency: "USD",
+          effective_at: "2026-08-16T16:00:00Z",
+          source: "provider pricing page",
+          cache_miss_input_per_million: 0.28,
+          cache_read_input_per_million: 0.028,
+          cache_creation_input_per_million: 0,
+          output_per_million: 0.42
+        }
       }
     ],
     pr: { submit_pr: false },
@@ -851,6 +864,64 @@ test("validateBenchmarkSuite accepts repeated paired execution metadata", () => 
   assert.equal(suite.repetitions, 5);
   assert.equal(suite.execution.max_parallel_runners, 1);
   assert.equal(suite.runners[1].endpoint, "responses");
+  assert.equal(suite.runners[1].pricing.currency, "USD");
+});
+
+test("validateBenchmarkSuite rejects incomplete or invalid pricing", () => {
+  assert.throws(
+    () =>
+      validateBenchmarkSuite({
+        suite_id: "deepseek-pilot",
+        label_prefix: "deepseek-pilot",
+        tasks: ["benchmarks/tasks/task.yaml"],
+        runners: [
+          {
+            runner_id: "deepseek",
+            driver: "holon",
+            model_ref: "deepseek/model",
+            pricing: {
+              currency: "USD",
+              effective_at: "not-a-date",
+              source: "provider pricing page",
+              cache_miss_input_per_million: 0.28,
+              cache_read_input_per_million: 0.028,
+              cache_creation_input_per_million: 0,
+              output_per_million: 0.42
+            }
+          }
+        ],
+        pr: { submit_pr: false },
+        timeouts: { ci_poll_minutes: 30 }
+      }),
+    /effective_at must be an ISO-8601 timestamp/
+  );
+  assert.throws(
+    () =>
+      validateBenchmarkSuite({
+        suite_id: "deepseek-pilot",
+        label_prefix: "deepseek-pilot",
+        tasks: ["benchmarks/tasks/task.yaml"],
+        runners: [
+          {
+            runner_id: "deepseek",
+            driver: "holon",
+            model_ref: "deepseek/model",
+            pricing: {
+              currency: "USD",
+              effective_at: "2026",
+              source: "provider pricing page",
+              cache_miss_input_per_million: 0.28,
+              cache_read_input_per_million: 0.028,
+              cache_creation_input_per_million: 0,
+              output_per_million: 0.42
+            }
+          }
+        ],
+        pr: { submit_pr: false },
+        timeouts: { ci_poll_minutes: 30 }
+      }),
+    /effective_at must be an ISO-8601 timestamp/
+  );
 });
 
 test("validateBenchmarkSuite requires serial execution for paired ordering", () => {
@@ -1010,11 +1081,14 @@ test("buildPairedSummary preserves execution order and emits metric deltas", () 
         success: true,
         duration_ms: 80,
         input_tokens: 90,
+        logical_input_tokens: 90,
         output_tokens: 20,
         provider_duration_ms: 50,
         provider_retry_count: 0,
         reasoning_tokens: 8,
-        cache_read_input_tokens: 4
+        cache_read_input_tokens: 4,
+        cache_miss_input_tokens: 86,
+        estimated_cost_usd: 0.00004
       },
       {
         task_id: "task-a",
@@ -1025,11 +1099,14 @@ test("buildPairedSummary preserves execution order and emits metric deltas", () 
         success: false,
         duration_ms: 100,
         input_tokens: 100,
+        logical_input_tokens: 120,
         output_tokens: 30,
         provider_duration_ms: 70,
         provider_retry_count: 1,
         reasoning_tokens: 5,
-        cache_read_input_tokens: 10
+        cache_read_input_tokens: 10,
+        cache_miss_input_tokens: 100,
+        estimated_cost_usd: 0.00006
       }
     ],
     [{ runner_id: "anthropic" }, { runner_id: "responses" }]
@@ -1039,6 +1116,229 @@ test("buildPairedSummary preserves execution order and emits metric deltas", () 
   assert.equal(entries[0].complete, true);
   assert.equal(entries[0].comparisons[0].duration_ms_delta, -20);
   assert.equal(entries[0].comparisons[0].provider_retry_count_delta, -1);
+  assert.equal(entries[0].comparisons[0].logical_input_tokens_delta, -30);
+  assert.equal(entries[0].comparisons[0].cache_miss_input_tokens_delta, -14);
+  assert.ok(Math.abs(entries[0].comparisons[0].estimated_cost_usd_delta + 0.00002) < 1e-12);
+});
+
+test("readHolonAuditEvents paginates stable DB event envelopes", async () => {
+  const calls = [];
+  const pages = [
+    {
+      event_log_epoch: "epoch-1",
+      newest_seq: 2,
+      has_newer: true,
+      events: [
+        {
+          id: "audit-1",
+          event_seq: 1,
+          event_log_epoch: "epoch-1",
+          contract_version: 1,
+          ts: "2026-08-15T00:00:00Z",
+          agent_id: "agent",
+          type: "provider_round_completed",
+          payload_schema: "holon.runtime_event.legacy",
+          payload_schema_version: 1,
+          payload: { round: 1 }
+        },
+        {
+          id: "audit-2",
+          event_seq: 2,
+          event_log_epoch: "epoch-1",
+          contract_version: 1,
+          ts: "2026-08-15T00:00:01Z",
+          agent_id: "agent",
+          type: "tool_executed",
+          payload_schema: "holon.runtime_event.legacy",
+          payload_schema_version: 1,
+          payload: { tool_name: "ExecCommand" }
+        }
+      ]
+    },
+    {
+      event_log_epoch: "epoch-1",
+      newest_seq: 3,
+      has_newer: false,
+      events: [
+        {
+          id: "audit-3",
+          event_seq: 3,
+          event_log_epoch: "epoch-1",
+          contract_version: 1,
+          ts: "2026-08-15T00:00:02Z",
+          agent_id: "agent",
+          type: "provider_round_completed",
+          payload_schema: "holon.runtime_event.legacy",
+          payload_schema_version: 1,
+          payload: { round: 2 }
+        }
+      ]
+    }
+  ];
+  const events = await readHolonAuditEvents({
+    holonBinary: "holon",
+    agentId: "agent",
+    homeDir: "/tmp/home",
+    cwd: "/tmp/repo",
+    env: {},
+    execute: async (_command, args) => {
+      calls.push(args);
+      return { stdout: JSON.stringify(pages[calls.length - 1]), stderr: "", exitCode: 0 };
+    }
+  });
+
+  assert.deepEqual(events.map((event) => event.event_seq), [1, 2, 3]);
+  assert.equal(events[0].kind, "provider_round_completed");
+  assert.equal(events[0].data.round, 1);
+  assert.deepEqual(calls[1].slice(-2), ["--after-seq", "2"]);
+});
+
+test("event envelope normalization rejects invalid events", () => {
+  assert.throws(
+    () => normalizeHolonEventEnvelope({ event_seq: 0, type: "x", payload: {} }),
+    /invalid event sequence/
+  );
+});
+
+test("DB event export failures are explicit", async () => {
+  await assert.rejects(
+    readHolonAuditEvents({
+      holonBinary: "holon",
+      agentId: "agent",
+      homeDir: "/tmp/home",
+      cwd: "/tmp/repo",
+      env: {},
+      execute: async () => ({ stdout: "not-json", stderr: "", exitCode: 0 })
+    }),
+    /failed to parse holon DB event export/
+  );
+});
+
+test("provider usage normalization is transport-neutral and cost-aware", () => {
+  const pricing = {
+    currency: "USD",
+    effective_at: "2026-08-16T16:00:00Z",
+    source: "provider pricing page",
+    cache_miss_input_per_million: 1,
+    cache_read_input_per_million: 0.1,
+    cache_creation_input_per_million: 2,
+    output_per_million: 3
+  };
+  const responses = normalizeProviderRoundUsage({
+    provider: "deepseek",
+    modelRef: "deepseek@responses/deepseek-v4-flash",
+    transport: "openai_responses",
+    pricing,
+    data: {
+      input_tokens: 1000,
+      output_tokens: 100,
+      provider_cache_usage: { read_input_tokens: 800, creation_input_tokens: 0 }
+    }
+  });
+  assert.equal(responses.logical_input_tokens, 1000);
+  assert.equal(responses.cache_miss_input_tokens, 200);
+  assert.equal(responses.estimated_cost_usd, 0.00058);
+
+  const anthropic = normalizeProviderRoundUsage({
+    provider: "deepseek",
+    modelRef: "deepseek@default/deepseek-v4-flash",
+    transport: "anthropic_messages",
+    pricing,
+    data: {
+      input_tokens: 200,
+      output_tokens: 100,
+      provider_cache_usage: { read_input_tokens: 800, creation_input_tokens: 50 }
+    }
+  });
+  assert.equal(anthropic.logical_input_tokens, 1050);
+  assert.equal(anthropic.cache_miss_input_tokens, 200);
+  assert.equal(anthropic.estimated_cost_usd, 0.00068);
+
+  const fullHit = normalizeProviderRoundUsage({
+    provider: "deepseek",
+    modelRef: "deepseek@responses/deepseek-v4-flash",
+    transport: "openai_responses",
+    data: {
+      input_tokens: 1000,
+      output_tokens: 10,
+      provider_cache_usage: { read_input_tokens: 1000, creation_input_tokens: 0 }
+    }
+  });
+  assert.equal(fullHit.cache_miss_input_tokens, 0);
+
+  const noHit = normalizeProviderRoundUsage({
+    provider: "deepseek",
+    modelRef: "deepseek@responses/deepseek-v4-flash",
+    transport: "openai_responses",
+    data: {
+      input_tokens: 1000,
+      output_tokens: 10,
+      provider_cache_usage: { read_input_tokens: 0, creation_input_tokens: 0 }
+    }
+  });
+  assert.equal(noHit.cache_miss_input_tokens, 1000);
+
+  const explicitResponsesWins = normalizeProviderRoundUsage({
+    provider: "anthropic",
+    modelRef: "fallback/model",
+    transport: "openai_responses",
+    data: {
+      input_tokens: 1000,
+      output_tokens: 10,
+      provider_cache_usage: { read_input_tokens: 800, creation_input_tokens: 0 }
+    }
+  });
+  assert.equal(explicitResponsesWins.usage_semantics, "openai_responses");
+  assert.equal(explicitResponsesWins.logical_input_tokens, 1000);
+});
+
+test("provider usage normalization reports invalid or unavailable data explicitly", () => {
+  const usage = normalizeProviderRoundUsage({
+    provider: "openai",
+    modelRef: "openai/gpt",
+    data: {
+      input_tokens: -1,
+      output_tokens: null,
+      provider_cache_usage: { read_input_tokens: 5 }
+    }
+  });
+  assert.equal(usage.estimated_cost_usd, null);
+  assert.ok(usage.usage_validation_issues.includes("input_tokens_negative"));
+  assert.ok(usage.usage_validation_issues.includes("output_tokens_missing"));
+  assert.ok(usage.usage_validation_issues.includes("cache_read_exceeds_logical_input"));
+
+  const invalidPriced = normalizeProviderRoundUsage({
+    provider: "openai",
+    modelRef: "openai/gpt",
+    pricing: {
+      currency: "USD",
+      effective_at: "2026-08-16T16:00:00Z",
+      source: "provider pricing page",
+      cache_miss_input_per_million: 1,
+      cache_read_input_per_million: 0.1,
+      cache_creation_input_per_million: 2,
+      output_per_million: 3
+    },
+    data: { input_tokens: null, output_tokens: 10 }
+  });
+  assert.equal(invalidPriced.estimated_cost_usd, null);
+});
+
+test("provider round telemetry cannot silently disappear after model execution", () => {
+  assert.throws(
+    () =>
+      assertHolonProviderRoundTelemetry({
+        modelRounds: 2,
+        tokenOptimization: { summary: { rounds: 0 } }
+      }),
+    /contained no provider_round_completed telemetry/
+  );
+  assert.doesNotThrow(() =>
+    assertHolonProviderRoundTelemetry({
+      modelRounds: 2,
+      tokenOptimization: { summary: { rounds: 2 } }
+    })
+  );
 });
 
 test("manifest verifier runs only when GitHub CI is not the verification source", () => {

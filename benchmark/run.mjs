@@ -915,15 +915,22 @@ function compactPairedRun(run) {
     success: run.success,
     duration_ms: run.duration_ms,
     input_tokens: run.input_tokens ?? 0,
+    logical_input_tokens: run.logical_input_tokens ?? null,
     output_tokens: run.output_tokens ?? 0,
     provider_duration_ms: run.provider_duration_ms ?? 0,
     provider_retry_count: run.provider_retry_count ?? 0,
     provider_error_count: run.provider_error_count ?? 0,
     reasoning_tokens: run.reasoning_tokens ?? 0,
     cache_read_input_tokens: run.cache_read_input_tokens ?? 0,
+    cache_miss_input_tokens: run.cache_miss_input_tokens ?? null,
     cache_creation_input_tokens: run.cache_creation_input_tokens ?? 0,
+    estimated_cost_usd: run.estimated_cost_usd ?? null,
     error_kind: run.error_kind ?? null
   };
+}
+
+function nullableDelta(left, right) {
+  return Number.isFinite(left) && Number.isFinite(right) ? right - left : null;
 }
 
 function comparePairedRuns(left, right) {
@@ -937,6 +944,10 @@ function comparePairedRuns(left, right) {
       (right.output_tokens ?? 0) -
       (left.input_tokens ?? 0) -
       (left.output_tokens ?? 0),
+    logical_input_tokens_delta: nullableDelta(
+      left.logical_input_tokens,
+      right.logical_input_tokens
+    ),
     provider_duration_ms_delta:
       (right.provider_duration_ms ?? 0) - (left.provider_duration_ms ?? 0),
     provider_retry_count_delta:
@@ -947,9 +958,17 @@ function comparePairedRuns(left, right) {
       (right.reasoning_tokens ?? 0) - (left.reasoning_tokens ?? 0),
     cache_read_input_tokens_delta:
       (right.cache_read_input_tokens ?? 0) - (left.cache_read_input_tokens ?? 0),
+    cache_miss_input_tokens_delta: nullableDelta(
+      left.cache_miss_input_tokens,
+      right.cache_miss_input_tokens
+    ),
     cache_creation_input_tokens_delta:
       (right.cache_creation_input_tokens ?? 0) -
-      (left.cache_creation_input_tokens ?? 0)
+      (left.cache_creation_input_tokens ?? 0),
+    estimated_cost_usd_delta: nullableDelta(
+      left.estimated_cost_usd,
+      right.estimated_cost_usd
+    )
   };
 }
 
@@ -958,12 +977,12 @@ function renderPairedSummary(entries) {
   for (const entry of entries) {
     lines.push(`## ${entry.task_id} (run ${entry.repetition})`, "");
     lines.push(
-      "| Runner | Transport | Success | Duration | Provider | Retries | Reasoning | Cache read/create |"
+      "| Runner | Transport | Success | Duration | Provider | Retries | Logical input | Cache read/miss/create | Output | Est. cost USD |"
     );
-    lines.push("|---|---|---:|---:|---:|---:|---:|---:|");
+    lines.push("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|");
     for (const run of entry.runs) {
       lines.push(
-        `| ${run.runner} | ${run.transport ?? "-"} | ${boolWord(run.success)} | ${formatMs(run.duration_ms)} | ${formatMs(run.provider_duration_ms)} | ${run.provider_retry_count} | ${run.reasoning_tokens} | ${run.cache_read_input_tokens}/${run.cache_creation_input_tokens} |`
+        `| ${run.runner} | ${run.transport ?? "-"} | ${boolWord(run.success)} | ${formatMs(run.duration_ms)} | ${formatMs(run.provider_duration_ms)} | ${run.provider_retry_count} | ${run.logical_input_tokens ?? "-"} | ${run.cache_read_input_tokens}/${run.cache_miss_input_tokens ?? "-"}/${run.cache_creation_input_tokens} | ${run.output_tokens} | ${run.estimated_cost_usd === null ? "-" : run.estimated_cost_usd.toFixed(6)} |`
       );
     }
     lines.push("");
@@ -1179,10 +1198,16 @@ async function runRealBenchmarkTask({
       runnerResult.tokenOptimization?.summary?.provider_error_count ?? 0,
     reasoning_tokens:
       runnerResult.tokenOptimization?.summary?.reasoning_tokens ?? 0,
+    logical_input_tokens:
+      runnerResult.tokenOptimization?.summary?.logical_input_tokens ?? null,
     cache_read_input_tokens:
       runnerResult.tokenOptimization?.summary?.cache_read_input_tokens ?? 0,
+    cache_miss_input_tokens:
+      runnerResult.tokenOptimization?.summary?.cache_miss_input_tokens ?? null,
     cache_creation_input_tokens:
       runnerResult.tokenOptimization?.summary?.cache_creation_input_tokens ?? 0,
+    estimated_cost_usd:
+      runnerResult.tokenOptimization?.summary?.estimated_cost_usd ?? null,
     base_sha: manifest.base.sha,
     benchmark_mode: manifest.benchmark.mode,
     branch: branchName,
@@ -1423,7 +1448,6 @@ async function runHolonRealTask({
   }
   const agentDir = path.join(homeDir, "agents", agentId);
   await copyAgentJsonlArtifact(agentDir, taskDir, "briefs.jsonl");
-  await copyAgentJsonlArtifact(agentDir, taskDir, "events.jsonl");
   await copyAgentJsonlArtifact(agentDir, taskDir, "tools.jsonl");
   await copyAgentJsonlArtifact(agentDir, taskDir, "transcript.jsonl");
   await copyAgentStateArtifact(agentDir, taskDir, "agent.json");
@@ -1433,7 +1457,17 @@ async function runHolonRealTask({
   const briefs = await readAgentJsonlArtifact(agentDir, "briefs.jsonl", taskDir);
   const toolExecutions = await readAgentJsonlArtifact(agentDir, "tools.jsonl", taskDir);
   const toolMetrics = summarizeHolonToolExecutions(toolExecutions);
-  const events = await readAgentJsonlArtifact(agentDir, "events.jsonl", taskDir);
+  const events = await readHolonAuditEvents({
+    holonBinary,
+    agentId,
+    homeDir,
+    cwd: worktreePath,
+    env
+  });
+  await writeJsonl(
+    path.join(taskDir, "events.jsonl"),
+    events.map((event) => JSON.stringify(event))
+  );
   const transcript = await readAgentJsonlArtifact(agentDir, "transcript.jsonl", taskDir);
   const durableState = await summarizeHolonDurableState(agentDir, taskDir);
   await writeJson(path.join(taskDir, "holon-durable-state.json"), durableState);
@@ -1449,7 +1483,13 @@ async function runHolonRealTask({
     await writeJson(path.join(taskDir, "holon-run.json"), parsed);
   }
   const tokenOptimization = summarizeHolonTokenOptimization(tokenOptimizationEvents(events, transcript), toolExecutions, {
-    modelRef: runnerConfig.model_ref
+    modelRef: runnerConfig.model_ref,
+    transport: runnerConfig.transport,
+    pricing: runnerConfig.pricing
+  });
+  assertHolonProviderRoundTelemetry({
+    modelRounds: parsed?.model_rounds ?? durableState.agent_total_model_rounds,
+    tokenOptimization
   });
   await writeJson(path.join(taskDir, "token-optimization.json"), tokenOptimization);
   const completion = classifyHolonBenchmarkCompletion({
@@ -2512,7 +2552,13 @@ async function runHolonTask({ task, taskDir, workspaceDir, runnerEnv }) {
     (await readJsonIfExists(path.join(agentDir, "agent.json"))) ??
     (await readJsonIfExists(path.join(agentDir, ".holon", "state", "agent.json")));
   const briefs = await readAgentJsonlArtifact(agentDir, "briefs.jsonl", taskDir);
-  const events = await readAgentJsonlArtifact(agentDir, "events.jsonl", taskDir);
+  const events = await readHolonAuditEvents({
+    holonBinary,
+    agentId,
+    homeDir,
+    cwd: repoRoot,
+    env
+  });
   const tasks = await readAgentJsonlArtifact(agentDir, "tasks.jsonl", taskDir);
 
   await writeJson(path.join(taskDir, "status.json"), { agent: agentState });
@@ -2520,7 +2566,10 @@ async function runHolonTask({ task, taskDir, workspaceDir, runnerEnv }) {
   await writeJson(path.join(taskDir, "events.json"), events);
   await writeJson(path.join(taskDir, "tasks.json"), lastRun?.tasks ?? tasks);
 
-  await copyAgentJsonlArtifact(agentDir, taskDir, "events.jsonl");
+  await writeJsonl(
+    path.join(taskDir, "events.jsonl"),
+    events.map((event) => JSON.stringify(event))
+  );
   await copyAgentJsonlArtifact(agentDir, taskDir, "briefs.jsonl");
   await copyAgentJsonlArtifact(agentDir, taskDir, "tools.jsonl");
   await copyAgentJsonlArtifact(agentDir, taskDir, "transcript.jsonl");
@@ -2533,6 +2582,10 @@ async function runHolonTask({ task, taskDir, workspaceDir, runnerEnv }) {
   const transcript = await readAgentJsonlArtifact(agentDir, "transcript.jsonl", taskDir);
   const tokenOptimization = summarizeHolonTokenOptimization(tokenOptimizationEvents(events, transcript), toolExecutions, {
     modelRef: env.HOLON_MODEL
+  });
+  assertHolonProviderRoundTelemetry({
+    modelRounds: lastRun?.model_rounds,
+    tokenOptimization
   });
   await writeJson(path.join(taskDir, "token-optimization.json"), tokenOptimization);
   const failureKind = computeFailureKind(lastRun);
@@ -3163,6 +3216,110 @@ function summarizeHolonToolExecutions(entries) {
   };
 }
 
+function usageNumber(value, field, issues, { required = false } = {}) {
+  if (value === undefined || value === null) {
+    if (required) {
+      issues.push(`${field}_missing`);
+    }
+    return 0;
+  }
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    issues.push(`${field}_not_finite`);
+    return 0;
+  }
+  if (numeric < 0) {
+    issues.push(`${field}_negative`);
+    return 0;
+  }
+  return numeric;
+}
+
+function usageSemantics(provider, modelRef, transport) {
+  const normalizedTransport = String(transport ?? "").toLowerCase();
+  if (normalizedTransport === "anthropic_messages") {
+    return "anthropic_messages";
+  }
+  if (normalizedTransport === "openai_responses") {
+    return "openai_responses";
+  }
+  if (normalizedTransport) {
+    return "total_input_with_cache";
+  }
+  if (provider === "anthropic") {
+    return "anthropic_messages";
+  }
+  if (String(modelRef ?? "").toLowerCase().includes("@responses/")) {
+    return "openai_responses";
+  }
+  return "total_input_with_cache";
+}
+
+export function normalizeProviderRoundUsage({
+  data,
+  provider,
+  modelRef,
+  transport,
+  pricing
+}) {
+  const issues = [];
+  const rawInputTokens = usageNumber(
+    data?.input_tokens ?? data?.token_usage?.input_tokens,
+    "input_tokens",
+    issues,
+    { required: true }
+  );
+  const outputTokens = usageNumber(
+    data?.output_tokens ?? data?.token_usage?.output_tokens,
+    "output_tokens",
+    issues,
+    { required: true }
+  );
+  const cacheUsage = data?.provider_cache_usage ?? {};
+  const cacheReadInputTokens = usageNumber(
+    cacheUsage.read_input_tokens,
+    "cache_read_input_tokens",
+    issues
+  );
+  const cacheCreationInputTokens = usageNumber(
+    cacheUsage.creation_input_tokens,
+    "cache_creation_input_tokens",
+    issues
+  );
+  const semantics = usageSemantics(provider, modelRef, transport);
+  const logicalInputTokens =
+    semantics === "anthropic_messages"
+      ? rawInputTokens + cacheReadInputTokens + cacheCreationInputTokens
+      : rawInputTokens;
+  if (cacheReadInputTokens > logicalInputTokens) {
+    issues.push("cache_read_exceeds_logical_input");
+  }
+  const cacheMissInputTokens =
+    semantics === "anthropic_messages"
+      ? rawInputTokens
+      : Math.max(0, logicalInputTokens - cacheReadInputTokens);
+  let estimatedCostUsd = null;
+  if (pricing && issues.length === 0) {
+    estimatedCostUsd =
+      (cacheMissInputTokens * pricing.cache_miss_input_per_million +
+        cacheReadInputTokens * pricing.cache_read_input_per_million +
+        cacheCreationInputTokens * pricing.cache_creation_input_per_million +
+        outputTokens * pricing.output_per_million) /
+      1_000_000;
+  }
+  return {
+    usage_semantics: semantics,
+    raw_input_tokens: rawInputTokens,
+    logical_input_tokens: logicalInputTokens,
+    cache_read_input_tokens: cacheReadInputTokens,
+    cache_miss_input_tokens: cacheMissInputTokens,
+    cache_creation_input_tokens: cacheCreationInputTokens,
+    output_tokens: outputTokens,
+    estimated_cost_usd: estimatedCostUsd,
+    usage_validation_issues: issues
+  };
+}
+
 export function summarizeHolonTokenOptimization(events, toolExecutions = [], options = {}) {
   const toolSummaries = toolExecutions.map(summarizeToolPayloadSize);
   const truncatedMutationToolCallRejections = events.filter((event) => {
@@ -3204,13 +3361,20 @@ export function summarizeHolonTokenOptimization(events, toolExecutions = [], opt
       options.modelRef ??
       null;
     const provider = attempt?.provider ?? providerFromModelRef(modelRef);
-    const cacheUsage = data?.provider_cache_usage ?? {};
     const attempts = Array.isArray(data?.provider_attempt_timeline?.attempts)
       ? data.provider_attempt_timeline.attempts
       : [];
-    const inputTokens = Number(data?.input_tokens ?? data?.token_usage?.input_tokens ?? 0);
-    const cacheReadInputTokens = Number(cacheUsage.read_input_tokens ?? 0);
-    const cacheCreationInputTokens = Number(cacheUsage.creation_input_tokens ?? 0);
+    const usage = normalizeProviderRoundUsage({
+      data,
+      provider,
+      modelRef,
+      transport: options.transport,
+      pricing: options.pricing
+    });
+    const cacheUsage = data?.provider_cache_usage ?? {};
+    const inputTokens = usage.raw_input_tokens;
+    const cacheReadInputTokens = usage.cache_read_input_tokens;
+    const cacheCreationInputTokens = usage.cache_creation_input_tokens;
     const round = Number(data?.round ?? event?.round ?? rounds.length + 1);
     const requestDiagnostics = data?.provider_request_diagnostics ?? {};
     const requestLoweringMode = inferRequestLoweringMode({
@@ -3248,7 +3412,7 @@ export function summarizeHolonTokenOptimization(events, toolExecutions = [], opt
       model_ref: modelRef,
       request_lowering_mode: requestLoweringMode,
       input_tokens: inputTokens,
-      output_tokens: Number(data?.output_tokens ?? data?.token_usage?.output_tokens ?? 0),
+      ...usage,
       reasoning_tokens: reasoningTokenCount(data),
       provider_duration_ms: attempts.reduce(
         (sum, providerAttempt) => sum + Number(providerAttempt?.duration_ms ?? 0),
@@ -3289,10 +3453,21 @@ export function summarizeHolonTokenOptimization(events, toolExecutions = [], opt
     exec_command_cost: summarizeExecCommandCost(toolSummaries)
   };
   return {
-    schema_version: 1,
-    generated_from: "holon_events",
+    schema_version: 2,
+    generated_from: "holon_runtime_db_events",
     secret_safe: true,
     large_cache_miss_input_threshold: 10_000,
+    pricing: options.pricing
+      ? {
+          currency: options.pricing.currency,
+          effective_at: options.pricing.effective_at,
+          source: options.pricing.source,
+          cache_miss_input_per_million: options.pricing.cache_miss_input_per_million,
+          cache_read_input_per_million: options.pricing.cache_read_input_per_million,
+          cache_creation_input_per_million: options.pricing.cache_creation_input_per_million,
+          output_per_million: options.pricing.output_per_million
+        }
+      : null,
     summary,
     rounds
   };
@@ -4173,8 +4348,14 @@ function numericField(object, fieldNames) {
 
 function summarizeTokenOptimizationRounds(rounds) {
   const requestLoweringModes = {};
+  let logicalInputTokens = 0;
   let cacheReadInputTokens = 0;
+  let cacheMissInputTokens = 0;
   let cacheCreationInputTokens = 0;
+  let outputTokens = 0;
+  let estimatedCostUsd = 0;
+  let pricedRounds = 0;
+  const usageValidationIssues = {};
   let reasoningTokens = 0;
   let providerDurationMs = 0;
   let providerAttemptCount = 0;
@@ -4209,8 +4390,18 @@ function summarizeTokenOptimizationRounds(rounds) {
   for (const round of rounds) {
     requestLoweringModes[round.request_lowering_mode] =
       (requestLoweringModes[round.request_lowering_mode] ?? 0) + 1;
+    logicalInputTokens += round.logical_input_tokens;
     cacheReadInputTokens += round.cache_read_input_tokens;
+    cacheMissInputTokens += round.cache_miss_input_tokens;
     cacheCreationInputTokens += round.cache_creation_input_tokens;
+    outputTokens += round.output_tokens;
+    if (round.estimated_cost_usd !== null) {
+      estimatedCostUsd += round.estimated_cost_usd;
+      pricedRounds += 1;
+    }
+    for (const issue of round.usage_validation_issues ?? []) {
+      usageValidationIssues[issue] = (usageValidationIssues[issue] ?? 0) + 1;
+    }
     reasoningTokens += round.reasoning_tokens;
     providerDurationMs += round.provider_duration_ms;
     providerAttemptCount += round.provider_attempt_count;
@@ -4301,8 +4492,18 @@ function summarizeTokenOptimizationRounds(rounds) {
   return {
     rounds: rounds.length,
     request_lowering_modes: requestLoweringModes,
+    logical_input_tokens: logicalInputTokens,
     cache_read_input_tokens: cacheReadInputTokens,
+    cache_miss_input_tokens: cacheMissInputTokens,
     cache_creation_input_tokens: cacheCreationInputTokens,
+    output_tokens: outputTokens,
+    estimated_cost_usd:
+      rounds.length > 0 && pricedRounds === rounds.length ? estimatedCostUsd : null,
+    priced_rounds: pricedRounds,
+    usage_validation_issue_counts: usageValidationIssues,
+    usage_validation_issue_rounds: rounds.filter(
+      (round) => (round.usage_validation_issues?.length ?? 0) > 0
+    ).length,
     reasoning_tokens: reasoningTokens,
     provider_duration_ms: providerDurationMs,
     provider_attempt_count: providerAttemptCount,
@@ -4530,6 +4731,109 @@ function agentJsonlArtifactCandidates(agentDir, filename, taskDir = null) {
     path.join(agentDir, filename),
     path.join(agentDir, ".holon", "ledger", filename)
   ].filter(Boolean);
+}
+
+export function normalizeHolonEventEnvelope(envelope) {
+  if (
+    !envelope ||
+    typeof envelope !== "object" ||
+    typeof envelope.type !== "string" ||
+    !envelope.payload ||
+    typeof envelope.payload !== "object" ||
+    Array.isArray(envelope.payload)
+  ) {
+    throw new Error("holon events tail returned an invalid event envelope");
+  }
+  const eventSeq = Number(envelope.event_seq);
+  if (!Number.isSafeInteger(eventSeq) || eventSeq <= 0) {
+    throw new Error("holon events tail returned an invalid event sequence");
+  }
+  return {
+    id: envelope.id,
+    event_seq: eventSeq,
+    event_log_epoch: envelope.event_log_epoch ?? "",
+    contract_version: envelope.contract_version,
+    created_at: envelope.ts,
+    kind: envelope.type,
+    payload_schema: envelope.payload_schema,
+    payload_schema_version: envelope.payload_schema_version,
+    data: envelope.payload
+  };
+}
+
+export function assertHolonProviderRoundTelemetry({ modelRounds, tokenOptimization }) {
+  if (
+    Number(modelRounds ?? 0) > 0 &&
+    Number(tokenOptimization?.summary?.rounds ?? 0) === 0
+  ) {
+    throw new Error(
+      `Holon reported ${modelRounds} model rounds but the runtime DB export contained no provider_round_completed telemetry`
+    );
+  }
+}
+
+export async function readHolonAuditEvents({
+  holonBinary,
+  agentId,
+  homeDir,
+  cwd,
+  env,
+  pageLimit = 512,
+  execute = runCommand
+}) {
+  const events = [];
+  let afterSeq = null;
+  let eventLogEpoch = null;
+  for (;;) {
+    const args = [
+      "events",
+      "tail",
+      "--agent",
+      agentId,
+      "--order",
+      "asc",
+      "--limit",
+      String(pageLimit),
+      "--offline"
+    ];
+    if (afterSeq !== null) {
+      args.push("--after-seq", String(afterSeq));
+    }
+    const result = await execute(
+      holonBinary,
+      args,
+      cwd,
+      { ...env, HOLON_HOME: homeDir },
+      false
+    );
+    let page;
+    try {
+      page = JSON.parse(result.stdout);
+    } catch (error) {
+      throw new Error(`failed to parse holon DB event export: ${error.message}`);
+    }
+    if (!page || !Array.isArray(page.events) || typeof page.has_newer !== "boolean") {
+      throw new Error("holon DB event export returned an invalid page");
+    }
+    if (eventLogEpoch !== null && page.event_log_epoch !== eventLogEpoch) {
+      throw new Error("holon DB event export epoch changed during pagination");
+    }
+    eventLogEpoch = page.event_log_epoch;
+    const normalized = page.events.map(normalizeHolonEventEnvelope);
+    events.push(...normalized);
+    if (!page.has_newer) {
+      return events;
+    }
+    const newestSeq = Number(page.newest_seq);
+    if (
+      normalized.length === 0 ||
+      !Number.isSafeInteger(newestSeq) ||
+      newestSeq <= (afterSeq ?? 0)
+    ) {
+      throw new Error("holon DB event export cursor did not advance");
+    }
+    afterSeq = newestSeq;
+  }
 }
 
 async function readAgentJsonlArtifact(agentDir, filename, taskDir = null) {

@@ -284,8 +284,13 @@ contracts are stabilized.
 ```bash
 holon events tail --limit 20
 holon events tail --order asc --max-level info
+holon events tail --agent benchmark-run --order asc --offline
 holon events stream --after-seq 42 --max-events 100
 ```
+
+`events tail --offline` reads the same stable event envelope from the local
+runtime database without requiring a running daemon. Offline pages do not
+support `--max-level`.
 
 ### Terminal UI
 

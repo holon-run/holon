@@ -278,7 +278,9 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
 fn runtime_command_uses_config_inspection(command: &Commands) -> bool {
     matches!(
         command,
-        Commands::Debug {
+        Commands::Events {
+            command: EventsCommands::Tail { offline: true, .. }
+        } | Commands::Debug {
             command: DebugCommands::SchedulerRecoveryFixture { .. }
                 | DebugCommands::SchedulerRestartFixture { .. }
         }
@@ -1594,6 +1596,7 @@ mod tests {
     #[test]
     fn hidden_offline_scheduler_commands_skip_runtime_model_resolution() {
         for args in [
+            vec!["holon", "events", "tail", "--agent", "runner", "--offline"],
             vec![
                 "holon",
                 "debug",
@@ -1617,6 +1620,60 @@ mod tests {
 
         let cli = Cli::parse_from(["holon", "debug", "scheduler-recovery"]);
         assert!(!runtime_command_uses_config_inspection(&cli.command));
+    }
+
+    #[test]
+    fn offline_event_page_reads_runtime_db_in_stable_envelope_shape() {
+        let config = test_config();
+        let runtime_db =
+            RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())
+                .unwrap();
+        runtime_db
+            .audit_events()
+            .append(
+                Some("runner"),
+                &AuditEvent::legacy(
+                    "provider_round_completed",
+                    serde_json::json!({ "round": 1, "input_tokens": 10 }),
+                ),
+            )
+            .unwrap();
+        runtime_db
+            .audit_events()
+            .append(
+                Some("runner"),
+                &AuditEvent::legacy("tool_executed", serde_json::json!({ "tool_name": "Read" })),
+            )
+            .unwrap();
+
+        let page = offline_event_page(
+            &config,
+            "runner",
+            None,
+            None,
+            1,
+            holon::cli::EventPageOrderCli::Asc,
+        )
+        .unwrap();
+
+        assert_eq!(page.events.len(), 1);
+        assert_eq!(page.events[0].event_type, "provider_round_completed");
+        assert_eq!(page.events[0].payload["round"], 1);
+        assert_eq!(page.newest_seq, Some(page.events[0].event_seq));
+        assert!(page.has_newer);
+        assert!(!page.has_older);
+
+        let clamped = offline_event_page(
+            &config,
+            "runner",
+            None,
+            None,
+            0,
+            holon::cli::EventPageOrderCli::Asc,
+        )
+        .unwrap();
+        assert_eq!(clamped.limit, 1);
+        assert_eq!(clamped.events.len(), 1);
     }
 
     #[test]
@@ -2295,8 +2352,18 @@ async fn handle_events_command(config: &AppConfig, command: EventsCommands) -> R
             order,
             max_level,
             agent,
+            offline,
         } => {
             let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
+            if offline {
+                anyhow::ensure!(
+                    max_level.is_none(),
+                    "--max-level is not supported with --offline"
+                );
+                return print_json(&serde_json::to_value(offline_event_page(
+                    config, &agent, before_seq, after_seq, limit, order,
+                )?)?);
+            }
             let client = LocalClient::new(config.clone())?;
             let page = client
                 .agent_events_page(
@@ -2337,6 +2404,94 @@ async fn handle_events_command(config: &AppConfig, command: EventsCommands) -> R
             }
         }
     }
+}
+
+fn offline_event_page(
+    config: &AppConfig,
+    agent_id: &str,
+    before_seq: Option<u64>,
+    after_seq: Option<u64>,
+    limit: usize,
+    order: holon::cli::EventPageOrderCli,
+) -> Result<holon::client::EventPageResponse> {
+    let limit = limit.clamp(1, holon::http::MAX_EVENT_STREAM_WINDOW);
+    let runtime_db =
+        RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
+    let descending = matches!(order, holon::cli::EventPageOrderCli::Desc);
+    let mut events = runtime_db.audit_events().range(
+        Some(agent_id),
+        before_seq,
+        after_seq,
+        descending,
+        limit.saturating_add(1),
+    )?;
+    let has_more = events.len() > limit;
+    if has_more {
+        events.truncate(limit);
+    }
+    let oldest_seq = events.iter().map(|event| event.event_seq).min();
+    let newest_seq = events.iter().map(|event| event.event_seq).max();
+    let event_log_epoch = runtime_db.event_log_epoch()?;
+    let envelopes = events
+        .into_iter()
+        .map(|event| holon::client::StreamEventEnvelope {
+            id: event.id,
+            event_seq: event.event_seq,
+            event_log_epoch: Some(if event.event_log_epoch.is_empty() {
+                event_log_epoch.clone()
+            } else {
+                event.event_log_epoch
+            }),
+            contract_version: event.contract_version,
+            ts: event.created_at,
+            agent_id: agent_id.to_string(),
+            event_type: event.kind,
+            payload_schema: event.payload_schema,
+            payload_schema_version: event.payload_schema_version,
+            provenance: Some(event_replay_provenance(&event.data)),
+            payload: event.data,
+        })
+        .collect();
+    Ok(holon::client::EventPageResponse {
+        events: envelopes,
+        event_log_epoch,
+        oldest_seq,
+        newest_seq,
+        cursor_seq: runtime_db.audit_events().latest_event_seq(Some(agent_id))?,
+        has_older: descending && has_more,
+        has_newer: !descending && has_more,
+        order: order.to_string(),
+        limit,
+    })
+}
+
+fn event_replay_provenance(payload: &serde_json::Value) -> serde_json::Value {
+    let fields = [
+        "origin",
+        "authority_class",
+        "delivery_surface",
+        "admission_context",
+        "transport",
+        "source",
+        "reply_route",
+        "message_id",
+        "task_id",
+        "work_item_id",
+        "correlation_id",
+        "causation_id",
+    ];
+    serde_json::Value::Object(
+        fields
+            .into_iter()
+            .filter_map(|field| {
+                payload
+                    .get(field)
+                    .filter(|value| !value.is_null())
+                    .cloned()
+                    .map(|value| (field.to_string(), value))
+            })
+            .collect(),
+    )
 }
 
 async fn handle_debug_command(config: AppConfig, command: DebugCommands) -> Result<()> {

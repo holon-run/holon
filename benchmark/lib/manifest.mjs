@@ -41,7 +41,25 @@ const SUITE_ALLOWED_KEYS = {
     "pr",
     "timeouts"
   ],
-  runner: ["runner_id", "driver", "model_ref", "model", "env", "transport", "endpoint"],
+  runner: [
+    "runner_id",
+    "driver",
+    "model_ref",
+    "model",
+    "env",
+    "transport",
+    "endpoint",
+    "pricing"
+  ],
+  pricing: [
+    "currency",
+    "effective_at",
+    "source",
+    "cache_miss_input_per_million",
+    "cache_read_input_per_million",
+    "cache_creation_input_per_million",
+    "output_per_million"
+  ],
   execution: ["runner_order", "random_seed", "max_parallel_runners", "cooldown_ms"],
   pr: ["create_draft", "push_branch", "submit_pr", "draft_pr"],
   timeouts: ["ci_poll_minutes"]
@@ -329,6 +347,47 @@ export function validateBenchmarkSuite(suite, { filePath = "<memory>" } = {}) {
         throw new Error(
           `${filePath}.runners[].${field} must be a non-empty string when present`
         );
+      }
+    }
+    if ("pricing" in runner) {
+      ensureObject(runner.pricing, `${filePath}.runners[].pricing`);
+      assertAllowedKeys(
+        runner.pricing,
+        SUITE_ALLOWED_KEYS.pricing,
+        `${filePath}.runners[].pricing`
+      );
+      requireKeys(
+        runner.pricing,
+        SUITE_ALLOWED_KEYS.pricing,
+        `${filePath}.runners[].pricing`
+      );
+      if (runner.pricing.currency !== "USD") {
+        throw new Error(`${filePath}.runners[].pricing.currency must be USD`);
+      }
+      if (
+        typeof runner.pricing.effective_at !== "string" ||
+        !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(
+          runner.pricing.effective_at
+        ) ||
+        Number.isNaN(Date.parse(runner.pricing.effective_at))
+      ) {
+        throw new Error(
+          `${filePath}.runners[].pricing.effective_at must be an ISO-8601 timestamp`
+        );
+      }
+      if (typeof runner.pricing.source !== "string" || !runner.pricing.source.trim()) {
+        throw new Error(`${filePath}.runners[].pricing.source must be a non-empty string`);
+      }
+      for (const field of SUITE_ALLOWED_KEYS.pricing.slice(3)) {
+        if (
+          typeof runner.pricing[field] !== "number" ||
+          !Number.isFinite(runner.pricing[field]) ||
+          runner.pricing[field] < 0
+        ) {
+          throw new Error(
+            `${filePath}.runners[].pricing.${field} must be a non-negative finite number`
+          );
+        }
       }
     }
   }

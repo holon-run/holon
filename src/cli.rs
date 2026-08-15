@@ -493,6 +493,11 @@ pub enum EventsCommands {
         max_level: Option<EventMaxLevelCli>,
         #[arg(long)]
         agent: Option<String>,
+        #[arg(
+            long,
+            help = "Read directly from the local runtime database without requiring a running daemon"
+        )]
+        offline: bool,
     },
     #[command(
         about = "Stream stable event envelopes as newline-delimited JSON",
