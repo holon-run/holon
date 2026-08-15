@@ -1726,8 +1726,13 @@ def require_turn_local_compaction(
         if row["kind"] == "turn_local_compaction_applied"
     ]
     require(
-        events and any(int(event.get("compacted_rounds") or 0) > 0 for event in events),
-        f"{label} compaction stimulus did not produce compacted rounds: {events}",
+        events
+        and any(
+            int(event.get("compacted_rounds") or 0) > 0
+            or int(event.get("compacted_tool_results") or 0) > 0
+            for event in events
+        ),
+        f"{label} compaction stimulus did not compact rounds or tool results: {events}",
     )
     return events
 

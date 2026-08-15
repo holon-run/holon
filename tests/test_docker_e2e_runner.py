@@ -2198,11 +2198,32 @@ class DockerE2ERunnerTests(unittest.TestCase):
         self.assertEqual(events[0]["compacted_rounds"], 2)
 
         event["data_json"] = json.dumps(
-            {"data": {"compacted_rounds": 0, "exact_tail_rounds": 3}}
+            {
+                "data": {
+                    "compacted_rounds": 0,
+                    "compacted_tool_results": 1,
+                    "exact_tail_rounds": 3,
+                }
+            }
+        )
+        events = runner.require_turn_local_compaction(
+            {"audit_events": [event]},
+            label="test",
+        )
+        self.assertEqual(events[0]["compacted_tool_results"], 1)
+
+        event["data_json"] = json.dumps(
+            {
+                "data": {
+                    "compacted_rounds": 0,
+                    "compacted_tool_results": 0,
+                    "exact_tail_rounds": 3,
+                }
+            }
         )
         with self.assertRaisesRegex(
             AssertionError,
-            "compaction stimulus did not produce compacted rounds",
+            "compaction stimulus did not compact rounds or tool results",
         ):
             runner.require_turn_local_compaction(
                 {
