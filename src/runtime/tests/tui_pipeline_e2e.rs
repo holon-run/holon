@@ -324,6 +324,9 @@ async fn e2e_tui_complex_turn_multi_operation() {
     // ── 2. Create RuntimeHandle ──────────────────────────────────────
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
+    let mut complex_turn_context = continuation_ready_context_config(&workspace, 16_000);
+    complex_turn_context.compaction_trigger_estimated_tokens =
+        complex_turn_context.prompt_budget_estimated_tokens;
     let runtime = RuntimeHandle::new(
         "default",
         dir.path().to_path_buf(),
@@ -331,7 +334,7 @@ async fn e2e_tui_complex_turn_multi_operation() {
         "http://127.0.0.1:7878".into(),
         Arc::new(provider),
         "default".into(),
-        context_config(),
+        complex_turn_context,
     )
     .unwrap();
 

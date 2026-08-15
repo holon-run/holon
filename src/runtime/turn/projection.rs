@@ -8,7 +8,10 @@ use crate::provider::{
     ConversationMessage, ModelBlock, PromptContentBlock, ProviderAttemptTimeline,
     ProviderPromptFrame, ToolResultBlock,
 };
-use crate::tool::ToolSpec;
+use crate::tool::{
+    spec::{ToolResultEnvelope, ToolResultStatus},
+    ToolSpec,
+};
 
 use super::checkpoint::TurnLocalCheckpointMode;
 use super::checkpoint::{TurnLocalCheckpointRequest, TurnLocalCheckpointState};
@@ -22,11 +25,20 @@ use super::{
 
 #[derive(Debug, Clone)]
 pub(super) struct TurnLocalCompactionStats {
+    pub(super) trigger_reason: &'static str,
     pub(super) compacted_rounds: usize,
     pub(super) exact_tail_rounds: usize,
+    pub(super) degraded_rounds: usize,
+    pub(super) pre_compaction_estimated_tokens: usize,
     pub(super) projected_estimated_tokens: usize,
+    pub(super) prompt_budget_estimated_tokens: usize,
+    pub(super) compaction_trigger_estimated_tokens: usize,
+    pub(super) keep_recent_estimated_tokens: usize,
+    pub(super) tool_output_budget_estimated_tokens: usize,
     pub(super) effective_budget_estimated_tokens: usize,
     pub(super) tool_overhead_estimated_tokens: usize,
+    pub(super) compacted_tool_results: usize,
+    pub(super) preserved_artifact_refs: usize,
     pub(super) strict_fallback_applied: bool,
     pub(super) checkpoint_request_id: Option<String>,
     pub(super) checkpoint_mode: Option<TurnLocalCheckpointMode>,
@@ -263,6 +275,155 @@ pub(super) fn exact_round_messages(round: &TurnRoundRecord) -> Vec<ConversationM
     messages
 }
 
+#[derive(Debug, Clone, Default)]
+pub(super) struct ToolResultProjectionStats {
+    pub(super) compacted_tool_results: usize,
+    pub(super) preserved_artifact_refs: usize,
+}
+
+fn recoverable_result_value(value: &Value) -> Option<Value> {
+    match value {
+        Value::Object(map) => {
+            let mut recovered = serde_json::Map::new();
+            for (key, nested) in map {
+                let keep_scalar = key == "path"
+                    || key == "status"
+                    || key == "truncated"
+                    || key == "content_truncated"
+                    || key == "output_truncated"
+                    || key == "initial_output_truncated"
+                    || key.ends_with("_id")
+                    || key.ends_with("_ref");
+                let keep_nested = key == "artifacts"
+                    || key == "task_handle"
+                    || key == "work_item"
+                    || key.ends_with("_refs");
+                if keep_scalar {
+                    recovered.insert(key.clone(), nested.clone());
+                } else if keep_nested {
+                    if let Some(value) = recoverable_result_value(nested) {
+                        recovered.insert(key.clone(), value);
+                    }
+                } else if let Some(value) = recoverable_result_value(nested) {
+                    if !matches!(&value, Value::Object(map) if map.is_empty())
+                        && !matches!(&value, Value::Array(values) if values.is_empty())
+                    {
+                        recovered.insert(key.clone(), value);
+                    }
+                }
+            }
+            Some(Value::Object(recovered))
+        }
+        Value::Array(values) => Some(Value::Array(
+            values.iter().filter_map(recoverable_result_value).collect(),
+        )),
+        _ => None,
+    }
+}
+
+fn count_artifact_refs(value: &Value) -> usize {
+    match value {
+        Value::Object(map) => map
+            .iter()
+            .map(|(key, value)| {
+                usize::from(
+                    (key == "path" || key.ends_with("_ref"))
+                        && value.as_str().is_some_and(|value| !value.is_empty()),
+                ) + count_artifact_refs(value)
+            })
+            .sum(),
+        Value::Array(values) => values.iter().map(count_artifact_refs).sum(),
+        _ => 0,
+    }
+}
+
+fn compact_tool_result_envelope(
+    envelope: &ToolResultEnvelope,
+    budget_estimated_tokens: usize,
+) -> Option<(String, usize)> {
+    let recovered_result = envelope.result.as_ref().and_then(recoverable_result_value);
+    let preserved_artifact_refs = recovered_result
+        .as_ref()
+        .map(count_artifact_refs)
+        .unwrap_or_default();
+    let mut receipt = serde_json::Map::new();
+    receipt.insert(
+        "tool_name".into(),
+        Value::String(envelope.tool_name.clone()),
+    );
+    receipt.insert(
+        "status".into(),
+        serde_json::to_value(&envelope.status).unwrap_or(Value::Null),
+    );
+    receipt.insert(
+        "summary_text".into(),
+        envelope
+            .summary_text
+            .clone()
+            .map(Value::String)
+            .unwrap_or(Value::Null),
+    );
+    if let Some(error) = envelope.error.as_ref() {
+        receipt.insert(
+            "error".into(),
+            serde_json::json!({
+                "kind": error.kind,
+                "message": error.message,
+                "recovery_hint": error.recovery_hint,
+                "retryable": error.retryable,
+            }),
+        );
+    }
+    if let Some(result) = recovered_result {
+        receipt.insert("result_refs".into(), result);
+    }
+    receipt.insert("provider_projection_truncated".into(), Value::Bool(true));
+    let rendered = serde_json::to_string(&Value::Object(receipt)).ok()?;
+    (estimate_text_tokens(&rendered) <= budget_estimated_tokens)
+        .then_some((rendered, preserved_artifact_refs))
+}
+
+pub(super) fn compacted_round_messages(
+    round: &TurnRoundRecord,
+    tool_output_budget_estimated_tokens: usize,
+) -> Option<(Vec<ConversationMessage>, ToolResultProjectionStats)> {
+    let mut messages = vec![ConversationMessage::AssistantBlocks(
+        round.assistant_blocks.clone(),
+    )];
+    let mut stats = ToolResultProjectionStats::default();
+    if !round.tool_results.is_empty() {
+        let mut projected_results = Vec::with_capacity(round.tool_results.len());
+        for (index, result) in round.tool_results.iter().enumerate() {
+            if estimate_tool_result_block_tokens(result) <= tool_output_budget_estimated_tokens {
+                projected_results.push(result.clone());
+                continue;
+            }
+            let envelope = round.tool_result_envelopes.get(index)?;
+            let (content, preserved_artifact_refs) =
+                compact_tool_result_envelope(envelope, tool_output_budget_estimated_tokens)?;
+            projected_results.push(ToolResultBlock {
+                tool_use_id: result.tool_use_id.clone(),
+                content,
+                is_error: matches!(envelope.status, ToolResultStatus::Error),
+                error: envelope.error.clone(),
+            });
+            stats.compacted_tool_results = stats.compacted_tool_results.saturating_add(1);
+            stats.preserved_artifact_refs = stats
+                .preserved_artifact_refs
+                .saturating_add(preserved_artifact_refs);
+        }
+        messages.push(ConversationMessage::UserToolResults(projected_results));
+    }
+    messages.extend(
+        round
+            .follow_up_user_texts
+            .iter()
+            .cloned()
+            .map(ConversationMessage::UserText),
+    );
+    Some((messages, stats))
+}
+
 pub(super) fn degraded_round_messages(
     round: &TurnRoundRecord,
     available_tokens: usize,
@@ -386,6 +547,11 @@ fn fold_repeated_tool_call_rounds(
     prompt_frame: &ProviderPromptFrame,
     runtime_reminder: Option<&str>,
     rounds: &[TurnRoundRecord],
+    pre_compaction_estimated_tokens: usize,
+    prompt_budget_estimated_tokens: usize,
+    compaction_trigger_estimated_tokens: usize,
+    keep_recent_estimated_tokens: usize,
+    tool_output_budget_estimated_tokens: usize,
     effective_budget_estimated_tokens: usize,
     tool_overhead_estimated_tokens: usize,
 ) -> Option<TurnLocalProjectionOutcome> {
@@ -404,6 +570,7 @@ fn fold_repeated_tool_call_rounds(
 
     let mut folded_count = 0usize;
     let mut skip_count = 0usize;
+    let mut tool_stats = ToolResultProjectionStats::default();
     for (i, round) in rounds.iter().enumerate() {
         if i + 1 < rounds.len() && rounds_have_identical_tool_calls(round, &rounds[i + 1]) {
             skip_count += 1;
@@ -416,7 +583,15 @@ fn fold_repeated_tool_call_rounds(
             )));
             skip_count = 0;
         }
-        conversation.extend(exact_round_messages(round));
+        let (messages, round_stats) =
+            compacted_round_messages(round, tool_output_budget_estimated_tokens)?;
+        tool_stats.compacted_tool_results = tool_stats
+            .compacted_tool_results
+            .saturating_add(round_stats.compacted_tool_results);
+        tool_stats.preserved_artifact_refs = tool_stats
+            .preserved_artifact_refs
+            .saturating_add(round_stats.preserved_artifact_refs);
+        conversation.extend(messages);
     }
     if skip_count > 0 {
         conversation.push(ConversationMessage::UserText(format!(
@@ -433,11 +608,20 @@ fn fold_repeated_tool_call_rounds(
         TurnLocalProjection {
             conversation,
             compaction: Some(TurnLocalCompactionStats {
+                trigger_reason: "estimated_tokens_exceeded_trigger",
                 compacted_rounds: folded_count,
                 exact_tail_rounds: rounds.len().saturating_sub(folded_count),
+                degraded_rounds: 0,
+                pre_compaction_estimated_tokens,
                 projected_estimated_tokens,
+                prompt_budget_estimated_tokens,
+                compaction_trigger_estimated_tokens,
+                keep_recent_estimated_tokens,
+                tool_output_budget_estimated_tokens,
                 effective_budget_estimated_tokens,
                 tool_overhead_estimated_tokens,
+                compacted_tool_results: tool_stats.compacted_tool_results,
+                preserved_artifact_refs: tool_stats.preserved_artifact_refs,
                 strict_fallback_applied: false,
                 checkpoint_request_id: None,
                 checkpoint_mode: None,
@@ -547,7 +731,9 @@ pub(super) fn build_turn_local_projection(
         checkpoint_state,
         checkpoint_request_id,
         request_prompt_budget,
+        request_prompt_budget,
         keep_recent_budget,
+        usize::MAX,
         None,
     )
 }
@@ -559,7 +745,9 @@ pub(super) fn build_turn_local_projection_with_runtime_reminder(
     checkpoint_state: &TurnLocalCheckpointState,
     checkpoint_request_id: Option<String>,
     request_prompt_budget: usize,
+    compaction_trigger_budget: usize,
     keep_recent_budget: usize,
+    tool_output_budget: usize,
     runtime_reminder: Option<&str>,
 ) -> TurnLocalProjectionOutcome {
     let tool_overhead_estimated_tokens = estimate_tool_specs_tokens(available_tools);
@@ -569,9 +757,13 @@ pub(super) fn build_turn_local_projection_with_runtime_reminder(
     let runtime_reminder_estimated_tokens = runtime_reminder
         .map(estimate_text_tokens)
         .unwrap_or_default();
-    let effective_budget_estimated_tokens = request_prompt_budget
+    let hard_effective_budget_estimated_tokens = request_prompt_budget
         .saturating_sub(tool_overhead_estimated_tokens)
         .saturating_sub(CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS);
+    let trigger_effective_budget_estimated_tokens = compaction_trigger_budget
+        .saturating_sub(tool_overhead_estimated_tokens)
+        .saturating_sub(CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS)
+        .min(hard_effective_budget_estimated_tokens);
     let estimated_baseline_tokens = system_prompt_estimated_tokens
         .saturating_add(context_attachment_estimated_tokens)
         .saturating_add(runtime_reminder_estimated_tokens);
@@ -585,7 +777,7 @@ pub(super) fn build_turn_local_projection_with_runtime_reminder(
                 estimated_baseline_tokens,
                 minimum_exact_round_estimated_tokens,
                 minimum_projection_estimated_tokens,
-                effective_budget_estimated_tokens,
+                effective_budget_estimated_tokens: hard_effective_budget_estimated_tokens,
                 tool_overhead_estimated_tokens,
                 system_prompt_estimated_tokens,
                 context_attachment_estimated_tokens,
@@ -601,23 +793,96 @@ pub(super) fn build_turn_local_projection_with_runtime_reminder(
     }
 
     let exact_estimated_tokens = estimate_projection_tokens(prompt_frame, &exact_conversation);
-    if exact_estimated_tokens <= effective_budget_estimated_tokens {
-        return TurnLocalProjectionOutcome::Projection(TurnLocalProjection {
-            conversation: exact_conversation,
-            compaction: None,
-        });
+    let mut tool_bounded_conversation = vec![ConversationMessage::UserBlocks(
+        prompt_frame.context_blocks.clone(),
+    )];
+    push_runtime_reminder_message(&mut tool_bounded_conversation, runtime_reminder);
+    let mut tool_bounded_stats = ToolResultProjectionStats::default();
+    let mut tool_bounded_projection_available = true;
+    for round in rounds {
+        let Some((messages, round_stats)) = compacted_round_messages(round, tool_output_budget)
+        else {
+            tool_bounded_projection_available = false;
+            break;
+        };
+        tool_bounded_stats.compacted_tool_results = tool_bounded_stats
+            .compacted_tool_results
+            .saturating_add(round_stats.compacted_tool_results);
+        tool_bounded_stats.preserved_artifact_refs = tool_bounded_stats
+            .preserved_artifact_refs
+            .saturating_add(round_stats.preserved_artifact_refs);
+        tool_bounded_conversation.extend(messages);
     }
+    if tool_bounded_projection_available {
+        let tool_bounded_estimated_tokens =
+            estimate_projection_tokens(prompt_frame, &tool_bounded_conversation);
+        if tool_bounded_estimated_tokens <= trigger_effective_budget_estimated_tokens {
+            let compaction = (tool_bounded_stats.compacted_tool_results > 0).then_some(
+                TurnLocalCompactionStats {
+                    trigger_reason: "tool_output_budget_exceeded",
+                    compacted_rounds: 0,
+                    exact_tail_rounds: rounds.len(),
+                    degraded_rounds: 0,
+                    pre_compaction_estimated_tokens: exact_estimated_tokens,
+                    projected_estimated_tokens: tool_bounded_estimated_tokens,
+                    prompt_budget_estimated_tokens: request_prompt_budget,
+                    compaction_trigger_estimated_tokens: compaction_trigger_budget,
+                    keep_recent_estimated_tokens: keep_recent_budget,
+                    tool_output_budget_estimated_tokens: tool_output_budget,
+                    effective_budget_estimated_tokens: trigger_effective_budget_estimated_tokens,
+                    tool_overhead_estimated_tokens,
+                    compacted_tool_results: tool_bounded_stats.compacted_tool_results,
+                    preserved_artifact_refs: tool_bounded_stats.preserved_artifact_refs,
+                    strict_fallback_applied: false,
+                    checkpoint_request_id: None,
+                    checkpoint_mode: None,
+                    checkpoint_anchor_generation: None,
+                    checkpoint_base_round: None,
+                    previous_checkpoint_round: None,
+                    anchor_changed_since_checkpoint: false,
+                    last_round_degraded: false,
+                },
+            );
+            return TurnLocalProjectionOutcome::Projection(TurnLocalProjection {
+                conversation: tool_bounded_conversation,
+                compaction,
+            });
+        }
+    }
+    let effective_budget_estimated_tokens = if trigger_effective_budget_estimated_tokens == 0 {
+        hard_effective_budget_estimated_tokens
+    } else {
+        trigger_effective_budget_estimated_tokens
+    };
 
     // Try folding consecutive identical tool-call rounds before more aggressive compaction.
     let folded = fold_repeated_tool_call_rounds(
         prompt_frame,
         runtime_reminder,
         rounds,
+        exact_estimated_tokens,
+        request_prompt_budget,
+        compaction_trigger_budget,
+        keep_recent_budget,
+        tool_output_budget,
         effective_budget_estimated_tokens,
         tool_overhead_estimated_tokens,
     );
     if let Some(outcome) = folded {
         return outcome;
+    }
+
+    // A round recap cannot reduce a single-round history. When the exact
+    // projection still fits the hard request budget, preserve it rather than
+    // issuing a checkpoint request with no compacted prefix.
+    if rounds.len() < 2
+        && tool_bounded_projection_available
+        && exact_estimated_tokens <= hard_effective_budget_estimated_tokens
+    {
+        return TurnLocalProjectionOutcome::Projection(TurnLocalProjection {
+            conversation: exact_conversation,
+            compaction: None,
+        });
     }
 
     let minimum_exact_round_estimated_tokens =
@@ -631,11 +896,75 @@ pub(super) fn build_turn_local_projection_with_runtime_reminder(
     }
     let minimum_projection_estimated_tokens =
         estimate_projection_tokens(prompt_frame, &minimum_viable_conversation);
-    if minimum_projection_estimated_tokens > effective_budget_estimated_tokens {
-        // Try degrading the last round before giving up.
+    if minimum_projection_estimated_tokens > hard_effective_budget_estimated_tokens {
+        // Prefer a recoverable projection from the canonical envelope before any
+        // text degradation. If the compact receipt itself cannot fit, fail closed.
         if let Some(last_round) = rounds.last() {
+            if let Some((compacted_messages, tool_stats)) =
+                compacted_round_messages(last_round, tool_output_budget)
+            {
+                let mut compacted_conversation = vec![ConversationMessage::UserBlocks(
+                    prompt_frame.context_blocks.clone(),
+                )];
+                push_runtime_reminder_message(&mut compacted_conversation, runtime_reminder);
+                compacted_conversation.extend(compacted_messages);
+                let compacted_projection_estimated_tokens =
+                    estimate_projection_tokens(prompt_frame, &compacted_conversation);
+                if tool_stats.compacted_tool_results > 0
+                    && compacted_projection_estimated_tokens
+                        <= hard_effective_budget_estimated_tokens
+                {
+                    return TurnLocalProjectionOutcome::Projection(TurnLocalProjection {
+                        conversation: compacted_conversation,
+                        compaction: Some(TurnLocalCompactionStats {
+                            trigger_reason: "estimated_tokens_exceeded_trigger",
+                            compacted_rounds: rounds.len().saturating_sub(1),
+                            exact_tail_rounds: 1,
+                            degraded_rounds: 1,
+                            pre_compaction_estimated_tokens: exact_estimated_tokens,
+                            projected_estimated_tokens: compacted_projection_estimated_tokens,
+                            prompt_budget_estimated_tokens: request_prompt_budget,
+                            compaction_trigger_estimated_tokens: compaction_trigger_budget,
+                            keep_recent_estimated_tokens: keep_recent_budget,
+                            tool_output_budget_estimated_tokens: tool_output_budget,
+                            effective_budget_estimated_tokens:
+                                hard_effective_budget_estimated_tokens,
+                            tool_overhead_estimated_tokens,
+                            compacted_tool_results: tool_stats.compacted_tool_results,
+                            preserved_artifact_refs: tool_stats.preserved_artifact_refs,
+                            strict_fallback_applied: true,
+                            checkpoint_request_id: None,
+                            checkpoint_mode: None,
+                            checkpoint_anchor_generation: None,
+                            checkpoint_base_round: None,
+                            previous_checkpoint_round: None,
+                            anchor_changed_since_checkpoint: false,
+                            last_round_degraded: true,
+                        }),
+                    });
+                }
+                if tool_stats.compacted_tool_results > 0 {
+                    return baseline_over_budget(
+                        "minimum_compact_tool_receipt_unfit",
+                        minimum_exact_round_estimated_tokens,
+                        compacted_projection_estimated_tokens,
+                    );
+                }
+            } else if last_round
+                .tool_results
+                .iter()
+                .any(|result| estimate_tool_result_block_tokens(result) > tool_output_budget)
+            {
+                return baseline_over_budget(
+                    "minimum_compact_tool_receipt_unfit",
+                    minimum_exact_round_estimated_tokens,
+                    minimum_projection_estimated_tokens,
+                );
+            }
+
+            // Assistant text remains degradable when tool results are already bounded.
             let degraded_available_tokens =
-                effective_budget_estimated_tokens.saturating_sub(estimated_baseline_tokens);
+                hard_effective_budget_estimated_tokens.saturating_sub(estimated_baseline_tokens);
             let mut degraded_conversation = vec![ConversationMessage::UserBlocks(
                 prompt_frame.context_blocks.clone(),
             )];
@@ -645,15 +974,24 @@ pub(super) fn build_turn_local_projection_with_runtime_reminder(
             degraded_conversation.extend(degraded_messages);
             let degraded_projection_estimated_tokens =
                 estimate_projection_tokens(prompt_frame, &degraded_conversation);
-            if degraded_projection_estimated_tokens <= effective_budget_estimated_tokens {
+            if degraded_projection_estimated_tokens <= hard_effective_budget_estimated_tokens {
                 return TurnLocalProjectionOutcome::Projection(TurnLocalProjection {
                     conversation: degraded_conversation,
                     compaction: Some(TurnLocalCompactionStats {
+                        trigger_reason: "estimated_tokens_exceeded_trigger",
                         compacted_rounds: rounds.len().saturating_sub(1),
                         exact_tail_rounds: 1,
+                        degraded_rounds: 1,
+                        pre_compaction_estimated_tokens: exact_estimated_tokens,
                         projected_estimated_tokens: degraded_projection_estimated_tokens,
-                        effective_budget_estimated_tokens,
+                        prompt_budget_estimated_tokens: request_prompt_budget,
+                        compaction_trigger_estimated_tokens: compaction_trigger_budget,
+                        keep_recent_estimated_tokens: keep_recent_budget,
+                        tool_output_budget_estimated_tokens: tool_output_budget,
+                        effective_budget_estimated_tokens: hard_effective_budget_estimated_tokens,
                         tool_overhead_estimated_tokens,
+                        compacted_tool_results: 0,
+                        preserved_artifact_refs: 0,
                         strict_fallback_applied: true,
                         checkpoint_request_id: None,
                         checkpoint_mode: None,
@@ -673,16 +1011,48 @@ pub(super) fn build_turn_local_projection_with_runtime_reminder(
         );
     }
 
-    let preferred_tail_start = select_exact_tail_start(rounds, keep_recent_budget);
+    let preferred_tail_start = select_exact_tail_start(rounds, keep_recent_budget).max(1);
     let minimum_tail_start = rounds.len().saturating_sub(1);
 
-    for tail_start in preferred_tail_start..=minimum_tail_start {
+    'tail: for tail_start in preferred_tail_start..=minimum_tail_start {
         let mut conversation = vec![ConversationMessage::UserBlocks(
             prompt_frame.context_blocks.clone(),
         )];
         push_runtime_reminder_message(&mut conversation, runtime_reminder);
         let exact_tail = &rounds[tail_start..];
-        let exact_tail_tokens = exact_tail.iter().map(estimate_round_tokens).sum::<usize>();
+        let mut projected_exact_tail = Vec::new();
+        let mut tool_stats = ToolResultProjectionStats::default();
+        for round in exact_tail {
+            let Some((messages, round_stats)) = compacted_round_messages(round, tool_output_budget)
+            else {
+                continue 'tail;
+            };
+            tool_stats.compacted_tool_results = tool_stats
+                .compacted_tool_results
+                .saturating_add(round_stats.compacted_tool_results);
+            tool_stats.preserved_artifact_refs = tool_stats
+                .preserved_artifact_refs
+                .saturating_add(round_stats.preserved_artifact_refs);
+            projected_exact_tail.extend(messages);
+        }
+        let exact_tail_tokens = projected_exact_tail
+            .iter()
+            .map(|message| match message {
+                ConversationMessage::UserText(text) => estimate_text_tokens(text),
+                ConversationMessage::UserBlocks(blocks) => estimate_prompt_blocks_tokens(blocks),
+                ConversationMessage::AssistantBlocks(blocks) => {
+                    blocks.iter().map(estimate_model_block_tokens).sum()
+                }
+                ConversationMessage::UserToolResults(results) => {
+                    results.iter().map(estimate_tool_result_block_tokens).sum()
+                }
+                ConversationMessage::UserImage {
+                    prompt,
+                    data_base64,
+                    ..
+                } => estimate_text_tokens(prompt).saturating_add(data_base64.len() / 4),
+            })
+            .sum::<usize>();
         let include_checkpoint = exact_tail
             .iter()
             .all(|round| round.follow_up_user_texts.is_empty());
@@ -710,9 +1080,7 @@ pub(super) fn build_turn_local_projection_with_runtime_reminder(
         if !recap.trim().is_empty() {
             conversation.push(ConversationMessage::UserText(recap));
         }
-        for round in exact_tail {
-            conversation.extend(exact_round_messages(round));
-        }
+        conversation.extend(projected_exact_tail);
         if let Some(checkpoint) = checkpoint_request.as_ref() {
             conversation.push(ConversationMessage::UserText(checkpoint.prompt.clone()));
         }
@@ -723,11 +1091,20 @@ pub(super) fn build_turn_local_projection_with_runtime_reminder(
             return TurnLocalProjectionOutcome::Projection(TurnLocalProjection {
                 conversation,
                 compaction: Some(TurnLocalCompactionStats {
+                    trigger_reason: "estimated_tokens_exceeded_trigger",
                     compacted_rounds: tail_start,
                     exact_tail_rounds: rounds.len().saturating_sub(tail_start),
+                    degraded_rounds: 0,
+                    pre_compaction_estimated_tokens: exact_estimated_tokens,
                     projected_estimated_tokens,
+                    prompt_budget_estimated_tokens: request_prompt_budget,
+                    compaction_trigger_estimated_tokens: compaction_trigger_budget,
+                    keep_recent_estimated_tokens: keep_recent_budget,
+                    tool_output_budget_estimated_tokens: tool_output_budget,
                     effective_budget_estimated_tokens,
                     tool_overhead_estimated_tokens,
+                    compacted_tool_results: tool_stats.compacted_tool_results,
+                    preserved_artifact_refs: tool_stats.preserved_artifact_refs,
                     strict_fallback_applied,
                     checkpoint_request_id: checkpoint_request
                         .as_ref()
@@ -753,14 +1130,39 @@ pub(super) fn build_turn_local_projection_with_runtime_reminder(
         }
     }
 
+    if let Some(last_round) = rounds.last() {
+        let oversized_tool_result = last_round
+            .tool_results
+            .iter()
+            .any(|result| estimate_tool_result_block_tokens(result) > tool_output_budget);
+        if oversized_tool_result
+            && compacted_round_messages(last_round, tool_output_budget).is_none()
+        {
+            return baseline_over_budget(
+                "minimum_compact_tool_receipt_unfit",
+                minimum_exact_round_estimated_tokens,
+                minimum_projection_estimated_tokens,
+            );
+        }
+    }
+
     TurnLocalProjectionOutcome::Projection(TurnLocalProjection {
         conversation: minimum_viable_conversation,
         compaction: Some(TurnLocalCompactionStats {
+            trigger_reason: "estimated_tokens_exceeded_trigger",
             compacted_rounds: minimum_tail_start,
             exact_tail_rounds: rounds.len().saturating_sub(minimum_tail_start),
+            degraded_rounds: 0,
+            pre_compaction_estimated_tokens: exact_estimated_tokens,
             projected_estimated_tokens: minimum_projection_estimated_tokens,
+            prompt_budget_estimated_tokens: request_prompt_budget,
+            compaction_trigger_estimated_tokens: compaction_trigger_budget,
+            keep_recent_estimated_tokens: keep_recent_budget,
+            tool_output_budget_estimated_tokens: tool_output_budget,
             effective_budget_estimated_tokens,
             tool_overhead_estimated_tokens,
+            compacted_tool_results: 0,
+            preserved_artifact_refs: 0,
             strict_fallback_applied: minimum_tail_start > preferred_tail_start,
             checkpoint_request_id: None,
             checkpoint_mode: None,

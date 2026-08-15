@@ -825,6 +825,13 @@ async fn turn_local_compaction_rewrites_older_rounds_into_runtime_recap() {
     let continuation_request = requests.get(3).expect("missing round 4 request");
     let checkpoint_resume_request = requests.get(4).expect("missing round 5 request");
     let pending_delivery_retry_request = requests.get(5).expect("missing round 6 request");
+    let first_tool_schema = serde_json::to_value(&requests[0].tools).unwrap();
+    assert!(
+        requests
+            .iter()
+            .all(|request| serde_json::to_value(&request.tools).unwrap() == first_tool_schema),
+        "resolved route tool order and schema must remain stable across rounds"
+    );
     let cache = continuation_request
         .prompt_frame
         .cache
@@ -853,6 +860,19 @@ async fn turn_local_compaction_rewrites_older_rounds_into_runtime_recap() {
     );
     let serialized_conversation = format!("{:?}", continuation_request.conversation);
     let events = runtime.storage().read_recent_events(50).unwrap();
+    let lineage_event = events
+        .iter()
+        .find(|event| event.kind == "lineage_selected")
+        .expect("missing lineage_selected");
+    assert_eq!(
+        lineage_event.data["tool_capability_projection"]["pruning"].as_str(),
+        Some("none")
+    );
+    assert!(
+        lineage_event.data["tool_capability_projection"]["schema_fingerprint"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("sha256:"))
+    );
     let round_four_event = events
         .iter()
         .find(|event| {
@@ -908,6 +928,14 @@ async fn turn_local_compaction_rewrites_older_rounds_into_runtime_recap() {
                 .as_u64()
                 .unwrap_or_default()
                 >= 1
+        );
+        assert_eq!(
+            round_four_event.data["turn_local_compaction"]["trigger_reason"].as_str(),
+            Some("estimated_tokens_exceeded_trigger")
+        );
+        assert_eq!(
+            round_four_event.data["turn_local_compaction"]["compacted_rounds"],
+            compaction_event.data["compacted_rounds"]
         );
         let checkpoint_request_id = compaction_event.data["checkpoint_request_id"]
             .as_str()
@@ -1801,6 +1829,38 @@ async fn view_image_selection_uses_current_turn_fallback_model() {
     assert_eq!(
         selection.primary_model.as_deref(),
         Some("claude-sonnet-4-6")
+    );
+}
+
+#[tokio::test]
+async fn fallback_turn_model_state_uses_fallback_model_policy() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let state = runtime.agent_state().await.unwrap();
+    let fallback =
+        crate::config::ModelRouteRef::parse("deepseek@responses/deepseek-v4-pro").unwrap();
+
+    let model_state = runtime.model_state_for_turn(&state, Some(&fallback));
+    let snapshot = runtime.inner.config_snapshot.load();
+    let expected_policy = snapshot
+        .model_catalog
+        .resolved_model_policy(&snapshot.base_context_config, Some(&fallback));
+
+    assert_eq!(model_state.active_model.as_ref(), Some(&fallback));
+    assert_eq!(model_state.resolved_policy, expected_policy);
+    assert_eq!(
+        model_state.resolved_policy.model_ref.as_string(),
+        "deepseek/deepseek-v4-pro"
     );
 }
 

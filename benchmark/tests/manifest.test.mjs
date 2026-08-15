@@ -1357,6 +1357,69 @@ test("provider round telemetry cannot silently disappear after model execution",
   );
 });
 
+test("summarizeHolonTokenOptimization reports local compaction and cache warm-up", () => {
+  const diagnostics = summarizeHolonTokenOptimization([
+    {
+      kind: "provider_round_completed",
+      data: {
+        round: 4,
+        input_tokens: 900,
+        output_tokens: 20,
+        provider_cache_usage: { read_input_tokens: 0, creation_input_tokens: 0 },
+        turn_local_compaction: {
+          trigger_reason: "estimated_tokens_exceeded_trigger",
+          pre_compaction_estimated_tokens: 1400,
+          projected_estimated_tokens: 850,
+          compacted_rounds: 2,
+          exact_tail_rounds: 1,
+          degraded_rounds: 0,
+          compacted_tool_results: 1,
+          preserved_artifact_refs: 3,
+          strict_fallback_applied: false
+        }
+      }
+    },
+    {
+      kind: "provider_round_completed",
+      data: {
+        round: 5,
+        input_tokens: 950,
+        output_tokens: 20,
+        provider_cache_usage: { read_input_tokens: 700, creation_input_tokens: 0 },
+        turn_local_compaction: null
+      }
+    }
+  ]);
+
+  assert.equal(diagnostics.summary.turn_local_compaction_telemetry_status, "available");
+  assert.equal(diagnostics.summary.turn_local_compaction_applied_rounds, 1);
+  assert.equal(diagnostics.summary.turn_local_compaction_pre_estimated_tokens, 1400);
+  assert.equal(diagnostics.summary.turn_local_compaction_projected_estimated_tokens, 850);
+  assert.equal(diagnostics.summary.turn_local_compacted_rounds, 2);
+  assert.equal(diagnostics.summary.turn_local_compacted_tool_results, 1);
+  assert.equal(diagnostics.summary.turn_local_preserved_artifact_refs, 3);
+  assert.equal(diagnostics.summary.turn_local_compaction_cache_warmup_observed, 1);
+  assert.equal(diagnostics.summary.turn_local_compaction_cache_warmup_hits, 1);
+  assert.equal(diagnostics.rounds[0].turn_local_compaction.status, "applied");
+  assert.equal(diagnostics.rounds[1].turn_local_compaction.status, "not_applied");
+});
+
+test("summarizeHolonTokenOptimization marks legacy local compaction telemetry unavailable", () => {
+  const diagnostics = summarizeHolonTokenOptimization([
+    {
+      kind: "provider_round_completed",
+      data: {
+        round: 1,
+        input_tokens: 100,
+        output_tokens: 10
+      }
+    }
+  ]);
+
+  assert.equal(diagnostics.rounds[0].turn_local_compaction.status, "unavailable");
+  assert.equal(diagnostics.summary.turn_local_compaction_telemetry_status, "unavailable");
+});
+
 test("manifest verifier runs only when GitHub CI is not the verification source", () => {
   assert.equal(shouldRunManifestVerifier({ pr: { submit_pr: false } }), true);
   assert.equal(shouldRunManifestVerifier({ pr: { submit_pr: true } }), false);

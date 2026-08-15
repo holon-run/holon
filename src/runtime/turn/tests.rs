@@ -682,7 +682,9 @@ fn build_turn_local_projection_includes_runtime_reminder() {
         &TurnLocalCheckpointState::default(),
         Some("req-1".into()),
         4_000,
+        4_000,
         120,
+        2_500,
         Some(reminder),
     );
 
@@ -758,7 +760,9 @@ fn large_work_item_stale_reminder_does_not_force_baseline_over_budget() {
         &TurnLocalCheckpointState::default(),
         Some("req-large".into()),
         4_000,
+        4_000,
         120,
+        2_500,
         Some(&reminder),
     );
 
@@ -1059,6 +1063,195 @@ fn build_turn_local_projection_minimum_projection_can_hit_exact_budget() {
         minimum_projection_estimated_tokens
     );
     assert!(compaction.strict_fallback_applied);
+}
+
+#[test]
+fn build_turn_local_projection_compacts_at_trigger_before_hard_budget() {
+    let rounds = vec![
+        fixture_round(1, &"alpha ".repeat(240)),
+        fixture_round(2, &"beta ".repeat(180)),
+        fixture_round(3, &"gamma ".repeat(120)),
+    ];
+    let prompt_frame = fixture_prompt_frame();
+    let mut exact_conversation = vec![ConversationMessage::UserBlocks(
+        prompt_frame.context_blocks.clone(),
+    )];
+    for round in &rounds {
+        exact_conversation.extend(exact_round_messages(round));
+    }
+    let exact_tokens = estimate_projection_tokens(&prompt_frame, &exact_conversation);
+    let hard_budget = exact_tokens + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS + 200;
+    let trigger_budget = exact_tokens
+        .saturating_sub(80)
+        .saturating_add(CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS);
+
+    let projection = build_turn_local_projection_with_runtime_reminder(
+        &prompt_frame,
+        &rounds,
+        &[],
+        &TurnLocalCheckpointState::default(),
+        Some("req-trigger".into()),
+        hard_budget,
+        trigger_budget,
+        100,
+        2_500,
+        None,
+    );
+
+    let TurnLocalProjectionOutcome::Projection(projection) = projection else {
+        panic!("expected projection outcome");
+    };
+    let compaction = projection.compaction.expect("trigger should compact");
+    assert_eq!(
+        compaction.trigger_reason,
+        "estimated_tokens_exceeded_trigger"
+    );
+    assert!(compaction.pre_compaction_estimated_tokens < hard_budget);
+    assert!(
+        compaction.projected_estimated_tokens
+            <= trigger_budget.saturating_sub(CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS)
+    );
+}
+
+#[test]
+fn compacted_tool_result_projection_uses_canonical_recoverable_receipt() {
+    let mut round = fixture_round_with_tool(
+        1,
+        "inspect command",
+        "ExecCommand",
+        serde_json::json!({"cmd": "printf ok"}),
+    );
+    let envelope = ToolResultEnvelope {
+        tool_name: "ExecCommand".into(),
+        status: ToolResultStatus::Success,
+        summary_text: Some("completed exit_status=0 truncated=true".into()),
+        result: Some(serde_json::json!({
+            "stdout_preview": "sensitive-large-payload ".repeat(500),
+            "output_ref": "tool_execution:tool_123:output",
+            "stdout_ref": "tool_execution:tool_123:stdout",
+            "truncated": true,
+            "artifacts": [{"path": "/tmp/full-output.log"}],
+            "task_handle": {"task_id": "task_123", "status": "completed"}
+        })),
+        error: None,
+    };
+    round.tool_results = vec![ToolResultBlock {
+        tool_use_id: "call_1".into(),
+        content: serde_json::to_string(&envelope).unwrap(),
+        is_error: false,
+        error: None,
+    }];
+    round.tool_result_envelopes = vec![envelope];
+    round.estimated_tokens =
+        build_round_estimated_tokens(&round.assistant_blocks, &round.tool_results, &[]);
+    let prompt_frame = fixture_prompt_frame();
+    let tool_budget = 160;
+    let (projected_messages, stats) =
+        compacted_round_messages(&round, tool_budget).expect("compact receipt should fit");
+    let compacted_conversation = [
+        vec![ConversationMessage::UserBlocks(
+            prompt_frame.context_blocks.clone(),
+        )],
+        projected_messages,
+    ]
+    .concat();
+    let compacted_tokens = estimate_projection_tokens(&prompt_frame, &compacted_conversation);
+    let exact_tokens = estimate_projection_tokens(
+        &prompt_frame,
+        &[
+            vec![ConversationMessage::UserBlocks(
+                prompt_frame.context_blocks.clone(),
+            )],
+            exact_round_messages(&round),
+        ]
+        .concat(),
+    );
+
+    let projection = build_turn_local_projection_with_runtime_reminder(
+        &prompt_frame,
+        &[round],
+        &[],
+        &TurnLocalCheckpointState::default(),
+        Some("req-tool".into()),
+        exact_tokens + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS + 100,
+        compacted_tokens + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS,
+        100,
+        tool_budget,
+        None,
+    );
+
+    let TurnLocalProjectionOutcome::Projection(projection) = projection else {
+        panic!("expected projection outcome");
+    };
+    let compaction = projection.compaction.expect("tool result should compact");
+    assert_eq!(stats.compacted_tool_results, 1);
+    assert_eq!(compaction.compacted_tool_results, 1);
+    assert!(compaction.preserved_artifact_refs >= 3);
+    let rendered = format!("{:?}", projection.conversation);
+    assert!(rendered.contains("completed exit_status=0 truncated=true"));
+    assert!(rendered.contains("tool_execution:tool_123:output"));
+    assert!(rendered.contains("task_123"));
+    assert!(rendered.contains("/tmp/full-output.log"));
+    assert!(!rendered.contains("sensitive-large-payload"));
+}
+
+#[test]
+fn compacted_tool_result_projection_fails_closed_when_minimum_receipt_cannot_fit() {
+    let mut round = fixture_round_with_tool(
+        1,
+        "inspect command",
+        "ExecCommand",
+        serde_json::json!({"cmd": "printf ok"}),
+    );
+    let envelope = ToolResultEnvelope {
+        tool_name: "ExecCommand".into(),
+        status: ToolResultStatus::Success,
+        summary_text: Some("completed".into()),
+        result: Some(serde_json::json!({"output_ref": "tool_execution:tool_123:output"})),
+        error: None,
+    };
+    round.tool_results = vec![ToolResultBlock {
+        tool_use_id: "call_1".into(),
+        content: format!(
+            "{}{}",
+            serde_json::to_string(&envelope).unwrap(),
+            "x".repeat(2_000)
+        ),
+        is_error: false,
+        error: None,
+    }];
+    round.tool_result_envelopes = vec![envelope];
+    round.estimated_tokens =
+        build_round_estimated_tokens(&round.assistant_blocks, &round.tool_results, &[]);
+    let prompt_frame = fixture_prompt_frame();
+    let exact_tokens = estimate_projection_tokens(
+        &prompt_frame,
+        &[
+            vec![ConversationMessage::UserBlocks(
+                prompt_frame.context_blocks.clone(),
+            )],
+            exact_round_messages(&round),
+        ]
+        .concat(),
+    );
+
+    let projection = build_turn_local_projection_with_runtime_reminder(
+        &prompt_frame,
+        &[round],
+        &[],
+        &TurnLocalCheckpointState::default(),
+        Some("req-tool-fail".into()),
+        exact_tokens + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS + 100,
+        CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS + 10,
+        100,
+        1,
+        None,
+    );
+
+    let TurnLocalProjectionOutcome::BaselineOverBudget(diagnostics) = projection else {
+        panic!("minimum compact receipt must fail closed");
+    };
+    assert_eq!(diagnostics.reason, "minimum_compact_tool_receipt_unfit");
 }
 
 #[test]

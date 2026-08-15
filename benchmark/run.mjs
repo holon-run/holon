@@ -363,6 +363,19 @@ function formatTokenOptimization(entry) {
   if ((diagnostics.summary.stable_prefix_changed_rounds ?? 0) > 0) {
     parts.push(`prefix_changed=${diagnostics.summary.stable_prefix_changed_rounds}`);
   }
+  if (diagnostics.summary.turn_local_compaction_telemetry_status === "unavailable") {
+    parts.push("local_compaction=unavailable");
+  } else if ((diagnostics.summary.turn_local_compaction_applied_rounds ?? 0) > 0) {
+    parts.push(
+      `local_compaction=${diagnostics.summary.turn_local_compaction_applied_rounds}`
+    );
+    parts.push(
+      `tool_results_compacted=${diagnostics.summary.turn_local_compacted_tool_results ?? 0}`
+    );
+    parts.push(
+      `cache_warmup=${diagnostics.summary.turn_local_compaction_cache_warmup_hits ?? 0}/${diagnostics.summary.turn_local_compaction_cache_warmup_observed ?? 0}`
+    );
+  }
   return parts.length > 0 ? parts.join(" ") : "observed";
 }
 
@@ -3265,6 +3278,44 @@ function usageSemantics(provider, modelRef, transport) {
   return "total_input_with_cache";
 }
 
+function turnLocalCompactionDiagnostic(data) {
+  if (!Object.prototype.hasOwnProperty.call(data ?? {}, "turn_local_compaction")) {
+    return { status: "unavailable" };
+  }
+  const compaction = data?.turn_local_compaction;
+  if (compaction === null || typeof compaction !== "object") {
+    return { status: "not_applied" };
+  }
+  return {
+    status: "applied",
+    trigger_reason: compaction.trigger_reason ?? null,
+    prompt_budget_estimated_tokens: numberOrNull(
+      compaction.prompt_budget_estimated_tokens
+    ),
+    compaction_trigger_estimated_tokens: numberOrNull(
+      compaction.compaction_trigger_estimated_tokens
+    ),
+    compaction_keep_recent_estimated_tokens: numberOrNull(
+      compaction.compaction_keep_recent_estimated_tokens
+    ),
+    tool_output_truncation_estimated_tokens: numberOrNull(
+      compaction.tool_output_truncation_estimated_tokens
+    ),
+    pre_compaction_estimated_tokens: numberOrNull(
+      compaction.pre_compaction_estimated_tokens
+    ),
+    projected_estimated_tokens: numberOrNull(
+      compaction.projected_estimated_tokens
+    ),
+    compacted_rounds: numberOrNull(compaction.compacted_rounds),
+    exact_tail_rounds: numberOrNull(compaction.exact_tail_rounds),
+    degraded_rounds: numberOrNull(compaction.degraded_rounds),
+    compacted_tool_results: numberOrNull(compaction.compacted_tool_results),
+    preserved_artifact_refs: numberOrNull(compaction.preserved_artifact_refs),
+    strict_fallback_applied: Boolean(compaction.strict_fallback_applied)
+  };
+}
+
 export function normalizeProviderRoundUsage({
   data,
   provider,
@@ -3460,6 +3511,7 @@ export function summarizeHolonTokenOptimization(events, toolExecutions = [], opt
         requestDiagnostics
       ),
       openai_remote_compaction: openaiRemoteCompactionDiagnostic(provider, requestDiagnostics),
+      turn_local_compaction: turnLocalCompactionDiagnostic(data),
       context_management: contextManagement,
       previous_tool: previousTool,
       anthropic_cache: anthropicCache,
@@ -4480,6 +4532,17 @@ function summarizeTokenOptimizationRounds(rounds) {
   let movingBreakpointNonReuseRounds = 0;
   let stablePrefixAvailableRounds = 0;
   let stablePrefixChangedRounds = 0;
+  let turnLocalCompactionTelemetryAvailableRounds = 0;
+  let turnLocalCompactionAppliedRounds = 0;
+  let turnLocalCompactionPreTokens = 0;
+  let turnLocalCompactionProjectedTokens = 0;
+  let turnLocalCompactedRounds = 0;
+  let turnLocalDegradedRounds = 0;
+  let turnLocalCompactedToolResults = 0;
+  let turnLocalPreservedArtifactRefs = 0;
+  let turnLocalCompactionCacheWarmupObserved = 0;
+  let turnLocalCompactionCacheWarmupHits = 0;
+  let previousRoundAppliedTurnLocalCompaction = false;
 
   for (const round of rounds) {
     requestLoweringModes[round.request_lowering_mode] =
@@ -4506,6 +4569,30 @@ function summarizeTokenOptimizationRounds(rounds) {
     }
     if ((round.stable_prefix_changed_components?.length ?? 0) > 0) {
       stablePrefixChangedRounds += 1;
+    }
+    if (round.turn_local_compaction?.status !== "unavailable") {
+      turnLocalCompactionTelemetryAvailableRounds += 1;
+    }
+    if (previousRoundAppliedTurnLocalCompaction) {
+      turnLocalCompactionCacheWarmupObserved += 1;
+      if (round.cache_read_input_tokens > 0) {
+        turnLocalCompactionCacheWarmupHits += 1;
+      }
+    }
+    previousRoundAppliedTurnLocalCompaction =
+      round.turn_local_compaction?.status === "applied";
+    if (previousRoundAppliedTurnLocalCompaction) {
+      turnLocalCompactionAppliedRounds += 1;
+      turnLocalCompactionPreTokens +=
+        round.turn_local_compaction.pre_compaction_estimated_tokens ?? 0;
+      turnLocalCompactionProjectedTokens +=
+        round.turn_local_compaction.projected_estimated_tokens ?? 0;
+      turnLocalCompactedRounds += round.turn_local_compaction.compacted_rounds ?? 0;
+      turnLocalDegradedRounds += round.turn_local_compaction.degraded_rounds ?? 0;
+      turnLocalCompactedToolResults +=
+        round.turn_local_compaction.compacted_tool_results ?? 0;
+      turnLocalPreservedArtifactRefs +=
+        round.turn_local_compaction.preserved_artifact_refs ?? 0;
     }
     if (round.high_input_zero_cache_read) {
       highInputZeroCacheReadRounds += 1;
@@ -4638,6 +4725,22 @@ function summarizeTokenOptimizationRounds(rounds) {
     moving_breakpoint_non_reuse_rounds: movingBreakpointNonReuseRounds,
     stable_prefix_available_rounds: stablePrefixAvailableRounds,
     stable_prefix_changed_rounds: stablePrefixChangedRounds,
+    turn_local_compaction_telemetry_status:
+      turnLocalCompactionTelemetryAvailableRounds === rounds.length
+        ? "available"
+        : turnLocalCompactionTelemetryAvailableRounds === 0
+          ? "unavailable"
+          : "partial",
+    turn_local_compaction_applied_rounds: turnLocalCompactionAppliedRounds,
+    turn_local_compaction_pre_estimated_tokens: turnLocalCompactionPreTokens,
+    turn_local_compaction_projected_estimated_tokens: turnLocalCompactionProjectedTokens,
+    turn_local_compacted_rounds: turnLocalCompactedRounds,
+    turn_local_degraded_rounds: turnLocalDegradedRounds,
+    turn_local_compacted_tool_results: turnLocalCompactedToolResults,
+    turn_local_preserved_artifact_refs: turnLocalPreservedArtifactRefs,
+    turn_local_compaction_cache_warmup_observed:
+      turnLocalCompactionCacheWarmupObserved,
+    turn_local_compaction_cache_warmup_hits: turnLocalCompactionCacheWarmupHits,
     top_cache_miss_rounds: topCacheMissRounds
   };
 }

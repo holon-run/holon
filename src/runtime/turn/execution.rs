@@ -6,6 +6,7 @@ use std::{collections::HashSet, time::Instant};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 
 use crate::config::ModelRouteRef;
 use crate::prompt::EffectivePrompt;
@@ -18,7 +19,7 @@ use crate::runtime::provider_turn::{
     build_continuation_request, build_initial_provider_turn_request, build_provider_prompt_frame,
 };
 use crate::storage::to_json_value;
-use crate::tool::{ToolCall, ToolError};
+use crate::tool::{ToolCall, ToolError, ToolSpec};
 use crate::types::{
     AdmissionContext, AssistantRoundPurpose, AuditEvent, AuthorityClass, Citation, MessageBody,
     MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, Priority,
@@ -81,6 +82,11 @@ struct PendingCompletionReport {
     tool_execution: ToolExecutionRecord,
     warnings: Vec<Value>,
     corrective_retry_attempted: bool,
+}
+
+fn tool_capability_projection_fingerprint(tools: &[ToolSpec]) -> String {
+    let encoded = serde_json::to_vec(tools).unwrap_or_default();
+    format!("sha256:{:x}", Sha256::digest(encoded))
 }
 
 impl TurnModelSelection {
@@ -1034,6 +1040,7 @@ impl TurnExecution<'_> {
             .iter()
             .map(|tool| tool.name.clone())
             .collect::<HashSet<_>>();
+        let tool_schema_fingerprint = tool_capability_projection_fingerprint(&available_tools);
         runtime.inner.storage.append_event(&AuditEvent::legacy(
             "lineage_selected",
             serde_json::json!({
@@ -1042,6 +1049,14 @@ impl TurnExecution<'_> {
                 "recovery_fallback_model": model_selection.fallback_model(),
                 "model": turn_model_state,
                 "builtin_web_search_selection": builtin_web_search_selection,
+                "tool_capability_projection": {
+                    "policy": "static_agent_profile_runtime_route",
+                    "pruning": "none",
+                    "reason": "no provider-specific tool pruning declared",
+                    "tool_count": available_tools.len(),
+                    "tool_names": available_tools.iter().map(|tool| tool.name.clone()).collect::<Vec<_>>(),
+                    "schema_fingerprint": tool_schema_fingerprint,
+                },
             }),
         ))?;
         if let Some(pending) = model_selection.fallback_model() {
@@ -1121,6 +1136,7 @@ impl TurnExecution<'_> {
                 provider_started_at,
                 provider_completed_at,
                 provider_round_ms,
+                turn_local_compaction,
             ) = if round == 1 {
                 let request_build_started = std::time::Instant::now();
                 let request = build_initial_provider_turn_request(
@@ -1145,6 +1161,7 @@ impl TurnExecution<'_> {
                         provider_started_at,
                         provider_completed_at,
                         provider_round_ms,
+                        None,
                     ),
                     Err(err) => {
                         if let Some(aborted) = err.downcast_ref::<CurrentRunAborted>() {
@@ -1323,7 +1340,11 @@ impl TurnExecution<'_> {
                         // Turn-local continuation projection covers the complete provider request.
                         // The bounded turn projection budget only applies to initial recent_turns.
                         context_config.prompt_budget_estimated_tokens,
+                        context_config.compaction_trigger_estimated_tokens,
                         context_config.compaction_keep_recent_estimated_tokens,
+                        turn_model_state
+                            .resolved_policy
+                            .tool_output_truncation_estimated_tokens,
                         runtime_reminder.as_deref(),
                     ) {
                         TurnLocalProjectionOutcome::Projection(projection) => break projection,
@@ -1421,17 +1442,52 @@ impl TurnExecution<'_> {
                         }
                     }
                 };
+                let turn_local_compaction = projection.compaction.as_ref().map(|compaction| {
+                    serde_json::json!({
+                        "trigger_reason": compaction.trigger_reason,
+                        "prompt_budget_estimated_tokens": compaction.prompt_budget_estimated_tokens,
+                        "compaction_trigger_estimated_tokens": compaction.compaction_trigger_estimated_tokens,
+                        "compaction_keep_recent_estimated_tokens": compaction.keep_recent_estimated_tokens,
+                        "tool_output_truncation_estimated_tokens": compaction.tool_output_budget_estimated_tokens,
+                        "pre_compaction_estimated_tokens": compaction.pre_compaction_estimated_tokens,
+                        "compacted_rounds": compaction.compacted_rounds,
+                        "exact_tail_rounds": compaction.exact_tail_rounds,
+                        "degraded_rounds": compaction.degraded_rounds,
+                        "projected_estimated_tokens": compaction.projected_estimated_tokens,
+                        "effective_budget_estimated_tokens": compaction.effective_budget_estimated_tokens,
+                        "tool_overhead_estimated_tokens": compaction.tool_overhead_estimated_tokens,
+                        "compacted_tool_results": compaction.compacted_tool_results,
+                        "preserved_artifact_refs": compaction.preserved_artifact_refs,
+                        "strict_fallback_applied": compaction.strict_fallback_applied,
+                        "checkpoint_request_id": compaction.checkpoint_request_id,
+                        "checkpoint_mode": compaction.checkpoint_mode.map(|mode| mode.as_str()),
+                        "checkpoint_anchor_generation": compaction.checkpoint_anchor_generation,
+                        "checkpoint_base_round": compaction.checkpoint_base_round,
+                        "previous_checkpoint_round": compaction.previous_checkpoint_round,
+                        "anchor_changed_since_checkpoint": compaction.anchor_changed_since_checkpoint,
+                        "last_round_degraded": compaction.last_round_degraded,
+                    })
+                });
                 if let Some(compaction) = projection.compaction.as_ref() {
                     runtime.inner.storage.append_event(&AuditEvent::legacy(
                         "turn_local_compaction_applied",
                         serde_json::json!({
                             "agent_id": agent_id,
                             "round": round,
+                            "trigger_reason": compaction.trigger_reason,
+                            "prompt_budget_estimated_tokens": compaction.prompt_budget_estimated_tokens,
+                            "compaction_trigger_estimated_tokens": compaction.compaction_trigger_estimated_tokens,
+                            "compaction_keep_recent_estimated_tokens": compaction.keep_recent_estimated_tokens,
+                            "tool_output_truncation_estimated_tokens": compaction.tool_output_budget_estimated_tokens,
+                            "pre_compaction_estimated_tokens": compaction.pre_compaction_estimated_tokens,
                             "compacted_rounds": compaction.compacted_rounds,
                             "exact_tail_rounds": compaction.exact_tail_rounds,
+                            "degraded_rounds": compaction.degraded_rounds,
                             "projected_estimated_tokens": compaction.projected_estimated_tokens,
                             "effective_budget_estimated_tokens": compaction.effective_budget_estimated_tokens,
                             "tool_overhead_estimated_tokens": compaction.tool_overhead_estimated_tokens,
+                            "compacted_tool_results": compaction.compacted_tool_results,
+                            "preserved_artifact_refs": compaction.preserved_artifact_refs,
                             "strict_fallback_applied": compaction.strict_fallback_applied,
                             "checkpoint_request_id": compaction.checkpoint_request_id,
                             "checkpoint_mode": compaction.checkpoint_mode.map(|mode| mode.as_str()),
@@ -1490,6 +1546,7 @@ impl TurnExecution<'_> {
                         provider_started_at,
                         provider_completed_at,
                         provider_round_ms,
+                        turn_local_compaction,
                     ),
                     Err(err) => {
                         if let Some(aborted) = err.downcast_ref::<CurrentRunAborted>() {
@@ -1718,6 +1775,7 @@ impl TurnExecution<'_> {
                     "active_model": model_attempt_state.active_model.clone(),
                     "fallback_active": model_attempt_state.fallback_active,
                     "context_management": context_management,
+                    "turn_local_compaction": turn_local_compaction,
                     "provider_request_diagnostics": request_diagnostics.clone(),
                     "provider_attempt_timeline": attempt_timeline,
                 }),

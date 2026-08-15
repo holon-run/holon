@@ -392,7 +392,22 @@ impl AgentProvider for MultiPassCompactionRecoveryFlowProvider {
         };
 
         self.requests.lock().await.push(CapturedTurnRequest {
-            prompt_text: delegated_prompt_text(&request),
+            prompt_text: request
+                .conversation
+                .iter()
+                .filter_map(|message| match message {
+                    ConversationMessage::UserText(text) => Some(text.clone()),
+                    ConversationMessage::UserBlocks(blocks) => Some(
+                        blocks
+                            .iter()
+                            .map(|block| block.text.clone())
+                            .collect::<Vec<_>>()
+                            .join("\n\n"),
+                    ),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n"),
             compression_epoch: request
                 .prompt_frame
                 .cache

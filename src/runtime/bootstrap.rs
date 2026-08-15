@@ -509,6 +509,9 @@ impl RuntimeHandle {
         if let Some(fallback_model) = fallback_model {
             model_state.active_model = Some(fallback_model.clone());
             model_state.fallback_active = model_state.effective_model != *fallback_model;
+            model_state.resolved_policy = snap
+                .model_catalog
+                .resolved_model_policy(&snap.base_context_config, Some(fallback_model));
             model_state.effective_fallback_models = snap
                 .model_catalog
                 .provider_chain_for_turn(state.model_override.as_ref(), Some(fallback_model))
