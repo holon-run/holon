@@ -500,6 +500,10 @@ fn validate_recover_unadvanced_task_result_claim(
     agent_id: &str,
     command: &execution_protocol::RecoverUnadvancedTaskResultClaim,
 ) -> Result<()> {
+    // This path intentionally synthesizes source_revision from the admitted
+    // revision because the durable WorkItem has not advanced. The shared
+    // repository validator may check equality, but must not require the strict
+    // monotonicity used by the interrupted-claim domain transition.
     validate_recover_interrupted_task_result_claim(
         tx,
         agent_id,
