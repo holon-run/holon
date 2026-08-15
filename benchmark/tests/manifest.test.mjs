@@ -1926,6 +1926,30 @@ test("summarizeHolonTokenOptimization reports non-material zero cache reads accu
   );
 });
 
+test("summarizeHolonTokenOptimization classifies matching stable-prefix cache drops as server-side", () => {
+  const diagnostics = summarizeHolonTokenOptimization([
+    anthropicProviderRound({
+      round: 1,
+      cacheRead: 18_000,
+      createdAt: "2026-04-28T00:00:00Z",
+      stablePrefixFingerprint: "stable-x"
+    }),
+    anthropicProviderRound({
+      round: 2,
+      cacheRead: 0,
+      createdAt: "2026-04-28T00:00:20Z",
+      stablePrefixFingerprint: "stable-x"
+    })
+  ]);
+
+  assert.equal(diagnostics.rounds[1].cache_break_classification, "likely_server_side_drop");
+  assert.equal(diagnostics.rounds[1].stable_prefix_matches_cache_baseline, true);
+  assert.equal(
+    diagnostics.rounds[1].cache_break_reason,
+    "provider-visible stable prefix matched the positive cache-read baseline"
+  );
+});
+
 test("summarizeHolonTokenOptimization classifies stable-prefix cache drop as likely server-side", () => {
   const diagnostics = summarizeHolonTokenOptimization([
     anthropicProviderRound({
