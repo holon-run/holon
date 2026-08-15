@@ -36,8 +36,9 @@ use crate::{
         ProviderNativeWebSearchKind, ProviderNativeWebSearchRequest,
         ProviderOpenAiRemoteCompactionDiagnostics, ProviderOpenAiRequestControlsDiagnostics,
         ProviderPromptFrame, ProviderRequestDiagnostics, ProviderResponseFormatDiagnostics,
-        ProviderResponseFormatRequest, ProviderTransportDiagnostics, ProviderTurnRequest,
-        ProviderTurnResponse, ToolSchemaContract,
+        ProviderResponseFormatRequest, ProviderStablePrefixDiagnostics,
+        ProviderTransportDiagnostics, ProviderTurnRequest, ProviderTurnResponse,
+        ToolSchemaContract,
     },
     token_estimate::estimate_json_tokens,
 };
@@ -520,6 +521,12 @@ impl AgentProvider for OpenAiProvider {
                     plan.diagnostics.request_lowering_mode.clone();
             }
         }
+        sent_diagnostics.stable_prefix = Some(openai_stable_prefix_diagnostics(
+            &plan.body,
+            &plan.request_shape.wire_shape,
+            &plan.provider_input,
+            &sent_diagnostics,
+        ));
         let mut final_provider_input = plan.provider_input.clone();
         let mut final_replay_loss_reason = plan.replay_loss_reason.clone();
         let parsed = match send_openai_responses_for_contract(
@@ -832,6 +839,12 @@ impl AgentProvider for OpenAiCodexProvider {
             sent_diagnostics.openai_remote_compaction = Some(remote_compaction);
             sent_diagnostics.request_lowering_mode = plan.diagnostics.request_lowering_mode.clone();
         }
+        sent_diagnostics.stable_prefix = Some(openai_stable_prefix_diagnostics(
+            &plan.body,
+            &plan.request_shape.wire_shape,
+            &plan.provider_input,
+            &sent_diagnostics,
+        ));
         let parsed = match send_openai_responses_streaming_request(
             &self.client,
             openai_codex_responses_url(&self.base_url),
@@ -1197,6 +1210,27 @@ impl ProviderTurnResponse {
         self.request_diagnostics = Some(diagnostics);
         self
     }
+}
+
+pub(in crate::provider::transports::openai) fn openai_stable_prefix_diagnostics(
+    actual_body: &Value,
+    stable_shape: &Value,
+    provider_input: &[Value],
+    diagnostics: &ProviderRequestDiagnostics,
+) -> ProviderStablePrefixDiagnostics {
+    let history_prefix_items = provider_input.len().saturating_sub(1);
+    crate::provider::wire_fingerprint::stable_prefix_diagnostics(
+        actual_body,
+        stable_shape,
+        &provider_input[..history_prefix_items],
+        provider_input.len().saturating_sub(history_prefix_items),
+        &json!({
+            "provider_transport": diagnostics.provider_transport,
+            "endpoint_dialect": diagnostics.endpoint_dialect,
+            "request_lowering_mode": diagnostics.request_lowering_mode,
+            "contract_version": 1,
+        }),
+    )
 }
 
 impl ParsedOpenAiResponse {

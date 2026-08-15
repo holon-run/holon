@@ -134,6 +134,17 @@ pub(in super::super) async fn retry_openai_responses_with_lossless_replay(
         continuation.fallback_reason = Some("previous_response_id_rejected".into());
         continuation.server_side_context_may_be_lost = None;
     }
+    let mut stable_shape = fallback_body.clone();
+    if let Some(object) = stable_shape.as_object_mut() {
+        object.remove("input");
+        object.remove("previous_response_id");
+    }
+    diagnostics.stable_prefix = Some(openai_stable_prefix_diagnostics(
+        &fallback_body,
+        &stable_shape,
+        final_provider_input,
+        diagnostics,
+    ));
     send_openai_responses_request(
         client,
         url,

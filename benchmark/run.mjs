@@ -336,6 +336,7 @@ function formatTokenOptimization(entry) {
     return "n/a";
   }
   const cacheRead = diagnostics.summary.cache_read_input_tokens ?? 0;
+  const cacheHitRatio = diagnostics.summary.cache_hit_ratio;
   const highMisses = diagnostics.summary.high_input_zero_cache_read_rounds ?? 0;
   const modes = Object.entries(diagnostics.summary.request_lowering_modes ?? {})
     .map(([mode, count]) => `${mode}:${count}`)
@@ -343,6 +344,9 @@ function formatTokenOptimization(entry) {
   const parts = [];
   if (cacheRead > 0 || highMisses > 0) {
     parts.push(`cache_read=${cacheRead}`);
+  }
+  if (typeof cacheHitRatio === "number") {
+    parts.push(`cache_hit=${(cacheHitRatio * 100).toFixed(2)}%`);
   }
   if (highMisses > 0) {
     parts.push(`high_miss=${highMisses}`);
@@ -352,6 +356,12 @@ function formatTokenOptimization(entry) {
   }
   if ((diagnostics.summary.context_management_enabled_rounds ?? 0) > 0) {
     parts.push(`ctx_mgmt=${diagnostics.summary.context_management_enabled_rounds}`);
+  }
+  parts.push(
+    `stable_prefix=${diagnostics.summary.stable_prefix_available_rounds ?? 0}/${diagnostics.summary.rounds ?? 0}`
+  );
+  if ((diagnostics.summary.stable_prefix_changed_rounds ?? 0) > 0) {
+    parts.push(`prefix_changed=${diagnostics.summary.stable_prefix_changed_rounds}`);
   }
   return parts.length > 0 ? parts.join(" ") : "observed";
 }
@@ -3336,6 +3346,7 @@ export function summarizeHolonTokenOptimization(events, toolExecutions = [], opt
     lastPositiveCacheRound: null,
     lastMissRound: null
   };
+  let previousStablePrefix = null;
 
   for (const event of events) {
     const kind = event?.kind ?? event?.event ?? event?.type;
@@ -3376,6 +3387,11 @@ export function summarizeHolonTokenOptimization(events, toolExecutions = [], opt
     const cacheCreationInputTokens = usage.cache_creation_input_tokens;
     const round = Number(data?.round ?? event?.round ?? rounds.length + 1);
     const requestDiagnostics = data?.provider_request_diagnostics ?? {};
+    const stablePrefix = stablePrefixDiagnostic(requestDiagnostics);
+    const stablePrefixChangedComponents = stablePrefixComponentChanges(
+      previousStablePrefix,
+      stablePrefix
+    );
     const requestLoweringMode = inferRequestLoweringMode({
       provider,
       modelRef,
@@ -3404,6 +3420,8 @@ export function summarizeHolonTokenOptimization(events, toolExecutions = [], opt
             cacheReadInputTokens,
             eventTimestampMs,
             contextManagement,
+            stablePrefix,
+            stablePrefixChangedComponents,
             state: anthropicCacheState
           })
         : {};
@@ -3427,6 +3445,10 @@ export function summarizeHolonTokenOptimization(events, toolExecutions = [], opt
       ).length,
       cache_read_input_tokens: cacheReadInputTokens,
       cache_creation_input_tokens: cacheCreationInputTokens,
+      cache_hit_ratio:
+        usage.logical_input_tokens > 0
+          ? cacheReadInputTokens / usage.logical_input_tokens
+          : null,
       high_input_zero_cache_read: highInputZeroCacheRead,
       prompt_cache_key_present: typeof data?.prompt_cache_key === "string" && data.prompt_cache_key.length > 0,
       working_memory_revision: workingMemoryRevision,
@@ -3441,11 +3463,16 @@ export function summarizeHolonTokenOptimization(events, toolExecutions = [], opt
       context_management: contextManagement,
       previous_tool: previousTool,
       anthropic_cache: anthropicCache,
+      stable_prefix: stablePrefix,
+      stable_prefix_changed_components: stablePrefixChangedComponents,
       ...preciseAnthropicCache
     };
     rounds.push(roundEntry);
     if (provider === "anthropic") {
       updateAnthropicCacheState(anthropicCacheState, roundEntry);
+    }
+    if (stablePrefix.status === "available") {
+      previousStablePrefix = stablePrefix;
     }
   }
 
@@ -3979,6 +4006,53 @@ function anthropicCacheDiagnostic(provider, requestDiagnostics) {
   };
 }
 
+function stablePrefixDiagnostic(requestDiagnostics) {
+  const stablePrefix = requestDiagnostics?.stable_prefix;
+  if (!stablePrefix || typeof stablePrefix.stable_prefix_fingerprint !== "string") {
+    return {
+      status: "unavailable",
+      schema_version: null,
+      algorithm: null,
+      full_request_fingerprint: null,
+      stable_prefix_fingerprint: null,
+      history_prefix_items: null,
+      dynamic_tail_items: null,
+      components: []
+    };
+  }
+  return {
+    status: "available",
+    schema_version: numberOrNull(stablePrefix.schema_version),
+    algorithm: stablePrefix.algorithm ?? null,
+    full_request_fingerprint: stablePrefix.full_request_fingerprint ?? null,
+    stable_prefix_fingerprint: stablePrefix.stable_prefix_fingerprint,
+    history_prefix_items: numberOrNull(stablePrefix.history_prefix_items),
+    dynamic_tail_items: numberOrNull(stablePrefix.dynamic_tail_items),
+    components: Array.isArray(stablePrefix.components)
+      ? stablePrefix.components.map((component) => ({
+          name: component?.name ?? "unknown",
+          fingerprint: component?.fingerprint ?? null,
+          item_count: numberOrNull(component?.item_count)
+        }))
+      : []
+  };
+}
+
+function stablePrefixComponentChanges(previous, current) {
+  if (previous?.status !== "available" || current?.status !== "available") {
+    return null;
+  }
+  const previousComponents = new Map(
+    previous.components.map((component) => [component.name, component.fingerprint])
+  );
+  const currentComponents = new Map(
+    current.components.map((component) => [component.name, component.fingerprint])
+  );
+  return [...new Set([...previousComponents.keys(), ...currentComponents.keys()])]
+    .sort()
+    .filter((name) => previousComponents.get(name) !== currentComponents.get(name));
+}
+
 function prepareAnthropicCacheRoundDiagnostics({
   modelRef,
   workingMemoryRevision,
@@ -3987,6 +4061,8 @@ function prepareAnthropicCacheRoundDiagnostics({
   cacheReadInputTokens,
   eventTimestampMs,
   contextManagement,
+  stablePrefix,
+  stablePrefixChangedComponents,
   state
 }) {
   const currentShape = anthropicComparableShape({
@@ -3998,6 +4074,11 @@ function prepareAnthropicCacheRoundDiagnostics({
   const shapeChangedFields = state.previousShape
     ? anthropicShapeChangedFields(state.previousShape, currentShape)
     : [];
+  if (Array.isArray(stablePrefixChangedComponents)) {
+    for (const component of stablePrefixChangedComponents) {
+      shapeChangedFields.push(`stable_prefix.components.${component}`);
+    }
+  }
   const previousSegmentPositiveRound =
     shapeChangedFields.length > 0 ? state.lastPositiveCacheRound : null;
   if (shapeChangedFields.length > 0) {
@@ -4022,6 +4103,11 @@ function prepareAnthropicCacheRoundDiagnostics({
   const currentContainsPriorCacheablePrefix = cacheBreakpointsWithReuse.some(
     (breakpoint) => breakpoint.seen_in_previous_comparable_rounds
   );
+  const stablePrefixMatchesBaseline =
+    stablePrefix?.status === "available" &&
+    state.lastPositiveCacheRound?.stable_prefix?.status === "available" &&
+    stablePrefix.stable_prefix_fingerprint ===
+      state.lastPositiveCacheRound.stable_prefix.stable_prefix_fingerprint;
 
   const baseline = state.lastPositiveCacheRound;
   const classificationBaseline = baseline ?? previousSegmentPositiveRound;
@@ -4076,6 +4162,9 @@ function prepareAnthropicCacheRoundDiagnostics({
   ) {
     cacheBreakClassification = "ttl_possible";
     cacheBreakReason = "elapsed time since last positive cache read exceeded 5 minute prompt-cache TTL";
+  } else if (materialDrop && stablePrefixMatchesBaseline) {
+    cacheBreakClassification = "likely_server_side_drop";
+    cacheBreakReason = "provider-visible stable prefix matched the positive cache-read baseline";
   } else if (materialDrop && currentContainsPriorCacheablePrefix) {
     cacheBreakClassification = "likely_server_side_drop";
     cacheBreakReason = "known prior cacheable prefix remained present but cache read dropped";
@@ -4103,6 +4192,7 @@ function prepareAnthropicCacheRoundDiagnostics({
       : null,
     cache_break_baseline_round: classificationBaseline?.round ?? null,
     contains_prior_known_cacheable_prefix: currentContainsPriorCacheablePrefix,
+    stable_prefix_matches_cache_baseline: stablePrefixMatchesBaseline,
     cache_break_classification: cacheBreakClassification,
     cache_break_reason: cacheBreakReason,
     prev_cache_read_input_tokens: previousCacheRead,
@@ -4388,6 +4478,8 @@ function summarizeTokenOptimizationRounds(rounds) {
   let expectedAfterCompactionCacheBreakRounds = 0;
   let continuedCacheMissRounds = 0;
   let movingBreakpointNonReuseRounds = 0;
+  let stablePrefixAvailableRounds = 0;
+  let stablePrefixChangedRounds = 0;
 
   for (const round of rounds) {
     requestLoweringModes[round.request_lowering_mode] =
@@ -4409,6 +4501,12 @@ function summarizeTokenOptimizationRounds(rounds) {
     providerAttemptCount += round.provider_attempt_count;
     providerRetryCount += round.provider_retry_count;
     providerErrorCount += round.provider_error_count;
+    if (round.stable_prefix?.status === "available") {
+      stablePrefixAvailableRounds += 1;
+    }
+    if ((round.stable_prefix_changed_components?.length ?? 0) > 0) {
+      stablePrefixChangedRounds += 1;
+    }
     if (round.high_input_zero_cache_read) {
       highInputZeroCacheReadRounds += 1;
     }
@@ -4498,6 +4596,8 @@ function summarizeTokenOptimizationRounds(rounds) {
     cache_read_input_tokens: cacheReadInputTokens,
     cache_miss_input_tokens: cacheMissInputTokens,
     cache_creation_input_tokens: cacheCreationInputTokens,
+    cache_hit_ratio:
+      logicalInputTokens > 0 ? cacheReadInputTokens / logicalInputTokens : null,
     output_tokens: outputTokens,
     estimated_cost_usd:
       rounds.length > 0 && pricedRounds === rounds.length ? estimatedCostUsd : null,
@@ -4536,6 +4636,8 @@ function summarizeTokenOptimizationRounds(rounds) {
     expected_after_compaction_cache_break_rounds: expectedAfterCompactionCacheBreakRounds,
     continued_cache_miss_rounds: continuedCacheMissRounds,
     moving_breakpoint_non_reuse_rounds: movingBreakpointNonReuseRounds,
+    stable_prefix_available_rounds: stablePrefixAvailableRounds,
+    stable_prefix_changed_rounds: stablePrefixChangedRounds,
     top_cache_miss_rounds: topCacheMissRounds
   };
 }

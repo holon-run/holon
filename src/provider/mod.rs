@@ -21,6 +21,7 @@ mod retry;
 pub mod test_support;
 mod tool_schema;
 mod transports;
+mod wire_fingerprint;
 
 pub(crate) use catalog::build_candidate_from_model_route;
 pub use catalog::{build_provider_from_config, build_provider_from_model_chain};
@@ -212,6 +213,27 @@ pub struct ProviderRequestDiagnostics {
     pub native_web_search: Option<ProviderNativeWebSearchDiagnostics>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_format: Option<ProviderResponseFormatDiagnostics>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stable_prefix: Option<ProviderStablePrefixDiagnostics>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderStablePrefixDiagnostics {
+    pub schema_version: u32,
+    pub algorithm: String,
+    pub full_request_fingerprint: String,
+    pub stable_prefix_fingerprint: String,
+    pub history_prefix_items: usize,
+    pub dynamic_tail_items: usize,
+    pub components: Vec<ProviderStablePrefixComponentDiagnostics>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderStablePrefixComponentDiagnostics {
+    pub name: String,
+    pub fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_count: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

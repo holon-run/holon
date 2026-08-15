@@ -732,7 +732,20 @@ fn anthropic_messages_response_to_turn_response(
         betas,
     );
     let request_lowering_mode = anthropic_request_lowering_mode(request, cache_strategy);
-
+    let (stable_history_prefix, dynamic_tail_items) =
+        anthropic_stable_history_prefix(request_payload, rolling_cache_marker);
+    let stable_prefix = crate::provider::wire_fingerprint::stable_prefix_diagnostics(
+        request_payload,
+        request_payload,
+        &stable_history_prefix,
+        dynamic_tail_items,
+        &json!({
+            "provider_transport": "anthropic_messages",
+            "endpoint_dialect": "anthropic_messages",
+            "request_lowering_mode": request_lowering_mode,
+            "contract_version": 1,
+        }),
+    );
     Ok(ProviderTurnResponse {
         blocks,
         stop_reason: parsed.stop_reason,
@@ -760,8 +773,35 @@ fn anthropic_messages_response_to_turn_response(
             openai_remote_compaction: None,
             native_web_search: native_web_search_diagnostics(request),
             response_format: response_format_diagnostics(request),
+            stable_prefix: Some(stable_prefix),
         }),
     })
+}
+
+fn anthropic_stable_history_prefix(
+    request_payload: &Value,
+    rolling_cache_marker: Option<(usize, usize)>,
+) -> (Vec<Value>, usize) {
+    let messages = request_payload
+        .get("messages")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let Some((message_index, content_index)) = rolling_cache_marker else {
+        let prefix_items = messages.len().saturating_sub(1);
+        return (
+            messages[..prefix_items].to_vec(),
+            messages.len().saturating_sub(prefix_items),
+        );
+    };
+    let end = message_index.saturating_add(1).min(messages.len());
+    let mut prefix = messages[..end].to_vec();
+    if let Some(message) = prefix.get_mut(message_index) {
+        if let Some(content) = message.get_mut("content").and_then(Value::as_array_mut) {
+            content.truncate(content_index.saturating_add(1));
+        }
+    }
+    (prefix, messages.len().saturating_sub(end))
 }
 
 fn provider_request_id_from_headers(headers: &HeaderMap) -> Option<String> {

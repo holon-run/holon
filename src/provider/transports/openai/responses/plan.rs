@@ -372,6 +372,7 @@ pub(in super::super) fn plan_openai_responses_request(
             }),
             native_web_search: native_web_search_diagnostics(request),
             response_format: response_format_diagnostics(true, request),
+            stable_prefix: None,
         },
     })
 }

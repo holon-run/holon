@@ -554,6 +554,17 @@ async fn deepseek_responses_streams_and_replays_full_history_across_provider_res
     assert_eq!(diagnostics.endpoint_dialect.as_deref(), Some("responses"));
     assert_eq!(diagnostics.streaming, Some(true));
     assert_eq!(diagnostics.reasoning_effort.as_deref(), Some("high"));
+    let stable_prefix = diagnostics
+        .stable_prefix
+        .as_ref()
+        .expect("stable prefix diagnostics");
+    assert_eq!(stable_prefix.schema_version, 1);
+    assert_eq!(stable_prefix.algorithm, "sha256");
+    assert_eq!(stable_prefix.dynamic_tail_items, 1);
+    assert!(stable_prefix
+        .components
+        .iter()
+        .any(|component| component.name == "tools"));
     assert_eq!(
         diagnostics
             .native_web_search

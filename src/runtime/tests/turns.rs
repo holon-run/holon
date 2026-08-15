@@ -6,6 +6,44 @@ struct PickThenExecProvider {
     target_work_item_id: String,
 }
 
+struct StablePrefixDiagnosticsProvider;
+
+#[async_trait]
+impl AgentProvider for StablePrefixDiagnosticsProvider {
+    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        Ok(ProviderTurnResponse {
+            blocks: vec![ModelBlock::Text {
+                text: "done".into(),
+            }],
+            stop_reason: None,
+            input_tokens: 42,
+            output_tokens: 7,
+            cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
+            request_diagnostics: Some(
+                serde_json::from_value(serde_json::json!({
+                    "request_lowering_mode": "full_replay",
+                    "stable_prefix": {
+                        "schema_version": 1,
+                        "algorithm": "sha256",
+                        "full_request_fingerprint": "full-fingerprint",
+                        "stable_prefix_fingerprint": "stable-fingerprint",
+                        "history_prefix_items": 2,
+                        "dynamic_tail_items": 1,
+                        "components": [{
+                            "name": "tools",
+                            "fingerprint": "tools-fingerprint",
+                            "item_count": 3
+                        }]
+                    }
+                }))
+                .unwrap(),
+            ),
+        })
+    }
+}
+
 #[tokio::test]
 async fn terminal_pick_ends_turn_before_later_tools_or_provider_rounds() {
     let dir = tempdir().unwrap();
@@ -298,6 +336,54 @@ async fn first_provider_round_records_prompt_cache_identity_fields() {
         assistant_round.data["context_fingerprint"].as_str(),
         Some("fingerprint-ce3")
     );
+}
+
+#[tokio::test]
+async fn provider_round_records_secret_safe_stable_prefix_diagnostics() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StablePrefixDiagnosticsProvider),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    runtime
+        .run_agent_loop(
+            "default",
+            AuthorityClass::OperatorInstruction,
+            test_effective_prompt(),
+            LoopControlOptions {
+                max_tool_rounds: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let events = runtime.storage().read_recent_events(10).unwrap();
+    let provider_event = events
+        .iter()
+        .find(|event| event.kind == "provider_round_completed")
+        .expect("missing provider_round_completed");
+    let stable_prefix = &provider_event.data["provider_request_diagnostics"]["stable_prefix"];
+    assert_eq!(
+        stable_prefix["stable_prefix_fingerprint"].as_str(),
+        Some("stable-fingerprint")
+    );
+    assert_eq!(stable_prefix["dynamic_tail_items"].as_u64(), Some(1));
+    assert_eq!(
+        stable_prefix["components"][0]["name"].as_str(),
+        Some("tools")
+    );
+    let serialized = serde_json::to_string(&provider_event.data).unwrap();
+    assert!(!serialized.contains("system_prompt"));
+    assert!(!serialized.contains("conversation"));
+    assert!(!serialized.contains("tool_arguments"));
 }
 
 #[tokio::test]
