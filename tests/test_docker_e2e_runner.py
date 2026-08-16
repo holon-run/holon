@@ -1678,7 +1678,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
             compaction["model_runtime_override"],
             {
                 "prompt_budget_estimated_tokens": 80000,
-                "compaction_trigger_estimated_tokens": 70000,
+                "compaction_trigger_estimated_tokens": 16000,
                 "compaction_keep_recent_estimated_tokens": 8000,
             },
         )
