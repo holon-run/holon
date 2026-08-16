@@ -503,7 +503,7 @@ impl RuntimeHandle {
             continuation_resolution,
             Some(&task),
         )?;
-        if let Some(transition) = self
+        let transition = self
             .reduce_task_result_message_deferred(
                 message,
                 task,
@@ -511,10 +511,8 @@ impl RuntimeHandle {
                 continuation_resolution,
                 execution_admission_provenance,
             )
-            .await?
-        {
-            self.persist_terminal_transition(&transition).await?;
-        }
+            .await?;
+        self.persist_terminal_transition(&transition).await?;
         Ok(())
     }
 
@@ -525,9 +523,11 @@ impl RuntimeHandle {
         model_reentry: bool,
         continuation_resolution: Option<&ContinuationResolution>,
         execution_admission_provenance: ExecutionAdmissionProvenance,
-    ) -> Result<Option<turn::TurnTerminalTransition>> {
+    ) -> Result<turn::TurnTerminalTransition> {
         if should_ignore_task_update(self.inner.runtime_db.tasks().latest(&task.id)?, &task) {
-            return Ok(None);
+            return self
+                .build_reducer_only_terminal_transition("reducer_only/duplicate_task_result")
+                .await;
         }
         self.persist_task_transition(&task, "task_result_received")
             .await?;
@@ -580,7 +580,7 @@ impl RuntimeHandle {
                     },
                 )
                 .await?;
-            return Ok(Some(transition));
+            return Ok(transition);
         } else if !model_reentry {
             if emit_result_brief {
                 let brief = brief::make_result(&message.agent_id, message, result_text);
@@ -597,7 +597,12 @@ impl RuntimeHandle {
                 }),
             ))?;
         }
-        Ok(None)
+        self.build_reducer_only_terminal_transition(if parent_turn_already_delivered {
+            "reducer_only/parent_turn_already_delivered"
+        } else {
+            "reducer_only/task_result_without_model_reentry"
+        })
+        .await
     }
 }
 
@@ -1123,12 +1128,18 @@ mod tests {
             .unwrap()
             .iter()
             .any(|event| event.kind == "stale_task_result_rejoin_suppressed"));
-        assert!(runtime
+        let terminal = runtime
             .agent_state()
             .await
             .unwrap()
             .last_turn_terminal
-            .is_none());
+            .expect("suppressed TaskResult should still complete its reducer-only turn");
+        assert_eq!(terminal.kind, TurnTerminalKind::Completed);
+        assert_eq!(
+            terminal.reason.as_deref(),
+            Some("reducer_only/parent_turn_already_delivered")
+        );
+        assert!(terminal.last_assistant_message.is_none());
     }
 
     #[tokio::test]

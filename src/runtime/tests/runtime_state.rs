@@ -1948,9 +1948,66 @@ async fn late_terminal_task_result_for_completed_work_item_settles_without_model
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
-    runner.abort();
 
     assert_eq!(provider.call_count().await, 0);
+    let terminal_turn = runtime
+        .inner
+        .runtime_db
+        .turn_records()
+        .recent_for_agent("default", 10)
+        .unwrap()
+        .into_iter()
+        .find(|turn| {
+            turn.terminal.as_ref().is_some_and(|terminal| {
+                terminal.reason.as_deref() == Some("reducer_only/task_result_without_model_reentry")
+            })
+        })
+        .expect("suppressed TaskResult should persist a matching terminal Turn");
+    assert_eq!(
+        terminal_turn
+            .terminal
+            .as_ref()
+            .map(|terminal| terminal.kind.clone()),
+        Some(TurnTerminalKind::Completed)
+    );
+    assert!(terminal_turn.produced_brief_ids.is_empty());
+
+    let operator = runtime
+        .enqueue(trusted_operator_prompt(
+            None,
+            "continue after late task result",
+        ))
+        .await
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        if runner.is_finished() {
+            panic!(
+                "runtime exited before processing the following operator prompt: {:?}",
+                (&mut runner).await
+            );
+        }
+        let processed = runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest_all()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == operator.id)
+            .is_some_and(|entry| entry.status == QueueEntryStatus::Processed);
+        if processed {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "operator prompt remained blocked after TaskResult settlement"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    runner.abort();
+
+    assert_eq!(provider.call_count().await, 1);
     let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
     assert!(events.iter().any(|event| {
         event.kind == "task_result_received" && event.data["task_id"] == "task-late-child-result"

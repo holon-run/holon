@@ -179,6 +179,37 @@ fn render_operator_interjection_text(message: &MessageEnvelope) -> String {
 }
 
 impl RuntimeHandle {
+    pub(super) async fn build_reducer_only_terminal_transition(
+        &self,
+        reason: impl Into<String>,
+    ) -> Result<TurnTerminalTransition> {
+        let terminal = {
+            let guard = self.inner.agent.lock().await;
+            let turn_id = guard
+                .state
+                .current_turn_id
+                .clone()
+                .filter(|turn_id| !turn_id.trim().is_empty())
+                .unwrap_or_else(crate::ids::turn_id);
+            TurnTerminalRecord {
+                turn_id,
+                turn_index: guard.state.turn_index,
+                kind: TurnTerminalKind::Completed,
+                reason: Some(reason.into()),
+                last_assistant_message: None,
+                checkpoint: None,
+                completed_at: chrono::Utc::now(),
+                duration_ms: 0,
+            }
+        };
+        Ok(TurnTerminalTransition {
+            turn_record: self.build_turn_record(&terminal).await?,
+            terminal,
+            prepared_work_item_completion: None,
+            terminal_tool_executions: Vec::new(),
+        })
+    }
+
     pub(super) async fn build_turn_record(
         &self,
         terminal: &TurnTerminalRecord,

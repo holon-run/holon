@@ -647,6 +647,13 @@ All terminal tools lower into the same runtime settlement command:
 - reducer-only completion; and
 - explicit continuation or pause.
 
+A claimed message that completes through a reducer-only path still produces a
+terminal `TurnRecord` for that activation. Duplicate, already-delivered, or
+policy-suppressed input may omit provider, assistant-round, token-usage, and
+delivery evidence, but it must not use an absent terminal Turn to mean
+success. Queue `Processed`, the terminal Turn, and execution settlement commit
+atomically.
+
 A WorkItem-bound activation must include one WorkItem disposition.
 
 ### Missing Settlement

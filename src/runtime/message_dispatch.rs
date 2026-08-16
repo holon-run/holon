@@ -168,12 +168,10 @@ impl RuntimeHandle {
         plan: MessageDispatchPlan,
         scheduler_decision: &scheduler::SchedulerDecision,
     ) -> Result<()> {
-        if let Some(transition) = self
+        let transition = self
             .process_message_with_plan_deferred(message, plan, scheduler_decision)
-            .await?
-        {
-            self.persist_terminal_transition(&transition).await?;
-        }
+            .await?;
+        self.persist_terminal_transition(&transition).await?;
         Ok(())
     }
 
@@ -182,7 +180,7 @@ impl RuntimeHandle {
         mut message: MessageEnvelope,
         plan: MessageDispatchPlan,
         scheduler_decision: &scheduler::SchedulerDecision,
-    ) -> Result<Option<turn::TurnTerminalTransition>> {
+    ) -> Result<turn::TurnTerminalTransition> {
         message.normalize_admission_fields();
         self.inner.storage.append_event(&AuditEvent::typed(
             RuntimeEventKind::MessageProcessingStarted,
@@ -199,6 +197,7 @@ impl RuntimeHandle {
         let model_reentry = scheduler_decision.model_reentry;
         let task = task?;
         let mut terminal_transition = None;
+        let mut reducer_only_reason = None;
         if let Some(trigger) = continuation_trigger.as_ref() {
             self.record_continuation_trigger_received(&message, trigger, &prior_closure)
                 .await?;
@@ -240,23 +239,27 @@ impl RuntimeHandle {
                         )
                         .await?,
                     );
+                } else {
+                    reducer_only_reason = Some("reducer_only/model_reentry_suppressed");
                 }
             }
             MessageKind::TaskStatus => {
                 let task = task.ok_or_else(|| anyhow!("task status message should parse task"))?;
                 self.reduce_task_status_message(task).await?;
+                reducer_only_reason = Some("reducer_only/task_status");
             }
             MessageKind::TaskResult => {
                 let task = task.ok_or_else(|| anyhow!("task result message should parse task"))?;
-                terminal_transition = self
-                    .reduce_task_result_message_deferred(
+                terminal_transition = Some(
+                    self.reduce_task_result_message_deferred(
                         &message,
                         task,
                         model_reentry,
                         continuation_resolution.as_ref(),
                         execution_admission_provenance,
                     )
-                    .await?;
+                    .await?,
+                );
             }
             MessageKind::Control => {
                 let action = match &message.body {
@@ -265,15 +268,18 @@ impl RuntimeHandle {
                     _ => return Err(anyhow!("unknown control action")),
                 };
                 self.control(action).await?;
+                reducer_only_reason = Some("reducer_only/control");
             }
-            MessageKind::BriefAck | MessageKind::BriefResult => {}
+            MessageKind::BriefAck | MessageKind::BriefResult => {
+                reducer_only_reason = Some("reducer_only/brief_notification");
+            }
         }
 
         if terminal_transition
             .as_ref()
             .is_some_and(|transition| transition.prepared_work_item_completion.is_some())
         {
-            return Ok(terminal_transition);
+            return Ok(terminal_transition.expect("checked prepared completion"));
         }
 
         if let Some(resolution) = continuation_resolution.as_ref() {
@@ -336,7 +342,15 @@ impl RuntimeHandle {
         ))?;
 
         info!("processed message {}", message.id);
-        Ok(terminal_transition)
+        match terminal_transition {
+            Some(transition) => Ok(transition),
+            None => {
+                self.build_reducer_only_terminal_transition(
+                    reducer_only_reason.unwrap_or("reducer_only/message_consumed"),
+                )
+                .await
+            }
+        }
     }
 
     async fn refresh_current_work_item_refs(

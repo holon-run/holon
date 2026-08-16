@@ -5738,14 +5738,11 @@ impl RuntimeHandle {
                         }),
                     )],
                     true,
-                    terminal_transition.as_ref(),
+                    Some(&terminal_transition),
                 )
                 .await?;
-                self.maybe_supersede_queued_provider_recovery(
-                    &message,
-                    terminal_transition.as_ref(),
-                )
-                .await?;
+                self.maybe_supersede_queued_provider_recovery(&message, Some(&terminal_transition))
+                    .await?;
             }
         }
     }
