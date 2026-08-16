@@ -12,6 +12,10 @@ on:
       previous_image:
         description: Previous release image used by upgrade cases.
         required: false
+      previous_ref:
+        description: Git tag of the previous release. Used to build the previous image when previous_image is not published.
+        required: false
+        default: v0.30.0
       model:
         description: Real model route.
         required: false
@@ -122,9 +126,56 @@ jobs:
           docker pull "${CANDIDATE_IMAGE}"
           scripts/docker-smoke.sh "${CANDIDATE_IMAGE}"
 
+      - name: Prepare previous release image
+        id: previous
+        env:
+          PREVIOUS_IMAGE_INPUT: ${{ inputs.previous_image }}
+          PREVIOUS_REF: ${{ inputs.previous_ref }}
+        run: |
+          set -euo pipefail
+          if [ -n "${PREVIOUS_IMAGE_INPUT}" ] \
+            && docker manifest inspect "${PREVIOUS_IMAGE_INPUT}" >/dev/null 2>&1; then
+            echo "image=${PREVIOUS_IMAGE_INPUT}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          version="${PREVIOUS_REF#v}"
+          workdir="$(mktemp -d)"
+          base_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${PREVIOUS_REF}"
+          curl -fsSL -o "${workdir}/checksums.txt" "${base_url}/checksums.txt"
+          curl -fsSL -o "${workdir}/holon-linux-amd64.tar.gz" "${base_url}/holon-linux-amd64.tar.gz"
+          (
+            cd "${workdir}"
+            sha256sum --check --ignore-missing checksums.txt
+            tar -xzf holon-linux-amd64.tar.gz
+            test -x holon || chmod +x holon
+          )
+          cat > "${workdir}/Dockerfile" <<'DOCKERFILE'
+          FROM debian:trixie-slim
+          RUN apt-get update \
+              && apt-get install -y --no-install-recommends \
+                 bash ca-certificates curl git gzip openssh-client tar \
+              && rm -rf /var/lib/apt/lists/* \
+              && useradd --create-home --home-dir /var/lib/holon --uid 10001 holon \
+              && mkdir -p /workspace \
+              && chown holon:holon /workspace
+          COPY holon /usr/local/bin/holon
+          RUN chmod +x /usr/local/bin/holon
+          ENV HOME=/var/lib/holon \
+              HOLON_HOME=/var/lib/holon \
+              HOLON_WORKSPACE_DIR=/workspace
+          WORKDIR /workspace
+          USER holon
+          EXPOSE 7878
+          ENTRYPOINT ["holon"]
+          CMD ["serve", "--listen", "0.0.0.0:7878"]
+          DOCKERFILE
+          tag="holon-e2e-previous:${version}"
+          docker build --tag "${tag}" "${workdir}"
+          echo "image=${tag}" >> "$GITHUB_OUTPUT"
+
       - name: Run release core E2E
         env:
-          HOLON_E2E_PREVIOUS_IMAGE: ${{ inputs.previous_image || 'ghcr.io/holon-run/holon:v0.30.0' }}
+          HOLON_E2E_PREVIOUS_IMAGE: ${{ steps.previous.outputs.image }}
           HOLON_E2E_PROVIDER_ENV_FILE: /tmp/holon-e2e.env
         run: |
           set -euo pipefail

@@ -159,6 +159,70 @@ def normalize_model_route(model: str) -> str:
     return f"{provider}/{name}"
 
 
+def model_route_provider(model: str) -> str:
+    return model.split("/", 1)[0]
+
+
+def canonical_model_route_entry(entry: dict[str, Any]) -> str | None:
+    family = str(entry.get("provider_family") or "")
+    endpoint = str(entry.get("endpoint") or "")
+    model_ref = str((entry.get("policy") or {}).get("model_ref") or "")
+    model = model_ref.split("/", 1)[-1] if "/" in model_ref else ""
+    if not (family and endpoint and model):
+        return None
+    return f"{family}@{endpoint}/{model}"
+
+
+def require_runtime_model_route(
+    harness: "CaseHarness",
+    label: str,
+    runtime_route: str,
+    models_payload: dict[str, Any],
+) -> None:
+    """Require the runtime route to serve the requested model route.
+
+    The runtime canonicalizes provider and model aliases while loading the
+    configured route (``dashscope-token-plan/qwen-3.7`` becomes
+    ``dashscope@token-plan/qwen3.7-max``), so literal equality only holds for
+    requests that already use canonical routes. When the strings differ, the
+    runtime route is accepted only when the runtime's own model catalog
+    confirms the resolution: an availability entry for the requested provider
+    that reconstructs to the served route and reports it as available.
+    """
+    requested = normalize_model_route(harness.model)
+    served = normalize_model_route(str(runtime_route))
+    if served == requested:
+        return
+    requested_provider = model_route_provider(harness.model)
+    confirmations = []
+    for entry in models_payload.get("model_availability") or []:
+        canonical = canonical_model_route_entry(entry)
+        if canonical is None or normalize_model_route(canonical) != served:
+            continue
+        entry_providers = {
+            str(entry.get("route_provider") or ""),
+            model_route_provider(canonical),
+        }
+        if requested_provider not in entry_providers:
+            continue
+        confirmations.append(entry)
+    require(
+        confirmations,
+        f"{label} model route mismatch: runtime served {runtime_route!r} for "
+        f"requested {harness.model!r}; the runtime model catalog did not "
+        "confirm the canonical resolution",
+    )
+    unavailable = [
+        str(entry.get("unavailable_reason"))
+        for entry in confirmations
+        if entry.get("available") is not True
+    ]
+    require(
+        not unavailable,
+        f"{label} model route is not available: {unavailable}",
+    )
+
+
 def load_runtime_config(path: Path | None) -> dict[str, Any]:
     if path is None:
         return {}
@@ -2146,14 +2210,17 @@ def run_runtime_case(harness: CaseHarness, case: dict[str, Any]) -> None:
     readiness = harness.request("GET", "/api/control/runtime/readiness")
     write_json(harness.evidence / "readiness.json", readiness)
     runtime_surface = readiness["runtime_surface"]
-    require(
-        normalize_model_route(runtime_surface["model_default"])
-        == normalize_model_route(harness.model),
-        f"runtime model route mismatch: {runtime_surface['model_default']}",
-    )
+    models_payload = harness.request("GET", "/api/models")
+    write_json(harness.evidence / "models.json", models_payload)
     require(
         runtime_surface["disable_provider_fallback"] is True,
         "provider fallback must be disabled for release E2E",
+    )
+    require_runtime_model_route(
+        harness,
+        "runtime default",
+        runtime_surface["model_default"],
+        models_payload,
     )
 
     phase = case["phases"][0]
@@ -2196,9 +2263,11 @@ def run_runtime_case(harness: CaseHarness, case: dict[str, Any]) -> None:
         f"provider token usage is missing: {provider}",
     )
     winning = timeline.get("winning_model_ref")
-    require(
-        normalize_model_route(str(winning)) == normalize_model_route(harness.model),
-        f"winning model {winning!r} did not match {harness.model!r}",
+    require_runtime_model_route(
+        harness,
+        "winning",
+        str(winning),
+        models_payload,
     )
 
     briefs = harness.request("GET", harness.agent_path("briefs?limit=20"))

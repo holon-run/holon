@@ -140,11 +140,13 @@ class Scenario:
             ):
                 return 200, response([text_item("Deterministic Holon test runtime ready.")], "resp_intro")
             if self.name == "runtime-upgrade-v030":
-                match = re.search(r"UPGRADE-V030-(?:OLD|NEW)-[0-9a-f]+", raw)
-                if match and self.phase < self.expected_phase():
+                # Serialized history carries the earlier phase marker, so the
+                # current prompt's marker is the last occurrence in the payload.
+                markers = re.findall(r"UPGRADE-V030-(?:OLD|NEW)-[0-9a-f]+", raw)
+                if markers and self.phase < self.expected_phase():
                     self.phase += 1
                     return 200, response(
-                        [text_item(match.group(0))],
+                        [text_item(markers[-1])],
                         f"resp_runtime_upgrade_v030_{self.phase}",
                     )
             if self.phase == self.expected_phase() - 1:

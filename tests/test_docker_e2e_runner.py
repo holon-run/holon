@@ -546,6 +546,70 @@ class DockerE2ERunnerTests(unittest.TestCase):
         self.assertEqual(scenario.status()["extra_requests"], 1)
         self.assertFalse(scenario.status()["complete"])
 
+    def test_openai_stub_upgrade_v030_echoes_current_marker_not_history(self) -> None:
+        scenario = stub.Scenario("runtime-upgrade-v030")
+        old_prompt = {
+            "instructions": "agent instructions",
+            "input": [
+                {
+                    "type": "message",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": (
+                                "## current_input\nCurrent input:\n"
+                                "- [operator] Reply with the exact marker "
+                                "UPGRADE-V030-OLD-0011aabb."
+                            ),
+                        }
+                    ],
+                }
+            ],
+        }
+        status, response = scenario.consume(old_prompt)
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            response["output"][0]["content"][0]["text"],
+            "UPGRADE-V030-OLD-0011aabb",
+        )
+        self.assertEqual(scenario.phase, 1)
+
+        new_prompt = {
+            "instructions": "agent instructions",
+            "input": [
+                {
+                    "type": "message",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": (
+                                "## recent_turns\n"
+                                "- [operator] Reply with the exact marker "
+                                "UPGRADE-V030-OLD-0011aabb.\n"
+                                "- [assistant] UPGRADE-V030-OLD-0011aabb\n"
+                                "## current_input\nCurrent input:\n"
+                                "- [operator] Reply with the exact marker "
+                                "UPGRADE-V030-NEW-0022ccdd."
+                            ),
+                        }
+                    ],
+                }
+            ],
+        }
+        status, response = scenario.consume(new_prompt)
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            response["output"][0]["content"][0]["text"],
+            "UPGRADE-V030-NEW-0022ccdd",
+        )
+        self.assertEqual(scenario.phase, 2)
+
+        status, response = scenario.consume(new_prompt)
+        self.assertEqual(status, 409)
+        self.assertEqual(response["error"]["type"], "transcript_exhausted")
+        self.assertEqual(scenario.status()["extra_requests"], 1)
+        self.assertFalse(scenario.status()["complete"])
+
     def test_openai_stub_multi_waits_for_second_autonomous_turn(self) -> None:
         scenario = stub.Scenario("scheduler-multi")
         scenario.phase = 7
@@ -2364,6 +2428,87 @@ class DockerE2ERunnerTests(unittest.TestCase):
                     expected_state="completed",
                     label="duplicate",
                 )
+
+    def _route_oracle_harness(self, model: str) -> "runner.CaseHarness":
+        harness = runner.CaseHarness(
+            case_id="runtime-auth-model-delivery",
+            image="unused",
+            model=model,
+            credential_envs=[],
+            env_file=None,
+            runtime_env={},
+            evidence_root=Path(tempfile.mkdtemp()),
+            timeout_seconds=1,
+            keep=True,
+        )
+        harness.agent_id = "default"
+        return harness
+
+    def _models_payload(self) -> dict:
+        return {
+            "model_availability": [
+                {
+                    "model": "dashscope/qwen3.7-max",
+                    "provider_family": "dashscope",
+                    "endpoint": "token-plan",
+                    "route_provider": "dashscope-token-plan",
+                    "available": True,
+                    "policy": {"model_ref": "dashscope/qwen3.7-max"},
+                },
+                {
+                    "model": "dashscope/qwen3.7-max",
+                    "provider_family": "dashscope",
+                    "endpoint": "default",
+                    "route_provider": "dashscope",
+                    "available": False,
+                    "unavailable_reason": "credential_missing",
+                    "policy": {"model_ref": "dashscope/qwen3.7-max"},
+                },
+            ]
+        }
+
+    def test_runtime_model_route_accepts_confirmed_canonical_resolution(self) -> None:
+        harness = self._route_oracle_harness("dashscope-token-plan/qwen-3.7")
+        runner.require_runtime_model_route(
+            harness,
+            "runtime default",
+            "dashscope@token-plan/qwen3.7-max",
+            self._models_payload(),
+        )
+
+    def test_runtime_model_route_accepts_literal_match(self) -> None:
+        harness = self._route_oracle_harness("openai/gpt-5.4")
+        runner.require_runtime_model_route(
+            harness,
+            "winning",
+            "openai/gpt-5.4",
+            {"model_availability": []},
+        )
+
+    def test_runtime_model_route_rejects_unconfirmed_provider(self) -> None:
+        harness = self._route_oracle_harness("dashscope-token-plan/qwen-3.7")
+        with self.assertRaisesRegex(
+            AssertionError, "model catalog did not confirm"
+        ):
+            runner.require_runtime_model_route(
+                harness,
+                "runtime default",
+                "deepseek@default/deepseek-chat",
+                self._models_payload(),
+            )
+
+    def test_runtime_model_route_rejects_unavailable_canonical_route(self) -> None:
+        harness = self._route_oracle_harness("dashscope-token-plan/qwen-3.7")
+        payload = self._models_payload()
+        payload["model_availability"][0]["available"] = False
+        payload["model_availability"][0]["unavailable_reason"] = "credential_missing"
+        with self.assertRaisesRegex(AssertionError, "not available"):
+            runner.require_runtime_model_route(
+                harness,
+                "runtime default",
+                "dashscope@token-plan/qwen3.7-max",
+                payload,
+            )
 
 
 if __name__ == "__main__":
