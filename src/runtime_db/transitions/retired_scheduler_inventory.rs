@@ -28,6 +28,7 @@ pub(crate) struct SchedulerAuthorityInventoryRecord {
 impl RuntimeTransitionRepository<'_> {
     pub(crate) fn retired_scheduler_partition_exists(&self, agent_id: &str) -> Result<bool> {
         let connection = self.db.connection()?;
+        // These names are interpolated into SQL below and must remain trusted SQLite identifiers.
         for table in [
             "scheduler_agent_slots",
             "scheduler_agent_dispatch",
@@ -98,6 +99,7 @@ impl RuntimeTransitionRepository<'_> {
     pub(crate) fn inspect_scheduler_authority_inventory(
         &self,
     ) -> Result<Vec<SchedulerAuthorityInventoryRecord>> {
+        // Storage names are interpolated into SQL below and must remain trusted SQLite identifiers.
         const INVENTORY: &[(&str, &str, bool, &str)] = &[
             (
                 "queue_entries",
