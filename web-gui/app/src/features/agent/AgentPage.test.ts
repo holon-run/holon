@@ -16,9 +16,11 @@ import {
   timelineForDisplayLevel,
   timelineLayoutRevision,
   writeStoredComposerDraft,
+  resolveModelSwitchReasoningEffort,
 } from "./AgentPage";
 import { availableDisplayLevels } from "../../runtime/display-level";
 import type { TimelineTurn } from "./timeline-utils";
+import type { RuntimeModelOption } from "../../runtime/types";
 
 class MemoryStorage implements Storage {
   private readonly items = new Map<string, string>();
@@ -95,6 +97,41 @@ describe("composer draft storage", () => {
 
     expect(readStoredComposerDraft("agent-a")).toBe("");
     expect(storage.getItem(storedComposerDraftKey("agent-a"))).toBeNull();
+  });
+});
+
+describe("model switch reasoning effort", () => {
+  function modelOption(supportsReasoningEffort: boolean, reasoningEffortOptions: string[]): RuntimeModelOption {
+    return {
+      model: "glm-5.3",
+      routeRef: "bigmodel/glm-5.3",
+      provider: "bigmodel",
+      providerFamily: "bigmodel",
+      endpoint: "default",
+      routeProvider: "bigmodel",
+      displayName: "GLM-5.3",
+      available: true,
+      supportsImageInput: true,
+      supportsImageGeneration: false,
+      supportsReasoningEffort,
+      reasoningEffortOptions,
+    };
+  }
+
+  it("falls back to auto when the target model lacks the current effort level", () => {
+    expect(resolveModelSwitchReasoningEffort(modelOption(true, ["low", "high", "max"]), "medium")).toBe("auto");
+  });
+
+  it("keeps the current effort level when the target model supports it", () => {
+    expect(resolveModelSwitchReasoningEffort(modelOption(true, ["low", "medium", "high"]), "medium")).toBe("medium");
+  });
+
+  it("keeps auto untouched for reasoning models", () => {
+    expect(resolveModelSwitchReasoningEffort(modelOption(true, ["low", "high"]), "auto")).toBe("auto");
+  });
+
+  it("resets to auto for models without reasoning support", () => {
+    expect(resolveModelSwitchReasoningEffort(modelOption(false, []), "medium")).toBe("auto");
   });
 });
 

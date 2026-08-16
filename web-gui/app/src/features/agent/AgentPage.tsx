@@ -395,7 +395,7 @@ export function AgentPage({
     setReasoningPopoverOpen(false);
     setSelectedProvider(null);
     setSelectedReasoningEffort(activeAgent.modelReasoningEffort ?? "auto");
-  }, [activeAgent.id, displayLevel]);
+  }, [activeAgent.id, displayLevel, activeAgent.modelReasoningEffort]);
 
   useEffect(() => {
     return () => {
@@ -657,11 +657,10 @@ export function AgentPage({
   async function handleSelectModel(option: RuntimeModelOption, reasoningEffort = selectedReasoningEffort) {
     if (!option.available || changingModel) return;
 
-    // When switching to a non-reasoning model, reset thinking display to auto.
-    if (!option.supportsReasoningEffort) {
-      setSelectedReasoningEffort("auto");
-      reasoningEffort = "auto";
-    }
+    // Switching models must win over a stale thinking level: fall back to auto
+    // when the target model does not support the currently selected effort.
+    reasoningEffort = resolveModelSwitchReasoningEffort(option, reasoningEffort);
+    setSelectedReasoningEffort(reasoningEffort);
 
     setChangingModel(option.routeRef);
     try {
@@ -1019,6 +1018,12 @@ export function AgentPage({
 function shortModelLabel(model: string): string {
   const parts = model.split("/");
   return parts[parts.length - 1] || model;
+}
+
+export function resolveModelSwitchReasoningEffort(option: RuntimeModelOption, requestedEffort: string): string {
+  if (!option.supportsReasoningEffort) return "auto";
+  if (requestedEffort !== "auto" && !option.reasoningEffortOptions.includes(requestedEffort)) return "auto";
+  return requestedEffort;
 }
 
 function modelButtonTitle(model: string, reasoningEffort: string | undefined, isModelOverride: boolean): string {
