@@ -8,6 +8,8 @@ import {
   attachmentKindForFile,
   captureScrollAnchor,
   historyLoadDecision,
+  isScrollKey,
+  looksLikeProgrammaticBottomScroll,
   readStoredComposerDraft,
   resizeComposerTextarea,
   restoredScrollTop,
@@ -207,6 +209,47 @@ describe("timeline virtual layout reconciliation", () => {
 
   it("does not capture an anchor when only overscan rows before the viewport are measured", () => {
     expect(captureScrollAnchor([{ key: "turn:a", index: 0, start: 0, size: 80 }], 120)).toBeNull();
+  });
+});
+
+describe("scroll stick intent", () => {
+  it("treats a scroll event as programmatic only while auto-scroll is active, no user intent exists, and the position is near the bottom", () => {
+    expect(
+      looksLikeProgrammaticBottomScroll({ autoScrollActive: true, userScrollIntent: false, nearBottom: true }),
+    ).toBe(true);
+  });
+
+  it("does not force stick when the user is scrolling even inside the auto-scroll window", () => {
+    expect(
+      looksLikeProgrammaticBottomScroll({ autoScrollActive: true, userScrollIntent: true, nearBottom: false }),
+    ).toBe(false);
+    expect(
+      looksLikeProgrammaticBottomScroll({ autoScrollActive: true, userScrollIntent: true, nearBottom: true }),
+    ).toBe(false);
+  });
+
+  it("does not force stick when the position left the bottom, even without user intent", () => {
+    expect(
+      looksLikeProgrammaticBottomScroll({ autoScrollActive: true, userScrollIntent: false, nearBottom: false }),
+    ).toBe(false);
+  });
+
+  it("never forces stick outside the auto-scroll window", () => {
+    expect(
+      looksLikeProgrammaticBottomScroll({ autoScrollActive: false, userScrollIntent: false, nearBottom: true }),
+    ).toBe(false);
+  });
+
+  it("recognizes keys that can scroll the message list", () => {
+    for (const key of ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " ", "Spacebar"]) {
+      expect(isScrollKey(key)).toBe(true);
+    }
+  });
+
+  it("ignores keys that cannot scroll the message list", () => {
+    for (const key of ["Enter", "Tab", "a", "Escape", ""]) {
+      expect(isScrollKey(key)).toBe(false);
+    }
   });
 });
 

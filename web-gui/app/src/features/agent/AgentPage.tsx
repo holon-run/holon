@@ -67,6 +67,9 @@ const DEFAULT_DEBUG_TIMELINE_ITEM_LIMIT = 220;
 const HISTORY_PAGE_VISIBLE_INCREMENT = 80;
 const TOP_SCROLL_THRESHOLD = 16;
 const BOTTOM_SCROLL_THRESHOLD = 96;
+// How long scroll intent stays active after the last user scroll input
+// (wheel, touch, or scroll keys). Long enough to cover momentum scrolling.
+const USER_SCROLL_INTENT_CLEAR_MS = 500;
 const COMPOSER_DRAFT_STORAGE_PREFIX = "holon.webGui.composerDraft.v1";
 const COMPOSER_TEXTAREA_MAX_HEIGHT = 320;
 const MESSAGE_LIST_BOTTOM_SAFE_SPACE = 96;
@@ -345,6 +348,8 @@ export function AgentPage({
   const preserveScrollRef = useRef<ScrollAnchor | null>(null);
   const stickToBottomRef = useRef(true);
   const autoStickToBottomRef = useRef(false);
+  const userScrollIntentRef = useRef(false);
+  const userScrollIntentTimerRef = useRef<number | null>(null);
   const scheduledBottomScrollRef = useRef<number | null>(null);
   const activeAgent = detail?.agent ?? agent;
   const sourceTimeline = detail?.timeline ?? [];
@@ -402,6 +407,30 @@ export function AgentPage({
       if (scheduledBottomScrollRef.current !== null) {
         window.cancelAnimationFrame(scheduledBottomScrollRef.current);
       }
+      clearUserScrollIntent(userScrollIntentRef, userScrollIntentTimerRef);
+    };
+  }, []);
+
+  // Distinguish user-initiated scrolling from programmatic bottom scrolls by
+  // input source. The auto-stick time window alone cannot tell them apart
+  // while streaming keeps re-opening it, which used to drag users viewing
+  // history back to the bottom on every new message.
+  useEffect(() => {
+    const list = messageListRef.current;
+    if (!list) return;
+    const markIntent = () => scheduleUserScrollIntentClear(userScrollIntentRef, userScrollIntentTimerRef);
+    const handleKeyDown = (event: { key: string }) => {
+      if (isScrollKey(event.key)) markIntent();
+    };
+    list.addEventListener("wheel", markIntent, { passive: true });
+    list.addEventListener("touchstart", markIntent, { passive: true });
+    list.addEventListener("touchmove", markIntent, { passive: true });
+    list.addEventListener("keydown", handleKeyDown);
+    return () => {
+      list.removeEventListener("wheel", markIntent);
+      list.removeEventListener("touchstart", markIntent);
+      list.removeEventListener("touchmove", markIntent);
+      list.removeEventListener("keydown", handleKeyDown);
     };
   }, []);
 
@@ -447,6 +476,9 @@ export function AgentPage({
   useLayoutEffect(() => {
     preserveScrollRef.current = null;
     stickToBottomRef.current = true;
+    // A fresh conversation view must not inherit scroll intent from the
+    // previously viewed agent.
+    clearUserScrollIntent(userScrollIntentRef, userScrollIntentTimerRef);
     rowVirtualizer.measure();
     scrollToConversationBottom();
   }, [activeAgent.id]);
@@ -612,11 +644,24 @@ export function AgentPage({
   function handleMessageListScroll() {
     const list = messageListRef.current;
     if (!list) return;
-    if (autoStickToBottomRef.current) {
+    if (userScrollIntentRef.current) {
+      // Continued scrolling while intent is active (e.g. momentum after a
+      // trackpad flick) keeps the intent window open so programmatic bottom
+      // scrolls cannot hijack it mid-gesture.
+      scheduleUserScrollIntentClear(userScrollIntentRef, userScrollIntentTimerRef);
+    }
+    const nearBottom = isScrolledNearBottom(list);
+    if (
+      looksLikeProgrammaticBottomScroll({
+        autoScrollActive: autoStickToBottomRef.current,
+        userScrollIntent: userScrollIntentRef.current,
+        nearBottom,
+      })
+    ) {
       stickToBottomRef.current = true;
       return;
     }
-    stickToBottomRef.current = isScrolledNearBottom(list);
+    stickToBottomRef.current = nearBottom;
     if (stickToBottomRef.current) onConversationRead();
   }
 
@@ -1058,6 +1103,56 @@ function titleCase(value: string): string {
 
 function isScrolledNearBottom(list: HTMLElement): boolean {
   return list.scrollHeight - list.scrollTop - list.clientHeight < BOTTOM_SCROLL_THRESHOLD;
+}
+
+export function isScrollKey(key: string): boolean {
+  return (
+    key === "ArrowUp" ||
+    key === "ArrowDown" ||
+    key === "PageUp" ||
+    key === "PageDown" ||
+    key === "Home" ||
+    key === "End" ||
+    key === " " ||
+    key === "Spacebar"
+  );
+}
+
+// A scroll event is only treated as our own programmatic bottom scroll when
+// no user scroll input is active and the scroll position actually matches the
+// programmatic target. Anything else reflects real user intent and must be
+// evaluated against the current position.
+export function looksLikeProgrammaticBottomScroll(state: {
+  autoScrollActive: boolean;
+  userScrollIntent: boolean;
+  nearBottom: boolean;
+}): boolean {
+  return state.autoScrollActive && !state.userScrollIntent && state.nearBottom;
+}
+
+function scheduleUserScrollIntentClear(
+  intentRef: MutableRefObject<boolean>,
+  timerRef: MutableRefObject<number | null>,
+): void {
+  intentRef.current = true;
+  if (timerRef.current !== null) {
+    window.clearTimeout(timerRef.current);
+  }
+  timerRef.current = window.setTimeout(() => {
+    timerRef.current = null;
+    intentRef.current = false;
+  }, USER_SCROLL_INTENT_CLEAR_MS);
+}
+
+function clearUserScrollIntent(
+  intentRef: MutableRefObject<boolean>,
+  timerRef: MutableRefObject<number | null>,
+): void {
+  if (timerRef.current !== null) {
+    window.clearTimeout(timerRef.current);
+    timerRef.current = null;
+  }
+  intentRef.current = false;
 }
 
 function defaultTimelineItemLimit(displayLevel: DisplayLevel): number {
