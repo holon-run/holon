@@ -263,6 +263,7 @@ pub async fn run_once_with_host(
 
     let mut candidate_completion: Option<CandidateCompletion> = None;
     let mut observed_new_task_ids = HashSet::<String>::new();
+    let mut observed_terminal_final_text: Option<String> = None;
 
     let final_candidate = loop {
         let state = session.runtime.agent_state().await?;
@@ -293,20 +294,26 @@ pub async fn run_once_with_host(
         } else {
             None
         };
-        let terminal_final_text_observed = state
+        let latest_terminal_final_text = state
             .last_turn_terminal
             .as_ref()
             .filter(|record| record.turn_index > baseline.turn_index)
             .and_then(|record| record.last_assistant_message.as_ref())
-            .is_some_and(|text| !text.trim().is_empty());
+            .map(|text| text.trim())
+            .filter(|text| !text.is_empty());
+        if let Some(text) = latest_terminal_final_text {
+            observed_terminal_final_text = Some(text.to_string());
+        }
+        let terminal_final_text_observed = observed_terminal_final_text.is_some()
+            || poll_view.operator_visible_assistant_text_observed;
 
         let waiting_for_active_tasks = request.wait_for_tasks && !active_new_task_ids.is_empty();
         let candidate_status = if poll_view.runtime_error && foreground_idle {
             Some((RunFinalStatus::Failed, None))
-        } else if terminal_within_max_turns
-            && (matches!(terminal_status, Some((RunFinalStatus::Failed, _)))
-                || (terminal_final_text_observed
-                    && matches!(terminal_status, Some((RunFinalStatus::Completed, _)))))
+        } else if (matches!(terminal_status, Some((RunFinalStatus::Failed, _)))
+            && terminal_within_max_turns)
+            || (terminal_final_text_observed
+                && matches!(terminal_status, Some((RunFinalStatus::Completed, _))))
         {
             if waiting_for_active_tasks {
                 None
@@ -399,6 +406,7 @@ pub async fn run_once_with_host(
         &queued_message,
         final_status,
         waiting_reason,
+        observed_terminal_final_text,
         final_state,
         final_view,
     )
@@ -590,6 +598,7 @@ impl CandidateCompletion {
 struct RunPollView {
     new_task_ids: Vec<String>,
     turn_terminal_observed: bool,
+    operator_visible_assistant_text_observed: bool,
     runtime_error: bool,
     activity_signature: PollActivitySignature,
 }
@@ -612,6 +621,15 @@ async fn collect_run_poll_view(
         .rev()
         .take_while(|event| !baseline.event_ids.contains(&event.id))
         .any(|event| event.kind == "runtime_error");
+    let operator_visible_assistant_text_observed = events
+        .iter()
+        .rev()
+        .take_while(|event| !baseline.event_ids.contains(&event.id))
+        .any(|event| {
+            event.kind == "assistant_round_recorded"
+                && event.data["visibility"] == "operator_visible"
+                && event.data["has_text"].as_bool() == Some(true)
+        });
 
     let mut new_task_ids = latest_tasks
         .iter()
@@ -646,6 +664,7 @@ async fn collect_run_poll_view(
             .last_turn_terminal
             .as_ref()
             .is_some_and(|record| record.turn_index > baseline.turn_index),
+        operator_visible_assistant_text_observed,
         runtime_error,
         activity_signature,
     })
@@ -834,6 +853,7 @@ async fn build_response(
     queued_message: &MessageEnvelope,
     final_status: RunFinalStatus,
     waiting_reason: Option<WaitingReason>,
+    observed_terminal_final_text: Option<String>,
     final_state: crate::types::AgentState,
     view: RunView,
 ) -> Result<RunOnceResponse> {
@@ -916,7 +936,12 @@ async fn build_response(
     } else {
         None
     };
-    let raw_final_text = raw_final_text(&final_state, baseline, final_status);
+    let raw_final_text = observed_terminal_final_text
+        .or(latest_operator_visible_assistant_text(
+            runtime,
+            &view.new_events,
+        )?)
+        .or_else(|| raw_final_text(&final_state, baseline, final_status));
     let new_briefs = runtime
         .storage()
         .read_recent_briefs(usize::MAX)?
@@ -1128,6 +1153,39 @@ fn latest_run_model_state(
     }
 
     (requested_model, active_model, fallback_active)
+}
+
+fn latest_operator_visible_assistant_text(
+    runtime: &crate::runtime::RuntimeHandle,
+    events: &[AuditEvent],
+) -> Result<Option<String>> {
+    for event in events.iter().rev().filter(|event| {
+        event.kind == "assistant_round_recorded"
+            && event.data["visibility"] == "operator_visible"
+            && event.data["has_text"].as_bool() == Some(true)
+    }) {
+        let Some(entry_id) = event.data["assistant_round_id"].as_str() else {
+            continue;
+        };
+        let Some(entry) = runtime.storage().read_transcript_entry_by_id(entry_id)? else {
+            continue;
+        };
+        let Some(blocks) = entry.data["blocks"].as_array() else {
+            continue;
+        };
+        let text = blocks
+            .iter()
+            .filter(|block| block["type"] == "text")
+            .filter_map(|block| block["text"].as_str())
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        if !text.is_empty() {
+            return Ok(Some(text));
+        }
+    }
+    Ok(None)
 }
 
 fn raw_final_text(
