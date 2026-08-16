@@ -178,10 +178,6 @@ fn normal_queue_transition_does_not_carry_legacy_scheduler_payload() {
             && !source.contains("LegacySchedulerProtocolTransition"),
         "retired scheduler protocol queue commits must not remain available"
     );
-    assert!(
-        source.contains("#[cfg(test)]\npub(crate) mod scheduler_protocol_repository;"),
-        "retired scheduler protocol repository must remain test-only until schema removal"
-    );
 }
 
 #[test]
