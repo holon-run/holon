@@ -39,11 +39,12 @@ class DockerE2ERunnerTests(unittest.TestCase):
         )
 
     def test_previous_schema_revision_rejects_invalid_revision(self) -> None:
-        with self.assertRaisesRegex(
-            AssertionError,
-            "previous release produced an invalid schema revision",
-        ):
-            runner.require_previous_schema_revision({"schema_revision": 0})
+        for snapshot in ({"schema_revision": 0}, {}):
+            with self.subTest(snapshot=snapshot), self.assertRaisesRegex(
+                AssertionError,
+                "previous release produced an invalid schema revision",
+            ):
+                runner.require_previous_schema_revision(snapshot)
 
     def setUp(self) -> None:
         self.manifest = json.loads(runner.DEFAULT_MANIFEST.read_text())

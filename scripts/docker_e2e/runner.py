@@ -2184,7 +2184,7 @@ def run_runtime_case(harness: CaseHarness, case: dict[str, Any]) -> None:
 
 
 def require_previous_schema_revision(snapshot: dict[str, Any]) -> int:
-    revision = snapshot["schema_revision"]
+    revision = snapshot.get("schema_revision")
     require(
         isinstance(revision, int) and revision > 0,
         f"previous release produced an invalid schema revision: {snapshot}",
