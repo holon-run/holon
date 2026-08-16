@@ -2183,7 +2183,16 @@ def run_runtime_case(harness: CaseHarness, case: dict[str, Any]) -> None:
     require(assistant_rounds, "marker assistant round is missing from transcript")
 
 
-def run_runtime_upgrade_v030_case(
+def require_previous_schema_revision(snapshot: dict[str, Any]) -> int:
+    revision = snapshot["schema_revision"]
+    require(
+        isinstance(revision, int) and revision > 0,
+        f"previous release produced an invalid schema revision: {snapshot}",
+    )
+    return revision
+
+
+def run_runtime_upgrade_previous_release_case(
     harness: CaseHarness, case: dict[str, Any]
 ) -> None:
     require(
@@ -2206,10 +2215,7 @@ def run_runtime_upgrade_v030_case(
         old_snapshot["integrity_check"] == "ok",
         f"old database is invalid: {old_snapshot}",
     )
-    require(
-        old_snapshot["schema_revision"] == 25,
-        f"previous release did not produce schema 25: {old_snapshot}",
-    )
+    old_schema_revision = require_previous_schema_revision(old_snapshot)
     require(
         old_snapshot["messages"] and old_snapshot["briefs"],
         f"previous release did not persist the marker: {old_snapshot}",
@@ -2225,7 +2231,7 @@ def run_runtime_upgrade_v030_case(
         f"migrated database is invalid: {migrated}",
     )
     require(
-        migrated["schema_revision"] > old_snapshot["schema_revision"],
+        migrated["schema_revision"] > old_schema_revision,
         f"candidate did not advance the schema: {migrated}",
     )
     require(
@@ -4219,7 +4225,7 @@ def run_scheduler_checkpoint_replay_case(
 
 CASE_RUNNERS = {
     "runtime-auth-model-delivery": run_runtime_case,
-    "runtime-upgrade-v030": run_runtime_upgrade_v030_case,
+    "runtime-upgrade-v030": run_runtime_upgrade_previous_release_case,
     "memory-agent-home-persistence": run_memory_case,
     "workspace-restart-lifecycle": run_workspace_case,
     "workitem-wait-restart-complete": run_workitem_case,

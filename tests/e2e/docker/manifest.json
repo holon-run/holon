@@ -78,7 +78,7 @@
       "requires_previous_image": true,
       "provider_mode": "stub",
       "stub_scenario": "runtime-upgrade-v030",
-      "description": "Run v0.30.0 against a shared volume, persist one agent turn, upgrade the same database to the candidate, verify baseline provenance and preserved data, then complete a new agent turn.",
+      "description": "Run the previous release against a shared volume, persist one agent turn, upgrade the same database to the candidate, verify baseline provenance and preserved data, then complete a new agent turn.",
       "phases": [
         {
           "id": "old-release",

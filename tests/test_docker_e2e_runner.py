@@ -28,6 +28,23 @@ STUB_SPEC.loader.exec_module(stub)
 
 
 class DockerE2ERunnerTests(unittest.TestCase):
+    def test_previous_schema_revision_accepts_supported_release_schemas(self) -> None:
+        self.assertEqual(
+            runner.require_previous_schema_revision({"schema_revision": 25}),
+            25,
+        )
+        self.assertEqual(
+            runner.require_previous_schema_revision({"schema_revision": 46}),
+            46,
+        )
+
+    def test_previous_schema_revision_rejects_invalid_revision(self) -> None:
+        with self.assertRaisesRegex(
+            AssertionError,
+            "previous release produced an invalid schema revision",
+        ):
+            runner.require_previous_schema_revision({"schema_revision": 0})
+
     def setUp(self) -> None:
         self.manifest = json.loads(runner.DEFAULT_MANIFEST.read_text())
         runner.validate_manifest(self.manifest)
