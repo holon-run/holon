@@ -1772,6 +1772,20 @@ fn scheduler_task_result_claim_recovery_candidates(
                 );
                 return Ok(candidate);
             }
+            if let unsettled_claim::UnsettledClaimDecision::QuarantineSettled { reason } = decision
+            {
+                let mut proposed_entry = entry.clone();
+                proposed_entry.status = QueueEntryStatus::Quarantined;
+                proposed_entry.updated_at = Utc::now();
+                candidate.eligible = true;
+                candidate.reason = reason.into();
+                candidate.recovery_decision = "quarantine_settled".into();
+                candidate.evidence.push("recovery_generation=1".to_string());
+                candidate.proposed_queue_entry = Some(proposed_entry);
+                candidate.expected_queue_entry = Some(entry.clone());
+                candidate.proposed_command = None;
+                return Ok(candidate);
+            }
             let recovery = exact_task_result_claim_recovery(
                 storage,
                 runtime_db,
@@ -6066,6 +6080,61 @@ impl RuntimeHandle {
                         || canonical_first_attempt,
                     recovery_of_attempt_id: attempt.recovery_of_attempt_id.clone(),
                 });
+            if let unsettled_claim::UnsettledClaimDecision::QuarantineSettled { reason } = decision
+            {
+                entry.status = QueueEntryStatus::Quarantined;
+                entry.updated_at = self.now();
+                let message_id = entry.message_id.clone();
+                let execution_protocol =
+                    crate::runtime_db::transitions::ExecutionProtocolTransition::default();
+                let commit = self
+                    .inner
+                    .runtime_db
+                    .transitions()
+                    .commit_queue_with_execution_protocol(
+                        &crate::runtime_db::transitions::QueueTransitionCommand {
+                            agent_id: agent_id.clone(),
+                            operation: crate::runtime_db::transitions::QueueOperation::Settle,
+                            mutation:
+                                crate::runtime_db::transitions::QueueMutation::CompareAndSet {
+                                    expected: expected_entry,
+                                    record: entry,
+                                },
+                            scheduler_claim_work_item: None,
+                            agent_state: None,
+                            message_evidence: Vec::new(),
+                            transcript_entries: Vec::new(),
+                            turn_record: terminal_turn.cloned(),
+                            audit_events: vec![AuditEvent::legacy(
+                                "unsettled_claim_reconciled",
+                                serde_json::json!({
+                                    "agent_id": agent_id,
+                                    "message_id": message_id,
+                                    "activation_id": activation_id,
+                                    "work_item_id": work_item_id,
+                                    "decision": "quarantine_settled",
+                                    "reason": reason,
+                                    "recovery_generation": u32::from(
+                                        attempt.recovery_of_attempt_id.is_some()
+                                    ),
+                                    "provenance": "bootstrap_reconciliation",
+                                }),
+                            )],
+                            notify_scheduler: true,
+                            fault: self.take_transition_fault(),
+                            brief_evidence: Vec::new(),
+                        },
+                        &execution_protocol,
+                    )?;
+                if commit.applied {
+                    recovered += 1;
+                    crate::diagnostics::record_unsettled_claim_recovery();
+                    crate::diagnostics::record_poison_message_quarantined();
+                }
+                drop(guard);
+                self.apply_transition_commit(commit).await;
+                continue;
+            }
             if let unsettled_claim::UnsettledClaimDecision::InterruptAndQuarantine { reason } =
                 decision
             {

@@ -21,6 +21,9 @@ pub(crate) enum UnsettledClaimDecision {
     InterruptAndQuarantine {
         reason: &'static str,
     },
+    QuarantineSettled {
+        reason: &'static str,
+    },
     NoopAlreadyConverged,
 }
 
@@ -39,7 +42,7 @@ pub(crate) fn plan_unsettled_claim(facts: &UnsettledClaimFacts) -> UnsettledClai
         };
     }
     if facts.attempt_state != ExecutionAttemptState::Open {
-        return UnsettledClaimDecision::InterruptAndQuarantine {
+        return UnsettledClaimDecision::QuarantineSettled {
             reason: "terminal_attempt_missing_terminal_turn",
         };
     }
@@ -115,19 +118,23 @@ mod tests {
     }
 
     #[test]
-    fn ambiguous_or_terminal_attempt_is_quarantined() {
+    fn ambiguous_replay_is_interrupt_quarantined() {
         assert_eq!(
             plan_unsettled_claim(&facts()),
             UnsettledClaimDecision::InterruptAndQuarantine {
                 reason: "replay_fence_ambiguous",
             }
         );
+    }
+
+    #[test]
+    fn settled_attempt_without_terminal_is_quarantined() {
         assert_eq!(
             plan_unsettled_claim(&UnsettledClaimFacts {
                 attempt_state: ExecutionAttemptState::Interrupted,
                 ..facts()
             }),
-            UnsettledClaimDecision::InterruptAndQuarantine {
+            UnsettledClaimDecision::QuarantineSettled {
                 reason: "terminal_attempt_missing_terminal_turn",
             }
         );
