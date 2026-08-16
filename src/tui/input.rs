@@ -3178,7 +3178,6 @@ mod tests {
             default_tool_output_tokens: 4096,
             max_tool_output_tokens: 16384,
             disable_provider_fallback: false,
-            scheduler: crate::config::SchedulerEngineMode::Canonical,
             runtime_db_retention: crate::runtime_db::RuntimeDbRetentionPolicy::default(),
             providers: Vec::new(),
             web_search: crate::daemon::RuntimeWebSearchSummary {

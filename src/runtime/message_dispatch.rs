@@ -106,7 +106,7 @@ impl RuntimeHandle {
             resolve_continuation(&prior_closure, trigger, continuation_work_item_id)
         });
         let model_turn_allowed = !matches!(scheduler_state.status, AgentStatus::Stopped);
-        let execution_admission_provenance = self.legacy_execution_admission_provenance(
+        let execution_admission_provenance = self.execution_admission_provenance(
             message,
             continuation_resolution.as_ref(),
             task.as_ref().ok().and_then(Option::as_ref),
@@ -139,11 +139,6 @@ impl RuntimeHandle {
             scheduler_state.pending,
             self.now(),
         )?;
-        let scheduler_projection = if self.inner.scheduler_engine.is_canonical() {
-            scheduler_projection
-        } else {
-            scheduler_projection.without_canonical_authority()
-        };
         let scheduler_decision = scheduler::decide_next_action(
             &scheduler_projection,
             scheduler::SchedulerBoundary::MessageProcessing,

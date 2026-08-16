@@ -7,6 +7,13 @@ handle: rfc-scheduler-cutover-simplification
 
 # RFC: Scheduler Cutover Simplification
 
+> **Canonical-only amendment (2026-08-16):** the bounded compatibility window
+> ended after v0.31.1. The runtime now has one canonical scheduler. Legacy
+> rollback uses v0.31.1 with a pre-migration database backup. A redundant
+> `canonical` selector is accepted with a warning for one minor release;
+> `legacy` and unknown values fail startup. Schema deletion is delivered in a
+> separate follow-up migration.
+
 ## Summary
 
 Holon will keep the canonical scheduler protocol and remove the runtime rollout
@@ -19,10 +26,9 @@ preflight revisions, per-scenario authority, automatic hard-blocker rollback,
 and semantic proposal routing are not part of the long-term production
 contract.
 
-During one bounded compatibility window, a process-wide startup selector may
-choose either the legacy or canonical scheduler. It has two values, defaults to
-`canonical`, never mixes engines within one process, and must be deleted with
-the legacy engine after the compatibility window.
+The bounded compatibility window used a process-wide startup selector. That
+historical selector no longer chooses an engine; the canonical scheduler is
+the sole runtime authority.
 
 Scheduler qualification evidence belongs in CI and release acceptance. Runtime
 databases store scheduling facts, not approval evidence for the binary that is
@@ -97,7 +103,7 @@ data from canonical recovery candidates.
 The transition removes runtime rollout metadata from scheduler authority before
 performing destructive schema cleanup.
 
-A temporary process-wide selector may then be introduced:
+A temporary process-wide selector was introduced:
 
 ```text
 runtime.scheduler = legacy | canonical
@@ -109,6 +115,8 @@ The precedence is:
 ```text
 environment override > persisted configuration > canonical default
 ```
+
+This transition state is now retired by the canonical-only amendment above.
 
 The selector is:
 
@@ -336,7 +344,9 @@ Implementation is split into independently reversible changes:
 4. move qualification evidence into CI/release acceptance;
 5. delete dead rollout, shadow, and semantic production surfaces (**complete**);
 6. reduce activation types only after rollout authority is gone; and
-7. delete legacy and the selector after one compatibility release.
+7. delete legacy and the selector after one compatibility release
+   (**code/config removal in progress under #2509; schema cleanup follows in a
+   separate PR**).
 
 The final legacy removal requires:
 

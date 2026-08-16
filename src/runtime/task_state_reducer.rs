@@ -498,11 +498,8 @@ impl RuntimeHandle {
         model_reentry: bool,
         continuation_resolution: Option<&ContinuationResolution>,
     ) -> Result<()> {
-        let execution_admission_provenance = self.legacy_execution_admission_provenance(
-            message,
-            continuation_resolution,
-            Some(&task),
-        )?;
+        let execution_admission_provenance =
+            self.execution_admission_provenance(message, continuation_resolution, Some(&task))?;
         let transition = self
             .reduce_task_result_message_deferred(
                 message,

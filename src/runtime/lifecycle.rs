@@ -249,11 +249,6 @@ impl RuntimeHandle {
             work_queue_projection,
             self.now(),
         )?;
-        let projection = if self.inner.scheduler_engine.is_canonical() {
-            projection
-        } else {
-            projection.without_canonical_authority()
-        };
         let runtime_error = runtime_error_override.unwrap_or(projection.runtime_error);
         Ok(derive_closure_decision(&ClosureFacts {
             runtime_error,
@@ -1806,11 +1801,6 @@ impl RuntimeHandle {
             .read_agent()?
             .ok_or_else(|| anyhow!("agent state is missing for lifecycle sleep"))?;
         let projection = scheduler::SchedulerProjection::from_state(&self.inner.storage, &state)?;
-        let projection = if self.inner.scheduler_engine.is_canonical() {
-            projection
-        } else {
-            projection.without_canonical_authority()
-        };
         Ok(projection
             .work_reactivation_work_item()
             .map(|(work_item, mode)| {

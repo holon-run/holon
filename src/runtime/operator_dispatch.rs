@@ -17,7 +17,7 @@ impl RuntimeHandle {
             .process_interactive_message_deferred_with_cleanup(
                 message,
                 continuation_resolution,
-                self.legacy_execution_admission_provenance(message, continuation_resolution, None)?,
+                self.execution_admission_provenance(message, continuation_resolution, None)?,
                 loop_control,
             )
             .await?;

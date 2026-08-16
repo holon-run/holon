@@ -10,7 +10,7 @@ const SCHEDULER_DOMAIN_MODULES: &[&str] = &[
     "src/domain/scheduler_protocol.rs",
 ];
 const NORMAL_QUEUE_TRANSITION: &str = "pub(crate) struct QueueTransitionCommand";
-const LEGACY_QUEUE_TRANSITION: &str = "pub(crate) struct LegacySchedulerProtocolTransition";
+const NORMAL_QUEUE_TRANSITION_END: &str = "pub(crate) struct ExecutionProtocolTransition";
 const CANONICAL_SCHEDULER_EXECUTOR: &str = "src/runtime/scheduler_executor.rs";
 
 fn collect_rust_sources(directory: &Path, sources: &mut Vec<PathBuf>) {
@@ -163,19 +163,24 @@ fn normal_queue_transition_does_not_carry_legacy_scheduler_payload() {
     let normal_start = source
         .find(NORMAL_QUEUE_TRANSITION)
         .expect("normal queue transition definition");
-    let legacy_start = source[normal_start..]
-        .find(LEGACY_QUEUE_TRANSITION)
+    let normal_end = source[normal_start..]
+        .find(NORMAL_QUEUE_TRANSITION_END)
         .map(|offset| normal_start + offset)
-        .expect("legacy queue transition definition");
-    let normal_definition = &source[normal_start..legacy_start];
+        .expect("normal queue transition definition end");
+    let normal_definition = &source[normal_start..normal_end];
 
     assert!(
         !normal_definition.contains("scheduler_protocol"),
         "normal QueueTransitionCommand must not carry legacy scheduler protocol payload"
     );
     assert!(
-        source.contains("commit_queue_with_legacy_scheduler_protocol"),
-        "legacy queue and scheduler protocol commits must use an explicit compatibility boundary"
+        !source.contains("commit_queue_with_legacy_scheduler_protocol")
+            && !source.contains("LegacySchedulerProtocolTransition"),
+        "retired scheduler protocol queue commits must not remain available"
+    );
+    assert!(
+        source.contains("#[cfg(test)]\npub(crate) mod scheduler_protocol_repository;"),
+        "retired scheduler protocol repository must remain test-only until schema removal"
     );
 }
 

@@ -148,8 +148,7 @@ WorkItems flow through scheduling states that the scheduler consumes:
 
 ## Protocol transition layer
 
-The scheduler decision flow above is shared by both startup-selectable engines.
-The canonical engine wraps each boundary in an atomic `QueueTransitionCommand`
+The scheduler wraps each boundary in an atomic `QueueTransitionCommand`
 transaction that can simultaneously:
 
 1. commit the queue operation (admit, claim, or enqueue);
@@ -162,18 +161,15 @@ All effects commit in the same SQLite transaction. If the transaction fails or
 the CAS does not match, no partial queue, activation, settlement, or delivery
 state is left behind.
 
-The process selects `legacy` or `canonical` once at startup through
-`HOLON_SCHEDULER` or `runtime.scheduler`; canonical is the default. The legacy
-engine uses the shared queue, WorkItem, wait, task, Turn, transcript, brief,
-delivery, and audit contracts but does not write canonical activation or
-settlement facts. It fails closed when startup finds non-terminal canonical
-activations or unreconciled dequeued claims.
+The canonical scheduler is the only runtime engine. Queue, WorkItem, wait,
+task, Turn, transcript, brief, delivery, activation, settlement, and execution
+facts share one authority and transaction path.
 
 The accepted transition contract retires runtime manifest/preflight gates,
 per-scenario authority, automatic hard-blocker rollback, and production shadow
-comparison. The process-wide selector is temporary, cannot change while the
-process is running, never enables mixed or per-scenario authority, and will be
-deleted with legacy after one compatibility release.
+comparison. The retired selector is accepted only when its value is
+`canonical`, with a deprecation warning for one minor release. `legacy` and
+unknown values fail startup.
 
 ### Integration points
 

@@ -74,7 +74,6 @@ pub(crate) struct LifecycleHarness {
     workspace: TempDir,
     clock: Arc<crate::runtime::clock::TestClock>,
     provider: Arc<dyn AgentProvider>,
-    scheduler_engine: crate::config::SchedulerEngineMode,
     runtime: RuntimeHandle,
 }
 
@@ -84,39 +83,15 @@ impl LifecycleHarness {
     }
 
     pub(crate) fn with_provider(provider: Arc<dyn AgentProvider>) -> Self {
-        Self::with_provider_and_scheduler_engine(
-            provider,
-            crate::config::SchedulerEngineMode::Canonical,
-        )
-    }
-
-    pub(crate) fn legacy() -> Self {
-        Self::with_provider_and_scheduler_engine(
-            Arc::new(StubProvider::new("unused")),
-            crate::config::SchedulerEngineMode::Legacy,
-        )
-    }
-
-    fn with_provider_and_scheduler_engine(
-        provider: Arc<dyn AgentProvider>,
-        scheduler_engine: crate::config::SchedulerEngineMode,
-    ) -> Self {
         let data_dir = tempdir().expect("create lifecycle data dir");
         let workspace = tempdir().expect("create lifecycle workspace");
         let clock = controlled_clock();
-        let runtime = Self::open_runtime(
-            &data_dir,
-            &workspace,
-            clock.clone(),
-            provider.clone(),
-            scheduler_engine,
-        );
+        let runtime = Self::open_runtime(&data_dir, &workspace, clock.clone(), provider.clone());
         Self {
             data_dir,
             workspace,
             clock,
             provider,
-            scheduler_engine,
             runtime,
         }
     }
@@ -126,9 +101,8 @@ impl LifecycleHarness {
         workspace: &TempDir,
         clock: Arc<crate::runtime::clock::TestClock>,
         provider: Arc<dyn AgentProvider>,
-        scheduler_engine: crate::config::SchedulerEngineMode,
     ) -> RuntimeHandle {
-        RuntimeHandle::new_with_clock_and_scheduler_engine(
+        RuntimeHandle::new_with_clock(
             "default",
             data_dir.path().to_path_buf(),
             workspace.path().to_path_buf(),
@@ -136,7 +110,6 @@ impl LifecycleHarness {
             provider,
             "default".into(),
             context_config(),
-            scheduler_engine,
             clock,
         )
         .expect("open lifecycle runtime")
@@ -156,7 +129,6 @@ impl LifecycleHarness {
             &self.workspace,
             self.clock.clone(),
             self.provider.clone(),
-            self.scheduler_engine,
         );
     }
 

@@ -5,10 +5,6 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     config::AppConfig,
-    domain::scheduler_protocol::{
-        ActivationCause, ActivationSlot, ActivationState, ProtocolCommand, TriggerWaitCommand,
-        WaitState, WorkStatus,
-    },
     runtime_db::{transitions::TransitionFaultPoint, RuntimeDb},
     types::{
         AdmissionContext, AgentStatus, AuthorityClass, ExecutionAdmissionProvenance, MessageBody,
@@ -85,26 +81,6 @@ pub struct SchedulerTerminalSettlementRestartFixture {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct SchedulerSettlementDeliveryRestartFixture {
-    pub checkpoint: String,
-    pub stage: String,
-    pub cut_kind: String,
-    pub agent_id: String,
-    pub work_item_id: String,
-    pub message_id: String,
-    pub turn_id: String,
-    pub activation_id: String,
-    pub canonical_settlement_committed: bool,
-    pub recovery_applied: bool,
-    pub replay_applied: bool,
-    pub replay_exactly_once: bool,
-    pub queue_status: String,
-    pub activation_state: String,
-    pub slot_state: String,
-    pub recovery_candidates: usize,
-}
-
-#[derive(Debug, Clone, Serialize)]
 pub struct SchedulerWaitTriggerRestartFixture {
     pub checkpoint: String,
     pub stage: String,
@@ -166,21 +142,6 @@ pub struct SchedulerTargetedYieldRestartFixture {
     pub focus_work_item_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct SchedulerLegacyAdoptionRestartFixture {
-    pub checkpoint: String,
-    pub stage: String,
-    pub cut_kind: String,
-    pub agent_id: String,
-    pub work_item_id: String,
-    pub precommit_fault_rolled_back: bool,
-    pub replay_applied: bool,
-    pub replay_exactly_once: bool,
-    pub partition_initialized: bool,
-    pub work_status: Option<String>,
-    pub focus_work_item_id: Option<String>,
-}
-
 pub async fn seed_scheduler_restart_fixture(
     config: &AppConfig,
     agent_id: &str,
@@ -208,11 +169,6 @@ pub async fn seed_scheduler_restart_fixture(
                 .await?,
         )
         .context("serializing scheduler terminal settlement restart fixture"),
-        "settlement_delivery" => serde_json::to_value(
-            seed_scheduler_settlement_delivery_restart_fixture(config, agent_id, stage, objective)
-                .await?,
-        )
-        .context("serializing scheduler settlement delivery restart fixture"),
         "post_commit_notification" => serde_json::to_value(
             seed_scheduler_post_commit_notification_restart_fixture(
                 config, agent_id, stage, objective,
@@ -225,11 +181,6 @@ pub async fn seed_scheduler_restart_fixture(
                 .await?,
         )
         .context("serializing scheduler targeted yield restart fixture"),
-        "legacy_adoption_atomicity" => serde_json::to_value(
-            seed_scheduler_legacy_adoption_restart_fixture(config, agent_id, stage, objective)
-                .await?,
-        )
-        .context("serializing scheduler legacy adoption restart fixture"),
         other => Err(anyhow!("unsupported scheduler restart checkpoint: {other}")),
     }
 }
@@ -303,7 +254,7 @@ async fn seed_scheduler_claim_admission_restart_fixture(
                 ));
             }
             let message_id = queued[0].message_id.clone();
-            let canonical_before = canonical_claim_row_counts(&runtime, agent_id)?;
+            let canonical_before = execution_claim_row_counts(&runtime, agent_id)?;
             runtime
                 .inject_next_acceptance_transition_fault(TransitionFaultPoint::BeforeCommit)?;
             let error = match scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
@@ -323,10 +274,10 @@ async fn seed_scheduler_claim_admission_restart_fixture(
             {
                 return Err(error).context("unexpected scheduler claim fixture failure");
             }
-            let canonical_after = canonical_claim_row_counts(&runtime, agent_id)?;
+            let canonical_after = execution_claim_row_counts(&runtime, agent_id)?;
             let queued_after = queue_entries_for_agent(&runtime, agent_id)?;
             if canonical_before != canonical_after
-                || canonical_after != (0, 0, 0)
+                || canonical_after != (0, 0)
                 || queued_after.len() != 1
                 || queued_after[0].message_id != message_id
                 || queued_after[0].status != QueueEntryStatus::Queued
@@ -393,13 +344,14 @@ async fn seed_scheduler_claim_admission_restart_fixture(
                 .clone()
                 .ok_or_else(|| anyhow!("claimed restart fixture message has no work item"))?;
             let activation_id = scheduler_executor::canonical_activation_id(&message_id);
-            let snapshot = runtime
+            let execution = runtime
                 .inner
                 .runtime_db
                 .transitions()
-                .load_scheduler_protocol_snapshot(agent_id)?;
-            let activation = snapshot
-                .activations
+                .load_execution_protocol_state_if_initialized(agent_id)?
+                .ok_or_else(|| anyhow!("scheduler claim replay execution state is missing"))?;
+            let activation = execution
+                .attempts
                 .get(&activation_id)
                 .ok_or_else(|| anyhow!("scheduler claim replay has no canonical activation"))?;
             let replay_exactly_once = queue_entries_for_agent(&runtime, agent_id)?
@@ -407,14 +359,17 @@ async fn seed_scheduler_claim_admission_restart_fixture(
                 .filter(|entry| entry.message_id == message_id)
                 .count()
                 == 1
-                && activation.state == ActivationState::Running
-                && matches!(
-                    snapshot.slot,
-                    ActivationSlot::Running {
-                        activation_id: ref slot_activation_id,
-                        ..
-                    } if slot_activation_id == &activation_id
-                );
+                && activation.state
+                    == crate::domain::execution_protocol::ExecutionAttemptState::Open
+                && execution
+                    .attempts
+                    .values()
+                    .filter(|attempt| {
+                        attempt.state
+                            == crate::domain::execution_protocol::ExecutionAttemptState::Open
+                    })
+                    .count()
+                    == 1;
             if !replay_exactly_once {
                 return Err(anyhow!(
                     "scheduler claim replay did not persist exactly one running activation"
@@ -433,7 +388,7 @@ async fn seed_scheduler_claim_admission_restart_fixture(
                 replay_exactly_once,
                 queue_status: "dequeued".into(),
                 activation_state: Some("running".into()),
-                slot_state: activation_slot_state(&snapshot.slot),
+                slot_state: execution_slot_state(&execution),
             })
         }
         "verify" => {
@@ -453,23 +408,27 @@ async fn seed_scheduler_claim_admission_restart_fixture(
                 .work_item_id
                 .ok_or_else(|| anyhow!("scheduler claim restart verify work item is missing"))?;
             let activation_id = scheduler_executor::canonical_activation_id(&message_id);
-            let snapshot = runtime
+            let execution = runtime
                 .inner
                 .runtime_db
                 .transitions()
-                .load_scheduler_protocol_snapshot(agent_id)?;
-            let activation = snapshot
-                .activations
+                .load_execution_protocol_state_if_initialized(agent_id)?
+                .ok_or_else(|| anyhow!("scheduler claim verify execution state is missing"))?;
+            let activation = execution
+                .attempts
                 .get(&activation_id)
                 .ok_or_else(|| anyhow!("scheduler claim restart verify activation is missing"))?;
-            let replay_exactly_once = activation.state == ActivationState::Running
-                && matches!(
-                    snapshot.slot,
-                    ActivationSlot::Running {
-                        activation_id: ref slot_activation_id,
-                        ..
-                    } if slot_activation_id == &activation_id
-                );
+            let replay_exactly_once = activation.state
+                == crate::domain::execution_protocol::ExecutionAttemptState::Open
+                && execution
+                    .attempts
+                    .values()
+                    .filter(|attempt| {
+                        attempt.state
+                            == crate::domain::execution_protocol::ExecutionAttemptState::Open
+                    })
+                    .count()
+                    == 1;
             if !replay_exactly_once {
                 return Err(anyhow!(
                     "scheduler claim restart verify found non-idempotent canonical state"
@@ -488,7 +447,7 @@ async fn seed_scheduler_claim_admission_restart_fixture(
                 replay_exactly_once,
                 queue_status: "dequeued".into(),
                 activation_state: Some("running".into()),
-                slot_state: activation_slot_state(&snapshot.slot),
+                slot_state: execution_slot_state(&execution),
             })
         }
         _ => Err(anyhow!(
@@ -511,31 +470,31 @@ fn queue_entries_for_agent(
         .collect())
 }
 
-fn canonical_claim_row_counts(runtime: &RuntimeHandle, agent_id: &str) -> Result<(i64, i64, i64)> {
+fn execution_claim_row_counts(runtime: &RuntimeHandle, agent_id: &str) -> Result<(i64, i64)> {
     let connection = runtime.inner.runtime_db.connection()?;
     Ok((
         connection.query_row(
-            "SELECT COUNT(*) FROM scheduler_agent_slots WHERE agent_id = ?1",
+            "SELECT COUNT(*) FROM execution_protocol_attempts WHERE agent_id = ?1",
             [agent_id],
             |row| row.get(0),
         )?,
         connection.query_row(
-            "SELECT COUNT(*) FROM scheduler_activation_authorities WHERE agent_id = ?1",
-            [agent_id],
-            |row| row.get(0),
-        )?,
-        connection.query_row(
-            "SELECT COUNT(*) FROM scheduler_activations WHERE agent_id = ?1",
+            "SELECT COUNT(*) FROM execution_protocol_outcomes WHERE agent_id = ?1",
             [agent_id],
             |row| row.get(0),
         )?,
     ))
 }
 
-fn activation_slot_state(slot: &ActivationSlot) -> String {
-    match slot {
-        ActivationSlot::Idle => "idle".into(),
-        ActivationSlot::Running { .. } => "running".into(),
+fn execution_slot_state(
+    execution: &crate::domain::execution_protocol::ExecutionProtocolState,
+) -> String {
+    if execution.attempts.values().any(|attempt| {
+        attempt.state == crate::domain::execution_protocol::ExecutionAttemptState::Open
+    }) {
+        "running".into()
+    } else {
+        "idle".into()
     }
 }
 
@@ -679,25 +638,32 @@ async fn seed_scheduler_waiting_work(
             "scheduler waiting restart fixture did not commit its settlement"
         ));
     }
-    let snapshot = runtime
+    let execution = runtime
         .inner
         .runtime_db
         .transitions()
-        .load_scheduler_protocol_snapshot(agent_id)?;
-    let wait = snapshot
-        .waits
-        .get(&registration.condition.id)
-        .ok_or_else(|| anyhow!("scheduler waiting restart fixture wait is missing"))?;
-    let wait_generation = wait.current_generation;
-    let generation = wait
-        .generations
-        .get(&wait_generation)
-        .ok_or_else(|| anyhow!("scheduler waiting restart fixture generation is missing"))?;
-    if generation.state != WaitState::Active
-        || !snapshot
-            .settlements
-            .contains_key(&super::canonical_settlement_id(&message.id))
-        || !matches!(snapshot.slot, ActivationSlot::Idle)
+        .load_execution_protocol_state_if_initialized(agent_id)?
+        .ok_or_else(|| anyhow!("scheduler waiting restart execution state is missing"))?;
+    let work_execution = execution
+        .work_items
+        .get(&work_item.id)
+        .ok_or_else(|| anyhow!("scheduler waiting restart WorkItem execution is missing"))?;
+    let wait_generation = work_execution.generation();
+    let wait_condition = runtime
+        .inner
+        .storage
+        .latest_wait_conditions()?
+        .into_iter()
+        .find(|condition| condition.id == registration.condition.id)
+        .ok_or_else(|| anyhow!("scheduler waiting restart wait is missing"))?;
+    let activation = execution
+        .attempts
+        .get(&activation_id)
+        .ok_or_else(|| anyhow!("scheduler waiting restart activation is missing"))?;
+    if wait_condition.status != crate::types::WaitConditionStatus::Active
+        || activation.state != crate::domain::execution_protocol::ExecutionAttemptState::Settled
+        || activation.terminal_outcome_id.is_none()
+        || execution_slot_state(&execution) != "idle"
     {
         return Err(anyhow!(
             "scheduler waiting restart fixture did not persist an active canonical wait"
@@ -770,23 +736,18 @@ fn scheduler_wait_trigger_message(
     Ok(None)
 }
 
-fn wait_state_name(state: &WaitState) -> String {
-    match state {
-        WaitState::Active => "active".into(),
-        WaitState::Triggered => "triggered".into(),
-        WaitState::Consumed => "consumed".into(),
-        WaitState::Resolved => "resolved".into(),
-    }
-}
-
-fn work_status_name(status: &WorkStatus) -> String {
+fn execution_work_status_name(
+    status: &crate::domain::execution_protocol::WorkItemExecutionState,
+) -> String {
     match status {
-        WorkStatus::Runnable => "runnable",
-        WorkStatus::Waiting { .. } => "waiting",
-        WorkStatus::Yielded { .. } => "yielded",
-        WorkStatus::NeedsSettlement { .. } => "needs_settlement",
-        WorkStatus::Paused { .. } => "paused",
-        WorkStatus::Terminal => "terminal",
+        crate::domain::execution_protocol::WorkItemExecutionState::Runnable { .. } => "runnable",
+        crate::domain::execution_protocol::WorkItemExecutionState::InFlight { .. } => "in_flight",
+        crate::domain::execution_protocol::WorkItemExecutionState::Waiting { .. } => "waiting",
+        crate::domain::execution_protocol::WorkItemExecutionState::Paused { .. } => "paused",
+        crate::domain::execution_protocol::WorkItemExecutionState::NeedsRepair { .. } => {
+            "needs_repair"
+        }
+        crate::domain::execution_protocol::WorkItemExecutionState::Terminal { .. } => "terminal",
     }
     .into()
 }
@@ -1032,43 +993,29 @@ async fn seed_scheduler_targeted_yield_restart_fixture(
                 "scheduler targeted yield source settlement did not commit"
             ));
         }
-        let report = super::scheduler_recovery_report(
-            &runtime.inner.storage,
-            &runtime.inner.runtime_db,
-            agent_id,
-        )?;
-        if super::apply_scheduler_recovery_plan(
-            &runtime.inner.storage,
-            &runtime.inner.runtime_db,
-            agent_id,
-            &report,
-        )?
-        .0 != 1
-        {
-            return Err(anyhow!(
-                "scheduler targeted yield recovery did not apply exactly once"
-            ));
-        }
-        let snapshot = runtime
+        let execution = runtime
             .inner
             .runtime_db
             .transitions()
-            .load_scheduler_protocol_snapshot(agent_id)?;
-        let source_status = snapshot
-            .work
+            .load_execution_protocol_state_if_initialized(agent_id)?
+            .ok_or_else(|| anyhow!("targeted yield execution state is missing"))?;
+        let source_status = execution
+            .work_items
             .get(&source.id)
-            .ok_or_else(|| anyhow!("targeted yield source demand is missing"))?;
-        let target_status = snapshot
-            .work
+            .ok_or_else(|| anyhow!("targeted yield source execution is missing"))?;
+        let target_status = execution
+            .work_items
             .get(&target.id)
-            .ok_or_else(|| anyhow!("targeted yield target demand is missing"))?;
+            .ok_or_else(|| anyhow!("targeted yield target execution is missing"))?;
+        let focus = runtime.agent_state().await?.current_work_item_id;
         let replay_exactly_once = matches!(
-            &source_status.status,
-            WorkStatus::Yielded { continuation }
-                if continuation.continuation_id == continuation_id
-                    && continuation.target_work_item_id == target.id
-        ) && target_status.status == WorkStatus::Runnable
-            && snapshot.focus.as_deref() == Some(target.id.as_str());
+            &source_status.state,
+            crate::domain::execution_protocol::WorkItemExecutionState::Paused { reason, .. }
+                if reason == &format!("yielded_to:{}", target.id)
+        ) && matches!(
+            target_status.state,
+            crate::domain::execution_protocol::WorkItemExecutionState::Runnable { .. }
+        ) && focus.as_deref() == Some(target.id.as_str());
         if !replay_exactly_once {
             return Err(anyhow!(
                 "scheduler targeted yield prepare did not persist canonical yield state"
@@ -1087,9 +1034,9 @@ async fn seed_scheduler_targeted_yield_restart_fixture(
             continuation_id,
             replay_applied: false,
             replay_exactly_once,
-            source_status: work_status_name(&source_status.status),
-            target_status: work_status_name(&target_status.status),
-            focus_work_item_id: snapshot.focus,
+            source_status: execution_work_status_name(&source_status.state),
+            target_status: execution_work_status_name(&target_status.state),
+            focus_work_item_id: focus,
         });
     }
     if stage != "replay" && stage != "verify" {
@@ -1195,19 +1142,21 @@ async fn seed_scheduler_targeted_yield_restart_fixture(
         .ok_or_else(|| anyhow!("targeted yield target queue entry is missing"))?;
     let target_activation_id =
         scheduler_executor::canonical_activation_id(&target_entry.message_id);
-    let snapshot = runtime
+    let execution = runtime
         .inner
         .runtime_db
         .transitions()
-        .load_scheduler_protocol_snapshot(agent_id)?;
-    let source_demand = snapshot
-        .work
+        .load_execution_protocol_state_if_initialized(agent_id)?
+        .ok_or_else(|| anyhow!("targeted yield execution state disappeared"))?;
+    let source_execution = execution
+        .work_items
         .get(&source.id)
-        .ok_or_else(|| anyhow!("targeted yield source demand disappeared"))?;
-    let target_demand = snapshot
-        .work
+        .ok_or_else(|| anyhow!("targeted yield source execution disappeared"))?;
+    let target_execution = execution
+        .work_items
         .get(&target.id)
-        .ok_or_else(|| anyhow!("targeted yield target demand disappeared"))?;
+        .ok_or_else(|| anyhow!("targeted yield target execution disappeared"))?;
+    let focus = runtime.agent_state().await?.current_work_item_id;
     let resumed = runtime
         .inner
         .storage
@@ -1217,17 +1166,29 @@ async fn seed_scheduler_targeted_yield_restart_fixture(
         .ok_or_else(|| anyhow!("targeted yield continuation disappeared"))?;
     let replay_exactly_once = source_entry.status == QueueEntryStatus::Processed
         && target_entry.status == QueueEntryStatus::Processed
-        && source_demand.status == WorkStatus::Runnable
-        && target_demand.status == WorkStatus::Terminal
-        && snapshot.focus.as_deref() == Some(source.id.as_str())
-        && snapshot
-            .activations
+        && matches!(
+            source_execution.state,
+            crate::domain::execution_protocol::WorkItemExecutionState::Runnable { .. }
+        )
+        && matches!(
+            target_execution.state,
+            crate::domain::execution_protocol::WorkItemExecutionState::Terminal { .. }
+        )
+        && focus.as_deref() == Some(source.id.as_str())
+        && execution
+            .attempts
             .get(&source_activation_id)
-            .is_some_and(|activation| activation.state == ActivationState::Settled)
-        && snapshot
-            .activations
+            .is_some_and(|activation| {
+                activation.state
+                    == crate::domain::execution_protocol::ExecutionAttemptState::Settled
+            })
+        && execution
+            .attempts
             .get(&target_activation_id)
-            .is_some_and(|activation| activation.state == ActivationState::Settled)
+            .is_some_and(|activation| {
+                activation.state
+                    == crate::domain::execution_protocol::ExecutionAttemptState::Settled
+            })
         && resumed.state == crate::types::WorkItemContinuationState::Resumed;
     if !replay_exactly_once {
         return Err(anyhow!(
@@ -1247,9 +1208,9 @@ async fn seed_scheduler_targeted_yield_restart_fixture(
         continuation_id: continuation.id,
         replay_applied: stage == "replay" && replay_applied,
         replay_exactly_once,
-        source_status: work_status_name(&source_demand.status),
-        target_status: work_status_name(&target_demand.status),
-        focus_work_item_id: snapshot.focus,
+        source_status: execution_work_status_name(&source_execution.state),
+        target_status: execution_work_status_name(&target_execution.state),
+        focus_work_item_id: focus,
     })
 }
 
@@ -1280,44 +1241,29 @@ async fn seed_scheduler_wait_trigger_restart_fixture(
             .message_seq
             .ok_or_else(|| anyhow!("scheduler wait trigger message has no sequence"))?;
         let trigger_id = scheduler_executor::canonical_wait_trigger_id(&trigger);
-        let trigger_command = ProtocolCommand::TriggerWait(TriggerWaitCommand {
-            wait_id: seed.wait_id.clone(),
-            wait_generation: seed.wait_generation,
-            trigger_id: trigger_id.clone(),
-            trigger_generation,
-        });
-        let trigger_commit = runtime
+        let before_wait = runtime
+            .inner
+            .storage
+            .latest_wait_conditions()?
+            .into_iter()
+            .find(|condition| condition.id == seed.wait_id)
+            .ok_or_else(|| anyhow!("scheduler wait trigger condition is missing"))?;
+        let before_execution = runtime
             .inner
             .runtime_db
             .transitions()
-            .commit_scheduler_protocol_command(agent_id, &trigger_command, None)?;
-        if !trigger_commit.applied || trigger_commit.replayed {
-            return Err(anyhow!(
-                "scheduler wait trigger prepare did not persist a fresh canonical trigger"
-            ));
-        }
+            .load_execution_protocol_state_if_initialized(agent_id)?;
         let entry = queue_entries_for_agent(&runtime, agent_id)?
             .into_iter()
             .find(|entry| entry.message_id == trigger.id)
             .ok_or_else(|| anyhow!("scheduler wait trigger queue entry is missing"))?;
-        let before_fault = runtime
-            .inner
-            .runtime_db
-            .transitions()
-            .load_scheduler_protocol_snapshot(agent_id)?;
         let activation_id = scheduler_executor::canonical_activation_id(&trigger.id);
-        let generation = &before_fault.waits[&seed.wait_id].generations[&seed.wait_generation];
         if entry.status != QueueEntryStatus::Queued
-            || generation.state != WaitState::Triggered
-            || !generation.trigger.as_ref().is_some_and(|persisted| {
-                persisted.trigger_id == trigger_id
-                    && persisted.trigger_generation == trigger_generation
-            })
-            || generation.consuming_activation_id.is_some()
-            || before_fault.activations.contains_key(&activation_id)
-            || before_fault
-                .activation_admissions
-                .contains_key(&activation_id)
+            || before_wait.status != crate::types::WaitConditionStatus::Triggered
+            || before_wait.trigger_message_id() != Some(trigger.id.as_str())
+            || before_execution
+                .as_ref()
+                .is_some_and(|execution| execution.attempts.contains_key(&activation_id))
         {
             return Err(anyhow!(
                 "scheduler wait trigger prepare did not leave a queued durable trigger"
@@ -1341,16 +1287,26 @@ async fn seed_scheduler_wait_trigger_restart_fixture(
         {
             return Err(error).context("unexpected scheduler wait trigger fixture failure");
         }
-        let after_fault = runtime
+        let after_wait = runtime
+            .inner
+            .storage
+            .latest_wait_conditions()?
+            .into_iter()
+            .find(|condition| condition.id == seed.wait_id)
+            .ok_or_else(|| anyhow!("scheduler wait trigger condition disappeared after fault"))?;
+        let after_execution = runtime
             .inner
             .runtime_db
             .transitions()
-            .load_scheduler_protocol_snapshot(agent_id)?;
+            .load_execution_protocol_state_if_initialized(agent_id)?;
         let entry_after = queue_entries_for_agent(&runtime, agent_id)?
             .into_iter()
             .find(|entry| entry.message_id == trigger.id)
             .ok_or_else(|| anyhow!("scheduler wait trigger queue entry disappeared after fault"))?;
-        if after_fault != before_fault || entry_after.status != QueueEntryStatus::Queued {
+        if after_wait != before_wait
+            || after_execution != before_execution
+            || entry_after.status != QueueEntryStatus::Queued
+        {
             return Err(anyhow!(
                 "scheduler wait trigger fault left partial consume or admission state"
             ));
@@ -1390,29 +1346,37 @@ async fn seed_scheduler_wait_trigger_restart_fixture(
         .clone()
         .ok_or_else(|| anyhow!("scheduler wait trigger work item is missing"))?;
     let activation_id = scheduler_executor::canonical_activation_id(&trigger.id);
-    let before = runtime
+    let wait = runtime
+        .inner
+        .storage
+        .latest_wait_conditions()?
+        .into_iter()
+        .find(|condition| condition.trigger_message_id() == Some(trigger.id.as_str()))
+        .ok_or_else(|| anyhow!("scheduler wait trigger canonical wait is missing"))?;
+    let wait_id = wait.id.clone();
+    let execution_before = runtime
         .inner
         .runtime_db
         .transitions()
-        .load_scheduler_protocol_snapshot(agent_id)?;
-    let (wait_id, wait_generation) = before
-        .waits
-        .iter()
-        .next()
-        .map(|(wait_id, wait)| (wait_id.clone(), wait.current_generation))
-        .ok_or_else(|| anyhow!("scheduler wait trigger canonical wait is missing"))?;
+        .load_execution_protocol_state_if_initialized(agent_id)?
+        .ok_or_else(|| anyhow!("scheduler wait trigger execution state is missing"))?;
+    let wait_generation = execution_before
+        .work_items
+        .get(&work_item_id)
+        .map(|record| record.generation())
+        .unwrap_or_default();
     let trigger_generation = trigger
         .message_seq
         .ok_or_else(|| anyhow!("scheduler wait trigger message has no sequence after restart"))?;
     let trigger_id = scheduler_executor::canonical_wait_trigger_id(&trigger);
-    let trigger_task_id = match &trigger.origin {
-        MessageOrigin::Task { task_id } => task_id.clone(),
+    match &trigger.origin {
+        MessageOrigin::Task { .. } => {}
         _ => {
             return Err(anyhow!(
                 "scheduler wait trigger message is not a task rejoin"
             ));
         }
-    };
+    }
     let entry_before = queue_entries_for_agent(&runtime, agent_id)?
         .into_iter()
         .find(|entry| entry.message_id == trigger.id)
@@ -1447,55 +1411,44 @@ async fn seed_scheduler_wait_trigger_restart_fixture(
     } else {
         false
     };
-    let snapshot = runtime
+    let execution = runtime
         .inner
         .runtime_db
         .transitions()
-        .load_scheduler_protocol_snapshot(agent_id)?;
-    let generation = snapshot
-        .waits
-        .get(&wait_id)
-        .and_then(|wait| wait.generations.get(&wait_generation))
-        .ok_or_else(|| anyhow!("scheduler wait trigger generation is missing after replay"))?;
-    let activation = snapshot
-        .activations
+        .load_execution_protocol_state_if_initialized(agent_id)?
+        .ok_or_else(|| anyhow!("scheduler wait trigger execution state disappeared"))?;
+    let resolved_wait = runtime
+        .inner
+        .storage
+        .latest_wait_conditions()?
+        .into_iter()
+        .find(|condition| condition.id == wait_id)
+        .ok_or_else(|| anyhow!("scheduler wait trigger condition is missing after replay"))?;
+    let activation = execution
+        .attempts
         .get(&activation_id)
         .ok_or_else(|| anyhow!("scheduler wait trigger activation is missing after replay"))?;
-    let admission = snapshot
-        .activation_admissions
-        .get(&activation_id)
-        .ok_or_else(|| anyhow!("scheduler wait trigger admission is missing after replay"))?;
     let queue_status = queue_entries_for_agent(&runtime, agent_id)?
         .into_iter()
         .find(|entry| entry.message_id == trigger.id)
         .map(|entry| entry.status)
         .ok_or_else(|| anyhow!("scheduler wait trigger queue entry disappeared"))?;
     let replay_exactly_once = queue_status == QueueEntryStatus::Dequeued
-        && generation.state == WaitState::Consumed
-        && generation.trigger.as_ref().is_some_and(|persisted| {
-            persisted.trigger_id == trigger_id && persisted.trigger_generation == trigger_generation
-        })
-        && generation.consuming_activation_id.as_deref() == Some(activation_id.as_str())
-        && activation.state == ActivationState::Running
+        && resolved_wait.status == crate::types::WaitConditionStatus::Resolved
+        && resolved_wait.trigger_message_id() == Some(trigger.id.as_str())
+        && activation.state == crate::domain::execution_protocol::ExecutionAttemptState::Open
         && matches!(
-            &admission.activation.cause,
-            ActivationCause::TaskRejoin {
-                task_id: cause_task_id,
-                message_id: cause_message_id,
-                resume: Some(resume),
-            } if cause_task_id == &trigger_task_id
-                && cause_message_id == &trigger.id
-                && resume.wait_id == wait_id
-                && resume.wait_generation == wait_generation
-                && resume.trigger_id == trigger_id
-                && resume.trigger_generation == trigger_generation
+            &activation.source.identity,
+            crate::domain::execution_protocol::ExecutionSourceIdentity::TriggeredWait {
+                wait_id: source_wait_id,
+                trigger_message_id,
+            } if source_wait_id == &wait_id && trigger_message_id == &trigger.id
         )
         && matches!(
-            snapshot.slot,
-            ActivationSlot::Running {
-                activation_id: ref slot_activation_id,
-                ..
-            } if slot_activation_id == &activation_id
+            &activation.binding,
+            crate::domain::execution_protocol::ExecutionBinding::WorkItem {
+                work_item_id: bound_work_item_id,
+            } if bound_work_item_id == &work_item_id
         );
     if !replay_exactly_once {
         return Err(anyhow!(
@@ -1509,7 +1462,7 @@ async fn seed_scheduler_wait_trigger_restart_fixture(
         agent_id: agent_id.into(),
         work_item_id,
         message_id: trigger.id,
-        activation_id,
+        activation_id: activation_id.clone(),
         wait_id,
         wait_generation,
         trigger_id,
@@ -1518,10 +1471,10 @@ async fn seed_scheduler_wait_trigger_restart_fixture(
         replay_applied: stage == "replay" && (replay_applied || replay_exactly_once),
         replay_exactly_once,
         queue_status: "dequeued".into(),
-        wait_state: wait_state_name(&generation.state),
-        consuming_activation_id: generation.consuming_activation_id.clone(),
+        wait_state: "consumed".into(),
+        consuming_activation_id: Some(activation_id),
         activation_state: Some("running".into()),
-        slot_state: activation_slot_state(&snapshot.slot),
+        slot_state: execution_slot_state(&execution),
     })
 }
 
@@ -1607,22 +1560,29 @@ async fn seed_scheduler_post_commit_notification_restart_fixture(
         .clone()
         .ok_or_else(|| anyhow!("scheduler post-commit work item is missing"))?;
     let source_activation_id = scheduler_executor::canonical_activation_id(&source_message.id);
-    let before = runtime
+    let before_execution = runtime
         .inner
         .runtime_db
         .transitions()
-        .load_scheduler_protocol_snapshot(agent_id)?;
-    let (wait_id, wait_generation) = before
-        .waits
-        .iter()
-        .next()
-        .map(|(wait_id, wait)| (wait_id.clone(), wait.current_generation))
+        .load_execution_protocol_state_if_initialized(agent_id)?
+        .ok_or_else(|| anyhow!("scheduler post-commit execution state is missing"))?;
+    let wait = runtime
+        .inner
+        .storage
+        .latest_wait_conditions()?
+        .into_iter()
+        .find(|condition| condition.work_item_id.as_deref() == Some(work_item_id.as_str()))
         .ok_or_else(|| anyhow!("scheduler post-commit canonical wait is missing"))?;
+    let wait_id = wait.id.clone();
     if source_entry.status != QueueEntryStatus::Processed
-        || before.activations[&source_activation_id].state != ActivationState::Settled
-        || !before
-            .settlements
-            .contains_key(&super::canonical_settlement_id(&source_message.id))
+        || before_execution
+            .attempts
+            .get(&source_activation_id)
+            .is_none_or(|attempt| {
+                attempt.state != crate::domain::execution_protocol::ExecutionAttemptState::Settled
+                    || attempt.terminal_outcome_id.is_none()
+            })
+        || wait.status != crate::types::WaitConditionStatus::Active
     {
         return Err(anyhow!(
             "scheduler post-commit durable settlement was not retained after restart"
@@ -1675,33 +1635,49 @@ async fn seed_scheduler_post_commit_notification_restart_fixture(
     } else {
         false
     };
-    let snapshot = runtime
+    let execution = runtime
         .inner
         .runtime_db
         .transitions()
-        .load_scheduler_protocol_snapshot(agent_id)?;
+        .load_execution_protocol_state_if_initialized(agent_id)?
+        .ok_or_else(|| anyhow!("scheduler post-commit execution state disappeared"))?;
     let progress_activation_id = scheduler_executor::canonical_activation_id(&progress_message.id);
-    let generation = snapshot
-        .waits
-        .get(&wait_id)
-        .and_then(|wait| wait.generations.get(&wait_generation))
-        .ok_or_else(|| anyhow!("scheduler post-commit wait generation is missing"))?;
+    let resolved_wait = runtime
+        .inner
+        .storage
+        .latest_wait_conditions()?
+        .into_iter()
+        .find(|condition| condition.id == wait_id)
+        .ok_or_else(|| anyhow!("scheduler post-commit wait condition is missing"))?;
     let progress_status = queue_entries_for_agent(&runtime, agent_id)?
         .into_iter()
         .find(|entry| entry.message_id == progress_message.id)
         .map(|entry| entry.status)
         .ok_or_else(|| anyhow!("scheduler post-commit progress message disappeared"))?;
     let replay_exactly_once = progress_status == QueueEntryStatus::Dequeued
-        && generation.state == WaitState::Consumed
-        && generation.consuming_activation_id.as_deref() == Some(progress_activation_id.as_str())
-        && snapshot
-            .activations
+        && resolved_wait.status == crate::types::WaitConditionStatus::Resolved
+        && resolved_wait.trigger_message_id() == Some(progress_message.id.as_str())
+        && execution
+            .attempts
             .get(&progress_activation_id)
-            .is_some_and(|activation| activation.state == ActivationState::Running)
-        && snapshot
-            .settlements
-            .contains_key(&super::canonical_settlement_id(&source_message.id))
-        && snapshot.activations[&source_activation_id].state == ActivationState::Settled;
+            .is_some_and(|activation| {
+                activation.state == crate::domain::execution_protocol::ExecutionAttemptState::Open
+                    && matches!(
+                        &activation.source.identity,
+                        crate::domain::execution_protocol::ExecutionSourceIdentity::TriggeredWait {
+                            wait_id: source_wait_id,
+                            trigger_message_id,
+                        } if source_wait_id == &wait_id
+                            && trigger_message_id == &progress_message.id
+                    )
+            })
+        && execution
+            .attempts
+            .get(&source_activation_id)
+            .is_some_and(|activation| {
+                activation.state
+                    == crate::domain::execution_protocol::ExecutionAttemptState::Settled
+            });
     if !replay_exactly_once {
         return Err(anyhow!(
             "scheduler post-commit restart did not retain settlement and resume progress"
@@ -1723,7 +1699,7 @@ async fn seed_scheduler_post_commit_notification_restart_fixture(
         replay_exactly_once,
         queue_status: "processed".into(),
         activation_state: "settled".into(),
-        slot_state: activation_slot_state(&snapshot.slot),
+        slot_state: execution_slot_state(&execution),
     })
 }
 
@@ -1866,211 +1842,6 @@ fn scheduler_restart_fixture_message_id(agent_id: &str, body: &MessageBody) -> S
     format!("msg_restart_{:x}", hasher.finalize())
 }
 
-async fn seed_scheduler_legacy_adoption_restart_fixture(
-    config: &AppConfig,
-    agent_id: &str,
-    stage: &str,
-    objective: String,
-) -> Result<SchedulerLegacyAdoptionRestartFixture> {
-    super::require_scheduler_acceptance_fixtures_enabled()?;
-    let runtime_db =
-        RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
-    let agent_home = config.agent_root_dir().join(agent_id);
-    std::fs::create_dir_all(&agent_home)
-        .with_context(|| format!("creating agent home {}", agent_home.display()))?;
-    let runtime = RuntimeHandle::new_offline_with_runtime_db(
-        agent_id,
-        agent_home,
-        InitialWorkspaceBinding::Detached,
-        runtime_db,
-    )?;
-
-    if stage == "prepare" {
-        if !work_items_for_agent(&runtime, agent_id)?.is_empty() {
-            return Err(anyhow!(
-                "scheduler legacy adoption prepare requires fresh agent state"
-            ));
-        }
-        runtime
-            .create_work_item(
-                format!("{objective} first"),
-                Some(WorkItemPlanStatus::Ready),
-                None,
-                Vec::new(),
-            )
-            .await?;
-        runtime
-            .create_work_item(
-                format!("{objective} second"),
-                Some(WorkItemPlanStatus::Ready),
-                None,
-                Vec::new(),
-            )
-            .await?;
-        let report = super::scheduler_recovery_report(
-            &runtime.inner.storage,
-            &runtime.inner.runtime_db,
-            agent_id,
-        )?;
-        let eligible = report
-            .legacy_adoptions
-            .iter()
-            .filter(|candidate| candidate.eligible && candidate.proposed_command.is_some())
-            .collect::<Vec<_>>();
-        if eligible.len() != 2 {
-            return Err(anyhow!(
-                "scheduler legacy adoption expected two eligible candidates, found {}",
-                eligible.len()
-            ));
-        }
-        let valid_work_item_id = eligible[0].work_item_id.clone();
-        let stale_work_item_id = eligible[1].work_item_id.clone();
-        let stale = runtime
-            .inner
-            .runtime_db
-            .work_items()
-            .latest(&stale_work_item_id)?
-            .ok_or_else(|| anyhow!("legacy adoption stale WorkItem is missing"))?;
-        runtime
-            .update_work_item_fields(
-                stale_work_item_id.clone(),
-                Some(format!("{} stale", stale.objective)),
-                None,
-                None,
-                None,
-                None,
-            )
-            .await?;
-        let applied = super::apply_scheduler_recovery_plan(
-            &runtime.inner.storage,
-            &runtime.inner.runtime_db,
-            agent_id,
-            &report,
-        )?;
-        if applied.0 != 1 {
-            return Err(anyhow!(
-                "scheduler legacy adoption did not apply the valid isolated candidate"
-            ));
-        }
-        let snapshot = runtime
-            .inner
-            .runtime_db
-            .transitions()
-            .load_scheduler_protocol_snapshot_if_initialized(agent_id)?
-            .ok_or_else(|| anyhow!("valid isolated adoption did not initialize partition"))?;
-        if !snapshot.work.contains_key(&valid_work_item_id)
-            || snapshot.work.contains_key(&stale_work_item_id)
-        {
-            return Err(anyhow!(
-                "legacy adoption candidate isolation changed the wrong WorkItems"
-            ));
-        }
-        let isolated_diagnostic = runtime
-            .inner
-            .storage
-            .read_recent_events(32)?
-            .into_iter()
-            .any(|event| {
-                event.kind == "scheduler_diagnostic"
-                    && event.data["reason"] == "legacy_adoption_rejected"
-                    && event.data["work_item_id"] == stale_work_item_id
-            });
-        if !isolated_diagnostic {
-            return Err(anyhow!(
-                "stale legacy adoption did not emit an isolation diagnostic"
-            ));
-        }
-        return Ok(SchedulerLegacyAdoptionRestartFixture {
-            checkpoint: "legacy_adoption_atomicity".into(),
-            stage: stage.into(),
-            cut_kind: "candidate_isolation".into(),
-            agent_id: agent_id.into(),
-            work_item_id: stale_work_item_id,
-            precommit_fault_rolled_back: true,
-            replay_applied: false,
-            replay_exactly_once: false,
-            partition_initialized: true,
-            work_status: None,
-            focus_work_item_id: snapshot.focus,
-        });
-    }
-    if stage != "replay" && stage != "verify" {
-        return Err(anyhow!(
-            "scheduler restart checkpoint legacy_adoption_atomicity does not support stage {stage}"
-        ));
-    }
-
-    let work_items = work_items_for_agent(&runtime, agent_id)?;
-    let stale = work_items
-        .iter()
-        .find(|record| record.objective.ends_with(" stale"))
-        .ok_or_else(|| anyhow!("legacy adoption stale WorkItem is missing after restart"))?;
-    let report = super::scheduler_recovery_report(
-        &runtime.inner.storage,
-        &runtime.inner.runtime_db,
-        agent_id,
-    )?;
-    let replay_applied = if stage == "replay" {
-        super::apply_scheduler_recovery_plan(
-            &runtime.inner.storage,
-            &runtime.inner.runtime_db,
-            agent_id,
-            &report,
-        )?
-        .0 == 1
-    } else {
-        false
-    };
-    let snapshot = runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .load_scheduler_protocol_snapshot(agent_id)?;
-    let stale_demand = snapshot
-        .work
-        .get(&stale.id)
-        .ok_or_else(|| anyhow!("legacy adoption stale demand is missing"))?;
-    let replay_exactly_once = snapshot.work.len() == work_items.len()
-        && work_items.iter().all(|record| {
-            snapshot.work.get(&record.id).is_some_and(|demand| {
-                demand.metadata_revision == record.revision
-                    && demand.scheduling_generation == record.revision.max(1)
-                    && demand.status == WorkStatus::Runnable
-            })
-        });
-    if !replay_exactly_once {
-        return Err(anyhow!(
-            "scheduler legacy adoption did not converge atomically"
-        ));
-    }
-    if stage == "verify"
-        && super::apply_scheduler_recovery_plan(
-            &runtime.inner.storage,
-            &runtime.inner.runtime_db,
-            agent_id,
-            &report,
-        )?
-        .0 != 0
-    {
-        return Err(anyhow!(
-            "scheduler legacy adoption verify applied duplicate state"
-        ));
-    }
-    Ok(SchedulerLegacyAdoptionRestartFixture {
-        checkpoint: "legacy_adoption_atomicity".into(),
-        stage: stage.into(),
-        cut_kind: "candidate_isolation".into(),
-        agent_id: agent_id.into(),
-        work_item_id: stale.id.clone(),
-        precommit_fault_rolled_back: stage == "verify",
-        replay_applied: stage == "replay" && replay_applied,
-        replay_exactly_once,
-        partition_initialized: true,
-        work_status: Some(work_status_name(&stale_demand.status)),
-        focus_work_item_id: snapshot.focus,
-    })
-}
-
 async fn seed_scheduler_terminal_settlement_restart_fixture(
     config: &AppConfig,
     agent_id: &str,
@@ -2156,21 +1927,24 @@ async fn seed_scheduler_terminal_settlement_restart_fixture(
         .clone()
         .ok_or_else(|| anyhow!("scheduler terminal settlement turn is missing"))?;
     let activation_id = scheduler_executor::canonical_activation_id(&entry.message_id);
-    let snapshot = runtime
+    let execution = runtime
         .inner
         .runtime_db
         .transitions()
-        .load_scheduler_protocol_snapshot(agent_id)?;
-    let activation = snapshot
-        .activations
+        .load_execution_protocol_state_if_initialized(agent_id)?
+        .ok_or_else(|| anyhow!("scheduler terminal settlement execution state is missing"))?;
+    let activation = execution
+        .attempts
         .get(&activation_id)
         .ok_or_else(|| anyhow!("scheduler terminal settlement activation is missing"))?;
     let replay_exactly_once = entry.status == QueueEntryStatus::Processed
-        && activation.state == ActivationState::Settled
-        && snapshot
-            .settlements
-            .contains_key(&super::canonical_settlement_id(&entry.message_id))
-        && matches!(snapshot.slot, ActivationSlot::Idle)
+        && activation.state == crate::domain::execution_protocol::ExecutionAttemptState::Settled
+        && activation.terminal_outcome_id.is_some()
+        && execution
+            .outcomes
+            .values()
+            .any(|outcome| outcome.attempt_id == activation_id)
+        && execution_slot_state(&execution) == "idle"
         && after.candidates.is_empty();
     if stage == "replay" && (recovered != 1 || recovery_candidates != 1) {
         return Err(anyhow!(
@@ -2196,216 +1970,6 @@ async fn seed_scheduler_terminal_settlement_restart_fixture(
         message_id: entry.message_id.clone(),
         turn_id,
         activation_id,
-        recovery_applied: recovered == 1,
-        replay_applied: recovered == 1,
-        replay_exactly_once,
-        queue_status: "processed".into(),
-        activation_state: "settled".into(),
-        slot_state: "idle".into(),
-        recovery_candidates,
-    })
-}
-
-async fn seed_scheduler_settlement_delivery_restart_fixture(
-    config: &AppConfig,
-    agent_id: &str,
-    stage: &str,
-    objective: String,
-) -> Result<SchedulerSettlementDeliveryRestartFixture> {
-    if stage == "prepare" {
-        let fixture = seed_scheduler_terminal_recovery_fixture(config, agent_id, objective).await?;
-        let runtime_db =
-            RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
-        let agent_home = config.agent_root_dir().join(agent_id);
-        let runtime = RuntimeHandle::new_offline_with_runtime_db(
-            agent_id,
-            agent_home,
-            InitialWorkspaceBinding::Detached,
-            runtime_db,
-        )?;
-        let report = super::scheduler_recovery_report(
-            &runtime.inner.storage,
-            &runtime.inner.runtime_db,
-            agent_id,
-        )?;
-        let candidate = report
-            .candidates
-            .iter()
-            .find(|candidate| candidate.message_id == fixture.message_id && candidate.eligible)
-            .ok_or_else(|| {
-                anyhow!("scheduler settlement delivery recovery candidate is missing")
-            })?;
-        let command = match candidate.proposed_commands.as_slice() {
-            [crate::domain::scheduler_protocol::ProtocolCommand::SettleActivation(command)] => {
-                crate::domain::scheduler_protocol::ProtocolCommand::SettleActivation(
-                    command.clone(),
-                )
-            }
-            commands => {
-                return Err(anyhow!(
-                    "scheduler settlement delivery expected one settlement command, found {}",
-                    commands.len()
-                ));
-            }
-        };
-        let commit = runtime
-            .inner
-            .runtime_db
-            .transitions()
-            .commit_scheduler_protocol_command(agent_id, &command, None)?;
-        if !commit.applied || commit.replayed {
-            return Err(anyhow!(
-                "scheduler settlement delivery did not commit a fresh canonical settlement"
-            ));
-        }
-        let snapshot = runtime
-            .inner
-            .runtime_db
-            .transitions()
-            .load_scheduler_protocol_snapshot(agent_id)?;
-        let activation = snapshot
-            .activations
-            .get(&fixture.activation_id)
-            .ok_or_else(|| anyhow!("scheduler settlement delivery activation is missing"))?;
-        let queue_status = runtime
-            .inner
-            .runtime_db
-            .queue_entries()
-            .latest_all()?
-            .into_iter()
-            .find(|entry| entry.message_id == fixture.message_id)
-            .map(|entry| entry.status)
-            .ok_or_else(|| anyhow!("scheduler settlement delivery queue entry is missing"))?;
-        if activation.state != ActivationState::Settled
-            || !snapshot
-                .settlements
-                .contains_key(&super::canonical_settlement_id(&fixture.message_id))
-            || !matches!(snapshot.slot, ActivationSlot::Idle)
-            || queue_status != QueueEntryStatus::Dequeued
-        {
-            return Err(anyhow!(
-                "scheduler settlement delivery prepare did not preserve the canonical/legacy split"
-            ));
-        }
-        return Ok(SchedulerSettlementDeliveryRestartFixture {
-            checkpoint: "settlement_delivery".into(),
-            stage: stage.into(),
-            cut_kind: "durable_recovery".into(),
-            agent_id: fixture.agent_id,
-            work_item_id: fixture.work_item_id,
-            message_id: fixture.message_id,
-            turn_id: fixture.turn_id,
-            activation_id: fixture.activation_id,
-            canonical_settlement_committed: true,
-            recovery_applied: false,
-            replay_applied: false,
-            replay_exactly_once: false,
-            queue_status: "dequeued".into(),
-            activation_state: "settled".into(),
-            slot_state: "idle".into(),
-            recovery_candidates: 1,
-        });
-    }
-    if stage != "replay" && stage != "verify" {
-        return Err(anyhow!(
-            "scheduler restart checkpoint settlement_delivery does not support stage {stage}"
-        ));
-    }
-
-    super::require_scheduler_acceptance_fixtures_enabled()?;
-    let runtime_db =
-        RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
-    let agent_home = config.agent_root_dir().join(agent_id);
-    std::fs::create_dir_all(&agent_home)
-        .with_context(|| format!("creating agent home {}", agent_home.display()))?;
-    let runtime = RuntimeHandle::new_offline_with_runtime_db(
-        agent_id,
-        agent_home,
-        InitialWorkspaceBinding::Detached,
-        runtime_db,
-    )?;
-    let before = super::scheduler_recovery_report(
-        &runtime.inner.storage,
-        &runtime.inner.runtime_db,
-        agent_id,
-    )?;
-    let recovery_candidates = before
-        .candidates
-        .iter()
-        .filter(|candidate| candidate.eligible)
-        .count();
-    let recovered = if stage == "replay" {
-        runtime.recover_scheduler_bootstrap_claims().await?
-    } else {
-        0
-    };
-    let after = super::scheduler_recovery_report(
-        &runtime.inner.storage,
-        &runtime.inner.runtime_db,
-        agent_id,
-    )?;
-    let entries = queue_entries_for_agent(&runtime, agent_id)?;
-    if entries.len() != 1 {
-        return Err(anyhow!(
-            "scheduler settlement delivery expected one queue entry"
-        ));
-    }
-    let entry = &entries[0];
-    let message = runtime
-        .inner
-        .storage
-        .read_message_by_id(&entry.message_id)?
-        .ok_or_else(|| anyhow!("scheduler settlement delivery message is missing"))?;
-    let work_item_id = message
-        .work_item_id
-        .clone()
-        .ok_or_else(|| anyhow!("scheduler settlement delivery work item is missing"))?;
-    let turn_id = message
-        .turn_id
-        .clone()
-        .ok_or_else(|| anyhow!("scheduler settlement delivery turn is missing"))?;
-    let activation_id = scheduler_executor::canonical_activation_id(&entry.message_id);
-    let snapshot = runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .load_scheduler_protocol_snapshot(agent_id)?;
-    let activation = snapshot
-        .activations
-        .get(&activation_id)
-        .ok_or_else(|| anyhow!("scheduler settlement delivery activation is missing"))?;
-    let replay_exactly_once = entry.status == QueueEntryStatus::Processed
-        && activation.state == ActivationState::Settled
-        && snapshot
-            .settlements
-            .contains_key(&super::canonical_settlement_id(&entry.message_id))
-        && matches!(snapshot.slot, ActivationSlot::Idle)
-        && after.candidates.is_empty();
-    if stage == "replay" && (recovered != 1 || recovery_candidates != 1) {
-        return Err(anyhow!(
-            "scheduler settlement delivery replay did not reconcile exactly one legacy claim"
-        ));
-    }
-    if stage == "verify" && (recovery_candidates != 0 || !replay_exactly_once) {
-        return Err(anyhow!(
-            "scheduler settlement delivery verify found residual recovery work"
-        ));
-    }
-    if !replay_exactly_once {
-        return Err(anyhow!(
-            "scheduler settlement delivery did not converge exactly once"
-        ));
-    }
-    Ok(SchedulerSettlementDeliveryRestartFixture {
-        checkpoint: "settlement_delivery".into(),
-        stage: stage.into(),
-        cut_kind: "durable_recovery".into(),
-        agent_id: agent_id.into(),
-        work_item_id,
-        message_id: entry.message_id.clone(),
-        turn_id,
-        activation_id,
-        canonical_settlement_committed: true,
         recovery_applied: recovered == 1,
         replay_applied: recovered == 1,
         replay_exactly_once,
@@ -2490,23 +2054,18 @@ pub async fn seed_scheduler_terminal_recovery_fixture(
         .clone()
         .ok_or_else(|| anyhow!("claimed scheduler fixture message has no turn id"))?;
     let activation_id = scheduler_executor::canonical_activation_id(&message.id);
-    let snapshot = runtime
+    let execution = runtime
         .inner
         .runtime_db
         .transitions()
-        .load_scheduler_protocol_snapshot(agent_id)?;
-    let activation = snapshot
-        .activations
+        .load_execution_protocol_state_if_initialized(agent_id)?
+        .ok_or_else(|| anyhow!("scheduler fixture execution state is missing"))?;
+    let activation = execution
+        .attempts
         .get(&activation_id)
         .ok_or_else(|| anyhow!("scheduler fixture claim did not create canonical activation"))?;
-    if activation.state != ActivationState::Running
-        || !matches!(
-            snapshot.slot,
-            ActivationSlot::Running {
-                activation_id: ref slot_activation_id,
-                ..
-            } if slot_activation_id == &activation_id
-        )
+    if activation.state != crate::domain::execution_protocol::ExecutionAttemptState::Open
+        || execution_slot_state(&execution) != "running"
     {
         return Err(anyhow!(
             "scheduler fixture claim did not retain a running canonical activation"
@@ -2544,7 +2103,7 @@ pub async fn seed_scheduler_terminal_recovery_fixture(
         message_id: message.id,
         turn_id,
         activation_id,
-        admitted_generation: activation.admitted_generation,
+        admitted_generation: activation.source.generation,
         queue_status: "dequeued".into(),
         activation_state: "running".into(),
         slot_state: "running".into(),

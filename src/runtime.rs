@@ -327,7 +327,6 @@ struct RuntimeInner {
     notify: Notify,
     storage: AppStorage,
     runtime_db: RuntimeDb,
-    scheduler_engine: crate::config::SchedulerEngineMode,
     clock: Arc<dyn clock::Clock>,
     base_provider: Arc<dyn AgentProvider>,
     provider: RwLock<Arc<dyn AgentProvider>>,
@@ -427,55 +426,6 @@ mod scheduler_acceptance_gate_tests {
                 .contains(SCHEDULER_ACCEPTANCE_FIXTURES_ENV)
         );
     }
-}
-
-fn canonical_settlement_id(message_id: &str) -> String {
-    format!("settlement:message:{message_id}")
-}
-
-fn canonical_settlement_id_for_attempt(message_id: &str, activation_id: &str) -> String {
-    if activation_id == scheduler_executor::canonical_activation_id(message_id) {
-        canonical_settlement_id(message_id)
-    } else {
-        format!("settlement:{activation_id}")
-    }
-}
-
-fn canonical_commands_settle_from_terminal(
-    commands: &[crate::domain::scheduler_protocol::ProtocolCommand],
-) -> bool {
-    matches!(
-        commands,
-        [
-            crate::domain::scheduler_protocol::ProtocolCommand::SettleActivation(command),
-            rest @ ..
-        ] if command.settlement.turn_terminal.is_some()
-            && rest.iter().all(|command| matches!(
-                command,
-                crate::domain::scheduler_protocol::ProtocolCommand::AdoptActivationWorkState(_)
-            ))
-    )
-}
-
-fn canonical_command_batch_rejection(
-    snapshot: &crate::domain::scheduler_protocol::Snapshot,
-    commands: &[crate::domain::scheduler_protocol::ProtocolCommand],
-) -> Option<Vec<String>> {
-    let mut proposed = snapshot.clone();
-    for command in commands {
-        let outcome = crate::domain::scheduler_protocol::reduce_command(&proposed, command);
-        if outcome.outcome.decision == crate::domain::scheduler_protocol::Decision::Rejected {
-            let mut diagnostics = outcome.outcome.diagnostics;
-            if diagnostics.is_empty() {
-                if let Some(conflict) = outcome.conflict {
-                    diagnostics.push(conflict.code);
-                }
-            }
-            return Some(diagnostics);
-        }
-        proposed = outcome.outcome.snapshot;
-    }
-    None
 }
 
 fn work_item_continuation_resume_source(
@@ -690,520 +640,6 @@ fn canonical_matching_terminal_turn(
         .recent_for_agent(&record.agent_id, usize::MAX)?
         .into_iter()
         .find(matches_activation))
-}
-
-fn completion_intent_revision_matches_activation(
-    snapshot: &crate::domain::scheduler_protocol::Snapshot,
-    activation_id: &str,
-    expected_work_revision: u64,
-) -> bool {
-    use crate::domain::scheduler_protocol::{ActivationCause, WaitState};
-
-    let Some(admission) = snapshot.activation_admissions.get(activation_id) else {
-        return false;
-    };
-    let Some(source_revision) = admission.activation.source_revision else {
-        return false;
-    };
-    if source_revision == expected_work_revision {
-        return true;
-    }
-    // Resume admission consumes the wait generation and advances the WorkItem
-    // revision once, so its activation source may be exactly one revision
-    // behind the completion intent. The consumed-wait proof below fences this
-    // tolerance to the same activation.
-    if source_revision.checked_add(1) != Some(expected_work_revision) {
-        return false;
-    }
-    let resume = match &admission.activation.cause {
-        ActivationCause::OperatorInput {
-            resume: Some(resume),
-            ..
-        }
-        | ActivationCause::TaskRejoin {
-            resume: Some(resume),
-            ..
-        } => resume,
-        ActivationCause::WaitResume {
-            wait_id,
-            wait_generation,
-            trigger_id,
-            trigger_generation,
-        } => {
-            let Some(generation) = snapshot
-                .waits
-                .get(wait_id)
-                .filter(|wait| wait.current_generation == *wait_generation)
-                .and_then(|wait| wait.generations.get(wait_generation))
-            else {
-                return false;
-            };
-            return generation.owner == snapshot.activations[activation_id].owner
-                && generation.state == WaitState::Consumed
-                && generation.consuming_activation_id.as_deref() == Some(activation_id)
-                && generation.trigger.as_ref().is_some_and(|trigger| {
-                    trigger.trigger_id == *trigger_id
-                        && trigger.trigger_generation == *trigger_generation
-                });
-        }
-        _ => return false,
-    };
-    let Some(generation) = snapshot
-        .waits
-        .get(&resume.wait_id)
-        .filter(|wait| wait.current_generation == resume.wait_generation)
-        .and_then(|wait| wait.generations.get(&resume.wait_generation))
-    else {
-        return false;
-    };
-    generation.owner == snapshot.activations[activation_id].owner
-        && generation.state == WaitState::Consumed
-        && generation.consuming_activation_id.as_deref() == Some(activation_id)
-        && generation.trigger.as_ref().is_some_and(|trigger| {
-            trigger.trigger_id == resume.trigger_id
-                && trigger.trigger_generation == resume.trigger_generation
-        })
-}
-
-fn legacy_scheduler_open_activation_id(
-    snapshot: &crate::domain::scheduler_protocol::Snapshot,
-    message_id: &str,
-) -> Option<String> {
-    // Compatibility/recovery boundary: locate the retained legacy activation
-    // needed to settle a canonical queue record without coupling the canonical
-    // scheduler executor to the legacy protocol model.
-    snapshot
-        .activations
-        .iter()
-        .filter(|(_, activation)| {
-            activation.state == crate::domain::scheduler_protocol::ActivationState::Running
-        })
-        .find_map(|(activation_id, _)| {
-            snapshot
-                .activation_admissions
-                .get(activation_id)
-                .filter(|admission| admission.activation.provenance.source_id == message_id)
-                .map(|_| activation_id.clone())
-        })
-}
-
-fn canonical_queue_settlement_commands_from_facts(
-    storage: &AppStorage,
-    runtime_db: &RuntimeDb,
-    record: &QueueEntryRecord,
-    terminal_turn: Option<&TurnRecord>,
-) -> Result<Vec<crate::domain::scheduler_protocol::ProtocolCommand>> {
-    let Some(message) = storage.read_message_by_id(&record.message_id)? else {
-        return Ok(Vec::new());
-    };
-    use crate::domain::scheduler::SchedulerOwner;
-    use crate::domain::scheduler_protocol::{
-        ActivationDisposition, ActivationSettlement, AdoptActivationWorkStateCommand,
-        AgentDispatchDisposition, AgentDispatchState, LegacyWaitAdoption,
-        LifecycleWaitHandoffProof, ProtocolCommand, SettleActivationCommand, WaitIdentity,
-        WaitState,
-    };
-
-    let Some(snapshot) = runtime_db
-        .transitions()
-        .load_scheduler_protocol_snapshot_if_initialized(&record.agent_id)?
-    else {
-        return Ok(Vec::new());
-    };
-    let Some(activation_id) = legacy_scheduler_open_activation_id(&snapshot, &record.message_id)
-    else {
-        return Ok(Vec::new());
-    };
-    let Some(activation) = snapshot.activations.get(&activation_id) else {
-        return Ok(Vec::new());
-    };
-    let interrupted = |reason: &str| {
-        ProtocolCommand::SettleActivation(SettleActivationCommand {
-            settlement: ActivationSettlement {
-                id: canonical_settlement_id_for_attempt(&record.message_id, &activation_id),
-                activation_id: activation_id.clone(),
-                turn_terminal: None,
-                disposition: ActivationDisposition::Interrupted {
-                    reason: reason.to_string(),
-                },
-                agent_dispatch: AgentDispatchDisposition::Open,
-                operator_delivery: None,
-                evidence: vec![
-                    format!("message:{}", record.message_id),
-                    format!("interruption_reason:{reason}"),
-                ],
-                created_at: record.updated_at.to_rfc3339(),
-            },
-        })
-    };
-    let matching_terminal_turn = if record.status == QueueEntryStatus::Processed {
-        canonical_matching_terminal_turn(
-            runtime_db,
-            record,
-            &message,
-            activation.owner.work_item_id(),
-            terminal_turn,
-        )?
-    } else {
-        None
-    };
-    if record.status == QueueEntryStatus::Processed && matching_terminal_turn.is_none() {
-        return Ok(vec![interrupted("terminal_turn_missing")]);
-    }
-    let turn_terminal = matching_terminal_turn
-        .as_ref()
-        .map(|turn| turn.turn_id.clone());
-    let Some(work_item_id) = activation.owner.work_item_id().map(ToString::to_string) else {
-        if record.status != QueueEntryStatus::Processed {
-            return Ok(vec![interrupted("runtime_interrupted")]);
-        }
-        let active_waits = storage
-            .latest_wait_conditions()?
-            .into_iter()
-            .filter(|wait| wait.agent_id == record.agent_id && wait.turn_id == message.turn_id)
-            .collect::<Vec<_>>();
-        let work_item_waits: Vec<_> = active_waits
-            .iter()
-            .filter(|wait| {
-                wait.work_item_id.is_some()
-                    && wait.status == crate::types::WaitConditionStatus::Active
-            })
-            .cloned()
-            .collect();
-        let lifecycle_waits: Vec<_> = active_waits
-            .into_iter()
-            .filter(|wait| {
-                wait.work_item_id.is_none()
-                    && wait.status == crate::types::WaitConditionStatus::Active
-            })
-            .collect::<Vec<_>>();
-        let lifecycle_wait = match lifecycle_waits.as_slice() {
-            [wait] if work_item_waits.is_empty() => Some(wait),
-            [] => None,
-            _ => return Ok(vec![interrupted("ambiguous_lifecycle_waits")]),
-        };
-        let work_item_wait = match work_item_waits.as_slice() {
-            [wait] => Some(wait),
-            [] => None,
-            _ => return Ok(vec![interrupted("ambiguous_work_item_waits")]),
-        };
-        let disposition = match lifecycle_wait {
-            None => ActivationDisposition::WorkContinues,
-            Some(wait) => ActivationDisposition::WorkWaits {
-                wait: WaitIdentity {
-                    id: wait.id.clone(),
-                    generation: activation.admitted_generation + 1,
-                },
-            },
-        };
-        let agent_dispatch = match &disposition {
-            ActivationDisposition::WorkWaits { wait } => {
-                AgentDispatchDisposition::Awaiting { wait: wait.clone() }
-            }
-            _ => AgentDispatchDisposition::Open,
-        };
-        let mut evidence = vec![
-            format!("message:{}", record.message_id),
-            format!("lifecycle_agent:{}", record.agent_id),
-        ];
-        if let Some(wait) = lifecycle_wait {
-            evidence.push(format!("wait:{}", wait.id));
-        }
-        let mut commands = vec![ProtocolCommand::SettleActivation(SettleActivationCommand {
-            settlement: ActivationSettlement {
-                id: canonical_settlement_id_for_attempt(&record.message_id, &activation_id),
-                activation_id: activation_id.clone(),
-                turn_terminal: turn_terminal.clone(),
-                disposition,
-                agent_dispatch,
-                operator_delivery: None,
-                evidence,
-                created_at: record.updated_at.to_rfc3339(),
-            },
-        })];
-        if let Some(wait) = work_item_wait {
-            let Some(work_item_id) = wait.work_item_id.as_deref() else {
-                return Ok(vec![interrupted("work_item_wait_owner_missing")]);
-            };
-            let Some(work_item) = storage.latest_work_item(work_item_id)? else {
-                return Ok(vec![interrupted("work_item_wait_owner_missing")]);
-            };
-            if work_item.agent_id != record.agent_id
-                || work_item.state != crate::types::WorkItemState::Open
-            {
-                return Ok(vec![interrupted("work_item_wait_owner_not_open")]);
-            }
-            if runtime_db
-                .transitions()
-                .activation_work_state_adoption_was_applied(
-                    &record.agent_id,
-                    &activation_id,
-                    work_item_id,
-                )?
-            {
-                return Ok(commands);
-            }
-            let focus = storage
-                .read_agent()?
-                .and_then(|agent| agent.current_work_item_id)
-                .as_deref()
-                == Some(work_item_id);
-            let target_generation = snapshot
-                .work
-                .get(work_item_id)
-                .map(|demand| {
-                    demand
-                        .scheduling_generation
-                        .checked_add(1)
-                        .ok_or_else(|| anyhow!("WorkItem scheduling generation overflow"))
-                })
-                .transpose()?
-                .unwrap_or(work_item.revision)
-                .max(work_item.revision);
-            let source_lifecycle_wait = match &snapshot.dispatch {
-                AgentDispatchState::Awaiting { wait } => snapshot
-                    .waits
-                    .get(&wait.id)
-                    .and_then(|record| record.generations.get(&wait.generation))
-                    .filter(|generation| {
-                        generation.owner
-                            == (SchedulerOwner::AgentLifecycle {
-                                agent_id: record.agent_id.clone(),
-                            })
-                            && matches!(generation.state, WaitState::Active | WaitState::Triggered)
-                    })
-                    .map(|_| LifecycleWaitHandoffProof {
-                        wait: wait.clone(),
-                        expected_dispatch_revision: snapshot.dispatch_revision,
-                    }),
-                AgentDispatchState::Open => None,
-            };
-            commands.push(ProtocolCommand::AdoptActivationWorkState(
-                AdoptActivationWorkStateCommand {
-                    source_activation_id: activation_id.clone(),
-                    source_message_id: record.message_id.clone(),
-                    source_turn_id: turn_terminal
-                        .clone()
-                        .ok_or_else(|| anyhow!("lifecycle wait handoff requires terminal turn"))?,
-                    source_admitted_generation: activation.admitted_generation,
-                    work_item_id: work_item_id.to_string(),
-                    source_work_item_revision: work_item.revision,
-                    wait: LegacyWaitAdoption {
-                        wait_id: wait.id.clone(),
-                        generation: target_generation,
-                        owner_work_item_id: work_item_id.to_string(),
-                        source_updated_at: wait.updated_at.to_rfc3339(),
-                    },
-                    source_lifecycle_wait,
-                    focus,
-                    reserve_dispatch: false,
-                },
-            ));
-        }
-        return Ok(commands);
-    };
-    let matching_continuations = runtime_db
-        .work_item_continuations()
-        .active_for_agent(&record.agent_id)?
-        .into_iter()
-        .filter(|frame| {
-            frame.suspended_work_item_id == work_item_id
-                && frame.turn_id.as_deref() == message.turn_id.as_deref()
-        })
-        .collect::<Vec<_>>();
-    if record.status == QueueEntryStatus::Processed {
-        match matching_continuations.as_slice() {
-            [frame] => {
-                let Some(target) = storage.latest_work_item(&frame.active_work_item_id)? else {
-                    return Ok(vec![interrupted("yield_target_missing")]);
-                };
-                if target.agent_id != record.agent_id
-                    || target.state != crate::types::WorkItemState::Open
-                    || target.readiness() != crate::types::WorkItemReadiness::Runnable
-                {
-                    return Ok(vec![interrupted("yield_target_not_runnable")]);
-                }
-                let target_generation = snapshot
-                    .work
-                    .get(&target.id)
-                    .filter(|demand| {
-                        demand.status == crate::domain::scheduler_protocol::WorkStatus::Runnable
-                    })
-                    .map(|demand| demand.scheduling_generation)
-                    .unwrap_or_else(|| target.revision.max(1));
-                let mut commands = Vec::new();
-                if !snapshot.work.contains_key(&target.id) {
-                    commands.push(ProtocolCommand::RegisterWorkDemand(
-                        crate::domain::scheduler_protocol::RegisterWorkDemandCommand {
-                            work_item_id: target.id.clone(),
-                            demand: crate::domain::scheduler_protocol::WorkDemand {
-                                metadata_revision: target_generation,
-                                scheduling_generation: target_generation,
-                                status: crate::domain::scheduler_protocol::WorkStatus::Runnable,
-                                capabilities: Default::default(),
-                                locks: Default::default(),
-                                locality: "runtime".into(),
-                                cost_class: "default".into(),
-                            },
-                        },
-                    ));
-                }
-                commands.push(ProtocolCommand::SettleActivation(SettleActivationCommand {
-                    settlement: ActivationSettlement {
-                        id: canonical_settlement_id_for_attempt(&record.message_id, &activation_id),
-                        activation_id,
-                        turn_terminal,
-                        disposition: ActivationDisposition::WorkYielded {
-                            target_work_item_id: Some(target.id),
-                            continuation_id: Some(frame.id.clone()),
-                            expected_target_generation: Some(target_generation),
-                        },
-                        agent_dispatch: AgentDispatchDisposition::Open,
-                        operator_delivery: None,
-                        evidence: vec![
-                            format!("message:{}", record.message_id),
-                            format!("work_item:{work_item_id}"),
-                            format!("continuation:{}", frame.id),
-                        ],
-                        created_at: record.updated_at.to_rfc3339(),
-                    },
-                }));
-                return Ok(commands);
-            }
-            [] => {}
-            _ => return Ok(vec![interrupted("yield_continuation_ambiguous")]),
-        }
-    }
-    let work_queue = storage.work_queue_prompt_projection()?;
-    let scheduling_state = work_queue
-        .items
-        .iter()
-        .find(|candidate| candidate.id == work_item_id)
-        .map(|candidate| candidate.scheduling_state);
-    let command = if record.status == QueueEntryStatus::Processed {
-        match scheduling_state {
-            Some(crate::types::WorkItemSchedulingState::Runnable) => {
-                ProtocolCommand::SettleActivation(SettleActivationCommand {
-                    settlement: ActivationSettlement {
-                        id: canonical_settlement_id_for_attempt(&record.message_id, &activation_id),
-                        activation_id,
-                        turn_terminal: turn_terminal.clone(),
-                        disposition: ActivationDisposition::WorkContinues,
-                        agent_dispatch: AgentDispatchDisposition::Open,
-                        operator_delivery: None,
-                        evidence: vec![
-                            format!("message:{}", record.message_id),
-                            format!("work_item:{work_item_id}"),
-                        ],
-                        created_at: record.updated_at.to_rfc3339(),
-                    },
-                })
-            }
-            Some(crate::types::WorkItemSchedulingState::Completed) => {
-                let Some(work_item) = runtime_db.work_items().latest(&work_item_id)? else {
-                    return Ok(vec![interrupted("completion_work_item_missing")]);
-                };
-                let Some(turn_terminal) = turn_terminal.clone() else {
-                    return Ok(vec![interrupted("completion_turn_missing")]);
-                };
-                let Some(completion_intent) = work_item.completion_intent.as_ref() else {
-                    return Ok(vec![interrupted("completion_intent_missing")]);
-                };
-                if !(completion_intent.work_item_id == work_item_id
-                    && completion_intent.source_activation_id.as_deref()
-                        == Some(activation_id.as_str())
-                    && completion_intent.source_message_id.as_deref()
-                        == Some(record.message_id.as_str())
-                    && completion_intent.source_turn_id.as_deref() == Some(turn_terminal.as_str())
-                    && completion_intent_revision_matches_activation(
-                        &snapshot,
-                        &activation_id,
-                        completion_intent.expected_work_revision,
-                    ))
-                {
-                    return Ok(vec![interrupted("completion_intent_mismatch")]);
-                }
-                let Some(result_brief_id) =
-                    completion_intent
-                        .result_brief_id
-                        .as_deref()
-                        .filter(|result_brief_id| {
-                            work_item.result_brief_id.as_deref() == Some(*result_brief_id)
-                        })
-                else {
-                    return Ok(vec![interrupted("completion_brief_binding_missing")]);
-                };
-                let Some(brief) = storage.read_brief_by_id(result_brief_id)?.filter(|brief| {
-                    brief.kind.is_success()
-                        && brief.work_item_id.as_deref() == Some(work_item_id.as_str())
-                        && brief.turn_id.as_deref() == Some(turn_terminal.as_str())
-                        && brief.related_message_id.as_deref() == Some(record.message_id.as_str())
-                        && !brief.text.trim().is_empty()
-                }) else {
-                    return Ok(vec![interrupted("completion_brief_evidence_missing")]);
-                };
-                ProtocolCommand::SettleActivation(SettleActivationCommand {
-                    settlement: ActivationSettlement {
-                        id: canonical_settlement_id_for_attempt(&record.message_id, &activation_id),
-                        activation_id,
-                        turn_terminal: Some(turn_terminal.clone()),
-                        disposition: ActivationDisposition::WorkCompleted { continuation: None },
-                        agent_dispatch: AgentDispatchDisposition::Open,
-                        operator_delivery: Some(brief.id.clone()),
-                        evidence: vec![
-                            format!("message:{}", record.message_id),
-                            format!("work_item:{work_item_id}"),
-                            format!("turn:{turn_terminal}"),
-                            format!("brief:{}", brief.id),
-                        ],
-                        created_at: record.updated_at.to_rfc3339(),
-                    },
-                })
-            }
-            Some(
-                crate::types::WorkItemSchedulingState::WaitingOperator
-                | crate::types::WorkItemSchedulingState::WaitingTask
-                | crate::types::WorkItemSchedulingState::WaitingExternal
-                | crate::types::WorkItemSchedulingState::WaitingTimer
-                | crate::types::WorkItemSchedulingState::WaitingSystem,
-            ) => {
-                let active_waits = storage
-                    .active_wait_conditions_for_work_item(&record.agent_id, &work_item_id)?;
-                let [active_wait] = active_waits.as_slice() else {
-                    return Ok(vec![interrupted("wait_outcome_ambiguous")]);
-                };
-                let generation = activation
-                    .admitted_generation
-                    .checked_add(1)
-                    .ok_or_else(|| anyhow!("canonical wait generation overflow"))?;
-                ProtocolCommand::SettleActivation(SettleActivationCommand {
-                    settlement: ActivationSettlement {
-                        id: canonical_settlement_id_for_attempt(&record.message_id, &activation_id),
-                        activation_id,
-                        turn_terminal: turn_terminal.clone(),
-                        disposition: ActivationDisposition::WorkWaits {
-                            wait: WaitIdentity {
-                                id: active_wait.id.clone(),
-                                generation,
-                            },
-                        },
-                        agent_dispatch: AgentDispatchDisposition::Open,
-                        operator_delivery: None,
-                        evidence: vec![
-                            format!("message:{}", record.message_id),
-                            format!("work_item:{work_item_id}"),
-                            format!("wait:{}", active_wait.id),
-                        ],
-                        created_at: record.updated_at.to_rfc3339(),
-                    },
-                })
-            }
-            _ => interrupted("terminal_outcome_unresolved"),
-        }
-    } else {
-        interrupted("runtime_interrupted")
-    };
-    Ok(vec![command])
 }
 
 fn execution_protocol_settlement_transition_from_facts(
@@ -1907,7 +1343,6 @@ pub struct SchedulerRecoveryReport {
     pub retired_rollout_metadata: SchedulerRetiredRolloutMetadata,
     pub candidates: Vec<SchedulerRecoveryCandidate>,
     pub task_result_claim_recoveries: Vec<SchedulerTaskResultClaimRecoveryCandidate>,
-    pub legacy_adoptions: Vec<SchedulerLegacyAdoptionCandidate>,
     pub continuation_reconciliations: Vec<SchedulerContinuationReconciliationCandidate>,
 }
 
@@ -1962,14 +1397,6 @@ pub struct SchedulerRetiredRolloutMetadata {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct SchedulerLegacyAdoptionCandidate {
-    pub work_item_id: String,
-    pub eligible: bool,
-    pub reason: String,
-    pub proposed_command: Option<crate::domain::scheduler_protocol::ProtocolCommand>,
-}
-
-#[derive(Debug, Clone, Serialize)]
 pub struct SchedulerContinuationReconciliationCandidate {
     pub continuation_id: String,
     pub work_item_id: String,
@@ -1993,15 +1420,16 @@ pub struct SchedulerRecoveryCandidate {
     pub reason: String,
     pub target_queue_status: Option<QueueEntryStatus>,
     pub evidence: Vec<String>,
-    pub proposed_commands: Vec<crate::domain::scheduler_protocol::ProtocolCommand>,
+    pub expected_queue_entry: Option<QueueEntryRecord>,
+    pub proposed_queue_entry: Option<QueueEntryRecord>,
+    pub proposed_commands: Vec<crate::domain::execution_protocol::ExecutionProtocolCommand>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SchedulerRecoveryCandidateKind {
-    NeedsSettlement,
-    LegacyDequeued,
-    AuthorityDrift,
+    UnsettledExecution,
+    DequeuedClaim,
 }
 
 fn scheduler_continuation_reconciliation_candidates(
@@ -2165,211 +1593,18 @@ fn scheduler_continuation_reconciliation_candidates(
     Ok(candidates)
 }
 
-fn canonical_settlement_recovery_commands(
-    snapshot: &crate::domain::scheduler_protocol::Snapshot,
-    _agent_id: &str,
-    _work_item_id: &str,
-    missing_activation_id: &str,
-    _target_demand: Option<(String, crate::domain::scheduler_protocol::WorkDemand)>,
-    resolution: Option<(
-        crate::domain::scheduler_protocol::ActivationDisposition,
-        Option<String>,
-        Option<String>,
-        Vec<String>,
-    )>,
-    created_at: String,
-) -> Vec<crate::domain::scheduler_protocol::ProtocolCommand> {
-    use crate::domain::scheduler_protocol::{
-        ActivationDisposition, ActivationSettlement, AgentDispatchDisposition, ProtocolCommand,
-        RecoverInterruptedActivationCommand, SettleActivationCommand,
-    };
-    let resolution = resolution.unwrap_or_else(|| {
-        (
-            ActivationDisposition::Interrupted {
-                reason: "runtime_interrupted".into(),
-            },
-            None,
-            None,
-            Vec::new(),
-        )
-    });
-    let (disposition, turn_terminal, operator_delivery, mut evidence) = resolution;
-    evidence.push(format!("interrupted_attempt:{missing_activation_id}"));
-    evidence.push("recovery_policy:model_guided_reentry".into());
-    let settlement = ActivationSettlement {
-        id: format!("interrupted-recovery:{missing_activation_id}"),
-        activation_id: missing_activation_id.to_string(),
-        turn_terminal,
-        disposition,
-        agent_dispatch: AgentDispatchDisposition::Open,
-        operator_delivery,
-        evidence,
-        created_at,
-    };
-    match snapshot
-        .activations
-        .get(missing_activation_id)
-        .map(|activation| &activation.state)
-    {
-        Some(crate::domain::scheduler_protocol::ActivationState::Running) => {
-            vec![ProtocolCommand::SettleActivation(SettleActivationCommand {
-                settlement,
-            })]
-        }
-        Some(crate::domain::scheduler_protocol::ActivationState::SettlementMissing) => {
-            let mut settlement = settlement;
-            settlement.turn_terminal = None;
-            settlement.operator_delivery = None;
-            settlement.disposition = ActivationDisposition::Interrupted {
-                reason: "legacy_missing_settlement_recovered".into(),
-            };
-            vec![ProtocolCommand::RecoverInterruptedActivation(
-                RecoverInterruptedActivationCommand { settlement },
-            )]
-        }
-        _ => Vec::new(),
-    }
-}
-
-fn canonical_authority_convergence_command(
-    storage: &AppStorage,
-    snapshot: &crate::domain::scheduler_protocol::Snapshot,
-    agent_id: &str,
-) -> Result<Option<crate::domain::scheduler_protocol::ProtocolCommand>> {
-    use crate::domain::scheduler::SchedulerOwner;
-    use crate::domain::scheduler_protocol::{
-        AgentDispatchState, AuthoritativeWaitState, AuthoritativeWorkState,
-        AuthorityWaitConvergence, AuthorityWorkConvergence, ConvergeAuthorityCommand,
-        ProtocolCommand, WaitState,
-    };
-
-    let dispatch_wait = match &snapshot.dispatch {
-        AgentDispatchState::Open => None,
-        AgentDispatchState::Awaiting { wait } => {
-            let Some(wait_record) = snapshot.waits.get(&wait.id) else {
-                return Ok(None);
-            };
-            let Some(generation) = wait_record.generations.get(&wait.generation) else {
-                return Ok(None);
-            };
-            matches!(generation.state, WaitState::Active | WaitState::Triggered)
-                .then_some((wait, generation))
-        }
-    };
-    let candidate_work_item_id = dispatch_wait
-        .as_ref()
-        .and_then(|(_, generation)| generation.owner.work_item_id())
-        .or(snapshot.focus.as_deref());
-    let work = if let Some(work_item_id) = candidate_work_item_id {
-        let Some(demand) = snapshot.work.get(work_item_id) else {
-            return Ok(None);
-        };
-        match storage.latest_work_item(work_item_id)? {
-            Some(work_item)
-                if work_item.agent_id == agent_id
-                    && work_item.state == WorkItemState::Completed =>
-            {
-                Some(AuthorityWorkConvergence {
-                    work_item_id: work_item_id.to_string(),
-                    expected_metadata_revision: demand.metadata_revision,
-                    expected_scheduling_generation: demand.scheduling_generation,
-                    authoritative_state: AuthoritativeWorkState::Completed {
-                        source_revision: work_item.revision,
-                    },
-                })
-            }
-            None => Some(AuthorityWorkConvergence {
-                work_item_id: work_item_id.to_string(),
-                expected_metadata_revision: demand.metadata_revision,
-                expected_scheduling_generation: demand.scheduling_generation,
-                authoritative_state: AuthoritativeWorkState::Missing,
-            }),
-            _ => None,
-        }
-    } else {
-        None
-    };
-
-    let wait = if let Some((wait, generation)) = dispatch_wait {
-        let wait_authority = storage
-            .latest_wait_conditions()?
-            .into_iter()
-            .find(|condition| condition.id == wait.id && condition.agent_id == agent_id);
-        let wait_repair = match wait_authority {
-            None => Some(AuthorityWaitConvergence {
-                wait_id: wait.id.clone(),
-                wait_generation: wait.generation,
-                expected_owner: generation.owner.clone(),
-                expected_state: generation.state.clone(),
-                authoritative_state: AuthoritativeWaitState::Missing,
-            }),
-            Some(condition) if condition.status != WaitConditionStatus::Active => {
-                let source_updated_at =
-                    crate::runtime_db::repositories::timestamp(condition.updated_at);
-                let authoritative_state = match condition.status {
-                    WaitConditionStatus::Triggered => return Ok(None),
-                    WaitConditionStatus::Resolved => {
-                        AuthoritativeWaitState::Resolved { source_updated_at }
-                    }
-                    WaitConditionStatus::Cancelled => {
-                        AuthoritativeWaitState::Cancelled { source_updated_at }
-                    }
-                    WaitConditionStatus::Expired => {
-                        AuthoritativeWaitState::Expired { source_updated_at }
-                    }
-                    WaitConditionStatus::Active => unreachable!(),
-                };
-                Some(AuthorityWaitConvergence {
-                    wait_id: wait.id.clone(),
-                    wait_generation: wait.generation,
-                    expected_owner: generation.owner.clone(),
-                    expected_state: generation.state.clone(),
-                    authoritative_state,
-                })
-            }
-            Some(_) => None,
-        };
-        match (&generation.owner, work.as_ref(), wait_repair) {
-            (SchedulerOwner::AgentLifecycle { .. }, _, wait) => wait,
-            (SchedulerOwner::WorkItem { .. }, Some(_), _) => None,
-            (SchedulerOwner::WorkItem { .. }, None, _) => None,
-        }
-    } else {
-        None
-    };
-    if work.is_none() && wait.is_none() {
-        return Ok(None);
-    }
-    let work_identity = work
-        .as_ref()
-        .map(|work| work.work_item_id.as_str())
-        .unwrap_or("lifecycle");
-    let generation_identity = work
-        .as_ref()
-        .map(|work| work.expected_scheduling_generation)
-        .or_else(|| wait.as_ref().map(|wait| wait.wait_generation))
-        .unwrap_or(0);
-    Ok(Some(ProtocolCommand::ConvergeAuthority(
-        ConvergeAuthorityCommand {
-            recovery_id: format!(
-                "authority-convergence:{agent_id}:{work_identity}:{}:{}",
-                generation_identity, snapshot.dispatch_revision
-            ),
-            expected_dispatch_revision: snapshot.dispatch_revision,
-            work,
-            wait,
-        },
-    )))
-}
-
 pub fn scheduler_recovery_report(
     storage: &AppStorage,
     runtime_db: &RuntimeDb,
     agent_id: &str,
 ) -> Result<SchedulerRecoveryReport> {
-    let authority_inventory = runtime_db
+    let partition_initialized = runtime_db
         .transitions()
-        .inspect_scheduler_authority_inventory()?
+        .retired_scheduler_partition_exists(agent_id)?;
+    let authority_inventory_records = runtime_db
+        .transitions()
+        .inspect_scheduler_authority_inventory()?;
+    let authority_inventory = authority_inventory_records
         .into_iter()
         .map(|entry| SchedulerAuthorityInventoryEntry {
             storage: entry.storage.to_string(),
@@ -2417,412 +1652,175 @@ pub fn scheduler_recovery_report(
         agent_id,
         execution_state.as_ref(),
     )?;
-    let Some(snapshot) = runtime_db
-        .transitions()
-        .load_scheduler_protocol_snapshot_if_initialized(agent_id)?
-    else {
-        return Ok(SchedulerRecoveryReport {
-            agent_id: agent_id.to_string(),
-            partition_initialized: false,
-            execution_partition_initialized: execution_state.is_some(),
-            authority_inventory,
-            retired_rollout_metadata,
-            candidates: Vec::new(),
-            task_result_claim_recoveries,
-            legacy_adoptions: runtime_db
-                .transitions()
-                .legacy_scheduler_adoption_candidates(agent_id)?
-                .into_iter()
-                .map(|candidate| SchedulerLegacyAdoptionCandidate {
-                    work_item_id: candidate.work_item_id,
-                    eligible: candidate.eligible,
-                    reason: candidate.reason,
-                    proposed_command: candidate.command,
-                })
-                .collect(),
-            continuation_reconciliations,
-        });
-    };
     let all_queue_entries = runtime_db
         .queue_entries()
         .recent(Some(agent_id), usize::MAX)?;
     let mut candidates = Vec::new();
-    if let Some(command) = canonical_authority_convergence_command(storage, &snapshot, agent_id)? {
-        let crate::domain::scheduler_protocol::ProtocolCommand::ConvergeAuthority(repair) =
-            &command
-        else {
-            unreachable!("authority convergence helper returns its typed command");
-        };
-        let message_id = format!("scheduler-recovery:{}", repair.recovery_id);
-        candidates.push(SchedulerRecoveryCandidate {
-            kind: SchedulerRecoveryCandidateKind::AuthorityDrift,
-            message_id: message_id.clone(),
-            activation_id: message_id,
-            work_item_id: repair.work.as_ref().map(|work| work.work_item_id.clone()),
-            queue_status: QueueEntryStatus::Processed,
-            terminal_turn_id: None,
-            eligible: true,
-            reason: "canonical_authority_drift".into(),
-            target_queue_status: None,
-            evidence: vec![
-                format!("dispatch_revision:{}", repair.expected_dispatch_revision),
-                repair
-                    .work
-                    .as_ref()
-                    .map(|work| format!("stale_work_item:{}", work.work_item_id))
-                    .or_else(|| {
-                        repair
-                            .wait
-                            .as_ref()
-                            .map(|wait| format!("stale_wait:{}", wait.wait_id))
-                    })
-                    .unwrap_or_else(|| "stale_authority".into()),
-            ],
-            proposed_commands: vec![command],
-        });
+
+    if let Some(state) = execution_state.as_ref() {
+        for attempt in state.attempts.values() {
+            let Some(message_id) = attempt.source_message_id.as_deref() else {
+                continue;
+            };
+            if task_result_claim_recoveries
+                .iter()
+                .any(|candidate| candidate.activation_id == attempt.attempt_id)
+            {
+                continue;
+            }
+            let Some(entry) = all_queue_entries
+                .iter()
+                .find(|entry| entry.message_id == message_id)
+                .cloned()
+            else {
+                candidates.push(SchedulerRecoveryCandidate {
+                    kind: SchedulerRecoveryCandidateKind::UnsettledExecution,
+                    message_id: message_id.to_string(),
+                    activation_id: attempt.attempt_id.clone(),
+                    work_item_id: match &attempt.binding {
+                        crate::domain::execution_protocol::ExecutionBinding::WorkItem {
+                            work_item_id,
+                        } => Some(work_item_id.clone()),
+                        _ => None,
+                    },
+                    queue_status: QueueEntryStatus::Processed,
+                    terminal_turn_id: None,
+                    eligible: false,
+                    reason: "queue_entry_missing".into(),
+                    target_queue_status: None,
+                    evidence: vec![format!("execution_attempt:{}", attempt.attempt_id)],
+                    expected_queue_entry: None,
+                    proposed_queue_entry: None,
+                    proposed_commands: Vec::new(),
+                });
+                continue;
+            };
+            let work_item_id = match &attempt.binding {
+                crate::domain::execution_protocol::ExecutionBinding::WorkItem { work_item_id } => {
+                    Some(work_item_id.clone())
+                }
+                _ => None,
+            };
+            if attempt.state == crate::domain::execution_protocol::ExecutionAttemptState::Open {
+                let mut proposed = entry.clone();
+                proposed.status = QueueEntryStatus::Processed;
+                proposed.updated_at = Utc::now();
+                let (transition, reason, terminal_turn_id) =
+                    match execution_protocol_settlement_transition_from_facts(
+                        storage, runtime_db, &proposed, None,
+                    ) {
+                        Ok(transition) if !transition.commands.is_empty() => {
+                            let terminal_turn_id = runtime_db
+                                .turn_records()
+                                .recent_for_agent(agent_id, usize::MAX)?
+                                .into_iter()
+                                .find(|turn| {
+                                    turn.terminal.is_some()
+                                        && turn
+                                            .trigger
+                                            .as_ref()
+                                            .and_then(|trigger| trigger.message_id.as_deref())
+                                            == Some(message_id)
+                                })
+                                .map(|turn| turn.turn_id);
+                            (transition, "execution_settlement", terminal_turn_id)
+                        }
+                        Ok(_) => continue,
+                        Err(error) if execution_settlement_conflict(&error) => {
+                            proposed.status = QueueEntryStatus::Aborted;
+                            let transition = execution_protocol_settlement_transition_from_facts(
+                                storage, runtime_db, &proposed, None,
+                            )?;
+                            (transition, "execution_interruption", None)
+                        }
+                        Err(error) => return Err(error),
+                    };
+                candidates.push(SchedulerRecoveryCandidate {
+                    kind: SchedulerRecoveryCandidateKind::UnsettledExecution,
+                    message_id: message_id.to_string(),
+                    activation_id: attempt.attempt_id.clone(),
+                    work_item_id,
+                    queue_status: entry.status.clone(),
+                    terminal_turn_id,
+                    eligible: true,
+                    reason: reason.into(),
+                    target_queue_status: Some(proposed.status.clone()),
+                    evidence: vec![
+                        format!("execution_attempt:{}", attempt.attempt_id),
+                        format!("execution_state:{:?}", attempt.state),
+                    ],
+                    expected_queue_entry: Some(entry),
+                    proposed_queue_entry: Some(proposed),
+                    proposed_commands: transition.commands,
+                });
+            } else if entry.status == QueueEntryStatus::Dequeued {
+                let mut proposed = entry.clone();
+                proposed.status = if attempt.state
+                    == crate::domain::execution_protocol::ExecutionAttemptState::Settled
+                {
+                    QueueEntryStatus::Processed
+                } else {
+                    QueueEntryStatus::Aborted
+                };
+                proposed.updated_at = Utc::now();
+                candidates.push(SchedulerRecoveryCandidate {
+                    kind: SchedulerRecoveryCandidateKind::DequeuedClaim,
+                    message_id: message_id.to_string(),
+                    activation_id: attempt.attempt_id.clone(),
+                    work_item_id,
+                    queue_status: entry.status.clone(),
+                    terminal_turn_id: None,
+                    eligible: true,
+                    reason: "terminal_execution_queue_pending".into(),
+                    target_queue_status: Some(proposed.status.clone()),
+                    evidence: vec![format!("execution_state:{:?}", attempt.state)],
+                    expected_queue_entry: Some(entry),
+                    proposed_queue_entry: Some(proposed),
+                    proposed_commands: Vec::new(),
+                });
+            }
+        }
     }
-    // Phase 5: execution attempts are the recovery authority. The scheduler
-    // snapshot remains only as the compatibility command target.
-    for attempt in execution_state
-        .as_ref()
-        .into_iter()
-        .flat_map(|state| state.attempts.values())
-        .filter(|attempt| {
-            attempt.state == crate::domain::execution_protocol::ExecutionAttemptState::Open
-        })
+
+    for entry in all_queue_entries
+        .iter()
+        .filter(|entry| entry.status == QueueEntryStatus::Dequeued)
     {
-        if task_result_claim_recoveries
+        if candidates
             .iter()
-            .any(|candidate| candidate.activation_id == attempt.attempt_id)
+            .any(|candidate| candidate.message_id == entry.message_id)
+            || task_result_claim_recoveries
+                .iter()
+                .any(|candidate| candidate.message_id == entry.message_id)
         {
             continue;
         }
-        let crate::domain::execution_protocol::ExecutionBinding::WorkItem { work_item_id } =
-            &attempt.binding
-        else {
-            continue;
-        };
-        let Some(message_id) = attempt.source_message_id.clone() else {
-            continue;
-        };
-        let activation_id = attempt.attempt_id.clone();
-        let work_item_id = work_item_id.clone();
-        let queue_entry = all_queue_entries
-            .iter()
-            .find(|entry| entry.message_id == message_id);
-        let message = storage.read_message_by_id(&message_id)?;
-        let frame = active_continuations.iter().find(|frame| {
-            frame.suspended_work_item_id == work_item_id
-                && frame.turn_id.as_deref()
-                    == message
-                        .as_ref()
-                        .and_then(|message| message.turn_id.as_deref())
-        });
-        let mut evidence = vec![
-            format!("work_item:{work_item_id}"),
-            format!("open_execution_attempt:{activation_id}"),
-            format!("source_generation:{}", attempt.source.generation),
-        ];
-        let mut target_demand = None;
-        let (resolution, terminal_turn_id, reason) = if let Some(frame) = frame {
-            evidence.extend([
-                format!("continuation:{}", frame.id),
-                format!("source_work_item:{}", frame.suspended_work_item_id),
-                format!("target_work_item:{}", frame.active_work_item_id),
-            ]);
-            let target_generation =
-                // Phase 4: read target WorkItem state from storage authority
-                // instead of the WorkDemand mirror.
-                storage
-                    .latest_work_item(&frame.active_work_item_id)?
-                    .filter(|target| {
-                        target.agent_id == agent_id
-                            && target.state == crate::types::WorkItemState::Open
-                            && target.readiness() == crate::types::WorkItemReadiness::Runnable
-                    })
-                    .map(|target| {
-                        let generation = target.revision.max(1);
-                        target_demand = Some((
-                            target.id,
-                            crate::domain::scheduler_protocol::WorkDemand {
-                                metadata_revision: generation,
-                                scheduling_generation: generation,
-                                status:
-                                    crate::domain::scheduler_protocol::WorkStatus::Runnable,
-                                capabilities: Default::default(),
-                                locks: Default::default(),
-                                locality: "runtime".into(),
-                                cost_class: "default".into(),
-                            },
-                        ));
-                        generation
-                    });
-            let resolution = target_generation.map(|target_generation| {
-                (
-                    crate::domain::scheduler_protocol::ActivationDisposition::WorkYielded {
-                        target_work_item_id: Some(frame.active_work_item_id.clone()),
-                        continuation_id: Some(frame.id.clone()),
-                        expected_target_generation: Some(target_generation),
-                    },
-                    frame.turn_id.clone(),
-                    None,
-                    evidence.clone(),
-                )
-            });
-            (
-                resolution,
-                frame.turn_id.clone(),
-                if target_generation.is_some() {
-                    "terminal_turn_settlement"
-                } else {
-                    "open_attempt_continuation_target_unavailable"
-                },
-            )
-        } else if let Some(entry) = queue_entry {
-            let mut processed = entry.clone();
-            processed.status = QueueEntryStatus::Processed;
-            match canonical_queue_settlement_commands_from_facts(
-                storage, runtime_db, &processed, None,
-            )?
-            .as_slice()
-            {
-                [crate::domain::scheduler_protocol::ProtocolCommand::SettleActivation(command)] => {
-                    evidence.extend(command.settlement.evidence.clone());
-                    let reason = if matches!(
-                        command.settlement.disposition,
-                        crate::domain::scheduler_protocol::ActivationDisposition::Interrupted { .. }
-                    ) {
-                        "terminal_turn_missing"
-                    } else {
-                        "terminal_turn_settlement"
-                    };
-                    (
-                        Some((
-                            command.settlement.disposition.clone(),
-                            command.settlement.turn_terminal.clone(),
-                            command.settlement.operator_delivery.clone(),
-                            evidence.clone(),
-                        )),
-                        command.settlement.turn_terminal.clone(),
-                        reason,
-                    )
-                }
-                _ => (None, None, "open_attempt_evidence_missing"),
-            }
-        } else {
-            (None, None, "open_attempt_evidence_missing")
-        };
-        let target_queue_status = match reason {
-            "terminal_turn_settlement" => Some(QueueEntryStatus::Processed),
-            "terminal_turn_missing" => Some(QueueEntryStatus::Interrupted),
-            _ => None,
-        };
         candidates.push(SchedulerRecoveryCandidate {
-            kind: SchedulerRecoveryCandidateKind::NeedsSettlement,
-            message_id,
-            activation_id: activation_id.clone(),
-            work_item_id: Some(work_item_id.clone()),
-            queue_status: queue_entry
-                .map(|entry| entry.status.clone())
-                .unwrap_or(QueueEntryStatus::Processed),
-            terminal_turn_id: terminal_turn_id.clone(),
-            eligible: true,
-            reason: reason.into(),
-            target_queue_status,
-            evidence: evidence.clone(),
-            proposed_commands: canonical_settlement_recovery_commands(
-                &snapshot,
-                agent_id,
-                &work_item_id,
-                &activation_id,
-                target_demand,
-                resolution,
-                queue_entry
-                    .map(|entry| entry.updated_at.to_rfc3339())
-                    .unwrap_or_else(|| Utc::now().to_rfc3339()),
-            ),
-        });
-    }
-    candidates.sort_by(|left, right| {
-        left.work_item_id
-            .cmp(&right.work_item_id)
-            .then_with(|| left.activation_id.cmp(&right.activation_id))
-    });
-
-    // This debug-only report intentionally scans retained history so it cannot
-    // omit an old recovery candidate; its cost scales with agent history.
-    let turns = runtime_db
-        .turn_records()
-        .recent_for_agent(agent_id, usize::MAX)?;
-    let mut entries = runtime_db
-        .queue_entries()
-        .recent(Some(agent_id), usize::MAX)?
-        .into_iter()
-        .filter(|entry| entry.status == QueueEntryStatus::Dequeued)
-        .collect::<Vec<_>>();
-    entries.sort_by(|left, right| left.message_id.cmp(&right.message_id));
-    for entry in entries {
-        let attempt = execution_state
-            .as_ref()
-            .and_then(|state| execution_attempt_for_message(state, &entry.message_id));
-        let activation_id = attempt
-            .map(|attempt| attempt.attempt_id.clone())
-            .unwrap_or_else(|| scheduler_executor::canonical_activation_id(&entry.message_id));
-        let mut candidate = SchedulerRecoveryCandidate {
-            kind: SchedulerRecoveryCandidateKind::LegacyDequeued,
+            kind: SchedulerRecoveryCandidateKind::DequeuedClaim,
             message_id: entry.message_id.clone(),
-            activation_id: activation_id.clone(),
+            activation_id: scheduler_executor::canonical_activation_id(&entry.message_id),
             work_item_id: None,
             queue_status: entry.status.clone(),
             terminal_turn_id: None,
             eligible: false,
-            reason: "activation_missing".into(),
+            reason: "execution_attempt_missing".into(),
             target_queue_status: None,
             evidence: vec!["queue_status=dequeued".into()],
+            expected_queue_entry: Some(entry.clone()),
+            proposed_queue_entry: None,
             proposed_commands: Vec::new(),
-        };
-        let Some(attempt) = attempt else {
-            candidate.reason = "execution_attempt_missing".into();
-            candidates.push(candidate);
-            continue;
-        };
-        // Open execution attempts were already emitted by the authority scan.
-        if candidates.iter().any(|c| c.activation_id == activation_id) {
-            continue;
-        }
-        let crate::domain::execution_protocol::ExecutionBinding::WorkItem { work_item_id } =
-            &attempt.binding
-        else {
-            candidate.reason = "lifecycle_activation_not_legacy_work_queue_claim".into();
-            candidates.push(candidate);
-            continue;
-        };
-        candidate.work_item_id = Some(work_item_id.clone());
-        candidate
-            .evidence
-            .push(format!("execution_attempt_state={:?}", attempt.state));
-        candidate
-            .evidence
-            .push(format!("source_generation={}", attempt.source.generation));
-        let Some(message) = storage.read_message_by_id(&entry.message_id)? else {
-            candidate.reason = "message_missing".into();
-            candidates.push(candidate);
-            continue;
-        };
-        if !matches!(
-            (&message.kind, &message.origin),
-            (MessageKind::SystemTick, MessageOrigin::System { subsystem })
-                if subsystem == "work_queue"
-        ) {
-            candidate.reason = "message_not_work_queue_tick".into();
-            candidates.push(candidate);
-            continue;
-        }
-        if message.work_item_id.as_deref() != Some(work_item_id.as_str()) {
-            candidate.reason = "work_item_binding_mismatch".into();
-            candidates.push(candidate);
-            continue;
-        }
-
-        let terminal_turn = turns.iter().find(|turn| {
-            turn.terminal.is_some()
-                && turn
-                    .trigger
-                    .as_ref()
-                    .and_then(|trigger| trigger.message_id.as_deref())
-                    == Some(entry.message_id.as_str())
-                && message.turn_id.as_deref() == Some(turn.turn_id.as_str())
-                && turn.current_work_item_id.as_deref() == Some(work_item_id.as_str())
         });
-        candidate.terminal_turn_id = terminal_turn.map(|turn| turn.turn_id.clone());
-        let terminal_is_completed = terminal_turn.is_some_and(|turn| {
-            turn.terminal
-                .as_ref()
-                .is_some_and(|terminal| terminal.kind == crate::types::TurnTerminalKind::Completed)
-        });
-        if attempt.state == crate::domain::execution_protocol::ExecutionAttemptState::Settled {
-            candidate.eligible = true;
-            candidate.reason = "execution_settlement_legacy_queue_pending".into();
-            candidate.target_queue_status = Some(if terminal_is_completed {
-                QueueEntryStatus::Processed
-            } else {
-                QueueEntryStatus::Aborted
-            });
-            candidates.push(candidate);
-            continue;
-        }
-        if matches!(
-            attempt.state,
-            crate::domain::execution_protocol::ExecutionAttemptState::Interrupted
-                | crate::domain::execution_protocol::ExecutionAttemptState::ProtocolViolation
-        ) {
-            candidate.eligible = true;
-            candidate.reason = "execution_interruption_legacy_queue_pending".into();
-            candidate.target_queue_status = Some(QueueEntryStatus::Aborted);
-            candidates.push(candidate);
-            continue;
-        }
-        let mut proposed_entry = entry.clone();
-        proposed_entry.status = if terminal_is_completed {
-            QueueEntryStatus::Processed
-        } else {
-            QueueEntryStatus::Aborted
-        };
-        let mut commands = canonical_queue_settlement_commands_from_facts(
-            storage,
-            runtime_db,
-            &proposed_entry,
-            terminal_turn,
-        )?;
-        let settles_from_terminal = canonical_commands_settle_from_terminal(&commands);
-        if !settles_from_terminal {
-            proposed_entry.status = QueueEntryStatus::Aborted;
-            commands = canonical_queue_settlement_commands_from_facts(
-                storage,
-                runtime_db,
-                &proposed_entry,
-                terminal_turn,
-            )?;
-        }
-        if let Some(diagnostics) = canonical_command_batch_rejection(&snapshot, &commands) {
-            candidate.reason = "typed_command_rejected".into();
-            candidate.evidence.extend(diagnostics);
-            candidate.proposed_commands = commands;
-            candidates.push(candidate);
-            continue;
-        }
-        candidate.eligible = true;
-        candidate.reason = if settles_from_terminal {
-            "terminal_turn_settlement".into()
-        } else if terminal_is_completed {
-            "terminal_evidence_incomplete".into()
-        } else {
-            "terminal_turn_missing".into()
-        };
-        candidate.target_queue_status = Some(proposed_entry.status);
-        candidate.proposed_commands = commands;
-        candidates.push(candidate);
     }
+    candidates.sort_by(|left, right| left.message_id.cmp(&right.message_id));
 
     Ok(SchedulerRecoveryReport {
         agent_id: agent_id.to_string(),
-        partition_initialized: true,
+        partition_initialized,
         execution_partition_initialized: execution_state.is_some(),
         authority_inventory,
         retired_rollout_metadata,
         candidates,
         task_result_claim_recoveries,
-        legacy_adoptions: runtime_db
-            .transitions()
-            .legacy_scheduler_adoption_candidates(agent_id)?
-            .into_iter()
-            .map(|candidate| SchedulerLegacyAdoptionCandidate {
-                work_item_id: candidate.work_item_id,
-                eligible: candidate.eligible,
-                reason: candidate.reason,
-                proposed_command: candidate.command,
-            })
-            .collect(),
         continuation_reconciliations,
     })
 }
@@ -2839,9 +1837,7 @@ pub fn apply_scheduler_recovery_plan(
         agent_id,
         report,
         SchedulerRecoveryBackupPolicy::Required,
-        true,
         None,
-        |_| Ok(()),
     )
 }
 
@@ -2865,29 +1861,7 @@ pub fn apply_scheduler_recovery_plan_with_backup_policy(
         agent_id,
         report,
         backup_policy,
-        true,
         None,
-        |_| Ok(()),
-    )
-}
-
-#[cfg(test)]
-fn apply_scheduler_recovery_plan_with_hook(
-    storage: &AppStorage,
-    runtime_db: &RuntimeDb,
-    agent_id: &str,
-    report: &SchedulerRecoveryReport,
-    mut before_legacy_adoption_commit: impl FnMut(&str) -> Result<()>,
-) -> Result<(usize, Option<std::path::PathBuf>)> {
-    apply_scheduler_recovery_plan_with_options(
-        storage,
-        runtime_db,
-        agent_id,
-        report,
-        SchedulerRecoveryBackupPolicy::Required,
-        true,
-        None,
-        &mut before_legacy_adoption_commit,
     )
 }
 
@@ -2905,9 +1879,7 @@ fn apply_scheduler_recovery_plan_with_task_result_fault(
         agent_id,
         report,
         SchedulerRecoveryBackupPolicy::SkipApproved,
-        true,
         Some(fault),
-        |_| Ok(()),
     )
 }
 
@@ -2917,38 +1889,19 @@ fn apply_scheduler_recovery_plan_with_options(
     agent_id: &str,
     report: &SchedulerRecoveryReport,
     backup_policy: SchedulerRecoveryBackupPolicy,
-    include_authority_repair: bool,
     task_result_fault: Option<crate::runtime_db::transitions::TransitionFaultPoint>,
-    mut before_legacy_adoption_commit: impl FnMut(&str) -> Result<()>,
 ) -> Result<(usize, Option<std::path::PathBuf>)> {
-    let legacy_adoptions = report
-        .legacy_adoptions
+    let recoveries = report
+        .candidates
         .iter()
         .filter(|candidate| candidate.eligible)
         .filter_map(|candidate| {
-            candidate
-                .proposed_command
-                .as_ref()
-                .map(|command| (candidate, command))
+            Some((
+                candidate,
+                candidate.expected_queue_entry.as_ref()?,
+                candidate.proposed_queue_entry.as_ref()?,
+            ))
         })
-        .collect::<Vec<_>>();
-    let settlement_recovery = report
-        .candidates
-        .iter()
-        .find(|candidate| {
-            candidate.kind == SchedulerRecoveryCandidateKind::NeedsSettlement && candidate.eligible
-        })
-        .map(|candidate| candidate.proposed_commands.as_slice())
-        .unwrap_or_default();
-    let authority_recovery = report
-        .candidates
-        .iter()
-        .filter(|candidate| {
-            include_authority_repair
-                && candidate.kind == SchedulerRecoveryCandidateKind::AuthorityDrift
-                && candidate.eligible
-        })
-        .flat_map(|candidate| candidate.proposed_commands.iter().cloned())
         .collect::<Vec<_>>();
     let continuation_reconciliation = report
         .continuation_reconciliations
@@ -2969,20 +1922,11 @@ fn apply_scheduler_recovery_plan_with_options(
             ))
         })
         .collect::<Vec<_>>();
-    if legacy_adoptions.is_empty()
-        && settlement_recovery.is_empty()
-        && authority_recovery.is_empty()
+    if recoveries.is_empty()
         && continuation_reconciliation.is_empty()
         && task_result_claim_recovery.is_empty()
     {
         return Ok((0, None));
-    }
-    if let Some(snapshot) = runtime_db
-        .transitions()
-        .load_scheduler_protocol_snapshot_if_initialized(agent_id)?
-    {
-        crate::domain::scheduler_protocol::assert_invariants(&snapshot)
-            .map_err(|error| anyhow!("invalid canonical scheduler recovery prestate: {error}"))?;
     }
     let backup_path = match backup_policy {
         SchedulerRecoveryBackupPolicy::Required => {
@@ -2991,6 +1935,67 @@ fn apply_scheduler_recovery_plan_with_options(
         SchedulerRecoveryBackupPolicy::SkipApproved => None,
     };
     let mut applied = false;
+    for (candidate, expected_entry, proposed_entry) in recoveries {
+        let Some(current_entry) = runtime_db
+            .queue_entries()
+            .recent(Some(agent_id), usize::MAX)?
+            .into_iter()
+            .find(|entry| entry.message_id == candidate.message_id)
+        else {
+            return Err(anyhow!(
+                "scheduler recovery queue entry disappeared: {}",
+                candidate.message_id
+            ));
+        };
+        if &current_entry != expected_entry && &current_entry != proposed_entry {
+            return Err(anyhow!(
+                "scheduler recovery queue fence changed: {}",
+                candidate.message_id
+            ));
+        }
+        if &current_entry == proposed_entry && candidate.proposed_commands.is_empty() {
+            continue;
+        }
+        let commit = runtime_db
+            .transitions()
+            .commit_queue_with_execution_protocol(
+                &crate::runtime_db::transitions::QueueTransitionCommand {
+                    agent_id: agent_id.to_string(),
+                    operation: if proposed_entry.status == QueueEntryStatus::Queued {
+                        crate::runtime_db::transitions::QueueOperation::Requeue
+                    } else {
+                        crate::runtime_db::transitions::QueueOperation::Settle
+                    },
+                    mutation: crate::runtime_db::transitions::QueueMutation::CompareAndSet {
+                        expected: current_entry,
+                        record: proposed_entry.clone(),
+                    },
+                    scheduler_claim_work_item: None,
+                    agent_state: None,
+                    message_evidence: Vec::new(),
+                    transcript_entries: Vec::new(),
+                    turn_record: None,
+                    audit_events: vec![AuditEvent::legacy(
+                        "scheduler_execution_recovered",
+                        serde_json::json!({
+                            "agent_id": agent_id,
+                            "message_id": candidate.message_id,
+                            "activation_id": candidate.activation_id,
+                            "work_item_id": candidate.work_item_id,
+                            "reason": candidate.reason,
+                        }),
+                    )],
+                    notify_scheduler: true,
+                    fault: None,
+                    brief_evidence: Vec::new(),
+                },
+                &crate::runtime_db::transitions::ExecutionProtocolTransition {
+                    bootstrap: None,
+                    commands: candidate.proposed_commands.clone(),
+                },
+            )?;
+        applied |= commit.applied;
+    }
     for (candidate, expected_entry, proposed_entry, command) in task_result_claim_recovery {
         let Some(current_entry) = runtime_db
             .queue_entries()
@@ -3097,72 +2102,6 @@ fn apply_scheduler_recovery_plan_with_options(
             }
         }
     }
-    if !authority_recovery.is_empty() {
-        match runtime_db
-            .transitions()
-            .commit_scheduler_recovery_plan(agent_id, &authority_recovery)?
-        {
-            crate::runtime_db::transitions::scheduler_protocol_repository::SchedulerRecoveryCommitOutcome::Applied(
-                changed,
-            ) => applied |= changed,
-            crate::runtime_db::transitions::scheduler_protocol_repository::SchedulerRecoveryCommitOutcome::Rejected {
-                reason,
-            } => {
-                return Err(anyhow!(
-                    "scheduler authority convergence unexpectedly rejected: {reason}"
-                ));
-            }
-        }
-    }
-    for (candidate, command) in legacy_adoptions {
-        if let Some(reason) =
-            preflight_legacy_adoption(runtime_db, agent_id, &candidate.work_item_id, command)?
-        {
-            record_legacy_adoption_rejection(storage, agent_id, &candidate.work_item_id, reason)?;
-            continue;
-        }
-        before_legacy_adoption_commit(&candidate.work_item_id)?;
-        match runtime_db
-            .transitions()
-            .commit_scheduler_recovery_plan(agent_id, std::slice::from_ref(command))
-        {
-            Ok(
-                crate::runtime_db::transitions::scheduler_protocol_repository::SchedulerRecoveryCommitOutcome::Applied(
-                    changed,
-                ),
-            ) => applied |= changed,
-            Ok(
-                crate::runtime_db::transitions::scheduler_protocol_repository::SchedulerRecoveryCommitOutcome::Rejected {
-                    reason,
-                },
-            ) => {
-                record_legacy_adoption_rejection(
-                    storage,
-                    agent_id,
-                    &candidate.work_item_id,
-                    reason,
-                )?;
-            }
-            Err(error) => return Err(error),
-        }
-    }
-    if !settlement_recovery.is_empty() {
-        match runtime_db
-            .transitions()
-            .commit_scheduler_recovery_plan(agent_id, settlement_recovery)?
-        {
-            crate::runtime_db::transitions::scheduler_protocol_repository::SchedulerRecoveryCommitOutcome::Applied(
-                changed,
-            ) => applied |= changed,
-            crate::runtime_db::transitions::scheduler_protocol_repository::SchedulerRecoveryCommitOutcome::Rejected {
-                reason,
-            } => {
-                return Err(anyhow!(
-                    "scheduler settlement recovery unexpectedly rejected: {reason}"
-                ));
-            }
-        }
-    }
     storage.append_event(&AuditEvent::legacy(
         "scheduler_recovery_applied",
         serde_json::json!({
@@ -3171,7 +2110,7 @@ fn apply_scheduler_recovery_plan_with_options(
             "backup_policy": backup_policy,
             "backup_created": backup_path.is_some(),
             "backup_path": backup_path,
-            "authority_repair_included": include_authority_repair,
+            "execution_recovery_count": report.candidates.iter().filter(|candidate| candidate.eligible).count(),
             "continuation_reconciliation_count": continuation_reconciliation.len(),
             "task_result_claim_recovery_count": report
                 .task_result_claim_recoveries
@@ -3181,67 +2120,6 @@ fn apply_scheduler_recovery_plan_with_options(
         }),
     ))?;
     Ok((usize::from(applied), backup_path))
-}
-
-fn preflight_legacy_adoption(
-    runtime_db: &RuntimeDb,
-    agent_id: &str,
-    work_item_id: &str,
-    command: &crate::domain::scheduler_protocol::ProtocolCommand,
-) -> Result<Option<String>> {
-    let current = runtime_db
-        .transitions()
-        .legacy_scheduler_adoption_candidates(agent_id)?
-        .into_iter()
-        .find(|candidate| candidate.work_item_id == work_item_id);
-    let Some(current) = current else {
-        return Ok(Some("source_work_item_missing_or_closed".into()));
-    };
-    if !current.eligible || current.command.as_ref() != Some(command) {
-        return Ok(Some(format!(
-            "source_changed:{agent_id}:{work_item_id}:{}",
-            current.reason
-        )));
-    }
-    let Some(snapshot) = runtime_db
-        .transitions()
-        .load_scheduler_protocol_snapshot_if_initialized(agent_id)?
-    else {
-        return Ok(None);
-    };
-    let outcome = crate::domain::scheduler_protocol::reduce_command(&snapshot, command);
-    if let Err(error) =
-        crate::domain::scheduler_protocol::assert_invariants(&outcome.outcome.snapshot)
-    {
-        return Ok(Some(format!(
-            "scheduler protocol reducer produced invalid state: {error}"
-        )));
-    }
-    if outcome.outcome.decision == crate::domain::scheduler_protocol::Decision::Rejected {
-        return Ok(Some(
-            outcome
-                .conflict
-                .map(|conflict| conflict.code)
-                .or_else(|| outcome.outcome.diagnostics.into_iter().next())
-                .unwrap_or_else(|| "rejected_without_diagnostic".into()),
-        ));
-    }
-    Ok(None)
-}
-
-fn record_legacy_adoption_rejection(
-    storage: &AppStorage,
-    agent_id: &str,
-    work_item_id: &str,
-    reason: String,
-) -> Result<()> {
-    storage.append_event(&scheduler::scheduler_invariant_diagnostic_event(
-        agent_id,
-        "legacy_adoption_rejected",
-        Some(work_item_id.to_string()),
-        None,
-        vec![reason],
-    )?)
 }
 
 fn runtime_error_queue_settlement(
@@ -3657,17 +2535,10 @@ impl RuntimeHandle {
         command: &crate::runtime_db::transitions::WorkItemTransitionCommand,
         execution_protocol: &crate::runtime_db::transitions::ExecutionProtocolTransition,
     ) -> Result<crate::runtime_db::transitions::TransitionCommit> {
-        if self.inner.scheduler_engine.is_canonical() {
-            self.inner
-                .runtime_db
-                .transitions()
-                .commit_work_item_with_execution_protocol(command, execution_protocol)
-        } else {
-            self.inner
-                .runtime_db
-                .transitions()
-                .commit_work_item(command)
-        }
+        self.inner
+            .runtime_db
+            .transitions()
+            .commit_work_item_with_execution_protocol(command, execution_protocol)
     }
 
     pub(super) fn commit_work_item_focus_transition(
@@ -3685,34 +2556,23 @@ impl RuntimeHandle {
         command: &crate::runtime_db::transitions::WorkItemFocusTransitionCommand,
         execution_protocol: &crate::runtime_db::transitions::ExecutionProtocolTransition,
     ) -> Result<crate::runtime_db::transitions::TransitionCommit> {
-        if self.inner.scheduler_engine.is_canonical() {
-            self.inner
-                .runtime_db
-                .transitions()
-                .commit_work_item_focus_with_execution_protocol(command, execution_protocol)
-        } else {
-            self.inner
-                .runtime_db
-                .transitions()
-                .commit_work_item_focus(command)
-        }
+        self.inner
+            .runtime_db
+            .transitions()
+            .commit_work_item_focus_with_execution_protocol(command, execution_protocol)
     }
 
     pub(super) fn commit_task_transition(
         &self,
         command: &crate::runtime_db::transitions::TaskTransitionCommand,
     ) -> Result<crate::runtime_db::transitions::TransitionCommit> {
-        if self.inner.scheduler_engine.is_canonical() {
-            self.inner
-                .runtime_db
-                .transitions()
-                .commit_task_with_execution_protocol(
-                    command,
-                    &crate::runtime_db::transitions::ExecutionProtocolTransition::default(),
-                )
-        } else {
-            self.inner.runtime_db.transitions().commit_task(command)
-        }
+        self.inner
+            .runtime_db
+            .transitions()
+            .commit_task_with_execution_protocol(
+                command,
+                &crate::runtime_db::transitions::ExecutionProtocolTransition::default(),
+            )
     }
 
     pub(super) fn inject_next_acceptance_transition_fault(
@@ -4711,7 +3571,7 @@ impl RuntimeHandle {
                     activation_id,
                 }
             } else {
-                self.legacy_execution_admission_provenance(message, None, None)?
+                self.execution_admission_provenance(message, None, None)?
             }
         } else {
             ExecutionAdmissionProvenance::LegacyCompat {
@@ -5214,51 +4074,44 @@ impl RuntimeHandle {
     ) -> Result<bool> {
         let prepared_completion = terminal_transition
             .and_then(|transition| transition.prepared_work_item_completion.as_ref());
-        let mut execution_protocol = if self.inner.scheduler_engine.is_canonical() {
-            if let Some(prepared) = prepared_completion {
-                execution_protocol_completion_transition_from_prepared(
-                    &record,
-                    terminal_transition
-                        .map(|transition| &transition.turn_record)
-                        .expect("prepared completion requires a terminal Turn"),
-                    prepared,
-                )?
-            } else {
-                execution_protocol_settlement_transition_from_facts(
+        let mut execution_protocol = if let Some(prepared) = prepared_completion {
+            execution_protocol_completion_transition_from_prepared(
+                &record,
+                terminal_transition
+                    .map(|transition| &transition.turn_record)
+                    .expect("prepared completion requires a terminal Turn"),
+                prepared,
+            )?
+        } else {
+            execution_protocol_settlement_transition_from_facts(
+                &self.inner.storage,
+                &self.inner.runtime_db,
+                &record,
+                terminal_transition.map(|transition| &transition.turn_record),
+            )?
+        };
+        if let Some(prepared) = prepared_completion {
+            let state = prepared
+                .expected_execution_protocol_state
+                .as_ref()
+                .ok_or_else(|| anyhow!("completion commit requires canonical execution state"))?;
+            for continuation in &prepared.continuations {
+                if continuation.state != crate::types::WorkItemContinuationState::Resumed {
+                    continue;
+                }
+                let parent = state
+                    .work_items
+                    .get(&continuation.suspended_work_item_id)
+                    .ok_or_else(|| anyhow!("completion parent execution state is missing"))?;
+                let (source, outcome) = work_item_continuation_resume_source(
                     &self.inner.storage,
                     &self.inner.runtime_db,
-                    &record,
-                    terminal_transition.map(|transition| &transition.turn_record),
-                )?
-            }
-        } else {
-            Default::default()
-        };
-        if self.inner.scheduler_engine.is_canonical() {
-            if let Some(prepared) = prepared_completion {
-                let state = prepared
-                    .expected_execution_protocol_state
-                    .as_ref()
-                    .ok_or_else(|| {
-                        anyhow!("completion commit requires canonical execution state")
-                    })?;
-                for continuation in &prepared.continuations {
-                    if continuation.state != crate::types::WorkItemContinuationState::Resumed {
-                        continue;
-                    }
-                    let parent = state
-                        .work_items
-                        .get(&continuation.suspended_work_item_id)
-                        .ok_or_else(|| anyhow!("completion parent execution state is missing"))?;
-                    let (source, outcome) = work_item_continuation_resume_source(
-                        &self.inner.storage,
-                        &self.inner.runtime_db,
-                        &record.agent_id,
-                        &continuation.suspended_work_item_id,
-                        None,
-                        &prepared.wait_conditions,
-                    )?;
-                    execution_protocol.commands.push(
+                    &record.agent_id,
+                    &continuation.suspended_work_item_id,
+                    None,
+                    &prepared.wait_conditions,
+                )?;
+                execution_protocol.commands.push(
                         crate::domain::execution_protocol::ExecutionProtocolCommand::ResumeWorkItemContinuation(
                             Box::new(
                                 crate::domain::execution_protocol::ResumeWorkItemContinuation {
@@ -5273,7 +4126,6 @@ impl RuntimeHandle {
                             ),
                         ),
                     );
-                }
             }
         }
         let original_audit_len = audit_events.len();
@@ -5355,10 +4207,7 @@ impl RuntimeHandle {
                         &command,
                         &execution_protocol,
                         &crate::runtime_db::transitions::CompletionTransition {
-                            requires_execution_continuation: self
-                                .inner
-                                .scheduler_engine
-                                .is_canonical(),
+                            requires_execution_continuation: true,
                             work_items: vec![
                                 crate::runtime_db::transitions::WorkItemMutation::Update {
                                     record: prepared.record.clone(),
@@ -5552,20 +4401,6 @@ impl RuntimeHandle {
         Ok(superseded)
     }
 
-    #[cfg(test)]
-    async fn canonical_queue_settlement_commands(
-        &self,
-        record: &QueueEntryRecord,
-        terminal_turn: Option<&TurnRecord>,
-    ) -> Result<Vec<crate::domain::scheduler_protocol::ProtocolCommand>> {
-        canonical_queue_settlement_commands_from_facts(
-            &self.inner.storage,
-            &self.inner.runtime_db,
-            record,
-            terminal_turn,
-        )
-    }
-
     pub(crate) fn persist_transcript_evidence(&self, entry: &TranscriptEntry) -> Result<()> {
         self.inner.storage.append_transcript_entry(entry)?;
         self.inner.notify.notify_one();
@@ -5588,19 +4423,12 @@ impl RuntimeHandle {
     }
 
     pub async fn run(self) -> Result<()> {
-        let agent_id = self.inner.agent.lock().await.state.id.clone();
         let bootstrap = async {
-            if !self.inner.scheduler_engine.is_canonical() {
-                // Fail fast on residual canonical state before general recovery mutates runtime state.
-                self.validate_legacy_engine_startup(&agent_id)?;
-            }
             self.bootstrap_recovery().await?;
             scheduler_executor::SchedulerDecisionExecutor::new(&self)
                 .bootstrap_recovered()
                 .await?;
-            if self.inner.scheduler_engine.is_canonical() {
-                self.recover_scheduler_bootstrap_claims().await?;
-            }
+            self.recover_scheduler_bootstrap_claims().await?;
             Ok(())
         }
         .await;
@@ -5943,17 +4771,7 @@ impl RuntimeHandle {
             Self::summarize_runtime_failure_error(&anyhow!(descriptor.operator_message.clone()));
         let occurred_at = Utc::now();
         let agent_id = self.inner.agent.lock().await.state.id.clone();
-        let released_claims = match self.release_claimed_messages_for_runtime_restart().await {
-            Ok(released) => released,
-            Err(release_error) => {
-                tracing::error!(
-                    agent_id = %agent_id,
-                    error = %release_error,
-                    "failed to release claimed messages after runtime loop failure"
-                );
-                0
-            }
-        };
+        let released_claims = 0;
         tracing::error!(
             agent_id = %agent_id,
             domain = ?descriptor.domain,
@@ -6000,59 +4818,6 @@ impl RuntimeHandle {
                 "failed to persist agent runtime loop failure state"
             );
         }
-    }
-
-    async fn release_claimed_messages_for_runtime_restart(&self) -> Result<usize> {
-        if self.inner.scheduler_engine.is_canonical() {
-            return Ok(0);
-        }
-        let agent_id = self.inner.agent.lock().await.state.id.clone();
-        self.inner
-            .runtime_db
-            .reconcile_orphaned_dequeued_claims(Some(&agent_id))
-            .map(|(_, changed)| changed)
-    }
-
-    fn validate_legacy_engine_startup(&self, agent_id: &str) -> Result<()> {
-        if let Some(execution) = self
-            .inner
-            .runtime_db
-            .transitions()
-            .load_execution_protocol_state_if_initialized(agent_id)?
-        {
-            let open_attempts = execution
-                .attempts
-                .iter()
-                .filter(|(_, attempt)| {
-                    attempt.state == crate::domain::execution_protocol::ExecutionAttemptState::Open
-                })
-                .map(|(attempt_id, _)| attempt_id.as_str())
-                .collect::<Vec<_>>();
-            if !open_attempts.is_empty() {
-                return Err(anyhow!(
-                    "legacy scheduler startup refused for agent {agent_id}: open unified \
-                     execution attempts remain ({})",
-                    open_attempts.join(", ")
-                ));
-            }
-        }
-        let dequeued = self
-            .inner
-            .runtime_db
-            .queue_entries()
-            .recent(Some(agent_id), usize::MAX)?
-            .into_iter()
-            .filter(|entry| entry.status == QueueEntryStatus::Dequeued)
-            .map(|entry| entry.message_id)
-            .collect::<Vec<_>>();
-        if dequeued.is_empty() {
-            return Ok(());
-        }
-        Err(anyhow!(
-            "legacy scheduler startup refused for agent {agent_id}: dequeued queue claims \
-             require diagnosis or repair ({})",
-            dequeued.join(", ")
-        ))
     }
 
     async fn recover_scheduler_bootstrap_claims(&self) -> Result<usize> {

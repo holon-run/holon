@@ -1468,23 +1468,6 @@ impl RuntimeHandle {
             return Ok(active_conditions);
         }
 
-        if !self.inner.scheduler_engine.is_canonical() {
-            let matching = active_conditions
-                .into_iter()
-                .filter(|condition| {
-                    reconciliation_signal_for_condition(message, condition).is_some()
-                })
-                .collect::<Vec<_>>();
-            if matching.len() > 1 {
-                return Err(anyhow!(
-                    "legacy wait resume is ambiguous for message {}: {} matching waits",
-                    message.id,
-                    matching.len()
-                ));
-            }
-            return Ok(matching);
-        }
-
         let exact_condition = self
             .canonical_consumed_wait_condition(agent_id, message, &active_conditions)
             .await?;

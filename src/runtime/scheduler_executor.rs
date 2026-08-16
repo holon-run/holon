@@ -152,18 +152,12 @@ enum PrepareMessageOutcome {
 }
 
 impl RuntimeHandle {
-    pub(super) fn legacy_execution_admission_provenance(
+    pub(super) fn execution_admission_provenance(
         &self,
         message: &MessageEnvelope,
         continuation_resolution: Option<&ContinuationResolution>,
         task: Option<&TaskRecord>,
     ) -> Result<ExecutionAdmissionProvenance> {
-        if !self.inner.scheduler_engine.is_canonical() {
-            return Ok(ExecutionAdmissionProvenance::LegacyCompat {
-                scenario_class: None,
-                effective_mode: crate::domain::scheduler::ScenarioMode::Off,
-            });
-        }
         let scenario_class = if matches!(
             message.kind,
             crate::types::MessageKind::TaskStatus | crate::types::MessageKind::TaskResult
@@ -457,11 +451,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             candidate.queue_len,
             self.runtime.now(),
         )?;
-        let projection = if self.runtime.inner.scheduler_engine.is_canonical() {
-            projection
-        } else {
-            projection.without_canonical_authority()
-        };
         let legacy_decision = scheduler::decide_next_action(
             &projection,
             scheduler::SchedulerBoundary::RunLoop,
@@ -487,81 +476,76 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             .latest(&candidate.message.id)?
             .filter(|entry| entry.status == QueueEntryStatus::Interrupted)
             .and_then(|_| persisted_message.turn_id.clone());
-        let canonical_claim = if self.runtime.inner.scheduler_engine.is_canonical() {
-            match self.canonical_activation_plan(
-                &projection,
-                &persisted_message,
-                &dispatch_plan,
-                legacy_decision.model_reentry,
-            ) {
-                Ok(CanonicalClaimOutcome::ReduceOnly) => None,
-                Ok(CanonicalClaimOutcome::Plan(plan)) => Some(plan),
-                Ok(CanonicalClaimOutcome::RejectQueued {
+        let canonical_claim = match self.canonical_activation_plan(
+            &projection,
+            &persisted_message,
+            &dispatch_plan,
+            legacy_decision.model_reentry,
+        ) {
+            Ok(CanonicalClaimOutcome::ReduceOnly) => None,
+            Ok(CanonicalClaimOutcome::Plan(plan)) => Some(plan),
+            Ok(CanonicalClaimOutcome::RejectQueued {
+                scenario_class,
+                reason,
+            }) => {
+                self.terminalize_rejected_queue_head(
+                    &candidate,
+                    &persisted_message,
                     scenario_class,
                     reason,
-                }) => {
-                    self.terminalize_rejected_queue_head(
-                        &candidate,
-                        &persisted_message,
-                        scenario_class,
-                        reason,
-                    )
-                    .await?;
-                    // Terminalization notifies the scheduler, so the next poll can
-                    // advance past the rejected queue head in the same session.
-                    return Ok(PrepareMessageOutcome::Poll(RunLoopPoll::Idle));
-                }
-                Ok(CanonicalClaimOutcome::RetainQueued {
-                    scenario_class,
-                    reason,
-                }) => {
-                    return Ok(PrepareMessageOutcome::Poll(
-                        self.defer_or_quarantine_queue_head(
-                            &candidate,
-                            QueueHeadNoProgressCause::RetainedAuthority {
-                                scenario_class,
-                                reason,
-                            },
-                        )
-                        .await?,
-                    ));
-                }
-                Ok(CanonicalClaimOutcome::HardBlocker(blocker)) => {
-                    return Ok(PrepareMessageOutcome::Poll(
-                        self.defer_or_quarantine_queue_head(
-                            &candidate,
-                            QueueHeadNoProgressCause::HardBlocker(blocker),
-                        )
-                        .await?,
-                    ));
-                }
-                Err(error) => {
-                    if let Some(ambiguous) =
-                        error.downcast_ref::<scheduler::AmbiguousCanonicalWaits>()
-                    {
-                        scheduler::append_ambiguous_wait_advisory(
-                            &self.runtime.inner.storage,
-                            &persisted_message,
-                            &ambiguous.wait_condition_ids,
-                        )?;
-                        scheduler::append_scheduling_advisories(
-                            &self.runtime.inner.storage,
-                            &candidate.prior_state,
-                            candidate.queue_len,
-                        )?;
-                        return Ok(PrepareMessageOutcome::Poll(
-                            self.defer_or_quarantine_queue_head(
-                                &candidate,
-                                QueueHeadNoProgressCause::AmbiguousWait,
-                            )
-                            .await?,
-                        ));
-                    }
-                    return Err(error);
-                }
+                )
+                .await?;
+                // Terminalization notifies the scheduler, so the next poll can
+                // advance past the rejected queue head in the same session.
+                return Ok(PrepareMessageOutcome::Poll(RunLoopPoll::Idle));
             }
-        } else {
-            None
+            Ok(CanonicalClaimOutcome::RetainQueued {
+                scenario_class,
+                reason,
+            }) => {
+                return Ok(PrepareMessageOutcome::Poll(
+                    self.defer_or_quarantine_queue_head(
+                        &candidate,
+                        QueueHeadNoProgressCause::RetainedAuthority {
+                            scenario_class,
+                            reason,
+                        },
+                    )
+                    .await?,
+                ));
+            }
+            Ok(CanonicalClaimOutcome::HardBlocker(blocker)) => {
+                return Ok(PrepareMessageOutcome::Poll(
+                    self.defer_or_quarantine_queue_head(
+                        &candidate,
+                        QueueHeadNoProgressCause::HardBlocker(blocker),
+                    )
+                    .await?,
+                ));
+            }
+            Err(error) => {
+                if let Some(ambiguous) = error.downcast_ref::<scheduler::AmbiguousCanonicalWaits>()
+                {
+                    scheduler::append_ambiguous_wait_advisory(
+                        &self.runtime.inner.storage,
+                        &persisted_message,
+                        &ambiguous.wait_condition_ids,
+                    )?;
+                    scheduler::append_scheduling_advisories(
+                        &self.runtime.inner.storage,
+                        &candidate.prior_state,
+                        candidate.queue_len,
+                    )?;
+                    return Ok(PrepareMessageOutcome::Poll(
+                        self.defer_or_quarantine_queue_head(
+                            &candidate,
+                            QueueHeadNoProgressCause::AmbiguousWait,
+                        )
+                        .await?,
+                    ));
+                }
+                return Err(error);
+            }
         };
         if let Some(plan) = canonical_claim.as_ref() {
             dispatch_plan.execution_admission_provenance =

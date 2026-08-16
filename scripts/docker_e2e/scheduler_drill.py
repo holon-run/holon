@@ -78,20 +78,16 @@ RESTART_CHECKPOINTS = (
     "queue_claim_activation_admission",
     "wait_trigger_consume_admission",
     "turn_terminal_settlement",
-    "settlement_delivery",
     "post_commit_notification",
     "targeted_yield_return",
-    "legacy_adoption_atomicity",
 )
 RESTART_CHECKPOINT_CUT_KINDS = {
     "ingress_queue_admission": "atomic_rollback",
     "queue_claim_activation_admission": "atomic_rollback",
     "wait_trigger_consume_admission": "atomic_rollback",
     "turn_terminal_settlement": "durable_recovery",
-    "settlement_delivery": "durable_recovery",
     "post_commit_notification": "post_commit_recovery",
     "targeted_yield_return": "durable_recovery",
-    "legacy_adoption_atomicity": "candidate_isolation",
 }
 RUN_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{5,63}$")
 FAULT_SCENARIOS = {
@@ -812,10 +808,6 @@ def wait_for_rearmed_work_item(
     raise TimeoutError("timed out waiting for duplicate-trigger wait rearm")
 
 
-def canonical_wait_evidence_required(harness: CaseHarness) -> bool:
-    return True
-
-
 def exercise_wait_rearm_race(
     harness: CaseHarness,
     marker: str,
@@ -862,7 +854,6 @@ def exercise_wait_rearm_race(
     initial_wait_id = None
     initial_generation = None
     duplicate_message_id = None
-    require_canonical_wait_evidence = canonical_wait_evidence_required(harness)
     if deep_checkpoint:
         initial_snapshot = harness.runtime_db_snapshot(
             "wait-rearm-initial-generation"
@@ -877,26 +868,18 @@ def exercise_wait_rearm_race(
             f"expected one initial active external wait: {initial_waits}",
         )
         initial_wait_id = initial_waits[0]["wait_condition_id"]
-        initial_generations = [
+        initial_work_items = [
             row
-            for row in initial_snapshot["scheduler_wait_generations"]
-            if row["owner_work_item_id"] == initial["id"]
-            and row["wait_id"] == initial_wait_id
+            for row in initial_snapshot["execution_protocol_work_items"]
+            if row["work_item_id"] == initial["id"]
         ]
-        if require_canonical_wait_evidence:
-            require(
-                len(initial_generations) == 1
-                and initial_generations[0]["lifecycle_state"] == "active",
-                "initial canonical wait generation is not active: "
-                f"{initial_generations}",
-            )
-            initial_generation = initial_generations[0]["generation"]
-        else:
-            require(
-                not initial_generations,
-                "shadow wait unexpectedly created a canonical generation: "
-                f"{initial_generations}",
-            )
+        require(
+            len(initial_work_items) == 1
+            and initial_work_items[0]["lifecycle_state"] == "waiting",
+            "initial execution WorkItem is not waiting: "
+            f"{initial_work_items}",
+        )
+        initial_generation = initial_work_items[0]["generation"]
     harness.wait_agent_asleep()
     before = harness.state("wait-rearm-before-first")
     baseline = int(before["agent"]["agent"]["turn_index"])
@@ -960,20 +943,18 @@ def exercise_wait_rearm_race(
             and duplicate_queue[0]["status"] == "processed",
             f"coalesced duplicate was not processed before rearm: {duplicate_queue}",
         )
-        if require_canonical_wait_evidence:
-            old_generation = [
-                row
-                for row in duplicate_snapshot["scheduler_wait_generations"]
-                if row["wait_id"] == initial_wait_id
-                and row["generation"] == initial_generation
-            ]
-            require(
-                len(old_generation) == 1
-                and old_generation[0]["lifecycle_state"] in {"consumed", "resolved"}
-                and old_generation[0]["trigger_generation"] is not None,
-                "initial wait generation lacks consumed trigger evidence: "
-                f"{old_generation}",
-            )
+        resolved_initial_wait = [
+            row
+            for row in duplicate_snapshot["wait_conditions"]
+            if row["wait_condition_id"] == initial_wait_id
+        ]
+        require(
+            len(resolved_initial_wait) == 1
+            and resolved_initial_wait[0]["status"] == "resolved"
+            and resolved_initial_wait[0]["trigger_message_id"] is not None,
+            "initial external wait lacks resolved trigger evidence: "
+            f"{resolved_initial_wait}",
+        )
         active_waits = [
             row
             for row in duplicate_snapshot["wait_conditions"]
@@ -1817,79 +1798,39 @@ def collect_database(database: Path) -> dict[str, Any]:
         evidence = {
             "schema_revision": schema_revision,
             "schema_migrations": migrations,
-            "protocol_config": optional_rows(
+            "wait_conditions": optional_rows(
                 connection,
-                "scheduler_protocol_config",
-                "SELECT protocol_mode, config_revision, latest_preflight_revision, "
-                "updated_at FROM scheduler_protocol_config",
+                "wait_conditions",
+                "SELECT wait_condition_id, agent_id, work_item_id, status, kind, "
+                "subject_ref, waiting_for, last_turn_id, trigger_message_id, "
+                "payload_json FROM wait_conditions ORDER BY created_at",
             ),
-            "scenario_authorities": optional_rows(
+            "execution_attempts": optional_rows(
                 connection,
-                "scheduler_scenario_authorities",
-                "SELECT scenario_class, mode, rollback_target, manifest_revision, "
-                "preflight_revision, updated_at FROM scheduler_scenario_authorities "
-                "ORDER BY scenario_class",
+                "execution_protocol_attempts",
+                "SELECT agent_id, attempt_id, lifecycle_state, terminal_outcome_id, "
+                "payload_json FROM execution_protocol_attempts "
+                "ORDER BY agent_id, attempt_id",
             ),
-            "hard_blockers": optional_rows(
+            "execution_work_items": optional_rows(
                 connection,
-                "scheduler_scenario_hard_blockers",
-                "SELECT scenario_class, blocker_code, config_revision, trigger_kind, "
-                "manifest_revision, preflight_revision, action_json, created_at "
-                "FROM scheduler_scenario_hard_blockers "
-                "ORDER BY created_at",
-            ),
-            "work_demands": optional_rows(
-                connection,
-                "scheduler_work_demands",
-                "SELECT agent_id, work_item_id, scheduling_generation, status, "
-                "status_reference_id, payload_json FROM scheduler_work_demands "
+                "execution_protocol_work_items",
+                "SELECT agent_id, work_item_id, source_revision, generation, "
+                "lifecycle_state, payload_json FROM execution_protocol_work_items "
                 "ORDER BY agent_id, work_item_id",
             ),
-            "activations": optional_rows(
+            "execution_outcomes": optional_rows(
                 connection,
-                "scheduler_activations",
-                "SELECT agent_id, activation_id, work_item_id, admission_kind, "
-                "lifecycle_state, admitted_generation, idempotency_key, payload_json "
-                "FROM scheduler_activations ORDER BY activation_id",
+                "execution_protocol_outcomes",
+                "SELECT agent_id, outcome_id, attempt_id, payload_json "
+                "FROM execution_protocol_outcomes ORDER BY agent_id, outcome_id",
             ),
-            "settlements": optional_rows(
+            "execution_command_results": optional_rows(
                 connection,
-                "scheduler_activation_settlements",
-                "SELECT agent_id, settlement_id, activation_id, payload_json "
-                "FROM scheduler_activation_settlements ORDER BY settlement_id",
-            ),
-            "missing_settlements": optional_rows(
-                connection,
-                "scheduler_missing_settlements",
-                "SELECT agent_id, missing_settlement_id, activation_id, payload_json "
-                "FROM scheduler_missing_settlements ORDER BY missing_settlement_id",
-            ),
-            "slots": optional_rows(
-                connection,
-                "scheduler_agent_slots",
-                "SELECT agent_id, slot_kind, activation_id, work_item_id, "
-                "admitted_generation FROM scheduler_agent_slots ORDER BY agent_id",
-            ),
-            "dispatch": optional_rows(
-                connection,
-                "scheduler_agent_dispatch",
-                "SELECT agent_id, dispatch_kind, wait_id, wait_generation, "
-                "dispatch_revision FROM scheduler_agent_dispatch ORDER BY agent_id",
-            ),
-            "wait_generations": optional_rows(
-                connection,
-                "scheduler_wait_generations",
-                "SELECT agent_id, wait_id, generation, owner_work_item_id, "
-                "lifecycle_state, trigger_id, trigger_generation, "
-                "consuming_activation_id FROM scheduler_wait_generations "
-                "ORDER BY wait_id, generation",
-            ),
-            "protocol_conflicts": optional_rows(
-                connection,
-                "scheduler_protocol_command_results",
-                "SELECT agent_id, command_kind, command_identity, decision, "
-                "conflict_kind, conflict_code FROM scheduler_protocol_command_results "
-                "WHERE conflict_kind IS NOT NULL ORDER BY created_at",
+                "execution_protocol_command_results",
+                "SELECT agent_id, command_kind, command_identity, payload_hash, "
+                "references_json, created_at FROM execution_protocol_command_results "
+                "ORDER BY created_at",
             ),
             "queue_status": optional_rows(
                 connection,
@@ -1945,11 +1886,10 @@ def collect_database(database: Path) -> dict[str, Any]:
 def parse_json_columns(evidence: dict[str, Any]) -> list[str]:
     failures: list[str] = []
     for collection in (
-        "hard_blockers",
-        "work_demands",
-        "activations",
-        "settlements",
-        "missing_settlements",
+        "wait_conditions",
+        "execution_attempts",
+        "execution_work_items",
+        "execution_outcomes",
         "briefs",
         "operator_deliveries",
     ):
@@ -1962,45 +1902,6 @@ def parse_json_columns(evidence: dict[str, Any]) -> list[str]:
                 except (TypeError, json.JSONDecodeError):
                     failures.append(f"{collection}[{index}].{key}")
     return failures
-
-
-def current_hard_blockers(evidence: dict[str, Any]) -> list[dict[str, Any]]:
-    if not evidence["protocol_config"]:
-        return []
-    config_revision = evidence["protocol_config"][0]["config_revision"]
-    authorities = {
-        row["scenario_class"]: row for row in evidence["scenario_authorities"]
-    }
-    return [
-        row
-        for row in evidence["hard_blockers"]
-        if row["config_revision"] == config_revision
-        and row["scenario_class"] in authorities
-        and row["manifest_revision"]
-        == authorities[row["scenario_class"]]["manifest_revision"]
-        and row["preflight_revision"]
-        == authorities[row["scenario_class"]]["preflight_revision"]
-    ]
-
-
-def scenario_mode_mismatches(
-    evidence: dict[str, Any],
-    expected_mode: str | None,
-) -> list[dict[str, Any]]:
-    if expected_mode not in {"shadow", "authoritative"}:
-        return []
-    authorities = {
-        row["scenario_class"]: row for row in evidence["scenario_authorities"]
-    }
-    return [
-        {
-            "scenario_class": scenario,
-            "expected_mode": expected_mode,
-            "actual_mode": authorities.get(scenario, {}).get("mode"),
-        }
-        for scenario in PRODUCTION_SCENARIOS
-        if authorities.get(scenario, {}).get("mode") != expected_mode
-    ]
 
 
 def aggregate_stress_coverage(
@@ -2204,65 +2105,50 @@ def evidence_summary(
         if stress is not None
         else {scenario: 0 for scenario in PRODUCTION_SCENARIOS}
     )
-    active_activations = [
+    open_attempts = [
         row
-        for row in evidence["activations"]
-        if row["lifecycle_state"] in {"admitted", "running", "settlement_missing"}
+        for row in evidence["execution_attempts"]
+        if row["lifecycle_state"] == "open"
     ]
-    occupied_slots = [row for row in evidence["slots"] if row["slot_kind"] != "idle"]
     active_waits = [
         row
-        for row in evidence["wait_generations"]
-        if row["lifecycle_state"] in {"active", "triggered", "consumed"}
+        for row in evidence["wait_conditions"]
+        if row["status"] in {"active", "triggered"}
     ]
-    needs_settlement = [
-        row for row in evidence["work_demands"] if row["status"] == "needs_settlement"
+    needs_repair_work_items = [
+        row
+        for row in evidence["execution_work_items"]
+        if row["lifecycle_state"] == "needs_repair"
     ]
-    settlement_by_activation = {
-        row["activation_id"]: row for row in evidence["settlements"]
+    outcomes_by_attempt = {
+        row["attempt_id"]: row for row in evidence["execution_outcomes"]
     }
-    missing_by_activation = {
-        row["activation_id"]: row for row in evidence["missing_settlements"]
-    }
-    settlement_inconsistencies = []
-    for activation in evidence["activations"]:
-        activation_id = activation["activation_id"]
-        has_settlement = activation_id in settlement_by_activation
-        has_missing = activation_id in missing_by_activation
-        expected_settlement = activation["lifecycle_state"] == "settled"
-        expected_missing = activation["lifecycle_state"] == "settlement_missing"
-        if (
-            has_settlement and has_missing
-            or expected_settlement != has_settlement
-            or expected_missing != has_missing
-        ):
-            settlement_inconsistencies.append(
+    outcome_inconsistencies = []
+    for attempt in evidence["execution_attempts"]:
+        attempt_id = attempt["attempt_id"]
+        outcome = outcomes_by_attempt.get(attempt_id)
+        outcome_id = attempt["terminal_outcome_id"]
+        if attempt["lifecycle_state"] == "open":
+            inconsistent = outcome_id is not None or outcome is not None
+        else:
+            inconsistent = (
+                outcome_id is None
+                or outcome is None
+                or outcome["outcome_id"] != outcome_id
+            )
+        if inconsistent:
+            outcome_inconsistencies.append(
                 {
-                    "activation_id": activation_id,
-                    "lifecycle_state": activation["lifecycle_state"],
-                    "has_settlement": has_settlement,
-                    "has_missing_settlement": has_missing,
+                    "attempt_id": attempt_id,
+                    "lifecycle_state": attempt["lifecycle_state"],
+                    "terminal_outcome_id": outcome_id,
+                    "outcome_id": outcome.get("outcome_id") if outcome else None,
                 }
             )
-    brief_ids = {row["evidence_id"] for row in evidence["briefs"]}
-    delivery_inconsistencies = []
-    for settlement in evidence["settlements"]:
-        payload = settlement.get("payload_json_value") or {}
-        brief_id = payload.get("operator_delivery")
-        if brief_id is not None and brief_id not in brief_ids:
-            delivery_inconsistencies.append(
-                {
-                    "activation_id": settlement["activation_id"],
-                    "operator_delivery": brief_id,
-                    "reason": "brief_missing",
-                }
-            )
-    blockers = current_hard_blockers(evidence)
     exact_wait_runs = counts.get("exact_wait_resume", 0)
     wait_trigger_counts = {
         trigger: exact_wait_runs for trigger in EXACT_WAIT_RESUME_TRIGGERS
     }
-    mode_mismatches = scenario_mode_mismatches(evidence, expected_mode)
     queue_tail = [
         row
         for row in evidence["queue_status"]
@@ -2271,16 +2157,11 @@ def evidence_summary(
     checks = {
         "all_scenarios_observed": all(counts.values()),
         "all_wait_resume_triggers_observed": all(wait_trigger_counts.values()),
-        "scenario_modes_match_requested_mode": not mode_mismatches,
         "json_columns_valid": not json_failures,
-        "no_current_hard_blocker": not blockers,
-        "no_active_activation": not active_activations,
-        "no_occupied_slot": not occupied_slots,
+        "no_open_execution_attempt": not open_attempts,
         "no_active_wait": not active_waits,
-        "no_needs_settlement_demand": not needs_settlement,
-        "settlement_state_consistent": not settlement_inconsistencies,
-        "delivery_binding_consistent": not delivery_inconsistencies,
-        "no_protocol_conflict": not evidence["protocol_conflicts"],
+        "no_needs_repair_work_item": not needs_repair_work_items,
+        "execution_outcomes_consistent": not outcome_inconsistencies,
         "no_incomplete_turn": not evidence["incomplete_turns"],
         "no_queue_tail": not queue_tail,
     }
@@ -2319,15 +2200,11 @@ def evidence_summary(
         "checks": checks,
         "scenario_counts": counts,
         "wait_resume_trigger_counts": wait_trigger_counts,
-        "scenario_mode_mismatches": mode_mismatches,
         "json_failures": json_failures,
-        "current_hard_blockers": blockers,
-        "active_activations": active_activations,
-        "occupied_slots": occupied_slots,
+        "open_attempts": open_attempts,
         "active_waits": active_waits,
-        "needs_settlement": needs_settlement,
-        "settlement_inconsistencies": settlement_inconsistencies,
-        "delivery_inconsistencies": delivery_inconsistencies,
+        "needs_repair_work_items": needs_repair_work_items,
+        "outcome_inconsistencies": outcome_inconsistencies,
         "queue_tail": queue_tail,
         "stress": stress,
         "restart": restart,
@@ -2425,17 +2302,12 @@ def render_report(
             "",
             "## Tail state",
             "",
-            f"- Current hard blockers: {len(summary['current_hard_blockers'])}",
-            f"- Historical hard blockers: {len(evidence['hard_blockers'])}",
-            f"- Active activations: {len(summary['active_activations'])}",
-            f"- Occupied slots: {len(summary['occupied_slots'])}",
+            f"- Open execution attempts: {len(summary['open_attempts'])}",
             f"- Active waits: {len(summary['active_waits'])}",
-            f"- Needs-settlement demands: {len(summary['needs_settlement'])}",
-            f"- Settlement inconsistencies: "
-            f"{len(summary['settlement_inconsistencies'])}",
-            f"- Delivery binding inconsistencies: "
-            f"{len(summary['delivery_inconsistencies'])}",
-            f"- Protocol conflicts: {len(evidence['protocol_conflicts'])}",
+            f"- Needs-repair WorkItems: "
+            f"{len(summary['needs_repair_work_items'])}",
+            f"- Execution outcome inconsistencies: "
+            f"{len(summary['outcome_inconsistencies'])}",
             f"- Incomplete turns: {len(evidence['incomplete_turns'])}",
             f"- Queue tail groups: {len(summary['queue_tail'])}",
             "",

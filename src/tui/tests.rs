@@ -79,7 +79,6 @@ fn test_config() -> AppConfig {
         default_tool_output_tokens: crate::tool::helpers::DEFAULT_TOOL_OUTPUT_TOKENS as u32,
         max_tool_output_tokens: crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS as u32,
         disable_provider_fallback: false,
-        scheduler_engine: crate::config::SchedulerEngineMode::Canonical,
         tui_alternate_screen: AltScreenMode::Auto,
         validated_model_overrides: std::collections::HashMap::new(),
         validated_unknown_model_fallback: None,

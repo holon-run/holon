@@ -1383,7 +1383,7 @@ are otherwise unchanged. Configuration parsing must reject an authoritative
 class without a matching successful manifest and consumed canonical
 preflight record.
 
-For the local-tool cutover surface, `HOLON_SCHEDULER=authoritative` is an
+For the historical local-tool cutover surface, `HOLON_SCHEDULER=authoritative` was an
 explicit startup authority command for
 `SchedulerScenarioClass::PRODUCTION_AUTHORITY`. It may bypass the manifest's
 sample-count, observation-duration, and verified-evidence completion gates
@@ -1445,7 +1445,7 @@ Exit gate:
 
 ### Phase 3: Production Shadow
 
-- the legacy scheduler remains authoritative;
+- the legacy scheduler remained authoritative during the historical cutover;
 - every legacy admission and terminal boundary produces a shadow candidate,
   activation, and settlement;
 - compare binding, admission, wait consume, WorkItem disposition, queue

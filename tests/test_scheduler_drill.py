@@ -92,33 +92,25 @@ class SchedulerDrillTests(unittest.TestCase):
 
     def test_evidence_summary_requires_all_scenarios_and_clean_tail(self) -> None:
         evidence = {
-            "protocol_config": [
+            "wait_conditions": [],
+            "execution_attempts": [
                 {
-                    "protocol_mode": "authoritative",
-                    "config_revision": 1,
-                }
-            ],
-            "scenario_authorities": [],
-            "hard_blockers": [],
-            "work_demands": [],
-            "activations": [
-                {
-                    "activation_id": "activation-1",
+                    "attempt_id": "activation-1",
                     "lifecycle_state": "settled",
-                }
-            ],
-            "settlements": [
-                {
-                    "activation_id": "activation-1",
+                    "terminal_outcome_id": "outcome-1",
                     "payload_json": "{}",
                 }
             ],
-            "missing_settlements": [],
-            "slots": [{"slot_kind": "idle"}],
-            "wait_generations": [{"lifecycle_state": "resolved"}],
+            "execution_work_items": [],
+            "execution_outcomes": [
+                {
+                    "outcome_id": "outcome-1",
+                    "attempt_id": "activation-1",
+                    "payload_json": "{}",
+                }
+            ],
             "briefs": [],
             "operator_deliveries": [],
-            "protocol_conflicts": [],
             "incomplete_turns": [],
             "queue_status": [{"status": "processed", "count": 8}],
         }
@@ -136,17 +128,16 @@ class SchedulerDrillTests(unittest.TestCase):
         self.assertEqual(summary["status"], "go")
         self.assertTrue(all(summary["checks"].values()))
 
-        evidence["activations"][0]["lifecycle_state"] = "running"
+        evidence["execution_attempts"][0]["lifecycle_state"] = "open"
+        evidence["execution_attempts"][0]["terminal_outcome_id"] = None
+        evidence["execution_outcomes"] = []
         summary = drill.evidence_summary(evidence, stress=stress)
         self.assertEqual(summary["status"], "no-go")
-        self.assertFalse(summary["checks"]["no_active_activation"])
+        self.assertFalse(summary["checks"]["no_open_execution_attempt"])
 
     def test_report_is_external_evidence_only(self) -> None:
         evidence = {
             "schema_revision": 33,
-            "hard_blockers": [],
-            "missing_settlements": [],
-            "protocol_conflicts": [],
             "incomplete_turns": [],
         }
         summary = {
@@ -155,13 +146,10 @@ class SchedulerDrillTests(unittest.TestCase):
                 scenario: 1 for scenario in drill.PRODUCTION_SCENARIOS
             },
             "checks": {"all_scenarios_observed": True},
-            "current_hard_blockers": [],
-            "active_activations": [],
-            "occupied_slots": [],
+            "open_attempts": [],
             "active_waits": [],
-            "needs_settlement": [],
-            "settlement_inconsistencies": [],
-            "delivery_inconsistencies": [],
+            "needs_repair_work_items": [],
+            "outcome_inconsistencies": [],
             "queue_tail": [],
         }
         report = drill.render_report(
@@ -393,9 +381,6 @@ class SchedulerDrillTests(unittest.TestCase):
         self.assertEqual(summary["injection_completed"]["stale"], 0)
         self.assertEqual(summary["injection_completed"]["duplicate"], 1)
         self.assertEqual(summary["injection_completed"]["out_of_order"], 1)
-
-    def test_wait_rearm_always_requires_canonical_evidence(self) -> None:
-        self.assertTrue(drill.canonical_wait_evidence_required(Mock()))
 
     def test_exercise_records_failed_phase_when_harness_setup_fails(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

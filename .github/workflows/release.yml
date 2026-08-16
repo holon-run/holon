@@ -80,7 +80,7 @@ jobs:
              and (.scheduler_acceptance.runtime_schema_revision | type == "number")
              and (.scheduler_acceptance.fixture_corpus_revision | length > 0)
              and (.scheduler_acceptance.image_digest | contains("@sha256:"))
-             and ([.scheduler_acceptance.engines[] | .engine] == ["legacy", "canonical"])
+             and ([.scheduler_acceptance.engines[] | .engine] == ["canonical"])
              and ([.scheduler_acceptance.engines[] | .status] | all(. == "pass"))' \
             release-e2e-gate/release-e2e-attestation.json >/dev/null
 

@@ -49,15 +49,16 @@ deepseek/deepseek-v4-flash
 The suite requires network access and provider quota, so ordinary pull-request
 CI only validates its manifest and Python runner. Each release candidate runs
 the core cases plus all scheduler-tagged cases through the protected
-`Release E2E` workflow. Scheduler cases run twice with
-`HOLON_SCHEDULER=legacy` and `HOLON_SCHEDULER=canonical`. Each engine uses a
-separate `holon serve` process, Docker volume, runtime database, and evidence
-directory while sharing the same user-visible and persistence assertions.
+`Release E2E` workflow. Scheduler cases run once with the canonical scheduler.
+The runner retains `scheduler_engine="canonical"` in attestation evidence for
+schema stability, but does not set the retired `HOLON_SCHEDULER` selector.
+Each case uses a separate `holon serve` process, Docker volume, runtime
+database, and evidence directory.
 
 The release gate does not install scheduler manifest/preflight rows, stage
-shadow authority, or import synthetic cutover evidence. It validates the
-temporary process-level rollback switch directly and records canonical-only
-protocol assertions only when the canonical engine is selected.
+shadow authority, or import synthetic cutover evidence. It validates
+canonical-only protocol assertions and records one consistent runtime schema
+revision.
 
 Run locally with a credential environment variable:
 

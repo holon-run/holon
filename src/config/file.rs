@@ -231,7 +231,7 @@ pub struct RuntimeConfigFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disable_provider_fallback: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scheduler: Option<SchedulerEngineMode>,
+    pub scheduler: Option<String>,
     #[serde(default, skip_serializing_if = "RuntimeRetentionConfigFile::is_empty")]
     pub retention: RuntimeRetentionConfigFile,
 }

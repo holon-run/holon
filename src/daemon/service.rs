@@ -91,7 +91,6 @@ pub struct RuntimeConfigSurface {
     pub default_tool_output_tokens: u32,
     pub max_tool_output_tokens: u32,
     pub disable_provider_fallback: bool,
-    pub scheduler: crate::config::SchedulerEngineMode,
     pub runtime_db_retention: crate::runtime_db::RuntimeDbRetentionPolicy,
     pub providers: Vec<RuntimeProviderSummary>,
     pub web_search: RuntimeWebSearchSummary,
@@ -168,7 +167,6 @@ impl RuntimeConfigSurface {
             default_tool_output_tokens: config.default_tool_output_tokens,
             max_tool_output_tokens: config.max_tool_output_tokens,
             disable_provider_fallback: config.disable_provider_fallback,
-            scheduler: config.scheduler_engine,
             runtime_db_retention: config
                 .runtime_db_retention_policy()
                 .expect("runtime database retention policy was validated during config load"),

@@ -36,7 +36,6 @@ and description.
 | `model.default` | model_route_ref | Default executable route, e.g. `"anthropic@default/claude-sonnet-4-6"` |
 | `model.fallbacks` | model_route_ref_list | Ordered executable fallback routes |
 | `runtime.disable_provider_fallback` | boolean | Disable provider/model fallback; require deterministic single-provider execution |
-| `runtime.scheduler` | `legacy` or `canonical` | Startup-only process-wide scheduler engine; defaults to `canonical` |
 
 ```bash
 # Set the default model
@@ -104,17 +103,11 @@ Do not combine `api.cors.allow_credentials=true` with
 
 ### Scheduler
 
-The process selects exactly one scheduler engine at startup:
-
-```text
-HOLON_SCHEDULER > runtime.scheduler > canonical
-```
-
-Accepted values are `legacy` and `canonical`. The selected engine is immutable
-until process restart, global to every agent in the process, and never enables
-shadow execution or per-scenario authority. `runtime.scheduler` is startup-only:
-stop the daemon before changing it with `holon config set`, or use the
-`HOLON_SCHEDULER` environment override for the next process start.
+The canonical scheduler is always enabled. `runtime.scheduler` is no longer a
+configurable key. For one minor release, an existing persisted
+`runtime.scheduler=canonical` value or `HOLON_SCHEDULER=canonical` environment
+value is accepted with a deprecation warning. `legacy` and all other values
+fail startup. Remove the obsolete selector from deployment configuration.
 
 Migration 40 marks the rollout tables as retired compatibility data without
 dropping them. `holon debug scheduler-recovery` reports their retained row
@@ -122,11 +115,9 @@ counts and stale authoritative rows. They are diagnostic only: startup,
 ordinary scheduler transactions, and typed repair do not read them to decide
 authority.
 
-`legacy` is a temporary compatibility fallback. It does not write canonical
-activation or settlement facts, and startup fails closed if non-terminal
-canonical activations remain. Stop admission and settle or interrupt in-flight
-canonical work before changing engines. The selector will be removed with the
-legacy engine after the compatibility release.
+Holon v0.31.1 is the rollback release for deployments that still require the
+legacy scheduler. Use it only with a pre-migration database backup; a database
+migrated by the follow-up schema cleanup is not downgrade-compatible.
 
 ## Credential Management
 

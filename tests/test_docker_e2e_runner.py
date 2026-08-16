@@ -340,9 +340,9 @@ class DockerE2ERunnerTests(unittest.TestCase):
             },
             case_results=[
                 {
-                    "id": "scheduler-external-wait-resume-legacy",
+                    "id": "scheduler-external-wait-resume-canonical",
                     "base_id": "scheduler-external-wait-resume",
-                    "scheduler_engine": "legacy",
+                    "scheduler_engine": "canonical",
                     "status": "pass",
                     "error": "",
                     "provider_rounds": 2,
@@ -357,18 +357,6 @@ class DockerE2ERunnerTests(unittest.TestCase):
                         }
                     ],
                 },
-                {
-                    "id": "scheduler-external-wait-resume-canonical",
-                    "base_id": "scheduler-external-wait-resume",
-                    "scheduler_engine": "canonical",
-                    "status": "pass",
-                    "error": "",
-                    "provider_rounds": 2,
-                    "provider_attempts": 2,
-                    "provider_retries": 0,
-                    "tool_counts": {"WaitFor": 1},
-                    "behavioral_variances": [],
-                },
             ],
             scheduler_acceptance_status="pass",
             scheduler_coverage_status="pass",
@@ -376,14 +364,14 @@ class DockerE2ERunnerTests(unittest.TestCase):
         )
         self.assertEqual(report["status"], "pass")
         self.assertEqual(report["model_route"], "provider/model")
-        self.assertEqual(report["provider_rounds"], 4)
-        self.assertEqual(report["provider_attempts"], 5)
+        self.assertEqual(report["provider_rounds"], 2)
+        self.assertEqual(report["provider_attempts"], 3)
         self.assertEqual(report["provider_retries"], 1)
         self.assertEqual(
             report["behavioral_variances"],
             [
                 {
-                    "case_id": "scheduler-external-wait-resume-legacy",
+                    "case_id": "scheduler-external-wait-resume-canonical",
                     "scope": "scheduler-external-resume",
                     "missing_tools": ["GetWorkItem"],
                     "forbidden_tools_used": [],
@@ -1686,7 +1674,6 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 ("memory-agent-home-persistence", None),
                 ("workspace-restart-lifecycle", None),
                 ("workitem-wait-restart-complete", None),
-                ("scheduler-task-wait-resume", "legacy"),
                 ("scheduler-task-wait-resume", "canonical"),
             ],
         )
@@ -1797,10 +1784,10 @@ class DockerE2ERunnerTests(unittest.TestCase):
         )
         self.assertEqual(
             [engine["engine"] for engine in report["engines"]],
-            ["legacy", "canonical"],
+            ["canonical"],
         )
 
-    def test_scheduler_acceptance_report_rejects_schema_drift(self) -> None:
+    def test_scheduler_acceptance_report_rejects_duplicate_canonical_coverage(self) -> None:
         run_record = {
             "git_sha": "abc123",
             "image": {"ref": "holon:test", "id": None, "repo_digests": []},
@@ -1809,13 +1796,13 @@ class DockerE2ERunnerTests(unittest.TestCase):
         }
         case_results = [
             {
-                "id": f"scheduler-task-wait-resume-{engine}",
+                "id": f"scheduler-task-wait-resume-canonical-{revision}",
                 "base_id": "scheduler-task-wait-resume",
-                "scheduler_engine": engine,
+                "scheduler_engine": "canonical",
                 "status": "pass",
                 "schema_revision": revision,
             }
-            for engine, revision in (("legacy", 39), ("canonical", 40))
+            for revision in (40, 40)
         ]
         report = runner.scheduler_acceptance_report(
             run_record=run_record,
@@ -1824,9 +1811,9 @@ class DockerE2ERunnerTests(unittest.TestCase):
             required_coverage_ids={"scheduler-task-wait-resume"},
         )
         self.assertEqual(report["status"], "fail")
-        self.assertIsNone(report["runtime_schema_revision"])
+        self.assertEqual(report["runtime_schema_revision"], 40)
         self.assertIn(
-            "scheduler_schema_revision_mismatch",
+            "engine_case_matrix_incomplete",
             {diagnostic["code"] for diagnostic in report["diagnostics"]},
         )
 
@@ -1839,19 +1826,14 @@ class DockerE2ERunnerTests(unittest.TestCase):
         }
         case_results = [
             {
-                "id": f"scheduler-task-wait-resume-{engine}",
+                "id": "scheduler-task-wait-resume-canonical",
                 "base_id": "scheduler-task-wait-resume",
-                "scheduler_engine": engine,
+                "scheduler_engine": "canonical",
                 "status": "fail",
                 "schema_revision": None,
-                "failure_kind": (
-                    "case_timeout" if engine == "legacy" else None
-                ),
-                "evidence_collection_error": (
-                    "docker cp failed" if engine == "canonical" else ""
-                ),
+                "failure_kind": "case_timeout",
+                "evidence_collection_error": "docker cp failed",
             }
-            for engine in ("legacy", "canonical")
         ]
 
         report = runner.scheduler_acceptance_report(
@@ -1868,14 +1850,11 @@ class DockerE2ERunnerTests(unittest.TestCase):
         )
         self.assertEqual(
             report["missing_schema_revision_cases"],
-            [
-                "scheduler-task-wait-resume-canonical",
-                "scheduler-task-wait-resume-legacy",
-            ],
+            ["scheduler-task-wait-resume-canonical"],
         )
         self.assertEqual(
             diagnostic["case_timeouts"],
-            ["scheduler-task-wait-resume-legacy"],
+            ["scheduler-task-wait-resume-canonical"],
         )
         self.assertEqual(
             diagnostic["evidence_collection_failures"],
@@ -1931,111 +1910,6 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 snapshot,
                 work_item_id="work-1",
                 wait_ids={"wait-1"},
-            )
-
-    def test_legacy_wait_terminal_accepts_completion_cancellation_evidence(self) -> None:
-        harness = type(
-            "LegacyHarness",
-            (),
-            {"canonical_scheduler_enabled": False},
-        )()
-        snapshot = {
-            "wait_conditions": [
-                {
-                    "wait_condition_id": "wait-1",
-                    "work_item_id": "work-1",
-                    "kind": "external",
-                    "status": "cancelled",
-                }
-            ],
-            "audit_events": [
-                {
-                    "kind": "callback_delivered",
-                    "data_json": json.dumps(
-                        {
-                            "data": {
-                                "disposition": "triggered",
-                                "external_trigger_id": "trigger-unrelated",
-                            }
-                        }
-                    ),
-                },
-                {
-                    "kind": "callback_delivered",
-                    "data_json": json.dumps(
-                        {
-                            "data": {
-                                "disposition": "triggered",
-                                "external_trigger_id": "trigger-target",
-                            }
-                        }
-                    ),
-                },
-                {
-                    "kind": "wait_conditions_cancelled",
-                    "data_json": json.dumps(
-                        {
-                            "data": {
-                                "work_item_id": "work-1",
-                                "reason": "work_item_completed",
-                                "wait_condition_ids": ["wait-1"],
-                            }
-                        }
-                    ),
-                },
-            ],
-        }
-
-        waits = runner.require_scheduler_wait_terminal(
-            harness,
-            snapshot,
-            work_item_id="work-1",
-            wait_kind="external",
-            require_callback_trigger=True,
-            callback_external_trigger_id="trigger-target",
-        )
-        self.assertEqual(waits[0]["status"], "cancelled")
-
-        snapshot["audit_events"] = snapshot["audit_events"][:2]
-        with self.assertRaisesRegex(
-            AssertionError,
-            "cancellation lacked completion evidence",
-        ):
-            runner.require_scheduler_wait_terminal(
-                harness,
-                snapshot,
-                work_item_id="work-1",
-                wait_kind="external",
-                require_callback_trigger=True,
-                callback_external_trigger_id="trigger-target",
-            )
-
-        snapshot["audit_events"] = [
-            snapshot["audit_events"][0],
-            {
-                "kind": "wait_conditions_cancelled",
-                "data_json": json.dumps(
-                    {
-                        "data": {
-                            "work_item_id": "work-1",
-                            "reason": "work_item_completed",
-                            "wait_condition_ids": ["wait-1"],
-                        }
-                    }
-                ),
-            },
-        ]
-        with self.assertRaisesRegex(
-            AssertionError,
-            "lacked callback trigger evidence",
-        ):
-            runner.require_scheduler_wait_terminal(
-                harness,
-                snapshot,
-                work_item_id="work-1",
-                wait_kind="external",
-                require_callback_trigger=True,
-                callback_external_trigger_id="trigger-target",
             )
 
     def test_canonical_wait_terminal_requires_callback_evidence(self) -> None:

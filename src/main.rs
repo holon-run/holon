@@ -1100,7 +1100,6 @@ mod tests {
             default_tool_output_tokens: 8_000,
             max_tool_output_tokens: 64_000,
             disable_provider_fallback: false,
-            scheduler_engine: holon::config::SchedulerEngineMode::Canonical,
             tui_alternate_screen: AltScreenMode::Auto,
             validated_model_overrides: Default::default(),
             validated_unknown_model_fallback: None,
@@ -2708,12 +2707,6 @@ fn print_scheduler_recovery_report(
                 .map(|entry| &entry.status),
         );
     }
-    for candidate in report.legacy_adoptions {
-        println!(
-            "- work_item:{}: adoption eligible={} reason={}",
-            candidate.work_item_id, candidate.eligible, candidate.reason
-        );
-    }
     for candidate in report.continuation_reconciliations {
         println!(
             "- continuation:{} parent={} stale_target={:?} active_target={} eligible={} reason={}",
@@ -2747,7 +2740,6 @@ fn filter_scheduler_recovery_report(
         ));
     }
     report.candidates.clear();
-    report.legacy_adoptions.clear();
     report.continuation_reconciliations.clear();
     report
         .task_result_claim_recoveries

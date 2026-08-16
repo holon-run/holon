@@ -2455,9 +2455,6 @@ impl RuntimeHandle {
             WorkItemExecutionRecord, WorkItemExecutionState,
         };
 
-        if !self.inner.scheduler_engine.is_canonical() {
-            return Ok(Default::default());
-        }
         let existing = self
             .inner
             .runtime_db
@@ -2495,9 +2492,6 @@ impl RuntimeHandle {
             WorkItemExecutionState,
         };
 
-        if !self.inner.scheduler_engine.is_canonical() {
-            return Ok(Default::default());
-        }
         let existing = self
             .inner
             .runtime_db
@@ -2632,9 +2626,6 @@ impl RuntimeHandle {
             WorkItemExecutionState,
         };
 
-        if !self.inner.scheduler_engine.is_canonical() {
-            return Ok(Default::default());
-        }
         let existing = self
             .inner
             .runtime_db
@@ -2746,9 +2737,6 @@ impl RuntimeHandle {
             ExecutionProtocolCommand, SuspendWorkItemContinuation,
         };
 
-        if !self.inner.scheduler_engine.is_canonical() {
-            return Ok(None);
-        }
         let state = self
             .inner
             .runtime_db
@@ -2786,9 +2774,6 @@ impl RuntimeHandle {
             ExecutionProtocolCommand, ResumeWorkItemContinuation,
         };
 
-        if !self.inner.scheduler_engine.is_canonical() {
-            return Ok(None);
-        }
         let state = self
             .inner
             .runtime_db
@@ -4031,8 +4016,7 @@ impl RuntimeHandle {
         }
         let now = Utc::now();
         let mut state = self.agent_state().await?;
-        let expected_execution_protocol_state = if self.inner.scheduler_engine.is_canonical()
-            && require_completion_commit_attempt
+        let expected_execution_protocol_state = if require_completion_commit_attempt
             && matches!(
                 authority,
                 Some(WorkItemCompletionAuthority::AgentExecution(_))
