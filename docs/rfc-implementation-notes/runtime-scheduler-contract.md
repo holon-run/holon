@@ -97,7 +97,6 @@ cargo test operator_interjection_prompt_is_interjected_before_next_provider_roun
 cargo test scheduling_advisory --quiet
 cargo test scheduler_diagnostic_audit_event --quiet
 cargo test scheduler_authoritative_queue_commits_survive_sustained_concurrent_load_and_restart --quiet
-cargo test retired_rollout_metadata_does_not_block_canonical_snapshot_reopen --quiet
 cargo test scheduler_repair_dry_run_and_apply_cancel_agent_wait --quiet
 cargo test storage_work_queue_prompt_projection_preserves_fifo_fairness_and_limit --quiet
 cargo test --test scheduler_workitem_mvp --quiet
