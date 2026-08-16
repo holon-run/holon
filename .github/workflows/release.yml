@@ -204,15 +204,16 @@ jobs:
 
           Holon ${GITHUB_REF_NAME} is part of the Rust runtime line. The Rust runtime is now the main \`holon\` binary.
 
-          This patch release hardens scheduler activation settlement and recovery: reducer-consumed duplicate TaskResult messages now terminalize with explicit reducer-only Turn evidence, unsettled scheduler claims are reconciled through bounded one-shot recovery that quarantines poison claims while releasing execution lanes, and claims whose task waits were revoked fail closed through the same interrupt-and-quarantine path.
+          This release completes the canonical-only scheduler cutover. Holon no longer exposes the legacy scheduler selector or compatibility protocol, and runtime recovery now derives authority exclusively from primary execution facts.
+
+          The database upgrade removes obsolete scheduler authority and control schema through a transactional, idempotent, fail-closed migration. Back up the database before upgrading. After migration, rollback to v0.31.1 requires restoring the pre-migration database backup; old binaries must not open the migrated database.
 
           Supported binary assets for this release are Linux amd64, macOS amd64, and macOS arm64.
 
           ## Changes
 
-          - Terminalize reducer-consumed duplicate/suppressed TaskResult messages with explicit reducer-only terminal Turns instead of fabricated provider or assistant evidence, and settle replayed task-restart messages idempotently ([#2601](https://github.com/holon-run/holon/pull/2601)).
-          - Reconcile unsettled scheduler claims through a shared pure planner across bootstrap, online settlement failure, and scheduler-recovery debug: replay is bounded to one fenced recovery generation, repeated or ambiguous poison claims are interrupted and quarantined with durable audit evidence while execution lanes are released, and unsettled/quarantined claim counts surface through agent status and metrics ([#2602](https://github.com/holon-run/holon/pull/2602)).
-          - Quarantine claims with revoked task waits: a cancelled exact task wait is treated as negative continuation authority and converged through the canonical interrupt-and-quarantine planner, with exact \`--message-id\` scheduler-recovery targeting plus claim age, lane-blocking, and health diagnostics ([#2603](https://github.com/holon-run/holon/pull/2603)).
+          - Retire the legacy scheduler runtime, selector, compatibility protocol, mirror-based recovery paths, and dual-engine release acceptance. Explicit legacy scheduler configuration now fails at startup instead of being ignored or silently falling back ([#2605](https://github.com/holon-run/holon/pull/2605)).
+          - Safely remove obsolete scheduler authority/control tables, triggers, and indexes while retaining primary execution facts and approved immutable audit evidence. The migration refuses active or unsettled legacy state and preserves recovery report/apply/report fixed-point behavior ([#2606](https://github.com/holon-run/holon/pull/2606)).
 
           ## Install
 

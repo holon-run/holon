@@ -3226,8 +3226,6 @@ export interface components {
                 };
                 /** Format: uint32 */
                 runtime_max_output_tokens: number;
-                /** @enum {string} */
-                scheduler: "legacy" | "canonical";
                 unknown_model_fallback_configured: boolean;
                 vision_default?: string | null;
                 web_search: {
@@ -3336,8 +3334,6 @@ export interface components {
                 };
                 /** Format: uint32 */
                 runtime_max_output_tokens: number;
-                /** @enum {string} */
-                scheduler: "legacy" | "canonical";
                 unknown_model_fallback_configured: boolean;
                 vision_default?: string | null;
                 web_search: {
