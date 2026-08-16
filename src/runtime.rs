@@ -4331,6 +4331,24 @@ impl RuntimeHandle {
         } else {
             None
         };
+        let terminal_source_turn = if replay_source.is_none() {
+            if let Some(message) = message {
+                if let Some(source_turn_id) = normalized_turn_id(message.turn_id.as_deref()) {
+                    self.inner
+                        .runtime_db
+                        .turn_records()
+                        .by_id(Some(&message.agent_id), &source_turn_id)?
+                        .filter(|turn| turn.terminal.is_some())
+                        .map(|turn| (source_turn_id, turn))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let canonical_execution_binding = match &execution_admission_provenance {
             ExecutionAdmissionProvenance::Canonical { activation_id, .. } => {
                 let message = message.ok_or_else(|| {
@@ -4406,7 +4424,7 @@ impl RuntimeHandle {
         let state = {
             let mut guard = self.inner.agent.lock().await;
             guard.state.turn_index += 1;
-            let turn_id = if replay_source.is_some() {
+            let turn_id = if replay_source.is_some() || terminal_source_turn.is_some() {
                 crate::ids::turn_id()
             } else {
                 message

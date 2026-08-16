@@ -275,12 +275,12 @@ impl RuntimeHandle {
             }
         }
 
-        if terminal_transition
-            .as_ref()
-            .is_some_and(|transition| transition.prepared_work_item_completion.is_some())
-        {
-            return Ok(terminal_transition.expect("checked prepared completion"));
-        }
+        terminal_transition = match terminal_transition {
+            Some(transition) if transition.prepared_work_item_completion.is_some() => {
+                return Ok(transition);
+            }
+            transition => transition,
+        };
 
         if let Some(resolution) = continuation_resolution.as_ref() {
             self.persist_last_continuation(resolution).await?;

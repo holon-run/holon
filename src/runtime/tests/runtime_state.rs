@@ -1909,10 +1909,19 @@ async fn late_terminal_task_result_for_completed_work_item_settles_without_model
         .complete_work_item(work_item.id.clone(), Vec::new())
         .await
         .unwrap();
+    let mut parent_turn = crate::types::TurnRecord::new("default", "turn-parent-completed", 1);
+    parent_turn.terminal = Some(crate::types::TurnTerminalSummary {
+        kind: TurnTerminalKind::Completed,
+        reason: Some("parent_completed".into()),
+        completed_at: Utc::now(),
+        duration_ms: 1,
+    });
+    runtime.storage().append_turn(&parent_turn).unwrap();
     let mut result = task_result_message("task-late-child-result").with_admission(
         MessageDeliverySurface::TaskRejoin,
         AdmissionContext::RuntimeOwned,
     );
+    result.turn_id = Some(parent_turn.turn_id.clone());
     result.metadata = Some(serde_json::json!({
         "task_id": "task-late-child-result",
         "task_kind": "child_agent_task",
@@ -1971,6 +1980,14 @@ async fn late_terminal_task_result_for_completed_work_item_settles_without_model
         Some(TurnTerminalKind::Completed)
     );
     assert!(terminal_turn.produced_brief_ids.is_empty());
+    assert_ne!(terminal_turn.turn_id, parent_turn.turn_id);
+    assert_eq!(
+        runtime
+            .storage()
+            .read_turn_by_id(&parent_turn.turn_id)
+            .unwrap(),
+        Some(parent_turn)
+    );
 
     let operator = runtime
         .enqueue(trusted_operator_prompt(
