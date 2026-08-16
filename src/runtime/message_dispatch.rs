@@ -195,6 +195,24 @@ impl RuntimeHandle {
             ..
         } = plan;
         let model_reentry = scheduler_decision.model_reentry;
+        let reducer_only_dispatch = match message.kind {
+            MessageKind::OperatorPrompt
+            | MessageKind::WebhookEvent
+            | MessageKind::CallbackEvent
+            | MessageKind::TimerTick
+            | MessageKind::SystemTick
+            | MessageKind::ChannelEvent
+            | MessageKind::InternalFollowup => !model_reentry,
+            MessageKind::TaskStatus
+            | MessageKind::Control
+            | MessageKind::BriefAck
+            | MessageKind::BriefResult => true,
+            MessageKind::TaskResult => false,
+        };
+        if reducer_only_dispatch {
+            self.begin_reducer_only_turn(&message, execution_admission_provenance.clone())
+                .await?;
+        }
         let task = task?;
         let mut terminal_transition = None;
         let mut reducer_only_reason = None;

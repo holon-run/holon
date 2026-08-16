@@ -1979,7 +1979,13 @@ async fn late_terminal_task_result_for_completed_work_item_settles_without_model
             .map(|terminal| terminal.kind.clone()),
         Some(TurnTerminalKind::Completed)
     );
-    assert!(terminal_turn.produced_brief_ids.is_empty());
+    assert_eq!(terminal_turn.produced_brief_ids.len(), 1);
+    let result_briefs = runtime
+        .storage()
+        .read_briefs_by_ids(&terminal_turn.produced_brief_ids)
+        .unwrap();
+    assert_eq!(result_briefs.len(), 1);
+    assert_eq!(result_briefs[0].kind, BriefKind::Result);
     assert_ne!(terminal_turn.turn_id, parent_turn.turn_id);
     assert_eq!(
         runtime

@@ -11,8 +11,9 @@ use super::support::*;
 use crate::domain::scheduler::ScenarioMode;
 use crate::types::{
     AuthorityClass, ClosureDecision, ClosureOutcome, ExecutionAdmissionProvenance, MessageBody,
-    MessageKind, MessageOrigin, Priority, RuntimePosture,
+    MessageKind, MessageOrigin, Priority, RuntimePosture, TurnTerminalKind, TurnTerminalSummary,
 };
+use chrono::Utc;
 
 fn task_metadata() -> serde_json::Value {
     serde_json::json!({
@@ -316,6 +317,65 @@ async fn dispatch_brief_result_is_noop() {
         .process_message_with_plan(msg, plan, &decision)
         .await
         .expect("BriefResult dispatch should not error");
+}
+
+#[tokio::test]
+async fn reducer_only_dispatch_preserves_parent_turn_identity() {
+    let (_dir, _ws, runtime) = fresh_runtime().await;
+    let mut parent = crate::types::TurnRecord::new("default", "turn-parent", 1);
+    parent.terminal = Some(TurnTerminalSummary {
+        kind: TurnTerminalKind::Completed,
+        reason: Some("parent_completed".into()),
+        completed_at: Utc::now(),
+        duration_ms: 1,
+    });
+    runtime.storage().append_turn(&parent).unwrap();
+
+    let mut msg = message_of_kind(
+        MessageKind::BriefAck,
+        MessageBody::Text { text: "ack".into() },
+    );
+    msg.turn_id = Some(parent.turn_id.clone());
+    let plan = runtime
+        .build_message_dispatch_plan(
+            &msg,
+            closure_decision(),
+            &runtime.agent_state().await.unwrap(),
+        )
+        .unwrap();
+    let decision =
+        scheduler::SchedulerDecision::new(scheduler::SchedulerDecisionKind::Noop, "test_brief_ack");
+
+    runtime
+        .process_message_with_plan(msg.clone(), plan, &decision)
+        .await
+        .expect("reducer-only dispatch should use a distinct terminal turn");
+
+    assert_eq!(
+        runtime.storage().read_turn_by_id(&parent.turn_id).unwrap(),
+        Some(parent)
+    );
+    let reducer_turn = runtime
+        .inner
+        .runtime_db
+        .turn_records()
+        .recent_for_agent("default", 10)
+        .unwrap()
+        .into_iter()
+        .find(|turn| {
+            turn.terminal.as_ref().is_some_and(|terminal| {
+                terminal.reason.as_deref() == Some("reducer_only/brief_notification")
+            })
+        })
+        .expect("reducer-only message should have a matching turn");
+    assert_ne!(reducer_turn.turn_id, "turn-parent");
+    assert_eq!(
+        reducer_turn
+            .terminal
+            .as_ref()
+            .and_then(|terminal| terminal.reason.as_deref()),
+        Some("reducer_only/brief_notification")
+    );
 }
 
 #[tokio::test]

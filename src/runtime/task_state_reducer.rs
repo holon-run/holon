@@ -525,14 +525,20 @@ impl RuntimeHandle {
         execution_admission_provenance: ExecutionAdmissionProvenance,
     ) -> Result<turn::TurnTerminalTransition> {
         if should_ignore_task_update(self.inner.runtime_db.tasks().latest(&task.id)?, &task) {
+            self.begin_reducer_only_turn(message, execution_admission_provenance)
+                .await?;
             return self
                 .build_reducer_only_terminal_transition("reducer_only/duplicate_task_result")
                 .await;
         }
-        self.persist_task_transition(&task, "task_result_received")
-            .await?;
         let parent_turn_already_delivered =
             task_result_parent_turn_already_delivered(&self.inner.storage, &task)?;
+        if !model_reentry || parent_turn_already_delivered {
+            self.begin_reducer_only_turn(message, execution_admission_provenance.clone())
+                .await?;
+        }
+        self.persist_task_transition(&task, "task_result_received")
+            .await?;
 
         let task_status_label = match task.status {
             TaskStatus::Completed => "completed",
