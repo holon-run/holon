@@ -140,12 +140,18 @@ jobs:
           fi
           version="${PREVIOUS_REF#v}"
           workdir="$(mktemp -d)"
+          trap 'rm -rf "${workdir}"' EXIT
           base_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${PREVIOUS_REF}"
           curl -fsSL -o "${workdir}/checksums.txt" "${base_url}/checksums.txt"
           curl -fsSL -o "${workdir}/holon-linux-amd64.tar.gz" "${base_url}/holon-linux-amd64.tar.gz"
           (
             cd "${workdir}"
-            sha256sum --check --ignore-missing checksums.txt
+            expected="$(awk 'match($0, /holon-linux-amd64\.tar\.gz$/) { print $1 }' checksums.txt)"
+            if [ -z "${expected}" ]; then
+              echo "checksums.txt has no entry for holon-linux-amd64.tar.gz" >&2
+              exit 1
+            fi
+            printf '%s  holon-linux-amd64.tar.gz\n' "${expected}" | sha256sum --check --strict -
             tar -xzf holon-linux-amd64.tar.gz
             test -x holon || chmod +x holon
           )
