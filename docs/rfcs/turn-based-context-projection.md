@@ -514,6 +514,14 @@ and WorkItem ledgers during prompt assembly.
 This phase can keep current prompt sections as compatibility fallback while
 adding a `recent_turns` or `turn_projection` section.
 
+Tool evidence and provider-visible tool receipts are separate surfaces.
+Canonical `ToolResultEnvelope` values remain durable evidence, while the
+provider receipt must fit the resolved per-tool output budget from its first
+appearance. Large tools should use a semantic bounded receipt with an
+`output_ref`; the generic continuation fallback must independently bound
+recursion depth, array width, node count, and string length before it is
+admitted to the prompt.
+
 ### Phase 2: Durable Turn Linkage
 
 Persist turn ids and source refs on newly produced briefs, task results, tool

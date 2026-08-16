@@ -282,11 +282,66 @@ pub(super) struct ToolResultProjectionStats {
     pub(super) preserved_artifact_refs: usize,
 }
 
-fn recoverable_result_value(value: &Value) -> Option<Value> {
+const RECOVERABLE_MAX_DEPTH: usize = 4;
+const RECOVERABLE_MAX_ARRAY_ITEMS: usize = 8;
+const RECOVERABLE_MAX_NODES: usize = 64;
+const RECOVERABLE_MAX_STRING_CHARS: usize = 256;
+const COMPACT_SUMMARY_MAX_CHARS: usize = 256;
+const COMPACT_ERROR_MAX_CHARS: usize = 256;
+
+struct RecoverableValueBudget {
+    remaining_nodes: usize,
+}
+
+fn truncate_receipt_text(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    let mut truncated = value
+        .chars()
+        .take(max_chars.saturating_sub(1))
+        .collect::<String>();
+    truncated.push('…');
+    truncated
+}
+
+fn bounded_recoverable_scalar(value: &Value) -> Value {
+    match value {
+        Value::String(value) => {
+            Value::String(truncate_receipt_text(value, RECOVERABLE_MAX_STRING_CHARS))
+        }
+        _ => value.clone(),
+    }
+}
+
+fn recoverable_result_value_at(
+    value: &Value,
+    depth: usize,
+    budget: &mut RecoverableValueBudget,
+) -> Option<Value> {
+    if depth > RECOVERABLE_MAX_DEPTH || budget.remaining_nodes == 0 {
+        return None;
+    }
     match value {
         Value::Object(map) => {
             let mut recovered = serde_json::Map::new();
-            for (key, nested) in map {
+            let mut keys = map.keys().collect::<Vec<_>>();
+            keys.sort_by_key(|key| {
+                if key.ends_with("_ref") || key.as_str() == "path" {
+                    0
+                } else if key.ends_with("_id") {
+                    1
+                } else if key.as_str() == "status" {
+                    2
+                } else {
+                    3
+                }
+            });
+            for key in keys {
+                if budget.remaining_nodes == 0 {
+                    break;
+                }
+                let nested = &map[key];
                 let keep_scalar = key == "path"
                     || key == "status"
                     || key == "truncated"
@@ -300,12 +355,13 @@ fn recoverable_result_value(value: &Value) -> Option<Value> {
                     || key == "work_item"
                     || key.ends_with("_refs");
                 if keep_scalar {
-                    recovered.insert(key.clone(), nested.clone());
+                    budget.remaining_nodes = budget.remaining_nodes.saturating_sub(1);
+                    recovered.insert(key.clone(), bounded_recoverable_scalar(nested));
                 } else if keep_nested {
-                    if let Some(value) = recoverable_result_value(nested) {
+                    if let Some(value) = recoverable_result_value_at(nested, depth + 1, budget) {
                         recovered.insert(key.clone(), value);
                     }
-                } else if let Some(value) = recoverable_result_value(nested) {
+                } else if let Some(value) = recoverable_result_value_at(nested, depth + 1, budget) {
                     if !matches!(&value, Value::Object(map) if map.is_empty())
                         && !matches!(&value, Value::Array(values) if values.is_empty())
                     {
@@ -315,11 +371,31 @@ fn recoverable_result_value(value: &Value) -> Option<Value> {
             }
             Some(Value::Object(recovered))
         }
-        Value::Array(values) => Some(Value::Array(
-            values.iter().filter_map(recoverable_result_value).collect(),
-        )),
+        Value::Array(values) => {
+            let items = values
+                .iter()
+                .take(RECOVERABLE_MAX_ARRAY_ITEMS)
+                .filter_map(|value| recoverable_result_value_at(value, depth + 1, budget))
+                .collect::<Vec<_>>();
+            Some(serde_json::json!({
+                "total": values.len(),
+                "returned": items.len(),
+                "truncated": items.len() < values.len(),
+                "items": items,
+            }))
+        }
         _ => None,
     }
+}
+
+fn recoverable_result_value(value: &Value) -> Option<Value> {
+    recoverable_result_value_at(
+        value,
+        0,
+        &mut RecoverableValueBudget {
+            remaining_nodes: RECOVERABLE_MAX_NODES,
+        },
+    )
 }
 
 fn count_artifact_refs_at(value: &Value, allow_path: bool) -> usize {
@@ -330,7 +406,10 @@ fn count_artifact_refs_at(value: &Value, allow_path: bool) -> usize {
                 usize::from(
                     ((allow_path && key == "path") || key.ends_with("_ref"))
                         && value.as_str().is_some_and(|value| !value.is_empty()),
-                ) + count_artifact_refs_at(value, key == "artifacts")
+                ) + count_artifact_refs_at(
+                    value,
+                    key == "artifacts" || (allow_path && key == "items"),
+                )
             })
             .sum(),
         Value::Array(values) => values
@@ -343,6 +422,17 @@ fn count_artifact_refs_at(value: &Value, allow_path: bool) -> usize {
 
 fn count_artifact_refs(value: &Value) -> usize {
     count_artifact_refs_at(value, true)
+}
+
+fn find_output_ref(value: &Value) -> Option<&str> {
+    match value {
+        Value::Object(map) => map
+            .get("output_ref")
+            .and_then(Value::as_str)
+            .or_else(|| map.values().find_map(find_output_ref)),
+        Value::Array(values) => values.iter().find_map(find_output_ref),
+        _ => None,
+    }
 }
 
 fn compact_tool_result_envelope(
@@ -363,11 +453,21 @@ fn compact_tool_result_envelope(
         "status".into(),
         serde_json::to_value(&envelope.status).unwrap_or(Value::Null),
     );
+    if let Some(output_ref) = envelope.result.as_ref().and_then(find_output_ref) {
+        receipt.insert(
+            "output_ref".into(),
+            Value::String(truncate_receipt_text(
+                output_ref,
+                RECOVERABLE_MAX_STRING_CHARS,
+            )),
+        );
+    }
     receipt.insert(
         "summary_text".into(),
         envelope
             .summary_text
-            .clone()
+            .as_deref()
+            .map(|value| truncate_receipt_text(value, COMPACT_SUMMARY_MAX_CHARS))
             .map(Value::String)
             .unwrap_or(Value::Null),
     );
@@ -375,9 +475,9 @@ fn compact_tool_result_envelope(
         receipt.insert(
             "error".into(),
             serde_json::json!({
-                "kind": error.kind,
-                "message": error.message,
-                "recovery_hint": error.recovery_hint,
+                "kind": truncate_receipt_text(&error.kind, COMPACT_ERROR_MAX_CHARS),
+                "message": truncate_receipt_text(&error.message, COMPACT_ERROR_MAX_CHARS),
+                "recovery_hint": error.recovery_hint.as_deref().map(|value| truncate_receipt_text(value, COMPACT_ERROR_MAX_CHARS)),
                 "retryable": error.retryable,
             }),
         );
@@ -386,9 +486,21 @@ fn compact_tool_result_envelope(
         receipt.insert("result_refs".into(), result);
     }
     receipt.insert("provider_projection_truncated".into(), Value::Bool(true));
-    let rendered = serde_json::to_string(&Value::Object(receipt)).ok()?;
-    (estimate_text_tokens(&rendered) <= budget_estimated_tokens)
-        .then_some((rendered, preserved_artifact_refs))
+    let mut rendered = serde_json::to_string(&Value::Object(receipt.clone())).ok()?;
+    if estimate_text_tokens(&rendered) <= budget_estimated_tokens {
+        return Some((rendered, preserved_artifact_refs));
+    }
+
+    receipt.remove("result_refs");
+    receipt.remove("error");
+    rendered = serde_json::to_string(&Value::Object(receipt.clone())).ok()?;
+    if estimate_text_tokens(&rendered) <= budget_estimated_tokens {
+        return Some((rendered, 0));
+    }
+
+    receipt.remove("summary_text");
+    rendered = serde_json::to_string(&Value::Object(receipt)).ok()?;
+    (estimate_text_tokens(&rendered) <= budget_estimated_tokens).then_some((rendered, 0))
 }
 
 pub(super) fn compacted_round_messages(

@@ -56,6 +56,11 @@ pub(crate) struct BuiltinToolDefinition {
     pub(crate) spec: ToolSpec,
 }
 
+pub(crate) struct ToolModelRenderContext<'a> {
+    pub(crate) tool_execution_id: &'a str,
+    pub(crate) tool_output_budget_estimated_tokens: usize,
+}
+
 pub(crate) fn builtin_tool_definitions() -> Result<Vec<BuiltinToolDefinition>> {
     Ok(vec![
         sleep::definition()?,
@@ -277,6 +282,57 @@ pub(crate) fn render_tool_result_for_model(result: &ToolResult) -> Result<String
         view_image::NAME => view_image::render_for_model(result),
         _ => canonical_json_render(result),
     }
+}
+
+pub(crate) fn render_tool_result_for_model_with_context(
+    result: &ToolResult,
+    context: &ToolModelRenderContext<'_>,
+) -> Result<String> {
+    let rendered = if result.envelope.tool_name == get_workspace_state::NAME && !result.is_error() {
+        get_workspace_state::render_for_model(result, context)?
+    } else {
+        render_tool_result_for_model(result)?
+    };
+    if estimated_tokens(&rendered) <= context.tool_output_budget_estimated_tokens {
+        return Ok(rendered);
+    }
+
+    let output_ref = format!("tool_execution:{}:output", context.tool_execution_id);
+    let mut receipt = serde_json::json!({
+        "tool_name": result.envelope.tool_name,
+        "status": result.envelope.status,
+        "summary_text": truncate_chars(result.envelope.summary_text.as_deref().unwrap_or(""), 512),
+        "output_ref": output_ref,
+        "provider_projection_truncated": true,
+    });
+    if let Some(error) = result.envelope.error.as_ref() {
+        receipt["error"] = serde_json::json!({
+            "kind": error.kind,
+            "message": truncate_chars(&error.message, 512),
+            "recovery_hint": error
+                .recovery_hint
+                .as_deref()
+                .map(|value| truncate_chars(value, 512)),
+            "retryable": error.retryable,
+        });
+    }
+    serde_json::to_string(&receipt).map_err(Into::into)
+}
+
+fn estimated_tokens(text: &str) -> usize {
+    text.chars().count().saturating_add(3) / 4
+}
+
+pub(crate) fn truncate_chars(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    let mut truncated = value
+        .chars()
+        .take(max_chars.saturating_sub(1))
+        .collect::<String>();
+    truncated.push('…');
+    truncated
 }
 
 pub(crate) fn canonical_json_render(result: &ToolResult) -> Result<String> {

@@ -2553,7 +2553,15 @@ impl TurnExecution<'_> {
                 match tool_execution {
                     Ok((mut result, mut record)) => {
                         let result_content =
-                            crate::tool::tools::render_tool_result_for_model(&result)?;
+                            crate::tool::tools::render_tool_result_for_model_with_context(
+                                &result,
+                                &crate::tool::tools::ToolModelRenderContext {
+                                    tool_execution_id: &record.id,
+                                    tool_output_budget_estimated_tokens: turn_model_state
+                                        .resolved_policy
+                                        .tool_output_truncation_estimated_tokens,
+                                },
+                            )?;
                         let loop_directive = result.loop_directive.take();
                         let duration_ms = record.duration_ms;
                         let (turn_index, turn_id, run_id, current_work_item_id) = {

@@ -3505,7 +3505,7 @@
       "stability": "stable"
     },
     {
-      "description": "Read the current agent's workspace lifecycle state. Returns attached workspace\nbindings, the active projection and cwd, durable execution-root/worktree\nrecords (including retained or removed artifacts), and active occupancy.\n",
+      "description": "Read the current agent's workspace lifecycle state. Returns attached workspace\nbindings, the active projection and cwd, durable execution-root/worktree\nrecords (including retained or removed artifacts), and active occupancy. The\nmodel-facing receipt is a bounded summary that prioritizes the active root,\noccupied roots, and recent roots; use `output_ref` when the complete canonical\nevidence is required.\n",
       "family": "local_environment",
       "freeform_grammar": null,
       "input_schema": {
@@ -3521,7 +3521,7 @@
       "result_envelope": {
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
-        "model_rendering": "canonical_json_envelope",
+        "model_rendering": "custom_text_receipt",
         "success_result": "WorkspaceStateResult",
         "success_result_schema": null
       },
