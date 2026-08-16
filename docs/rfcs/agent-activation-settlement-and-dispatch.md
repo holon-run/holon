@@ -654,6 +654,36 @@ delivery evidence, but it must not use an absent terminal Turn to mean
 success. Queue `Processed`, the terminal Turn, and execution settlement commit
 atomically.
 
+### Unsettled Claim Reconciliation
+
+`Processed` without a matching terminal Turn remains a protocol conflict. The
+runtime represents it as a typed `ExecutionSettlementConflict`, not a string
+matched error and not permission to weaken the terminal evidence invariant.
+
+Bootstrap recovery, online settlement conflict handling, and
+`debug scheduler-recovery` inspect/apply use the same durable-facts planner.
+For a dequeued claim the planner chooses one of:
+
+- settle from a matching terminal Turn;
+- interrupt and requeue when exact source, owner, and revision fences prove
+  replay is safe;
+- interrupt and quarantine when replay evidence is ambiguous or the claim is
+  already a recovery attempt; or
+- no-op when the claim already converged.
+
+Automatic replay is bounded to one recovery generation. A second failure for
+the same recovery chain is not requeued again. Quarantine atomically records an
+interrupted execution outcome and `QueueEntryStatus::Quarantined`, preserves
+the message and attempt as audit evidence, releases the agent execution lane,
+and permits the next operator message to be claimed. Quarantine never rewrites
+unknown work as `Processed`.
+
+Every automatic decision emits durable `unsettled_claim_reconciled` evidence
+with the decision, reason, and recovery generation. Runtime diagnostics count
+missing terminal conflicts, unsettled-claim recoveries, and poison-message
+quarantines. The debug recovery projection exposes the same decision and
+generation used by apply.
+
 A WorkItem-bound activation must include one WorkItem disposition.
 
 ### Missing Settlement

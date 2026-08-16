@@ -8,6 +8,18 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ExecutionSettlementConflict {
+    #[error(
+        "execution attempt {attempt_id} cannot settle message {message_id} as processed without a matching terminal Turn"
+    )]
+    MissingTerminalTurn {
+        attempt_id: String,
+        message_id: String,
+        owner_work_item_id: Option<String>,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionProtocolState {
     pub agent_id: String,

@@ -24,6 +24,7 @@ mod tasks;
 #[cfg(test)]
 mod test_util;
 mod turn;
+mod unsettled_claim;
 mod waiting;
 pub(crate) mod workspace;
 pub(crate) mod workspace_control;
@@ -1258,12 +1259,14 @@ fn execution_protocol_settlement_transition_from_facts(
         terminal_turn,
     )?;
     let Some(terminal_turn) = matching_terminal_turn else {
-        return Err(anyhow!(
-            "execution attempt {} cannot settle message {} as processed without a matching \
-             terminal Turn",
-            attempt.attempt_id,
-            record.message_id
-        ));
+        return Err(
+            crate::domain::execution_protocol::ExecutionSettlementConflict::MissingTerminalTurn {
+                attempt_id: attempt.attempt_id.clone(),
+                message_id: record.message_id.clone(),
+                owner_work_item_id: owner_work_item_id.map(ToString::to_string),
+            }
+            .into(),
+        );
     };
 
     let outcome = match &attempt.binding {
@@ -1467,6 +1470,14 @@ fn execution_protocol_settlement_transition_from_facts(
             })],
         },
     )
+}
+
+fn execution_settlement_conflict(error: &anyhow::Error) -> bool {
+    error.chain().any(|source| {
+        source
+            .downcast_ref::<crate::domain::execution_protocol::ExecutionSettlementConflict>()
+            .is_some()
+    })
 }
 
 fn execution_attempt_for_message<'a>(
@@ -1709,6 +1720,8 @@ fn scheduler_task_result_claim_recovery_candidates(
                 expected_queue_entry: None,
                 eligible: false,
                 reason: "task_result_claim_evidence_incomplete".into(),
+                recovery_decision: "no_op".into(),
+                recovery_generation: u32::from(attempt.recovery_of_attempt_id.is_some()),
                 evidence: vec![
                     format!("work_item:{work_item_id}"),
                     format!("open_execution_attempt:{}", attempt.attempt_id),
@@ -1727,6 +1740,38 @@ fn scheduler_task_result_claim_recovery_candidates(
                 candidate.reason = "message_missing".into();
                 return Ok(candidate);
             };
+            let decision =
+                unsettled_claim::plan_unsettled_claim(&unsettled_claim::UnsettledClaimFacts {
+                    queue_status: entry.status.clone(),
+                    attempt_state: attempt.state,
+                    terminal_turn_completed: None,
+                    replay_is_exactly_fenced: true,
+                    recovery_of_attempt_id: attempt.recovery_of_attempt_id.clone(),
+                });
+            if let unsettled_claim::UnsettledClaimDecision::InterruptAndQuarantine { reason } =
+                decision
+            {
+                let mut proposed_entry = entry.clone();
+                proposed_entry.status = QueueEntryStatus::Quarantined;
+                proposed_entry.updated_at = Utc::now();
+                candidate.eligible = true;
+                candidate.reason = reason.into();
+                candidate.recovery_decision = "interrupt_and_quarantine".into();
+                candidate.evidence.push("recovery_generation=1".to_string());
+                candidate.proposed_queue_entry = Some(proposed_entry);
+                candidate.expected_queue_entry = Some(entry.clone());
+                candidate.proposed_command = Some(
+                    crate::domain::execution_protocol::ExecutionProtocolCommand::Interrupt(
+                        crate::domain::execution_protocol::InterruptExecution {
+                            attempt_id: attempt.attempt_id.clone(),
+                            outcome_id: format!("outcome:interrupted:{}", attempt.attempt_id),
+                            reason: reason.into(),
+                            interrupted_at: Utc::now().to_rfc3339(),
+                        },
+                    ),
+                );
+                return Ok(candidate);
+            }
             let recovery = exact_task_result_claim_recovery(
                 storage,
                 runtime_db,
@@ -1752,6 +1797,7 @@ fn scheduler_task_result_claim_recovery_candidates(
             proposed_entry.updated_at = Utc::now();
             candidate.eligible = true;
             candidate.reason = reason.into();
+            candidate.recovery_decision = "interrupt_and_requeue".into();
             candidate.evidence.push(format!(
                 "durable_work_item_revision:{}",
                 runtime_db
@@ -1790,6 +1836,8 @@ pub struct SchedulerTaskResultClaimRecoveryCandidate {
     pub expected_queue_entry: Option<QueueEntryRecord>,
     pub eligible: bool,
     pub reason: String,
+    pub recovery_decision: String,
+    pub recovery_generation: u32,
     pub evidence: Vec<String>,
     pub proposed_queue_entry: Option<QueueEntryRecord>,
     pub proposed_command: Option<crate::domain::execution_protocol::ExecutionProtocolCommand>,
@@ -2875,7 +2923,11 @@ fn apply_scheduler_recovery_plan_with_options(
             .commit_queue_with_execution_protocol(
                 &crate::runtime_db::transitions::QueueTransitionCommand {
                     agent_id: agent_id.to_string(),
-                    operation: crate::runtime_db::transitions::QueueOperation::Requeue,
+                    operation: if proposed_entry.status == QueueEntryStatus::Queued {
+                        crate::runtime_db::transitions::QueueOperation::Requeue
+                    } else {
+                        crate::runtime_db::transitions::QueueOperation::Settle
+                    },
                     mutation: crate::runtime_db::transitions::QueueMutation::CompareAndSet {
                         expected: expected_entry.clone(),
                         record: proposed_entry.clone(),
@@ -2905,6 +2957,12 @@ fn apply_scheduler_recovery_plan_with_options(
                 },
             )?;
         applied |= commit.applied;
+        if commit.applied {
+            crate::diagnostics::record_unsettled_claim_recovery();
+            if proposed_entry.status == QueueEntryStatus::Quarantined {
+                crate::diagnostics::record_poison_message_quarantined();
+            }
+        }
     }
     if !continuation_reconciliation.is_empty() {
         let audit_events = report
@@ -5696,29 +5754,39 @@ impl RuntimeHandle {
                         }
                         state
                     };
-                    self.commit_queue_terminal_settlement_with_evidence(
-                        QueueEntryRecord {
-                            message_id: message.id.clone(),
-                            agent_id: message.agent_id.clone(),
-                            priority: message.priority.clone(),
-                            status: queue_status,
-                            created_at: message.created_at,
-                            updated_at: Utc::now(),
-                        },
-                        audit_events,
-                        true,
-                        Some(&terminal_transition),
-                        Some(committed_state),
-                        failure_artifacts
-                            .as_ref()
-                            .map(|artifacts| vec![artifacts.transcript.clone()])
-                            .unwrap_or_default(),
-                        failure_artifacts
-                            .as_ref()
-                            .map(|artifacts| vec![artifacts.brief.clone()])
-                            .unwrap_or_default(),
-                    )
-                    .await?;
+                    let settlement = self
+                        .commit_queue_terminal_settlement_with_evidence(
+                            QueueEntryRecord {
+                                message_id: message.id.clone(),
+                                agent_id: message.agent_id.clone(),
+                                priority: message.priority.clone(),
+                                status: queue_status,
+                                created_at: message.created_at,
+                                updated_at: Utc::now(),
+                            },
+                            audit_events,
+                            true,
+                            Some(&terminal_transition),
+                            Some(committed_state),
+                            failure_artifacts
+                                .as_ref()
+                                .map(|artifacts| vec![artifacts.transcript.clone()])
+                                .unwrap_or_default(),
+                            failure_artifacts
+                                .as_ref()
+                                .map(|artifacts| vec![artifacts.brief.clone()])
+                                .unwrap_or_default(),
+                        )
+                        .await;
+                    if let Err(error) = settlement {
+                        if execution_settlement_conflict(&error) {
+                            crate::diagnostics::record_missing_terminal_turn_detected();
+                            if self.recover_scheduler_bootstrap_claims().await? > 0 {
+                                continue;
+                            }
+                        }
+                        return Err(error);
+                    }
                     let failed_state = {
                         let mut guard = self.inner.agent.lock().await;
                         guard.current_run_abort = None;
@@ -5738,27 +5806,37 @@ impl RuntimeHandle {
                     guard.state.clone()
                 };
                 self.append_state_changed_events(&processed_state)?;
-                self.commit_queue_terminal_settlement(
-                    QueueEntryRecord {
-                        message_id: message.id.clone(),
-                        agent_id: message.agent_id.clone(),
-                        priority: message.priority.clone(),
-                        status: QueueEntryStatus::Processed,
-                        created_at: message.created_at,
-                        updated_at: Utc::now(),
-                    },
-                    vec![AuditEvent::legacy(
-                        "queue_entry_settled",
-                        serde_json::json!({
-                            "message_id": message.id,
-                            "message_kind": message.kind,
-                            "status": QueueEntryStatus::Processed,
-                        }),
-                    )],
-                    true,
-                    Some(&terminal_transition),
-                )
-                .await?;
+                let settlement = self
+                    .commit_queue_terminal_settlement(
+                        QueueEntryRecord {
+                            message_id: message.id.clone(),
+                            agent_id: message.agent_id.clone(),
+                            priority: message.priority.clone(),
+                            status: QueueEntryStatus::Processed,
+                            created_at: message.created_at,
+                            updated_at: Utc::now(),
+                        },
+                        vec![AuditEvent::legacy(
+                            "queue_entry_settled",
+                            serde_json::json!({
+                                "message_id": message.id,
+                                "message_kind": message.kind,
+                                "status": QueueEntryStatus::Processed,
+                            }),
+                        )],
+                        true,
+                        Some(&terminal_transition),
+                    )
+                    .await;
+                if let Err(error) = settlement {
+                    if execution_settlement_conflict(&error) {
+                        crate::diagnostics::record_missing_terminal_turn_detected();
+                        if self.recover_scheduler_bootstrap_claims().await? > 0 {
+                            continue;
+                        }
+                    }
+                    return Err(error);
+                }
                 self.maybe_supersede_queued_provider_recovery(&message, Some(&terminal_transition))
                     .await?;
             }
@@ -5932,12 +6010,14 @@ impl RuntimeHandle {
                     continue;
                 }
             };
-            let task_result_recovery = if let Some(work_item_id) = work_item_id.as_deref() {
-                let work_queue_claim = matches!(
+            let work_queue_claim = work_item_id.as_deref().is_some_and(|work_item_id| {
+                matches!(
                     (&message.kind, &message.origin),
                     (MessageKind::SystemTick, MessageOrigin::System { subsystem })
                         if subsystem == "work_queue"
-                ) && message.work_item_id.as_deref() == Some(work_item_id);
+                ) && message.work_item_id.as_deref() == Some(work_item_id)
+            });
+            let task_result_recovery = if let Some(work_item_id) = work_item_id.as_deref() {
                 let task_result_recovery = exact_task_result_claim_recovery(
                     &self.inner.storage,
                     &self.inner.runtime_db,
@@ -5974,6 +6054,78 @@ impl RuntimeHandle {
                     terminal.kind == crate::types::TurnTerminalKind::Completed
                 })
             });
+            let canonical_first_attempt = attempt.attempt_id
+                == scheduler_executor::canonical_activation_id(&entry.message_id);
+            let decision =
+                unsettled_claim::plan_unsettled_claim(&unsettled_claim::UnsettledClaimFacts {
+                    queue_status: entry.status.clone(),
+                    attempt_state: attempt.state,
+                    terminal_turn_completed: terminal_turn.map(|_| terminal_is_completed),
+                    replay_is_exactly_fenced: task_result_recovery.is_some()
+                        || work_queue_claim
+                        || canonical_first_attempt,
+                    recovery_of_attempt_id: attempt.recovery_of_attempt_id.clone(),
+                });
+            if let unsettled_claim::UnsettledClaimDecision::InterruptAndQuarantine { reason } =
+                decision
+            {
+                entry.status = QueueEntryStatus::Quarantined;
+                entry.updated_at = self.now();
+                let message_id = entry.message_id.clone();
+                let execution_protocol = execution_protocol_settlement_transition_from_facts(
+                    &self.inner.storage,
+                    &self.inner.runtime_db,
+                    &entry,
+                    terminal_turn,
+                )?;
+                let commit = self
+                    .inner
+                    .runtime_db
+                    .transitions()
+                    .commit_queue_with_execution_protocol(
+                        &crate::runtime_db::transitions::QueueTransitionCommand {
+                            agent_id: agent_id.clone(),
+                            operation: crate::runtime_db::transitions::QueueOperation::Settle,
+                            mutation:
+                                crate::runtime_db::transitions::QueueMutation::CompareAndSet {
+                                    expected: expected_entry,
+                                    record: entry,
+                                },
+                            scheduler_claim_work_item: None,
+                            agent_state: None,
+                            message_evidence: Vec::new(),
+                            transcript_entries: Vec::new(),
+                            turn_record: terminal_turn.cloned(),
+                            audit_events: vec![AuditEvent::legacy(
+                                "unsettled_claim_reconciled",
+                                serde_json::json!({
+                                    "agent_id": agent_id,
+                                    "message_id": message_id,
+                                    "activation_id": activation_id,
+                                    "work_item_id": work_item_id,
+                                    "decision": "interrupt_and_quarantine",
+                                    "reason": reason,
+                                    "recovery_generation": usize::from(
+                                        attempt.recovery_of_attempt_id.is_some()
+                                    ),
+                                    "provenance": "bootstrap_reconciliation",
+                                }),
+                            )],
+                            notify_scheduler: true,
+                            fault: self.take_transition_fault(),
+                            brief_evidence: Vec::new(),
+                        },
+                        &execution_protocol,
+                    )?;
+                if commit.applied {
+                    recovered += 1;
+                    crate::diagnostics::record_unsettled_claim_recovery();
+                    crate::diagnostics::record_poison_message_quarantined();
+                }
+                drop(guard);
+                self.apply_transition_commit(commit).await;
+                continue;
+            }
             if attempt.state == crate::domain::execution_protocol::ExecutionAttemptState::Open
                 && terminal_turn.is_none()
                 && task_result_recovery.is_some()
@@ -6021,6 +6173,7 @@ impl RuntimeHandle {
                     )?;
                 if commit.applied {
                     recovered += 1;
+                    crate::diagnostics::record_unsettled_claim_recovery();
                     guard.restore_bootstrap_replay_message(&self.inner.storage, &message)?;
                 }
                 drop(guard);

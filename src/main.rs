@@ -2663,11 +2663,13 @@ fn print_scheduler_recovery_report(
     }
     for candidate in report.task_result_claim_recoveries {
         println!(
-            "- task_result_claim:{} attempt={} work_item={} eligible={} reason={} target={:?}",
+            "- task_result_claim:{} attempt={} work_item={} eligible={} decision={} generation={} reason={} target={:?}",
             candidate.message_id,
             candidate.activation_id,
             candidate.work_item_id,
             candidate.eligible,
+            candidate.recovery_decision,
+            candidate.recovery_generation,
             candidate.reason,
             candidate
                 .proposed_queue_entry

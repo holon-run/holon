@@ -2762,6 +2762,97 @@ async fn bootstrap_recovers_unadvanced_task_result_claim_but_diagnostic_apply_do
 }
 
 #[tokio::test]
+async fn bootstrap_quarantines_repeated_task_result_claim_recovery() {
+    use crate::domain::execution_protocol::ExecutionAttemptState;
+
+    let fixture = stale_task_result_claim_fixture("task-bootstrap-bounded-recovery").await;
+    let mut state = fixture
+        .runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .expect("TaskResult fixture execution partition");
+    state
+        .attempts
+        .get_mut(&fixture.attempt_id)
+        .expect("TaskResult fixture attempt")
+        .recovery_of_attempt_id = Some("attempt:prior-recovery".into());
+    fixture
+        .runtime
+        .inner
+        .runtime_db
+        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &state))
+        .unwrap();
+
+    assert_eq!(
+        fixture
+            .runtime
+            .recover_scheduler_bootstrap_claims()
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        fixture
+            .runtime
+            .recover_scheduler_bootstrap_claims()
+            .await
+            .unwrap(),
+        0
+    );
+    let recovered = fixture
+        .runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .expect("recovered execution partition");
+    assert_eq!(
+        recovered.attempts[&fixture.attempt_id].state,
+        ExecutionAttemptState::Interrupted
+    );
+    assert_eq!(
+        fixture
+            .runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&fixture.result.id)
+            .unwrap()
+            .expect("quarantined TaskResult")
+            .status,
+        QueueEntryStatus::Quarantined
+    );
+    let event = fixture
+        .runtime
+        .inner
+        .storage
+        .read_recent_events(100)
+        .unwrap()
+        .into_iter()
+        .find(|event| {
+            event.kind == "unsettled_claim_reconciled"
+                && event
+                    .data
+                    .get("message_id")
+                    .and_then(|value| value.as_str())
+                    == Some(fixture.result.id.as_str())
+        })
+        .expect("bounded recovery should emit durable reconciliation evidence");
+    assert_eq!(
+        event.data.get("decision").and_then(|value| value.as_str()),
+        Some("interrupt_and_quarantine")
+    );
+    assert_eq!(
+        event.data.get("reason").and_then(|value| value.as_str()),
+        Some("bounded_replay_exhausted")
+    );
+}
+
+#[tokio::test]
 async fn scheduler_recovery_task_result_claim_is_atomic_fenced_and_idempotent() {
     use crate::domain::execution_protocol::{ExecutionAttemptState, WorkItemExecutionState};
     use crate::runtime_db::transitions::TransitionFaultPoint;
@@ -2942,6 +3033,82 @@ async fn scheduler_recovery_task_result_claim_is_atomic_fenced_and_idempotent() 
             .unwrap()
             .unwrap(),
         before_queue
+    );
+}
+
+#[tokio::test]
+async fn scheduler_recovery_quarantines_repeated_task_result_claim() {
+    use crate::domain::execution_protocol::ExecutionAttemptState;
+
+    let fixture = stale_task_result_claim_fixture("task-debug-bounded-recovery").await;
+    let mut state = fixture
+        .runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .expect("TaskResult fixture execution partition");
+    state
+        .attempts
+        .get_mut(&fixture.attempt_id)
+        .expect("TaskResult fixture attempt")
+        .recovery_of_attempt_id = Some("attempt:prior-recovery".into());
+    fixture
+        .runtime
+        .inner
+        .runtime_db
+        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &state))
+        .unwrap();
+
+    let report = isolated_task_result_claim_report(&fixture.runtime);
+    let [candidate] = report.task_result_claim_recoveries.as_slice() else {
+        panic!("expected one repeated TaskResult claim candidate: {report:#?}");
+    };
+    assert!(candidate.eligible);
+    assert_eq!(candidate.reason, "bounded_replay_exhausted");
+    assert_eq!(
+        candidate
+            .proposed_queue_entry
+            .as_ref()
+            .map(|entry| entry.status.clone()),
+        Some(QueueEntryStatus::Quarantined)
+    );
+
+    assert_eq!(
+        apply_scheduler_recovery_plan_with_backup_policy(
+            &fixture.runtime.inner.storage,
+            &fixture.runtime.inner.runtime_db,
+            "default",
+            &report,
+            SchedulerRecoveryBackupPolicy::SkipApproved,
+        )
+        .unwrap(),
+        (1, None)
+    );
+    let recovered = fixture
+        .runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .expect("recovered execution partition");
+    assert_eq!(
+        recovered.attempts[&fixture.attempt_id].state,
+        ExecutionAttemptState::Interrupted
+    );
+    assert_eq!(
+        fixture
+            .runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&fixture.result.id)
+            .unwrap()
+            .expect("quarantined TaskResult")
+            .status,
+        QueueEntryStatus::Quarantined
     );
 }
 
@@ -6382,7 +6549,7 @@ async fn restarted_interrupted_unbound_operator_prompt_does_not_block_resent_pro
         .into_iter()
         .find(|entry| entry.message_id == first.id)
         .map(|entry| entry.status);
-    assert_eq!(recovered_first_status, Some(QueueEntryStatus::Aborted));
+    assert_eq!(recovered_first_status, Some(QueueEntryStatus::Quarantined));
     let second = runtime
         .enqueue(trusted_operator_prompt(None, "resent operator prompt"))
         .await
@@ -6640,6 +6807,9 @@ async fn canonical_processed_settlement_without_terminal_turn_fails_closed() {
         )
         .await
         .unwrap_err();
+    assert!(error
+        .downcast_ref::<crate::domain::execution_protocol::ExecutionSettlementConflict>()
+        .is_some());
     assert!(error
         .to_string()
         .contains("without a matching terminal Turn"));

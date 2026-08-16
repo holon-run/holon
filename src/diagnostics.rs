@@ -35,6 +35,12 @@ static SCHEDULER_POLL_STOPPED: MetricAccumulator = MetricAccumulator::new("sched
 static SCHEDULER_POLL_SHUTDOWN: MetricAccumulator =
     MetricAccumulator::new("scheduler.poll.shutdown");
 static SCHEDULER_POLL_SKIPPED: MetricAccumulator = MetricAccumulator::new("scheduler.poll.skipped");
+static SCHEDULER_MISSING_TERMINAL_TURN: MetricAccumulator =
+    MetricAccumulator::new("scheduler.missing_terminal_turn_detected");
+static SCHEDULER_UNSETTLED_CLAIM_RECOVERY: MetricAccumulator =
+    MetricAccumulator::new("scheduler.unsettled_claim_recovery");
+static SCHEDULER_POISON_MESSAGE_QUARANTINED: MetricAccumulator =
+    MetricAccumulator::new("scheduler.poison_message_quarantined");
 
 // Turn lifecycle
 static TURN_TOTAL: MetricAccumulator = MetricAccumulator::new("turn.total");
@@ -225,6 +231,21 @@ pub fn record_scheduler_poll(outcome: &'static str, elapsed: Duration) {
     process_started_at();
     SCHEDULER_POLL_ALL.record(elapsed, None);
     scheduler_poll_accumulator(outcome).record(elapsed, None);
+}
+
+pub fn record_missing_terminal_turn_detected() {
+    process_started_at();
+    SCHEDULER_MISSING_TERMINAL_TURN.record(Duration::ZERO, None);
+}
+
+pub fn record_unsettled_claim_recovery() {
+    process_started_at();
+    SCHEDULER_UNSETTLED_CLAIM_RECOVERY.record(Duration::ZERO, None);
+}
+
+pub fn record_poison_message_quarantined() {
+    process_started_at();
+    SCHEDULER_POISON_MESSAGE_QUARANTINED.record(Duration::ZERO, None);
 }
 
 // Turn lifecycle recording
@@ -455,6 +476,9 @@ pub fn performance_snapshot() -> PerformanceDiagnosticsSnapshot {
             SCHEDULER_POLL_STOPPED.snapshot(false),
             SCHEDULER_POLL_SHUTDOWN.snapshot(false),
             SCHEDULER_POLL_SKIPPED.snapshot(false),
+            SCHEDULER_MISSING_TERMINAL_TURN.snapshot(false),
+            SCHEDULER_UNSETTLED_CLAIM_RECOVERY.snapshot(false),
+            SCHEDULER_POISON_MESSAGE_QUARANTINED.snapshot(false),
         ],
         turn: vec![
             TURN_TOTAL.snapshot(false),
