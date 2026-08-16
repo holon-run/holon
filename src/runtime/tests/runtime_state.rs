@@ -2850,6 +2850,17 @@ async fn bootstrap_quarantines_repeated_task_result_claim_recovery() {
         event.data.get("reason").and_then(|value| value.as_str()),
         Some("bounded_replay_exhausted")
     );
+    let attempt = &recovered.attempts[&fixture.attempt_id];
+    assert!(matches!(
+        &recovered.outcomes[attempt
+            .terminal_outcome_id
+            .as_deref()
+            .expect("quarantine should persist interruption evidence")]
+        .outcome,
+        crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
+            crate::domain::execution_protocol::WorkItemOutcome::Interrupted { reason }
+        ) if reason == "bounded_replay_exhausted"
+    ));
 }
 
 #[tokio::test]

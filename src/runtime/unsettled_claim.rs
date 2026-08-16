@@ -43,6 +43,7 @@ pub(crate) fn plan_unsettled_claim(facts: &UnsettledClaimFacts) -> UnsettledClai
             reason: "terminal_attempt_missing_terminal_turn",
         };
     }
+    // Recovery lineage takes precedence over a valid fence so one replay cannot recurse.
     if facts.recovery_of_attempt_id.is_some() {
         return UnsettledClaimDecision::InterruptAndQuarantine {
             reason: "bounded_replay_exhausted",

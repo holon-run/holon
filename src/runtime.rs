@@ -6072,12 +6072,23 @@ impl RuntimeHandle {
                 entry.status = QueueEntryStatus::Quarantined;
                 entry.updated_at = self.now();
                 let message_id = entry.message_id.clone();
-                let execution_protocol = execution_protocol_settlement_transition_from_facts(
-                    &self.inner.storage,
-                    &self.inner.runtime_db,
-                    &entry,
-                    terminal_turn,
-                )?;
+                let execution_protocol =
+                    crate::runtime_db::transitions::ExecutionProtocolTransition {
+                        bootstrap: None,
+                        commands: vec![
+                            crate::domain::execution_protocol::ExecutionProtocolCommand::Interrupt(
+                                crate::domain::execution_protocol::InterruptExecution {
+                                    attempt_id: attempt.attempt_id.clone(),
+                                    outcome_id: format!(
+                                        "outcome:interrupted:{}",
+                                        attempt.attempt_id
+                                    ),
+                                    reason: reason.into(),
+                                    interrupted_at: entry.updated_at.to_rfc3339(),
+                                },
+                            ),
+                        ],
+                    };
                 let commit = self
                     .inner
                     .runtime_db
@@ -6105,7 +6116,7 @@ impl RuntimeHandle {
                                     "work_item_id": work_item_id,
                                     "decision": "interrupt_and_quarantine",
                                     "reason": reason,
-                                    "recovery_generation": usize::from(
+                                    "recovery_generation": u32::from(
                                         attempt.recovery_of_attempt_id.is_some()
                                     ),
                                     "provenance": "bootstrap_reconciliation",
