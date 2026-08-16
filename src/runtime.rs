@@ -1755,6 +1755,8 @@ fn scheduler_task_result_claim_recovery_candidates(
                 queue_status: entry.status.clone(),
                 health: SchedulerUnsettledClaimHealth::Unhealthy,
                 lane_blocked: true,
+                // Queue entries currently expose the latest durable update, not a
+                // distinct claimed-at timestamp, so this is a diagnostic approximation.
                 claim_age_seconds: Utc::now()
                     .signed_duration_since(entry.updated_at)
                     .num_seconds()
@@ -6109,36 +6111,43 @@ impl RuntimeHandle {
                         if subsystem == "work_queue"
                 ) && message.work_item_id.as_deref() == Some(work_item_id)
             });
-            let (task_result_recovery, task_result_replay_fence) =
-                if let Some(work_item_id) = work_item_id.as_deref() {
-                    let task_result_recovery = exact_task_result_claim_recovery(
-                        &self.inner.storage,
-                        &self.inner.runtime_db,
-                        &message,
-                        &attempt,
-                        work_item_id,
-                        self.now(),
-                        TaskResultClaimRecoveryAuthority::RuntimeTerminatedBootstrap,
-                    )?;
-                    match task_result_recovery {
-                        TaskResultClaimRecovery::Replayable { transition, .. } => (
-                            Some(transition),
-                            unsettled_claim::ReplayFence::ExactReplayable,
-                        ),
-                        TaskResultClaimRecovery::Revoked { .. } => {
-                            (None, unsettled_claim::ReplayFence::Revoked)
-                        }
-                        TaskResultClaimRecovery::RequiresInactiveRuntime => {
-                            unreachable!("bootstrap authority permits equal-revision recovery")
-                        }
-                        TaskResultClaimRecovery::Ineligible { .. } if !work_queue_claim => continue,
-                        TaskResultClaimRecovery::Ineligible { .. } => {
-                            (None, unsettled_claim::ReplayFence::Ambiguous)
-                        }
+            let (task_result_recovery, task_result_replay_fence) = if let Some(work_item_id) =
+                work_item_id.as_deref()
+            {
+                let task_result_recovery = exact_task_result_claim_recovery(
+                    &self.inner.storage,
+                    &self.inner.runtime_db,
+                    &message,
+                    &attempt,
+                    work_item_id,
+                    self.now(),
+                    TaskResultClaimRecoveryAuthority::RuntimeTerminatedBootstrap,
+                )?;
+                match task_result_recovery {
+                    TaskResultClaimRecovery::Replayable { transition, .. } => (
+                        Some(transition),
+                        unsettled_claim::ReplayFence::ExactReplayable,
+                    ),
+                    TaskResultClaimRecovery::Revoked { .. } => {
+                        (None, unsettled_claim::ReplayFence::Revoked)
                     }
-                } else {
-                    (None, unsettled_claim::ReplayFence::Ambiguous)
-                };
+                    TaskResultClaimRecovery::RequiresInactiveRuntime => {
+                        tracing::error!(
+                            agent_id = %agent_id,
+                            message_id = %entry.message_id,
+                            activation_id = %activation_id,
+                            "bootstrap task-result recovery unexpectedly required an inactive runtime"
+                        );
+                        continue;
+                    }
+                    TaskResultClaimRecovery::Ineligible { .. } if !work_queue_claim => continue,
+                    TaskResultClaimRecovery::Ineligible { .. } => {
+                        (None, unsettled_claim::ReplayFence::Ambiguous)
+                    }
+                }
+            } else {
+                (None, unsettled_claim::ReplayFence::Ambiguous)
+            };
 
             let terminal_turn = turns.iter().find(|turn| {
                 turn.terminal.is_some()
