@@ -5,8 +5,15 @@ pub(crate) struct UnsettledClaimFacts {
     pub queue_status: QueueEntryStatus,
     pub attempt_state: ExecutionAttemptState,
     pub terminal_turn_completed: Option<bool>,
-    pub replay_is_exactly_fenced: bool,
+    pub replay_fence: ReplayFence,
     pub recovery_of_attempt_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReplayFence {
+    ExactReplayable,
+    Revoked,
+    Ambiguous,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,13 +53,18 @@ pub(crate) fn plan_unsettled_claim(facts: &UnsettledClaimFacts) -> UnsettledClai
             reason: "terminal_attempt_missing_terminal_turn",
         };
     }
-    // Recovery lineage takes precedence over a valid fence so one replay cannot recurse.
+    if facts.replay_fence == ReplayFence::Revoked {
+        return UnsettledClaimDecision::InterruptAndQuarantine {
+            reason: "task_result_wait_cancelled",
+        };
+    }
+    // Recovery lineage takes precedence over a replayable fence so one replay cannot recurse.
     if facts.recovery_of_attempt_id.is_some() {
         return UnsettledClaimDecision::InterruptAndQuarantine {
             reason: "bounded_replay_exhausted",
         };
     }
-    if facts.replay_is_exactly_fenced {
+    if facts.replay_fence == ReplayFence::ExactReplayable {
         return UnsettledClaimDecision::InterruptAndRequeue {
             reason: "exact_fence_replay",
         };
@@ -71,7 +83,7 @@ mod tests {
             queue_status: QueueEntryStatus::Dequeued,
             attempt_state: ExecutionAttemptState::Open,
             terminal_turn_completed: None,
-            replay_is_exactly_fenced: false,
+            replay_fence: ReplayFence::Ambiguous,
             recovery_of_attempt_id: None,
         }
     }
@@ -94,7 +106,7 @@ mod tests {
     fn exact_fence_allows_one_replay() {
         assert_eq!(
             plan_unsettled_claim(&UnsettledClaimFacts {
-                replay_is_exactly_fenced: true,
+                replay_fence: ReplayFence::ExactReplayable,
                 ..facts()
             }),
             UnsettledClaimDecision::InterruptAndRequeue {
@@ -107,7 +119,7 @@ mod tests {
     fn replay_attempt_is_quarantined_instead_of_looping() {
         assert_eq!(
             plan_unsettled_claim(&UnsettledClaimFacts {
-                replay_is_exactly_fenced: true,
+                replay_fence: ReplayFence::ExactReplayable,
                 recovery_of_attempt_id: Some("attempt:original".into()),
                 ..facts()
             }),
@@ -123,6 +135,20 @@ mod tests {
             plan_unsettled_claim(&facts()),
             UnsettledClaimDecision::InterruptAndQuarantine {
                 reason: "replay_fence_ambiguous",
+            }
+        );
+    }
+
+    #[test]
+    fn revoked_replay_authority_is_quarantined_even_for_recovery_attempt() {
+        assert_eq!(
+            plan_unsettled_claim(&UnsettledClaimFacts {
+                replay_fence: ReplayFence::Revoked,
+                recovery_of_attempt_id: Some("attempt:original".into()),
+                ..facts()
+            }),
+            UnsettledClaimDecision::InterruptAndQuarantine {
+                reason: "task_result_wait_cancelled",
             }
         );
     }

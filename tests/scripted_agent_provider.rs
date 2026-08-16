@@ -159,9 +159,19 @@ async fn scripted_agent_provider_drives_tool_loop_and_captures_requests() -> Res
         .find(|result| result.tool_use_id == "agent-get-1")
         .expect("AgentGet result should be returned to the provider");
     assert!(!agent_get_result.is_error);
+    let agent_get_content: serde_json::Value = serde_json::from_str(&agent_get_result.content)?;
     assert!(
-        agent_get_result.content.contains("\"agent\""),
-        "AgentGet tool result should preserve the structured result envelope"
+        agent_get_content
+            .pointer("/result/agent")
+            .is_some_and(|value| value.is_object())
+            || (agent_get_content
+                .get("provider_projection_truncated")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+                && agent_get_content
+                    .get("output_ref")
+                    .is_some_and(|value| value.is_string())),
+        "AgentGet tool result should preserve either the full result or its canonical truncation receipt"
     );
 
     let state = runtime.agent_state().await?;

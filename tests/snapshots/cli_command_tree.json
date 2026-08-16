@@ -875,6 +875,13 @@
         "required": false
       },
       {
+        "long": "message-id",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
         "long": "no-backup",
         "short": null,
         "default_value": null,

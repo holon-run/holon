@@ -16,6 +16,126 @@ struct BlockingProvider {
     started: Arc<tokio::sync::Notify>,
 }
 
+#[tokio::test]
+async fn cancelled_task_result_wait_quarantines_open_claim_and_releases_lane() {
+    use crate::domain::execution_protocol::ExecutionAttemptState;
+
+    let fixture = cancelled_wait_task_result_claim_fixture("task-cancelled-wait-recovery").await;
+    let report = isolated_task_result_claim_report(&fixture.runtime);
+    let [candidate] = report.task_result_claim_recoveries.as_slice() else {
+        panic!("expected one cancelled-wait TaskResult claim candidate: {report:#?}");
+    };
+    assert!(candidate.eligible, "candidate: {candidate:#?}");
+    assert_eq!(candidate.health, SchedulerUnsettledClaimHealth::Recoverable);
+    assert!(candidate.lane_blocked);
+    assert_eq!(candidate.reason, "task_result_wait_cancelled");
+    assert_eq!(candidate.recovery_decision, "interrupt_and_quarantine");
+    assert!(candidate
+        .evidence
+        .iter()
+        .any(|evidence| evidence.starts_with("cancelled_wait:")));
+    assert_eq!(
+        candidate
+            .proposed_queue_entry
+            .as_ref()
+            .map(|entry| entry.status.clone()),
+        Some(QueueEntryStatus::Quarantined)
+    );
+
+    assert_eq!(
+        fixture
+            .runtime
+            .recover_scheduler_bootstrap_claims()
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        fixture
+            .runtime
+            .recover_scheduler_bootstrap_claims()
+            .await
+            .unwrap(),
+        0
+    );
+    let recovered = fixture
+        .runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .expect("recovered execution partition");
+    assert_eq!(
+        recovered.attempts[&fixture.attempt_id].state,
+        ExecutionAttemptState::Interrupted
+    );
+    assert!(matches!(
+        recovered.work_items[&fixture.work_item_id].state,
+        crate::domain::execution_protocol::WorkItemExecutionState::Runnable { .. }
+    ));
+    assert_eq!(
+        fixture
+            .runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&fixture.result.id)
+            .unwrap()
+            .expect("quarantined TaskResult")
+            .status,
+        QueueEntryStatus::Quarantined
+    );
+}
+
+#[tokio::test]
+async fn scheduler_recovery_apply_quarantines_cancelled_task_result_claim_atomically() {
+    let fixture = cancelled_wait_task_result_claim_fixture("task-cancelled-wait-debug-apply").await;
+    let report = isolated_task_result_claim_report(&fixture.runtime);
+    let [candidate] = report.task_result_claim_recoveries.as_slice() else {
+        panic!("expected one cancelled-wait TaskResult claim candidate: {report:#?}");
+    };
+    assert!(candidate.eligible);
+    assert_eq!(candidate.reason, "task_result_wait_cancelled");
+
+    assert_eq!(
+        apply_scheduler_recovery_plan_with_backup_policy(
+            &fixture.runtime.inner.storage,
+            &fixture.runtime.inner.runtime_db,
+            "default",
+            &report,
+            SchedulerRecoveryBackupPolicy::SkipApproved,
+        )
+        .unwrap(),
+        (1, None)
+    );
+    assert_eq!(
+        apply_scheduler_recovery_plan_with_backup_policy(
+            &fixture.runtime.inner.storage,
+            &fixture.runtime.inner.runtime_db,
+            "default",
+            &report,
+            SchedulerRecoveryBackupPolicy::SkipApproved,
+        )
+        .unwrap(),
+        (0, None)
+    );
+    let recovered = isolated_task_result_claim_report(&fixture.runtime);
+    assert!(recovered.task_result_claim_recoveries.is_empty());
+    assert_eq!(
+        fixture
+            .runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&fixture.result.id)
+            .unwrap()
+            .expect("quarantined TaskResult")
+            .status,
+        QueueEntryStatus::Quarantined
+    );
+}
+
 struct GatedFailingProvider {
     started: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
@@ -2460,6 +2580,17 @@ struct StaleTaskResultClaimFixture {
 }
 
 async fn stale_task_result_claim_fixture(task_id: &str) -> StaleTaskResultClaimFixture {
+    task_result_claim_fixture(task_id, false).await
+}
+
+async fn cancelled_wait_task_result_claim_fixture(task_id: &str) -> StaleTaskResultClaimFixture {
+    task_result_claim_fixture(task_id, true).await
+}
+
+async fn task_result_claim_fixture(
+    task_id: &str,
+    cancel_wait_before_result: bool,
+) -> StaleTaskResultClaimFixture {
     use crate::domain::execution_protocol::{
         AdmittedFences, ExecutionAttempt, ExecutionAttemptState, ExecutionBinding, ExecutionOrigin,
         ExecutionPriority, ExecutionProtocolState, ExecutionProvenance, ExecutionSource,
@@ -2539,6 +2670,30 @@ async fn stale_task_result_claim_fixture(task_id: &str) -> StaleTaskResultClaimF
     result.work_item_id = Some(work_item.id.clone());
     result.turn_id = Some(format!("turn-{task_id}-result"));
     terminal_task.parent_message_id = Some(result.id.clone());
+    if cancel_wait_before_result {
+        let mut wait = runtime
+            .storage()
+            .latest_wait_conditions()
+            .unwrap()
+            .into_iter()
+            .find(|condition| {
+                condition.wake_sources.iter().any(|source| {
+                    matches!(source, WakeSource::TaskResult { task_id: source_task_id } if source_task_id == task_id)
+                })
+                    && condition.work_item_id.as_deref() == Some(work_item.id.as_str())
+            })
+            .expect("active TaskResult wait");
+        wait.status = WaitConditionStatus::Cancelled;
+        wait.updated_at = Utc::now();
+        wait.cancelled_at = Some(wait.updated_at);
+        wait.trigger_message_id = Some(result.id.clone());
+        runtime
+            .inner
+            .runtime_db
+            .wait_conditions()
+            .upsert(&wait)
+            .unwrap();
+    }
     assert!(!terminal_task.terminal_reentry());
     runtime
         .commit_terminal_task_result(&terminal_task, "task_completed", &result)
@@ -2705,6 +2860,8 @@ async fn bootstrap_recovers_unadvanced_task_result_claim_but_diagnostic_apply_do
         panic!("expected one unadvanced TaskResult claim candidate: {report:#?}");
     };
     assert!(!candidate.eligible);
+    assert_eq!(candidate.health, SchedulerUnsettledClaimHealth::Unhealthy);
+    assert!(candidate.lane_blocked);
     assert_eq!(candidate.reason, "requires_inactive_runtime_recovery");
     assert!(candidate.proposed_command.is_none());
 

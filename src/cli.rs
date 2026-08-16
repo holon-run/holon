@@ -586,6 +586,8 @@ pub enum DebugCommands {
         #[arg(long)]
         agent: Option<String>,
         #[arg(long)]
+        message_id: Option<String>,
+        #[arg(long)]
         json: bool,
         #[arg(long)]
         apply: bool,

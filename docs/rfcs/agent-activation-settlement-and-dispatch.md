@@ -667,9 +667,19 @@ For a dequeued claim the planner chooses one of:
 - settle from a matching terminal Turn;
 - interrupt and requeue when exact source, owner, and revision fences prove
   replay is safe;
+- interrupt and quarantine when an exact cancelled task wait proves that the
+  result's continuation authority was revoked;
 - interrupt and quarantine when replay evidence is ambiguous or the claim is
   already a recovery attempt; or
 - no-op when the claim already converged.
+
+An exact cancelled task wait is negative authority evidence, not incomplete
+evidence and not replay authority. The runtime must never restore that wait,
+replay its `TaskResult`, or mark the claim `Processed`; bootstrap, online
+settlement conflict handling, and debug recovery all use
+`task_result_wait_cancelled` for the canonical interrupt-and-quarantine
+decision. Missing, duplicate, or identity-mismatched waits remain ambiguous and
+fail closed.
 
 Automatic replay is bounded to one recovery generation. A second failure for
 the same recovery chain is not requeued again. Quarantine atomically records an
@@ -682,7 +692,14 @@ Every automatic decision emits durable `unsettled_claim_reconciled` evidence
 with the decision, reason, and recovery generation. Runtime diagnostics count
 missing terminal conflicts, unsettled-claim recoveries, and poison-message
 quarantines. The debug recovery projection exposes the same decision and
-generation used by apply.
+generation used by apply. Operators may constrain both inspect and apply to one
+TaskResult claim with `--message-id`; the selector must match exactly one
+candidate and does not override eligibility.
+
+Every retained dequeued TaskResult claim also reports its age, whether it still
+blocks the execution lane, and a `recoverable` or `unhealthy` health class.
+Ambiguous claims remain fail-closed and ineligible, but they must be externally
+visible as unhealthy rather than silently represented as an ordinary no-op.
 
 A WorkItem-bound activation must include one WorkItem disposition.
 

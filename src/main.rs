@@ -1491,6 +1491,7 @@ mod tests {
             command:
                 DebugCommands::SchedulerRecovery {
                     agent,
+                    message_id,
                     json,
                     apply,
                     no_backup,
@@ -1500,6 +1501,7 @@ mod tests {
             panic!("expected debug scheduler-recovery command");
         };
         assert_eq!(agent.as_deref(), Some("pm"));
+        assert!(message_id.is_none());
         assert!(json);
         assert!(!apply);
         assert!(!no_backup);
@@ -1529,6 +1531,28 @@ mod tests {
         };
         assert!(apply);
         assert!(no_backup);
+    }
+
+    #[test]
+    fn debug_scheduler_recovery_command_parses_message_selector() {
+        let cli = Cli::parse_from([
+            "holon",
+            "debug",
+            "scheduler-recovery",
+            "--message-id",
+            "message:task-restart:task-1",
+        ]);
+        let Commands::Debug {
+            command:
+                DebugCommands::SchedulerRecovery {
+                    message_id, apply, ..
+                },
+        } = cli.command
+        else {
+            panic!("expected debug scheduler-recovery command");
+        };
+        assert_eq!(message_id.as_deref(), Some("message:task-restart:task-1"));
+        assert!(!apply);
     }
 
     #[test]
@@ -2513,10 +2537,11 @@ async fn handle_debug_command(config: AppConfig, command: DebugCommands) -> Resu
         }
         DebugCommands::SchedulerRecovery {
             agent,
+            message_id,
             json,
             apply,
             no_backup,
-        } => print_scheduler_recovery_report(&config, agent, json, apply, no_backup),
+        } => print_scheduler_recovery_report(&config, agent, message_id, json, apply, no_backup),
         DebugCommands::SchedulerRecoveryFixture {
             agent,
             objective,
@@ -2584,6 +2609,7 @@ async fn seed_scheduler_restart_fixture(
 fn print_scheduler_recovery_report(
     config: &AppConfig,
     agent: Option<String>,
+    message_id: Option<String>,
     json: bool,
     apply: bool,
     no_backup: bool,
@@ -2593,6 +2619,7 @@ fn print_scheduler_recovery_report(
     let storage = host.agent_storage(&agent_id)?;
     let mut report =
         holon::runtime::scheduler_recovery_report(&storage, host.runtime_db(), &agent_id)?;
+    filter_scheduler_recovery_report(&mut report, message_id.as_deref(), true)?;
     let mut apply_result = None;
     if apply {
         let _maintenance_lock = RuntimeDbLock::try_lock(config.runtime_db_maintenance_lock_path())
@@ -2613,6 +2640,7 @@ fn print_scheduler_recovery_report(
             backup_policy,
         ));
         report = holon::runtime::scheduler_recovery_report(&storage, host.runtime_db(), &agent_id)?;
+        filter_scheduler_recovery_report(&mut report, message_id.as_deref(), false)?;
     }
     if json {
         return print_json(&serde_json::json!({
@@ -2663,10 +2691,13 @@ fn print_scheduler_recovery_report(
     }
     for candidate in report.task_result_claim_recoveries {
         println!(
-            "- task_result_claim:{} attempt={} work_item={} eligible={} decision={} generation={} reason={} target={:?}",
+            "- task_result_claim:{} attempt={} work_item={} health={:?} lane_blocked={} age_seconds={} eligible={} decision={} generation={} reason={} target={:?}",
             candidate.message_id,
             candidate.activation_id,
             candidate.work_item_id,
+            candidate.health,
+            candidate.lane_blocked,
+            candidate.claim_age_seconds,
             candidate.eligible,
             candidate.recovery_decision,
             candidate.recovery_generation,
@@ -2694,6 +2725,33 @@ fn print_scheduler_recovery_report(
             candidate.reason,
         );
     }
+    Ok(())
+}
+
+fn filter_scheduler_recovery_report(
+    report: &mut holon::runtime::SchedulerRecoveryReport,
+    message_id: Option<&str>,
+    require_match: bool,
+) -> Result<()> {
+    let Some(message_id) = message_id else {
+        return Ok(());
+    };
+    let matching = report
+        .task_result_claim_recoveries
+        .iter()
+        .filter(|candidate| candidate.message_id == message_id)
+        .count();
+    if matching > 1 || (require_match && matching != 1) {
+        return Err(anyhow!(
+            "scheduler recovery selector `{message_id}` matched {matching} TaskResult claim candidates; expected exactly one"
+        ));
+    }
+    report.candidates.clear();
+    report.legacy_adoptions.clear();
+    report.continuation_reconciliations.clear();
+    report
+        .task_result_claim_recoveries
+        .retain(|candidate| candidate.message_id == message_id);
     Ok(())
 }
 
