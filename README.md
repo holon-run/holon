@@ -146,7 +146,7 @@ For more detailed explanations, see [Concepts](docs/website/concepts/).
 ## Status and compatibility
 
 Holon is under active development. The current recommended release is
-[`v0.30.0`](https://github.com/holon-run/holon/releases/tag/v0.30.0).
+[`v0.31.0`](https://github.com/holon-run/holon/releases/tag/v0.31.0).
 
 The current project focus remains the Rust runtime: agent lifecycle, queues,
 WaitFor/wake, tasks, WorkItems, trust boundaries, local workspaces, and

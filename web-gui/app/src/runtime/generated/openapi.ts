@@ -4137,7 +4137,7 @@ export interface components {
             invocation_surface?: string | null;
             output: unknown;
             /** @enum {string} */
-            status: "success" | "error";
+            status: "deferred" | "success" | "error" | "interrupted";
             summary: string;
             tool_name: string;
             turn_id?: string | null;
