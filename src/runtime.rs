@@ -1337,10 +1337,7 @@ fn scheduler_task_result_claim_recovery_candidates(
 #[derive(Debug, Clone, Serialize)]
 pub struct SchedulerRecoveryReport {
     pub agent_id: String,
-    pub partition_initialized: bool,
     pub execution_partition_initialized: bool,
-    pub authority_inventory: Vec<SchedulerAuthorityInventoryEntry>,
-    pub retired_rollout_metadata: SchedulerRetiredRolloutMetadata,
     pub candidates: Vec<SchedulerRecoveryCandidate>,
     pub task_result_claim_recoveries: Vec<SchedulerTaskResultClaimRecoveryCandidate>,
     pub continuation_reconciliations: Vec<SchedulerContinuationReconciliationCandidate>,
@@ -1370,30 +1367,6 @@ pub struct SchedulerTaskResultClaimRecoveryCandidate {
 pub enum SchedulerUnsettledClaimHealth {
     Recoverable,
     Unhealthy,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct SchedulerAuthorityInventoryEntry {
-    pub storage: String,
-    pub role: String,
-    pub canonical_reader: bool,
-    pub target: String,
-    pub row_count: u64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct SchedulerRetiredRolloutMetadata {
-    pub retirement_marked: bool,
-    pub compatibility_data_present: bool,
-    pub protocol_mode: String,
-    pub config_revision: u64,
-    pub preflight_count: u64,
-    pub manifest_count: u64,
-    pub scenario_count: u64,
-    pub authoritative_scenario_count: u64,
-    pub stale_authoritative_scenario_count: u64,
-    pub hard_blocker_count: u64,
-    pub command_result_count: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1598,42 +1571,6 @@ pub fn scheduler_recovery_report(
     runtime_db: &RuntimeDb,
     agent_id: &str,
 ) -> Result<SchedulerRecoveryReport> {
-    let partition_initialized = runtime_db
-        .transitions()
-        .retired_scheduler_partition_exists(agent_id)?;
-    let authority_inventory_records = runtime_db
-        .transitions()
-        .inspect_scheduler_authority_inventory()?;
-    let authority_inventory = authority_inventory_records
-        .into_iter()
-        .map(|entry| SchedulerAuthorityInventoryEntry {
-            storage: entry.storage.to_string(),
-            role: entry.role.to_string(),
-            canonical_reader: entry.canonical_reader,
-            target: entry.target.to_string(),
-            row_count: entry.row_count,
-        })
-        .collect();
-    let retired = runtime_db
-        .transitions()
-        .inspect_retired_scheduler_rollout_metadata()?;
-    let retired_rollout_metadata = SchedulerRetiredRolloutMetadata {
-        retirement_marked: retired.retirement_marked,
-        compatibility_data_present: retired.preflight_count > 0
-            || retired.manifest_count > 0
-            || retired.scenario_count > 0
-            || retired.hard_blocker_count > 0
-            || retired.command_result_count > 0,
-        protocol_mode: retired.protocol_mode,
-        config_revision: retired.config_revision,
-        preflight_count: retired.preflight_count,
-        manifest_count: retired.manifest_count,
-        scenario_count: retired.scenario_count,
-        authoritative_scenario_count: retired.authoritative_scenario_count,
-        stale_authoritative_scenario_count: retired.stale_authoritative_scenario_count,
-        hard_blocker_count: retired.hard_blocker_count,
-        command_result_count: retired.command_result_count,
-    };
     let execution_state = runtime_db
         .transitions()
         .load_execution_protocol_state_if_initialized(agent_id)?;
@@ -1815,10 +1752,7 @@ pub fn scheduler_recovery_report(
 
     Ok(SchedulerRecoveryReport {
         agent_id: agent_id.to_string(),
-        partition_initialized,
         execution_partition_initialized: execution_state.is_some(),
-        authority_inventory,
-        retired_rollout_metadata,
         candidates,
         task_result_claim_recoveries,
         continuation_reconciliations,

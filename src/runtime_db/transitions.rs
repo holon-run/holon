@@ -6,9 +6,6 @@
 mod execution_protocol_fixture_repository;
 pub(crate) mod execution_protocol_repository;
 pub(crate) use execution_protocol_repository::{authority_fences_tx, persist_state_tx};
-mod retired_scheduler_inventory;
-#[cfg(test)]
-pub(crate) mod scheduler_protocol_repository;
 
 use anyhow::{anyhow, bail, Result};
 use chrono::Utc;
@@ -3439,10 +3436,6 @@ mod tests {
         assert!(conflict.retryable());
         assert_eq!(db.queue_entries().latest_all()?, vec![queued]);
         assert!(db.audit_events().recent(Some("agent-a"), 10)?.is_empty());
-        assert!(db
-            .transitions()
-            .load_scheduler_protocol_snapshot_if_initialized("agent-a")?
-            .is_none());
         Ok(())
     }
 

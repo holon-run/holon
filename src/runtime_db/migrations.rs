@@ -32,6 +32,127 @@ pub(crate) const RELEASE_BASELINE_TARGET: i64 = 45;
 const RELEASE_BASELINE_SCHEMA_TARGET: i64 = 42;
 const RELEASE_BASELINE_ID: &str = "v0.30.0-schema-25-to-schema-45";
 
+pub(crate) const RETAINED_SCHEDULER_AUDIT_TABLES: &[&str] = &[
+    "scheduler_activations",
+    "scheduler_activation_settlements",
+    "scheduler_activation_sources",
+    "scheduler_activation_inputs",
+    "scheduler_continuation_admissions",
+    "scheduler_protocol_command_results",
+    "scheduler_protocol_command_conflict_attempts",
+    "scheduler_rollout_command_results",
+];
+
+pub(crate) const RETIRED_SCHEDULER_TABLES: &[&str] = &[
+    "scheduler_scenario_hard_blockers",
+    "scheduler_scenario_authorities",
+    "scheduler_rollout_manifests",
+    "scheduler_rollout_preflights",
+    "scheduler_shadow_comparisons",
+    "scheduler_semantic_shadow_decisions",
+    "scheduler_protocol_config",
+    "scheduler_protocol_migrations",
+    "scheduler_rollout_retirement",
+    "scheduler_yield_continuations",
+    "scheduler_missing_settlements",
+    "scheduler_wait_generations",
+    "scheduler_waits",
+    "scheduler_activation_authorities",
+    "scheduler_agent_dispatch",
+    "scheduler_agent_focus",
+    "scheduler_agent_slots",
+    "scheduler_work_demands",
+];
+
+fn migrate_retired_scheduler_schema(
+    connection: &mut Connection,
+    migration: &Migration,
+) -> Result<()> {
+    let transaction = connection.transaction()?;
+    let open_attempts: i64 = transaction.query_row(
+        "SELECT COUNT(*) FROM execution_protocol_attempts
+         WHERE lifecycle_state = 'open'",
+        [],
+        |row| row.get(0),
+    )?;
+    let in_flight_work_items: i64 = transaction.query_row(
+        "SELECT COUNT(*) FROM execution_protocol_work_items
+         WHERE lifecycle_state = 'in_flight'",
+        [],
+        |row| row.get(0),
+    )?;
+    let dequeued_queue_entries: i64 = transaction.query_row(
+        "SELECT COUNT(*) FROM queue_entries WHERE status = 'dequeued'",
+        [],
+        |row| row.get(0),
+    )?;
+    if open_attempts > 0 || in_flight_work_items > 0 || dequeued_queue_entries > 0 {
+        bail!(
+            "retired scheduler schema migration requires a recovery fixed point: \
+             open_execution_attempts={open_attempts}, \
+             in_flight_execution_work_items={in_flight_work_items}, \
+             dequeued_queue_entries={dequeued_queue_entries}; \
+             run scheduler-recovery report/apply/report with the pre-migration binary \
+             (v0.31.1 is the supported rollback binary) and retry"
+        );
+    }
+
+    transaction.execute_batch(
+        r#"
+DROP TRIGGER IF EXISTS trg_scheduler_agent_focus_insert;
+DROP TRIGGER IF EXISTS trg_scheduler_agent_focus_update;
+DROP TRIGGER IF EXISTS trg_scheduler_work_demands_preserve_focus;
+DROP TRIGGER IF EXISTS trg_scheduler_work_demands_preserve_focus_delete;
+
+DROP TABLE IF EXISTS scheduler_scenario_hard_blockers;
+DROP TABLE IF EXISTS scheduler_scenario_authorities;
+DROP TABLE IF EXISTS scheduler_rollout_manifests;
+DROP TABLE IF EXISTS scheduler_rollout_preflights;
+DROP TABLE IF EXISTS scheduler_shadow_comparisons;
+DROP TABLE IF EXISTS scheduler_semantic_shadow_decisions;
+DROP TABLE IF EXISTS scheduler_protocol_config;
+DROP TABLE IF EXISTS scheduler_protocol_migrations;
+DROP TABLE IF EXISTS scheduler_rollout_retirement;
+DROP TABLE IF EXISTS scheduler_yield_continuations;
+DROP TABLE IF EXISTS scheduler_missing_settlements;
+DROP TABLE IF EXISTS scheduler_agent_dispatch;
+DROP TABLE IF EXISTS scheduler_wait_generations;
+DROP TABLE IF EXISTS scheduler_waits;
+DROP TABLE IF EXISTS scheduler_activation_authorities;
+DROP TABLE IF EXISTS scheduler_agent_focus;
+DROP TABLE IF EXISTS scheduler_agent_slots;
+DROP TABLE IF EXISTS scheduler_work_demands;
+"#,
+    )?;
+
+    for table in RETIRED_SCHEDULER_TABLES {
+        if table_exists_internal(&transaction, table)? {
+            bail!("retired scheduler table {table} remains after schema migration");
+        }
+    }
+    for table in RETAINED_SCHEDULER_AUDIT_TABLES {
+        if !table_exists_internal(&transaction, table)? {
+            bail!("retained scheduler audit table {table} is missing after schema migration");
+        }
+    }
+
+    let foreign_key_violation: Option<(String, Option<i64>, String, i64)> = transaction
+        .query_row("PRAGMA foreign_key_check", [], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .optional()?;
+    if let Some((table, row_id, parent, foreign_key_id)) = foreign_key_violation {
+        bail!(
+            "retired scheduler schema migration introduced a foreign key violation: \
+             table={table}, row_id={row_id:?}, parent={parent}, foreign_key_id={foreign_key_id}"
+        );
+    }
+
+    record_migration(&transaction, migration)?;
+    transaction.commit()?;
+    Ok(())
+}
+
 fn migrate_scheduler_lifecycle_owners(
     connection: &mut Connection,
     migration: &Migration,
@@ -2978,6 +3099,11 @@ CREATE INDEX IF NOT EXISTS idx_queue_head_no_progress_agent_status
   ON queue_head_no_progress(agent_id, status, updated_at);
 "#,
     },
+    Migration {
+        version: 47,
+        name: "drop_retired_scheduler_schema",
+        sql: "",
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -3198,6 +3324,9 @@ pub(crate) fn apply_migration(connection: &mut Connection, migration: &Migration
     }
     if migration.name == "wait_protocol_cutover" {
         return migrate_wait_protocol_cutover(connection, migration);
+    }
+    if migration.name == "drop_retired_scheduler_schema" {
+        return migrate_retired_scheduler_schema(connection, migration);
     }
 
     let transaction = connection.transaction()?;

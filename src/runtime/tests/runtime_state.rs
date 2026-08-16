@@ -1,10 +1,5 @@
 use super::super::*;
 use super::support::*;
-use crate::domain::scheduler::SchedulerOwner;
-use crate::domain::scheduler_protocol::{
-    ActivationSlot, AgentDispatchState, Snapshot, WaitGenerationRecord, WaitIdentity, WaitRecord,
-    WaitState, WorkDemand, WorkStatus,
-};
 use crate::types::{
     ActiveSkillRecord, AuthorityClass, BriefKind, BriefRecord, CompletionReportState,
     QueueEntryStatus, SkillActivationSource, SkillActivationState, SkillLoadReason, SkillScope,
@@ -597,101 +592,6 @@ fn persist_execution_transition_only(
         .unwrap();
 }
 
-fn canonical_waiting_snapshot(
-    work_item: &WorkItemRecord,
-    wait_id: &str,
-    wait_generation: u64,
-) -> Snapshot {
-    Snapshot {
-        slot: ActivationSlot::Idle,
-        dispatch: AgentDispatchState::Awaiting {
-            wait: WaitIdentity {
-                id: wait_id.into(),
-                generation: wait_generation,
-            },
-        },
-        dispatch_revision: 1,
-        focus: Some(work_item.id.clone()),
-        work: std::collections::BTreeMap::from([(
-            work_item.id.clone(),
-            WorkDemand {
-                metadata_revision: work_item.revision,
-                scheduling_generation: work_item.revision,
-                status: WorkStatus::Waiting {
-                    wait_id: wait_id.into(),
-                },
-                capabilities: Default::default(),
-                locks: Default::default(),
-                locality: "runtime".into(),
-                cost_class: "default".into(),
-            },
-        )]),
-        waits: std::collections::BTreeMap::from([(
-            wait_id.into(),
-            WaitRecord {
-                current_generation: wait_generation,
-                generations: std::collections::BTreeMap::from([(
-                    wait_generation,
-                    WaitGenerationRecord {
-                        owner: SchedulerOwner::WorkItem {
-                            work_item_id: work_item.id.clone(),
-                        },
-                        state: WaitState::Active,
-                        trigger: None,
-                        consuming_activation_id: None,
-                    },
-                )]),
-            },
-        )]),
-        activations: Default::default(),
-        activation_admissions: Default::default(),
-        settlements: Default::default(),
-        missing_settlements: Default::default(),
-        admitted_generations: Default::default(),
-        continuation_admissions: Default::default(),
-        activation_inputs: Default::default(),
-    }
-}
-
-fn canonical_lifecycle_waiting_snapshot(wait_id: &str, wait_generation: u64) -> Snapshot {
-    Snapshot {
-        slot: ActivationSlot::Idle,
-        dispatch: AgentDispatchState::Awaiting {
-            wait: WaitIdentity {
-                id: wait_id.into(),
-                generation: wait_generation,
-            },
-        },
-        dispatch_revision: 1,
-        focus: None,
-        work: Default::default(),
-        waits: std::collections::BTreeMap::from([(
-            wait_id.into(),
-            WaitRecord {
-                current_generation: wait_generation,
-                generations: std::collections::BTreeMap::from([(
-                    wait_generation,
-                    WaitGenerationRecord {
-                        owner: SchedulerOwner::AgentLifecycle {
-                            agent_id: "default".into(),
-                        },
-                        state: WaitState::Active,
-                        trigger: None,
-                        consuming_activation_id: None,
-                    },
-                )]),
-            },
-        )]),
-        activations: Default::default(),
-        activation_admissions: Default::default(),
-        settlements: Default::default(),
-        missing_settlements: Default::default(),
-        admitted_generations: Default::default(),
-        continuation_admissions: Default::default(),
-        activation_inputs: Default::default(),
-    }
-}
-
 #[test]
 fn append_state_changed_events_emits_single_lightweight_agent_event() {
     let dir = tempdir().unwrap();
@@ -1281,135 +1181,6 @@ async fn interrupted_message_replay_creates_new_turn_without_current_focus_drift
         Some(QueueEntryStatus::Processed)
     );
 }
-
-#[tokio::test]
-async fn legacy_scheduler_wait_does_not_block_unified_lifecycle_claim() {
-    let dir = tempdir().unwrap();
-    let workspace = tempdir().unwrap();
-    let runtime = RuntimeHandle::new(
-        "default",
-        dir.path().to_path_buf(),
-        workspace.path().to_path_buf(),
-        "http://127.0.0.1:7878".into(),
-        Arc::new(CountingProvider {
-            calls: Mutex::new(0),
-            reply: "unused",
-        }),
-        "default".into(),
-        context_config(),
-    )
-    .unwrap();
-    let work_item = runtime
-        .create_work_item(
-            "canonical claim contention".into(),
-            Some(WorkItemPlanStatus::Ready),
-            None,
-            Vec::new(),
-        )
-        .await
-        .unwrap();
-    runtime.pick_work_item(work_item.id.clone()).await.unwrap();
-    runtime
-        .register_wait_for(
-            "default",
-            Some(work_item.id.clone()),
-            WaitForWakeKind::External,
-            Some("github:holon-run/holon#claim-contention".into()),
-            "hold the WorkItem lane".into(),
-            None,
-        )
-        .await
-        .unwrap();
-    let wait = runtime
-        .storage()
-        .latest_wait_conditions()
-        .unwrap()
-        .into_iter()
-        .find(|condition| condition.work_item_id.as_deref() == Some(work_item.id.as_str()))
-        .expect("active WorkItem wait");
-    let waiting = runtime
-        .latest_work_item(&work_item.id)
-        .await
-        .unwrap()
-        .expect("waiting WorkItem");
-    runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .initialize_scheduler_protocol_partition(
-            "default",
-            &canonical_waiting_snapshot(&waiting, &wait.id, waiting.revision),
-        )
-        .unwrap();
-    let reserved = runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .load_scheduler_protocol_snapshot("default")
-        .unwrap();
-    assert!(matches!(
-        reserved.dispatch,
-        AgentDispatchState::Awaiting { ref wait }
-            if reserved.waits[&wait.id].generations[&wait.generation].owner
-                == SchedulerOwner::WorkItem {
-                    work_item_id: work_item.id.clone(),
-                }
-    ));
-
-    let message = runtime
-        .enqueue(
-            MessageEnvelope::new(
-                "default",
-                MessageKind::InternalFollowup,
-                MessageOrigin::System {
-                    subsystem: "claim-contention".into(),
-                },
-                AuthorityClass::RuntimeInstruction,
-                Priority::Next,
-                MessageBody::Text {
-                    text: "lifecycle nudge while another owner holds the lane".into(),
-                },
-            )
-            .with_admission(
-                MessageDeliverySurface::RuntimeSystem,
-                AdmissionContext::RuntimeOwned,
-            ),
-        )
-        .await
-        .unwrap();
-
-    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-        .poll()
-        .await
-        .unwrap();
-    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
-        panic!("legacy scheduler wait must not block unified lifecycle claim");
-    };
-    assert_eq!(scheduled.message.id, message.id);
-    assert_eq!(
-        runtime
-            .inner
-            .runtime_db
-            .queue_entries()
-            .latest_all()
-            .unwrap()
-            .into_iter()
-            .find(|entry| entry.message_id == message.id)
-            .map(|entry| entry.status),
-        Some(QueueEntryStatus::Dequeued)
-    );
-    assert!(runtime
-        .storage()
-        .read_recent_events(usize::MAX)
-        .unwrap()
-        .iter()
-        .all(|event| {
-            !(event.kind == "scheduler_claim_contended"
-                && event.data["conflict_code"] == "agent_lane_reserved_by_other_owner"
-                && event.data["queue_disposition"] == "retained_queued")
-        }));
-}
-
 #[tokio::test]
 async fn canonical_work_item_wait_keeps_other_runnable_work_schedulable() {
     let dir = tempdir().unwrap();
@@ -2837,7 +2608,7 @@ async fn scheduler_recovery_quarantines_repeated_task_result_claim() {
 }
 
 #[tokio::test]
-async fn bootstrap_recovery_uses_execution_attempt_without_scheduler_compatibility_partition() {
+async fn bootstrap_recovery_uses_execution_attempt() {
     let mut harness = LifecycleHarness::new();
     let (message_id, activation_id) = {
         let runtime = harness.runtime();
@@ -2885,36 +2656,11 @@ async fn bootstrap_recovery_uses_execution_attempt_without_scheduler_compatibili
             crate::domain::execution_protocol::ExecutionAttemptState::Open
         );
 
-        let connection = runtime.inner.runtime_db.connection().unwrap();
-        connection
-            .execute_batch(
-                "PRAGMA foreign_keys = OFF;
-                 DELETE FROM scheduler_agent_slots WHERE agent_id = 'default';
-                 DELETE FROM scheduler_agent_dispatch WHERE agent_id = 'default';
-                 DELETE FROM scheduler_agent_focus WHERE agent_id = 'default';
-                 DELETE FROM scheduler_work_demands WHERE agent_id = 'default';
-                 PRAGMA foreign_keys = ON;",
-            )
-            .unwrap();
-        assert!(runtime
-            .inner
-            .runtime_db
-            .transitions()
-            .load_scheduler_protocol_snapshot_if_initialized("default")
-            .unwrap()
-            .is_none());
         (message.id, activation_id)
     };
 
     harness.restart();
     let runtime = harness.runtime();
-    assert!(runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .load_scheduler_protocol_snapshot_if_initialized("default")
-        .unwrap()
-        .is_none());
     assert_eq!(
         runtime.recover_scheduler_bootstrap_claims().await.unwrap(),
         1
@@ -2923,13 +2669,6 @@ async fn bootstrap_recovery_uses_execution_attempt_without_scheduler_compatibili
         runtime.recover_scheduler_bootstrap_claims().await.unwrap(),
         0
     );
-    assert!(runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .load_scheduler_protocol_snapshot_if_initialized("default")
-        .unwrap()
-        .is_none());
     assert_eq!(
         runtime
             .inner
@@ -4585,20 +4324,6 @@ async fn lifecycle_wait_handoff_to_work_item_wait_is_atomic_idempotent_and_resta
         )
         .await
         .unwrap();
-    let lifecycle_generation = 1;
-    runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .initialize_scheduler_protocol_partition(
-            "default",
-            &canonical_lifecycle_waiting_snapshot(
-                &lifecycle_wait.condition.id,
-                lifecycle_generation,
-            ),
-        )
-        .unwrap();
-
     let mut message = trusted_operator_prompt(None, "create a WorkItem and wait for its task");
     message.turn_id = Some("turn-lifecycle-wait-handoff".into());
     let message = runtime.enqueue(message).await.unwrap();
@@ -4843,7 +4568,7 @@ async fn lifecycle_wait_handoff_to_work_item_wait_is_atomic_idempotent_and_resta
 }
 
 #[tokio::test]
-async fn exact_task_rejoin_prefers_canonical_wait_when_legacy_revision_advanced() {
+async fn exact_task_rejoin_uses_canonical_wait_when_work_item_revision_advanced() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -4887,15 +4612,6 @@ async fn exact_task_rejoin_prefers_canonical_wait_when_legacy_revision_advanced(
         .unwrap()
         .expect("waiting WorkItem");
     let wait_generation = waiting_work.revision;
-    runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .initialize_scheduler_protocol_partition(
-            "default",
-            &canonical_waiting_snapshot(&waiting_work, &registration.condition.id, wait_generation),
-        )
-        .unwrap();
     let mut execution = crate::domain::execution_protocol::ExecutionProtocolState::empty("default");
     execution.work_items.insert(
         work_item.id.clone(),
@@ -5067,15 +4783,6 @@ async fn stale_exact_task_rejoin_is_dropped_without_blocking_next_message() {
         .unwrap()
         .expect("waiting WorkItem");
     let wait_generation = waiting_work.revision;
-    runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .initialize_scheduler_protocol_partition(
-            "default",
-            &canonical_waiting_snapshot(&waiting_work, &registration.condition.id, wait_generation),
-        )
-        .unwrap();
     let mut execution = crate::domain::execution_protocol::ExecutionProtocolState::empty("default");
     execution.work_items.insert(
         work_item.id.clone(),
@@ -5176,7 +4883,7 @@ async fn stale_exact_task_rejoin_is_dropped_without_blocking_next_message() {
 }
 
 #[tokio::test]
-async fn pre_cutover_task_rejoin_without_execution_owner_is_dropped() {
+async fn task_rejoin_without_execution_owner_is_dropped() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -5214,24 +4921,11 @@ async fn pre_cutover_task_rejoin_without_execution_owner_is_dropped() {
         )
         .await
         .unwrap();
-    let waiting_work = runtime
+    let _waiting_work = runtime
         .latest_work_item(&work_item.id)
         .await
         .unwrap()
         .expect("waiting WorkItem");
-    runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .initialize_scheduler_protocol_partition(
-            "default",
-            &canonical_waiting_snapshot(
-                &waiting_work,
-                "legacy-current-wait-for-other-work",
-                waiting_work.revision,
-            ),
-        )
-        .unwrap();
     let mut stale = task_result_message("task-pre-cutover").with_admission(
         MessageDeliverySurface::TaskRejoin,
         AdmissionContext::RuntimeOwned,
@@ -5381,7 +5075,7 @@ async fn task_rejoin_missing_from_initialized_execution_partition_is_rejected() 
         .unwrap();
     runtime.pick_work_item(work_item.id.clone()).await.unwrap();
     append_running_rejoin_task(&runtime, "task-pre-cutover-current", &work_item.id);
-    let registration = runtime
+    let _registration = runtime
         .register_wait_for(
             "default",
             Some(work_item.id.clone()),
@@ -5392,24 +5086,11 @@ async fn task_rejoin_missing_from_initialized_execution_partition_is_rejected() 
         )
         .await
         .unwrap();
-    let waiting_work = runtime
+    let _waiting_work = runtime
         .latest_work_item(&work_item.id)
         .await
         .unwrap()
         .expect("waiting WorkItem");
-    runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .initialize_scheduler_protocol_partition(
-            "default",
-            &canonical_waiting_snapshot(
-                &waiting_work,
-                &registration.condition.id,
-                waiting_work.revision,
-            ),
-        )
-        .unwrap();
     runtime
         .inner
         .runtime_db
@@ -5737,13 +5418,6 @@ async fn terminal_task_result_without_work_item_uses_non_reentrant_dispatch() {
     }));
     let message = runtime.enqueue(message).await.unwrap();
     assert!(message.work_item_id.is_none());
-    assert!(runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .load_scheduler_protocol_snapshot_if_initialized("default")
-        .unwrap()
-        .is_none());
     assert_eq!(
         scheduler::canonical_activation_candidate(
             &message,
@@ -5788,13 +5462,6 @@ async fn terminal_task_result_without_work_item_uses_non_reentrant_dispatch() {
             .map(|entry| entry.status),
         Some(QueueEntryStatus::Dequeued)
     );
-    assert!(runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .load_scheduler_protocol_snapshot_if_initialized("default")
-        .unwrap()
-        .is_none());
 }
 
 #[tokio::test]
@@ -9946,7 +9613,7 @@ async fn canonical_task_result_claim_resolves_wait_and_clears_matching_blocker()
 }
 
 #[tokio::test]
-async fn resolved_task_result_uses_unified_wait_when_legacy_wait_is_stale() {
+async fn resolved_task_result_uses_canonical_wait() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -10028,15 +9695,6 @@ async fn resolved_task_result_uses_unified_wait_when_legacy_wait_is_stale() {
         .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
         .unwrap();
 
-    runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .initialize_scheduler_protocol_partition(
-            "default",
-            &canonical_waiting_snapshot(&resumed, "wait-stale-legacy", resumed.revision),
-        )
-        .unwrap();
     append_completed_rejoin_task(
         &runtime,
         "task-unified-wait",
@@ -12243,7 +11901,6 @@ async fn scheduler_recovery_reconciles_stale_continuation_yield_without_legacy_p
     let report =
         scheduler_recovery_report(&runtime.inner.storage, &runtime.inner.runtime_db, "default")
             .unwrap();
-    assert!(!report.partition_initialized);
     assert!(report.execution_partition_initialized);
     let candidate = report
         .continuation_reconciliations
@@ -12304,7 +11961,7 @@ async fn scheduler_recovery_reconciles_stale_continuation_yield_without_legacy_p
 }
 
 #[tokio::test]
-async fn lifecycle_ingress_converges_completed_work_item_lane_before_claim() {
+async fn lifecycle_ingress_ignores_completed_work_item_lane_before_claim() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -12349,15 +12006,6 @@ async fn lifecycle_ingress_converges_completed_work_item_lane_before_claim() {
         triggered_at: None,
     };
     runtime.storage().append_wait_condition(&wait).unwrap();
-    runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .initialize_scheduler_protocol_partition(
-            "default",
-            &canonical_waiting_snapshot(&completed, &wait.id, completed.revision),
-        )
-        .unwrap();
 
     let message = runtime
         .enqueue(trusted_operator_prompt(
@@ -13810,123 +13458,6 @@ async fn same_turn_message_does_not_reconcile_wait_condition() {
         "different-turn message must reconcile the wait"
     );
 }
-
-#[tokio::test]
-async fn work_item_wait_resume_repairs_missing_scheduler_wait_mirror() {
-    let dir = tempdir().unwrap();
-    let workspace = tempdir().unwrap();
-    let runtime = RuntimeHandle::new(
-        "default",
-        dir.path().to_path_buf(),
-        workspace.path().to_path_buf(),
-        "http://127.0.0.1:7878".into(),
-        Arc::new(CountingProvider {
-            calls: Mutex::new(0),
-            reply: "reconciled",
-        }),
-        "default".into(),
-        context_config(),
-    )
-    .unwrap();
-    let mut work_item = WorkItemRecord::new("default", "operator wait work", WorkItemState::Open);
-    work_item.id = "work-op-wait-mirror-missing".into();
-    runtime.storage().append_work_item(&work_item).unwrap();
-    let wait = runtime
-        .register_wait_for(
-            "default",
-            Some(work_item.id.clone()),
-            WaitForWakeKind::OperatorInput,
-            None,
-            "operator resume".into(),
-            None,
-        )
-        .await
-        .unwrap();
-    let work_item = runtime
-        .latest_work_item(&work_item.id)
-        .await
-        .unwrap()
-        .unwrap();
-    let mut execution = crate::domain::execution_protocol::ExecutionProtocolState::empty("default");
-    execution.work_items.insert(
-        work_item.id.clone(),
-        crate::domain::execution_protocol::WorkItemExecutionRecord {
-            source_revision: work_item.revision,
-            state: crate::domain::execution_protocol::WorkItemExecutionState::Waiting {
-                generation: work_item.revision,
-                wait: crate::domain::execution_protocol::WaitReference {
-                    wait_id: wait.condition.id.clone(),
-                },
-            },
-        },
-    );
-    runtime
-        .inner
-        .runtime_db
-        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
-        .unwrap();
-    let mut snapshot =
-        canonical_waiting_snapshot(&work_item, &wait.condition.id, work_item.revision);
-    snapshot.dispatch = AgentDispatchState::Open;
-    snapshot.focus = None;
-    snapshot.work.clear();
-    snapshot.waits.clear();
-    runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .initialize_scheduler_protocol_partition("default", &snapshot)
-        .unwrap();
-
-    let message = runtime
-        .enqueue(trusted_operator_prompt(
-            Some(&work_item.id),
-            "resume without scheduler wait mirror",
-        ))
-        .await
-        .unwrap();
-    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-        .poll()
-        .await
-        .unwrap();
-    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
-        panic!("durable WorkItem wait should resume without a scheduler wait mirror");
-    };
-    assert_eq!(scheduled.message.id, message.id);
-
-    let execution = runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .load_execution_protocol_state_if_initialized("default")
-        .unwrap()
-        .expect("claim should preserve unified execution authority");
-    let activation_id = scheduler_executor::canonical_activation_id(&message.id);
-    assert!(matches!(
-        &execution.attempts[&activation_id].source.identity,
-        crate::domain::execution_protocol::ExecutionSourceIdentity::TriggeredWait {
-            wait_id,
-            trigger_message_id,
-        } if trigger_message_id == &message.id && wait_id == &wait.condition.id
-    ));
-    assert_eq!(
-        execution.attempts[&activation_id].binding,
-        crate::domain::execution_protocol::ExecutionBinding::WorkItem {
-            work_item_id: work_item.id.clone(),
-        }
-    );
-
-    runtime
-        .record_wait_reconciliation_signals(&scheduled.message)
-        .await
-        .unwrap();
-    assert!(runtime
-        .storage()
-        .active_wait_conditions_for_work_item("default", &work_item.id)
-        .unwrap()
-        .is_empty());
-}
-
 #[tokio::test]
 async fn task_result_persists_reduced_state_when_agent_status_is_not_mutable() {
     let dir = tempdir().unwrap();

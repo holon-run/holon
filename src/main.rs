@@ -2653,19 +2653,8 @@ fn print_scheduler_recovery_report(
         }));
     }
     println!(
-        "Scheduler recovery candidates for {} (scheduler partition initialized: {}, execution partition initialized: {})",
-        report.agent_id,
-        report.partition_initialized,
-        report.execution_partition_initialized
-    );
-    println!(
-        "- retired rollout metadata: marked={} present={} mode={} stale_authoritative={}",
-        report.retired_rollout_metadata.retirement_marked,
-        report.retired_rollout_metadata.compatibility_data_present,
-        report.retired_rollout_metadata.protocol_mode,
-        report
-            .retired_rollout_metadata
-            .stale_authoritative_scenario_count,
+        "Scheduler recovery candidates for {} (execution partition initialized: {})",
+        report.agent_id, report.execution_partition_initialized
     );
     if let Some(((changed, backup_path), backup_policy)) = apply_result {
         println!(

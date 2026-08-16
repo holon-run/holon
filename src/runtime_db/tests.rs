@@ -46,7 +46,7 @@ use crate::runtime_db::RuntimeDbLock;
 #[cfg(test)]
 use rusqlite::{ffi::ErrorCode, TransactionBehavior};
 #[cfg(test)]
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 #[cfg(test)]
 pub mod test_support {
@@ -83,20 +83,15 @@ mod tests {
         },
         domain::scheduler::SchedulerOwner,
         domain::scheduler_protocol::{
-            self, ActivationBinding, ActivationCause, ActivationDisposition,
-            ActivationInputAttachment, ActivationLifecycleState, ActivationOrigin,
-            ActivationPriority, ActivationProvenance, ActivationSettlement, ActivationSlot,
-            ActivationTrust, AdmitActivationCommand, AgentActivation, AgentDispatchDisposition,
-            AgentDispatchState, AttachActivationInputCommand, Continuation, Decision,
-            PreemptionPolicy, ProtocolCommand, RegisterWorkDemandCommand, SettleActivationCommand,
-            Snapshot, TriggerWaitCommand, WaitGenerationRecord, WaitIdentity, WaitRecord,
-            WaitResumeClaim, WaitState, WaitTrigger, WorkDemand, WorkStatus,
+            ActivationBinding, ActivationCause, ActivationInputAttachment,
+            ActivationLifecycleState, ActivationOrigin, ActivationPriority, ActivationProvenance,
+            ActivationTrust, AdmitActivationCommand, AgentActivation, PreemptionPolicy, WorkDemand,
         },
+        runtime_db::migrations::{RETAINED_SCHEDULER_AUDIT_TABLES, RETIRED_SCHEDULER_TABLES},
         runtime_db::repositories::{enum_string, slim_task_record_for_payload},
         runtime_db::transitions::{
-            scheduler_protocol_repository::SchedulerProtocolCommandIdentityConflict,
             AgentStateMutation, QueueHeadNoProgressCommand, QueueHeadNoProgressOutcome,
-            QueueMutation, QueueOperation, QueueTransitionCommand, TransitionFaultPoint,
+            TransitionFaultPoint,
         },
         system::WorkspaceAccessMode,
         types::{
@@ -140,6 +135,18 @@ mod tests {
                 Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
             ),
         )?;
+        Ok(())
+    }
+
+    fn migrate_through(connection: &mut rusqlite::Connection, target_version: i64) -> Result<()> {
+        ensure_migration_table(connection)?;
+        for migration in MIGRATIONS
+            .iter()
+            .filter(|migration| migration.version <= target_version)
+        {
+            apply_migration(connection, migration)?;
+        }
+        assert_eq!(current_schema_version(connection)?, target_version);
         Ok(())
     }
 
@@ -314,121 +321,6 @@ mod tests {
         identity.status = AgentRegistryStatus::Active;
         identity
     }
-
-    fn scheduler_protocol_snapshot(scheduling_generation: u64) -> Snapshot {
-        Snapshot {
-            slot: ActivationSlot::Idle,
-            dispatch: AgentDispatchState::Open,
-            dispatch_revision: 0,
-            focus: Some("work-a".into()),
-            work: BTreeMap::from([(
-                "work-a".into(),
-                WorkDemand {
-                    metadata_revision: scheduling_generation,
-                    scheduling_generation,
-                    status: WorkStatus::Runnable,
-                    capabilities: BTreeSet::from(["workspace_write".into()]),
-                    locks: BTreeSet::from(["workspace:holon".into()]),
-                    locality: "workspace:holon".into(),
-                    cost_class: "standard".into(),
-                },
-            )]),
-            waits: BTreeMap::new(),
-            activations: BTreeMap::new(),
-            activation_admissions: BTreeMap::new(),
-            settlements: BTreeMap::new(),
-            missing_settlements: BTreeMap::new(),
-            admitted_generations: BTreeSet::new(),
-            continuation_admissions: BTreeMap::new(),
-            activation_inputs: BTreeMap::new(),
-        }
-    }
-
-    #[test]
-    fn scheduler_recovery_plan_rolls_back_adoption_when_later_command_rejects() -> Result<()> {
-        let dir = tempfile::tempdir()?;
-        let db = RuntimeDb::open_and_migrate(
-            dir.path().join("runtime.sqlite"),
-            dir.path().join("runtime.lock"),
-        )?;
-        let mut work = WorkItemRecord::new("agent-a", "legacy recovery", WorkItemState::Open);
-        work.id = "work-legacy-recovery".into();
-        db.work_items().insert_new(&work)?;
-        let adoption = db
-            .transitions()
-            .legacy_scheduler_adoption_candidates("agent-a")?
-            .into_iter()
-            .find(|candidate| candidate.work_item_id == work.id)
-            .and_then(|candidate| candidate.command)
-            .expect("eligible legacy adoption command");
-        let rejected = ProtocolCommand::RegisterWorkDemand(RegisterWorkDemandCommand {
-            work_item_id: "work-invalid-recovery".into(),
-            demand: WorkDemand {
-                metadata_revision: 0,
-                scheduling_generation: 1,
-                status: WorkStatus::Runnable,
-                capabilities: Default::default(),
-                locks: Default::default(),
-                locality: "runtime".into(),
-                cost_class: "default".into(),
-            },
-        });
-
-        let error = db
-            .transitions()
-            .commit_scheduler_recovery_plan("agent-a", &[adoption, rejected])
-            .expect_err("rejected recovery command should roll back the whole plan");
-        assert!(error
-            .to_string()
-            .contains("work_demand_registration_fields_required"));
-        assert!(db
-            .transitions()
-            .load_scheduler_protocol_snapshot_if_initialized("agent-a")?
-            .is_none());
-        let stored_results: i64 = db.connection()?.query_row(
-            "SELECT COUNT(*) FROM scheduler_protocol_command_results
-             WHERE agent_id = 'agent-a'",
-            [],
-            |row| row.get(0),
-        )?;
-        assert_eq!(stored_results, 0);
-        Ok(())
-    }
-
-    fn scheduler_protocol_admission_command(
-        agent_id: &str,
-        scheduling_generation: u64,
-    ) -> ProtocolCommand {
-        ProtocolCommand::AdmitActivation(AdmitActivationCommand {
-            authority_id: "authority-a".into(),
-            activation: AgentActivation {
-                id: "activation-a".into(),
-                agent_id: agent_id.into(),
-                state: ActivationLifecycleState::Admitted,
-                cause: ActivationCause::WorkItemRunnable {
-                    work_item_id: "work-a".into(),
-                    scheduling_generation,
-                },
-                binding: ActivationBinding::WorkItem {
-                    work_item_id: "work-a".into(),
-                },
-                priority: ActivationPriority::Normal,
-                preemption: PreemptionPolicy::NonPreemptive,
-                source_revision: Some(1),
-                idempotency_key: "activation-a".into(),
-                provenance: ActivationProvenance {
-                    origin: ActivationOrigin::System,
-                    trust: ActivationTrust::RuntimeInstruction,
-                    source_id: "scheduler".into(),
-                    correlation_id: Some("correlation-a".into()),
-                    causation_id: Some("cause-a".into()),
-                },
-            },
-            expected_scheduling_generation: scheduling_generation,
-            expected_dispatch_revision: 0,
-        })
-    }
-
     fn prepare_pre_execution_protocol_claim(
         db: &RuntimeDb,
         agent_id: &str,
@@ -471,23 +363,7 @@ mod tests {
         assert!(db.queue_entries().try_claim_queued_message(&dequeued)?);
 
         let scheduling_generation = 1;
-        let mut snapshot = scheduler_protocol_snapshot(scheduling_generation);
-        snapshot.focus = Some(work_item_id.into());
-        snapshot.work = BTreeMap::from([(
-            work_item_id.into(),
-            WorkDemand {
-                metadata_revision: work.revision,
-                scheduling_generation,
-                status: WorkStatus::Runnable,
-                capabilities: Default::default(),
-                locks: Default::default(),
-                locality: "runtime".into(),
-                cost_class: "default".into(),
-            },
-        )]);
-        db.transitions()
-            .initialize_scheduler_protocol_partition(agent_id, &snapshot)?;
-        let admission = ProtocolCommand::AdmitActivation(AdmitActivationCommand {
+        let admission = AdmitActivationCommand {
             authority_id: format!("authority-{activation_id}"),
             activation: AgentActivation {
                 id: activation_id.into(),
@@ -514,9 +390,29 @@ mod tests {
             },
             expected_scheduling_generation: scheduling_generation,
             expected_dispatch_revision: 0,
-        });
-        db.transitions()
-            .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &admission, None)?;
+        };
+        let now = timestamp(Utc::now());
+        db.connection()?.execute(
+            "INSERT INTO scheduler_activations (
+               agent_id, activation_id, authority_id, owner_kind, owner_id, work_item_id,
+               admitted_generation, admission_kind, recovery_for_activation_id, wait_id,
+               wait_generation, lifecycle_state, idempotency_key, payload_json, created_at,
+               updated_at
+             ) VALUES (
+               ?1, ?2, ?3, 'work_item', ?4, ?4, ?5, 'scheduling', NULL, NULL, NULL,
+               'admitted', ?6, ?7, ?8, ?8
+             )",
+            params![
+                agent_id,
+                activation_id,
+                admission.authority_id,
+                work_item_id,
+                scheduling_generation,
+                admission.activation.idempotency_key,
+                serde_json::to_string(&admission)?,
+                now,
+            ],
+        )?;
         Ok(())
     }
 
@@ -530,27 +426,73 @@ mod tests {
              DROP TABLE execution_protocol_attempts;
              DROP TABLE execution_protocol_work_items;
              DROP TABLE execution_protocol_partitions;
-             ALTER TABLE agent_states DROP COLUMN control_revision;",
+             ALTER TABLE agent_states DROP COLUMN control_revision;
+
+             CREATE TABLE scheduler_work_demands (
+               agent_id TEXT NOT NULL,
+               work_item_id TEXT NOT NULL,
+               metadata_revision INTEGER NOT NULL CHECK (metadata_revision >= 0),
+               scheduling_generation INTEGER NOT NULL CHECK (scheduling_generation >= 0),
+               status TEXT NOT NULL CHECK (
+                 status IN ('runnable', 'waiting', 'needs_settlement', 'paused', 'terminal')
+               ),
+               status_reference_id TEXT,
+               capabilities_json TEXT NOT NULL,
+               locks_json TEXT NOT NULL,
+               locality TEXT NOT NULL,
+               cost_class TEXT NOT NULL,
+               payload_json TEXT NOT NULL,
+               updated_at TEXT NOT NULL,
+               PRIMARY KEY (agent_id, work_item_id),
+               CHECK (
+                 (status IN ('runnable', 'terminal') AND status_reference_id IS NULL)
+                 OR (
+                   status IN ('waiting', 'needs_settlement', 'paused')
+                   AND status_reference_id IS NOT NULL
+                 )
+               )
+             );",
         )?;
         Ok(())
     }
 
-    fn scheduler_protocol_completion_command(
-        settlement_id: &str,
-        continuation: Option<Continuation>,
-    ) -> ProtocolCommand {
-        ProtocolCommand::SettleActivation(SettleActivationCommand {
-            settlement: ActivationSettlement {
-                id: settlement_id.into(),
-                activation_id: "activation-a".into(),
-                turn_terminal: Some(format!("turn-terminal-{settlement_id}")),
-                disposition: ActivationDisposition::WorkCompleted { continuation },
-                agent_dispatch: AgentDispatchDisposition::Open,
-                operator_delivery: Some(format!("brief-{settlement_id}")),
-                evidence: vec![format!("trace-{settlement_id}")],
-                created_at: "2026-07-21T00:00:00Z".into(),
-            },
-        })
+    fn restore_pre_execution_protocol_work_demand(
+        db_path: &std::path::Path,
+        agent_id: &str,
+        work_item_id: &str,
+    ) -> Result<()> {
+        let demand = WorkDemand {
+            metadata_revision: 1,
+            scheduling_generation: 1,
+            status: crate::domain::scheduler_protocol::WorkStatus::Runnable,
+            capabilities: BTreeSet::new(),
+            locks: BTreeSet::new(),
+            locality: "local".into(),
+            cost_class: "small".into(),
+        };
+        open_connection(db_path)?.execute(
+            "INSERT INTO scheduler_work_demands (
+               agent_id,
+               work_item_id,
+               metadata_revision,
+               scheduling_generation,
+               status,
+               status_reference_id,
+               capabilities_json,
+               locks_json,
+               locality,
+               cost_class,
+               payload_json,
+               updated_at
+             ) VALUES (?1, ?2, 1, 1, 'runnable', NULL, '[]', '[]', 'local', 'small', ?3, ?4)",
+            params![
+                agent_id,
+                work_item_id,
+                serde_json::to_string(&demand)?,
+                timestamp(Utc::now()),
+            ],
+        )?;
+        Ok(())
     }
 
     #[test]
@@ -590,30 +532,14 @@ mod tests {
             "workspace_occupancies",
             "agent_identities",
             "context_episode_anchors",
-            "scheduler_work_demands",
-            "scheduler_activation_authorities",
             "scheduler_activations",
-            "scheduler_waits",
-            "scheduler_wait_generations",
-            "scheduler_agent_slots",
-            "scheduler_agent_dispatch",
-            "scheduler_agent_focus",
             "scheduler_activation_settlements",
-            "scheduler_missing_settlements",
             "scheduler_continuation_admissions",
             "scheduler_activation_sources",
             "scheduler_activation_inputs",
             "scheduler_protocol_command_results",
             "scheduler_protocol_command_conflict_attempts",
-            "scheduler_protocol_migrations",
-            "scheduler_protocol_config",
             "scheduler_rollout_command_results",
-            "scheduler_rollout_preflights",
-            "scheduler_rollout_manifests",
-            "scheduler_scenario_authorities",
-            "scheduler_scenario_hard_blockers",
-            "scheduler_shadow_comparisons",
-            "scheduler_semantic_shadow_decisions",
         ] {
             let count: i64 = connection.query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
@@ -621,6 +547,12 @@ mod tests {
                 |row| row.get(0),
             )?;
             assert_eq!(count, 1, "missing table {table}");
+        }
+        for table in RETIRED_SCHEDULER_TABLES {
+            assert!(
+                !table_exists(&connection, table)?,
+                "fresh schema must not create retired scheduler table {table}"
+            );
         }
         assert!(
             !table_exists(&connection, "workspace_id_aliases")?,
@@ -1027,33 +959,8 @@ INSERT INTO scheduler_activations (
     }
 
     #[test]
-    fn scheduler_rollout_schema_rejects_authoritative_rollback_target() -> Result<()> {
-        let (_temp_dir, db_path, lock_path) = temp_paths()?;
-        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        let error = db
-            .connection()?
-            .execute(
-                "INSERT INTO scheduler_scenario_authorities (
-                   scenario_class,
-                   mode,
-                   rollback_target,
-                   manifest_revision,
-                   preflight_revision,
-                   updated_at
-                 ) VALUES ('invalid-rollback', 'off', 'authoritative', NULL, NULL, ?1)",
-                [Utc::now().to_rfc3339()],
-            )
-            .unwrap_err();
-        assert_eq!(
-            error.sqlite_error_code(),
-            Some(ErrorCode::ConstraintViolation)
-        );
-        Ok(())
-    }
-
-    #[test]
     fn migrations_normalize_unsafe_operator_interjection_authority() -> Result<()> {
-        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let (_temp_dir, db_path, _lock_path) = temp_paths()?;
         {
             let mut connection = open_connection(&db_path)?;
             ensure_migration_table(&connection)?;
@@ -1084,8 +991,8 @@ INSERT INTO scheduler_scenario_authorities (
             )?;
         }
 
-        RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        let connection = open_connection(&db_path)?;
+        let mut connection = open_connection(&db_path)?;
+        apply_migration(&mut connection, &MIGRATIONS[37])?;
         let normalized: (String, Option<i64>, Option<i64>, String) = connection.query_row(
             "SELECT mode, manifest_revision, preflight_revision, rollback_target
              FROM scheduler_scenario_authorities
@@ -1093,62 +1000,12 @@ INSERT INTO scheduler_scenario_authorities (
             [],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )?;
-        assert_eq!(
-            normalized,
-            ("authoritative".into(), None, None, "shadow".into())
-        );
+        assert_eq!(normalized, ("shadow".into(), None, None, "shadow".into()));
         Ok(())
     }
-
-    #[test]
-    fn retired_rollout_metadata_does_not_block_canonical_snapshot_reopen() -> Result<()> {
-        let (_temp_dir, db_path, lock_path) = temp_paths()?;
-        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        db.transitions()
-            .initialize_scheduler_protocol_partition("agent-a", &scheduler_protocol_snapshot(1))?;
-        db.connection()?.execute(
-            "INSERT INTO scheduler_scenario_authorities (
-               scenario_class,
-               mode,
-               rollback_target,
-               manifest_revision,
-               preflight_revision,
-               updated_at
-             ) VALUES (
-               'delivery',
-               'authoritative',
-               'shadow',
-               NULL,
-               NULL,
-               ?1
-             )
-             ON CONFLICT(scenario_class) DO UPDATE SET
-               mode = excluded.mode,
-               rollback_target = excluded.rollback_target,
-               manifest_revision = excluded.manifest_revision,
-               preflight_revision = excluded.preflight_revision,
-               updated_at = excluded.updated_at",
-            [Utc::now().to_rfc3339()],
-        )?;
-        drop(db);
-
-        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        let snapshot = reopened
-            .transitions()
-            .load_scheduler_protocol_snapshot("agent-a")?;
-        assert_eq!(snapshot.work["work-a"].scheduling_generation, 1);
-        let retired = reopened
-            .transitions()
-            .inspect_retired_scheduler_rollout_metadata()?;
-        assert!(retired.retirement_marked);
-        assert!(retired.authoritative_scenario_count > 0);
-        assert!(retired.stale_authoritative_scenario_count > 0);
-        Ok(())
-    }
-
     #[test]
     fn migration_38_preserves_safe_operator_interjection_authority() -> Result<()> {
-        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let (_temp_dir, db_path, _lock_path) = temp_paths()?;
         {
             let mut connection = open_connection(&db_path)?;
             ensure_migration_table(&connection)?;
@@ -1179,8 +1036,8 @@ INSERT INTO scheduler_scenario_authorities (
             )?;
         }
 
-        RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        let connection = open_connection(&db_path)?;
+        let mut connection = open_connection(&db_path)?;
+        apply_migration(&mut connection, &MIGRATIONS[37])?;
         let preserved: (String, Option<i64>, Option<i64>) = connection.query_row(
             "SELECT mode, manifest_revision, preflight_revision
              FROM scheduler_scenario_authorities
@@ -1193,366 +1050,7 @@ INSERT INTO scheduler_scenario_authorities (
     }
 
     #[test]
-    fn scheduler_protocol_schema_leaves_cross_table_consistency_to_runtime() -> Result<()> {
-        let (_temp_dir, db_path, lock_path) = temp_paths()?;
-        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        let connection = db.connection()?;
-        for (agent_id, work_item_id) in [("agent-a", "work-a"), ("agent-b", "work-b")] {
-            connection.execute(
-                "INSERT INTO scheduler_work_demands (
-                   agent_id,
-                   work_item_id,
-                   metadata_revision,
-                   scheduling_generation,
-                   status,
-                   status_reference_id,
-                   capabilities_json,
-                   locks_json,
-                   locality,
-                   cost_class,
-                   payload_json,
-                   updated_at
-                 ) VALUES (?1, ?2, 0, 1, 'runnable', NULL, '[]', '[]', 'local', 'small', '{}', ?3)",
-                (agent_id, work_item_id, Utc::now().to_rfc3339()),
-            )?;
-        }
-
-        connection.execute(
-            "INSERT INTO scheduler_agent_focus (
-               agent_id,
-               focused_work_item_id,
-               focus_revision,
-               updated_at
-             ) VALUES ('agent-a', 'work-b', 1, ?1)",
-            [Utc::now().to_rfc3339()],
-        )?;
-        connection.execute(
-            "UPDATE scheduler_work_demands
-             SET status = 'terminal'
-             WHERE agent_id = 'agent-a' AND work_item_id = 'work-a'",
-            [],
-        )?;
-
-        for table in [
-            "scheduler_activation_authorities",
-            "scheduler_activations",
-            "scheduler_waits",
-            "scheduler_wait_generations",
-            "scheduler_agent_slots",
-            "scheduler_agent_dispatch",
-            "scheduler_agent_focus",
-            "scheduler_activation_settlements",
-            "scheduler_missing_settlements",
-            "scheduler_continuation_admissions",
-            "scheduler_activation_sources",
-            "scheduler_activation_inputs",
-            "scheduler_yield_continuations",
-        ] {
-            let foreign_key_count: i64 = connection.query_row(
-                "SELECT COUNT(*) FROM pragma_foreign_key_list(?1)",
-                [table],
-                |row| row.get(0),
-            )?;
-            assert_eq!(
-                foreign_key_count, 0,
-                "{table} must not encode canonical cross-table consistency as a foreign key"
-            );
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn scheduler_protocol_schema_enforces_shared_admission_fence() -> Result<()> {
-        let (_temp_dir, db_path, lock_path) = temp_paths()?;
-        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        let connection = db.connection()?;
-        let now = Utc::now().to_rfc3339();
-        connection.execute(
-            "INSERT INTO scheduler_work_demands (
-               agent_id,
-               work_item_id,
-               metadata_revision,
-               scheduling_generation,
-               status,
-               status_reference_id,
-               capabilities_json,
-               locks_json,
-               locality,
-               cost_class,
-               payload_json,
-               updated_at
-             ) VALUES ('agent-a', 'work-a', 0, 7, 'runnable', NULL, '[]', '[]', 'local', 'small', '{}', ?1)",
-            [&now],
-        )?;
-        connection.execute(
-            "INSERT INTO scheduler_waits (
-               agent_id,
-               wait_id,
-               owner_kind,
-               owner_id,
-               owner_work_item_id,
-               current_generation,
-               payload_json,
-               updated_at
-             ) VALUES ('agent-a', 'wait-a', 'work_item', 'work-a', 'work-a', 1, '{}', ?1)",
-            [&now],
-        )?;
-        connection.execute(
-            "INSERT INTO scheduler_wait_generations (
-               agent_id,
-               wait_id,
-               generation,
-               owner_kind,
-               owner_id,
-               owner_work_item_id,
-               lifecycle_state,
-               trigger_id,
-               trigger_generation,
-               consuming_activation_id,
-               payload_json,
-               created_at,
-               updated_at
-             ) VALUES (
-               'agent-a',
-               'wait-a',
-               1,
-               'work_item',
-               'work-a',
-               'work-a',
-               'triggered',
-               'trigger-a',
-               1,
-               NULL,
-               '{}',
-               ?1,
-               ?1
-             )",
-            [&now],
-        )?;
-        for (authority_id, activation_id) in [
-            ("authority-scheduling", "activation-scheduling"),
-            ("authority-wait-resume", "activation-wait-resume"),
-        ] {
-            connection.execute(
-                "INSERT INTO scheduler_activation_authorities (
-                   agent_id,
-                   authority_id,
-                   activation_id,
-                   owner_kind,
-                   owner_id,
-                   work_item_id,
-                   expected_scheduling_generation,
-                   expected_dispatch_revision,
-                   consumed_by_activation_id,
-                   payload_json,
-                   created_at
-                 ) VALUES ('agent-a', ?1, ?2, 'work_item', 'work-a', 'work-a', 7, 0, NULL, '{}', ?3)",
-                (authority_id, activation_id, &now),
-            )?;
-        }
-        connection.execute(
-            "INSERT INTO scheduler_activations (
-               agent_id,
-               activation_id,
-               authority_id,
-               owner_kind,
-               owner_id,
-               work_item_id,
-               admitted_generation,
-               admission_kind,
-               recovery_for_activation_id,
-               wait_id,
-               wait_generation,
-               lifecycle_state,
-               idempotency_key,
-               payload_json,
-               created_at,
-               updated_at
-             ) VALUES (
-               'agent-a',
-               'activation-scheduling',
-               'authority-scheduling',
-               'work_item',
-               'work-a',
-               'work-a',
-               7,
-               'scheduling',
-               NULL,
-               NULL,
-               NULL,
-               'running',
-               'idempotency-scheduling',
-               '{}',
-               ?1,
-               ?1
-             )",
-            [&now],
-        )?;
-
-        let error = connection
-            .execute(
-                "INSERT INTO scheduler_activations (
-                   agent_id,
-                   activation_id,
-                   authority_id,
-                   owner_kind,
-                   owner_id,
-                   work_item_id,
-                   admitted_generation,
-                   admission_kind,
-                   recovery_for_activation_id,
-                   wait_id,
-                   wait_generation,
-                   lifecycle_state,
-                   idempotency_key,
-                   payload_json,
-                   created_at,
-                   updated_at
-                 ) VALUES (
-                   'agent-a',
-                   'activation-wait-resume',
-                   'authority-wait-resume',
-                   'work_item',
-                   'work-a',
-                   'work-a',
-                   7,
-                   'wait_resume',
-                   NULL,
-                   'wait-a',
-                   1,
-                   'running',
-                   'idempotency-wait-resume',
-                   '{}',
-                   ?1,
-                   ?1
-                 )",
-                [&now],
-            )
-            .unwrap_err();
-        assert_eq!(
-            error.sqlite_error_code(),
-            Some(ErrorCode::ConstraintViolation)
-        );
-        assert!(
-            error
-                .to_string()
-                .contains("scheduler_activations.agent_id, scheduler_activations.owner_kind, scheduler_activations.owner_id, scheduler_activations.admitted_generation"),
-            "expected shared ordinary admission fence, got {error}"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn scheduler_protocol_schema_enforces_row_local_authority_identity() -> Result<()> {
-        let (_temp_dir, db_path, lock_path) = temp_paths()?;
-        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        let connection = db.connection()?;
-        let now = Utc::now().to_rfc3339();
-        connection.execute(
-            "INSERT INTO scheduler_work_demands (
-               agent_id,
-               work_item_id,
-               metadata_revision,
-               scheduling_generation,
-               status,
-               status_reference_id,
-               capabilities_json,
-               locks_json,
-               locality,
-               cost_class,
-               payload_json,
-               updated_at
-             ) VALUES ('agent-a', 'work-a', 0, 2, 'runnable', NULL, '[]', '[]', 'local', 'small', '{}', ?1)",
-            [&now],
-        )?;
-        for (authority_id, activation_id, generation) in [
-            ("authority-a", "activation-a", 1),
-            ("authority-b", "activation-b", 2),
-        ] {
-            connection.execute(
-                "INSERT INTO scheduler_activation_authorities (
-                   agent_id,
-                   authority_id,
-                   activation_id,
-                   owner_kind,
-                   owner_id,
-                   work_item_id,
-                   expected_scheduling_generation,
-                   expected_dispatch_revision,
-                   consumed_by_activation_id,
-                   payload_json,
-                   created_at
-                 ) VALUES ('agent-a', ?1, ?2, 'work_item', 'work-a', 'work-a', ?3, 0, NULL, '{}', ?4)",
-                (authority_id, activation_id, generation, &now),
-            )?;
-        }
-
-        for (authority_id, activation_id, generation) in [
-            ("authority-a", "activation-a", 1),
-            ("authority-b", "activation-b", 2),
-        ] {
-            connection.execute(
-                "INSERT INTO scheduler_activations (
-                   agent_id,
-                   activation_id,
-                   authority_id,
-                   owner_kind,
-                   owner_id,
-                   work_item_id,
-                   admitted_generation,
-                   admission_kind,
-                   recovery_for_activation_id,
-                   wait_id,
-                   wait_generation,
-                   lifecycle_state,
-                   idempotency_key,
-                   payload_json,
-                   created_at,
-                   updated_at
-                 ) VALUES (
-                   'agent-a',
-                   ?1,
-                   ?2,
-                   'work_item',
-                   'work-a',
-                   'work-a',
-                   ?3,
-                   'scheduling',
-                   NULL,
-                   NULL,
-                   NULL,
-                   'running',
-                   ?1,
-                   '{}',
-                   ?4,
-                   ?4
-                 )",
-                (activation_id, authority_id, generation, &now),
-            )?;
-        }
-        let error = connection
-            .execute(
-                "UPDATE scheduler_activation_authorities
-                 SET consumed_by_activation_id = 'activation-b'
-                 WHERE agent_id = 'agent-a' AND authority_id = 'authority-a'",
-                [],
-            )
-            .unwrap_err();
-        assert_eq!(
-            error.sqlite_error_code(),
-            Some(ErrorCode::ConstraintViolation)
-        );
-        connection.execute(
-            "UPDATE scheduler_activation_authorities
-             SET consumed_by_activation_id = 'activation-a'
-             WHERE agent_id = 'agent-a' AND authority_id = 'authority-a'",
-            [],
-        )?;
-        Ok(())
-    }
-
-    #[test]
-    fn scheduler_protocol_ledgers_keep_first_seen_identities() -> Result<()> {
+    fn scheduler_protocol_command_results_keep_first_seen_identities() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
         let connection = db.connection()?;
@@ -1628,986 +1126,8 @@ INSERT INTO scheduler_scenario_authorities (
             Some(ErrorCode::ConstraintViolation)
         );
 
-        connection.execute(
-            "INSERT INTO scheduler_protocol_migrations (
-               agent_id,
-               migration_identity,
-               migration_version,
-               source_kind,
-               source_id,
-               payload_hash,
-               provenance_json,
-               decision,
-               rejection_kind,
-               rejection_code,
-               imported_fact_references_json,
-               outcome_json,
-               created_at
-             ) VALUES (
-               'agent-a',
-               'migration-a',
-               1,
-               'legacy_turn',
-               'turn-a',
-               'hash-a',
-               '{}',
-               'imported',
-               NULL,
-               NULL,
-               '[]',
-               '{}',
-               ?1
-             )",
-            [&now],
-        )?;
-        let error = connection
-            .execute(
-                "INSERT INTO scheduler_protocol_migrations (
-                   agent_id,
-                   migration_identity,
-                   migration_version,
-                   source_kind,
-                   source_id,
-                   payload_hash,
-                   provenance_json,
-                   decision,
-                   rejection_kind,
-                   rejection_code,
-                   imported_fact_references_json,
-                   outcome_json,
-                   created_at
-                 ) VALUES (
-                   'agent-a',
-                   'migration-b',
-                   1,
-                   'legacy_turn',
-                   'turn-a',
-                   'hash-a',
-                   '{}',
-                   'imported',
-                   NULL,
-                   NULL,
-                   '[]',
-                   '{}',
-                   ?1
-                 )",
-                [&now],
-            )
-            .unwrap_err();
-        assert_eq!(
-            error.sqlite_error_code(),
-            Some(ErrorCode::ConstraintViolation)
-        );
         Ok(())
     }
-
-    #[test]
-    fn scheduler_protocol_repository_rebuilds_and_replays_after_restart() -> Result<()> {
-        let (_temp_dir, db_path, lock_path) = temp_paths()?;
-        let agent_id = "agent-a";
-        let initial = scheduler_protocol_snapshot(1);
-        let command = scheduler_protocol_admission_command(agent_id, 1);
-
-        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        db.transitions()
-            .initialize_scheduler_protocol_partition(agent_id, &initial)?;
-        let initialized = db
-            .transitions()
-            .load_scheduler_protocol_snapshot(agent_id)?;
-        let expected = scheduler_protocol::reduce_command(&initialized, &command)
-            .outcome
-            .snapshot;
-        let committed = db
-            .transitions()
-            .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &command, None)?;
-        assert!(committed.applied);
-        assert!(!committed.replayed);
-        assert_eq!(committed.result.decision, Decision::Admitted);
-        drop(db);
-
-        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        assert_eq!(
-            reopened
-                .transitions()
-                .load_scheduler_protocol_snapshot(agent_id)?,
-            expected
-        );
-        let replayed = reopened
-            .transitions()
-            .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &command, None)?;
-        assert!(!replayed.applied);
-        assert!(replayed.replayed);
-        assert_eq!(replayed.result, committed.result);
-        assert_eq!(
-            reopened
-                .transitions()
-                .load_scheduler_protocol_snapshot(agent_id)?,
-            expected
-        );
-        let ledger_rows: i64 = reopened.connection()?.query_row(
-            "SELECT COUNT(*) FROM scheduler_protocol_command_results
-             WHERE agent_id = ?1",
-            [agent_id],
-            |row| row.get(0),
-        )?;
-        assert_eq!(ledger_rows, 1);
-        Ok(())
-    }
-
-    #[test]
-    fn canonical_wait_resume_persists_consumed_wait_and_activation_atomically() -> Result<()> {
-        let (_temp_dir, db_path, lock_path) = temp_paths()?;
-        let agent_id = "agent-a";
-        let wait_id = "wait-a";
-        let wait_generation = 2;
-        let trigger_id = "trigger-a";
-        let trigger_generation = 1;
-        let scheduling_generation = 2;
-        let dispatch_revision = 1;
-        let activation = AgentActivation {
-            id: "activation-wait-resume".into(),
-            agent_id: agent_id.into(),
-            state: ActivationLifecycleState::Admitted,
-            cause: ActivationCause::WaitResume {
-                wait_id: wait_id.into(),
-                wait_generation,
-                trigger_id: trigger_id.into(),
-                trigger_generation,
-            },
-            binding: ActivationBinding::WaitOwner {
-                wait_id: wait_id.into(),
-                owner: SchedulerOwner::WorkItem {
-                    work_item_id: "work-a".into(),
-                },
-            },
-            priority: ActivationPriority::Normal,
-            preemption: PreemptionPolicy::NonPreemptive,
-            source_revision: Some(1),
-            idempotency_key: "activation-wait-resume".into(),
-            provenance: ActivationProvenance {
-                origin: ActivationOrigin::System,
-                trust: ActivationTrust::RuntimeInstruction,
-                source_id: "wait-trigger".into(),
-                correlation_id: Some("correlation-wait-resume".into()),
-                causation_id: Some(trigger_id.into()),
-            },
-        };
-        let authority_id = "authority-wait-resume";
-        let admission = ProtocolCommand::AdmitActivation(AdmitActivationCommand {
-            authority_id: authority_id.into(),
-            activation,
-            expected_scheduling_generation: scheduling_generation,
-            expected_dispatch_revision: dispatch_revision,
-        });
-        let mut initial = scheduler_protocol_snapshot(scheduling_generation);
-        initial.work.get_mut("work-a").expect("work").status = WorkStatus::Waiting {
-            wait_id: wait_id.into(),
-        };
-        initial.dispatch = AgentDispatchState::Awaiting {
-            wait: WaitIdentity {
-                id: wait_id.into(),
-                generation: wait_generation,
-            },
-        };
-        initial.dispatch_revision = dispatch_revision;
-        initial.waits.insert(
-            wait_id.into(),
-            WaitRecord {
-                current_generation: wait_generation,
-                generations: BTreeMap::from([(
-                    wait_generation,
-                    WaitGenerationRecord {
-                        owner: SchedulerOwner::WorkItem {
-                            work_item_id: "work-a".into(),
-                        },
-                        state: WaitState::Triggered,
-                        trigger: Some(WaitTrigger {
-                            trigger_id: trigger_id.into(),
-                            trigger_generation,
-                        }),
-                        consuming_activation_id: None,
-                    },
-                )]),
-            },
-        );
-
-        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        db.transitions()
-            .initialize_scheduler_protocol_partition(agent_id, &initial)?;
-        let before_admission = db
-            .transitions()
-            .load_scheduler_protocol_snapshot(agent_id)?;
-        let error = db
-            .transitions()
-            .commit_scheduler_protocol_command_unchecked_for_test(
-                agent_id,
-                &admission,
-                Some(TransitionFaultPoint::AfterCanonicalWrites),
-            )
-            .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("injected runtime transition fault"),
-            "unexpected wait resume fault: {error}"
-        );
-        assert_eq!(
-            db.transitions()
-                .load_scheduler_protocol_snapshot(agent_id)?,
-            before_admission
-        );
-        let rolled_back: (String, Option<String>) = db.connection()?.query_row(
-            "SELECT lifecycle_state, consuming_activation_id
-             FROM scheduler_wait_generations
-             WHERE agent_id = ?1 AND wait_id = ?2 AND generation = ?3",
-            params![agent_id, wait_id, wait_generation],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
-        assert_eq!(rolled_back, ("triggered".into(), None));
-
-        let committed = db
-            .transitions()
-            .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &admission, None)?;
-        assert_eq!(committed.result.decision, Decision::Admitted);
-        drop(db);
-
-        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        let persisted: (String, Option<String>) = reopened.connection()?.query_row(
-            "SELECT lifecycle_state, consuming_activation_id
-             FROM scheduler_wait_generations
-             WHERE agent_id = ?1 AND wait_id = ?2 AND generation = ?3",
-            params![agent_id, wait_id, wait_generation],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
-        assert_eq!(
-            persisted,
-            ("consumed".into(), Some("activation-wait-resume".into()))
-        );
-        assert_eq!(
-            reopened
-                .transitions()
-                .load_scheduler_protocol_snapshot(agent_id)?
-                .waits[wait_id]
-                .generations[&wait_generation]
-                .consuming_activation_id
-                .as_deref(),
-            Some("activation-wait-resume")
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn canonical_task_rejoin_persists_source_fence_and_wait_consumption() -> Result<()> {
-        let (_temp_dir, db_path, lock_path) = temp_paths()?;
-        let agent_id = "agent-a";
-        let wait_id = "wait-task";
-        let wait_generation = 2;
-        let trigger_id = "task:task-a";
-        let trigger_generation = 7;
-        let scheduling_generation = 2;
-        let dispatch_revision = 1;
-        let resume = WaitResumeClaim {
-            wait_id: wait_id.into(),
-            wait_generation,
-            trigger_id: trigger_id.into(),
-            trigger_generation,
-        };
-        let activation = AgentActivation {
-            id: "activation-task-rejoin".into(),
-            agent_id: agent_id.into(),
-            state: ActivationLifecycleState::Admitted,
-            cause: ActivationCause::TaskRejoin {
-                task_id: "task-a".into(),
-                message_id: "message-task-result".into(),
-                resume: Some(resume.clone()),
-            },
-            binding: ActivationBinding::WorkItem {
-                work_item_id: "work-a".into(),
-            },
-            priority: ActivationPriority::Normal,
-            preemption: PreemptionPolicy::AllowOperatorInterjection,
-            source_revision: Some(7),
-            idempotency_key: "task-rejoin:task-a".into(),
-            provenance: ActivationProvenance {
-                origin: ActivationOrigin::Task,
-                trust: ActivationTrust::RuntimeInstruction,
-                source_id: "message-task-result".into(),
-                correlation_id: Some("task-a".into()),
-                causation_id: Some("parent-message".into()),
-            },
-        };
-        let authority_id = "authority-task-rejoin";
-        let trigger = ProtocolCommand::TriggerWait(TriggerWaitCommand {
-            wait_id: wait_id.into(),
-            wait_generation,
-            trigger_id: trigger_id.into(),
-            trigger_generation,
-        });
-        let admission = ProtocolCommand::AdmitActivation(AdmitActivationCommand {
-            authority_id: authority_id.into(),
-            activation,
-            expected_scheduling_generation: scheduling_generation,
-            expected_dispatch_revision: dispatch_revision,
-        });
-        let mut initial = scheduler_protocol_snapshot(scheduling_generation);
-        initial.work.get_mut("work-a").expect("work").status = WorkStatus::Waiting {
-            wait_id: wait_id.into(),
-        };
-        initial.dispatch = AgentDispatchState::Awaiting {
-            wait: WaitIdentity {
-                id: wait_id.into(),
-                generation: wait_generation,
-            },
-        };
-        initial.dispatch_revision = dispatch_revision;
-        initial.waits.insert(
-            wait_id.into(),
-            WaitRecord {
-                current_generation: wait_generation,
-                generations: BTreeMap::from([(
-                    wait_generation,
-                    WaitGenerationRecord {
-                        owner: SchedulerOwner::WorkItem {
-                            work_item_id: "work-a".into(),
-                        },
-                        state: WaitState::Active,
-                        trigger: None,
-                        consuming_activation_id: None,
-                    },
-                )]),
-            },
-        );
-
-        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        db.transitions()
-            .initialize_scheduler_protocol_partition(agent_id, &initial)?;
-        db.transitions()
-            .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &trigger, None)?;
-        db.transitions()
-            .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &admission, None)?;
-        drop(db);
-
-        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        let snapshot = reopened
-            .transitions()
-            .load_scheduler_protocol_snapshot(agent_id)?;
-        assert_eq!(
-            snapshot.waits[wait_id].generations[&wait_generation].state,
-            WaitState::Consumed
-        );
-        assert_eq!(
-            snapshot.admitted_generations,
-            BTreeSet::from(["task:task-a".into()])
-        );
-        let source: (String, String) = reopened.connection()?.query_row(
-            "SELECT source_kind, source_identity
-             FROM scheduler_activation_sources
-             WHERE agent_id = ?1 AND activation_id = 'activation-task-rejoin'",
-            [agent_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
-        assert_eq!(source, ("task_rejoin".into(), "task-a".into()));
-        Ok(())
-    }
-
-    #[test]
-    fn canonical_operator_input_uses_message_source_fence() -> Result<()> {
-        let (_temp_dir, db_path, lock_path) = temp_paths()?;
-        let agent_id = "agent-a";
-        let scheduling_generation = 1;
-        let activation = AgentActivation {
-            id: "activation-operator-input".into(),
-            agent_id: agent_id.into(),
-            state: ActivationLifecycleState::Admitted,
-            cause: ActivationCause::OperatorInput {
-                message_id: "message-operator".into(),
-                resume: None,
-            },
-            binding: ActivationBinding::WorkItem {
-                work_item_id: "work-a".into(),
-            },
-            priority: ActivationPriority::Normal,
-            preemption: PreemptionPolicy::AllowOperatorInterjection,
-            source_revision: Some(9),
-            idempotency_key: "operator-message:message-operator".into(),
-            provenance: ActivationProvenance {
-                origin: ActivationOrigin::Operator,
-                trust: ActivationTrust::OperatorInstruction,
-                source_id: "message-operator".into(),
-                correlation_id: None,
-                causation_id: None,
-            },
-        };
-        let authority_id = "authority-operator-input";
-        let admission = ProtocolCommand::AdmitActivation(AdmitActivationCommand {
-            authority_id: authority_id.into(),
-            activation,
-            expected_scheduling_generation: scheduling_generation,
-            expected_dispatch_revision: 0,
-        });
-        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        db.transitions().initialize_scheduler_protocol_partition(
-            agent_id,
-            &scheduler_protocol_snapshot(scheduling_generation),
-        )?;
-        db.transitions()
-            .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &admission, None)?;
-        drop(db);
-
-        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        let snapshot = reopened
-            .transitions()
-            .load_scheduler_protocol_snapshot(agent_id)?;
-        assert_eq!(
-            snapshot.admitted_generations,
-            BTreeSet::from(["operator_message:message-operator".into()])
-        );
-        let source: (String, String) = reopened.connection()?.query_row(
-            "SELECT source_kind, source_identity
-             FROM scheduler_activation_sources
-             WHERE agent_id = ?1 AND activation_id = 'activation-operator-input'",
-            [agent_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
-        assert_eq!(source, ("operator_input".into(), "message-operator".into()));
-        Ok(())
-    }
-
-    #[test]
-    fn canonical_internal_followup_is_message_unique_and_generation_fenced() -> Result<()> {
-        let (_temp_dir, db_path, lock_path) = temp_paths()?;
-        let agent_id = "agent-a";
-        let admission = |activation_id: &str,
-                         authority_id: &str,
-                         message_id: &str,
-                         expected_dispatch_revision| {
-            ProtocolCommand::AdmitActivation(AdmitActivationCommand {
-                authority_id: authority_id.into(),
-                activation: AgentActivation {
-                    id: activation_id.into(),
-                    agent_id: agent_id.into(),
-                    state: ActivationLifecycleState::Admitted,
-                    cause: ActivationCause::InternalFollowup {
-                        message_id: message_id.into(),
-                    },
-                    binding: ActivationBinding::Lifecycle {
-                        agent_id: agent_id.into(),
-                    },
-                    priority: ActivationPriority::Normal,
-                    preemption: PreemptionPolicy::AllowOperatorInterjection,
-                    source_revision: Some(1),
-                    idempotency_key: format!("internal-followup:{activation_id}"),
-                    provenance: ActivationProvenance {
-                        origin: ActivationOrigin::System,
-                        trust: ActivationTrust::RuntimeInstruction,
-                        source_id: message_id.into(),
-                        correlation_id: None,
-                        causation_id: None,
-                    },
-                },
-                expected_scheduling_generation: 1,
-                expected_dispatch_revision,
-            })
-        };
-        let first_message_id = "message-internal-followup-a";
-        let first_admission = admission(
-            "activation-internal-followup-a",
-            "authority-internal-followup-a",
-            first_message_id,
-            0,
-        );
-        let first_settlement = ProtocolCommand::SettleActivation(SettleActivationCommand {
-            settlement: ActivationSettlement {
-                id: "settlement-internal-followup-a".into(),
-                activation_id: "activation-internal-followup-a".into(),
-                turn_terminal: None,
-                disposition: ActivationDisposition::WorkContinues,
-                agent_dispatch: AgentDispatchDisposition::Open,
-                operator_delivery: None,
-                evidence: Vec::new(),
-                created_at: "2026-08-03T00:00:00Z".into(),
-            },
-        });
-        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        db.transitions()
-            .initialize_scheduler_protocol_partition(agent_id, &scheduler_protocol_snapshot(1))?;
-        db.transitions()
-            .commit_scheduler_protocol_command_unchecked_for_test(
-                agent_id,
-                &first_admission,
-                None,
-            )?;
-        db.transitions()
-            .commit_scheduler_protocol_command_unchecked_for_test(
-                agent_id,
-                &first_settlement,
-                None,
-            )?;
-        drop(db);
-
-        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        let snapshot = reopened
-            .transitions()
-            .load_scheduler_protocol_snapshot(agent_id)?;
-        assert_eq!(
-            snapshot.admitted_generations,
-            BTreeSet::from(["lifecycle:agent-a:1".into()])
-        );
-        let second_message_id = "message-internal-followup-b";
-        let second_admission = admission(
-            "activation-internal-followup-b",
-            "authority-internal-followup-b",
-            second_message_id,
-            snapshot.dispatch_revision,
-        );
-        let duplicate = reopened
-            .transitions()
-            .commit_scheduler_protocol_command_unchecked_for_test(
-                agent_id,
-                &second_admission,
-                None,
-            )?;
-        assert_eq!(duplicate.result.decision, Decision::Rejected);
-        assert_eq!(
-            duplicate.result.diagnostics,
-            ["scheduling_generation_already_admitted"]
-        );
-        drop(reopened);
-
-        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        let snapshot = reopened
-            .transitions()
-            .load_scheduler_protocol_snapshot(agent_id)?;
-        assert_eq!(
-            snapshot.admitted_generations,
-            BTreeSet::from(["lifecycle:agent-a:1".into()])
-        );
-        let sources = reopened
-            .connection()?
-            .prepare(
-                "SELECT source_kind, source_identity
-                 FROM scheduler_activation_sources
-                 WHERE agent_id = ?1
-                 ORDER BY source_identity",
-            )?
-            .query_map([agent_id], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        assert_eq!(
-            sources,
-            vec![("internal_followup".into(), first_message_id.into())]
-        );
-
-        let error = reopened
-            .connection()?
-            .execute(
-                "INSERT INTO scheduler_activation_sources (
-                   agent_id,
-                   activation_id,
-                   source_kind,
-                   source_identity,
-                   payload_json,
-                   created_at
-                 ) VALUES (?1, 'activation-duplicate', 'internal_followup', ?2, '{}', ?3)",
-                (agent_id, first_message_id, Utc::now().to_rfc3339()),
-            )
-            .unwrap_err();
-        assert_eq!(
-            error.sqlite_error_code(),
-            Some(ErrorCode::ConstraintViolation)
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn canonical_activation_input_attachment_is_restart_safe_and_message_unique() -> Result<()> {
-        let (_temp_dir, db_path, lock_path) = temp_paths()?;
-        let agent_id = "agent-a";
-        let initial = scheduler_protocol_snapshot(1);
-        let ProtocolCommand::AdmitActivation(mut admission_payload) =
-            scheduler_protocol_admission_command(agent_id, 1)
-        else {
-            unreachable!()
-        };
-        admission_payload.activation.preemption = PreemptionPolicy::AllowOperatorInterjection;
-        let admission = ProtocolCommand::AdmitActivation(admission_payload);
-        let attachment = ActivationInputAttachment {
-            id: "attachment-a".into(),
-            activation_id: "activation-a".into(),
-            owner: SchedulerOwner::WorkItem {
-                work_item_id: "work-a".into(),
-            },
-            expected_admitted_generation: 1,
-            expected_dispatch_revision: 0,
-            message_id: "interjection-message".into(),
-            turn_id: "turn-a".into(),
-            boundary: "after_provider_round".into(),
-            round: 1,
-            provenance: ActivationProvenance {
-                origin: ActivationOrigin::Operator,
-                trust: ActivationTrust::OperatorInstruction,
-                source_id: "interjection-message".into(),
-                correlation_id: Some("activation-a".into()),
-                causation_id: None,
-            },
-            created_at: "2026-07-23T00:00:00Z".into(),
-        };
-        let command = ProtocolCommand::AttachActivationInput(AttachActivationInputCommand {
-            attachment: attachment.clone(),
-        });
-        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        db.transitions()
-            .initialize_scheduler_protocol_partition(agent_id, &initial)?;
-        db.transitions()
-            .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &admission, None)?;
-        let committed = db
-            .transitions()
-            .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &command, None)?;
-        assert_eq!(committed.result.decision, Decision::ActivationInputAttached);
-        let replayed = db
-            .transitions()
-            .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &command, None)?;
-        assert!(replayed.replayed);
-
-        let conflicting = ProtocolCommand::AttachActivationInput(AttachActivationInputCommand {
-            attachment: ActivationInputAttachment {
-                id: "attachment-b".into(),
-                boundary: "before_tool_execution".into(),
-                ..attachment.clone()
-            },
-        });
-        let before_conflict = db
-            .transitions()
-            .load_scheduler_protocol_snapshot(agent_id)?;
-        let conflict = db
-            .transitions()
-            .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &conflicting, None)?;
-        assert_eq!(conflict.result.decision, Decision::Rejected);
-        assert!(conflict.result.fact_references.is_empty());
-        assert_eq!(
-            conflict
-                .result
-                .conflict
-                .as_ref()
-                .map(|conflict| conflict.code.as_str()),
-            Some("activation_input_message_conflict")
-        );
-        assert_eq!(
-            db.transitions()
-                .load_scheduler_protocol_snapshot(agent_id)?,
-            before_conflict
-        );
-        drop(db);
-
-        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        assert_eq!(
-            reopened
-                .transitions()
-                .load_scheduler_protocol_snapshot(agent_id)?
-                .activation_inputs,
-            BTreeMap::from([("attachment-a".into(), attachment)])
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn canonical_focused_completion_releases_focus_before_terminal_constraint() -> Result<()> {
-        let (_temp_dir, db_path, lock_path) = temp_paths()?;
-        let agent_id = "agent-a";
-        let initial = scheduler_protocol_snapshot(1);
-        let admission = scheduler_protocol_admission_command(agent_id, 1);
-        let completion = scheduler_protocol_completion_command("settlement-a", None);
-
-        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        db.transitions()
-            .initialize_scheduler_protocol_partition(agent_id, &initial)?;
-        db.transitions()
-            .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &admission, None)?;
-        let committed = db
-            .transitions()
-            .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &completion, None)?;
-        assert_eq!(committed.result.decision, Decision::Settled);
-
-        let persisted = db
-            .transitions()
-            .load_scheduler_protocol_snapshot(agent_id)?;
-        assert_eq!(persisted.focus, None);
-        assert_eq!(persisted.work["work-a"].status, WorkStatus::Terminal);
-        Ok(())
-    }
-
-    #[test]
-    fn canonical_completion_restores_caller_focus_and_generation() -> Result<()> {
-        let (_temp_dir, db_path, lock_path) = temp_paths()?;
-        let agent_id = "agent-a";
-        let mut initial = scheduler_protocol_snapshot(1);
-        initial.work.insert(
-            "work-caller".into(),
-            WorkDemand {
-                metadata_revision: 4,
-                scheduling_generation: 4,
-                status: WorkStatus::Runnable,
-                capabilities: BTreeSet::from(["workspace_read".into()]),
-                locks: BTreeSet::new(),
-                locality: "workspace:holon".into(),
-                cost_class: "standard".into(),
-            },
-        );
-        let admission = scheduler_protocol_admission_command(agent_id, 1);
-        let completion = scheduler_protocol_completion_command(
-            "settlement-a",
-            Some(Continuation {
-                admission_id: "continuation-a".into(),
-                caller_work_item_id: "work-caller".into(),
-                expected_caller_generation: 4,
-            }),
-        );
-
-        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        db.transitions()
-            .initialize_scheduler_protocol_partition(agent_id, &initial)?;
-        db.transitions()
-            .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &admission, None)?;
-        let committed = db
-            .transitions()
-            .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &completion, None)?;
-        assert_eq!(committed.result.decision, Decision::Settled);
-
-        let persisted = db
-            .transitions()
-            .load_scheduler_protocol_snapshot(agent_id)?;
-        assert_eq!(persisted.focus.as_deref(), Some("work-caller"));
-        assert_eq!(persisted.work["work-a"].status, WorkStatus::Terminal);
-        assert_eq!(persisted.work["work-caller"].status, WorkStatus::Runnable);
-        assert_eq!(persisted.work["work-caller"].scheduling_generation, 5);
-        assert_eq!(
-            persisted.continuation_admissions["continuation-a"].admitted_caller_generation,
-            5
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn scheduler_protocol_repository_faults_roll_back_snapshot_and_ledger() -> Result<()> {
-        for fault in [
-            TransitionFaultPoint::AfterValidation,
-            TransitionFaultPoint::AfterCanonicalWrites,
-            TransitionFaultPoint::BeforeCommit,
-        ] {
-            let (_temp_dir, db_path, lock_path) = temp_paths()?;
-            let agent_id = "agent-a";
-            let initial = scheduler_protocol_snapshot(1);
-            let command = scheduler_protocol_admission_command(agent_id, 1);
-            let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-            db.transitions()
-                .initialize_scheduler_protocol_partition(agent_id, &initial)?;
-            let initialized = db
-                .transitions()
-                .load_scheduler_protocol_snapshot(agent_id)?;
-            let expected = scheduler_protocol::reduce_command(&initialized, &command)
-                .outcome
-                .snapshot;
-
-            let error = db
-                .transitions()
-                .commit_scheduler_protocol_command_unchecked_for_test(
-                    agent_id,
-                    &command,
-                    Some(fault),
-                )
-                .unwrap_err();
-            assert!(
-                error
-                    .to_string()
-                    .contains("injected runtime transition fault"),
-                "unexpected {fault:?} error: {error}"
-            );
-            assert_eq!(
-                db.transitions()
-                    .load_scheduler_protocol_snapshot(agent_id)?,
-                initialized,
-                "{fault:?} left partial canonical state"
-            );
-            let connection = db.connection()?;
-            let authority_rows: i64 = connection.query_row(
-                "SELECT COUNT(*) FROM scheduler_activation_authorities
-                 WHERE agent_id = ?1",
-                [agent_id],
-                |row| row.get(0),
-            )?;
-            let ledger_rows: i64 = connection.query_row(
-                "SELECT COUNT(*) FROM scheduler_protocol_command_results
-                 WHERE agent_id = ?1",
-                [agent_id],
-                |row| row.get(0),
-            )?;
-            assert_eq!(authority_rows, 0, "{fault:?} left authority state");
-            assert_eq!(ledger_rows, 0, "{fault:?} left command ledger state");
-            drop(connection);
-
-            let retried = db
-                .transitions()
-                .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &command, None)?;
-            assert!(retried.applied);
-            assert!(!retried.replayed);
-            assert_eq!(
-                db.transitions()
-                    .load_scheduler_protocol_snapshot(agent_id)?,
-                expected
-            );
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn scheduler_protocol_command_identity_conflicts_are_typed_and_audited() -> Result<()> {
-        let (_temp_dir, db_path, lock_path) = temp_paths()?;
-        let agent_id = "agent-a";
-        let initial = scheduler_protocol_snapshot(1);
-        let command = scheduler_protocol_admission_command(agent_id, 1);
-        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        db.transitions()
-            .initialize_scheduler_protocol_partition(agent_id, &initial)?;
-        db.transitions()
-            .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &command, None)?;
-
-        let mut conflicting_command = command.clone();
-        let ProtocolCommand::AdmitActivation(conflicting_admission) = &mut conflicting_command
-        else {
-            unreachable!("fixture is an admission command");
-        };
-        conflicting_admission.expected_dispatch_revision = 1;
-        let error = db
-            .transitions()
-            .commit_scheduler_protocol_command_unchecked_for_test(
-                agent_id,
-                &conflicting_command,
-                None,
-            )
-            .unwrap_err();
-        let conflict = error
-            .downcast_ref::<SchedulerProtocolCommandIdentityConflict>()
-            .expect("agent command conflict should retain its protocol type");
-        assert_eq!(conflict.partition_kind, "agent");
-        assert_eq!(conflict.partition_key, agent_id);
-        assert_eq!(conflict.command_kind, "admit_activation");
-        assert_eq!(conflict.command_identity, "activation-a");
-        assert_ne!(
-            conflict.existing_payload_hash,
-            conflict.incoming_payload_hash
-        );
-        assert_eq!(
-            conflict.conflict.kind,
-            scheduler_protocol::ProtocolConflictKind::PayloadConflict
-        );
-        assert_eq!(conflict.conflict.code, "command_identity_payload_conflict");
-
-        drop(db);
-        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        let connection = reopened.connection()?;
-        let attempts: Vec<(String, String, String, String)> = connection
-            .prepare(
-                "SELECT partition_kind, partition_key, command_kind, command_identity
-                 FROM scheduler_protocol_command_conflict_attempts
-                 ORDER BY conflict_attempt_id",
-            )?
-            .query_map([], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-            })?
-            .collect::<std::result::Result<_, _>>()?;
-        assert_eq!(
-            attempts,
-            vec![(
-                "agent".into(),
-                agent_id.into(),
-                "admit_activation".into(),
-                "activation-a".into(),
-            ),]
-        );
-        let agent_results: i64 = connection.query_row(
-            "SELECT COUNT(*) FROM scheduler_protocol_command_results
-             WHERE agent_id = ?1 AND command_identity = 'activation-a'",
-            [agent_id],
-            |row| row.get(0),
-        )?;
-        assert_eq!(agent_results, 1);
-        Ok(())
-    }
-
-    #[test]
-    fn scheduler_authoritative_queue_commits_survive_sustained_concurrent_load_and_restart(
-    ) -> Result<()> {
-        const WRITERS: usize = 4;
-        const COMMITS_PER_WRITER: usize = 64;
-
-        let (_temp_dir, db_path, lock_path) = temp_paths()?;
-        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        db.transitions()
-            .initialize_scheduler_protocol_partition("agent-a", &scheduler_protocol_snapshot(1))?;
-
-        let mut handles = Vec::new();
-        for writer_index in 0..WRITERS {
-            let writer = db.clone();
-            handles.push(std::thread::spawn(move || -> Result<()> {
-                for commit_index in 0..COMMITS_PER_WRITER {
-                    let identity = format!("{writer_index}-{commit_index}");
-                    let now = Utc::now();
-                    let queue_record = QueueEntryRecord {
-                        message_id: format!("message-{identity}"),
-                        agent_id: "agent-a".into(),
-                        priority: crate::types::Priority::Normal,
-                        status: QueueEntryStatus::Queued,
-                        created_at: now,
-                        updated_at: now,
-                    };
-                    let command = QueueTransitionCommand {
-                        agent_id: "agent-a".into(),
-                        operation: QueueOperation::Admit,
-                        mutation: QueueMutation::Upsert(queue_record),
-                        scheduler_claim_work_item: None,
-                        agent_state: None,
-                        message_evidence: Vec::new(),
-                        transcript_entries: Vec::new(),
-                        turn_record: None,
-                        audit_events: Vec::new(),
-                        notify_scheduler: false,
-                        fault: None,
-                        brief_evidence: Vec::new(),
-                    };
-                    assert!(writer.transitions().commit_queue(&command)?.applied);
-                }
-                Ok(())
-            }));
-        }
-        for handle in handles {
-            handle
-                .join()
-                .map_err(|_| anyhow!("authoritative load writer panicked"))??;
-        }
-
-        let expected = i64::try_from(WRITERS * COMMITS_PER_WRITER)?;
-        let assert_counts = |db: &RuntimeDb| -> Result<()> {
-            let connection = db.connection()?;
-            let queue_count: i64 = connection.query_row(
-                "SELECT COUNT(*) FROM queue_entries WHERE agent_id = 'agent-a'",
-                [],
-                |row| row.get(0),
-            )?;
-            assert_eq!(queue_count, expected);
-            Ok(())
-        };
-        assert_counts(&db)?;
-        drop(db);
-
-        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        assert_counts(&reopened)?;
-        reopened
-            .transitions()
-            .load_scheduler_protocol_snapshot("agent-a")?;
-        Ok(())
-    }
-
     #[test]
     fn event_log_epoch_is_stable_across_reopen() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
@@ -2825,6 +1345,284 @@ INSERT INTO storage_domains (
     }
 
     #[test]
+    fn migration_47_upgrades_v0_31_1_schema_and_preserves_scheduler_audit_evidence() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        {
+            let mut connection = open_connection(&db_path)?;
+            migrate_through(&mut connection, 46)?;
+            connection.execute_batch(
+                r#"
+INSERT INTO scheduler_work_demands (
+  agent_id, work_item_id, metadata_revision, scheduling_generation, status,
+  status_reference_id, capabilities_json, locks_json, locality, cost_class,
+  payload_json, updated_at
+) VALUES (
+  'agent-a', 'work-a', 1, 1, 'terminal',
+  NULL, '[]', '[]', 'runtime', 'default',
+  '{"retired":"work-demand"}', '2026-08-16T00:00:00Z'
+);
+INSERT INTO scheduler_waits (
+  agent_id, wait_id, owner_kind, owner_id, owner_work_item_id, current_generation,
+  payload_json, updated_at
+) VALUES (
+  'agent-a', 'wait-a', 'work_item', 'work-a', 'work-a', 1,
+  '{"retired":"wait"}', '2026-08-16T00:00:00Z'
+);
+INSERT INTO scheduler_wait_generations (
+  agent_id, wait_id, generation, owner_kind, owner_id, owner_work_item_id, lifecycle_state,
+  trigger_id, trigger_generation, consuming_activation_id,
+  payload_json, created_at, updated_at
+) VALUES (
+  'agent-a', 'wait-a', 1, 'work_item', 'work-a', 'work-a', 'active',
+  NULL, NULL, NULL,
+  '{"retired":"wait-generation"}',
+  '2026-08-16T00:00:00Z', '2026-08-16T00:00:00Z'
+);
+INSERT INTO scheduler_agent_dispatch (
+  agent_id, dispatch_kind, wait_id, wait_generation,
+  dispatch_revision, updated_at
+) VALUES (
+  'agent-a', 'awaiting', 'wait-a', 1,
+  1, '2026-08-16T00:00:00Z'
+);
+INSERT INTO scheduler_activations (
+  agent_id, activation_id, authority_id, owner_kind, owner_id, work_item_id,
+  admitted_generation, admission_kind, recovery_for_activation_id, wait_id,
+  wait_generation, lifecycle_state, idempotency_key, payload_json,
+  created_at, updated_at
+) VALUES (
+  'agent-a', 'activation-a', 'authority-a', 'work_item', 'work-a', 'work-a',
+  1, 'scheduling', NULL, NULL,
+  NULL, 'settled', 'activation-a', '{"audit":"activation"}',
+  '2026-08-16T00:00:00Z', '2026-08-16T00:01:00Z'
+);
+INSERT INTO scheduler_activation_settlements (
+  agent_id, settlement_id, activation_id, payload_json, created_at
+) VALUES (
+  'agent-a', 'settlement-a', 'activation-a',
+  '{"audit":"settlement"}', '2026-08-16T00:01:00Z'
+);
+INSERT INTO scheduler_continuation_admissions (
+  agent_id, admission_id, settlement_id, completed_work_item_id,
+  caller_work_item_id, expected_caller_generation, admitted_caller_generation,
+  payload_json, created_at
+) VALUES (
+  'agent-a', 'admission-a', 'settlement-a', 'work-a',
+  'work-caller', 1, 2, '{"audit":"continuation"}',
+  '2026-08-16T00:02:00Z'
+);
+INSERT INTO scheduler_activation_sources (
+  agent_id, activation_id, source_kind, source_identity, payload_json, created_at
+) VALUES (
+  'agent-a', 'activation-a', 'internal_followup', 'source-a',
+  '{"audit":"source"}', '2026-08-16T00:00:00Z'
+);
+INSERT INTO scheduler_activation_inputs (
+  agent_id, attachment_id, activation_id, owner_kind, owner_id,
+  expected_admitted_generation, expected_dispatch_revision, message_id,
+  turn_id, boundary, round, payload_json, created_at
+) VALUES (
+  'agent-a', 'attachment-a', 'activation-a', 'work_item', 'work-a',
+  1, 0, 'message-a', 'turn-a', 'initial', 0,
+  '{"audit":"input"}', '2026-08-16T00:00:00Z'
+);
+INSERT INTO scheduler_protocol_command_results (
+  agent_id, command_kind, command_identity, canonical_schema_version,
+  payload_hash, decision, conflict_kind, conflict_code, result_references_json,
+  pre_state_fence_json, post_state_fence_json, outcome_json, created_at
+) VALUES (
+  'agent-a', 'settle_activation', 'command-a', 1,
+  'hash-a', 'applied', NULL, NULL, '[]',
+  '{}', '{}', '{"audit":"command"}', '2026-08-16T00:01:00Z'
+);
+INSERT INTO scheduler_protocol_command_conflict_attempts (
+  partition_kind, partition_key, command_kind, command_identity,
+  canonical_schema_version, existing_payload_hash, incoming_payload_hash,
+  conflict_kind, conflict_code, created_at
+) VALUES (
+  'agent', 'agent-a', 'settle_activation', 'command-a',
+  1, 'hash-a', 'hash-b', 'identity', 'payload_mismatch',
+  '2026-08-16T00:02:00Z'
+);
+INSERT INTO scheduler_rollout_command_results (
+  command_kind, command_identity, canonical_schema_version, payload_hash,
+  decision, conflict_kind, conflict_code, result_references_json,
+  pre_state_fence_json, post_state_fence_json, outcome_json, created_at
+) VALUES (
+  'install_manifest', 'rollout-a', 1, 'hash-rollout',
+  'applied', NULL, NULL, '[]',
+  '{}', '{}', '{"audit":"rollout"}', '2026-08-16T00:03:00Z'
+);
+"#,
+            )?;
+        }
+
+        RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+
+        let connection = open_connection(&db_path)?;
+        assert_eq!(current_schema_version(&connection)?, 47);
+        for table in RETIRED_SCHEDULER_TABLES {
+            assert!(
+                !table_exists(&connection, table)?,
+                "retired scheduler table {table} must be removed"
+            );
+        }
+        for (table, payload_column, expected_payload) in [
+            (
+                "scheduler_activations",
+                "payload_json",
+                r#"{"audit":"activation"}"#,
+            ),
+            (
+                "scheduler_activation_settlements",
+                "payload_json",
+                r#"{"audit":"settlement"}"#,
+            ),
+            (
+                "scheduler_continuation_admissions",
+                "payload_json",
+                r#"{"audit":"continuation"}"#,
+            ),
+            (
+                "scheduler_activation_sources",
+                "payload_json",
+                r#"{"audit":"source"}"#,
+            ),
+            (
+                "scheduler_activation_inputs",
+                "payload_json",
+                r#"{"audit":"input"}"#,
+            ),
+            (
+                "scheduler_protocol_command_results",
+                "outcome_json",
+                r#"{"audit":"command"}"#,
+            ),
+            (
+                "scheduler_rollout_command_results",
+                "outcome_json",
+                r#"{"audit":"rollout"}"#,
+            ),
+        ] {
+            let payload: String = connection.query_row(
+                &format!("SELECT {payload_column} FROM {table}"),
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(payload, expected_payload, "changed evidence in {table}");
+        }
+        let conflict_count: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM scheduler_protocol_command_conflict_attempts
+             WHERE existing_payload_hash = 'hash-a'
+               AND incoming_payload_hash = 'hash-b'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(conflict_count, 1);
+        for table in RETAINED_SCHEDULER_AUDIT_TABLES {
+            let foreign_key_count: i64 = connection.query_row(
+                &format!("SELECT COUNT(*) FROM pragma_foreign_key_list('{table}')"),
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(
+                foreign_key_count, 0,
+                "retained audit table {table} must not depend on retired schema"
+            );
+        }
+        let foreign_key_violation_count: i64 =
+            connection.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })?;
+        assert_eq!(foreign_key_violation_count, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn migration_47_fails_closed_for_unsettled_canonical_execution_state() -> Result<()> {
+        for (active_state_sql, recovery_sql, expected_count) in [
+            (
+                "INSERT INTO execution_protocol_attempts (
+                   agent_id, attempt_id, lifecycle_state, source_identity_json,
+                   source_generation, recovery_of_attempt_id, terminal_outcome_id, payload_json
+                 ) VALUES (
+                   'agent-a', 'attempt-a', 'open', '{}',
+                   1, NULL, NULL, '{}'
+                 )",
+                "UPDATE execution_protocol_attempts
+                 SET lifecycle_state = 'interrupted'
+                 WHERE agent_id = 'agent-a' AND attempt_id = 'attempt-a'",
+                "open_execution_attempts=1",
+            ),
+            (
+                "INSERT INTO execution_protocol_work_items (
+                   agent_id, work_item_id, source_revision, generation,
+                   lifecycle_state, payload_json
+                 ) VALUES (
+                   'agent-a', 'work-a', 1, 1, 'in_flight', '{}'
+                 )",
+                "UPDATE execution_protocol_work_items
+                 SET lifecycle_state = 'paused'
+                 WHERE agent_id = 'agent-a' AND work_item_id = 'work-a'",
+                "in_flight_execution_work_items=1",
+            ),
+            (
+                "INSERT INTO queue_entries (
+                   message_id, agent_id, priority, status,
+                   created_at, updated_at, payload_json
+                 ) VALUES (
+                   'message-a', 'agent-a', 'normal', 'dequeued',
+                   '2026-08-16T00:00:00Z', '2026-08-16T00:00:00Z', '{}'
+                 )",
+                "UPDATE queue_entries
+                 SET status = 'processed', updated_at = '2026-08-16T00:01:00Z'
+                 WHERE message_id = 'message-a'",
+                "dequeued_queue_entries=1",
+            ),
+        ] {
+            let (_temp_dir, db_path, lock_path) = temp_paths()?;
+            {
+                let mut connection = open_connection(&db_path)?;
+                migrate_through(&mut connection, 46)?;
+                connection.execute(active_state_sql, [])?;
+            }
+
+            let error = RuntimeDb::open_and_migrate(&db_path, &lock_path)
+                .expect_err("migration must reject unsettled canonical execution state");
+            assert!(error.to_string().contains(expected_count), "{error:#}");
+            assert!(
+                error.to_string().contains(
+                    "run scheduler-recovery report/apply/report with the pre-migration binary"
+                ),
+                "{error:#}"
+            );
+
+            let connection = open_connection(&db_path)?;
+            assert_eq!(current_schema_version(&connection)?, 46);
+            for table in RETIRED_SCHEDULER_TABLES {
+                assert!(
+                    table_exists(&connection, table)?,
+                    "failed migration must retain retired table {table}"
+                );
+            }
+            connection.execute(recovery_sql, [])?;
+            drop(connection);
+
+            RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+            let connection = open_connection(&db_path)?;
+            assert_eq!(current_schema_version(&connection)?, 47);
+            for table in RETIRED_SCHEDULER_TABLES {
+                assert!(
+                    !table_exists(&connection, table)?,
+                    "migration must remove retired table {table} after recovery reaches a fixed point"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn execution_protocol_migration_backfills_active_canonical_claim() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
@@ -2837,13 +1635,18 @@ INSERT INTO storage_domains (
         )?;
         drop(db);
         downgrade_before_execution_protocol(&db_path)?;
+        restore_pre_execution_protocol_work_demand(&db_path, "agent-a", "work-a")?;
 
-        let migrated = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        let state = migrated
-            .transitions()
-            .load_execution_protocol_state_if_initialized("agent-a")?
-            .expect("migrated execution protocol state");
-        let attempt = state.attempts.get("activation-a").expect("open attempt");
+        let mut connection = open_connection(&db_path)?;
+        apply_migration(&mut connection, &MIGRATIONS[40])?;
+        let payload_json: String = connection.query_row(
+            "SELECT payload_json
+             FROM execution_protocol_attempts
+             WHERE agent_id = 'agent-a' AND attempt_id = 'activation-a'",
+            [],
+            |row| row.get(0),
+        )?;
+        let attempt: ExecutionAttempt = serde_json::from_str(&payload_json)?;
         assert_eq!(
             attempt.state,
             crate::domain::execution_protocol::ExecutionAttemptState::Open
@@ -2860,12 +1663,7 @@ INSERT INTO storage_domains (
         assert_eq!(attempt.admitted_fences.work_item_generation, Some(1));
         assert_eq!(attempt.admitted_fences.agent_control_revision, 1);
         assert_eq!(attempt.admitted_fences.host_registry_revision, 1);
-        assert_eq!(
-            state
-                .open_attempt()
-                .map(|attempt| attempt.attempt_id.as_str()),
-            Some("activation-a")
-        );
+        assert_eq!(current_schema_version(&connection)?, 41);
         Ok(())
     }
 
@@ -2882,10 +1680,12 @@ INSERT INTO storage_domains (
         )?;
         drop(db);
         downgrade_before_execution_protocol(&db_path)?;
+        restore_pre_execution_protocol_work_demand(&db_path, "agent-a", "work-a")?;
         open_connection(&db_path)?
             .execute("DELETE FROM messages WHERE message_id = 'message-a'", [])?;
 
-        let error = RuntimeDb::open_and_migrate(&db_path, &lock_path)
+        let mut connection = open_connection(&db_path)?;
+        let error = apply_migration(&mut connection, &MIGRATIONS[40])
             .expect_err("migration must reject an unreconstructable active claim");
         assert!(
             error
@@ -2893,7 +1693,6 @@ INSERT INTO storage_domains (
                 .contains("requires exactly one message evidence row"),
             "{error:#}"
         );
-        let connection = open_connection(&db_path)?;
         assert_eq!(current_schema_version(&connection)?, 40);
         assert!(!table_exists(&connection, "execution_protocol_attempts")?);
         Ok(())
