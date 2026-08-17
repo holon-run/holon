@@ -1492,6 +1492,7 @@ mod tests {
                 DebugCommands::SchedulerRecovery {
                     agent,
                     message_id,
+                    all_affected,
                     json,
                     apply,
                     no_backup,
@@ -1502,9 +1503,53 @@ mod tests {
         };
         assert_eq!(agent.as_deref(), Some("pm"));
         assert!(message_id.is_none());
+        assert!(!all_affected);
         assert!(json);
         assert!(!apply);
         assert!(!no_backup);
+    }
+
+    #[test]
+    fn debug_scheduler_recovery_all_affected_conflicts_with_selectors() {
+        let cli = Cli::parse_from([
+            "holon",
+            "debug",
+            "scheduler-recovery",
+            "--all-affected",
+            "--json",
+        ]);
+        let Commands::Debug {
+            command:
+                DebugCommands::SchedulerRecovery {
+                    agent,
+                    message_id,
+                    all_affected,
+                    json,
+                    apply,
+                    no_backup,
+                },
+        } = cli.command
+        else {
+            panic!("expected debug scheduler-recovery command");
+        };
+        assert!(agent.is_none());
+        assert!(message_id.is_none());
+        assert!(all_affected);
+        assert!(json);
+        assert!(!apply);
+        assert!(!no_backup);
+
+        for selector in [["--agent", "pm"], ["--message-id", "message-1"]] {
+            assert!(Cli::try_parse_from([
+                "holon",
+                "debug",
+                "scheduler-recovery",
+                "--all-affected",
+                selector[0],
+                selector[1],
+            ])
+            .is_err());
+        }
     }
 
     #[test]
@@ -2536,10 +2581,19 @@ async fn handle_debug_command(config: AppConfig, command: DebugCommands) -> Resu
         DebugCommands::SchedulerRecovery {
             agent,
             message_id,
+            all_affected,
             json,
             apply,
             no_backup,
-        } => print_scheduler_recovery_report(&config, agent, message_id, json, apply, no_backup),
+        } => print_scheduler_recovery_report(
+            &config,
+            agent,
+            message_id,
+            all_affected,
+            json,
+            apply,
+            no_backup,
+        ),
         DebugCommands::SchedulerRecoveryFixture {
             agent,
             objective,
@@ -2608,15 +2662,23 @@ fn print_scheduler_recovery_report(
     config: &AppConfig,
     agent: Option<String>,
     message_id: Option<String>,
+    all_affected: bool,
     json: bool,
     apply: bool,
     no_backup: bool,
 ) -> Result<()> {
-    let agent_id = agent.unwrap_or_else(|| config.default_agent_id.clone());
     let runtime_db = RuntimeDb::open_for_scheduler_recovery(
         config.runtime_db_path(),
         config.runtime_db_lock_path(),
     )?;
+    let _maintenance_lock = apply
+        .then(|| RuntimeDbLock::try_lock(config.runtime_db_maintenance_lock_path()))
+        .transpose()
+        .context("scheduler recovery apply requires holon serve to be stopped")?;
+    if all_affected {
+        return print_all_scheduler_recovery_reports(config, &runtime_db, json, apply, no_backup);
+    }
+    let agent_id = agent.unwrap_or_else(|| config.default_agent_id.clone());
     let storage = AppStorage::new_for_agent(
         config.agent_root_dir().join(&agent_id),
         agent_id.clone(),
@@ -2626,8 +2688,6 @@ fn print_scheduler_recovery_report(
     filter_scheduler_recovery_report(&mut report, message_id.as_deref(), true)?;
     let mut apply_result = None;
     if apply {
-        let _maintenance_lock = RuntimeDbLock::try_lock(config.runtime_db_maintenance_lock_path())
-            .context("scheduler recovery apply requires holon serve to be stopped")?;
         let backup_policy = if no_backup {
             holon::runtime::SchedulerRecoveryBackupPolicy::SkipApproved
         } else {
@@ -2711,6 +2771,126 @@ fn print_scheduler_recovery_report(
             candidate.eligible,
             candidate.reason,
         );
+    }
+    Ok(())
+}
+
+fn print_all_scheduler_recovery_reports(
+    config: &AppConfig,
+    runtime_db: &RuntimeDb,
+    json: bool,
+    apply: bool,
+    no_backup: bool,
+) -> Result<()> {
+    let before = runtime_db.retired_scheduler_cleanup_inventory()?;
+    let agent_ids = before.affected_agents();
+    let mut storages = Vec::with_capacity(agent_ids.len());
+    let mut reports = Vec::with_capacity(agent_ids.len());
+    let mut report_errors = Vec::new();
+    for agent_id in &agent_ids {
+        let storage = AppStorage::new_for_agent(
+            config.agent_root_dir().join(agent_id),
+            agent_id.clone(),
+            runtime_db.clone(),
+        )?;
+        match holon::runtime::scheduler_recovery_report(&storage, runtime_db, agent_id) {
+            Ok(report) => reports.push(Some(report)),
+            Err(error) => {
+                report_errors.push(serde_json::json!({
+                    "agent_id": agent_id,
+                    "error": format!("{error:#}"),
+                }));
+                reports.push(None);
+            }
+        }
+        storages.push(storage);
+    }
+
+    let mut changed = 0;
+    let mut backup_path = None;
+    let mut fallback_results = Vec::new();
+    if apply && !before.is_fixed_point() {
+        if !no_backup {
+            backup_path = Some(runtime_db.create_scheduler_recovery_backup()?);
+        }
+        for ((storage, report), agent_id) in storages.iter().zip(&reports).zip(&agent_ids) {
+            let Some(report) = report else {
+                continue;
+            };
+            changed += holon::runtime::apply_scheduler_recovery_plan_with_backup_policy(
+                storage,
+                runtime_db,
+                agent_id,
+                report,
+                holon::runtime::SchedulerRecoveryBackupPolicy::SkipApproved,
+            )?
+            .0;
+        }
+        let after_exact = runtime_db.retired_scheduler_cleanup_inventory()?;
+        for result in
+            runtime_db.apply_retired_scheduler_cleanup_fallbacks(&after_exact.affected_agents())?
+        {
+            changed += usize::from(!result.actions.is_empty());
+            fallback_results.push(result);
+        }
+    }
+
+    let after = runtime_db.retired_scheduler_cleanup_inventory()?;
+    if json {
+        print_json(&serde_json::json!({
+            "before": before,
+            "reports": reports,
+            "report_errors": report_errors,
+            "apply": apply.then(|| serde_json::json!({
+                "changed": changed,
+                "backup_path": backup_path,
+                "backup_policy": if no_backup { "skip_approved" } else { "required" },
+                "backup_created": backup_path.is_some(),
+                "fallback_results": fallback_results,
+            })),
+            "after": after,
+        }))?;
+    } else {
+        println!(
+            "Scheduler recovery affected agents={} blockers={}",
+            agent_ids.join(","),
+            before.blockers.len()
+        );
+        for (agent_id, report) in agent_ids.iter().zip(&reports) {
+            if let Some(report) = report {
+                println!(
+                    "- {}: candidates={} task_result_claims={} continuations={}",
+                    report.agent_id,
+                    report.candidates.len(),
+                    report.task_result_claim_recoveries.len(),
+                    report.continuation_reconciliations.len(),
+                );
+            } else {
+                println!(
+                    "- {agent_id}: exact recovery report unavailable; typed fallback required"
+                );
+            }
+        }
+        if apply {
+            println!(
+                "- applied recovery changes={} fallbacks={} backup={}",
+                changed,
+                fallback_results.len(),
+                backup_path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "not-created".into())
+            );
+        }
+        println!("- remaining blockers={}", after.blockers.len());
+    }
+    if apply && !after.is_fixed_point() {
+        return Err(anyhow!(
+            "scheduler recovery did not reach the retired scheduler cleanup fixed point: \
+             remaining_blockers={} affected_agents={}",
+            after.blockers.len(),
+            after.affected_agents().join(",")
+        ));
     }
     Ok(())
 }

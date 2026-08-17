@@ -583,10 +583,12 @@ pub enum DebugCommands {
     },
     #[command(about = "Inspect scheduler bootstrap recovery candidates without applying repairs")]
     SchedulerRecovery {
-        #[arg(long)]
+        #[arg(long, conflicts_with = "all_affected")]
         agent: Option<String>,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "all_affected")]
         message_id: Option<String>,
+        #[arg(long)]
+        all_affected: bool,
         #[arg(long)]
         json: bool,
         #[arg(long)]

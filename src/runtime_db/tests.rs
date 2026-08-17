@@ -1639,7 +1639,7 @@ INSERT INTO scheduler_rollout_command_results (
             assert!(
                 error
                     .to_string()
-                    .contains("run `holon debug scheduler-recovery --agent <affected-agent>`"),
+                    .contains("run `holon debug scheduler-recovery --all-affected`"),
                 "{error:#}"
             );
             assert!(
@@ -1668,6 +1668,388 @@ INSERT INTO scheduler_rollout_command_results (
                 );
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn retired_scheduler_cleanup_fallback_preserves_input_and_reaches_fixed_point() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        prepare_pre_execution_protocol_claim(
+            &db,
+            "agent-a",
+            "work-a",
+            "message-a",
+            "activation-a",
+        )?;
+        let original_message = db
+            .messages()
+            .recent(Some("agent-a"), usize::MAX)?
+            .into_iter()
+            .find(|message| message.id == "message-a")
+            .expect("operator message exists");
+        drop(db);
+        downgrade_before_execution_protocol(&db_path)?;
+        restore_pre_execution_protocol_work_demand(&db_path, "agent-a", "work-a")?;
+        {
+            let mut connection = open_connection(&db_path)?;
+            migrate_through(&mut connection, 46)?;
+        }
+
+        let db = RuntimeDb::open_for_scheduler_recovery(&db_path, &lock_path)?;
+        assert_eq!(db.retired_scheduler_cleanup_inventory()?.blockers.len(), 3);
+        let result = db.apply_retired_scheduler_cleanup_fallback("agent-a")?;
+        assert_eq!(result.protected_message_ids, vec!["message-a".to_string()]);
+        assert!(result.recovery_message_id.is_some());
+        assert!(db.retired_scheduler_cleanup_inventory()?.is_fixed_point());
+
+        let messages = db.messages().recent(Some("agent-a"), usize::MAX)?;
+        assert_eq!(
+            messages.iter().find(|message| message.id == "message-a"),
+            Some(&original_message)
+        );
+        let recovery_message = messages
+            .iter()
+            .find(|message| Some(message.id.as_str()) == result.recovery_message_id.as_deref())
+            .expect("fallback enqueues an agent recovery event");
+        assert_eq!(
+            recovery_message.kind,
+            crate::types::MessageKind::InternalFollowup
+        );
+        let crate::types::MessageBody::Json { value } = &recovery_message.body else {
+            panic!("recovery event must use a typed JSON body");
+        };
+        assert_eq!(
+            value["actions"]
+                .as_array()
+                .expect("recovery actions are an array")
+                .len(),
+            result.actions.len()
+        );
+        assert_eq!(
+            value["actions"]
+                .as_array()
+                .expect("recovery actions are an array")
+                .last()
+                .and_then(|action| action["kind"].as_str()),
+            Some("enqueue_agent_recovery_event")
+        );
+        assert_eq!(
+            db.queue_entries()
+                .latest("message-a")?
+                .expect("original queue entry exists")
+                .status,
+            QueueEntryStatus::Quarantined
+        );
+        assert_eq!(
+            db.queue_entries()
+                .latest(&recovery_message.id)?
+                .expect("recovery queue entry exists")
+                .status,
+            QueueEntryStatus::Queued
+        );
+        let state = db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("agent-a")?
+            .expect("execution partition exists");
+        assert!(matches!(
+            state
+                .attempts
+                .get("activation-a")
+                .expect("attempt remains durable")
+                .state,
+            crate::domain::execution_protocol::ExecutionAttemptState::Interrupted
+        ));
+        assert!(matches!(
+            state
+                .work_items
+                .get("work-a")
+                .expect("WorkItem remains durable")
+                .state,
+            WorkItemExecutionState::Runnable {
+                recovery_ref: Some(_),
+                ..
+            }
+        ));
+        drop(db);
+
+        RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        assert_eq!(current_schema_version(&open_connection(&db_path)?)?, 47);
+        Ok(())
+    }
+
+    #[test]
+    fn retired_scheduler_cleanup_fallback_refuses_missing_source_message() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        prepare_pre_execution_protocol_claim(
+            &db,
+            "agent-a",
+            "work-a",
+            "message-a",
+            "activation-a",
+        )?;
+        drop(db);
+        downgrade_before_execution_protocol(&db_path)?;
+        restore_pre_execution_protocol_work_demand(&db_path, "agent-a", "work-a")?;
+        {
+            let mut connection = open_connection(&db_path)?;
+            migrate_through(&mut connection, 46)?;
+            connection.execute("DELETE FROM messages WHERE message_id = 'message-a'", [])?;
+        }
+
+        let db = RuntimeDb::open_for_scheduler_recovery(&db_path, &lock_path)?;
+        let before = db.retired_scheduler_cleanup_inventory()?;
+        let error = db
+            .apply_retired_scheduler_cleanup_fallback("agent-a")
+            .expect_err("fallback must protect missing operator input");
+        assert!(
+            error
+                .to_string()
+                .contains("cannot preserve source message message-a"),
+            "{error:#}"
+        );
+        assert_eq!(db.retired_scheduler_cleanup_inventory()?, before);
+        Ok(())
+    }
+
+    #[test]
+    fn retired_scheduler_cleanup_fallback_handles_partial_execution_facts() -> Result<()> {
+        for (case, damage_sql, expected_blockers) in [
+            (
+                "missing_attempt",
+                "DELETE FROM execution_protocol_attempts
+                 WHERE agent_id = 'agent-a' AND attempt_id = 'activation-a'",
+                2,
+            ),
+            (
+                "isolated_queue",
+                "DELETE FROM execution_protocol_attempts
+                 WHERE agent_id = 'agent-a' AND attempt_id = 'activation-a';
+                 DELETE FROM execution_protocol_work_items
+                 WHERE agent_id = 'agent-a' AND work_item_id = 'work-a'",
+                1,
+            ),
+            (
+                "bare_in_flight_work_item",
+                "DELETE FROM execution_protocol_attempts
+                 WHERE agent_id = 'agent-a' AND attempt_id = 'activation-a';
+                 DELETE FROM queue_entries
+                 WHERE agent_id = 'agent-a' AND message_id = 'message-a'",
+                1,
+            ),
+        ] {
+            let (_temp_dir, db_path, lock_path) = temp_paths()?;
+            let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+            prepare_pre_execution_protocol_claim(
+                &db,
+                "agent-a",
+                "work-a",
+                "message-a",
+                "activation-a",
+            )?;
+            drop(db);
+            downgrade_before_execution_protocol(&db_path)?;
+            restore_pre_execution_protocol_work_demand(&db_path, "agent-a", "work-a")?;
+            {
+                let mut connection = open_connection(&db_path)?;
+                migrate_through(&mut connection, 46)?;
+                connection.execute_batch(damage_sql)?;
+            }
+
+            let db = RuntimeDb::open_for_scheduler_recovery(&db_path, &lock_path)?;
+            assert_eq!(
+                db.retired_scheduler_cleanup_inventory()?.blockers.len(),
+                expected_blockers,
+                "{case}"
+            );
+            let result = db.apply_retired_scheduler_cleanup_fallback("agent-a")?;
+            assert!(
+                !result.actions.is_empty(),
+                "{case} must produce typed recovery actions"
+            );
+            assert!(
+                db.retired_scheduler_cleanup_inventory()?.is_fixed_point(),
+                "{case} must reach the migration fixed point"
+            );
+            assert!(
+                result.recovery_message_id.is_some(),
+                "{case} must wake the agent for reconciliation"
+            );
+            drop(db);
+
+            RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+            assert_eq!(
+                current_schema_version(&open_connection(&db_path)?)?,
+                47,
+                "{case}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn retired_scheduler_cleanup_fallback_repairs_nonreciprocal_execution_facts() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        prepare_pre_execution_protocol_claim(
+            &db,
+            "agent-a",
+            "work-a",
+            "message-a",
+            "activation-a",
+        )?;
+        drop(db);
+        downgrade_before_execution_protocol(&db_path)?;
+        restore_pre_execution_protocol_work_demand(&db_path, "agent-a", "work-a")?;
+        {
+            let mut connection = open_connection(&db_path)?;
+            migrate_through(&mut connection, 46)?;
+            let payload = connection.query_row(
+                "SELECT payload_json
+                 FROM execution_protocol_work_items
+                 WHERE agent_id = 'agent-a' AND work_item_id = 'work-a'",
+                [],
+                |row| row.get::<_, String>(0),
+            )?;
+            let mut record: WorkItemExecutionRecord = serde_json::from_str(&payload)?;
+            record.state = WorkItemExecutionState::InFlight {
+                generation: record.generation(),
+                attempt_id: "missing-attempt".into(),
+            };
+            connection.execute(
+                "UPDATE execution_protocol_work_items
+                 SET payload_json = ?1
+                 WHERE agent_id = 'agent-a' AND work_item_id = 'work-a'",
+                [serde_json::to_string(&record)?],
+            )?;
+        }
+
+        let db = RuntimeDb::open_for_scheduler_recovery(&db_path, &lock_path)?;
+        assert_eq!(db.retired_scheduler_cleanup_inventory()?.blockers.len(), 3);
+        let result = db.apply_retired_scheduler_cleanup_fallback("agent-a")?;
+        assert!(result.actions.iter().any(|action| {
+            action.kind
+                == crate::runtime_db::RetiredSchedulerFallbackActionKind::ResumeInFlightExecutionWorkItem
+        }));
+        assert!(result.actions.iter().any(|action| {
+            action.kind
+                == crate::runtime_db::RetiredSchedulerFallbackActionKind::InterruptOpenExecutionAttempt
+        }));
+        assert!(db.retired_scheduler_cleanup_inventory()?.is_fixed_point());
+        drop(db);
+
+        RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        assert_eq!(current_schema_version(&open_connection(&db_path)?)?, 47);
+        Ok(())
+    }
+
+    #[test]
+    fn retired_scheduler_cleanup_fallback_converges_for_multiple_agents() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        for suffix in ["a", "b"] {
+            prepare_pre_execution_protocol_claim(
+                &db,
+                &format!("agent-{suffix}"),
+                &format!("work-{suffix}"),
+                &format!("message-{suffix}"),
+                &format!("activation-{suffix}"),
+            )?;
+        }
+        drop(db);
+        downgrade_before_execution_protocol(&db_path)?;
+        for suffix in ["a", "b"] {
+            restore_pre_execution_protocol_work_demand(
+                &db_path,
+                &format!("agent-{suffix}"),
+                &format!("work-{suffix}"),
+            )?;
+        }
+        {
+            let mut connection = open_connection(&db_path)?;
+            migrate_through(&mut connection, 46)?;
+        }
+
+        let db = RuntimeDb::open_for_scheduler_recovery(&db_path, &lock_path)?;
+        let before = db.retired_scheduler_cleanup_inventory()?;
+        assert_eq!(
+            before.affected_agents(),
+            vec!["agent-a".to_string(), "agent-b".to_string()]
+        );
+        assert_eq!(before.blockers.len(), 6);
+        for agent_id in before.affected_agents() {
+            let first = db.apply_retired_scheduler_cleanup_fallback(&agent_id)?;
+            assert!(!first.actions.is_empty());
+        }
+        assert!(db.retired_scheduler_cleanup_inventory()?.is_fixed_point());
+        for agent_id in ["agent-a", "agent-b"] {
+            let message_count = db.messages().recent(Some(agent_id), usize::MAX)?.len();
+            let second = db.apply_retired_scheduler_cleanup_fallback(agent_id)?;
+            assert!(
+                second.actions.is_empty(),
+                "repeated fallback must be a fixed point for {agent_id}"
+            );
+            assert!(second.recovery_message_id.is_none());
+            assert_eq!(
+                db.messages().recent(Some(agent_id), usize::MAX)?.len(),
+                message_count,
+                "fixed-point apply must not enqueue another recovery event for {agent_id}"
+            );
+        }
+        drop(db);
+
+        RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        assert_eq!(current_schema_version(&open_connection(&db_path)?)?, 47);
+        Ok(())
+    }
+
+    #[test]
+    fn retired_scheduler_cleanup_fallbacks_are_atomic_across_agents() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        for suffix in ["a", "b"] {
+            prepare_pre_execution_protocol_claim(
+                &db,
+                &format!("agent-{suffix}"),
+                &format!("work-{suffix}"),
+                &format!("message-{suffix}"),
+                &format!("activation-{suffix}"),
+            )?;
+        }
+        drop(db);
+        downgrade_before_execution_protocol(&db_path)?;
+        for suffix in ["a", "b"] {
+            restore_pre_execution_protocol_work_demand(
+                &db_path,
+                &format!("agent-{suffix}"),
+                &format!("work-{suffix}"),
+            )?;
+        }
+        {
+            let mut connection = open_connection(&db_path)?;
+            migrate_through(&mut connection, 46)?;
+            connection.execute("DELETE FROM messages WHERE message_id = 'message-b'", [])?;
+        }
+
+        let db = RuntimeDb::open_for_scheduler_recovery(&db_path, &lock_path)?;
+        let before = db.retired_scheduler_cleanup_inventory()?;
+        let agent_a_messages = db.messages().recent(Some("agent-a"), usize::MAX)?;
+        let error = db
+            .apply_retired_scheduler_cleanup_fallbacks(&before.affected_agents())
+            .expect_err("one unprotected operator input must abort the global fallback");
+        assert!(
+            error
+                .to_string()
+                .contains("cannot preserve source message message-b"),
+            "{error:#}"
+        );
+        assert_eq!(db.retired_scheduler_cleanup_inventory()?, before);
+        assert_eq!(
+            db.messages().recent(Some("agent-a"), usize::MAX)?,
+            agent_a_messages,
+            "the first agent must roll back when a later agent cannot be recovered"
+        );
         Ok(())
     }
 

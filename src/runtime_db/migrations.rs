@@ -19,6 +19,7 @@ use crate::domain::{
     },
 };
 use crate::runtime_db::evidence::content_hash;
+use crate::runtime_db::retired_scheduler_cleanup::retired_scheduler_cleanup_inventory;
 use crate::types::{AgentState, MessageEnvelope, TaskRecord, WaitConditionRecord, WorkItemRecord};
 
 pub struct Migration {
@@ -70,43 +71,19 @@ fn migrate_retired_scheduler_schema(
     migration: &Migration,
 ) -> Result<()> {
     let transaction = connection.transaction()?;
-    let open_attempts: i64 = transaction.query_row(
-        "SELECT COUNT(*) FROM execution_protocol_attempts
-         WHERE lifecycle_state = 'open'",
-        [],
-        |row| row.get(0),
-    )?;
-    let in_flight_work_items: i64 = transaction.query_row(
-        "SELECT COUNT(*) FROM execution_protocol_work_items
-         WHERE lifecycle_state = 'in_flight'",
-        [],
-        |row| row.get(0),
-    )?;
-    let dequeued_queue_entries: i64 = transaction.query_row(
-        "SELECT COUNT(*) FROM queue_entries WHERE status = 'dequeued'",
-        [],
-        |row| row.get(0),
-    )?;
-    if open_attempts > 0 || in_flight_work_items > 0 || dequeued_queue_entries > 0 {
-        let mut affected_agents = transaction.prepare(
-            "SELECT agent_id FROM execution_protocol_attempts WHERE lifecycle_state = 'open'
-             UNION
-             SELECT agent_id FROM execution_protocol_work_items WHERE lifecycle_state = 'in_flight'
-             UNION
-             SELECT agent_id FROM queue_entries WHERE status = 'dequeued'
-             ORDER BY agent_id",
-        )?;
-        let affected_agents = affected_agents
-            .query_map([], |row| row.get::<_, String>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?
-            .join(",");
+    let inventory = retired_scheduler_cleanup_inventory(&transaction)?;
+    if !inventory.is_fixed_point() {
+        let open_attempts = inventory.open_execution_attempts();
+        let in_flight_work_items = inventory.in_flight_execution_work_items();
+        let dequeued_queue_entries = inventory.dequeued_queue_entries();
+        let affected_agents = inventory.affected_agents().join(",");
         bail!(
             "retired scheduler schema migration requires a recovery fixed point: \
              open_execution_attempts={open_attempts}, \
              in_flight_execution_work_items={in_flight_work_items}, \
              dequeued_queue_entries={dequeued_queue_entries}, \
              affected_agents={affected_agents}; \
-             stop holon, then run `holon debug scheduler-recovery --agent <affected-agent>` \
+             stop holon, then run `holon debug scheduler-recovery --all-affected` \
              report/apply/report and retry (v0.31.1 remains the supported rollback binary)"
         );
     }

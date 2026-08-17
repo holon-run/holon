@@ -15,6 +15,7 @@ pub mod evidence;
 pub mod migrations;
 pub mod repositories;
 pub mod retention;
+pub mod retired_scheduler_cleanup;
 pub mod storage_domain;
 pub(crate) mod transitions;
 pub mod types;
@@ -32,6 +33,11 @@ pub use crate::runtime_db::index_outbox::{
 pub use crate::runtime_db::retention::{
     RuntimeDbCompactReport, RuntimeDbRetentionPolicy, RuntimeDbRetentionReport,
     RuntimeDbRetentionTableReport,
+};
+pub use crate::runtime_db::retired_scheduler_cleanup::{
+    RetiredSchedulerCleanupBlocker, RetiredSchedulerCleanupBlockerKind,
+    RetiredSchedulerCleanupInventory, RetiredSchedulerFallbackAction,
+    RetiredSchedulerFallbackActionKind, RetiredSchedulerFallbackResult,
 };
 pub use crate::runtime_db::storage_domain::{ExpectedStorageDomain, StorageDomainSnapshot};
 pub use crate::runtime_db::types::{
@@ -367,6 +373,10 @@ impl RuntimeDb {
         Ok(backup_path)
     }
 
+    pub fn create_scheduler_recovery_backup(&self) -> Result<PathBuf> {
+        self.create_verified_backup("scheduler-recovery")
+    }
+
     pub fn transaction<T>(&self, f: impl FnMut(&Transaction<'_>) -> Result<T>) -> Result<T> {
         self.writer.append_wait(f)
     }
@@ -398,6 +408,39 @@ impl RuntimeDb {
     pub fn current_schema_version(&self) -> Result<i64> {
         let connection = self.connection()?;
         current_schema_version(&connection)
+    }
+
+    pub fn retired_scheduler_cleanup_inventory(&self) -> Result<RetiredSchedulerCleanupInventory> {
+        let connection = self.connection()?;
+        retired_scheduler_cleanup::retired_scheduler_cleanup_inventory(&connection)
+    }
+
+    pub fn apply_retired_scheduler_cleanup_fallback(
+        &self,
+        agent_id: &str,
+    ) -> Result<RetiredSchedulerFallbackResult> {
+        self.apply_retired_scheduler_cleanup_fallbacks(&[agent_id.to_string()])
+            .map(|mut results| {
+                results
+                    .pop()
+                    .expect("one fallback result is returned for one agent")
+            })
+    }
+
+    pub fn apply_retired_scheduler_cleanup_fallbacks(
+        &self,
+        agent_ids: &[String],
+    ) -> Result<Vec<RetiredSchedulerFallbackResult>> {
+        self.transaction(|tx| {
+            agent_ids
+                .iter()
+                .map(|agent_id| {
+                    retired_scheduler_cleanup::apply_retired_scheduler_cleanup_fallback(
+                        tx, agent_id,
+                    )
+                })
+                .collect()
+        })
     }
 
     pub fn work_items(&self) -> WorkItemRepository<'_> {
