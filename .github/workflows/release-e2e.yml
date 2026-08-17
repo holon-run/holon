@@ -318,6 +318,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
+          import hashlib
           import json
           import os
           from pathlib import Path
@@ -358,6 +359,66 @@ jobs:
               raise SystemExit("Scheduler coverage image digest does not match summary")
           if coverage_report["profile"] != "scheduler-required":
               raise SystemExit("Scheduler coverage profile is not scheduler-required")
+          interrupted_case = next(
+              (
+                  result
+                  for result in summary["case_results"]
+                  if result["base_id"] == "runtime-upgrade-interrupted-schema47"
+              ),
+              None,
+          )
+          if interrupted_case is None or interrupted_case["status"] != "pass":
+              raise SystemExit(
+                  "Interrupted schema 47 previous-image upgrade case did not pass"
+              )
+          recovery_path = Path(
+              "target/docker-e2e/release-core/"
+              "runtime-upgrade-interrupted-schema47/"
+              "upgrade-schema47-recovery-attestation.json"
+          )
+          recovery = json.loads(recovery_path.read_text())
+          recovery_dir = recovery_path.parent
+          old_snapshot_path = recovery_dir / "upgrade-schema47-old-runtime-db.json"
+          migrated_snapshot_path = (
+              recovery_dir / "upgrade-schema47-migrated-runtime-db.json"
+          )
+          old_snapshot_sha256 = hashlib.sha256(
+              old_snapshot_path.read_bytes()
+          ).hexdigest()
+          migrated_snapshot_sha256 = hashlib.sha256(
+              migrated_snapshot_path.read_bytes()
+          ).hexdigest()
+          old_snapshot = json.loads(old_snapshot_path.read_text())
+          migrated_snapshot = json.loads(migrated_snapshot_path.read_text())
+          report_before = recovery.get("report_before", {})
+          apply = recovery.get("apply", {})
+          report_after = recovery.get("report_after", {})
+          if (
+              recovery["previous_schema_revision"]
+              != old_snapshot.get("schema_revision")
+              or recovery["candidate_schema_revision"]
+              != migrated_snapshot.get("schema_revision")
+              or recovery["candidate_schema_revision"] < 47
+              or recovery["candidate_schema_revision"]
+              <= recovery["previous_schema_revision"]
+              or len(recovery["affected_agents"]) < 2
+              or recovery.get("old_snapshot_sha256") != old_snapshot_sha256
+              or recovery.get("migrated_snapshot_sha256")
+              != migrated_snapshot_sha256
+              or not report_before.get("before", {}).get("blockers")
+              or report_before.get("report_errors")
+              or not apply.get("apply", {}).get("changed")
+              or apply.get("after", {}).get("blockers")
+              or apply.get("report_errors")
+              or report_after.get("before", {}).get("blockers")
+              or report_after.get("after", {}).get("blockers")
+              or report_after.get("report_errors")
+              or report_after.get("reports")
+          ):
+              raise SystemExit(
+                  f"Interrupted schema 47 recovery evidence is invalid: {recovery}"
+              )
+          recovery_sha256 = hashlib.sha256(recovery_path.read_bytes()).hexdigest()
           attestation = {
               "schema_version": 1,
               "release_tag": os.environ["RELEASE_TAG"],
@@ -377,6 +438,16 @@ jobs:
               "scheduler_acceptance": scheduler_report,
               "scheduler_coverage": coverage_report,
               "scheduler_live_canary": canary_report,
+              "interrupted_schema47_upgrade": {
+                  "case": interrupted_case,
+                  "evidence_path": str(recovery_path),
+                  "evidence_sha256": recovery_sha256,
+                  "previous_schema_revision": recovery["previous_schema_revision"],
+                  "candidate_schema_revision": recovery["candidate_schema_revision"],
+                  "affected_agents": recovery["affected_agents"],
+                  "old_snapshot_sha256": recovery["old_snapshot_sha256"],
+                  "migrated_snapshot_sha256": recovery["migrated_snapshot_sha256"],
+              },
               "summary_path": str(summary_path),
               "scheduler_acceptance_path": str(scheduler_report_path),
               "scheduler_coverage_path": str(coverage_report_path),

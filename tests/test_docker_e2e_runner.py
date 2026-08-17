@@ -8,6 +8,8 @@ import copy
 import os
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
 import urllib.error
 from pathlib import Path
@@ -28,6 +30,11 @@ STUB_SPEC.loader.exec_module(stub)
 
 
 class DockerE2ERunnerTests(unittest.TestCase):
+    def test_skip_build_covers_candidate_and_stub_images(self) -> None:
+        source = inspect.getsource(runner.main)
+        self.assertIn("if not args.skip_build:", source)
+        self.assertIn("if not args.skip_build and any(", source)
+
     def test_previous_schema_revision_accepts_supported_release_schemas(self) -> None:
         self.assertEqual(
             runner.require_previous_schema_revision({"schema_revision": 25}),
@@ -40,9 +47,12 @@ class DockerE2ERunnerTests(unittest.TestCase):
 
     def test_previous_schema_revision_rejects_invalid_revision(self) -> None:
         for snapshot in ({"schema_revision": 0}, {}):
-            with self.subTest(snapshot=snapshot), self.assertRaisesRegex(
-                AssertionError,
-                "previous release produced an invalid schema revision",
+            with (
+                self.subTest(snapshot=snapshot),
+                self.assertRaisesRegex(
+                    AssertionError,
+                    "previous release produced an invalid schema revision",
+                ),
             ):
                 runner.require_previous_schema_revision(snapshot)
 
@@ -59,6 +69,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
             [
                 "runtime-auth-model-delivery",
                 "runtime-upgrade-v030",
+                "runtime-upgrade-interrupted-schema47",
                 "memory-agent-home-persistence",
                 "workspace-restart-lifecycle",
                 "workitem-wait-restart-complete",
@@ -287,17 +298,15 @@ class DockerE2ERunnerTests(unittest.TestCase):
         self.assertIn("HOLON_E2E_PROVIDER_CONFIG_FILE:", nightly)
         self.assertNotIn("HOLON_E2E_CONFIG_FILE:", nightly)
         for workflow in (ci, nightly, release):
-            live_step = workflow.split(
-                "      - name: Run scheduler live canary\n", 1
-            )[1].split("      - name:", 1)[0]
+            live_step = workflow.split("      - name: Run scheduler live canary\n", 1)[
+                1
+            ].split("      - name:", 1)[0]
             self.assertNotIn("HOLON_E2E_PROVIDER_CONFIG_FILE", live_step)
             self.assertIn("config_file=/tmp/holon-e2e-config.json", live_step)
-        nightly_job_env = nightly.split("  nightly:\n", 1)[1].split(
-            "    steps:\n", 1
-        )[0]
-        release_job_env = release.split("  core:\n", 1)[1].split(
-            "    steps:\n", 1
-        )[0]
+        nightly_job_env = nightly.split("  nightly:\n", 1)[1].split("    steps:\n", 1)[
+            0
+        ]
+        release_job_env = release.split("  core:\n", 1)[1].split("    steps:\n", 1)[0]
         for job_env in (nightly_job_env, release_job_env):
             self.assertNotIn("HOLON_E2E_PROVIDER_ENV_FILE", job_env)
             self.assertNotIn("HOLON_E2E_PROVIDER_CONFIG_FILE", job_env)
@@ -305,9 +314,9 @@ class DockerE2ERunnerTests(unittest.TestCase):
     def test_release_workflow_fails_closed_for_previous_release_inputs(self) -> None:
         release = (ROOT / ".github/workflows/release-e2e.yml").read_text()
         inputs = release.split("    inputs:\n", 1)[1].split("\npermissions:", 1)[0]
-        prepare = release.split(
-            "      - name: Prepare previous release image\n", 1
-        )[1].split("      - name:", 1)[0]
+        prepare = release.split("      - name: Prepare previous release image\n", 1)[
+            1
+        ].split("      - name:", 1)[0]
 
         self.assertNotIn("default: v0.30.0", inputs)
         self.assertIn(
@@ -332,6 +341,42 @@ class DockerE2ERunnerTests(unittest.TestCase):
         self.assertIn('"image": os.environ["PREVIOUS_IMAGE"]', release)
         self.assertIn('"source": os.environ["PREVIOUS_SOURCE"]', release)
         self.assertIn('"ref": os.environ["PREVIOUS_REF"] or None', release)
+        self.assertIn('"runtime-upgrade-interrupted-schema47"', release)
+        self.assertIn('"interrupted_schema47_upgrade": {', release)
+        self.assertIn('"evidence_sha256": recovery_sha256', release)
+        self.assertIn(
+            'recovery["previous_schema_revision"]\n'
+            '              != old_snapshot.get("schema_revision")',
+            release,
+        )
+        self.assertIn(
+            'recovery["candidate_schema_revision"]\n'
+            '              != migrated_snapshot.get("schema_revision")',
+            release,
+        )
+        self.assertIn('recovery["candidate_schema_revision"] < 47', release)
+        self.assertIn(
+            'recovery["candidate_schema_revision"]\n'
+            '              <= recovery["previous_schema_revision"]',
+            release,
+        )
+        self.assertIn(
+            'recovery.get("old_snapshot_sha256") != old_snapshot_sha256',
+            release,
+        )
+        self.assertIn(
+            'recovery.get("migrated_snapshot_sha256")',
+            release,
+        )
+        self.assertIn("!= migrated_snapshot_sha256", release)
+        self.assertIn(
+            'not report_before.get("before", {}).get("blockers")',
+            release,
+        )
+        self.assertIn('not apply.get("apply", {}).get("changed")', release)
+        self.assertIn('apply.get("after", {}).get("blockers")', release)
+        self.assertIn('report_after.get("before", {}).get("blockers")', release)
+        self.assertIn('report_after.get("reports")', release)
         publish = (ROOT / ".github/workflows/release.yml").read_text()
         self.assertIn(".previous_release.image", publish)
         self.assertIn(
@@ -362,15 +407,11 @@ class DockerE2ERunnerTests(unittest.TestCase):
         self.assertEqual([case["id"] for case in selected], expected)
         self.assertEqual(profile["required_coverage_ids"], expected)
         self.assertTrue(all(case.get("stub_scenario") for case in selected))
-        self.assertTrue(
-            all(case["timeout_seconds"] <= 120 for case in selected)
-        )
+        self.assertTrue(all(case["timeout_seconds"] <= 120 for case in selected))
 
     def test_manifest_rejects_live_canary_with_strict_tools(self) -> None:
         invalid = json.loads(json.dumps(self.manifest))
-        invalid["profiles"]["scheduler-live-canary"][
-            "tool_assertion_mode"
-        ] = "strict"
+        invalid["profiles"]["scheduler-live-canary"]["tool_assertion_mode"] = "strict"
         with self.assertRaisesRegex(
             AssertionError,
             "live canary must observe tool assertions",
@@ -438,7 +479,9 @@ class DockerE2ERunnerTests(unittest.TestCase):
             ],
         )
 
-    def test_collect_case_metrics_deduplicates_overlapping_event_snapshots(self) -> None:
+    def test_collect_case_metrics_deduplicates_overlapping_event_snapshots(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             evidence = Path(directory)
             events = [
@@ -462,12 +505,8 @@ class DockerE2ERunnerTests(unittest.TestCase):
                     },
                 },
             ]
-            (evidence / "first-events.json").write_text(
-                json.dumps({"events": events})
-            )
-            (evidence / "second-events.json").write_text(
-                json.dumps({"events": events})
-            )
+            (evidence / "first-events.json").write_text(json.dumps({"events": events}))
+            (evidence / "second-events.json").write_text(json.dumps({"events": events}))
 
             metrics = runner.collect_case_metrics(evidence)
 
@@ -476,6 +515,34 @@ class DockerE2ERunnerTests(unittest.TestCase):
         self.assertEqual(metrics["provider_attempts"], 2)
         self.assertEqual(metrics["provider_retries"], 1)
         self.assertEqual(metrics["token_usage"]["total_tokens"], 5)
+
+    def test_collect_case_schema_revision_uses_declared_result_snapshot(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory)
+            (evidence / "old-runtime-db.json").write_text(
+                json.dumps({"schema_revision": 46})
+            )
+            (evidence / "migrated-runtime-db.json").write_text(
+                json.dumps({"schema_revision": 47})
+            )
+
+            revision = runner.collect_case_schema_revision(evidence, "migrated")
+
+        self.assertEqual(revision, 47)
+
+    def test_collect_case_schema_revision_requires_declared_result_snapshot(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory)
+
+            with self.assertRaisesRegex(
+                AssertionError,
+                "result schema revision snapshot is missing",
+            ):
+                runner.collect_case_schema_revision(evidence, "migrated")
 
     def test_scheduler_coverage_reports_missing_and_duplicate_ids(self) -> None:
         report = runner.scheduler_coverage_report(
@@ -571,11 +638,32 @@ class DockerE2ERunnerTests(unittest.TestCase):
         )
         self.assertEqual(scenario.phase, 0)
         status, response = scenario.consume(
-            {"input": [{"type": "message", "content": [{"type": "input_text", "text": "SCHEDULER-EXTERNAL-WAIT-abcd SCHEDULER-EXTERNAL-COMPLETE-abcd docker-e2e:abcd"}]}]}
+            {
+                "input": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": "SCHEDULER-EXTERNAL-WAIT-abcd SCHEDULER-EXTERNAL-COMPLETE-abcd docker-e2e:abcd",
+                            }
+                        ],
+                    }
+                ]
+            }
         )
         self.assertEqual(status, 200)
         self.assertEqual(response["output"][0]["name"], "CreateWorkItem")
-        status, response = scenario.consume({"input": [{"type": "function_call_output", "output": "{\"work_item\":{\"id\":\"work_0123456789abcde\"}}"}]})
+        status, response = scenario.consume(
+            {
+                "input": [
+                    {
+                        "type": "function_call_output",
+                        "output": '{"work_item":{"id":"work_0123456789abcde"}}',
+                    }
+                ]
+            }
+        )
         self.assertEqual(status, 200)
         self.assertEqual(response["output"][0]["name"], "PickWorkItem")
         scenario.phase = 6
@@ -778,57 +866,142 @@ class DockerE2ERunnerTests(unittest.TestCase):
         )
         for case in selected:
             scenario = stub.Scenario(case["stub_scenario"])
-            self.assertGreater(scenario.expected_phase(), 0)
+            if case["stub_scenario"] == "runtime-upgrade-interrupted-schema47":
+                self.assertEqual(scenario.expected_phase(), 0)
+            else:
+                self.assertGreater(scenario.expected_phase(), 0)
+
+    def test_interrupted_schema47_stub_attests_both_blocked_request_kinds(self) -> None:
+        scenario = stub.Scenario("runtime-upgrade-interrupted-schema47")
+        workers = []
+        for marker in (
+            "UPGRADE-SCHEMA47-LIFECYCLE-deadbeef",
+            "UPGRADE-SCHEMA47-WORKITEM-deadbeef",
+        ):
+            request = {
+                "input": [{"content": [{"text": marker}]}],
+            }
+            worker = threading.Thread(
+                target=scenario.consume,
+                args=(request,),
+                daemon=True,
+            )
+            worker.start()
+            workers.append(worker)
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline and not scenario.status()["complete"]:
+            time.sleep(0.01)
+
+        self.assertTrue(scenario.interrupted_schema47_seen)
+        self.assertTrue(scenario.status()["complete"])
 
     def test_openai_stub_required_scenarios_reach_exact_completion(self) -> None:
         expected_calls = {
             "scheduler-task-wait": [
-                "CreateWorkItem", "ExecCommand", "WaitFor", "GetWorkItem",
-                "WaitFor", "GetWorkItem", "UpdateWorkItem", "CompleteWorkItem",
+                "CreateWorkItem",
+                "ExecCommand",
+                "WaitFor",
+                "GetWorkItem",
+                "WaitFor",
+                "GetWorkItem",
+                "UpdateWorkItem",
+                "CompleteWorkItem",
             ],
             "scheduler-provider-retry": ["ListWorkItems", "CompleteWorkItem"],
             "scheduler-multi": [
-                "CreateWorkItem", "CreateWorkItem", "AgentGet", "ListWorkItems",
-                "UpdateWorkItem", "CompleteWorkItem", "GetWorkspaceState",
-                "ListWorkItems", "UpdateWorkItem", "CompleteWorkItem",
+                "CreateWorkItem",
+                "CreateWorkItem",
+                "AgentGet",
+                "ListWorkItems",
+                "UpdateWorkItem",
+                "CompleteWorkItem",
+                "GetWorkspaceState",
+                "ListWorkItems",
+                "UpdateWorkItem",
+                "CompleteWorkItem",
             ],
             "scheduler-external": [
-                "CreateWorkItem", "PickWorkItem", "WaitFor", "GetWorkItem",
-                "UpdateWorkItem", "CompleteWorkItem",
+                "CreateWorkItem",
+                "PickWorkItem",
+                "WaitFor",
+                "GetWorkItem",
+                "UpdateWorkItem",
+                "CompleteWorkItem",
             ],
             "scheduler-operator": [
-                "CreateWorkItem", "PickWorkItem", "WaitFor", "GetWorkItem",
-                "UpdateWorkItem", "CompleteWorkItem",
+                "CreateWorkItem",
+                "PickWorkItem",
+                "WaitFor",
+                "GetWorkItem",
+                "UpdateWorkItem",
+                "CompleteWorkItem",
             ],
             "scheduler-concurrent": [
-                "CreateWorkItem", "PickWorkItem", "WaitFor",
-                "ListWorkItems", "UpdateWorkItem", "CompleteWorkItem",
-                "GetWorkItem", "UpdateWorkItem", "CompleteWorkItem",
+                "CreateWorkItem",
+                "PickWorkItem",
+                "WaitFor",
+                "ListWorkItems",
+                "UpdateWorkItem",
+                "CompleteWorkItem",
+                "GetWorkItem",
+                "UpdateWorkItem",
+                "CompleteWorkItem",
             ],
             "scheduler-interject": [
-                "CreateWorkItem", "PickWorkItem", "WaitFor", "CreateWorkItem",
-                "ListWorkItems", "UpdateWorkItem", "CompleteWorkItem",
-                "GetWorkItem", "UpdateWorkItem", "CompleteWorkItem",
+                "CreateWorkItem",
+                "PickWorkItem",
+                "WaitFor",
+                "CreateWorkItem",
+                "ListWorkItems",
+                "UpdateWorkItem",
+                "CompleteWorkItem",
+                "GetWorkItem",
+                "UpdateWorkItem",
+                "CompleteWorkItem",
             ],
             "scheduler-compaction": [
-                "CreateWorkItem", "PickWorkItem", "ExecCommand", "ExecCommand",
-                "ExecCommand", "WaitFor", "GetWorkItem", "UpdateWorkItem",
+                "CreateWorkItem",
+                "PickWorkItem",
+                "ExecCommand",
+                "ExecCommand",
+                "ExecCommand",
+                "WaitFor",
+                "GetWorkItem",
+                "UpdateWorkItem",
                 "CompleteWorkItem",
             ],
             "scheduler-worktree": [
-                "CreateWorkItem", "PickWorkItem", "GetWorkspaceState",
-                "CreateWorktree", "GetWorkspaceState", "SwitchWorkspace",
-                "GetWorkspaceState", "RemoveWorktree", "GetWorkspaceState",
-                "UpdateWorkItem", "CompleteWorkItem",
+                "CreateWorkItem",
+                "PickWorkItem",
+                "GetWorkspaceState",
+                "CreateWorktree",
+                "GetWorkspaceState",
+                "SwitchWorkspace",
+                "GetWorkspaceState",
+                "RemoveWorktree",
+                "GetWorkspaceState",
+                "UpdateWorkItem",
+                "CompleteWorkItem",
             ],
             "scheduler-spawn": [
-                "CreateWorkItem", "PickWorkItem", "SpawnAgent", "TaskStatus",
-                "UpdateWorkItem", "CompleteWorkItem",
+                "CreateWorkItem",
+                "PickWorkItem",
+                "SpawnAgent",
+                "TaskStatus",
+                "UpdateWorkItem",
+                "CompleteWorkItem",
             ],
             "scheduler-checkpoint": [
-                "CreateWorkItem", "CreateWorkItem", "ListWorkItems", "WaitFor",
-                "ListWorkItems", "UpdateWorkItem", "CompleteWorkItem",
-                "GetWorkItem", "UpdateWorkItem", "CompleteWorkItem",
+                "CreateWorkItem",
+                "CreateWorkItem",
+                "ListWorkItems",
+                "WaitFor",
+                "ListWorkItems",
+                "UpdateWorkItem",
+                "CompleteWorkItem",
+                "GetWorkItem",
+                "UpdateWorkItem",
+                "CompleteWorkItem",
             ],
         }
         transcript = (
@@ -866,10 +1039,12 @@ class DockerE2ERunnerTests(unittest.TestCase):
             "git_worktree_root:deterministic"
         )
         request = {
-            "input": [{
-                "type": "message",
-                "content": [{"type": "input_text", "text": transcript}],
-            }]
+            "input": [
+                {
+                    "type": "message",
+                    "content": [{"type": "input_text", "text": transcript}],
+                }
+            ]
         }
         for name, expected in expected_calls.items():
             scenario = stub.Scenario(name)
@@ -967,9 +1142,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
         self.assertEqual(runner.memory_value(memory), memory)
 
     def test_evidence_redacts_callback_capability(self) -> None:
-        value = {
-            "url": "http://localhost/api/callbacks/wake/cb_secret-capability"
-        }
+        value = {"url": "http://localhost/api/callbacks/wake/cb_secret-capability"}
         redacted = runner.redact_evidence(value)
         self.assertEqual(
             redacted["url"],
@@ -1091,8 +1264,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
 
             failure = json.loads(
                 (
-                    harness.evidence
-                    / "scheduler-runtime-state-copy-failure.json"
+                    harness.evidence / "scheduler-runtime-state-copy-failure.json"
                 ).read_text()
             )
             self.assertEqual(failure["status"], "timeout")
@@ -1102,6 +1274,39 @@ class DockerE2ERunnerTests(unittest.TestCase):
             )
             self.assertEqual(failure["stdout"], "partial")
             self.assertEqual(failure["stderr"], "daemon stalled")
+
+    def test_offline_runtime_db_snapshot_can_write_host_evidence_directory(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            harness = runner.CaseHarness(
+                case_id="offline-snapshot-user-test",
+                image="holon:test",
+                model="deepseek/deepseek-v4-flash",
+                credential_envs=[],
+                env_file=None,
+                runtime_env={},
+                evidence_root=Path(directory),
+                timeout_seconds=1,
+                keep=False,
+            )
+            docker_args: tuple[str, ...] | None = None
+
+            def capture_docker(
+                *args: str, **_: object
+            ) -> subprocess.CompletedProcess[str]:
+                nonlocal docker_args
+                docker_args = args
+                raise RuntimeError("stop after command capture")
+
+            harness.docker = capture_docker
+            with self.assertRaisesRegex(RuntimeError, "command capture"):
+                harness.offline_runtime_db_snapshot("scheduler")
+
+            self.assertIsNotNone(docker_args)
+            assert docker_args is not None
+            user_index = docker_args.index("--user")
+            self.assertEqual(docker_args[user_index + 1], "0:0")
 
     def test_docker_circuit_breaker_opens_after_consecutive_timeouts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1182,10 +1387,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 include_conversation=False,
             )
             self.assertTrue(
-                any(
-                    "events?limit=300&order=asc&after_seq=12" in path
-                    for path in paths
-                )
+                any("events?limit=300&order=asc&after_seq=12" in path for path in paths)
             )
             self.assertFalse(any("/briefs?" in path for path in paths))
             self.assertFalse(any("/transcript?" in path for path in paths))
@@ -1248,7 +1450,9 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 keep=False,
             )
 
-            def fake_docker(*args: str, **_: object) -> subprocess.CompletedProcess[str]:
+            def fake_docker(
+                *args: str, **_: object
+            ) -> subprocess.CompletedProcess[str]:
                 if args[:2] == ("volume", "inspect"):
                     return subprocess.CompletedProcess(["docker", *args], 0, "", "")
                 return subprocess.CompletedProcess(["docker", *args], 1, "", "")
@@ -1641,13 +1845,9 @@ class DockerE2ERunnerTests(unittest.TestCase):
         )
         task_wait = selected[0]
         self.assertEqual(len(task_wait["phases"]), 1)
-        self.assertIn(
-            "ExecCommand", task_wait["phases"][0]["required_tools"]
-        )
+        self.assertIn("ExecCommand", task_wait["phases"][0]["required_tools"])
         self.assertIn("WaitFor", task_wait["phases"][0]["required_tools"])
-        self.assertNotIn(
-            "PickWorkItem", task_wait["phases"][0]["required_tools"]
-        )
+        self.assertNotIn("PickWorkItem", task_wait["phases"][0]["required_tools"])
         for case in selected:
             self.assertNotIn(
                 "HOLON_SCHEDULER_ACCEPTANCE_FIXTURES",
@@ -1730,6 +1930,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
             [
                 ("runtime-auth-model-delivery", None),
                 ("runtime-upgrade-v030", None),
+                ("runtime-upgrade-interrupted-schema47", None),
                 ("memory-agent-home-persistence", None),
                 ("workspace-restart-lifecycle", None),
                 ("workitem-wait-restart-complete", None),
@@ -1780,9 +1981,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
             )
             self.assertEqual(len(case["phases"]), 1)
         compaction = next(
-            case
-            for case in selected
-            if case["id"] == "scheduler-compaction-continuity"
+            case for case in selected if case["id"] == "scheduler-compaction-continuity"
         )
         self.assertEqual(
             compaction["model_runtime_override"],
@@ -1846,7 +2045,9 @@ class DockerE2ERunnerTests(unittest.TestCase):
             ["canonical"],
         )
 
-    def test_scheduler_acceptance_report_rejects_duplicate_canonical_coverage(self) -> None:
+    def test_scheduler_acceptance_report_rejects_duplicate_canonical_coverage(
+        self,
+    ) -> None:
         run_record = {
             "git_sha": "abc123",
             "image": {"ref": "holon:test", "id": None, "repo_digests": []},
@@ -1876,7 +2077,9 @@ class DockerE2ERunnerTests(unittest.TestCase):
             {diagnostic["code"] for diagnostic in report["diagnostics"]},
         )
 
-    def test_scheduler_acceptance_report_distinguishes_missing_schema_evidence(self) -> None:
+    def test_scheduler_acceptance_report_distinguishes_missing_schema_evidence(
+        self,
+    ) -> None:
         run_record = {
             "git_sha": "abc123",
             "image": {"ref": "holon:test", "id": None, "repo_digests": []},
@@ -2025,7 +2228,9 @@ class DockerE2ERunnerTests(unittest.TestCase):
         )
         self.assertEqual(waits[0]["status"], "resolved")
 
-    def test_canonical_activation_oracle_distinguishes_lifecycle_and_work_item(self) -> None:
+    def test_canonical_activation_oracle_distinguishes_lifecycle_and_work_item(
+        self,
+    ) -> None:
         harness = type(
             "CanonicalHarness",
             (),
@@ -2086,9 +2291,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 {
                     "agent_id": "default",
                     "outcome_id": "outcome-lifecycle",
-                    "payload_json": json.dumps(
-                        {"attempt_id": "attempt-lifecycle"}
-                    ),
+                    "payload_json": json.dumps({"attempt_id": "attempt-lifecycle"}),
                 },
                 {
                     "agent_id": "default",
@@ -2228,9 +2431,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
                         event,
                         {
                             "kind": "provider_round_completed",
-                            "data_json": json.dumps(
-                                {"data": {"compression_epoch": 1}}
-                            ),
+                            "data_json": json.dumps({"data": {"compression_epoch": 1}}),
                         },
                     ]
                 },
@@ -2315,13 +2516,9 @@ class DockerE2ERunnerTests(unittest.TestCase):
             wait_id="wait-1",
         )
 
-        resume = json.loads(
-            snapshot["execution_protocol_attempts"][1]["payload_json"]
-        )
+        resume = json.loads(snapshot["execution_protocol_attempts"][1]["payload_json"])
         resume["source"]["identity"]["wait_id"] = "other-wait"
-        snapshot["execution_protocol_attempts"][1]["payload_json"] = json.dumps(
-            resume
-        )
+        snapshot["execution_protocol_attempts"][1]["payload_json"] = json.dumps(resume)
         with self.assertRaisesRegex(
             AssertionError,
             "wait-resume attempt mismatch",
@@ -2420,9 +2617,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
 
     def test_runtime_model_route_rejects_unconfirmed_provider(self) -> None:
         harness = self._route_oracle_harness("dashscope-token-plan/qwen-3.7")
-        with self.assertRaisesRegex(
-            AssertionError, "model catalog did not confirm"
-        ):
+        with self.assertRaisesRegex(AssertionError, "model catalog did not confirm"):
             runner.require_runtime_model_route(
                 harness,
                 "runtime default",

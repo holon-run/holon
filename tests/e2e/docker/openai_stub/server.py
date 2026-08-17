@@ -11,6 +11,7 @@ CALLBACK_CAPABILITY_PATTERN = re.compile(
 )
 SCENARIOS = (
     "runtime-upgrade-v030",
+    "runtime-upgrade-interrupted-schema47",
     "scheduler-task-wait",
     "scheduler-provider-retry",
     "scheduler-multi",
@@ -24,6 +25,7 @@ SCENARIOS = (
     "scheduler-checkpoint",
 )
 
+
 def redact_evidence(value: Any) -> Any:
     if isinstance(value, dict):
         return {key: redact_evidence(item) for key, item in value.items()}
@@ -33,14 +35,33 @@ def redact_evidence(value: Any) -> Any:
         return CALLBACK_CAPABILITY_PATTERN.sub(r"\1<redacted>", value)
     return value
 
+
 def response(items: list[dict[str, Any]], rid: str) -> dict[str, Any]:
-    return {"id": rid, "status": "completed", "usage": {"input_tokens": 100, "output_tokens": 10}, "output": items}
+    return {
+        "id": rid,
+        "status": "completed",
+        "usage": {"input_tokens": 100, "output_tokens": 10},
+        "output": items,
+    }
+
 
 def text_item(text: str) -> dict[str, Any]:
-    return {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": text}]}
+    return {
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": text}],
+    }
+
 
 def call_item(cid: str, name: str, args: dict[str, Any]) -> dict[str, Any]:
-    return {"type": "function_call", "id": f"fc_{cid}", "call_id": cid, "name": name, "arguments": json.dumps(args, separators=(",", ":"))}
+    return {
+        "type": "function_call",
+        "id": f"fc_{cid}",
+        "call_id": cid,
+        "name": name,
+        "arguments": json.dumps(args, separators=(",", ":")),
+    }
+
 
 class Scenario:
     def __init__(self, name: str) -> None:
@@ -52,6 +73,8 @@ class Scenario:
         self.current_input_text = ""
         self.extra_requests = 0
         self.lock = threading.Lock()
+        self.interrupted_schema47_seen = False
+        self.interrupted_schema47_kinds: set[str] = set()
 
     def observe(self, request: dict[str, Any]) -> str:
         raw = json.dumps(request, ensure_ascii=False)
@@ -68,23 +91,38 @@ class Scenario:
             if execution_root_id not in self.execution_root_ids:
                 self.execution_root_ids.append(execution_root_id)
         for key, pattern in {
-            "multi_a": r"SCHEDULER-MULTI-A-[0-9a-f]+", "multi_b": r"SCHEDULER-MULTI-B-[0-9a-f]+",
-            "multi_complete_a": r"SCHEDULER-MULTI-COMPLETE-A-[0-9a-f]+", "multi_complete_b": r"SCHEDULER-MULTI-COMPLETE-B-[0-9a-f]+",
-            "external": r"SCHEDULER-EXTERNAL-WAIT-[0-9a-f]+", "external_complete": r"SCHEDULER-EXTERNAL-COMPLETE-[0-9a-f]+",
-            "operator": r"SCHEDULER-OPERATOR-WAIT-[0-9a-f]+", "operator_complete": r"SCHEDULER-OPERATOR-COMPLETE-[0-9a-f]+",
-            "task": r"SCHEDULER-TASK-WAIT-[0-9a-f]+", "task_result": r"SCHEDULER-TASK-RESULT-[0-9a-f]+",
+            "multi_a": r"SCHEDULER-MULTI-A-[0-9a-f]+",
+            "multi_b": r"SCHEDULER-MULTI-B-[0-9a-f]+",
+            "multi_complete_a": r"SCHEDULER-MULTI-COMPLETE-A-[0-9a-f]+",
+            "multi_complete_b": r"SCHEDULER-MULTI-COMPLETE-B-[0-9a-f]+",
+            "external": r"SCHEDULER-EXTERNAL-WAIT-[0-9a-f]+",
+            "external_complete": r"SCHEDULER-EXTERNAL-COMPLETE-[0-9a-f]+",
+            "operator": r"SCHEDULER-OPERATOR-WAIT-[0-9a-f]+",
+            "operator_complete": r"SCHEDULER-OPERATOR-COMPLETE-[0-9a-f]+",
+            "task": r"SCHEDULER-TASK-WAIT-[0-9a-f]+",
+            "task_result": r"SCHEDULER-TASK-RESULT-[0-9a-f]+",
             "task_complete": r"SCHEDULER-TASK-WAIT-COMPLETE-[0-9a-f]+",
-            "provider": r"SCHEDULER-PROVIDER-RETRY-[0-9a-f]+", "provider_complete": r"SCHEDULER-PROVIDER-RETRY-COMPLETE-[0-9a-f]+",
-            "concurrent_a": r"SCHEDULER-CONCURRENT-A-[0-9a-f]+", "concurrent_b": r"SCHEDULER-CONCURRENT-B-[0-9a-f]+",
-            "concurrent_complete_a": r"SCHEDULER-CONCURRENT-COMPLETE-A-[0-9a-f]+", "concurrent_complete_b": r"SCHEDULER-CONCURRENT-COMPLETE-B-[0-9a-f]+",
-            "interject_a": r"SCHEDULER-INTERJECT-A-[0-9a-f]+", "interject_b": r"SCHEDULER-INTERJECT-B-[0-9a-f]+",
-            "interject_complete_a": r"SCHEDULER-INTERJECT-COMPLETE-A-[0-9a-f]+", "interject_complete_b": r"SCHEDULER-INTERJECT-COMPLETE-B-[0-9a-f]+",
-            "compaction": r"SCHEDULER-COMPACTION-[0-9a-f]+", "compaction_complete": r"SCHEDULER-COMPACTION-COMPLETE-[0-9a-f]+",
-            "worktree": r"SCHEDULER-WORKTREE-[0-9a-f]+", "worktree_complete": r"SCHEDULER-WORKTREE-COMPLETE-[0-9a-f]+",
-            "spawn": r"SCHEDULER-SPAWN-[0-9a-f]+", "spawn_complete": r"SCHEDULER-SPAWN-COMPLETE-[0-9a-f]+",
+            "provider": r"SCHEDULER-PROVIDER-RETRY-[0-9a-f]+",
+            "provider_complete": r"SCHEDULER-PROVIDER-RETRY-COMPLETE-[0-9a-f]+",
+            "concurrent_a": r"SCHEDULER-CONCURRENT-A-[0-9a-f]+",
+            "concurrent_b": r"SCHEDULER-CONCURRENT-B-[0-9a-f]+",
+            "concurrent_complete_a": r"SCHEDULER-CONCURRENT-COMPLETE-A-[0-9a-f]+",
+            "concurrent_complete_b": r"SCHEDULER-CONCURRENT-COMPLETE-B-[0-9a-f]+",
+            "interject_a": r"SCHEDULER-INTERJECT-A-[0-9a-f]+",
+            "interject_b": r"SCHEDULER-INTERJECT-B-[0-9a-f]+",
+            "interject_complete_a": r"SCHEDULER-INTERJECT-COMPLETE-A-[0-9a-f]+",
+            "interject_complete_b": r"SCHEDULER-INTERJECT-COMPLETE-B-[0-9a-f]+",
+            "compaction": r"SCHEDULER-COMPACTION-[0-9a-f]+",
+            "compaction_complete": r"SCHEDULER-COMPACTION-COMPLETE-[0-9a-f]+",
+            "worktree": r"SCHEDULER-WORKTREE-[0-9a-f]+",
+            "worktree_complete": r"SCHEDULER-WORKTREE-COMPLETE-[0-9a-f]+",
+            "spawn": r"SCHEDULER-SPAWN-[0-9a-f]+",
+            "spawn_complete": r"SCHEDULER-SPAWN-COMPLETE-[0-9a-f]+",
             "spawn_child": r"SCHEDULER-SPAWN-CHILD-[0-9a-f]+",
-            "checkpoint_a": r"SCHEDULER-REPLAY-A-[0-9a-f]+", "checkpoint_b": r"SCHEDULER-REPLAY-B-[0-9a-f]+",
-            "checkpoint_complete_a": r"SCHEDULER-REPLAY-COMPLETE-A-[0-9a-f]+", "checkpoint_complete_b": r"SCHEDULER-REPLAY-COMPLETE-B-[0-9a-f]+",
+            "checkpoint_a": r"SCHEDULER-REPLAY-A-[0-9a-f]+",
+            "checkpoint_b": r"SCHEDULER-REPLAY-B-[0-9a-f]+",
+            "checkpoint_complete_a": r"SCHEDULER-REPLAY-COMPLETE-A-[0-9a-f]+",
+            "checkpoint_complete_b": r"SCHEDULER-REPLAY-COMPLETE-B-[0-9a-f]+",
             "branch": r"e2e-worktree-[0-9a-f]+",
             "callback": r"docker-e2e:[0-9a-f]+",
         }.items():
@@ -108,13 +146,30 @@ class Scenario:
                 return text.rsplit(marker, 1)[1]
         return ""
 
-    def call(self, name: str, args: dict[str, Any], text: str | None = None) -> tuple[int, dict[str, Any]]:
+    def call(
+        self, name: str, args: dict[str, Any], text: str | None = None
+    ) -> tuple[int, dict[str, Any]]:
         cid = f"{self.name}-{self.phase}-{name.lower()}"
         self.phase += 1
         items = ([text_item(text)] if text else []) + [call_item(cid, name, args)]
         return 200, response(items, f"resp_{cid}")
 
     def consume(self, request: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        if self.name == "runtime-upgrade-interrupted-schema47":
+            raw = self.observe(request)
+            if "UPGRADE-SCHEMA47-LIFECYCLE-" in raw:
+                self.interrupted_schema47_kinds.add("agent_lifecycle")
+                self.interrupted_schema47_seen = True
+                threading.Event().wait(300)
+            if "UPGRADE-SCHEMA47-WORKITEM-" in raw:
+                self.interrupted_schema47_kinds.add("work_item")
+                self.interrupted_schema47_seen = True
+                threading.Event().wait(300)
+            markers = re.findall(r"UPGRADE-SCHEMA47-CANDIDATE-[0-9a-f]+", raw)
+            return 200, response(
+                [text_item(markers[-1] if markers else "Recovered schema 47 runtime.")],
+                "resp_runtime_upgrade_interrupted_schema47",
+            )
         with self.lock:
             raw = self.observe(request)
             if request.get("instructions") == "Reply with exactly OK.":
@@ -138,7 +193,9 @@ class Scenario:
                 in current_input
                 and "This is the first run of Holon" in current_input
             ):
-                return 200, response([text_item("Deterministic Holon test runtime ready.")], "resp_intro")
+                return 200, response(
+                    [text_item("Deterministic Holon test runtime ready.")], "resp_intro"
+                )
             if self.name == "runtime-upgrade-v030":
                 # Serialized history carries the earlier phase marker, so the
                 # current prompt's marker is the last occurrence in the payload.
@@ -189,15 +246,39 @@ class Scenario:
 
     def multi(self) -> tuple[int, dict[str, Any]]:
         if self.phase == 0:
-            return self.call("CreateWorkItem", {"objective": self.markers.get("multi_a", "SCHEDULER-MULTI-A"), "plan_status": "ready", "todo_list": [{"text": "seed-a", "state": "completed"}, {"text": "complete-a", "state": "pending"}]})
+            return self.call(
+                "CreateWorkItem",
+                {
+                    "objective": self.markers.get("multi_a", "SCHEDULER-MULTI-A"),
+                    "plan_status": "ready",
+                    "todo_list": [
+                        {"text": "seed-a", "state": "completed"},
+                        {"text": "complete-a", "state": "pending"},
+                    ],
+                },
+            )
         if self.phase == 1:
-            return self.call("CreateWorkItem", {"objective": self.markers.get("multi_b", "SCHEDULER-MULTI-B"), "plan_status": "ready", "todo_list": [{"text": "seed-b", "state": "completed"}, {"text": "complete-b", "state": "pending"}]})
+            return self.call(
+                "CreateWorkItem",
+                {
+                    "objective": self.markers.get("multi_b", "SCHEDULER-MULTI-B"),
+                    "plan_status": "ready",
+                    "todo_list": [
+                        {"text": "seed-b", "state": "completed"},
+                        {"text": "complete-b", "state": "pending"},
+                    ],
+                },
+            )
         if self.phase == 2:
             self.phase += 1
-            return 200, response([text_item("Created two deterministic WorkItems.")], "resp_multi_seeded")
+            return 200, response(
+                [text_item("Created two deterministic WorkItems.")], "resp_multi_seeded"
+            )
         index = 0 if self.phase < 7 else 1
         if len(self.work_ids) <= index:
-            return 409, {"error": {"type": "missing_work_item_id", "message": str(self.phase)}}
+            return 409, {
+                "error": {"type": "missing_work_item_id", "message": str(self.phase)}
+            }
         wid = self.work_ids[index]
         if self.phase == 7 and (
             "[trigger:system_tick]" not in self.current_input_text
@@ -216,10 +297,30 @@ class Scenario:
                 "resp_multi_first_complete",
             )
         steps = {
-            3: ("AgentGet", {}), 4: ("ListWorkItems", {"filter": "current", "include_todo_list": True}),
-            5: ("UpdateWorkItem", {"work_item_id": wid, "todo_list": [{"text": "seed-a", "state": "completed"}, {"text": "complete-a", "state": "completed"}]}),
-            7: ("GetWorkspaceState", {}), 8: ("ListWorkItems", {"filter": "current", "include_todo_list": True}),
-            9: ("UpdateWorkItem", {"work_item_id": wid, "todo_list": [{"text": "seed-b", "state": "completed"}, {"text": "complete-b", "state": "completed"}]}),
+            3: ("AgentGet", {}),
+            4: ("ListWorkItems", {"filter": "current", "include_todo_list": True}),
+            5: (
+                "UpdateWorkItem",
+                {
+                    "work_item_id": wid,
+                    "todo_list": [
+                        {"text": "seed-a", "state": "completed"},
+                        {"text": "complete-a", "state": "completed"},
+                    ],
+                },
+            ),
+            7: ("GetWorkspaceState", {}),
+            8: ("ListWorkItems", {"filter": "current", "include_todo_list": True}),
+            9: (
+                "UpdateWorkItem",
+                {
+                    "work_item_id": wid,
+                    "todo_list": [
+                        {"text": "seed-b", "state": "completed"},
+                        {"text": "complete-b", "state": "completed"},
+                    ],
+                },
+            ),
         }
         if self.phase in steps:
             return self.call(*steps[self.phase])
@@ -233,27 +334,59 @@ class Scenario:
                 "multi_b"
             ].replace("SCHEDULER-MULTI-B-", "SCHEDULER-MULTI-COMPLETE-B-")
             return self.call("CompleteWorkItem", {"work_item_id": wid}, completion)
-        return 409, {"error": {"type": "transcript_exhausted", "message": str(self.phase)}}
+        return 409, {
+            "error": {"type": "transcript_exhausted", "message": str(self.phase)}
+        }
 
     def wait(
         self, marker_key: str, todo_prefix: str, wake: str
     ) -> tuple[int, dict[str, Any]]:
         if self.phase == 0:
-            return self.call("CreateWorkItem", {"objective": self.markers.get(marker_key, f"SCHEDULER-{marker_key.upper()}-WAIT"), "plan_status": "ready", "todo_list": [{"text": f"{todo_prefix}-wait", "state": "pending"}, {"text": f"{todo_prefix}-complete", "state": "pending"}]})
+            return self.call(
+                "CreateWorkItem",
+                {
+                    "objective": self.markers.get(
+                        marker_key, f"SCHEDULER-{marker_key.upper()}-WAIT"
+                    ),
+                    "plan_status": "ready",
+                    "todo_list": [
+                        {"text": f"{todo_prefix}-wait", "state": "pending"},
+                        {"text": f"{todo_prefix}-complete", "state": "pending"},
+                    ],
+                },
+            )
         if not self.work_ids:
-            return 409, {"error": {"type": "missing_work_item_id", "message": str(self.phase)}}
+            return 409, {
+                "error": {"type": "missing_work_item_id", "message": str(self.phase)}
+            }
         wid = self.work_ids[0]
         if self.phase == 1:
             return self.call("PickWorkItem", {"work_item_id": wid})
         if self.phase == 2:
-            args: dict[str, Any] = {"wake": wake, "reason": f"deterministic {marker_key} wait"}
+            args: dict[str, Any] = {
+                "wake": wake,
+                "reason": f"deterministic {marker_key} wait",
+            }
             if wake == "external":
-                args["resource"] = self.markers.get("callback", "docker-e2e:deterministic")
+                args["resource"] = self.markers.get(
+                    "callback", "docker-e2e:deterministic"
+                )
             return self.call("WaitFor", args)
         if self.phase == 3:
-            return self.call("GetWorkItem", {"work_item_id": wid, "include_todo_list": True})
+            return self.call(
+                "GetWorkItem", {"work_item_id": wid, "include_todo_list": True}
+            )
         if self.phase == 4:
-            return self.call("UpdateWorkItem", {"work_item_id": wid, "todo_list": [{"text": f"{todo_prefix}-wait", "state": "completed"}, {"text": f"{todo_prefix}-complete", "state": "completed"}]})
+            return self.call(
+                "UpdateWorkItem",
+                {
+                    "work_item_id": wid,
+                    "todo_list": [
+                        {"text": f"{todo_prefix}-wait", "state": "completed"},
+                        {"text": f"{todo_prefix}-complete", "state": "completed"},
+                    ],
+                },
+            )
         if self.phase == 5:
             completion = self.markers.get(f"{marker_key}_complete") or self.markers[
                 marker_key
@@ -262,7 +395,9 @@ class Scenario:
                 f"SCHEDULER-{marker_key.upper()}-COMPLETE-",
             )
             return self.call("CompleteWorkItem", {"work_item_id": wid}, completion)
-        return 409, {"error": {"type": "transcript_exhausted", "message": str(self.phase)}}
+        return 409, {
+            "error": {"type": "transcript_exhausted", "message": str(self.phase)}
+        }
 
     def task_wait(self) -> tuple[int, dict[str, Any]]:
         if self.phase == 0:
@@ -284,7 +419,9 @@ class Scenario:
                 "resp_task_wait_created",
             )
         if not self.work_ids:
-            return 409, {"error": {"type": "missing_work_item_id", "message": str(self.phase)}}
+            return 409, {
+                "error": {"type": "missing_work_item_id", "message": str(self.phase)}
+            }
         wid = self.work_ids[0]
         if self.phase == 2:
             marker = self.markers.get("task_result", "SCHEDULER-TASK-RESULT")
@@ -298,7 +435,9 @@ class Scenario:
             )
         if self.phase == 3:
             if not self.task_ids:
-                return 409, {"error": {"type": "missing_task_id", "message": str(self.phase)}}
+                return 409, {
+                    "error": {"type": "missing_task_id", "message": str(self.phase)}
+                }
             return self.call(
                 "WaitFor",
                 {
@@ -317,7 +456,9 @@ class Scenario:
                 "WaitFor",
                 {
                     "wake": "external",
-                    "resource": self.markers.get("callback", "docker-e2e:deterministic"),
+                    "resource": self.markers.get(
+                        "callback", "docker-e2e:deterministic"
+                    ),
                     "reason": "deterministic external completion",
                 },
             )
@@ -338,11 +479,15 @@ class Scenario:
                 {"work_item_id": wid},
                 self.markers.get("task_complete", "SCHEDULER-TASK-WAIT-COMPLETE"),
             )
-        return 409, {"error": {"type": "transcript_exhausted", "message": str(self.phase)}}
+        return 409, {
+            "error": {"type": "transcript_exhausted", "message": str(self.phase)}
+        }
 
     def provider_retry(self) -> tuple[int, dict[str, Any]]:
         if not self.work_ids:
-            return 409, {"error": {"type": "missing_work_item_id", "message": str(self.phase)}}
+            return 409, {
+                "error": {"type": "missing_work_item_id", "message": str(self.phase)}
+            }
         wid = self.work_ids[0]
         if self.phase == 0:
             return self.call(
@@ -357,7 +502,9 @@ class Scenario:
                     "provider_complete", "SCHEDULER-PROVIDER-RETRY-COMPLETE"
                 ),
             )
-        return 409, {"error": {"type": "transcript_exhausted", "message": str(self.phase)}}
+        return 409, {
+            "error": {"type": "transcript_exhausted", "message": str(self.phase)}
+        }
 
     def concurrent(self) -> tuple[int, dict[str, Any]]:
         if self.phase == 0:
@@ -373,7 +520,9 @@ class Scenario:
                 },
             )
         if not self.work_ids:
-            return 409, {"error": {"type": "missing_work_item_id", "message": str(self.phase)}}
+            return 409, {
+                "error": {"type": "missing_work_item_id", "message": str(self.phase)}
+            }
         if self.phase == 1:
             return self.call("PickWorkItem", {"work_item_id": self.work_ids[0]})
         if self.phase == 2:
@@ -388,7 +537,9 @@ class Scenario:
                 },
             )
         if len(self.work_ids) < 2:
-            return 409, {"error": {"type": "missing_work_item_id", "message": str(self.phase)}}
+            return 409, {
+                "error": {"type": "missing_work_item_id", "message": str(self.phase)}
+            }
         if self.phase == 3:
             return self.call(
                 "ListWorkItems",
@@ -409,13 +560,14 @@ class Scenario:
             return self.call(
                 "CompleteWorkItem",
                 {"work_item_id": self.work_ids[1]},
-                self.markers.get(
-                    "concurrent_complete_b", "concurrent-complete-b"
-                ),
+                self.markers.get("concurrent_complete_b", "concurrent-complete-b"),
             )
         if self.phase == 6:
             marker = self.markers.get("concurrent_a", "SCHEDULER-CONCURRENT-A")
-            if "[trigger:" not in self.current_input_text or marker not in self.current_input_text:
+            if (
+                "[trigger:" not in self.current_input_text
+                or marker not in self.current_input_text
+            ):
                 self.phase += 1
                 return 200, response(
                     [text_item("Completed deterministic concurrent WorkItem B.")],
@@ -442,20 +594,18 @@ class Scenario:
             return self.call(
                 "CompleteWorkItem",
                 {"work_item_id": self.work_ids[0]},
-                self.markers.get(
-                    "concurrent_complete_a", "concurrent-complete-a"
-                ),
+                self.markers.get("concurrent_complete_a", "concurrent-complete-a"),
             )
-        return 409, {"error": {"type": "transcript_exhausted", "message": str(self.phase)}}
+        return 409, {
+            "error": {"type": "transcript_exhausted", "message": str(self.phase)}
+        }
 
     def compaction(self) -> tuple[int, dict[str, Any]]:
         if self.phase == 0:
             return self.call(
                 "CreateWorkItem",
                 {
-                    "objective": self.markers.get(
-                        "compaction", "SCHEDULER-COMPACTION"
-                    ),
+                    "objective": self.markers.get("compaction", "SCHEDULER-COMPACTION"),
                     "plan_status": "ready",
                     "todo_list": [
                         {"text": "compaction-wait", "state": "pending"},
@@ -475,7 +625,7 @@ class Scenario:
                 "ExecCommand",
                 {
                     "cmd": (
-                        "i=0; while [ \"$i\" -lt 16000 ]; do "
+                        'i=0; while [ "$i" -lt 16000 ]; do '
                         f"printf 'compaction-payload-{self.phase}-%04d\\n' \"$i\"; "
                         "i=$((i+1)); done"
                     ),
@@ -532,7 +682,9 @@ class Scenario:
                 },
             )
         if not self.work_ids:
-            return 409, {"error": {"type": "missing_work_item_id", "message": str(self.phase)}}
+            return 409, {
+                "error": {"type": "missing_work_item_id", "message": str(self.phase)}
+            }
         if self.phase == 1:
             return self.call("PickWorkItem", {"work_item_id": self.work_ids[0]})
         if self.phase == 2:
@@ -564,7 +716,9 @@ class Scenario:
                 f"resp_{prefix}_interject_created",
             )
         if len(self.work_ids) < 2:
-            return 409, {"error": {"type": "missing_work_item_id", "message": str(self.phase)}}
+            return 409, {
+                "error": {"type": "missing_work_item_id", "message": str(self.phase)}
+            }
         if self.phase == 5:
             return self.call(
                 "ListWorkItems",
@@ -615,7 +769,9 @@ class Scenario:
                 {"work_item_id": self.work_ids[0]},
                 self.markers.get(f"{prefix}_complete_a", f"{prefix}-complete-a"),
             )
-        return 409, {"error": {"type": "transcript_exhausted", "message": str(self.phase)}}
+        return 409, {
+            "error": {"type": "transcript_exhausted", "message": str(self.phase)}
+        }
 
     def worktree(self) -> tuple[int, dict[str, Any]]:
         if self.phase == 0:
@@ -631,7 +787,9 @@ class Scenario:
                 },
             )
         if not self.work_ids:
-            return 409, {"error": {"type": "missing_work_item_id", "message": str(self.phase)}}
+            return 409, {
+                "error": {"type": "missing_work_item_id", "message": str(self.phase)}
+            }
         wid = self.work_ids[0]
         if self.phase == 1:
             return self.call("PickWorkItem", {"work_item_id": wid})
@@ -639,7 +797,12 @@ class Scenario:
             return self.call("GetWorkspaceState", {})
         if self.phase == 3:
             if not self.workspace_ids:
-                return 409, {"error": {"type": "missing_workspace_id", "message": str(self.phase)}}
+                return 409, {
+                    "error": {
+                        "type": "missing_workspace_id",
+                        "message": str(self.phase),
+                    }
+                }
             return self.call(
                 "CreateWorktree",
                 {
@@ -656,7 +819,12 @@ class Scenario:
             )
         if self.phase == 7:
             if not self.execution_root_ids:
-                return 409, {"error": {"type": "missing_execution_root_id", "message": str(self.phase)}}
+                return 409, {
+                    "error": {
+                        "type": "missing_execution_root_id",
+                        "message": str(self.phase),
+                    }
+                }
             return self.call(
                 "RemoveWorktree",
                 {
@@ -681,7 +849,9 @@ class Scenario:
                 {"work_item_id": wid},
                 self.markers.get("worktree_complete", "SCHEDULER-WORKTREE-COMPLETE"),
             )
-        return 409, {"error": {"type": "transcript_exhausted", "message": str(self.phase)}}
+        return 409, {
+            "error": {"type": "transcript_exhausted", "message": str(self.phase)}
+        }
 
     def spawn(self) -> tuple[int, dict[str, Any]]:
         if self.phase == 0:
@@ -697,7 +867,9 @@ class Scenario:
                 },
             )
         if not self.work_ids:
-            return 409, {"error": {"type": "missing_work_item_id", "message": str(self.phase)}}
+            return 409, {
+                "error": {"type": "missing_work_item_id", "message": str(self.phase)}
+            }
         wid = self.work_ids[0]
         if self.phase == 1:
             return self.call("PickWorkItem", {"work_item_id": wid})
@@ -717,7 +889,9 @@ class Scenario:
             )
         if self.phase == 3:
             if not self.task_ids:
-                return 409, {"error": {"type": "missing_task_id", "message": str(self.phase)}}
+                return 409, {
+                    "error": {"type": "missing_task_id", "message": str(self.phase)}
+                }
             return self.call("TaskStatus", {"task_id": self.task_ids[-1]})
         if self.phase == 4:
             return self.call(
@@ -736,7 +910,9 @@ class Scenario:
                 {"work_item_id": wid},
                 self.markers.get("spawn_complete", "SCHEDULER-SPAWN-COMPLETE"),
             )
-        return 409, {"error": {"type": "transcript_exhausted", "message": str(self.phase)}}
+        return 409, {
+            "error": {"type": "transcript_exhausted", "message": str(self.phase)}
+        }
 
     def checkpoint(self) -> tuple[int, dict[str, Any]]:
         if self.phase in {0, 1}:
@@ -765,13 +941,17 @@ class Scenario:
                 "resp_checkpoint_created",
             )
         if len(self.work_ids) < 2:
-            return 409, {"error": {"type": "missing_work_item_id", "message": str(self.phase)}}
+            return 409, {
+                "error": {"type": "missing_work_item_id", "message": str(self.phase)}
+            }
         if self.phase == 4:
             return self.call(
                 "WaitFor",
                 {
                     "wake": "external",
-                    "resource": self.markers.get("callback", "docker-e2e:deterministic"),
+                    "resource": self.markers.get(
+                        "callback", "docker-e2e:deterministic"
+                    ),
                     "reason": "deterministic checkpoint wait",
                 },
             )
@@ -829,11 +1009,14 @@ class Scenario:
                     "checkpoint_complete_a", "SCHEDULER-REPLAY-COMPLETE-A"
                 ),
             )
-        return 409, {"error": {"type": "transcript_exhausted", "message": str(self.phase)}}
+        return 409, {
+            "error": {"type": "transcript_exhausted", "message": str(self.phase)}
+        }
 
     def expected_phase(self) -> int:
         return {
             "runtime-upgrade-v030": 2,
+            "runtime-upgrade-interrupted-schema47": 0,
             "scheduler-task-wait": 10,
             "scheduler-provider-retry": 3,
             "scheduler-multi": 12,
@@ -848,6 +1031,15 @@ class Scenario:
         }[self.name]
 
     def status(self) -> dict[str, Any]:
+        if self.name == "runtime-upgrade-interrupted-schema47":
+            return {
+                "scenario": self.name,
+                "phase": 0,
+                "expected_phase": 0,
+                "extra_requests": 0,
+                "complete": self.interrupted_schema47_kinds
+                == {"agent_lifecycle", "work_item"},
+            }
         expected = self.expected_phase()
         return {
             "scenario": self.name,
@@ -857,34 +1049,68 @@ class Scenario:
             "complete": self.phase == expected and self.extra_requests == 0,
         }
 
+
 def make_handler(scenario: Scenario, log: Path) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def send_json(self, status: int, value: dict[str, Any]) -> None:
             body = json.dumps(value, separators=(",", ":")).encode()
-            self.send_response(status); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
         def do_GET(self) -> None:
-            self.send_json(200, {"status": "ok"}) if self.path == "/healthz" else self.send_json(200, scenario.status()) if self.path == "/status" else self.send_json(404, {"error": {"type": "not_found"}})
+            (
+                self.send_json(200, {"status": "ok"})
+                if self.path == "/healthz"
+                else (
+                    self.send_json(200, scenario.status())
+                    if self.path == "/status"
+                    else self.send_json(404, {"error": {"type": "not_found"}})
+                )
+            )
+
         def do_POST(self) -> None:
             if self.path != "/v1/responses":
-                self.send_json(404, {"error": {"type": "not_found"}}); return
+                self.send_json(404, {"error": {"type": "not_found"}})
+                return
             try:
-                request = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
-                if not isinstance(request, dict): raise ValueError
+                request = json.loads(
+                    self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                )
+                if not isinstance(request, dict):
+                    raise ValueError
             except (ValueError, json.JSONDecodeError):
-                self.send_json(400, {"error": {"type": "invalid_json"}}); return
+                self.send_json(400, {"error": {"type": "invalid_json"}})
+                return
             log.parent.mkdir(parents=True, exist_ok=True)
             with log.open("a") as stream:
                 stream.write(
                     json.dumps(redact_evidence(request), separators=(",", ":")) + "\n"
                 )
             self.send_json(*scenario.consume(request))
-        def log_message(self, format: str, *args: Any) -> None: return
+
+        def log_message(self, format: str, *args: Any) -> None:
+            return
+
     return Handler
 
+
 def main() -> None:
-    parser = argparse.ArgumentParser(); parser.add_argument("--listen", default="0.0.0.0"); parser.add_argument("--port", type=int, default=8080); parser.add_argument("--scenario", required=True, choices=SCENARIOS); parser.add_argument("--request-log", type=Path, default=Path("/data/stub-requests.jsonl")); args = parser.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--listen", default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument("--scenario", required=True, choices=SCENARIOS)
+    parser.add_argument(
+        "--request-log", type=Path, default=Path("/data/stub-requests.jsonl")
+    )
+    args = parser.parse_args()
     scenario = Scenario(args.scenario)
-    ThreadingHTTPServer((args.listen, args.port), make_handler(scenario, args.request_log)).serve_forever()
+    ThreadingHTTPServer(
+        (args.listen, args.port), make_handler(scenario, args.request_log)
+    ).serve_forever()
+
 
 if __name__ == "__main__":
     main()

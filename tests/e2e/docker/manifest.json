@@ -95,6 +95,32 @@
       ]
     },
     {
+      "id": "runtime-upgrade-interrupted-schema47",
+      "tier": "core",
+      "tags": ["runtime", "upgrade", "migration", "recovery", "multi-agent"],
+      "timeout_seconds": 300,
+      "requires_model": false,
+      "requires_previous_image": true,
+      "provider_mode": "stub",
+      "stub_scenario": "runtime-upgrade-interrupted-schema47",
+      "result_schema_revision_snapshot": "upgrade-schema47-migrated",
+      "description": "Interrupt a previous-image agent-lifecycle activation, add a second agent with an in-flight WorkItem, recover all affected agents with the candidate, migrate schema 46 to 47, and attest the fixed point.",
+      "phases": [
+        {
+          "id": "previous-image-interrupted",
+          "prompt": "Keep this turn active for the release interruption checkpoint {marker}.",
+          "required_tools": [],
+          "forbidden_tools": []
+        },
+        {
+          "id": "candidate",
+          "prompt": "Reply with the exact marker {marker}.",
+          "required_tools": [],
+          "forbidden_tools": []
+        }
+      ]
+    },
+    {
       "id": "memory-agent-home-persistence",
       "tier": "core",
       "tags": ["memory", "agent-home", "restart", "persistence"],
