@@ -1164,6 +1164,10 @@ fn stored_outcome_matches(existing: &str, outcome: &ExecutionOutcomeRecord) -> R
     Ok(existing == *outcome)
 }
 
+/// Loads execution-protocol rows without requiring a partition marker or
+/// asserting cross-row invariants.
+///
+/// Repair callers must restore and assert those invariants before committing.
 pub(crate) fn load_state_unchecked_tx(
     tx: &Transaction<'_>,
     agent_id: &str,

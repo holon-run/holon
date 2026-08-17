@@ -2830,7 +2830,7 @@ fn print_all_scheduler_recovery_reports(
         for result in
             runtime_db.apply_retired_scheduler_cleanup_fallbacks(&after_exact.affected_agents())?
         {
-            changed += usize::from(!result.actions.is_empty());
+            changed += result.actions.len();
             fallback_results.push(result);
         }
     }
