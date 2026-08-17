@@ -314,6 +314,14 @@ The database stores scheduler facts and audit history. Configuration selects a
 temporary engine. Neither historical rollout rows nor repair records select
 authority.
 
+The destructive cleanup migration requires a recovery fixed point: no open
+execution attempts, in-flight execution work items, or dequeued queue entries.
+Normal startup remains fail-closed when that invariant is not met. The offline
+`holon debug scheduler-recovery` command is the only current-binary path allowed
+to open the immediately preceding schema without applying the cleanup first;
+it exposes only the existing typed, fenced report/apply/report workflow and
+does not start a runtime or admit new work.
+
 ## Rollback
 
 There is no automatic per-scenario rollback.

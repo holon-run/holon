@@ -281,7 +281,8 @@ fn runtime_command_uses_config_inspection(command: &Commands) -> bool {
         Commands::Events {
             command: EventsCommands::Tail { offline: true, .. }
         } | Commands::Debug {
-            command: DebugCommands::SchedulerRecoveryFixture { .. }
+            command: DebugCommands::SchedulerRecovery { .. }
+                | DebugCommands::SchedulerRecoveryFixture { .. }
                 | DebugCommands::SchedulerRestartFixture { .. }
         }
     )
@@ -1620,6 +1621,7 @@ mod tests {
     fn hidden_offline_scheduler_commands_skip_runtime_model_resolution() {
         for args in [
             vec!["holon", "events", "tail", "--agent", "runner", "--offline"],
+            vec!["holon", "debug", "scheduler-recovery"],
             vec![
                 "holon",
                 "debug",
@@ -1640,9 +1642,6 @@ mod tests {
             let cli = Cli::parse_from(args);
             assert!(runtime_command_uses_config_inspection(&cli.command));
         }
-
-        let cli = Cli::parse_from(["holon", "debug", "scheduler-recovery"]);
-        assert!(!runtime_command_uses_config_inspection(&cli.command));
     }
 
     #[test]
@@ -2614,10 +2613,16 @@ fn print_scheduler_recovery_report(
     no_backup: bool,
 ) -> Result<()> {
     let agent_id = agent.unwrap_or_else(|| config.default_agent_id.clone());
-    let host = RuntimeHost::new(config.clone())?;
-    let storage = host.agent_storage(&agent_id)?;
-    let mut report =
-        holon::runtime::scheduler_recovery_report(&storage, host.runtime_db(), &agent_id)?;
+    let runtime_db = RuntimeDb::open_for_scheduler_recovery(
+        config.runtime_db_path(),
+        config.runtime_db_lock_path(),
+    )?;
+    let storage = AppStorage::new_for_agent(
+        config.agent_root_dir().join(&agent_id),
+        agent_id.clone(),
+        runtime_db.clone(),
+    )?;
+    let mut report = holon::runtime::scheduler_recovery_report(&storage, &runtime_db, &agent_id)?;
     filter_scheduler_recovery_report(&mut report, message_id.as_deref(), true)?;
     let mut apply_result = None;
     if apply {
@@ -2631,14 +2636,14 @@ fn print_scheduler_recovery_report(
         apply_result = Some((
             holon::runtime::apply_scheduler_recovery_plan_with_backup_policy(
                 &storage,
-                host.runtime_db(),
+                &runtime_db,
                 &agent_id,
                 &report,
                 backup_policy,
             )?,
             backup_policy,
         ));
-        report = holon::runtime::scheduler_recovery_report(&storage, host.runtime_db(), &agent_id)?;
+        report = holon::runtime::scheduler_recovery_report(&storage, &runtime_db, &agent_id)?;
         filter_scheduler_recovery_report(&mut report, message_id.as_deref(), false)?;
     }
     if json {

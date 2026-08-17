@@ -66,6 +66,7 @@ use crate::runtime_db::migrations::{
     apply_migration, apply_release_baseline, backfill_wait_condition_payload_columns,
     backfill_work_item_recheck_columns, current_schema_version, ensure_migration_table,
     max_known_migration_version, MIGRATIONS, PUBLISHED_MIGRATION_FLOOR, RELEASE_BASELINE_TARGET,
+    RETIRED_SCHEDULER_SCHEMA_PREDECESSOR,
 };
 use crate::runtime_db::storage_domain::{
     read_storage_domain_connection, upsert_storage_domain, upsert_storage_domain_checkpoint_json,
@@ -277,6 +278,45 @@ impl RuntimeDb {
             lock_path: lock_path.into(),
         };
         db.migrate()?;
+        Ok(db)
+    }
+
+    /// Opens an existing database for the offline scheduler recovery command.
+    ///
+    /// Recovery must be able to inspect and settle schema 46 rows that block
+    /// the destructive scheduler-schema migration. All other callers must use
+    /// [`Self::open_and_migrate`].
+    pub fn open_for_scheduler_recovery(
+        path: impl Into<PathBuf>,
+        lock_path: impl Into<PathBuf>,
+    ) -> Result<Self> {
+        let path = path.into();
+        if !path.is_file() {
+            bail!(
+                "scheduler recovery requires an existing runtime database: {}",
+                path.display()
+            );
+        }
+        let writer = RuntimeDbWriter::open(path.clone(), open_connection(&path)?)?;
+        let db = Self {
+            writer,
+            path,
+            lock_path: lock_path.into(),
+        };
+        let current_version: i64 = db.connection()?.query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            [],
+            |row| row.get(0),
+        )?;
+        let max_known_version = max_known_migration_version();
+        if !(RETIRED_SCHEDULER_SCHEMA_PREDECESSOR..=max_known_version).contains(&current_version) {
+            bail!(
+                "scheduler recovery supports runtime db schemas {} through {}, found {}",
+                RETIRED_SCHEDULER_SCHEMA_PREDECESSOR,
+                max_known_version,
+                current_version
+            );
+        }
         Ok(db)
     }
 

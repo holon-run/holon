@@ -29,6 +29,7 @@ pub struct Migration {
 
 pub(crate) const PUBLISHED_MIGRATION_FLOOR: i64 = 25;
 pub(crate) const RELEASE_BASELINE_TARGET: i64 = 45;
+pub(crate) const RETIRED_SCHEDULER_SCHEMA_PREDECESSOR: i64 = 46;
 const RELEASE_BASELINE_SCHEMA_TARGET: i64 = 42;
 const RELEASE_BASELINE_ID: &str = "v0.30.0-schema-25-to-schema-45";
 
@@ -87,13 +88,26 @@ fn migrate_retired_scheduler_schema(
         |row| row.get(0),
     )?;
     if open_attempts > 0 || in_flight_work_items > 0 || dequeued_queue_entries > 0 {
+        let mut affected_agents = transaction.prepare(
+            "SELECT agent_id FROM execution_protocol_attempts WHERE lifecycle_state = 'open'
+             UNION
+             SELECT agent_id FROM execution_protocol_work_items WHERE lifecycle_state = 'in_flight'
+             UNION
+             SELECT agent_id FROM queue_entries WHERE status = 'dequeued'
+             ORDER BY agent_id",
+        )?;
+        let affected_agents = affected_agents
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .join(",");
         bail!(
             "retired scheduler schema migration requires a recovery fixed point: \
              open_execution_attempts={open_attempts}, \
              in_flight_execution_work_items={in_flight_work_items}, \
-             dequeued_queue_entries={dequeued_queue_entries}; \
-             run scheduler-recovery report/apply/report with the pre-migration binary \
-             (v0.31.1 is the supported rollback binary) and retry"
+             dequeued_queue_entries={dequeued_queue_entries}, \
+             affected_agents={affected_agents}; \
+             stop holon, then run `holon debug scheduler-recovery --agent <affected-agent>` \
+             report/apply/report and retry (v0.31.1 remains the supported rollback binary)"
         );
     }
 

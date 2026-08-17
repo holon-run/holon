@@ -109,11 +109,17 @@ configurable key. For one minor release, an existing persisted
 value is accepted with a deprecation warning. `legacy` and all other values
 fail startup. Remove the obsolete selector from deployment configuration.
 
-Migration 40 marks the rollout tables as retired compatibility data without
-dropping them. `holon debug scheduler-recovery` reports their retained row
-counts and stale authoritative rows. They are diagnostic only: startup,
-ordinary scheduler transactions, and typed repair do not read them to decide
-authority.
+Migration 40 marked the rollout tables as retired compatibility data. The
+follow-up cleanup migration removes them after recovery reaches a fixed point.
+They do not decide authority during startup, ordinary scheduler transactions,
+or typed repair.
+
+The follow-up cleanup migration fails closed while any canonical execution is
+open, any execution work item is in flight, or any queue entry is dequeued. The
+error lists the affected agent IDs. Stop Holon and run
+`holon debug scheduler-recovery --agent <agent>` to report, apply the typed
+recovery, and report again. This command can open the immediately preceding
+schema without triggering cleanup; other current-binary commands cannot.
 
 Holon v0.31.1 is the rollback release for deployments that still require the
 legacy scheduler. Use it only with a pre-migration database backup; a database

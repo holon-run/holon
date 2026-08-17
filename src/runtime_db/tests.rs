@@ -1345,6 +1345,51 @@ INSERT INTO storage_domains (
     }
 
     #[test]
+    fn scheduler_recovery_open_preserves_the_previous_release_schema() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        {
+            let mut connection = open_connection(&db_path)?;
+            migrate_through(&mut connection, 46)?;
+        }
+
+        let recovery_db = RuntimeDb::open_for_scheduler_recovery(&db_path, &lock_path)?;
+        assert_eq!(recovery_db.current_schema_version()?, 46);
+        for table in RETIRED_SCHEDULER_TABLES {
+            assert!(
+                table_exists(&recovery_db.connection()?, table)?,
+                "recovery open must not remove retired table {table}"
+            );
+        }
+        drop(recovery_db);
+
+        RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        assert_eq!(
+            current_schema_version(&open_connection(&db_path)?)?,
+            max_known_migration_version()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn scheduler_recovery_open_rejects_older_schemas() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        {
+            let mut connection = open_connection(&db_path)?;
+            migrate_through(&mut connection, 45)?;
+        }
+
+        let error = RuntimeDb::open_for_scheduler_recovery(&db_path, &lock_path)
+            .expect_err("schema 45 is too old for the schema 46 recovery contract");
+        assert!(
+            error
+                .to_string()
+                .contains("supports runtime db schemas 46 through 47, found 45"),
+            "{error:#}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn migration_47_upgrades_v0_31_1_schema_and_preserves_scheduler_audit_evidence() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         {
@@ -1592,9 +1637,13 @@ INSERT INTO scheduler_rollout_command_results (
                 .expect_err("migration must reject unsettled canonical execution state");
             assert!(error.to_string().contains(expected_count), "{error:#}");
             assert!(
-                error.to_string().contains(
-                    "run scheduler-recovery report/apply/report with the pre-migration binary"
-                ),
+                error
+                    .to_string()
+                    .contains("run `holon debug scheduler-recovery --agent <affected-agent>`"),
+                "{error:#}"
+            );
+            assert!(
+                error.to_string().contains("affected_agents=agent-a"),
                 "{error:#}"
             );
 
