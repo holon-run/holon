@@ -158,12 +158,14 @@ class Scenario:
         if self.name == "runtime-upgrade-interrupted-schema47":
             raw = self.observe(request)
             if "UPGRADE-SCHEMA47-LIFECYCLE-" in raw:
-                self.interrupted_schema47_kinds.add("agent_lifecycle")
-                self.interrupted_schema47_seen = True
+                with self.lock:
+                    self.interrupted_schema47_kinds.add("agent_lifecycle")
+                    self.interrupted_schema47_seen = True
                 threading.Event().wait(300)
             if "UPGRADE-SCHEMA47-WORKITEM-" in raw:
-                self.interrupted_schema47_kinds.add("work_item")
-                self.interrupted_schema47_seen = True
+                with self.lock:
+                    self.interrupted_schema47_kinds.add("work_item")
+                    self.interrupted_schema47_seen = True
                 threading.Event().wait(300)
             markers = re.findall(r"UPGRADE-SCHEMA47-CANDIDATE-[0-9a-f]+", raw)
             return 200, response(
@@ -1032,13 +1034,17 @@ class Scenario:
 
     def status(self) -> dict[str, Any]:
         if self.name == "runtime-upgrade-interrupted-schema47":
+            with self.lock:
+                complete = self.interrupted_schema47_kinds == {
+                    "agent_lifecycle",
+                    "work_item",
+                }
             return {
                 "scenario": self.name,
                 "phase": 0,
                 "expected_phase": 0,
                 "extra_requests": 0,
-                "complete": self.interrupted_schema47_kinds
-                == {"agent_lifecycle", "work_item"},
+                "complete": complete,
             }
         expected = self.expected_phase()
         return {

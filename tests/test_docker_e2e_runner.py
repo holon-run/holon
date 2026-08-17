@@ -30,10 +30,11 @@ STUB_SPEC.loader.exec_module(stub)
 
 
 class DockerE2ERunnerTests(unittest.TestCase):
-    def test_skip_build_covers_candidate_and_stub_images(self) -> None:
+    def test_skip_build_only_covers_candidate_image(self) -> None:
         source = inspect.getsource(runner.main)
         self.assertIn("if not args.skip_build:", source)
-        self.assertIn("if not args.skip_build and any(", source)
+        self.assertIn("if any(", source)
+        self.assertNotIn("if not args.skip_build and any(", source)
 
     def test_previous_schema_revision_accepts_supported_release_schemas(self) -> None:
         self.assertEqual(

@@ -2456,14 +2456,6 @@ def run_runtime_upgrade_interrupted_schema47_case(
         matching,
         "previous image did not retain open agent-lifecycle and WorkItem attempts",
     )
-    for row in matching:
-        payload = json.loads(row["payload_json"])
-        if (
-            row["agent_id"] == lifecycle_agent
-            and payload.get("binding", {}).get("kind") == "agent_lifecycle"
-        ):
-            lifecycle_agent = row["agent_id"]
-            break
     harness.crash()
     prompt_thread.join(timeout=35)
     work_item_thread.join(timeout=35)
@@ -5429,7 +5421,7 @@ def main(argv: list[str] | None = None) -> int:
         selected,
         scheduler_matrix=args.scheduler_matrix,
     )
-    if not args.skip_build and any(
+    if any(
         case.get("provider_mode", profile.get("provider_mode", "live")) == "stub"
         for case, _ in expanded_cases
     ):
