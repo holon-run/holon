@@ -1,6 +1,12 @@
 name: Release Smoke
 
 on:
+  workflow_call:
+    inputs:
+      version:
+        description: Release tag to smoke test.
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       version:
@@ -18,7 +24,7 @@ permissions:
 jobs:
   linux-asset:
     name: Linux asset
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     env:
       RELEASE_VERSION: ${{ inputs.version || 'v0.13.0' }}
     steps:

@@ -74,6 +74,7 @@ holon --help
 
 You can also download prebuilt binaries for Linux amd64, macOS amd64, and macOS
 arm64 from [GitHub Releases](https://github.com/holon-run/holon/releases/latest).
+The Linux amd64 binary supports Ubuntu 22.04 or newer (glibc 2.35 or newer).
 
 The examples below assume `holon` is installed on `PATH`.
 

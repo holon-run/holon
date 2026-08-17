@@ -74,6 +74,7 @@ holon --help
 
 也可以从 [GitHub Releases](https://github.com/holon-run/holon/releases/latest)
 下载 Linux amd64、macOS amd64 和 macOS arm64 预编译二进制。
+Linux amd64 二进制支持 Ubuntu 22.04 或更新版本（glibc 2.35 或更新版本）。
 
 下文示例假设 `holon` 已在 `PATH` 中。
 
