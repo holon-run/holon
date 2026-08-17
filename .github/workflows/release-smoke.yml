@@ -13,10 +13,6 @@ on:
         description: Release tag to smoke test.
         required: false
         default: v0.13.0
-  pull_request:
-    branches: [main]
-    paths:
-      - ".github/workflows/release-smoke.yml"
 
 permissions:
   contents: read
