@@ -18,7 +18,13 @@ from a commit whose crate version is `0.13.0`.
 
 Before creating the tag:
 
-1. Run the `Release E2E` workflow with the candidate commit and intended tag.
+1. Run the `Release E2E` workflow with the candidate commit, intended tag, and
+   exactly one previous-release source:
+   - `previous_image`: a full, resolvable container image reference; or
+   - `previous_ref`: a release tag such as `v0.31.1`, used to build an image
+     from that release's verified Linux binary asset.
+   The workflow fails rather than falling back when an explicit image is
+   invalid, when both inputs are set, or when neither input is set.
 2. Select the protected `release-e2e` environment approval.
 3. Confirm the uploaded `summary.json`, JUnit report, and secret scan all pass.
 4. Record the successful workflow run and candidate digest in the release
@@ -84,7 +90,8 @@ Before pushing the tag, verify:
 - the public GHCR tags promote the verified candidate digest rather than
   rebuilding a new image
 - when an upgrade case is available, it used the current recommended release
-  image as `previous_image`
+  through exactly one of `previous_image` or `previous_ref`, and the attestation
+  records the resolved image and source
 - the host real-data upgrade verification passed for the previous release ->
   candidate pair (`scripts/upgrade-verify-realdata/README.md`): migration,
   preservation, and cross-upgrade memory recall with a real model

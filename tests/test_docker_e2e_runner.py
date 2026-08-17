@@ -302,6 +302,47 @@ class DockerE2ERunnerTests(unittest.TestCase):
             self.assertNotIn("HOLON_E2E_PROVIDER_ENV_FILE", job_env)
             self.assertNotIn("HOLON_E2E_PROVIDER_CONFIG_FILE", job_env)
 
+    def test_release_workflow_fails_closed_for_previous_release_inputs(self) -> None:
+        release = (ROOT / ".github/workflows/release-e2e.yml").read_text()
+        inputs = release.split("    inputs:\n", 1)[1].split("\npermissions:", 1)[0]
+        prepare = release.split(
+            "      - name: Prepare previous release image\n", 1
+        )[1].split("      - name:", 1)[0]
+
+        self.assertNotIn("default: v0.30.0", inputs)
+        self.assertIn(
+            "previous_image and previous_ref are mutually exclusive",
+            prepare,
+        )
+        self.assertIn(
+            'if ! docker manifest inspect "${PREVIOUS_IMAGE_INPUT}"',
+            prepare,
+        )
+        self.assertIn(
+            "previous_image is not a resolvable container image",
+            prepare,
+        )
+        self.assertIn(
+            "one of previous_image or previous_ref is required",
+            prepare,
+        )
+        self.assertIn("source=previous_image", prepare)
+        self.assertIn("source=previous_ref", prepare)
+        self.assertIn('"previous_release": {', release)
+        self.assertIn('"image": os.environ["PREVIOUS_IMAGE"]', release)
+        self.assertIn('"source": os.environ["PREVIOUS_SOURCE"]', release)
+        self.assertIn('"ref": os.environ["PREVIOUS_REF"] or None', release)
+        publish = (ROOT / ".github/workflows/release.yml").read_text()
+        self.assertIn(".previous_release.image", publish)
+        self.assertIn(
+            '.previous_release.source == "previous_image"',
+            publish,
+        )
+        self.assertIn(
+            '.previous_release.source == "previous_ref"',
+            publish,
+        )
+
     def test_scheduler_required_profile_selects_all_stub_cases(self) -> None:
         profile = runner.resolve_profile(self.manifest, "scheduler-required")
         selected = runner.select_cases(

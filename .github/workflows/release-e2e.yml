@@ -10,12 +10,11 @@ on:
         description: Intended release tag, for example v0.14.0.
         required: true
       previous_image:
-        description: Previous release image used by upgrade cases.
+        description: Full previous release image reference. Mutually exclusive with previous_ref; invalid references fail.
         required: false
       previous_ref:
-        description: Git tag of the previous release. Used to build the previous image when previous_image is not published.
+        description: Git tag used to build the previous image when previous_image is omitted.
         required: false
-        default: v0.30.0
       model:
         description: Real model route.
         required: false
@@ -133,11 +132,32 @@ jobs:
           PREVIOUS_REF: ${{ inputs.previous_ref }}
         run: |
           set -euo pipefail
-          if [ -n "${PREVIOUS_IMAGE_INPUT}" ] \
-            && docker manifest inspect "${PREVIOUS_IMAGE_INPUT}" >/dev/null 2>&1; then
-            echo "image=${PREVIOUS_IMAGE_INPUT}" >> "$GITHUB_OUTPUT"
+          if [ -n "${PREVIOUS_IMAGE_INPUT}" ] && [ -n "${PREVIOUS_REF}" ]; then
+            echo "previous_image and previous_ref are mutually exclusive" >&2
+            exit 1
+          fi
+          if [ -n "${PREVIOUS_IMAGE_INPUT}" ]; then
+            echo "Resolving previous release from explicit image: ${PREVIOUS_IMAGE_INPUT}"
+            if ! docker manifest inspect "${PREVIOUS_IMAGE_INPUT}" >/dev/null; then
+              echo "previous_image is not a resolvable container image: ${PREVIOUS_IMAGE_INPUT}" >&2
+              exit 1
+            fi
+            {
+              echo "image=${PREVIOUS_IMAGE_INPUT}"
+              echo "source=previous_image"
+              echo "ref="
+            } >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          if [ -z "${PREVIOUS_REF}" ]; then
+            echo "one of previous_image or previous_ref is required" >&2
+            exit 1
+          fi
+          if [[ ! "${PREVIOUS_REF}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "previous_ref must be a release tag such as v0.31.1: ${PREVIOUS_REF}" >&2
+            exit 1
+          fi
+          echo "Building previous release image from release assets for ${PREVIOUS_REF}"
           version="${PREVIOUS_REF#v}"
           workdir="$(mktemp -d)"
           trap 'rm -rf "${workdir}"' EXIT
@@ -177,7 +197,11 @@ jobs:
           DOCKERFILE
           tag="holon-e2e-previous:${version}"
           docker build --tag "${tag}" "${workdir}"
-          echo "image=${tag}" >> "$GITHUB_OUTPUT"
+          {
+            echo "image=${tag}"
+            echo "source=previous_ref"
+            echo "ref=${PREVIOUS_REF}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Run release core E2E
         env:
@@ -238,6 +262,7 @@ jobs:
         run: |
           python3 - <<'PY'
           import json
+          import os
           from pathlib import Path
 
           summary = json.loads(
@@ -260,6 +285,9 @@ jobs:
               f"- Status: **{summary['status']}**",
               f"- Candidate: `{summary['image']['ref']}`",
               f"- Git SHA: `{summary['git_sha']}`",
+              f"- Previous release image: `{os.environ['PREVIOUS_IMAGE']}`",
+              f"- Previous release source: `{os.environ['PREVIOUS_SOURCE']}`",
+              f"- Previous release ref: `{os.environ['PREVIOUS_REF'] or 'n/a'}`",
               f"- Deterministic scheduler gate: **{scheduler_report['status']}**",
               f"- Scheduler live canary: **{canary['status'] if canary else 'missing'}**",
               f"- Runtime schema revision: `{scheduler_report['runtime_schema_revision']}`",
@@ -277,10 +305,14 @@ jobs:
               lines.append(
                   f"| `{case['id']}` | {case['status']} | {case['duration_seconds']}s |"
               )
-          Path(__import__("os").environ["GITHUB_STEP_SUMMARY"]).write_text(
+          Path(os.environ["GITHUB_STEP_SUMMARY"]).write_text(
               "\n".join(lines) + "\n"
           )
           PY
+        env:
+          PREVIOUS_IMAGE: ${{ steps.previous.outputs.image }}
+          PREVIOUS_SOURCE: ${{ steps.previous.outputs.source }}
+          PREVIOUS_REF: ${{ steps.previous.outputs.ref }}
 
       - name: Write release E2E attestation
         run: |
@@ -337,6 +369,11 @@ jobs:
               "model_route": summary["model_route"],
               "image": summary["image"],
               "image_digest": summary["image_digest"],
+              "previous_release": {
+                  "image": os.environ["PREVIOUS_IMAGE"],
+                  "source": os.environ["PREVIOUS_SOURCE"],
+                  "ref": os.environ["PREVIOUS_REF"] or None,
+              },
               "scheduler_acceptance": scheduler_report,
               "scheduler_coverage": coverage_report,
               "scheduler_live_canary": canary_report,
@@ -355,6 +392,9 @@ jobs:
         env:
           CANDIDATE_REF: ${{ inputs.candidate_ref }}
           CANDIDATE_SHA: ${{ needs.candidate.outputs.sha }}
+          PREVIOUS_IMAGE: ${{ steps.previous.outputs.image }}
+          PREVIOUS_SOURCE: ${{ steps.previous.outputs.source }}
+          PREVIOUS_REF: ${{ steps.previous.outputs.ref }}
           RELEASE_TAG: ${{ inputs.release_tag }}
 
       - name: Prepare safe evidence upload

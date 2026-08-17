@@ -233,6 +233,12 @@ jobs:
    scheduler-tagged cases with `--scheduler-matrix` in one attested runner
    invocation.
 
+The manual dispatch must provide exactly one previous-release source.
+`previous_image` is a full container image reference and is validated without
+fallback; `previous_ref` is a release tag used to download the checksummed Linux
+binary and build the local upgrade image. The resolved image, source kind, and
+release ref are recorded in the run summary and attestation.
+
 The E2E job has read-only repository/package permissions and cannot publish a
 GitHub release, promote `latest`, or update Homebrew. Evidence is retained as a
 workflow artifact. Its attestation embeds the machine-readable scheduler

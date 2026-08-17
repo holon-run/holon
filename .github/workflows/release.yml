@@ -74,6 +74,14 @@ jobs:
              and .status == "pass"
              and (.image.ref | contains("@sha256:"))
              and (.model_route | length > 0)
+             and (.previous_release.image | type == "string" and length > 0)
+             and (
+               (.previous_release.source == "previous_image"
+                and .previous_release.ref == null)
+               or
+               (.previous_release.source == "previous_ref"
+                and (.previous_release.ref | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")))
+             )
              and .scheduler_acceptance.schema_version == 1
              and .scheduler_acceptance.status == "pass"
              and .scheduler_acceptance.git_sha == $sha
