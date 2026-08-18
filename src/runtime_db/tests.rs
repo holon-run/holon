@@ -6149,6 +6149,323 @@ CREATE TABLE working_memory_deltas (
         Ok(())
     }
 
+    fn insert_projection_message(
+        db: &RuntimeDb,
+        evidence_id: &str,
+        agent_id: &str,
+        created_at: &str,
+    ) -> Result<()> {
+        let payload = serde_json::json!({
+            "id": evidence_id,
+            "agent_id": agent_id,
+            "kind": "operator_prompt",
+            "created_at": created_at,
+        });
+        db.connection()?.execute(
+            "INSERT INTO messages (
+                evidence_id, agent_id, created_at, kind, payload_json
+             ) VALUES (?1, ?2, ?3, 'operator_prompt', ?4)",
+            rusqlite::params![evidence_id, agent_id, created_at, payload.to_string()],
+        )?;
+        Ok(())
+    }
+
+    fn insert_projection_transcript_entry(
+        db: &RuntimeDb,
+        evidence_id: &str,
+        agent_id: &str,
+        created_at: &str,
+    ) -> Result<()> {
+        let payload = serde_json::json!({
+            "id": evidence_id,
+            "agent_id": agent_id,
+            "kind": "assistant",
+            "created_at": created_at,
+        });
+        db.connection()?.execute(
+            "INSERT INTO transcript_entries (
+                evidence_id, agent_id, created_at, kind, payload_json
+             ) VALUES (?1, ?2, ?3, 'assistant', ?4)",
+            rusqlite::params![evidence_id, agent_id, created_at, payload.to_string()],
+        )?;
+        Ok(())
+    }
+
+    fn insert_projection_work_item(
+        db: &RuntimeDb,
+        work_item_id: &str,
+        agent_id: &str,
+        state: &str,
+        plan_status: Option<&str>,
+        revision: i64,
+        current_focus: bool,
+        updated_at: &str,
+    ) -> Result<()> {
+        // The payload stays a decodable WorkItemRecord even when a column
+        // is deliberately corrupt, so open-time migrations succeed and the
+        // projection verification is what observes the corruption.
+        let mut record = crate::types::WorkItemRecord::new(
+            agent_id,
+            "projection snapshot test",
+            crate::types::WorkItemState::Open,
+        );
+        record.id = work_item_id.to_string();
+        record.revision = revision.max(1) as u64;
+        record.plan_status = plan_status
+            .and_then(|status| match status {
+                "draft" => Some(crate::types::WorkItemPlanStatus::Draft),
+                "ready" => Some(crate::types::WorkItemPlanStatus::Ready),
+                "needs_input" => Some(crate::types::WorkItemPlanStatus::NeedsInput),
+                _ => None,
+            })
+            .unwrap_or(crate::types::WorkItemPlanStatus::Draft);
+        let payload = serde_json::to_value(&record)?;
+        db.connection()?.execute(
+            "INSERT INTO work_items (
+                work_item_id, agent_id, state, objective, plan_status, revision,
+                current_focus, created_at, updated_at, payload_json
+             ) VALUES (?1, ?2, ?3, 'objective', ?4, ?5, ?6, ?7, ?7, ?8)",
+            rusqlite::params![
+                work_item_id,
+                agent_id,
+                state,
+                plan_status,
+                revision,
+                i64::from(current_focus),
+                updated_at,
+                payload.to_string()
+            ],
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn agent_projection_snapshot_rows_read_one_committed_view() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        db.agent_identities().upsert(&agent_identity("member", 0))?;
+        db.agent_states()
+            .upsert(&crate::types::AgentState::new("member"))?;
+        for index in 1..=3 {
+            let event = crate::types::AuditEvent::legacy(
+                format!("projection_event_{index}"),
+                serde_json::json!({ "index": index }),
+            );
+            db.audit_events().append(Some("member"), &event)?;
+        }
+        insert_projection_work_item(
+            &db,
+            "work-stale",
+            "member",
+            "open",
+            Some("draft"),
+            4,
+            false,
+            "2026-01-01T00:00:00.000Z",
+        )?;
+        insert_projection_work_item(
+            &db,
+            "work-focused",
+            "member",
+            "open",
+            Some("ready"),
+            2,
+            true,
+            "2026-01-02T00:00:00.000Z",
+        )?;
+        insert_projection_work_item(
+            &db,
+            "work-other-agent",
+            "stranger",
+            "open",
+            None,
+            9,
+            false,
+            "2026-01-03T00:00:00.000Z",
+        )?;
+        insert_projection_message(&db, "msg-older", "member", "2026-01-01T00:00:00.000Z")?;
+        insert_projection_message(&db, "msg-newer", "member", "2026-01-02T00:00:00.000Z")?;
+        insert_projection_message(&db, "msg-stranger", "stranger", "2026-01-04T00:00:00.000Z")?;
+        insert_projection_transcript_entry(&db, "te-only", "member", "2026-01-01T12:00:00.000Z")?;
+        insert_roster_brief(
+            &db,
+            "brief-member",
+            "member",
+            "2026-01-02T00:00:00.000Z",
+            Some(3),
+            Some("member preview"),
+        )?;
+
+        let snapshot = db.agent_projection_snapshot_rows("member")?;
+        assert_eq!(snapshot.runtime_id, db.runtime_id()?);
+        assert_eq!(snapshot.event_log_epoch, db.event_log_epoch()?);
+        let row = snapshot.row.expect("member anchors");
+        assert_eq!(row.agent_id, "member");
+        assert_eq!(row.event_head_seq, 3);
+        assert_eq!(row.oldest_retained_seq, Some(1));
+        let work_item = row.current_work_item.expect("current work item anchor");
+        assert_eq!(work_item.work_item_id, "work-focused");
+        assert_eq!(work_item.state, "open");
+        assert_eq!(work_item.plan_status.as_deref(), Some("ready"));
+        assert_eq!(work_item.revision, 2);
+        assert_eq!(row.latest_message_id.as_deref(), Some("msg-newer"));
+        assert_eq!(row.latest_transcript_entry_id.as_deref(), Some("te-only"));
+        assert_eq!(
+            row.latest_brief.as_ref().expect("latest brief").brief_id,
+            "brief-member"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn agent_projection_snapshot_rows_absent_for_inaccessible_identities() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        db.agent_identities().upsert(&agent_identity("member", 0))?;
+        let mut private = agent_identity("child-private", 0);
+        private.visibility = AgentVisibility::Private;
+        db.agent_identities().upsert(&private)?;
+        let mut deleted = agent_identity("member-deleted", 0);
+        deleted.status = AgentRegistryStatus::Deleted;
+        db.agent_identities().upsert(&deleted)?;
+
+        for agent_id in ["child-private", "member-deleted", "never-existed"] {
+            let snapshot = db.agent_projection_snapshot_rows(agent_id)?;
+            assert!(
+                snapshot.row.is_none(),
+                "{agent_id} must not assemble projection anchors"
+            );
+        }
+        // Metadata stays readable only for real members.
+        assert!(db.agent_projection_snapshot_rows("member")?.row.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn agent_projection_snapshot_boundary_equals_committed_head() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        db.agent_identities().upsert(&agent_identity("member", 0))?;
+        db.audit_events().append(
+            Some("member"),
+            &crate::types::AuditEvent::legacy("head_before", serde_json::json!({})),
+        )?;
+        let before = db.agent_projection_snapshot_rows("member")?;
+        let head_before = before.row.as_ref().expect("member").event_head_seq;
+        assert_eq!(head_before, 1);
+        db.audit_events().append(
+            Some("member"),
+            &crate::types::AuditEvent::legacy("head_after", serde_json::json!({})),
+        )?;
+        let after = db.agent_projection_snapshot_rows("member")?;
+        let row = after.row.expect("member");
+        assert_eq!(row.event_head_seq, head_before + 1);
+        // Every later event stays replayable through the raw event page.
+        let count: i64 = db.connection()?.query_row(
+            "SELECT COUNT(*) FROM audit_events WHERE agent_id = 'member' AND event_seq > ?1",
+            [head_before as i64],
+            |row| row.get(0),
+        )?;
+        assert_eq!(count, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn agent_projection_snapshot_falls_back_to_latest_open_work_item() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        db.agent_identities().upsert(&agent_identity("member", 0))?;
+        insert_projection_work_item(
+            &db,
+            "work-completed",
+            "member",
+            "completed",
+            Some("ready"),
+            5,
+            false,
+            "2026-01-05T00:00:00.000Z",
+        )?;
+        insert_projection_work_item(
+            &db,
+            "work-open-older",
+            "member",
+            "open",
+            None,
+            1,
+            false,
+            "2026-01-01T00:00:00.000Z",
+        )?;
+        insert_projection_work_item(
+            &db,
+            "work-open-newer",
+            "member",
+            "open",
+            Some("draft"),
+            2,
+            false,
+            "2026-01-02T00:00:00.000Z",
+        )?;
+        let snapshot = db.agent_projection_snapshot_rows("member")?;
+        let row = snapshot.row.expect("member anchors");
+        assert_eq!(
+            row.current_work_item.expect("fallback anchor").work_item_id,
+            "work-open-newer"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn projection_snapshot_verification_degrades_on_unreadable_work_item_anchor() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        {
+            let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+            assert!(db.observer_sync_foundations()?.projection_snapshot_verified);
+            db.agent_identities().upsert(&agent_identity("member", 0))?;
+            insert_projection_work_item(
+                &db,
+                "work-corrupt",
+                "member",
+                "not-a-state",
+                Some("ready"),
+                1,
+                true,
+                "2026-01-01T00:00:00.000Z",
+            )?;
+        }
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let foundations = reopened.observer_sync_foundations()?;
+        assert!(!foundations.projection_snapshot_verified);
+        // The sibling capabilities keep their own verdicts.
+        assert!(foundations.roster_snapshot_verified);
+        assert!(foundations.runtime_identity_stable);
+        Ok(())
+    }
+
+    #[test]
+    fn projection_snapshot_verification_passes_for_healthy_database() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        db.agent_identities().upsert(&agent_identity("member", 0))?;
+        db.agent_states()
+            .upsert(&crate::types::AgentState::new("member"))?;
+        db.audit_events().append(
+            Some("member"),
+            &crate::types::AuditEvent::legacy("healthy", serde_json::json!({})),
+        )?;
+        insert_projection_work_item(
+            &db,
+            "work-healthy",
+            "member",
+            "open",
+            Some("needs_input"),
+            3,
+            true,
+            "2026-01-01T00:00:00.000Z",
+        )?;
+        assert!(db.observer_sync_foundations()?.projection_snapshot_verified);
+        Ok(())
+    }
+
     #[test]
     fn observer_sync_fresh_databases_mint_distinct_identity() -> Result<()> {
         let (_first_dir, first_path, first_lock) = temp_paths()?;

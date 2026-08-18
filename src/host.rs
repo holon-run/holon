@@ -98,6 +98,70 @@ pub(crate) struct AgentRosterLatestBriefData {
     pub preview: String,
 }
 
+/// Host-level per-Agent projection snapshot data assembled from one
+/// committed read view. The HTTP layer maps this onto the wire
+/// `AgentProjectionSnapshot` contract.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct AgentProjectionSnapshotData {
+    pub runtime_id: String,
+    pub event_log_epoch: String,
+    pub visibility_policy_generation: u64,
+    pub agent_id: String,
+    /// Consistency boundary: equals the per-Agent committed event head of
+    /// the same read view, because every display-affecting event family
+    /// commits its canonical record no later than its event.
+    pub snapshot_through_seq: u64,
+    pub event_head_seq: u64,
+    pub oldest_retained_seq: Option<u64>,
+    pub agent: AgentListEntry,
+    pub current_work_item: Option<AgentWorkItemAnchorData>,
+    pub conversation: ConversationRevisionAnchorsData,
+    pub latest_brief: Option<AgentRosterLatestBriefData>,
+    /// Records referenced by the projection and resolvable through the
+    /// per-family batch record APIs. Tombstones stay empty in v1: no
+    /// durable per-record deletion ledger exists for these families yet,
+    /// and absence is represented by the null anchors above.
+    pub hydration_references: Vec<AgentHydrationReferenceData>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct AgentWorkItemAnchorData {
+    pub work_item_id: String,
+    pub state: crate::types::WorkItemState,
+    pub plan_status: crate::types::WorkItemPlanStatus,
+    pub revision: u64,
+    pub updated_at: chrono::DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ConversationRevisionAnchorsData {
+    pub latest_message_id: Option<String>,
+    pub latest_transcript_entry_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct AgentHydrationReferenceData {
+    pub record_kind: ObserverSyncRecordKindData,
+    pub record_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ObserverSyncRecordKindData {
+    Message,
+    Brief,
+    TranscriptEntry,
+}
+
+fn work_item_state(value: &str) -> Result<crate::types::WorkItemState> {
+    serde_json::from_value(serde_json::Value::String(value.to_string()))
+        .map_err(|error| anyhow!("invalid work item state {value}: {error}"))
+}
+
+fn work_item_plan_status(value: &str) -> Result<crate::types::WorkItemPlanStatus> {
+    serde_json::from_value(serde_json::Value::String(value.to_string()))
+        .map_err(|error| anyhow!("invalid work item plan status {value}: {error}"))
+}
+
 /// Bounds a stored Brief preview to the roster contract's UTF-8 byte limit,
 /// cutting on a char boundary so the value stays valid UTF-8.
 fn brief_preview(preview: &Option<String>) -> String {
@@ -2335,6 +2399,133 @@ impl RuntimeHost {
             visibility_policy_generation: rows.visibility_policy_generation,
             agents,
         })
+    }
+
+    /// Per-Agent canonical projection snapshot data (S5) assembled from one
+    /// committed read view. Returns `None` when the Agent is not an active
+    /// public member, so unknown, private, and deleted identities stay
+    /// indistinguishable. Assembly is all-or-nothing: an unreadable anchor
+    /// fails the whole request instead of substituting placeholder facts.
+    pub(crate) fn agent_projection_snapshot(
+        &self,
+        agent_id: &str,
+    ) -> Result<Option<AgentProjectionSnapshotData>> {
+        let rows = self.runtime_db().agent_projection_snapshot_rows(agent_id)?;
+        let row = match rows.row {
+            Some(row) => row,
+            None => return Ok(None),
+        };
+        let identity: AgentIdentityRecord =
+            serde_json::from_str(&row.identity_json).map_err(|error| {
+                anyhow!(
+                    "unreadable projection identity payload for {}: {error}",
+                    row.agent_id
+                )
+            })?;
+        let agent_state = row
+            .agent_state_json
+            .as_deref()
+            .map(|payload| {
+                serde_json::from_str::<AgentState>(payload).map_err(|error| {
+                    anyhow!(
+                        "unreadable projection agent state payload for {}: {error}",
+                        row.agent_id
+                    )
+                })
+            })
+            .transpose()?;
+        let catalog = RuntimeModelCatalog::from_config(&self.config());
+        let agent = self.agent_list_entry_from_committed_state(&identity, agent_state, &catalog)?;
+        let current_work_item = row
+            .current_work_item
+            .map(|work_item| -> Result<AgentWorkItemAnchorData> {
+                Ok(AgentWorkItemAnchorData {
+                    work_item_id: work_item.work_item_id,
+                    state: work_item_state(&work_item.state)?,
+                    // A stored NULL is the pre-plan state; the wire anchor
+                    // is non-optional and maps it to the draft baseline.
+                    plan_status: work_item
+                        .plan_status
+                        .as_deref()
+                        .map(work_item_plan_status)
+                        .transpose()?
+                        .unwrap_or(crate::types::WorkItemPlanStatus::Draft),
+                    revision: u64::try_from(work_item.revision)
+                        .map_err(|_| anyhow!("negative work item revision for {}", row.agent_id))?,
+                    updated_at: chrono::DateTime::parse_from_rfc3339(&work_item.updated_at)
+                        .map(|parsed| parsed.with_timezone(&Utc))
+                        .map_err(|error| {
+                            anyhow!(
+                                "unreadable work item timestamp for {}: {error}",
+                                row.agent_id
+                            )
+                        })?,
+                })
+            })
+            .transpose()?;
+        let latest_brief = row
+            .latest_brief
+            .map(|brief| -> Result<AgentRosterLatestBriefData> {
+                Ok(AgentRosterLatestBriefData {
+                    brief_id: brief.brief_id,
+                    created_event_seq: brief
+                        .created_event_seq
+                        .map(|seq| {
+                            u64::try_from(seq).map_err(|_| {
+                                anyhow!("negative latest brief linkage for {}", row.agent_id)
+                            })
+                        })
+                        .transpose()?,
+                    created_at: chrono::DateTime::parse_from_rfc3339(&brief.created_at)
+                        .map(|parsed| parsed.with_timezone(&Utc))
+                        .map_err(|error| {
+                            anyhow!(
+                                "unreadable latest brief timestamp for {}: {error}",
+                                row.agent_id
+                            )
+                        })?,
+                    preview: brief_preview(&brief.preview),
+                })
+            })
+            .transpose()?;
+        // Hydration references mirror the anchors the projection itself
+        // names; each id resolves through the per-family batch record API.
+        let mut hydration_references = Vec::new();
+        if let Some(message_id) = row.latest_message_id.clone() {
+            hydration_references.push(AgentHydrationReferenceData {
+                record_kind: ObserverSyncRecordKindData::Message,
+                record_id: message_id,
+            });
+        }
+        if let Some(transcript_entry_id) = row.latest_transcript_entry_id.clone() {
+            hydration_references.push(AgentHydrationReferenceData {
+                record_kind: ObserverSyncRecordKindData::TranscriptEntry,
+                record_id: transcript_entry_id,
+            });
+        }
+        if let Some(brief) = latest_brief.as_ref() {
+            hydration_references.push(AgentHydrationReferenceData {
+                record_kind: ObserverSyncRecordKindData::Brief,
+                record_id: brief.brief_id.clone(),
+            });
+        }
+        Ok(Some(AgentProjectionSnapshotData {
+            runtime_id: rows.runtime_id,
+            event_log_epoch: rows.event_log_epoch,
+            visibility_policy_generation: rows.visibility_policy_generation,
+            agent_id: row.agent_id,
+            snapshot_through_seq: row.event_head_seq,
+            event_head_seq: row.event_head_seq,
+            oldest_retained_seq: row.oldest_retained_seq,
+            agent,
+            current_work_item,
+            conversation: ConversationRevisionAnchorsData {
+                latest_message_id: row.latest_message_id,
+                latest_transcript_entry_id: row.latest_transcript_entry_id,
+            },
+            latest_brief,
+            hydration_references,
+        }))
     }
 
     /// Builds one roster `AgentListEntry` from the committed identity and

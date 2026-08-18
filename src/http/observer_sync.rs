@@ -4,7 +4,8 @@
 //! `docs/rfcs/observer-sync-agent-summary-and-read-markers.md` (S0):
 //! snapshot DTOs, projection-effect classification, the rich cursor error
 //! shape, and the capability evaluator, plus the S4 roster snapshot
-//! handler. A capability is advertised only after its durable verification
+//! handler and the S5 per-Agent projection snapshot handler. A capability
+//! is advertised only after its durable verification
 //! succeeds, so route registration alone never serves a snapshot contract.
 
 use chrono::{DateTime, Utc};
@@ -12,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::diagnostics;
 use crate::types::{AgentListEntry, WorkItemPlanStatus, WorkItemState};
-use crate::{diagnostics, host::AgentRosterSnapshotData};
 // The projection-effect classification lives with the runtime event registry
 // (its source of truth); re-exported here to keep the S0 contract surface.
 use super::{
@@ -23,7 +24,7 @@ use super::{
 };
 #[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use crate::runtime_event::ProjectionEffect;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 
 pub(crate) const ROSTER_SNAPSHOT_CAPABILITY: &str = "agents.roster-snapshot.v1";
@@ -263,6 +264,28 @@ impl Default for RosterSnapshotLimits {
     }
 }
 
+/// First-version hard limits for one per-Agent projection snapshot
+/// response. A snapshot is one Agent's compact projection, so the byte
+/// budget is well below the roster's; the timeout bounds the committed
+/// read view plus assembly.
+pub(crate) const PROJECTION_SNAPSHOT_MAX_SERIALIZED_BYTES: usize = 1024 * 1024;
+pub(crate) const PROJECTION_SNAPSHOT_ASSEMBLY_TIMEOUT: Duration = Duration::from_secs(10);
+
+#[derive(Debug, Clone)]
+pub(crate) struct ProjectionSnapshotLimits {
+    pub max_serialized_bytes: usize,
+    pub timeout: Duration,
+}
+
+impl Default for ProjectionSnapshotLimits {
+    fn default() -> Self {
+        Self {
+            max_serialized_bytes: PROJECTION_SNAPSHOT_MAX_SERIALIZED_BYTES,
+            timeout: PROJECTION_SNAPSHOT_ASSEMBLY_TIMEOUT,
+        }
+    }
+}
+
 /// `GET /api/agents/snapshot`: the authoritative roster snapshot. The
 /// handler does authorization, the capability gate, hard limits, and
 /// serialization only; membership and anchors come from one committed
@@ -327,7 +350,11 @@ pub async fn agent_roster_snapshot(
                     .extension("max_agents", limits.max_agents),
                 )));
             }
-            let visibility_scope_id = roster_visibility_scope(&gate_state, &snapshot);
+            let visibility_scope_id = observer_visibility_scope(
+                &gate_state,
+                &snapshot.runtime_id,
+                snapshot.visibility_policy_generation,
+            );
             let snapshot = AgentRosterSnapshot {
                 contract_version: AGENT_ROSTER_SNAPSHOT_CONTRACT_VERSION,
                 runtime_id: snapshot.runtime_id,
@@ -382,7 +409,11 @@ pub async fn agent_roster_snapshot(
 /// read view plus the request's resolved authority mode. Credentials are
 /// never an input, so token rotation with unchanged entitlement keeps the
 /// scope stable.
-fn roster_visibility_scope(state: &AppState, snapshot: &AgentRosterSnapshotData) -> String {
+fn observer_visibility_scope(
+    state: &AppState,
+    runtime_id: &str,
+    visibility_policy_generation: u64,
+) -> String {
     let (principal, entitlement) = if state.require_control_token {
         (CONTROL_SCOPE_PRINCIPAL, CONTROL_SCOPE_ENTITLEMENT)
     } else {
@@ -392,11 +423,168 @@ fn roster_visibility_scope(state: &AppState, snapshot: &AgentRosterSnapshotData)
         )
     };
     crate::ids::visibility_scope_id(
-        &snapshot.runtime_id,
+        runtime_id,
         principal,
         entitlement,
-        snapshot.visibility_policy_generation,
+        visibility_policy_generation,
     )
+}
+
+/// `GET /api/agents/{agent_id}/projection-snapshot`: the per-Agent
+/// canonical projection snapshot at one committed consistency boundary.
+/// The handler does authorization, the capability gate, hard limits, and
+/// serialization only; every anchor comes from one committed database read
+/// view assembled by the host, and the boundary equals that view's
+/// per-Agent event head. Non-members answer with the same not-found shape
+/// whether unknown, private, or deleted, so no membership metadata leaks.
+pub async fn agent_projection_snapshot(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> AxumResponse {
+    let started_at = std::time::Instant::now();
+    if let Err(error) = authorize_remote_access(&headers, &state) {
+        return auth_required(error.to_string()).into_response();
+    }
+    let verification = load_observer_sync_verification(&state);
+    if !advertised_observer_sync_capabilities(&verification)
+        .contains(&PROJECTION_SNAPSHOT_CAPABILITY)
+    {
+        diagnostics::record_projection_snapshot_failure();
+        return http_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            HttpErrorEnvelope::new(
+                "the agents.projection-snapshot.v1 capability is not verified for this database",
+            )
+            .code("capability_unavailable")
+            .hint("see the handshake capabilities; route registration alone never serves this contract"),
+        )
+        .into_response();
+    }
+    let gate_state = Arc::clone(&state);
+    let boundary_agent_id = agent_id.clone();
+    let result = state
+        .projection_gate
+        .run(
+            ProjectionKey::AgentProjectionSnapshot(agent_id.clone()),
+            || async {
+                let limits = gate_state.projection_snapshot_limits.clone();
+                let host = gate_state.host.clone();
+                let snapshot = match tokio::time::timeout(
+                    limits.timeout,
+                    tokio::task::spawn_blocking(move || {
+                        host.agent_projection_snapshot(&boundary_agent_id)
+                    }),
+                )
+                .await
+                {
+                    Ok(joined) => joined
+                        .map_err(|error| ProjectionFailure::from(error_response(error.into())))?
+                        .map_err(|error| ProjectionFailure::from(error_response(error)))?,
+                    Err(_) => {
+                        return Err(ProjectionFailure::from(http_error(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            HttpErrorEnvelope::new(format!(
+                                "projection snapshot assembly exceeded the {} second budget",
+                                limits.timeout.as_secs(),
+                            ))
+                            .code("projection_snapshot_timeout")
+                            .retryable(true),
+                        )));
+                    }
+                };
+                let Some(snapshot) = snapshot else {
+                    // Unknown, private, and deleted identities share one
+                    // not-found shape: no runtime, epoch, or scope facts.
+                    return Err(ProjectionFailure::from(http_error(
+                        StatusCode::NOT_FOUND,
+                        HttpErrorEnvelope::new("no accessible Agent for this request")
+                            .code("agent_not_found"),
+                    )));
+                };
+                let visibility_scope_id = observer_visibility_scope(
+                    &gate_state,
+                    &snapshot.runtime_id,
+                    snapshot.visibility_policy_generation,
+                );
+                let snapshot = AgentProjectionSnapshot {
+                    contract_version: AGENT_PROJECTION_SNAPSHOT_CONTRACT_VERSION,
+                    runtime_id: snapshot.runtime_id,
+                    event_log_epoch: snapshot.event_log_epoch,
+                    visibility_scope_id,
+                    agent_id: snapshot.agent_id,
+                    snapshot_through_seq: snapshot.snapshot_through_seq,
+                    event_head_seq: snapshot.event_head_seq,
+                    oldest_retained_seq: snapshot.oldest_retained_seq,
+                    projection: AgentCanonicalProjection {
+                        agent: snapshot.agent,
+                        current_work_item: snapshot.current_work_item.map(|work_item| {
+                            AgentWorkItemAnchor {
+                                work_item_id: work_item.work_item_id,
+                                state: work_item.state,
+                                plan_status: work_item.plan_status,
+                                revision: work_item.revision,
+                                updated_at: work_item.updated_at,
+                            }
+                        }),
+                        conversation: ConversationRevisionAnchors {
+                            latest_message_id: snapshot.conversation.latest_message_id,
+                            latest_transcript_entry_id: snapshot
+                                .conversation
+                                .latest_transcript_entry_id,
+                        },
+                        latest_brief: snapshot.latest_brief.map(|brief| AgentLatestBrief {
+                            brief_id: brief.brief_id,
+                            created_event_seq: brief.created_event_seq,
+                            created_at: brief.created_at,
+                            preview: brief.preview,
+                        }),
+                        hydration_tombstones: Vec::new(),
+                        hydration_references: snapshot
+                            .hydration_references
+                            .into_iter()
+                            .map(|reference| AgentHydrationKey {
+                                record_kind: match reference.record_kind {
+                                    crate::host::ObserverSyncRecordKindData::Message => {
+                                        ObserverSyncRecordKind::Message
+                                    }
+                                    crate::host::ObserverSyncRecordKindData::Brief => {
+                                        ObserverSyncRecordKind::Brief
+                                    }
+                                    crate::host::ObserverSyncRecordKindData::TranscriptEntry => {
+                                        ObserverSyncRecordKind::TranscriptEntry
+                                    }
+                                },
+                                record_id: reference.record_id,
+                            })
+                            .collect(),
+                    },
+                };
+                let bytes = serialize_json("/agents/{agent_id}/projection-snapshot", &snapshot)
+                    .map_err(ProjectionFailure::from)?;
+                if bytes.len() > limits.max_serialized_bytes {
+                    return Err(ProjectionFailure::from(http_error(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        HttpErrorEnvelope::new(
+                            "projection snapshot exceeds the maximum serialized response size",
+                        )
+                        .code("projection_snapshot_too_large")
+                        .extension("serialized_bytes", bytes.len())
+                        .extension("max_serialized_bytes", limits.max_serialized_bytes),
+                    )));
+                }
+                diagnostics::record_projection_snapshot(started_at.elapsed(), bytes.len());
+                Ok(bytes)
+            },
+        )
+        .await;
+    match result {
+        Ok(bytes) => traced_json_bytes("/agents/{agent_id}/projection-snapshot", started_at, bytes),
+        Err(error) => {
+            diagnostics::record_projection_snapshot_failure();
+            projection_gate_error_response(error)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -542,9 +730,9 @@ mod tests {
             assert!(schemas.contains_key(name), "missing schema {name}");
         }
         let paths = api["paths"].as_object().unwrap();
-        // S4 registers the roster snapshot route; projection snapshots stay
-        // unregistered until S5. Route existence still must never be
-        // mistaken for capability support: the handler gates on durable
+        // S4 registers the roster snapshot route and S5 the per-Agent
+        // projection snapshot route. Route existence still must never be
+        // mistaken for capability support: the handlers gate on durable
         // verification.
         assert!(paths.contains_key("/api/agents/snapshot"));
         assert_eq!(
@@ -552,7 +740,12 @@ mod tests {
                 ["schema"]["$ref"],
             "#/components/schemas/AgentRosterSnapshot"
         );
-        assert!(!paths.contains_key("/api/agents/{agent_id}/projection-snapshot"));
+        assert!(paths.contains_key("/api/agents/{agent_id}/projection-snapshot"));
+        assert_eq!(
+            paths["/api/agents/{agent_id}/projection-snapshot"]["get"]["responses"]["200"]
+                ["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/AgentProjectionSnapshot"
+        );
     }
 
     fn assert_brief_preview_bounded(latest_brief: Option<&AgentLatestBrief>) {
@@ -792,6 +985,346 @@ mod tests {
                 .collect();
             assert!(ids.contains(&"web"));
             assert!(!ids.contains(&"child-secret"));
+        }
+    }
+
+    mod projection_http_tests {
+        use super::super::*;
+        use crate::{
+            config::AppConfig,
+            host::RuntimeHost,
+            provider::StubProvider,
+            types::{
+                AgentIdentityRecord, AgentKind, AgentOwnership, AgentProfilePreset, AgentVisibility,
+            },
+        };
+        use axum::{
+            body::{to_bytes, Body},
+            http::{Request, StatusCode},
+        };
+        use std::sync::Arc;
+        use tower::ServiceExt;
+
+        async fn projection_test_host() -> (tempfile::TempDir, RuntimeHost) {
+            let home = tempfile::tempdir().unwrap();
+            std::fs::write(
+                home.path().join("config.json"),
+                r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+            )
+            .unwrap();
+            let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+            let host = RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done")))
+                .unwrap();
+            host.create_named_agent("web", None).await.unwrap();
+            (home, host)
+        }
+
+        async fn get_projection_snapshot(
+            state: AppState,
+            agent_id: &str,
+        ) -> (StatusCode, serde_json::Value) {
+            let app = crate::http::router(state);
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri(format!("/api/agents/{agent_id}/projection-snapshot"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let value = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+            (status, value)
+        }
+
+        #[tokio::test]
+        async fn projection_snapshot_serves_anchors_at_one_boundary() {
+            let (_home, host) = projection_test_host().await;
+            let mut work_item_record = crate::types::WorkItemRecord::new(
+                "web",
+                "objective",
+                crate::types::WorkItemState::Open,
+            );
+            work_item_record.id = "work-http".to_string();
+            work_item_record.revision = 7;
+            work_item_record.plan_status = crate::types::WorkItemPlanStatus::Ready;
+            let work_item_payload = serde_json::to_string(&work_item_record).unwrap();
+            let connection = host.runtime_db().connection().unwrap();
+            connection
+                .execute(
+                    "INSERT INTO work_items (
+                        work_item_id, agent_id, state, objective, plan_status, revision,
+                        current_focus, created_at, updated_at, payload_json
+                     ) VALUES (
+                        'work-http', 'web', 'open', 'objective', 'ready', 7, 1,
+                        '2026-02-01T00:00:00.000Z', '2026-02-02T00:00:00.000Z', ?1)",
+                    [&work_item_payload],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO messages (
+                        evidence_id, agent_id, created_at, kind, payload_json
+                     ) VALUES ('msg-http', 'web', '2026-02-01T00:00:00.000Z', 'operator_prompt', '{}')",
+                    [],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO transcript_entries (
+                        evidence_id, agent_id, created_at, kind, payload_json
+                     ) VALUES ('te-http', 'web', '2026-02-01T00:00:00.000Z', 'assistant', '{}')",
+                    [],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO briefs (
+                        evidence_id, agent_id, created_event_seq, created_at, kind, preview, payload_json
+                     ) VALUES ('brief-http', 'web', 1, '2026-02-01T00:00:00.000Z', 'result', 'preview', '{}')",
+                    [],
+                )
+                .unwrap();
+            drop(connection);
+            host.runtime_db()
+                .audit_events()
+                .append(
+                    Some("web"),
+                    &crate::types::AuditEvent::legacy(
+                        "projection_http_event",
+                        serde_json::json!({ "index": 1 }),
+                    ),
+                )
+                .unwrap();
+            host.runtime_db()
+                .audit_events()
+                .append(
+                    Some("web"),
+                    &crate::types::AuditEvent::legacy(
+                        "projection_http_event",
+                        serde_json::json!({ "index": 2 }),
+                    ),
+                )
+                .unwrap();
+
+            let (status, body) = get_projection_snapshot(AppState::for_tcp(host), "web").await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body["contract_version"], 1);
+            assert_eq!(body["agent_id"], "web");
+            let head = body["event_head_seq"].as_u64().unwrap();
+            assert!(head >= 2);
+            // One committed view: the boundary equals the head it read.
+            assert_eq!(body["snapshot_through_seq"].as_u64().unwrap(), head);
+            assert_eq!(body["oldest_retained_seq"].as_u64().unwrap_or(1), 1);
+            assert!(body["visibility_scope_id"]
+                .as_str()
+                .is_some_and(|scope| scope.starts_with("vscope1_")));
+            let projection = &body["projection"];
+            assert_eq!(projection["agent"]["identity"]["agent_id"], "web");
+            let work_item = &projection["current_work_item"];
+            assert_eq!(work_item["work_item_id"], "work-http");
+            assert_eq!(work_item["state"], "open");
+            assert_eq!(work_item["plan_status"], "ready");
+            assert_eq!(work_item["revision"], 7);
+            assert_eq!(projection["conversation"]["latest_message_id"], "msg-http");
+            assert_eq!(
+                projection["conversation"]["latest_transcript_entry_id"],
+                "te-http"
+            );
+            assert_eq!(projection["latest_brief"]["brief_id"], "brief-http");
+            assert_eq!(
+                projection["latest_brief"]["created_event_seq"],
+                serde_json::json!(1)
+            );
+            let references = projection["hydration_references"]
+                .as_array()
+                .expect("hydration references");
+            let keyed: Vec<(String, String)> = references
+                .iter()
+                .map(|reference| {
+                    (
+                        reference["record_kind"].as_str().unwrap().to_string(),
+                        reference["record_id"].as_str().unwrap().to_string(),
+                    )
+                })
+                .collect();
+            assert!(keyed.contains(&("message".into(), "msg-http".into())));
+            assert!(keyed.contains(&("transcript_entry".into(), "te-http".into())));
+            assert!(keyed.contains(&("brief".into(), "brief-http".into())));
+            assert_eq!(
+                projection["hydration_tombstones"].as_array().map(Vec::len),
+                Some(0)
+            );
+        }
+
+        #[tokio::test]
+        async fn projection_snapshot_replays_only_events_after_boundary() {
+            let (_home, host) = projection_test_host().await;
+            // Identity-only membership: no runtime activation, so the only
+            // events for this Agent are the ones appended below.
+            host.runtime_db()
+                .agent_identities()
+                .upsert(&crate::types::AgentIdentityRecord::new(
+                    "quiet",
+                    crate::types::AgentKind::Named,
+                    crate::types::AgentVisibility::Public,
+                    crate::types::AgentOwnership::SelfOwned,
+                    crate::types::AgentProfilePreset::PublicNamed,
+                    None,
+                    None,
+                ))
+                .unwrap();
+            host.runtime_db()
+                .audit_events()
+                .append(
+                    Some("quiet"),
+                    &crate::types::AuditEvent::legacy("before_boundary", serde_json::json!({})),
+                )
+                .unwrap();
+            let (status, body) =
+                get_projection_snapshot(AppState::for_tcp(host.clone()), "quiet").await;
+            assert_eq!(status, StatusCode::OK);
+            let boundary = body["snapshot_through_seq"].as_u64().unwrap();
+            let replayable: i64 = host
+                .runtime_db()
+                .connection()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM audit_events WHERE agent_id = 'quiet' AND event_seq <= ?1",
+                    [boundary as i64],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(replayable, boundary as i64);
+            // A later event stays readable through the raw page cursor.
+            host.runtime_db()
+                .audit_events()
+                .append(
+                    Some("quiet"),
+                    &crate::types::AuditEvent::legacy("after_boundary", serde_json::json!({})),
+                )
+                .unwrap();
+            let after: i64 = host
+                .runtime_db()
+                .connection()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM audit_events WHERE agent_id = 'quiet' AND event_seq > ?1",
+                    [boundary as i64],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(after, 1);
+        }
+
+        #[tokio::test]
+        async fn projection_snapshot_authorizes_before_serving() {
+            let (_home, host) = projection_test_host().await;
+            let mut state = AppState::for_tcp(host);
+            state.require_control_token = true;
+            let (status, body) = get_projection_snapshot(state, "web").await;
+            assert_eq!(status, StatusCode::FORBIDDEN);
+            assert_eq!(body["code"], "auth_required");
+            assert!(body.get("projection").is_none());
+            assert!(body.get("runtime_id").is_none());
+        }
+
+        #[tokio::test]
+        async fn projection_snapshot_gates_on_durable_capability_verification() {
+            let (_home, host) = projection_test_host().await;
+            let (status, _body) =
+                get_projection_snapshot(AppState::for_tcp(host.clone()), "web").await;
+            assert_eq!(status, StatusCode::OK);
+            host.runtime_db()
+                .connection()
+                .unwrap()
+                .execute(
+                    "UPDATE observer_sync_capability_verifications
+                     SET verified = 0 WHERE capability = 'projection_snapshot_verified'",
+                    [],
+                )
+                .unwrap();
+            let (status, body) = get_projection_snapshot(AppState::for_tcp(host), "web").await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(body["code"], "capability_unavailable");
+            assert!(body.get("projection").is_none());
+        }
+
+        #[tokio::test]
+        async fn projection_snapshot_not_found_shape_hides_membership() {
+            let (_home, host) = projection_test_host().await;
+            let mut private = AgentIdentityRecord::new(
+                "child-secret",
+                AgentKind::Child,
+                AgentVisibility::Private,
+                AgentOwnership::ParentSupervised,
+                AgentProfilePreset::PrivateChild,
+                Some("web".into()),
+                None,
+            );
+            private.status = crate::types::AgentRegistryStatus::Active;
+            host.runtime_db()
+                .agent_identities()
+                .upsert(&private)
+                .unwrap();
+            host.runtime_db()
+                .audit_events()
+                .append(
+                    Some("child-secret"),
+                    &crate::types::AuditEvent::legacy(
+                        "private_child_event",
+                        serde_json::json!({ "secret": true }),
+                    ),
+                )
+                .unwrap();
+
+            let (unknown_status, unknown_body) =
+                get_projection_snapshot(AppState::for_tcp(host.clone()), "never-existed").await;
+            assert_eq!(unknown_status, StatusCode::NOT_FOUND);
+            assert_eq!(unknown_body["code"], "agent_not_found");
+            // The not-found shape carries no runtime, epoch, or scope facts.
+            assert!(unknown_body.get("runtime_id").is_none());
+            assert!(unknown_body.get("event_log_epoch").is_none());
+            assert!(unknown_body.get("visibility_scope_id").is_none());
+
+            let (private_status, private_body) =
+                get_projection_snapshot(AppState::for_tcp(host), "child-secret").await;
+            assert_eq!(private_status, unknown_status);
+            assert_eq!(private_body["code"], unknown_body["code"]);
+            assert_eq!(private_body["error"], unknown_body["error"]);
+        }
+
+        #[tokio::test]
+        async fn projection_snapshot_serialized_size_limit_rejects_response() {
+            let (_home, host) = projection_test_host().await;
+            let mut state = AppState::for_tcp(host);
+            state.projection_snapshot_limits.max_serialized_bytes = 16;
+            let (status, body) = get_projection_snapshot(state, "web").await;
+            assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+            assert_eq!(body["code"], "projection_snapshot_too_large");
+            assert!(body.get("projection").is_none());
+        }
+
+        #[tokio::test]
+        async fn projection_snapshot_assembly_failure_fails_whole_response() {
+            let (_home, host) = projection_test_host().await;
+            host.runtime_db()
+                .connection()
+                .unwrap()
+                .execute(
+                    "UPDATE agent_states SET payload_json = '{not json' WHERE agent_id = 'web'",
+                    [],
+                )
+                .unwrap();
+            let (status, body) = get_projection_snapshot(AppState::for_tcp(host), "web").await;
+            assert!(status.is_server_error(), "unexpected status {status}");
+            assert_eq!(body["ok"], false);
+            // All-or-nothing: no partial projection is ever serialized.
+            assert!(body.get("projection").is_none());
+            assert!(body.get("runtime_id").is_none());
         }
     }
 }

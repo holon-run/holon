@@ -89,6 +89,9 @@ static ROSTER_SNAPSHOT_ASSEMBLY: MetricAccumulator =
     MetricAccumulator::new("observer_sync.roster_snapshot.assembly");
 static ROSTER_SNAPSHOT_MEMBER_ROWS: AtomicU64 = AtomicU64::new(0);
 static ROSTER_SNAPSHOT_FAILURES: AtomicU64 = AtomicU64::new(0);
+static PROJECTION_SNAPSHOT_ASSEMBLY: MetricAccumulator =
+    MetricAccumulator::new("observer_sync.projection_snapshot.assembly");
+static PROJECTION_SNAPSHOT_FAILURES: AtomicU64 = AtomicU64::new(0);
 static PROJECTION_GATE_LEADERS: AtomicU64 = AtomicU64::new(0);
 static PROJECTION_GATE_JOINED_WAITERS: AtomicU64 = AtomicU64::new(0);
 static PROJECTION_GATE_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
@@ -393,6 +396,23 @@ pub fn record_roster_snapshot(elapsed: Duration, agent_count: usize, bytes: usiz
 pub fn record_roster_snapshot_failure() {
     process_started_at();
     ROSTER_SNAPSHOT_FAILURES.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Records one successful per-Agent projection snapshot assembly:
+/// wall-clock duration of the committed read view plus assembly, and the
+/// serialized response size.
+pub fn record_projection_snapshot(elapsed: Duration, bytes: usize) {
+    process_started_at();
+    PROJECTION_SNAPSHOT_ASSEMBLY.record(elapsed, Some(bytes));
+}
+
+/// Records one projection snapshot request that ended without a response
+/// body: capability off, not-found, limit exceeded, timeout, or an
+/// all-or-nothing assembly failure. Counts only; agent identities are
+/// never recorded.
+pub fn record_projection_snapshot_failure() {
+    process_started_at();
+    PROJECTION_SNAPSHOT_FAILURES.fetch_add(1, Ordering::Relaxed);
 }
 
 pub fn record_projection_gate_cache_hit() {

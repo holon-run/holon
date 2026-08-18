@@ -165,6 +165,7 @@ pub(crate) fn load_observer_sync_verification(
             verification.runtime_identity_stable = foundations.runtime_identity_stable;
             verification.agent_identity_reserved = foundations.agent_identity_reserved;
             verification.roster_snapshot_verified = foundations.roster_snapshot_verified;
+            verification.projection_snapshot_verified = foundations.projection_snapshot_verified;
             verification.event_projection_effect_complete =
                 foundations.event_projection_effect_complete;
             verification.brief_atomic_linkage_verified = foundations.brief_atomic_linkage_verified;

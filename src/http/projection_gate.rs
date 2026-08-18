@@ -20,6 +20,7 @@ const DEFAULT_TTL: Duration = Duration::from_millis(250);
 pub(crate) enum ProjectionKey {
     AgentsList,
     AgentsRosterSnapshot,
+    AgentProjectionSnapshot(String),
     AgentState(String),
 }
 

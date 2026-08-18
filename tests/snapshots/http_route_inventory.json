@@ -208,6 +208,28 @@
   },
   {
     "method": "get",
+    "path": "/api/agents/{agent_id}/projection-snapshot",
+    "handler": "agent_projection_snapshot",
+    "operation_id": "agentProjectionSnapshot",
+    "tag": "agents",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
     "path": "/api/agents/{agent_id}/skills",
     "handler": "list_skills",
     "operation_id": "agentSkills",

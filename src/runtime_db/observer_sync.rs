@@ -22,6 +22,7 @@ pub(crate) const AGENT_IDENTITY_RESERVED: &str = "agent_identity_reserved";
 pub(crate) const EVENT_PROJECTION_EFFECT_COMPLETE: &str = "event_projection_effect_complete";
 pub(crate) const BRIEF_ATOMIC_LINKAGE_VERIFIED: &str = "brief_atomic_linkage_verified";
 pub(crate) const ROSTER_SNAPSHOT_VERIFIED: &str = "roster_snapshot_verified";
+pub(crate) const PROJECTION_SNAPSHOT_VERIFIED: &str = "projection_snapshot_verified";
 
 /// Principal and entitlement used to derive the runtime-local public scope
 /// for unauthenticated local mode.
@@ -67,6 +68,59 @@ pub struct AgentRosterLatestBriefRow {
     pub preview: Option<String>,
 }
 
+/// Per-Agent canonical projection anchors captured inside one committed
+/// database read view. Every field comes from the same view, so a response
+/// built from this struct never mixes facts from different commits.
+/// Runtime identity metadata is read by the caller inside the same
+/// transaction and returned alongside.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AgentProjectionSnapshotRows {
+    pub runtime_id: String,
+    pub event_log_epoch: String,
+    pub visibility_policy_generation: u64,
+    /// `None` when the Agent is not an active public member: unknown,
+    /// private, or deleted identities are indistinguishable by design.
+    pub row: Option<AgentProjectionSnapshotRow>,
+}
+
+/// Per-Agent projection anchor row. `event_head_seq` doubles as the
+/// snapshot boundary because every display-affecting event family commits
+/// its canonical record no later than its event, so a committed view that
+/// contains the event also contains the record it describes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AgentProjectionSnapshotRow {
+    pub agent_id: String,
+    pub identity_json: String,
+    /// Committed AgentState payload; `None` while the identity has no
+    /// persisted state yet (stopped placeholder semantics).
+    pub agent_state_json: Option<String>,
+    /// Greatest committed `event_seq` for the Agent in this view.
+    pub event_head_seq: u64,
+    pub oldest_retained_seq: Option<u64>,
+    /// Current focused WorkItem, or the most recently updated open one.
+    pub current_work_item: Option<AgentProjectionWorkItemRow>,
+    /// Latest message record id resolvable through the batch API.
+    pub latest_message_id: Option<String>,
+    /// Latest transcript entry id resolvable through the batch API.
+    pub latest_transcript_entry_id: Option<String>,
+    pub latest_brief: Option<AgentRosterLatestBriefRow>,
+}
+
+/// Current WorkItem anchor row kept in wire-neutral form: `state`,
+/// `plan_status`, `revision`, and `updated_at` stay as stored text so an
+/// unparsable value fails assembly (all-or-nothing) instead of being
+/// silently replaced.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AgentProjectionWorkItemRow {
+    pub work_item_id: String,
+    pub state: String,
+    pub plan_status: Option<String>,
+    /// Raw stored revision; conversion to `u64` happens at assembly so a
+    /// corrupt value fails the whole snapshot.
+    pub revision: i64,
+    pub updated_at: String,
+}
+
 /// Verification rows for the two S1 foundations. The S2-S5 verification
 /// families stay absent (and therefore false) until their slices land.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -77,6 +131,11 @@ pub struct ObserverSyncFoundationVerification {
     /// membership row's identity, committed state, event window, and latest
     /// Brief anchor parse and satisfy their structural invariants.
     pub roster_snapshot_verified: bool,
+    /// The per-Agent projection snapshot read boundary assembles for this
+    /// database: membership, committed state, event window, current
+    /// WorkItem anchor, conversation anchors, and latest Brief all parse
+    /// and satisfy their structural invariants inside one read view.
+    pub projection_snapshot_verified: bool,
     /// Every stored audit event classifies soundly for the additive
     /// `projection_effect` envelope field: registry-known kinds match their
     /// declared payload schema, and unknown kinds carry legacy markers.
@@ -271,6 +330,22 @@ pub(crate) fn verify_observer_sync_foundations(connection: &mut Connection) -> R
         &now,
         &roster_detail,
     )?;
+    let projection = verify_projection_snapshot_view(connection);
+    let projection_detail = match &projection {
+        Ok(verified) => serde_json::json!({
+            "verified": verified,
+            "boundary_rule": "event_head_seq",
+        })
+        .to_string(),
+        Err(error) => serde_json::json!({ "error": format!("{error:#}") }).to_string(),
+    };
+    persist_verification(
+        connection,
+        PROJECTION_SNAPSHOT_VERIFIED,
+        projection.unwrap_or(false),
+        &now,
+        &projection_detail,
+    )?;
     Ok(())
 }
 
@@ -306,6 +381,226 @@ fn verify_roster_snapshot_view(connection: &Connection) -> Result<bool> {
         );
     }
     Ok(true)
+}
+
+/// Proves the per-Agent projection snapshot read boundary is assemblable
+/// and sound for this database: every active public member's projection
+/// anchors parse (identity, committed state, current WorkItem, latest
+/// Brief) and event windows are ordered. A row that cannot assemble would
+/// fail a whole snapshot response, so the capability degrades instead.
+fn verify_projection_snapshot_view(connection: &Connection) -> Result<bool> {
+    for table in [
+        "agent_identities",
+        "agent_states",
+        "audit_events",
+        "briefs",
+        "work_items",
+        "messages",
+        "transcript_entries",
+    ] {
+        if !table_exists(connection, table)? {
+            return Ok(false);
+        }
+    }
+    let snapshot = collect_agent_roster_rows(connection)?;
+    for roster_row in &snapshot.rows {
+        let rows = collect_agent_projection_anchors(connection, &roster_row.agent_id)?;
+        let Some(row) = rows.row else {
+            // Membership cannot change between the two collects on one
+            // connection; treat absence as a failed verification.
+            anyhow::bail!(
+                "projection snapshot member {} disappeared inside one read view",
+                roster_row.agent_id
+            );
+        };
+        serde_json::from_str::<AgentIdentityRecord>(&row.identity_json).with_context(|| {
+            format!(
+                "unreadable projection identity payload for {}",
+                row.agent_id
+            )
+        })?;
+        if let Some(state_json) = row.agent_state_json.as_deref() {
+            serde_json::from_str::<crate::types::AgentState>(state_json).with_context(|| {
+                format!(
+                    "unreadable projection agent state payload for {}",
+                    row.agent_id
+                )
+            })?;
+        }
+        if let Some(work_item) = row.current_work_item.as_ref() {
+            parse_work_item_state(&work_item.state)
+                .with_context(|| format!("unreadable work item state for {}", row.agent_id))?;
+            if let Some(plan_status) = work_item.plan_status.as_deref() {
+                parse_work_item_plan_status(plan_status).with_context(|| {
+                    format!("unreadable work item plan status for {}", row.agent_id)
+                })?;
+            }
+            anyhow::ensure!(
+                work_item.revision >= 0,
+                "negative work item revision for {}",
+                row.agent_id
+            );
+            chrono_datetime(&work_item.updated_at)
+                .with_context(|| format!("unreadable work item timestamp for {}", row.agent_id))?;
+        }
+        if let Some(brief) = row.latest_brief.as_ref() {
+            chrono_datetime(&brief.created_at).with_context(|| {
+                format!("unreadable latest brief timestamp for {}", row.agent_id)
+            })?;
+        }
+        anyhow::ensure!(
+            row.event_head_seq >= row.oldest_retained_seq.unwrap_or(0),
+            "projection event window for {} is inverted",
+            row.agent_id
+        );
+    }
+    Ok(true)
+}
+
+fn parse_work_item_state(value: &str) -> Result<crate::types::WorkItemState> {
+    serde_json::from_value(serde_json::Value::String(value.to_string()))
+        .with_context(|| format!("invalid work item state {value}"))
+}
+
+fn parse_work_item_plan_status(value: &str) -> Result<crate::types::WorkItemPlanStatus> {
+    serde_json::from_value(serde_json::Value::String(value.to_string()))
+        .with_context(|| format!("invalid work item plan status {value}"))
+}
+
+/// Collects one Agent's canonical projection anchors from one connection.
+/// The caller decides the transaction boundary; the snapshot read path
+/// wraps this plus the runtime identity metadata in one deferred read
+/// transaction so the response forms a single committed view.
+///
+/// Returns `row: None` when the Agent is not an active public member, so
+/// unknown, private-child, and deleted identities stay indistinguishable
+/// to callers and no membership metadata leaks through the endpoint.
+fn collect_agent_projection_anchors(
+    connection: &Connection,
+    agent_id: &str,
+) -> Result<AgentProjectionSnapshotRows> {
+    let runtime_id = read_metadata(connection, "runtime_id")?;
+    let event_log_epoch = read_metadata(connection, "event_log_epoch")?;
+    let visibility_policy_generation: u64 =
+        read_metadata(connection, "visibility_policy_generation")?
+            .parse()
+            .context("invalid visibility policy generation")?;
+
+    let membership = connection
+        .query_row(
+            "SELECT i.payload_json,
+                    (SELECT s.payload_json FROM agent_states s WHERE s.agent_id = i.agent_id)
+             FROM agent_identities i
+             WHERE i.agent_id = ?1 AND i.status = 'active' AND i.visibility = 'public'",
+            [agent_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        )
+        .optional()?;
+    let Some((identity_json, agent_state_json)) = membership else {
+        return Ok(AgentProjectionSnapshotRows {
+            runtime_id,
+            event_log_epoch,
+            visibility_policy_generation,
+            row: None,
+        });
+    };
+
+    let (oldest, head): (Option<i64>, Option<i64>) = connection.query_row(
+        "SELECT (SELECT MIN(event_seq) FROM audit_events WHERE agent_id = ?1),
+                (SELECT MAX(event_seq) FROM audit_events WHERE agent_id = ?1)",
+        [agent_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let to_seq = |value: Option<i64>| -> Result<Option<u64>> {
+        value
+            .map(|seq| u64::try_from(seq).context("stored audit event sequence is negative"))
+            .transpose()
+    };
+
+    // Current WorkItem anchor: the focused row wins; without focus the
+    // most recently updated open WorkItem keeps the card meaningful. Both
+    // orders are deterministic on ties via work_item_id.
+    let current_work_item = connection
+        .query_row(
+            "SELECT work_item_id, state, plan_status, revision, updated_at FROM work_items
+             WHERE agent_id = ?1 AND current_focus = 1
+             ORDER BY updated_at DESC, work_item_id DESC LIMIT 1",
+            [agent_id],
+            work_item_anchor_row,
+        )
+        .optional()?;
+    let current_work_item = match current_work_item {
+        Some(row) => Some(row),
+        None => connection
+            .query_row(
+                "SELECT work_item_id, state, plan_status, revision, updated_at FROM work_items
+                 WHERE agent_id = ?1 AND state = 'open'
+                 ORDER BY updated_at DESC, work_item_id DESC LIMIT 1",
+                [agent_id],
+                work_item_anchor_row,
+            )
+            .optional()?,
+    };
+
+    let latest_message_id: Option<String> = connection
+        .query_row(
+            "SELECT evidence_id FROM messages WHERE agent_id = ?1
+             ORDER BY created_at DESC, evidence_id DESC LIMIT 1",
+            [agent_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let latest_transcript_entry_id: Option<String> = connection
+        .query_row(
+            "SELECT evidence_id FROM transcript_entries WHERE agent_id = ?1
+             ORDER BY created_at DESC, evidence_id DESC LIMIT 1",
+            [agent_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let latest_brief = connection
+        .query_row(
+            "SELECT evidence_id, created_event_seq, created_at, preview FROM briefs
+             WHERE agent_id = ?1
+             ORDER BY created_at DESC, evidence_id DESC LIMIT 1",
+            [agent_id],
+            |row| {
+                Ok(AgentRosterLatestBriefRow {
+                    brief_id: row.get(0)?,
+                    created_event_seq: row.get(1)?,
+                    created_at: row.get(2)?,
+                    preview: row.get(3)?,
+                })
+            },
+        )
+        .optional()?;
+
+    Ok(AgentProjectionSnapshotRows {
+        runtime_id,
+        event_log_epoch,
+        visibility_policy_generation,
+        row: Some(AgentProjectionSnapshotRow {
+            agent_id: agent_id.to_string(),
+            identity_json,
+            agent_state_json,
+            event_head_seq: to_seq(head)?.unwrap_or(0),
+            oldest_retained_seq: to_seq(oldest)?,
+            current_work_item,
+            latest_message_id,
+            latest_transcript_entry_id,
+            latest_brief,
+        }),
+    })
+}
+
+fn work_item_anchor_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentProjectionWorkItemRow> {
+    Ok(AgentProjectionWorkItemRow {
+        work_item_id: row.get(0)?,
+        state: row.get(1)?,
+        plan_status: row.get(2)?,
+        revision: row.get(3)?,
+        updated_at: row.get(4)?,
+    })
 }
 
 /// Parses a stored RFC 3339 timestamp into a UTC datetime.
@@ -682,6 +977,7 @@ impl crate::runtime_db::RuntimeDb {
             runtime_identity_stable: verified(RUNTIME_IDENTITY_STABLE)?,
             agent_identity_reserved: verified(AGENT_IDENTITY_RESERVED)?,
             roster_snapshot_verified: verified(ROSTER_SNAPSHOT_VERIFIED)?,
+            projection_snapshot_verified: verified(PROJECTION_SNAPSHOT_VERIFIED)?,
             event_projection_effect_complete: verified(EVENT_PROJECTION_EFFECT_COMPLETE)?,
             brief_atomic_linkage_verified: verified(BRIEF_ATOMIC_LINKAGE_VERIFIED)?,
         })
@@ -695,6 +991,23 @@ impl crate::runtime_db::RuntimeDb {
         let mut connection = self.connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
         let rows = collect_agent_roster_rows(&transaction)?;
+        transaction.commit()?;
+        Ok(rows)
+    }
+
+    /// Reads one Agent's canonical projection anchors — membership,
+    /// committed state, event window, current WorkItem, conversation
+    /// anchors, and latest Brief — plus the runtime identity metadata
+    /// inside one deferred read transaction, so all values share one
+    /// committed database view and the boundary equals that view's
+    /// per-Agent event head.
+    pub fn agent_projection_snapshot_rows(
+        &self,
+        agent_id: &str,
+    ) -> Result<AgentProjectionSnapshotRows> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+        let rows = collect_agent_projection_anchors(&transaction, agent_id)?;
         transaction.commit()?;
         Ok(rows)
     }
