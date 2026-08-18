@@ -24,6 +24,8 @@ jobs:
     env:
       RELEASE_VERSION: ${{ inputs.version || 'v0.13.0' }}
     steps:
+      - uses: actions/checkout@v4
+
       - name: Download release asset
         run: |
           set -euo pipefail
@@ -48,4 +50,4 @@ jobs:
           expected="${RELEASE_VERSION#v}"
           actual="$(./smoke/holon --version)"
           echo "$actual"
-          test "$actual" = "holon ${expected}"
+          scripts/verify-release-version.sh "$expected" "$actual"
