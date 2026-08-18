@@ -140,6 +140,10 @@ pub async fn events_stream(
     }
     let mut live_rx = state.host.subscribe_events();
     let event_log_epoch = storage.event_log_epoch().map_err(error_response)?;
+    // Capability advertisement is captured once at stream open and applies
+    // to every event in the stream: the underlying verification only
+    // changes on migration/restart, and a lagging stream is closed instead
+    // of being resumed with different emission semantics mid-stream.
     let emit_projection_effect = projection_effect_emission_enabled(&state);
     let recovery_window = storage
         .agent_event_recovery_window()

@@ -395,14 +395,31 @@ impl crate::runtime_db::RuntimeDb {
         agent_id: Option<&str>,
     ) -> Result<AgentEventRecoveryWindow> {
         let connection = self.connection()?;
-        let (epoch, oldest, head): (String, Option<i64>, Option<i64>) = connection.query_row(
-            "SELECT
-                (SELECT value FROM runtime_metadata WHERE key = 'event_log_epoch'),
-                (SELECT MIN(event_seq) FROM audit_events WHERE agent_id = ?1),
-                (SELECT MAX(event_seq) FROM audit_events WHERE agent_id = ?1)",
-            [agent_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )?;
+        // Scoped storages read their own agent rows while unscoped storages
+        // read the runtime-level rows (`agent_id IS NULL`), matching the
+        // retention queries. A plain `agent_id = ?1` would silently match no
+        // rows for a NULL scope; folding both cases into one
+        // `OR (?1 IS NULL ...)` predicate would defeat the index seek that
+        // backs the MIN/MAX subselects.
+        let window_sql = |predicate: &str| {
+            format!(
+                "SELECT
+                    (SELECT value FROM runtime_metadata WHERE key = 'event_log_epoch'),
+                    (SELECT MIN(event_seq) FROM audit_events WHERE {predicate}),
+                    (SELECT MAX(event_seq) FROM audit_events WHERE {predicate})"
+            )
+        };
+        let window_row = |row: &rusqlite::Row<'_>| Ok((row.get(0)?, row.get(1)?, row.get(2)?));
+        let (epoch, oldest, head): (String, Option<i64>, Option<i64>) = match agent_id {
+            Some(agent_id) => connection.query_row(
+                window_sql("agent_id = ?1").as_str(),
+                [agent_id],
+                window_row,
+            )?,
+            None => {
+                connection.query_row(window_sql("agent_id IS NULL").as_str(), [], window_row)?
+            }
+        };
         let to_seq = |value: Option<i64>| -> Result<Option<u64>> {
             value
                 .map(|seq| u64::try_from(seq).context("stored audit event sequence is negative"))

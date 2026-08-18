@@ -5763,6 +5763,23 @@ CREATE TABLE working_memory_deltas (
         assert_eq!(window.event_head_seq, 3);
         assert_eq!(window.oldest_retained_seq, Some(1));
         assert_eq!(window.event_log_epoch, db.event_log_epoch()?);
+        for index in 1..=2 {
+            let event = crate::types::AuditEvent::legacy(
+                format!("runtime_legacy_{index}"),
+                serde_json::json!({ "index": index }),
+            );
+            db.audit_events().append(None, &event)?;
+        }
+        // The scoped window must not absorb runtime-level rows, and the
+        // unscoped window must see them instead of silently matching
+        // nothing behind a `agent_id = NULL` comparison.
+        let scoped = db.agent_event_recovery_window(Some("default"))?;
+        assert_eq!(scoped.event_head_seq, 3);
+        assert_eq!(scoped.oldest_retained_seq, Some(1));
+        let unscoped = db.agent_event_recovery_window(None)?;
+        assert_eq!(unscoped.event_head_seq, 2);
+        assert_eq!(unscoped.oldest_retained_seq, Some(1));
+        assert_eq!(unscoped.event_log_epoch, db.event_log_epoch()?);
         Ok(())
     }
 
