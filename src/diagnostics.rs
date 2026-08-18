@@ -85,6 +85,10 @@ static PROJECTION_STATE_SOURCE_STORAGE: MetricAccumulator =
 static PROJECTION_STATE_RUNTIME_SPAWN_AVOIDED: MetricAccumulator =
     MetricAccumulator::new("projection.agent_state.runtime_spawn_avoided");
 static PROJECTION_AGENTS_LIST: MetricAccumulator = MetricAccumulator::new("projection.agents_list");
+static ROSTER_SNAPSHOT_ASSEMBLY: MetricAccumulator =
+    MetricAccumulator::new("observer_sync.roster_snapshot.assembly");
+static ROSTER_SNAPSHOT_MEMBER_ROWS: AtomicU64 = AtomicU64::new(0);
+static ROSTER_SNAPSHOT_FAILURES: AtomicU64 = AtomicU64::new(0);
 static PROJECTION_GATE_LEADERS: AtomicU64 = AtomicU64::new(0);
 static PROJECTION_GATE_JOINED_WAITERS: AtomicU64 = AtomicU64::new(0);
 static PROJECTION_GATE_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
@@ -371,6 +375,24 @@ pub fn record_projection_state_runtime_spawn_avoided() {
 pub fn record_projection_agents_list(elapsed: Duration) {
     process_started_at();
     PROJECTION_AGENTS_LIST.record(elapsed, None);
+}
+
+/// Records one successful roster snapshot assembly: wall-clock duration of
+/// the committed read view plus per-Agent entry assembly, the membership
+/// count, and the serialized response size.
+pub fn record_roster_snapshot(elapsed: Duration, agent_count: usize, bytes: usize) {
+    process_started_at();
+    ROSTER_SNAPSHOT_ASSEMBLY.record(elapsed, Some(bytes));
+    ROSTER_SNAPSHOT_MEMBER_ROWS
+        .fetch_add(agent_count.min(u64::MAX as usize) as u64, Ordering::Relaxed);
+}
+
+/// Records one roster snapshot request that ended without a response body:
+/// capability off, limit exceeded, timeout, or an all-or-nothing assembly
+/// failure. Counts only; agent identities are never recorded.
+pub fn record_roster_snapshot_failure() {
+    process_started_at();
+    ROSTER_SNAPSHOT_FAILURES.fetch_add(1, Ordering::Relaxed);
 }
 
 pub fn record_projection_gate_cache_hit() {

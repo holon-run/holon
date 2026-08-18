@@ -33,7 +33,9 @@ pub use crate::runtime_db::evidence::{
 pub use crate::runtime_db::index_outbox::{
     RuntimeIndexChange, RuntimeIndexOperation, RuntimeIndexOutboxRepository, RuntimeIndexOutboxRow,
 };
-pub use crate::runtime_db::observer_sync::AgentEventRecoveryWindow;
+pub use crate::runtime_db::observer_sync::{
+    AgentEventRecoveryWindow, AgentRosterLatestBriefRow, AgentRosterRow, AgentRosterSnapshotRows,
+};
 pub use crate::runtime_db::retention::{
     RuntimeDbCompactReport, RuntimeDbRetentionPolicy, RuntimeDbRetentionReport,
     RuntimeDbRetentionTableReport,

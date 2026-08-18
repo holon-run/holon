@@ -72,6 +72,47 @@ pub struct PublicAgentActivitySnapshot {
     pub last_runtime_failure: Option<RuntimeFailureSummary>,
 }
 
+/// Host-level roster snapshot data assembled from one committed read view.
+/// The HTTP layer maps this onto the wire `AgentRosterSnapshot` contract.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct AgentRosterSnapshotData {
+    pub runtime_id: String,
+    pub event_log_epoch: String,
+    pub visibility_policy_generation: u64,
+    pub agents: Vec<AgentRosterEntryData>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct AgentRosterEntryData {
+    pub agent: AgentListEntry,
+    pub event_head_seq: u64,
+    pub oldest_retained_seq: Option<u64>,
+    pub latest_brief: Option<AgentRosterLatestBriefData>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct AgentRosterLatestBriefData {
+    pub brief_id: String,
+    pub created_event_seq: Option<u64>,
+    pub created_at: chrono::DateTime<Utc>,
+    pub preview: String,
+}
+
+/// Bounds a stored Brief preview to the roster contract's UTF-8 byte limit,
+/// cutting on a char boundary so the value stays valid UTF-8.
+fn brief_preview(preview: &Option<String>) -> String {
+    const MAX_UTF8_BYTES: usize = crate::http::observer_sync::LATEST_BRIEF_PREVIEW_MAX_UTF8_BYTES;
+    let text = preview.as_deref().unwrap_or("");
+    if text.len() <= MAX_UTF8_BYTES {
+        return text.to_string();
+    }
+    let mut end = MAX_UTF8_BYTES;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_string()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AgentStateProjectionSource {
     Loaded,
@@ -2209,6 +2250,116 @@ impl RuntimeHost {
                 crate::types::AgentPostureProjection::default()
             }
         };
+        let waiting_reason = crate::runtime::lightweight_agent_list_waiting_reason(&agent);
+        Ok(AgentListEntry {
+            identity: AgentIdentityView::from_record(identity, &self.config().default_agent_id),
+            lifecycle: AgentLifecycleHint::from_status(&agent.id, agent.status.clone()),
+            status: agent.status,
+            scheduling_posture,
+            pending: agent.pending,
+            current_run_id: agent.current_run_id,
+            waiting_reason,
+            model: (&model).into(),
+            active_workspace_entry: agent
+                .active_workspace_entry
+                .map(crate::types::ActiveWorkspaceEntry::without_projection_metadata),
+        })
+    }
+
+    /// Authoritative roster snapshot data (S4): membership, per-Agent
+    /// committed event windows, and latest canonical Brief anchors from one
+    /// committed database read view. All-or-nothing: any per-Agent assembly
+    /// failure fails the whole snapshot, and entries reflect committed
+    /// canonical state instead of in-memory runtime watchers.
+    pub(crate) fn agent_roster_snapshot(&self) -> Result<AgentRosterSnapshotData> {
+        let rows = self.runtime_db().agent_roster_snapshot_rows()?;
+        let catalog = RuntimeModelCatalog::from_config(&self.config());
+        let mut agents = Vec::with_capacity(rows.rows.len());
+        for row in rows.rows {
+            let identity: AgentIdentityRecord =
+                serde_json::from_str(&row.identity_json).map_err(|error| {
+                    anyhow!(
+                        "unreadable roster identity payload for {}: {error}",
+                        row.agent_id
+                    )
+                })?;
+            let agent_state = row
+                .agent_state_json
+                .as_deref()
+                .map(|payload| {
+                    serde_json::from_str::<AgentState>(payload).map_err(|error| {
+                        anyhow!(
+                            "unreadable roster agent state payload for {}: {error}",
+                            row.agent_id
+                        )
+                    })
+                })
+                .transpose()?;
+            let latest_brief = row
+                .latest_brief
+                .map(|brief| -> Result<AgentRosterLatestBriefData> {
+                    Ok(AgentRosterLatestBriefData {
+                        brief_id: brief.brief_id,
+                        created_event_seq: brief
+                            .created_event_seq
+                            .map(|seq| {
+                                u64::try_from(seq).map_err(|_| {
+                                    anyhow!("negative latest brief linkage for {}", row.agent_id)
+                                })
+                            })
+                            .transpose()?,
+                        created_at: chrono::DateTime::parse_from_rfc3339(&brief.created_at)
+                            .map(|parsed| parsed.with_timezone(&Utc))
+                            .map_err(|error| {
+                                anyhow!(
+                                    "unreadable latest brief timestamp for {}: {error}",
+                                    row.agent_id
+                                )
+                            })?,
+                        preview: brief_preview(&brief.preview),
+                    })
+                })
+                .transpose()?;
+            let agent =
+                self.agent_list_entry_from_committed_state(&identity, agent_state, &catalog)?;
+            agents.push(AgentRosterEntryData {
+                agent,
+                event_head_seq: row.event_head_seq,
+                oldest_retained_seq: row.oldest_retained_seq,
+                latest_brief,
+            });
+        }
+        Ok(AgentRosterSnapshotData {
+            runtime_id: rows.runtime_id,
+            event_log_epoch: rows.event_log_epoch,
+            visibility_policy_generation: rows.visibility_policy_generation,
+            agents,
+        })
+    }
+
+    /// Builds one roster `AgentListEntry` from the committed identity and
+    /// AgentState captured by the snapshot read view. Unlike
+    /// `agent_list_entry_from_storage`, read failures propagate: the roster
+    /// is all-or-nothing and never substitutes placeholder facts. A member
+    /// with no committed state yet keeps the stopped placeholder semantics
+    /// it would also get from `/agents/list`.
+    fn agent_list_entry_from_committed_state(
+        &self,
+        identity: &AgentIdentityRecord,
+        agent_state: Option<AgentState>,
+        catalog: &RuntimeModelCatalog,
+    ) -> Result<AgentListEntry> {
+        let storage = self.agent_storage_read_only(&identity.agent_id)?;
+        let agent = match agent_state {
+            Some(agent) => agent,
+            None => stopped_unloaded_agent(&identity.agent_id),
+        };
+        let model = crate::runtime::agent_model_state_for_catalog(
+            catalog,
+            &self.runtime_context_config(),
+            &agent,
+        );
+        let scheduling_posture = storage.agent_posture_projection(&agent)?;
         let waiting_reason = crate::runtime::lightweight_agent_list_waiting_reason(&agent);
         Ok(AgentListEntry {
             identity: AgentIdentityView::from_record(identity, &self.config().default_agent_id),

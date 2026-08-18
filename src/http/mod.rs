@@ -100,7 +100,7 @@ mod jobs;
 // S0 contract skeleton: DTOs/fixtures/capability evaluator are exercised by
 // unit tests now and wired into handlers by the S2/S4/S5 slices.
 #[cfg_attr(not(test), allow(dead_code))]
-mod observer_sync;
+pub(crate) mod observer_sync;
 mod projection_gate;
 mod skills;
 mod state;
@@ -194,6 +194,7 @@ pub struct AppState {
     pub jobs: JobRegistry,
     pub skill_library_write_jobs: Arc<tokio::sync::Semaphore>,
     pub template_remote_source_sync_jobs: Arc<tokio::sync::Semaphore>,
+    pub(crate) roster_snapshot_limits: observer_sync::RosterSnapshotLimits,
     pub(crate) projection_gate: Arc<ProjectionGate>,
 }
 
@@ -305,6 +306,7 @@ impl AppState {
             jobs,
             skill_library_write_jobs,
             template_remote_source_sync_jobs,
+            roster_snapshot_limits: observer_sync::RosterSnapshotLimits::default(),
             projection_gate,
         }
     }
@@ -333,6 +335,7 @@ impl AppState {
             jobs,
             skill_library_write_jobs,
             template_remote_source_sync_jobs,
+            roster_snapshot_limits: observer_sync::RosterSnapshotLimits::default(),
             projection_gate,
         }
     }
@@ -355,6 +358,10 @@ pub fn router(state: AppState) -> Router {
         .route("/handshake", get(agents::handshake))
         .route("/models", get(agents::models_handler))
         .route("/agents/list", get(agents::list_agent_entries))
+        .route(
+            "/agents/snapshot",
+            get(observer_sync::agent_roster_snapshot),
+        )
         .route("/agents/{agent_id}/enqueue", post(state::enqueue))
         .route("/agents/{agent_id}/status", get(state::status))
         .route("/agents/{agent_id}/briefs", get(state::briefs))

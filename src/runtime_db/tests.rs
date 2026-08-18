@@ -5979,6 +5979,176 @@ CREATE TABLE working_memory_deltas (
         Ok(())
     }
 
+    fn insert_roster_brief(
+        db: &RuntimeDb,
+        evidence_id: &str,
+        agent_id: &str,
+        created_at: &str,
+        created_event_seq: Option<i64>,
+        preview: Option<&str>,
+    ) -> Result<()> {
+        let payload = serde_json::json!({
+            "id": evidence_id,
+            "agent_id": agent_id,
+            "kind": "result",
+            "created_at": created_at,
+            "text": "brief text",
+        });
+        db.connection()?.execute(
+            "INSERT INTO briefs (
+                evidence_id, agent_id, created_at, kind, preview, payload_json, created_event_seq
+             ) VALUES (?1, ?2, ?3, 'result', ?4, ?5, ?6)",
+            rusqlite::params![
+                evidence_id,
+                agent_id,
+                created_at,
+                preview,
+                payload.to_string(),
+                created_event_seq
+            ],
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn agent_roster_snapshot_rows_read_one_committed_view() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+
+        // Membership: one public active member, one private child, one
+        // deleted public agent. Only the member may appear.
+        db.agent_identities()
+            .upsert(&agent_identity("member-public", 0))?;
+        let mut private = agent_identity("child-private", 0);
+        private.visibility = AgentVisibility::Private;
+        db.agent_identities().upsert(&private)?;
+        let mut deleted = agent_identity("member-deleted", 0);
+        deleted.status = AgentRegistryStatus::Deleted;
+        db.agent_identities().upsert(&deleted)?;
+
+        for index in 1..=3 {
+            let event = crate::types::AuditEvent::legacy(
+                format!("roster_event_{index}"),
+                serde_json::json!({ "index": index }),
+            );
+            db.audit_events().append(Some("member-public"), &event)?;
+        }
+        db.audit_events().append(
+            Some("child-private"),
+            &crate::types::AuditEvent::legacy("roster_private_event", serde_json::json!({})),
+        )?;
+
+        insert_roster_brief(
+            &db,
+            "brief-older",
+            "member-public",
+            "2026-01-01T00:00:01.000Z",
+            Some(1),
+            Some("older"),
+        )?;
+        insert_roster_brief(
+            &db,
+            "brief-newer",
+            "member-public",
+            "2026-01-02T00:00:01.000Z",
+            Some(2),
+            Some("newer"),
+        )?;
+        insert_roster_brief(
+            &db,
+            "brief-private",
+            "child-private",
+            "2026-01-03T00:00:01.000Z",
+            None,
+            Some("private"),
+        )?;
+
+        db.agent_states()
+            .upsert(&crate::types::AgentState::new("member-public"))?;
+
+        let snapshot = db.agent_roster_snapshot_rows()?;
+        assert_eq!(snapshot.runtime_id, db.runtime_id()?);
+        assert_eq!(snapshot.event_log_epoch, db.event_log_epoch()?);
+        assert_eq!(snapshot.visibility_policy_generation, 0);
+        let ids: Vec<&str> = snapshot
+            .rows
+            .iter()
+            .map(|row| row.agent_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["member-public"]);
+
+        let row = &snapshot.rows[0];
+        assert_eq!(row.event_head_seq, 3);
+        assert_eq!(row.oldest_retained_seq, Some(1));
+        let brief = row.latest_brief.as_ref().expect("latest brief anchor");
+        assert_eq!(brief.brief_id, "brief-newer");
+        assert_eq!(brief.created_event_seq, Some(2));
+        assert_eq!(brief.preview.as_deref(), Some("newer"));
+        assert!(row.agent_state_json.is_some());
+
+        // A registered member with no committed state, events, or briefs
+        // still appears with zero anchors instead of vanishing.
+        db.agent_identities()
+            .upsert(&agent_identity("member-empty", 1))?;
+        let snapshot = db.agent_roster_snapshot_rows()?;
+        assert_eq!(snapshot.rows.len(), 2);
+        let empty = snapshot
+            .rows
+            .iter()
+            .find(|row| row.agent_id == "member-empty")
+            .expect("empty member row");
+        assert_eq!(empty.event_head_seq, 0);
+        assert_eq!(empty.oldest_retained_seq, None);
+        assert_eq!(empty.latest_brief, None);
+        assert_eq!(empty.agent_state_json, None);
+        Ok(())
+    }
+
+    #[test]
+    fn agent_roster_snapshot_rows_break_latest_brief_ties_deterministically() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        db.agent_identities().upsert(&agent_identity("member", 0))?;
+        let tied = "2026-01-01T00:00:00.000Z";
+        insert_roster_brief(&db, "brief-a", "member", tied, None, Some("a"))?;
+        insert_roster_brief(&db, "brief-z", "member", tied, None, Some("z"))?;
+        insert_roster_brief(
+            &db,
+            "brief-older",
+            "member",
+            "2025-12-31T00:00:00.000Z",
+            None,
+            Some("older"),
+        )?;
+        let snapshot = db.agent_roster_snapshot_rows()?;
+        assert_eq!(
+            snapshot.rows[0].latest_brief.as_ref().unwrap().brief_id,
+            "brief-z"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn roster_snapshot_verification_degrades_on_unreadable_committed_state() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        {
+            let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+            assert!(db.observer_sync_foundations()?.roster_snapshot_verified);
+            db.agent_identities().upsert(&agent_identity("member", 0))?;
+            db.agent_states()
+                .upsert(&crate::types::AgentState::new("member"))?;
+            db.connection()?.execute(
+                "UPDATE agent_states SET payload_json = '{not json' WHERE agent_id = 'member'",
+                [],
+            )?;
+        }
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let foundations = reopened.observer_sync_foundations()?;
+        assert!(!foundations.roster_snapshot_verified);
+        assert!(foundations.runtime_identity_stable);
+        Ok(())
+    }
+
     #[test]
     fn observer_sync_fresh_databases_mint_distinct_identity() -> Result<()> {
         let (_first_dir, first_path, first_lock) = temp_paths()?;

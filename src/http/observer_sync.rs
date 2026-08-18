@@ -1,21 +1,30 @@
-//! Observer-sync HTTP contract skeleton.
+//! Observer-sync HTTP contract surface and roster snapshot handler.
 //!
 //! Implements the contract surface of
 //! `docs/rfcs/observer-sync-agent-summary-and-read-markers.md` (S0):
 //! snapshot DTOs, projection-effect classification, the rich cursor error
-//! shape, and the capability evaluator. The snapshot endpoints are
-//! intentionally not registered yet: a capability is advertised only after
-//! its durable verification succeeds, and until a verification source exists
-//! (S1+) the evaluator keeps all four capabilities disabled.
+//! shape, and the capability evaluator, plus the S4 roster snapshot
+//! handler. A capability is advertised only after its durable verification
+//! succeeds, so route registration alone never serves a snapshot contract.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use std::time::Duration;
 
 use crate::types::{AgentListEntry, WorkItemPlanStatus, WorkItemState};
+use crate::{diagnostics, host::AgentRosterSnapshotData};
 // The projection-effect classification lives with the runtime event registry
 // (its source of truth); re-exported here to keep the S0 contract surface.
+use super::{
+    agents::load_observer_sync_verification, auth_required, authorize_remote_access,
+    error_response, http_error, projection_gate_error_response, serialize_json, traced_json_bytes,
+    AppState, AxumResponse, HttpErrorEnvelope, IntoResponse, ProjectionFailure, ProjectionKey,
+};
 #[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use crate::runtime_event::ProjectionEffect;
+use axum::extract::State;
+use axum::http::{HeaderMap, StatusCode};
 
 pub(crate) const ROSTER_SNAPSHOT_CAPABILITY: &str = "agents.roster-snapshot.v1";
 pub(crate) const PROJECTION_SNAPSHOT_CAPABILITY: &str = "agents.projection-snapshot.v1";
@@ -224,6 +233,175 @@ pub(crate) struct RichCursorNotFoundError {
     pub(crate) event_head_seq: u64,
 }
 
+/// First-version hard limits for the roster snapshot response. When the
+/// deployment outgrows them, pagination bound to a server-pinned snapshot
+/// token replaces them; independently read pages cannot form a roster.
+pub(crate) const ROSTER_SNAPSHOT_MAX_AGENTS: usize = 512;
+pub(crate) const ROSTER_SNAPSHOT_MAX_SERIALIZED_BYTES: usize = 4 * 1024 * 1024;
+pub(crate) const ROSTER_SNAPSHOT_ASSEMBLY_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Principal and entitlement used to derive the observer scope while the
+/// control token is required (and therefore presented); local
+/// unauthenticated mode keeps the runtime-local public scope.
+pub(crate) const CONTROL_SCOPE_PRINCIPAL: &str = "control-token";
+pub(crate) const CONTROL_SCOPE_ENTITLEMENT: &str = "control";
+
+#[derive(Debug, Clone)]
+pub(crate) struct RosterSnapshotLimits {
+    pub max_agents: usize,
+    pub max_serialized_bytes: usize,
+    pub timeout: Duration,
+}
+
+impl Default for RosterSnapshotLimits {
+    fn default() -> Self {
+        Self {
+            max_agents: ROSTER_SNAPSHOT_MAX_AGENTS,
+            max_serialized_bytes: ROSTER_SNAPSHOT_MAX_SERIALIZED_BYTES,
+            timeout: ROSTER_SNAPSHOT_ASSEMBLY_TIMEOUT,
+        }
+    }
+}
+
+/// `GET /api/agents/snapshot`: the authoritative roster snapshot. The
+/// handler does authorization, the capability gate, hard limits, and
+/// serialization only; membership and anchors come from one committed
+/// database read view assembled by the host. The response is
+/// all-or-nothing: one unassemblable Agent fails the whole request.
+pub async fn agent_roster_snapshot(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> AxumResponse {
+    let started_at = std::time::Instant::now();
+    if let Err(error) = authorize_remote_access(&headers, &state) {
+        return auth_required(error.to_string()).into_response();
+    }
+    let verification = load_observer_sync_verification(&state);
+    if !advertised_observer_sync_capabilities(&verification).contains(&ROSTER_SNAPSHOT_CAPABILITY) {
+        diagnostics::record_roster_snapshot_failure();
+        return http_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            HttpErrorEnvelope::new(
+                "the agents.roster-snapshot.v1 capability is not verified for this database",
+            )
+            .code("capability_unavailable")
+            .hint("see the handshake capabilities; route registration alone never serves this contract"),
+        )
+        .into_response();
+    }
+    let gate_state = Arc::clone(&state);
+    let result = state
+        .projection_gate
+        .run(ProjectionKey::AgentsRosterSnapshot, || async {
+            let limits = gate_state.roster_snapshot_limits.clone();
+            let host = gate_state.host.clone();
+            let snapshot = match tokio::time::timeout(
+                limits.timeout,
+                tokio::task::spawn_blocking(move || host.agent_roster_snapshot()),
+            )
+            .await
+            {
+                Ok(joined) => joined
+                    .map_err(|error| ProjectionFailure::from(error_response(error.into())))?
+                    .map_err(|error| ProjectionFailure::from(error_response(error)))?,
+                Err(_) => {
+                    diagnostics::record_roster_snapshot_failure();
+                    return Err(ProjectionFailure::from(http_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        HttpErrorEnvelope::new(format!(
+                            "roster snapshot assembly exceeded the {} second budget",
+                            limits.timeout.as_secs(),
+                        ))
+                        .code("roster_snapshot_timeout")
+                        .retryable(true),
+                    )));
+                }
+            };
+            if snapshot.agents.len() > limits.max_agents {
+                diagnostics::record_roster_snapshot_failure();
+                return Err(ProjectionFailure::from(http_error(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    HttpErrorEnvelope::new(
+                        "roster snapshot exceeds the maximum Agent count for one response",
+                    )
+                    .code("roster_snapshot_too_large")
+                    .extension("agent_count", snapshot.agents.len())
+                    .extension("max_agents", limits.max_agents),
+                )));
+            }
+            let visibility_scope_id = roster_visibility_scope(&gate_state, &snapshot);
+            let snapshot = AgentRosterSnapshot {
+                contract_version: AGENT_ROSTER_SNAPSHOT_CONTRACT_VERSION,
+                runtime_id: snapshot.runtime_id,
+                event_log_epoch: snapshot.event_log_epoch,
+                visibility_scope_id,
+                agents: snapshot
+                    .agents
+                    .into_iter()
+                    .map(|entry| AgentRosterEntry {
+                        agent: entry.agent,
+                        event_window: AgentEventWindow {
+                            event_head_seq: entry.event_head_seq,
+                            oldest_retained_seq: entry.oldest_retained_seq,
+                        },
+                        latest_brief: entry.latest_brief.map(|brief| AgentLatestBrief {
+                            brief_id: brief.brief_id,
+                            created_event_seq: brief.created_event_seq,
+                            created_at: brief.created_at,
+                            preview: brief.preview,
+                        }),
+                    })
+                    .collect(),
+            };
+            let agent_count = snapshot.agents.len();
+            let bytes =
+                serialize_json("/agents/snapshot", &snapshot).map_err(ProjectionFailure::from)?;
+            if bytes.len() > limits.max_serialized_bytes {
+                diagnostics::record_roster_snapshot_failure();
+                return Err(ProjectionFailure::from(http_error(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    HttpErrorEnvelope::new(
+                        "roster snapshot exceeds the maximum serialized response size",
+                    )
+                    .code("roster_snapshot_too_large")
+                    .extension("serialized_bytes", bytes.len())
+                    .extension("max_serialized_bytes", limits.max_serialized_bytes),
+                )));
+            }
+            diagnostics::record_roster_snapshot(started_at.elapsed(), agent_count, bytes.len());
+            Ok(bytes)
+        })
+        .await;
+    match result {
+        Ok(bytes) => traced_json_bytes("/agents/snapshot", started_at, bytes),
+        Err(error) => {
+            diagnostics::record_roster_snapshot_failure();
+            projection_gate_error_response(error)
+        }
+    }
+}
+
+/// Derives the observer scope for the caller from facts inside the snapshot
+/// read view plus the request's resolved authority mode. Credentials are
+/// never an input, so token rotation with unchanged entitlement keeps the
+/// scope stable.
+fn roster_visibility_scope(state: &AppState, snapshot: &AgentRosterSnapshotData) -> String {
+    let (principal, entitlement) = if state.require_control_token {
+        (CONTROL_SCOPE_PRINCIPAL, CONTROL_SCOPE_ENTITLEMENT)
+    } else {
+        (
+            crate::runtime_db::observer_sync::PUBLIC_SCOPE_PRINCIPAL,
+            crate::runtime_db::observer_sync::PUBLIC_SCOPE_ENTITLEMENT,
+        )
+    };
+    crate::ids::visibility_scope_id(
+        &snapshot.runtime_id,
+        principal,
+        entitlement,
+        snapshot.visibility_policy_generation,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -367,9 +545,16 @@ mod tests {
             assert!(schemas.contains_key(name), "missing schema {name}");
         }
         let paths = api["paths"].as_object().unwrap();
-        // S0 registers no snapshot routes: route existence must never be
-        // mistaken for capability support.
-        assert!(!paths.contains_key("/api/agents/snapshot"));
+        // S4 registers the roster snapshot route; projection snapshots stay
+        // unregistered until S5. Route existence still must never be
+        // mistaken for capability support: the handler gates on durable
+        // verification.
+        assert!(paths.contains_key("/api/agents/snapshot"));
+        assert_eq!(
+            paths["/api/agents/snapshot"]["get"]["responses"]["200"]["content"]["application/json"]
+                ["schema"]["$ref"],
+            "#/components/schemas/AgentRosterSnapshot"
+        );
         assert!(!paths.contains_key("/api/agents/{agent_id}/projection-snapshot"));
     }
 
@@ -382,5 +567,234 @@ mod tests {
             "preview exceeds {} UTF-8 bytes",
             LATEST_BRIEF_PREVIEW_MAX_UTF8_BYTES
         );
+    }
+
+    mod roster_http_tests {
+        use super::super::*;
+        use crate::{
+            config::AppConfig,
+            host::RuntimeHost,
+            provider::StubProvider,
+            types::{
+                AgentIdentityRecord, AgentKind, AgentOwnership, AgentProfilePreset, AgentVisibility,
+            },
+        };
+        use axum::{
+            body::{to_bytes, Body},
+            http::{Request, StatusCode},
+        };
+        use std::sync::Arc;
+        use tower::ServiceExt;
+
+        async fn roster_test_host() -> (tempfile::TempDir, RuntimeHost) {
+            let home = tempfile::tempdir().unwrap();
+            std::fs::write(
+                home.path().join("config.json"),
+                r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+            )
+            .unwrap();
+            let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+            let host = RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done")))
+                .unwrap();
+            host.create_named_agent("web", None).await.unwrap();
+            (home, host)
+        }
+
+        async fn get_snapshot(state: AppState) -> (StatusCode, serde_json::Value) {
+            let app = crate::http::router(state);
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri("/api/agents/snapshot")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let value = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+            (status, value)
+        }
+
+        #[tokio::test]
+        async fn roster_snapshot_serves_membership_anchors_and_bounded_preview() {
+            let (_home, host) = roster_test_host().await;
+            host.runtime_db()
+                .audit_events()
+                .append(
+                    Some("web"),
+                    &crate::types::AuditEvent::legacy(
+                        "roster_http_event",
+                        serde_json::json!({ "index": 1 }),
+                    ),
+                )
+                .unwrap();
+            let long_preview = "预".repeat(400);
+            host.runtime_db()
+                .connection()
+                .unwrap()
+                .execute(
+                    "INSERT INTO briefs (
+                        evidence_id, agent_id, created_at, kind, preview, payload_json
+                     ) VALUES ('brief-http', 'web', '2026-02-01T00:00:00.000Z', 'result', ?1, ?2)",
+                    rusqlite::params![
+                        long_preview,
+                        serde_json::json!({
+                            "id": "brief-http",
+                            "agent_id": "web",
+                            "kind": "result",
+                            "created_at": "2026-02-01T00:00:00.000Z",
+                            "text": "brief text",
+                        })
+                        .to_string()
+                    ],
+                )
+                .unwrap();
+
+            let (status, body) = get_snapshot(AppState::for_tcp(host)).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body["contract_version"], 1);
+            assert!(!body["runtime_id"].as_str().unwrap().is_empty());
+            assert!(!body["event_log_epoch"].as_str().unwrap().is_empty());
+            assert!(body["visibility_scope_id"]
+                .as_str()
+                .is_some_and(|scope| scope.starts_with("vscope1_")));
+            let agents = body["agents"].as_array().unwrap();
+            let entry = agents
+                .iter()
+                .find(|entry| entry["agent"]["identity"]["agent_id"] == "web")
+                .expect("web membership");
+            assert!(entry["event_window"]["event_head_seq"].as_u64().unwrap() >= 1);
+            assert!(entry["event_window"]["oldest_retained_seq"].is_u64());
+            let brief = entry["latest_brief"].as_object().expect("latest brief");
+            assert_eq!(brief["brief_id"], "brief-http");
+            assert!(brief["created_event_seq"].is_null());
+            let preview = brief["preview"].as_str().unwrap();
+            assert!(
+                preview.len() <= LATEST_BRIEF_PREVIEW_MAX_UTF8_BYTES,
+                "preview was not bounded to {} UTF-8 bytes",
+                LATEST_BRIEF_PREVIEW_MAX_UTF8_BYTES
+            );
+        }
+
+        #[tokio::test]
+        async fn roster_snapshot_authorizes_before_serving() {
+            let (_home, host) = roster_test_host().await;
+            let mut state = AppState::for_tcp(host);
+            state.require_control_token = true;
+            let (status, body) = get_snapshot(state).await;
+            assert_eq!(status, StatusCode::FORBIDDEN);
+            assert_eq!(body["code"], "auth_required");
+            assert!(body.get("agents").is_none());
+        }
+
+        #[tokio::test]
+        async fn roster_snapshot_gates_on_durable_capability_verification() {
+            let (_home, host) = roster_test_host().await;
+            let (status, _body) = get_snapshot(AppState::for_tcp(host.clone())).await;
+            assert_eq!(status, StatusCode::OK);
+            host.runtime_db()
+                .connection()
+                .unwrap()
+                .execute(
+                    "UPDATE observer_sync_capability_verifications
+                     SET verified = 0 WHERE capability = 'roster_snapshot_verified'",
+                    [],
+                )
+                .unwrap();
+            let (status, body) = get_snapshot(AppState::for_tcp(host)).await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(body["code"], "capability_unavailable");
+            assert!(body.get("agents").is_none());
+        }
+
+        #[tokio::test]
+        async fn roster_snapshot_agent_count_limit_is_all_or_nothing() {
+            let (_home, host) = roster_test_host().await;
+            let mut state = AppState::for_tcp(host);
+            state.roster_snapshot_limits.max_agents = 0;
+            let (status, body) = get_snapshot(state).await;
+            assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+            assert_eq!(body["code"], "roster_snapshot_too_large");
+            assert_eq!(body["max_agents"], 0);
+            assert!(body.get("agents").is_none());
+        }
+
+        #[tokio::test]
+        async fn roster_snapshot_serialized_size_limit_rejects_response() {
+            let (_home, host) = roster_test_host().await;
+            let mut state = AppState::for_tcp(host);
+            state.roster_snapshot_limits.max_serialized_bytes = 16;
+            let (status, body) = get_snapshot(state).await;
+            assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+            assert_eq!(body["code"], "roster_snapshot_too_large");
+            assert!(body.get("agents").is_none());
+        }
+
+        #[tokio::test]
+        async fn roster_snapshot_assembly_failure_fails_whole_response() {
+            let (_home, host) = roster_test_host().await;
+            host.runtime_db()
+                .connection()
+                .unwrap()
+                .execute(
+                    "UPDATE agent_states SET payload_json = '{not json' WHERE agent_id = 'web'",
+                    [],
+                )
+                .unwrap();
+            let (status, body) = get_snapshot(AppState::for_tcp(host)).await;
+            assert!(status.is_server_error(), "unexpected status {status}");
+            assert_eq!(body["ok"], false);
+            // All-or-nothing: no partial membership is ever serialized.
+            assert!(body.get("agents").is_none());
+        }
+
+        #[tokio::test]
+        async fn roster_snapshot_excludes_private_children_without_leaking_them() {
+            let (_home, host) = roster_test_host().await;
+            let mut private = AgentIdentityRecord::new(
+                "child-secret",
+                AgentKind::Child,
+                AgentVisibility::Private,
+                AgentOwnership::ParentSupervised,
+                AgentProfilePreset::PrivateChild,
+                Some("web".into()),
+                None,
+            );
+            private.status = crate::types::AgentRegistryStatus::Active;
+            host.runtime_db()
+                .agent_identities()
+                .upsert(&private)
+                .unwrap();
+            host.runtime_db()
+                .audit_events()
+                .append(
+                    Some("child-secret"),
+                    &crate::types::AuditEvent::legacy(
+                        "private_child_event",
+                        serde_json::json!({ "secret": true }),
+                    ),
+                )
+                .unwrap();
+
+            let (status, body) = get_snapshot(AppState::for_tcp(host)).await;
+            assert_eq!(status, StatusCode::OK);
+            let serialized = body.to_string();
+            assert!(
+                !serialized.contains("child-secret"),
+                "private child leaked into the roster: {serialized}"
+            );
+            let agents = body["agents"].as_array().unwrap();
+            // The runtime's default agent plus "web" are public members.
+            assert_eq!(agents.len(), 2);
+            let ids: Vec<&str> = agents
+                .iter()
+                .filter_map(|entry| entry["agent"]["identity"]["agent_id"].as_str())
+                .collect();
+            assert!(ids.contains(&"web"));
+            assert!(!ids.contains(&"child-secret"));
+        }
     }
 }

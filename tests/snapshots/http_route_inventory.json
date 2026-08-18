@@ -71,6 +71,22 @@
   },
   {
     "method": "get",
+    "path": "/api/agents/snapshot",
+    "handler": "agent_roster_snapshot",
+    "operation_id": "agentsSnapshot",
+    "tag": "agents",
+    "parameters": [],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
     "path": "/api/agents/{agent_id}/briefs",
     "handler": "briefs",
     "operation_id": "agentBriefs",
