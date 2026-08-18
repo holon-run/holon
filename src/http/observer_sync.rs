@@ -305,7 +305,6 @@ pub async fn agent_roster_snapshot(
                     .map_err(|error| ProjectionFailure::from(error_response(error.into())))?
                     .map_err(|error| ProjectionFailure::from(error_response(error)))?,
                 Err(_) => {
-                    diagnostics::record_roster_snapshot_failure();
                     return Err(ProjectionFailure::from(http_error(
                         StatusCode::SERVICE_UNAVAILABLE,
                         HttpErrorEnvelope::new(format!(
@@ -318,7 +317,6 @@ pub async fn agent_roster_snapshot(
                 }
             };
             if snapshot.agents.len() > limits.max_agents {
-                diagnostics::record_roster_snapshot_failure();
                 return Err(ProjectionFailure::from(http_error(
                     StatusCode::PAYLOAD_TOO_LARGE,
                     HttpErrorEnvelope::new(
@@ -357,7 +355,6 @@ pub async fn agent_roster_snapshot(
             let bytes =
                 serialize_json("/agents/snapshot", &snapshot).map_err(ProjectionFailure::from)?;
             if bytes.len() > limits.max_serialized_bytes {
-                diagnostics::record_roster_snapshot_failure();
                 return Err(ProjectionFailure::from(http_error(
                     StatusCode::PAYLOAD_TOO_LARGE,
                     HttpErrorEnvelope::new(
