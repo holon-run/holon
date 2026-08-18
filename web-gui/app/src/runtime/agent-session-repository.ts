@@ -14,6 +14,13 @@ import {
   startRuntimeSpan,
   type RuntimeTraceContext,
 } from "./runtime-trace";
+import {
+  LedgerIngestionPipeline,
+  type LedgerHydrationFetchers,
+  type LedgerIngestionStatus,
+  type LedgerScopeKey,
+  type ProjectionSnapshotRepairSource,
+} from "./event-ledger";
 import type { AgentSessionState } from "./runtime-store-helpers";
 import type {
   DisplayLevel,
@@ -52,6 +59,21 @@ export interface AgentSessionRepositoryState {
   ) => Promise<void>;
   refreshAgentWorkItems: (agentId: string | undefined) => Promise<void>;
   refreshAgentState: (agentId: string | undefined) => Promise<void>;
+}
+
+/**
+ * Durable ledger ingestion integration (W2). The repository owns the
+ * pipeline lifecycle; scope resolution decides whether a remote already
+ * exposes the stable runtime identity (runtime id + visibility scope) the
+ * correctness key requires. Remotes without it return null and ingest
+ * nothing — the in-memory path is unchanged until the W3/W4 cutover.
+ */
+export interface LedgerIngestionIntegration {
+  /** Full ledger scope for one agent, or null while identity is unknown. */
+  resolveScope: (agentId: string) => LedgerScopeKey | null;
+  fetchers: LedgerHydrationFetchers;
+  snapshotRepair?: ProjectionSnapshotRepairSource;
+  onStatus?: (status: LedgerIngestionStatus) => void;
 }
 
 type StoreSet<State> = (
@@ -174,6 +196,7 @@ export interface AgentSessionRepositoryDependencies<State extends AgentSessionRe
   isWorkItemInvalidationEvent: (event: StreamEventEnvelopeDto) => boolean;
   isAgentStateInvalidationEvent: (event: StreamEventEnvelopeDto) => boolean;
   catchUpErrorKind: (error: unknown) => string;
+  ledgerIngestion?: LedgerIngestionIntegration;
 }
 
 export class AgentSessionRepository<State extends AgentSessionRepositoryState> {
@@ -186,11 +209,17 @@ export class AgentSessionRepository<State extends AgentSessionRepositoryState> {
   private readonly briefHydrationInFlight = new Map<string, Set<string>>();
   private readonly briefHydrationRetryTimers = new Map<string, number>();
 
+  private ledgerPipeline: LedgerIngestionPipeline | null = null;
+  private ledgerInitPromise: Promise<void> | null = null;
+
   constructor(private readonly dependencies: AgentSessionRepositoryDependencies<State>) {}
 
   initializeCache(): void {
     if (this.cacheInitPromise) return;
     const context = this.currentCacheContext();
+    // Durable ledger ingestion is independent of the legacy cache: start the
+    // restart scan even when the legacy cache is unavailable.
+    void this.initializeLedgerIngestion();
     const initialization = this.initializeCacheForContext(context);
     this.cacheInitPromise = initialization;
     void initialization.finally(() => {
@@ -288,7 +317,80 @@ export class AgentSessionRepository<State extends AgentSessionRepositoryState> {
     void this.cacheWriter?.flush();
     this.cacheWriter = null;
     this.cacheInitPromise = null;
+    this.ledgerPipeline?.dispose();
+    this.ledgerPipeline = null;
+    this.ledgerInitPromise = null;
     this.cancelClientGenerationWork();
+  }
+
+  /**
+   * Open the durable ingestion pipeline and run the restart scan for every
+   * scope of the current remote: pending hydration resumes before any new
+   * readiness claim. Idempotent; safe to call on every cache init.
+   */
+  initializeLedgerIngestion(): Promise<void> {
+    if (!this.dependencies.ledgerIngestion) return Promise.resolve();
+    if (this.ledgerInitPromise) return this.ledgerInitPromise;
+    const integration = this.dependencies.ledgerIngestion;
+    const pipeline = new LedgerIngestionPipeline({
+      fetchers: integration.fetchers,
+      snapshotRepair: integration.snapshotRepair,
+      onStatus: integration.onStatus,
+    });
+    this.ledgerPipeline = pipeline;
+    this.ledgerInitPromise = (async () => {
+      if (!(await pipeline.open())) return;
+      await pipeline.resumeRemote(
+        currentRemoteKey(this.dependencies.getConnectionConfig()),
+      );
+    })().catch((error) => {
+      console.warn("Failed to initialize the event ledger pipeline.", error);
+    });
+    return this.ledgerInitPromise;
+  }
+
+  /**
+   * Ingest raw envelopes for one agent into the durable ledger. Returns
+   * null when ledger ingestion is unavailable or the agent's runtime
+   * identity is not resolvable yet.
+   */
+  async ingestSessionEvents(
+    agentId: string,
+    events: StreamEventEnvelopeDto[],
+  ): Promise<LedgerIngestionStatus | null> {
+    const integration = this.dependencies.ledgerIngestion;
+    if (!integration || !this.ledgerPipeline || events.length === 0) return null;
+    const scope = integration.resolveScope(agentId);
+    if (!scope) return null;
+    await this.initializeLedgerIngestion();
+    return this.ledgerPipeline.ingest(
+      scope,
+      events as Array<Record<string, unknown>>,
+    );
+  }
+
+  /** Current durable ingestion status for one agent, if tracked. */
+  sessionLedgerStatus(agentId: string): LedgerIngestionStatus | null {
+    const integration = this.dependencies.ledgerIngestion;
+    if (!integration || !this.ledgerPipeline) return null;
+    const scope = integration.resolveScope(agentId);
+    return scope ? this.ledgerPipeline.status(scope) : null;
+  }
+
+  /**
+   * Read-marker gate: the highest delivery seq a read state may claim for
+   * this agent without crossing unsatisfied display demand.
+   */
+  sessionLedgerReadiness(agentId: string): {
+    readyThroughSeq: number;
+    ingestedThroughSeq: number;
+    blockedByEventSeq?: number;
+    blockedReason?: "pending_hydration" | "unknown_envelope_version";
+  } | null {
+    const integration = this.dependencies.ledgerIngestion;
+    if (!integration || !this.ledgerPipeline) return null;
+    const scope = integration.resolveScope(agentId);
+    return scope ? this.ledgerPipeline.readinessGate(scope) : null;
   }
 
   cancelClientGenerationWork(): void {

@@ -1078,6 +1078,45 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     isWorkItemInvalidationEvent: isWorkItemCacheInvalidationEvent,
     isAgentStateInvalidationEvent: isAgentStateCacheInvalidationEvent,
     catchUpErrorKind: agentDetailErrorKind,
+    ledgerIngestion: {
+      // Stable runtime identity (runtime id + visibility scope) reaches the
+      // client with the W3/W4 roster and projection snapshot cutover. Until
+      // then the ledger scope is unresolvable and durable ingestion stays
+      // dormant: the in-memory path is unchanged.
+      resolveScope: () => null,
+      fetchers: {
+        fetchCanonicalRecords: async (agentId, recordKind, recordIds) => {
+          if (recordKind === "message") {
+            const response = await runtimeClient.getAgentMessagesBatch(agentId, recordIds);
+            const recordsById: Record<string, { record: unknown }> = {};
+            for (const message of response.messages ?? []) {
+              if (message?.id) recordsById[message.id] = { record: message };
+            }
+            return { recordsById, missingIds: response.missing_message_ids ?? [] };
+          }
+          if (recordKind === "transcript_entry") {
+            const response = await runtimeClient.getAgentTranscriptEntriesBatch(
+              agentId,
+              recordIds,
+            );
+            const recordsById: Record<string, { record: unknown }> = {};
+            for (const entry of response.entries ?? []) {
+              if (entry?.id) recordsById[entry.id] = { record: entry };
+            }
+            return { recordsById, missingIds: response.missing_entry_ids ?? [] };
+          }
+          const response = await runtimeClient.getAgentBriefsById(agentId, recordIds);
+          const recordsById: Record<string, { record: unknown }> = {};
+          for (const [briefId, record] of Object.entries(response.recordsById ?? {})) {
+            recordsById[briefId] = { record };
+          }
+          return { recordsById, missingIds: response.notFoundIds ?? [] };
+        },
+      },
+      onStatus: () => {
+        // W5 wires unread/read-marker gating to these statuses.
+      },
+    },
   });
 
   return ({

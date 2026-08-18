@@ -82,6 +82,18 @@ export interface LedgerHydrationJobRecord {
   recordKind: LedgerRecordKind;
   recordId: string;
   createdByEventSeq: number;
+  /**
+   * Minimum canonical revision that satisfies this job, when the creating
+   * event names one. A canonical record (or tombstone) with a revision >=
+   * this value completes the job; a fetched record without a revision cannot
+   * prove satisfaction and leaves the job pending.
+   */
+  expectedRevision?: string | number;
+  /** Durable retry bookkeeping; `failed` marks exhausted bounded retries. */
+  attemptCount?: number;
+  lastAttemptAt?: number;
+  lastErrorKind?: string;
+  state?: "pending" | "failed";
   createdAt: number;
 }
 
@@ -106,6 +118,12 @@ export interface LedgerAgentSessionRecord {
   agentId: string;
   /** Contiguous raw ingestion cursor: every event <= this seq is durably stored. */
   ingestedThroughSeq?: number;
+  /**
+   * Projection readiness cursor: every display-affecting event <= this seq
+   * is durably stored AND satisfied (applied directly, hydrated, or
+   * tombstoned). Never exceeds ingestedThroughSeq.
+   */
+  projectionReadyThroughSeq?: number;
   /** Projection revision anchor after applying directly applicable events. */
   projectionRevision?: number;
   projection?: unknown;
@@ -155,6 +173,7 @@ type WriteOperation =
       classification: RawEventClassification;
     }
   | { kind: "hydration_job"; scope: LedgerScopeKey; job: LedgerHydrationJobRecord }
+  | { kind: "hydration_job_delete"; scope: LedgerScopeKey; jobId: string }
   | {
       kind: "canonical_record";
       scope: LedgerScopeKey;
@@ -166,6 +185,19 @@ type WriteOperation =
   | { kind: "agent_session"; scope: LedgerScopeKey; patch: AgentSessionPatch }
   | { kind: "runtime_scope"; scope: LedgerRemoteScopeKey; patch: RuntimeScopePatch }
   | { kind: "read_state"; scope: LedgerScopeKey; patch: ReadStatePatch };
+
+/*
+ * Agent-session patches share one patch channel: per-scope patches inside one
+ * batch coalesce by ordered spread and the merged value is written once. Both
+ * cursors are validated monotonically against the value observed inside the
+ * same transaction, so a coalesced patch can never regress either cursor.
+ */
+type AgentSessionCursorField = "ingestedThroughSeq" | "projectionReadyThroughSeq";
+
+const CURSOR_FIELDS: readonly AgentSessionCursorField[] = [
+  "ingestedThroughSeq",
+  "projectionReadyThroughSeq",
+];
 
 /** Composable write batch; `commit()` runs as one atomic transaction. */
 export class EventLedgerWriteBatch {
@@ -193,6 +225,17 @@ export class EventLedgerWriteBatch {
   putHydrationJob(scope: LedgerScopeKey, job: LedgerHydrationJobRecord): this {
     this.assertNotCommitted();
     this.ops.push({ kind: "hydration_job", scope, job });
+    return this;
+  }
+
+  /**
+   * Remove one durable hydration job. Intended to land in the same
+   * transaction as the canonical record (or tombstone) that satisfies it,
+   * so completion is all-or-nothing.
+   */
+  deleteHydrationJob(scope: LedgerScopeKey, jobId: string): this {
+    this.assertNotCommitted();
+    this.ops.push({ kind: "hydration_job_delete", scope, jobId });
     return this;
   }
 
@@ -259,6 +302,9 @@ export class EventLedgerWriteBatch {
           storeNames.add(AGENT_SESSIONS_STORE);
           break;
         case "hydration_job":
+          storeNames.add(PENDING_HYDRATION_STORE);
+          break;
+        case "hydration_job_delete":
           storeNames.add(PENDING_HYDRATION_STORE);
           break;
         case "canonical_record":
@@ -411,6 +457,14 @@ export class EventLedgerWriteBatch {
           });
           break;
         }
+        case "hydration_job_delete": {
+          const jobs = tx.objectStore(PENDING_HYDRATION_STORE);
+          const del = issue(() => jobs.delete(hydrationJobKey(op.scope, op.jobId)));
+          del?.addEventListener("error", () => {
+            failure = failure ?? (del.error ?? new Error("hydration job delete failed"));
+          });
+          break;
+        }
         case "canonical_record": {
           const records = tx.objectStore(CANONICAL_RECORDS_STORE);
           const put = issue(() =>
@@ -442,10 +496,29 @@ export class EventLedgerWriteBatch {
       if (!get) continue;
       get.onsuccess = () => {
         const existing = get.result;
-        const current = existing?.ingestedThroughSeq;
-        const requested = entry.patch.ingestedThroughSeq;
-        if (current !== undefined && requested !== undefined && requested < current) {
-          failure = failure ?? new LedgerCursorRegressionError(current, requested);
+        for (const field of CURSOR_FIELDS) {
+          const current = existing?.[field];
+          const requested = entry.patch[field];
+          if (
+            typeof current === "number" &&
+            typeof requested === "number" &&
+            requested < current
+          ) {
+            failure = failure ?? new LedgerCursorRegressionError(current, requested);
+            tryAbort(tx);
+            return;
+          }
+        }
+        // Readiness may never claim past the contiguous ingestion cursor.
+        const readyThrough = entry.patch.projectionReadyThroughSeq;
+        const ingestedThrough =
+          entry.patch.ingestedThroughSeq ?? existing?.ingestedThroughSeq;
+        if (
+          typeof readyThrough === "number" &&
+          typeof ingestedThrough === "number" &&
+          readyThrough > ingestedThrough
+        ) {
+          failure = failure ?? new LedgerCursorRegressionError(ingestedThrough, readyThrough);
           tryAbort(tx);
           return;
         }
@@ -608,6 +681,24 @@ export class EventLedger {
       RUNTIME_SCOPES_STORE,
       BY_REMOTE_RUNTIME_INDEX,
       IDBKeyRange.only([remoteKey, runtimeId, visibilityScopeId]),
+    );
+  }
+
+  /**
+   * List every runtime scope of one remote key. Used by the restart scan to
+   * enumerate scopes with durable state without knowing their identities in
+   * advance. Index keys are 3-part arrays; `[remoteKey, []]` sorts after
+   * every string runtime id, so the bound covers the whole remote.
+   */
+  async listRuntimeScopesByRemoteKey(
+    remoteKey: string,
+  ): Promise<LedgerRuntimeScopeRecord[]> {
+    const db = this.requireOpenDb();
+    return collectIndex<LedgerRuntimeScopeRecord>(
+      db,
+      RUNTIME_SCOPES_STORE,
+      BY_REMOTE_RUNTIME_INDEX,
+      IDBKeyRange.bound([remoteKey, ""], [remoteKey, []]),
     );
   }
 
@@ -801,6 +892,7 @@ async function collectRange<T>(
   range: IDBKeyRange,
 ): Promise<T[]> {
   return new Promise<T[]>((resolve, reject) => {
+    let settled = false;
     const tx = db.transaction(storeName, "readonly");
     const results: T[] = [];
     const req = tx.objectStore(storeName).openCursor(range);
@@ -810,11 +902,15 @@ async function collectRange<T>(
         results.push(cursor.value as T);
         cursor.continue();
       } else {
+        settled = true;
         resolve(results);
       }
     };
     req.onerror = () => reject(req.error ?? new Error(`${storeName} cursor failed`));
     tx.onerror = () => reject(tx.error ?? new Error(`${storeName} transaction failed`));
+    tx.onabort = () => {
+      if (!settled) reject(tx.error ?? new Error(`${storeName} transaction aborted`));
+    };
   });
 }
 
@@ -825,6 +921,7 @@ async function collectIndex<T>(
   range: IDBKeyRange,
 ): Promise<T[]> {
   return new Promise<T[]>((resolve, reject) => {
+    let settled = false;
     const tx = db.transaction(storeName, "readonly");
     const results: T[] = [];
     const req = tx.objectStore(storeName).index(indexName).openCursor(range);
@@ -834,10 +931,14 @@ async function collectIndex<T>(
         results.push(cursor.value as T);
         cursor.continue();
       } else {
+        settled = true;
         resolve(results);
       }
     };
     req.onerror = () => reject(req.error ?? new Error(`${storeName} index cursor failed`));
     tx.onerror = () => reject(tx.error ?? new Error(`${storeName} transaction failed`));
+    tx.onabort = () => {
+      if (!settled) reject(tx.error ?? new Error(`${storeName} transaction aborted`));
+    };
   });
 }

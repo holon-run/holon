@@ -11,6 +11,14 @@ export {
   deleteLedgerDatabase,
 } from "./db";
 export {
+  classifyEnvelope,
+  SUPPORTED_ENVELOPE_CONTRACT_VERSION,
+  type ClassifiedEnvelope,
+  type EnvelopeProjectionEffect,
+  type EnvelopeRecordReference,
+  type EnvelopeRecordTombstone,
+} from "./classification";
+export {
   LedgerCursorRegressionError,
   LedgerIdentityConflictError,
   LedgerQuotaError,
@@ -46,6 +54,16 @@ export {
   type LedgerRuntimeScopeRecord,
   type RawEventClassification,
 } from "./ledger";
+export {
+  isCanonicalTombstone,
+  LedgerIngestionPipeline,
+  type CanonicalTombstone,
+  type IngestionPipelineDependencies,
+  type LedgerHydrationFetchers,
+  type LedgerIngestionState,
+  type LedgerIngestionStatus,
+  type ProjectionSnapshotRepairSource,
+} from "./ingestion-pipeline";
 export {
   LEGACY_DB_NAME,
   deleteLegacyDatabase,
