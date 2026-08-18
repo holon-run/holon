@@ -140,10 +140,10 @@ python3 scripts/docker-e2e.py \
 
 The summary records the Git SHA, image ID and repository digest, requested
 model route, manifest hash, timings, provider attempts, token usage, tool
-counts, cleanup status, and previous image when supplied. A matrix run also
+counts, cleanup status, and previous image when supplied. A scheduler run also
 writes `scheduler-acceptance-report.json`, which binds the result to the Git
 SHA, immutable image digest, runtime schema revision, fixture corpus revision,
-manifest hash, both scheduler engines, and their per-case evidence identities.
+manifest hash, the canonical scheduler label, and per-case evidence identities.
 
 ### Checked-in cases
 
@@ -198,8 +198,8 @@ manifest hash, both scheduler engines, and their per-case evidence identities.
 
 #### Scheduler release acceptance cases
 
-The protected release run selects every case tagged `scheduler` and expands
-each into isolated `legacy` and `canonical` processes. The corpus includes:
+The protected release run selects every case tagged `scheduler` and runs each
+once in an isolated canonical process. The corpus includes:
 
 1. `scheduler-task-wait-resume` validates autonomous scheduling, promoted task
    yield/rejoin, external wait-resume, exact completion delivery binding, and
@@ -207,9 +207,8 @@ each into isolated `legacy` and `canonical` processes. The corpus includes:
 2. Provider-failure retry, multi-WorkItem scheduling, external/operator waits,
    interjection, compaction, worktree isolation, child supervision, and
    checkpoint replay retain their real process and persistence assertions.
-3. The canonical process additionally requires settled activation, demand,
-   and wait-generation state. The legacy process requires those canonical
-   execution tables to remain unused.
+3. Every scheduler case requires the canonical execution, WorkItem, queue,
+   task, and wait evidence appropriate to that scenario.
 
 These cases validate the complete boundary:
 
@@ -242,10 +241,10 @@ release ref are recorded in the run summary and attestation.
 The E2E job has read-only repository/package permissions and cannot publish a
 GitHub release, promote `latest`, or update Homebrew. Evidence is retained as a
 workflow artifact. Its attestation embeds the machine-readable scheduler
-acceptance report. The tag-triggered release workflow verifies that both
-engines passed against the same Git SHA, schema revision, fixture corpus, and
-candidate digest before publishing, then promotes that exact digest instead of
-rebuilding the container image.
+acceptance report. The tag-triggered release workflow verifies that the
+canonical scheduler suite passed against the same Git SHA, schema revision,
+fixture corpus, and candidate digest before publishing, then promotes that
+exact digest instead of rebuilding the container image.
 
 ## Phases
 

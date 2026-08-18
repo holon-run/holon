@@ -7,12 +7,13 @@ handle: rfc-scheduler-cutover-simplification
 
 # RFC: Scheduler Cutover Simplification
 
-> **Canonical-only amendment (2026-08-16):** the bounded compatibility window
-> ended after v0.31.1. The runtime now has one canonical scheduler. Legacy
-> rollback uses v0.31.1 with a pre-migration database backup. A redundant
-> `canonical` selector is accepted with a warning for one minor release;
-> `legacy` and unknown values fail startup. Schema deletion is delivered in a
-> separate follow-up migration.
+> **Canonical-only amendment (2026-08-18):** the bounded compatibility window
+> ended after v0.31.1. The runtime now has one canonical scheduler and no
+> scheduler engine selector. `HOLON_SCHEDULER` and the persisted
+> `runtime.scheduler` key are no longer runtime inputs. Legacy rollback uses
+> v0.31.1 with a pre-migration database backup. Published legacy wire and schema
+> shapes remain only where migration compatibility or historical diagnostics
+> require them.
 
 ## Summary
 
@@ -45,13 +46,13 @@ CI and release environments qualify one build
         operator makes one release decision
                     |
                     v
- process starts with legacy or canonical selected
+       process starts the canonical scheduler
                     |
                     v
        exactly one scheduler owns all admissions
                     |
                     v
- legacy and the temporary selector are deleted
+ legacy code and the temporary selector stay deleted
 ```
 
 Holon will not maintain a production path that:
@@ -82,11 +83,11 @@ This RFC also supersedes implementation notes or website text that describes:
 [Runtime Scheduler Contract](./runtime-scheduler-contract.md) remains the
 broader scheduler vocabulary and projection contract.
 
-## Current, Transition, And Target States
+## Historical Transition And Current State
 
-### Current state
+### Historical state on July 31, 2026
 
-As of July 31, 2026, startup exposes a temporary process-wide
+On July 31, 2026, startup exposed a temporary process-wide
 `legacy | canonical` selector. The selected engine is immutable for the process
 and the two engines do not shadow or compare each other in production.
 
@@ -98,7 +99,7 @@ export have been removed. `holon debug scheduler-recovery` retains a read-only
 summary of historical rollout rows so operators can distinguish compatibility
 data from canonical recovery candidates.
 
-### Transition state
+### Retired transition state
 
 The transition removes runtime rollout metadata from scheduler authority before
 performing destructive schema cleanup.
@@ -118,7 +119,7 @@ environment override > persisted configuration > canonical default
 
 This transition state is now retired by the canonical-only amendment above.
 
-The selector is:
+While it existed, the selector was:
 
 - parsed once during process startup;
 - immutable until process restart;
@@ -133,9 +134,9 @@ restored without reintroducing the deleted shadow and rollout systems. If that
 requires rebuilding a second large scheduler, Holon will remain canonical-only
 and use binary/database rollback instead.
 
-### Target state
+### Current canonical-only state
 
-The target runtime has:
+The runtime now has:
 
 - one canonical scheduler engine;
 - no scheduler engine selector;
@@ -147,8 +148,9 @@ The target runtime has:
   scheduler transactions; and
 - no schema whose rows can change scheduler authority at runtime.
 
-Historical tables may remain unread for one compatibility release before a
-later destructive migration removes them.
+Historical tables and wire shapes may remain only for published-migration
+compatibility or read-only diagnosis until a later destructive migration
+removes them.
 
 ## Preserved Canonical Contract
 
@@ -169,13 +171,14 @@ remain required:
 
 The simplification removes transition machinery, not safety invariants.
 
-## Engine Isolation
+## Historical Engine Isolation
 
-If the temporary selector is implemented, the engine choice occurs at the
-highest scheduler admission/execution boundary. Deep transition commands must
-not carry mode flags.
+This section records the isolation rule used during the retired compatibility
+window. It is not a current runtime mode or extension point. The engine choice
+occurred at the highest scheduler admission/execution boundary; deep transition
+commands did not carry mode flags.
 
-The two engines may share:
+The two historical engines could share:
 
 - message envelopes;
 - WorkItem, task, and wait persistence;
@@ -183,7 +186,7 @@ The two engines may share:
 - transcripts, briefs, delivery, and audit records; and
 - end-to-end scenarios and externally visible assertions.
 
-They must not, for the same production input:
+They could not, for the same production input:
 
 - both decide admission;
 - both reserve or consume scheduler ownership;
@@ -196,9 +199,10 @@ Comparison belongs in tests that run separate processes and databases. Tests
 compare user-visible behavior and durable invariants, not byte-for-byte
 internal records.
 
-## Adoption Boundary
+## Historical Adoption Boundary
 
-Switching engines is an offline startup operation:
+During the retired compatibility window, switching engines was an offline
+startup operation:
 
 1. stop the runtime;
 2. create a database backup;
@@ -206,7 +210,7 @@ Switching engines is an offline startup operation:
 4. perform one bounded, transactional, idempotent adoption;
 5. start serving only after adoption and invariant checks succeed.
 
-Adoption may reconstruct only business state needed by the selected engine,
+Adoption could reconstruct only business state needed by the selected engine,
 including:
 
 - open WorkItem scheduling generations;
@@ -215,8 +219,11 @@ including:
 - dequeued but non-terminal queue claims; and
 - recoverable task rejoins.
 
-Adoption must not install a rollout manifest, collect approval evidence, or
+Adoption could not install a rollout manifest, collect approval evidence, or
 grant authority by scenario class.
+
+The current binary does not perform engine adoption. Returning to legacy
+requires restoring the pre-migration backup and running v0.31.1.
 
 ## Scheduler Diagnose And Repair
 
@@ -310,9 +317,9 @@ Published migrations are immutable. The transition therefore:
 5. leaves historical tables intact for at least one compatibility release; and
 6. drops them only in a later, independently reversible schema change.
 
-The database stores scheduler facts and audit history. Configuration selects a
-temporary engine. Neither historical rollout rows nor repair records select
-authority.
+The database stores scheduler facts and audit history. There is no scheduler
+engine configuration. Neither historical rollout rows, legacy wire records,
+nor repair records select authority.
 
 The destructive cleanup migration requires a recovery fixed point: no open
 execution attempts, in-flight execution work items, or dequeued queue entries.
@@ -326,16 +333,9 @@ does not start a runtime or admit new work.
 
 There is no automatic per-scenario rollback.
 
-During the compatibility window, supported rollback is:
-
-1. stop new admission;
-2. settle or explicitly interrupt in-flight activation;
-3. stop the runtime;
-4. run diagnosis and any safe typed repair;
-5. restart with the other engine if reverse projection is supported.
-
-When reverse projection is not supported, restore the pre-cutover backup and
-run the previous binary.
+The supported legacy rollback is to stop the runtime, restore the pre-migration
+backup, and run v0.31.1. The current binary never switches engines or projects
+canonical state back into a legacy scheduler.
 
 Every supported path must be exercised in release acceptance. A rollback path
 that has not been tested is not a supported recovery promise.
@@ -353,8 +353,7 @@ Implementation is split into independently reversible changes:
 5. delete dead rollout, shadow, and semantic production surfaces (**complete**);
 6. reduce activation types only after rollout authority is gone; and
 7. delete legacy and the selector after one compatibility release
-   (**code/config removal in progress under #2509; schema cleanup follows in a
-   separate PR**).
+   (**complete; schema cleanup remains a separate migration concern**).
 
 The final legacy removal requires:
 
@@ -371,8 +370,7 @@ The final legacy removal requires:
 - Do not replace the canonical scheduler with the legacy implementation.
 - Do not weaken activation, settlement, wait, replay, or transaction
   invariants.
-- Do not support live engine switching.
-- Do not support per-agent or per-scenario engine selection.
+- Do not reintroduce live, per-agent, or per-scenario engine selection.
 - Do not preserve shadow comparison as a permanent observability system.
 - Do not make the repair tool a general database editor.
 - Do not combine destructive schema cleanup with the startup compatibility

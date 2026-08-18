@@ -8,6 +8,14 @@
 
 审计基线：`a0a4d8c8`，2026-08-01。
 
+> **当前状态（2026-08-18）：** 本文以下“当前实现形态”和“已采用的近期收缩”记录
+> 的是 unified execution protocol 切换前的历史审计基线。运行时已删除
+> `src/domain/scheduler_protocol.rs` 及其 slot/dispatch/WorkDemand/
+> missing-settlement 控制权，也不存在 legacy engine 或 runtime selector。当前契约以
+> [Scheduler–WorkItem Unified Execution Protocol](../rfcs/scheduler-work-item-unified-execution-protocol.md)
+> 和现行 runtime scheduler notes 为准。本文保留用于解释为何发生职责收缩，不应作为
+> 现行生产 authority 图读取。
+
 ## 结论摘要
 
 Canonical scheduler 不是一套应当整体废弃的方案。以下基础能力仍然具有明确的
@@ -34,10 +42,11 @@ settlement 表达该 attempt 的终态 outcome；运行资格、等待所有权�
 WorkItem/queue/wait 状态共同裁决。
 
 这不是立即删除 activation/settlement 的决定，也不是另起一套 scheduler 的提案。
-在新的简化设计被 RFC 明确之前，现有 canonical reducer 仍然是生产契约，修复必须
-继续遵守它的事务、幂等、fencing 和 provenance 边界。
+在当时新的简化设计被 RFC 明确之前，canonical reducer 仍是生产契约，修复必须
+遵守它的事务、幂等、fencing 和 provenance 边界。该过渡约束现已由 unified
+execution protocol 取代。
 
-## 当前实现形态
+## 历史实现形态
 
 ### 一个 snapshot 承载多组相互约束的事实
 
@@ -182,9 +191,10 @@ WorkItem、wait condition、agent state 和 queue projection，settlement builde
 读取这些事实。这意味着 canonical protocol 当前更像覆盖在已有 runtime lifecycle
 之上的控制层，而不是唯一状态机。
 
-这不等同于仍在运行两套 scheduler；accepted cutover RFC 已经要求一个进程只选择一个
-调度引擎。问题在于：即使只有 canonical engine，engine 内仍存在 protocol state 与
-operational state 的双向同步。只删除 rollout/shadow 控制面并不会自动消除这层重复。
+这在当时也不等同于同时运行两套 scheduler；进程只运行所选引擎。问题在于：即使只有
+canonical engine，engine 内仍存在 protocol state 与 operational state 的双向同步。
+后续删除 rollout/shadow 控制面本身并不会自动消除这层重复，因此最终还需要 unified
+execution protocol 收敛 authority。
 
 ### 7. Protocol conflict 会演化为 agent 不可用
 
@@ -307,7 +317,7 @@ owner 检查。
 
 Runtime loop 不应把普通 protocol rejection 无差别转成 agent restart。
 
-## 已采用的近期收缩
+## 当时已采用的近期收缩
 
 在不更换 scheduler、不修改持久化 schema 的前提下，近期实现先收缩最容易反复出错的
 lane 边界：
@@ -321,8 +331,8 @@ lane 边界：
   canonical partition 之外并产生诊断，不再阻止 agent 处理已经合法的 canonical work；
 - canonical prestate 损坏、存储错误和 missing-settlement recovery 仍然 fail closed。
 
-这是面向稳定性的有界修正，不代表 activation/settlement 的长期职责收缩已经完成。后续
-是否继续简化，应以生产 trace replay、restart drill 和 invariant 规模是否明显下降为依据。
+这是当时面向稳定性的有界修正；后续 unified execution protocol 和 canonical-only
+cutover 已完成长期职责收缩。下面的测试结果仍只代表该审计基线。
 
 ## 验证和测试缺口
 

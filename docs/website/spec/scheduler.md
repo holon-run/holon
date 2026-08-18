@@ -12,20 +12,21 @@ It also documents the additive protocol transition layer that wraps scheduler
 decisions in atomic transactions with replay protection, explicit activation
 ownership, terminal settlement, and a public diagnostic event stream.
 
-> **Last verified:** 2026-07-31 against `src/runtime/scheduler.rs`,
+> **Last verified:** 2026-08-18 against `src/runtime/scheduler.rs`,
 > `src/runtime/scheduler_executor.rs`, `src/runtime/waiting.rs`,
 > `src/runtime/closure.rs`, `src/runtime/turn/execution.rs`,
-> `src/runtime_event.rs`, `src/types.rs`.
+> `src/runtime_db/transitions.rs`, `src/runtime_event.rs`, and `src/types.rs`.
 
 ## Source RFCs
 
 - [Runtime Scheduler Contract](https://github.com/holon-run/holon/blob/main/docs/rfcs/runtime-scheduler-contract.md)
+- [Scheduler–WorkItem Unified Execution Protocol](https://github.com/holon-run/holon/blob/main/docs/rfcs/scheduler-work-item-unified-execution-protocol.md)
 - [Scheduler Cutover Simplification](https://github.com/holon-run/holon/blob/main/docs/rfcs/scheduler-cutover-simplification.md)
 - [Scheduler Wait State And Recoverable Agent Continuation](https://github.com/holon-run/holon/blob/main/docs/rfcs/scheduler-wait-state.md)
 - [Waiting Plane And Reactivation](https://github.com/holon-run/holon/blob/main/docs/rfcs/waiting-plane-and-reactivation.md)
 - [Continuation Trigger](https://github.com/holon-run/holon/blob/main/docs/rfcs/continuation-trigger.md)
 - [Work Item Centered Agent Runtime](https://github.com/holon-run/holon/blob/main/docs/rfcs/work-item-centered-agent-runtime.md)
-- [Agent Activation, Settlement, and Dispatch](https://github.com/holon-run/holon/blob/main/docs/rfcs/agent-activation-settlement-and-dispatch.md) — normative target for admission, activation, settlement, and dispatch authority
+- [Agent Activation, Settlement, and Dispatch](https://github.com/holon-run/holon/blob/main/docs/rfcs/agent-activation-settlement-and-dispatch.md) — historical activation/settlement design; superseded where the unified protocol assigns current authority
 
 ## Core model
 
@@ -166,10 +167,9 @@ task, Turn, transcript, brief, delivery, activation, settlement, and execution
 facts share one authority and transaction path.
 
 The accepted transition contract retires runtime manifest/preflight gates,
-per-scenario authority, automatic hard-blocker rollback, and production shadow
-comparison. The retired selector is accepted only when its value is
-`canonical`, with a deprecation warning for one minor release. `legacy` and
-unknown values fail startup.
+per-scenario authority, automatic hard-blocker rollback, production shadow
+comparison, the legacy engine, and the runtime engine selector. Historical
+selector configuration is not a runtime input.
 
 ### Integration points
 
@@ -183,11 +183,10 @@ boundary records the canonical facts required by the next boundary:
 | Settlement (`runtime::commit_queue_settlement`) | `Settle` | matching activation, terminal Turn, WorkItem disposition |
 | Delivery disposition | `Settle` | settlement-bound brief or delivery evidence |
 | Operator interjection | `Admit` | running activation and safe-point identity |
-| Work-queue idle tick (`memory_refresh::emit_system_tick_from_work_queue`) | `Admit` | runnable demand and dispatch revision |
+| Work-queue idle tick (`memory_refresh::emit_system_tick_from_work_queue`) | `Admit` | runnable WorkItem identity, generation, and source revision |
 
-The semantic decision plane is not part of production admission. Its remaining
-module and fixtures are offline experimental surface and will be removed from
-the production dependency graph. Deterministic structural binding and the
+The semantic decision plane is not part of production admission. Its production
+module and fixtures have been removed. Deterministic structural binding and the
 canonical protocol retain all state-transition control.
 
 ### Public diagnostic event stream

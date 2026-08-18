@@ -31,12 +31,13 @@ accepted.
 
 ## Implementation Status
 
-As of 2026-08-05, canonical admission, turn binding, terminal settlement,
+As of 2026-08-18, canonical admission, turn binding, terminal settlement,
 operator interjection, exact wait reconciliation, and startup recovery read
-only the unified execution protocol and their owning business ledgers.
-Historical scheduler control tables remain available to the explicitly
-selected legacy engine and to explicit recovery diagnostics during the
-observation period; they do not grant or settle canonical execution.
+only the unified execution protocol and their owning business ledgers. The
+legacy engine and runtime engine selector have been removed. Historical
+scheduler control tables and wire shapes remain only as published-migration
+compatibility or explicit diagnostic input; they do not grant or settle
+execution.
 
 ## Motivation
 
@@ -404,14 +405,12 @@ facts are:
 - command results, audit, and delivery outbox.
 
 Historical activation authorities, slots, dispatch rows, scheduler WorkDemand,
-scheduler wait mirrors, missing-settlement rows, and rollout metadata become
-compatibility data or rebuildable evidence. During one compatibility release
-they may receive derived writes, but the canonical reader must not consult
-them for admission or settlement. Compatibility-write failure must not create
-partial primary state.
+scheduler wait mirrors, missing-settlement rows, and rollout metadata are
+compatibility data or rebuildable evidence. The canonical reader and writer do
+not consult or maintain them for admission or settlement.
 
-The process chooses `legacy` or `canonical` once at startup. There is no
-scenario, agent, conflict, or claim-time fallback between engines.
+The process always runs the canonical scheduler. There is no runtime selector
+or scenario, agent, conflict, or claim-time fallback between engines.
 
 The canonical cutover does not semantically migrate historical unresolved
 waits. A protocol-version migration cancels every pre-cutover unresolved wait
@@ -442,11 +441,9 @@ not revive, rebind, or trigger any historical wait.
 6. run required scheduler CI, crash/restart, soak, incident replay, upgrade,
    repair, and rollback drills;
 7. publish a canonical-default compatibility release retaining the
-   process-global legacy selector;
-8. remove legacy only after one explicit observation period and operator
-   approval.
-
-Legacy removal is not authorized by this RFC's implementation alone.
+   process-global legacy selector (**complete**);
+8. remove legacy after one explicit observation period and operator approval
+   (**complete**).
 
 ## Required Verification
 
@@ -482,4 +479,4 @@ slot/dispatch/WorkDemand/missing-settlement authority in the canonical reader.
 - replacement of the provider turn loop;
 - removal of append-only audit;
 - making plan, todo, prose, or focus grant execution;
-- deletion of legacy before the compatibility release and observation gate.
+- reintroduction of legacy or an engine selector after the completed cutover.

@@ -28,6 +28,12 @@ observability. See
 [scheduler spec](../website/spec/scheduler.md) and
 [implementation decision 098](../implementation-decisions/098-scheduler-protocol-transition-wraps-legacy-boundaries-atomically.md).
 
+The implementation-decision title records the historical migration boundary.
+The current `QueueTransitionCommand` contains only canonical queue, WorkItem,
+agent-state, message, transcript, Turn, audit, and brief mutations; it carries
+no legacy scheduler protocol payload. The runtime has no scheduler engine
+selector or legacy admission path.
+
 Canonical scheduler snapshots and ordinary queue/protocol transactions no
 longer load rollout manifests, preflights, per-scenario authority, expectations,
 or hard blockers. Migration 40 records that those tables are retired
@@ -41,6 +47,10 @@ its public export are gone, and runtime tests no longer configure historical
 scenario-authority rows. Published rollout, shadow-comparison, and semantic
 decision migrations remain immutable and are covered as upgrade compatibility
 schema.
+
+Published legacy scheduler command JSON shapes likewise remain only in
+migration parsing and tests that prove old databases can be read safely. They
+are not domain commands or runtime authority.
 
 `holon debug scheduler-recovery` reports retired rollout row counts and stale
 authoritative rows separately from typed canonical recovery candidates. The
