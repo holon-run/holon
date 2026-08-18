@@ -41,6 +41,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/agents/snapshot": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Agent roster snapshot
+         * @description Authoritative roster snapshot (RFC: observer sync): all-or-nothing membership with per-Agent event windows and latest Brief anchors from one committed read view. Served only while the agents.roster-snapshot.v1 capability is advertised; route registration alone is never sufficient.
+         */
+        get: operations["agentsSnapshot"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agents/{agent_id}/briefs": {
         parameters: {
             query?: never;
@@ -130,7 +150,7 @@ export interface paths {
         };
         /**
          * Agent event page
-         * @description Return a bounded page of versioned runtime event envelopes. Query parameters: before_seq, after_seq, limit, order, max_level. Identity is (event_log_epoch, agent_id, event_seq); unknown kinds retain their opaque payload.
+         * @description Return a bounded page of versioned runtime event envelopes. Query parameters: before_seq, after_seq, limit, order, max_level. Identity is (event_log_epoch, agent_id, event_seq); unknown kinds retain their opaque payload. While events.projection-effect.v1 is advertised every envelope carries the additive projection_effect classification derived from the runtime event registry (envelope contract version 3); a max_level-filtered page changes presentation only and is never proof of raw continuity.
          */
         get: operations["agentEvents"];
         put?: never;
@@ -150,7 +170,7 @@ export interface paths {
         };
         /**
          * Agent event stream
-         * @description Return Server-Sent Events carrying raw StreamEventEnvelope JSON data. Query parameters: after_seq, limit. SSE id is event_seq; SSE event is the audit event kind; missing replay cursors return cursor_not_found before the stream opens. If the receiver lags, the server closes the stream so clients can backfill after the last contiguous SSE id before reconnecting. Breaking change: the projection query parameter and StreamEventEnvelope.projection field have been removed.
+         * @description Return Server-Sent Events carrying raw StreamEventEnvelope JSON data. Query parameters: after_seq, limit. SSE id is event_seq; SSE event is the audit event kind; missing replay cursors return cursor_not_found before the stream opens, carrying event_log_epoch, oldest_retained_seq, and event_head_seq from one committed read view so clients can distinguish a retained-prefix gap from an epoch change. Envelopes carry the additive projection_effect field while events.projection-effect.v1 is advertised. If the receiver lags, the server closes the stream so clients can backfill after the last contiguous SSE id before reconnecting. Breaking change: the projection query parameter and StreamEventEnvelope.projection field have been removed.
          */
         get: operations["agentEventsStream"];
         put?: never;
@@ -195,6 +215,26 @@ export interface paths {
          * @description Return persisted message envelopes for the selected agent. Missing or cross-agent ids are reported in missing_message_ids.
          */
         post: operations["agentMessagesBatchGet"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agents/{agent_id}/projection-snapshot": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Agent projection snapshot
+         * @description Per-Agent canonical projection snapshot (RFC: observer sync): compact current state plus revision anchors at one committed consistency boundary. snapshot_through_seq equals the committed per-Agent event head of the same view; clients replay only event_seq greater than it. Served only while the agents.projection-snapshot.v1 capability is advertised; route registration alone is never sufficient.
+         */
+        get: operations["agentProjectionSnapshot"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2641,6 +2681,14 @@ export interface components {
             };
             /** Format: date-time */
             created_at: string;
+            /**
+             * Format: uint64
+             * @description Immutable linkage to the unique `brief_created` audit event committed
+             *      in the same runtime DB transition as this record. `None` for records
+             *      whose creating event cannot be identified (pre-linkage history or
+             *      ambiguous backfill candidates).
+             */
+            created_event_seq?: number | null;
             finalizes_assistant_round_id?: string | null;
             id: string;
             /** @enum {string} */
@@ -2792,6 +2840,11 @@ export interface components {
                 payload_schema: string;
                 /** Format: uint32 */
                 payload_schema_version: number;
+                /**
+                 * @description Additive classification derived from the runtime event registry.
+                 *      Present only while `events.projection-effect.v1` is advertised.
+                 */
+                projection_effect?: ("none" | "display_invalidation") | null;
                 provenance: {
                     admission_context?: unknown;
                     authority_class?: unknown;
@@ -3682,6 +3735,11 @@ export interface components {
             payload_schema: string;
             /** Format: uint32 */
             payload_schema_version: number;
+            /**
+             * @description Additive classification derived from the runtime event registry.
+             *      Present only while `events.projection-effect.v1` is advertised.
+             */
+            projection_effect?: ("none" | "display_invalidation") | null;
             provenance: {
                 admission_context?: unknown;
                 authority_class?: unknown;
@@ -4442,6 +4500,44 @@ export interface operations {
             };
         };
     };
+    agentsSnapshot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentRosterSnapshot"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     agentBriefs: {
         parameters: {
             query?: never;
@@ -4755,6 +4851,47 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BatchGetMessagesResponse"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    agentProjectionSnapshot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Agent id. */
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentProjectionSnapshot"];
                 };
             };
             /** @description Client error JSON response. */
