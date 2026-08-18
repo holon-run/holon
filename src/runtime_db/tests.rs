@@ -82,10 +82,11 @@ mod tests {
             WorkItemExecutionState,
         },
         domain::scheduler::SchedulerOwner,
-        domain::scheduler_protocol::{
+        runtime_db::legacy_scheduler_wire::{
             ActivationBinding, ActivationCause, ActivationInputAttachment,
             ActivationLifecycleState, ActivationOrigin, ActivationPriority, ActivationProvenance,
             ActivationTrust, AdmitActivationCommand, AgentActivation, PreemptionPolicy, WorkDemand,
+            WorkStatus,
         },
         runtime_db::migrations::{RETAINED_SCHEDULER_AUDIT_TABLES, RETIRED_SCHEDULER_TABLES},
         runtime_db::repositories::{enum_string, slim_task_record_for_payload},
@@ -464,7 +465,7 @@ mod tests {
         let demand = WorkDemand {
             metadata_revision: 1,
             scheduling_generation: 1,
-            status: crate::domain::scheduler_protocol::WorkStatus::Runnable,
+            status: WorkStatus::Runnable,
             capabilities: BTreeSet::new(),
             locks: BTreeSet::new(),
             locality: "local".into(),

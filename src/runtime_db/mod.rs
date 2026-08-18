@@ -12,6 +12,7 @@
 
 pub mod connection;
 pub mod evidence;
+mod legacy_scheduler_wire;
 pub mod migrations;
 pub mod repositories;
 pub mod retention;

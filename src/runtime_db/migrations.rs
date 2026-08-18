@@ -13,12 +13,12 @@ use crate::domain::{
         WorkItemExecutionRecord, WorkItemExecutionState,
     },
     scheduler::SchedulerOwner,
-    scheduler_protocol::{
-        ActivationBinding, ActivationCause, ActivationOrigin, ActivationPriority, ActivationTrust,
-        AdmitActivationCommand, WorkDemand,
-    },
 };
 use crate::runtime_db::evidence::content_hash;
+use crate::runtime_db::legacy_scheduler_wire::{
+    ActivationBinding, ActivationCause, ActivationOrigin, ActivationPriority, ActivationTrust,
+    AdmitActivationCommand, WorkDemand,
+};
 use crate::runtime_db::retired_scheduler_cleanup::retired_scheduler_cleanup_inventory;
 use crate::types::{AgentState, MessageEnvelope, TaskRecord, WaitConditionRecord, WorkItemRecord};
 

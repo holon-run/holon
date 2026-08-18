@@ -1,8 +1,8 @@
 //! Scheduler / WorkItem unified execution aggregate.
 //!
 //! Canonical production scheduling uses this aggregate as the sole execution
-//! authority. The older `scheduler_protocol` remains only for the explicitly
-//! selected legacy engine and read-only compatibility diagnostics.
+//! authority. Retired scheduler payloads remain only as private runtime
+//! database migration wire types for already-published databases.
 
 use std::collections::BTreeMap;
 
