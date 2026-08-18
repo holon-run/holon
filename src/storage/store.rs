@@ -91,6 +91,45 @@ impl RuntimeStore {
         self.index_outbox.enqueue_brief_best_effort(brief)
     }
 
+    /// Single-transition Brief publication. The Brief record, its audit
+    /// event sequence allocation, and the `brief_created` event commit in
+    /// one SQLite transaction; the stored linkage, committed event, and
+    /// insertion flag are returned. Event bus publication happens only
+    /// after the transaction commits, so an observed event always implies a
+    /// readable Brief record.
+    pub fn append_brief_with_created_event(
+        &self,
+        brief: &BriefRecord,
+        event: &crate::types::AuditEvent,
+    ) -> Result<crate::runtime_db::evidence::BriefCreatedCommit> {
+        self.ensure_writable()?;
+        let changes = self.index_outbox.changes_for_brief(brief);
+        let agent_id = self.current_agent_id()?;
+        let commit = self.runtime_db.evidence().append_brief_with_created_event(
+            agent_id.as_deref(),
+            brief,
+            event,
+            &changes,
+        )?;
+        self.index_outbox.enqueue_brief_best_effort(&commit.brief)?;
+        if commit.event_inserted {
+            if let Err(error) = self
+                .event_log
+                .publish_committed_event(agent_id.clone(), &commit.event)
+            {
+                tracing::warn!(
+                    error = %error,
+                    event_id = %commit.event.id,
+                    event_kind = %commit.event.kind,
+                    event_seq = commit.event.event_seq,
+                    agent_id = agent_id.as_deref().unwrap_or("<global>"),
+                    "failed to publish committed brief_created audit event"
+                );
+            }
+        }
+        Ok(commit)
+    }
+
     pub fn append_message(&self, message: &MessageEnvelope) -> Result<()> {
         self.ensure_writable()?;
         let changes = self.index_outbox.changes_for_message(message);

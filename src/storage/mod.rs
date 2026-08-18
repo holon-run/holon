@@ -366,6 +366,16 @@ impl AppStorage {
         self.store.append_brief(brief)
     }
 
+    /// Single-transition Brief publication: record, event sequence
+    /// allocation, and `brief_created` event commit atomically.
+    pub fn append_brief_with_created_event(
+        &self,
+        brief: &BriefRecord,
+        event: &crate::types::AuditEvent,
+    ) -> Result<crate::runtime_db::evidence::BriefCreatedCommit> {
+        self.store.append_brief_with_created_event(brief, event)
+    }
+
     pub fn append_message(&self, message: &MessageEnvelope) -> Result<()> {
         self.store.append_message(message)
     }
@@ -1428,6 +1438,65 @@ mod tests {
         assert_eq!(persisted.len(), 1);
         assert_eq!(persisted[0].id, published.event.id);
         assert_eq!(persisted[0].event_seq, published.event.event_seq);
+    }
+
+    #[test]
+    fn append_brief_with_created_event_publishes_after_commit_and_deduplicates() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "agent-test").unwrap();
+        storage.enable_event_bus(EventBus::new(8)).unwrap();
+        let mut receiver = storage.subscribe_events().unwrap().unwrap();
+
+        let brief = BriefRecord::new(
+            "agent-test",
+            BriefKind::Result,
+            "atomic brief publication",
+            None,
+            None,
+        );
+        let event = crate::types::brief_created_event_for(&brief).unwrap();
+        let commit = storage
+            .append_brief_with_created_event(&brief, &event)
+            .unwrap();
+        assert!(commit.event_inserted);
+
+        // The published event implies the Brief record is already committed:
+        // a fresh reader observes both in one view.
+        let published = receiver.try_recv().unwrap();
+        let reader = RuntimeDb::open_and_migrate(
+            storage.runtime_dir().join("state/runtime.sqlite"),
+            storage.runtime_dir().join("state/runtime.lock"),
+        )
+        .unwrap();
+        let stored = reader
+            .evidence()
+            .brief_by_id("agent-test", &brief.id)
+            .unwrap()
+            .expect("brief readable once event is published");
+        assert_eq!(
+            stored.created_event_seq,
+            Some(published.event.event_seq),
+            "linkage must point at the published event"
+        );
+
+        // A retried publication neither appends a second event nor
+        // republishes the committed one.
+        let retry = storage
+            .append_brief_with_created_event(&brief, &event)
+            .unwrap();
+        assert!(!retry.event_inserted);
+        assert!(receiver.try_recv().is_err());
+        let events = reader
+            .audit_events()
+            .recent(Some("agent-test"), 10)
+            .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.kind == "brief_created")
+                .count(),
+            1
+        );
     }
 
     #[test]

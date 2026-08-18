@@ -115,8 +115,8 @@ use crate::{
     tool::{ToolRegistry, ToolResult},
     types::LoadedAgentMemory,
     types::{
-        ActiveWorkspaceEntry, AdmissionContext, AgentIdentityView, AgentKind,
-        AgentModelOverrideAuditEvent, AgentModelSource, AgentModelState, AgentState,
+        brief_created_event_for, ActiveWorkspaceEntry, AdmissionContext, AgentIdentityView,
+        AgentKind, AgentModelOverrideAuditEvent, AgentModelSource, AgentModelState, AgentState,
         AgentStateChangedEvent, AgentStatus, AgentSummary, AuditEvent, AuthorityClass,
         BriefCreatedAuditEvent, BriefRecord, CallbackDeliveryMode, CallbackDeliveryPayload,
         CallbackDeliveryResult, CallbackIngressDisposition, ClosureDecision,
@@ -4346,12 +4346,6 @@ impl RuntimeHandle {
         record: &ToolExecutionRecord,
     ) -> Result<()> {
         self.inner.storage.append_tool_execution(record)?;
-        self.inner.notify.notify_one();
-        Ok(())
-    }
-
-    pub(crate) fn persist_brief_evidence(&self, brief: &BriefRecord) -> Result<()> {
-        self.inner.storage.append_brief(brief)?;
         self.inner.notify.notify_one();
         Ok(())
     }

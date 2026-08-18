@@ -9,15 +9,15 @@ use crate::runtime_error::{
 use crate::tool::helpers::truncate_output_to_char_budget;
 use crate::tool::ToolError;
 use crate::types::{
-    AgentProfilePreset, BriefKind, BriefRecord, ChildAgentWorkspaceMode, CommandTaskStatusSnapshot,
-    CompletionReportRequirement, CompletionReportState, FailureArtifact, FailureArtifactCategory,
-    SpawnAgentModelRequest, SpawnAgentModelResolution, SpawnAgentModelResolutionStatus,
-    SpawnAgentResult, TaskHandle, TaskInputResult, TaskKind, TaskListEntry, TaskOutputResult,
-    TaskOutputRetrievalStatus, TaskOutputSnapshot, TaskStatusSnapshot, TodoItem, ToolArtifactRef,
-    WaitConditionRecord, WaitConditionStatus, WorkItemCompletionIntent, WorkItemContinuationFrame,
-    WorkItemContinuationReturnPolicy, WorkItemContinuationState, WorkItemDelegationRecord,
-    WorkItemDelegationState, WorkItemPlanStatus, WorkItemReadiness, WorkItemRecord, WorkItemState,
-    CHILD_AGENT_TASK_KIND,
+    brief_created_event_for, AgentProfilePreset, BriefKind, BriefRecord, ChildAgentWorkspaceMode,
+    CommandTaskStatusSnapshot, CompletionReportRequirement, CompletionReportState, FailureArtifact,
+    FailureArtifactCategory, SpawnAgentModelRequest, SpawnAgentModelResolution,
+    SpawnAgentModelResolutionStatus, SpawnAgentResult, TaskHandle, TaskInputResult, TaskKind,
+    TaskListEntry, TaskOutputResult, TaskOutputRetrievalStatus, TaskOutputSnapshot,
+    TaskStatusSnapshot, TodoItem, ToolArtifactRef, WaitConditionRecord, WaitConditionStatus,
+    WorkItemCompletionIntent, WorkItemContinuationFrame, WorkItemContinuationReturnPolicy,
+    WorkItemContinuationState, WorkItemDelegationRecord, WorkItemDelegationState,
+    WorkItemPlanStatus, WorkItemReadiness, WorkItemRecord, WorkItemState, CHILD_AGENT_TASK_KIND,
 };
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -4238,10 +4238,10 @@ impl RuntimeHandle {
         }
 
         let mut audit_events = vec![
-            AuditEvent::typed(
-                RuntimeEventKind::BriefCreated,
-                &BriefCreatedAuditEvent::from_brief(brief),
-            )?,
+            // Deterministic identity so a replayed completion transition
+            // reuses the committed brief_created event and links the Brief
+            // to its event sequence in the same transaction.
+            brief_created_event_for(brief)?,
             binding_event.clone(),
         ];
         if plan_artifact_changed {

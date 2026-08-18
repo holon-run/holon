@@ -146,6 +146,19 @@ impl RuntimeEventLog {
         Ok(())
     }
 
+    /// Publishes an event that was committed inside another storage
+    /// transaction (for example the single-transition Brief publication).
+    /// Callers must invoke this only after the owning transaction has
+    /// committed so subscribers never observe an event whose canonical
+    /// record is not yet readable.
+    pub(crate) fn publish_committed_event(
+        &self,
+        agent_id: Option<String>,
+        event: &AuditEvent,
+    ) -> Result<()> {
+        self.publish(agent_id, event)
+    }
+
     pub(crate) fn publish_transition_events(
         &self,
         effects: &PostCommitEffects,

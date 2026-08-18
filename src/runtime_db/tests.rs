@@ -615,6 +615,202 @@ mod tests {
     }
 
     #[test]
+    fn append_brief_with_created_event_commits_and_deduplicates_publication() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let mut brief = BriefRecord::new(
+            "agent-a",
+            crate::types::BriefKind::Result,
+            "atomic brief",
+            None,
+            None,
+        );
+        brief.turn_id = Some("turn-1".into());
+        let event = crate::types::brief_created_event_for(&brief)?;
+
+        let commit =
+            db.evidence()
+                .append_brief_with_created_event(Some("agent-a"), &brief, &event, &[])?;
+        assert!(commit.event_inserted);
+        assert_eq!(commit.brief.created_event_seq, Some(commit.event.event_seq));
+
+        // A retry of the same publication reuses the committed event and
+        // linkage instead of appending a duplicate event.
+        let retry =
+            db.evidence()
+                .append_brief_with_created_event(Some("agent-a"), &brief, &event, &[])?;
+        assert!(!retry.event_inserted);
+        assert_eq!(retry.event.event_seq, commit.event.event_seq);
+        assert_eq!(retry.event.id, commit.event.id);
+        assert_eq!(retry.brief.created_event_seq, Some(commit.event.event_seq));
+
+        let events = db.audit_events().recent(Some("agent-a"), 10)?;
+        let brief_created: Vec<_> = events
+            .iter()
+            .filter(|event| event.kind == "brief_created")
+            .collect();
+        assert_eq!(brief_created.len(), 1);
+        let stored = db
+            .evidence()
+            .brief_by_id("agent-a", &brief.id)?
+            .expect("brief stored");
+        assert_eq!(stored.created_event_seq, Some(commit.event.event_seq));
+        Ok(())
+    }
+
+    #[test]
+    fn append_brief_with_created_event_rejects_conflicting_relink_and_rolls_back() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let brief = BriefRecord::new(
+            "agent-a",
+            crate::types::BriefKind::Result,
+            "linked once",
+            None,
+            None,
+        );
+        let event = crate::types::brief_created_event_for(&brief)?;
+        let commit =
+            db.evidence()
+                .append_brief_with_created_event(Some("agent-a"), &brief, &event, &[])?;
+
+        // A second, different event identity for the same Brief must not
+        // relink it, and the whole transaction rolls back.
+        let mut other = crate::types::brief_created_event_for(&brief)?;
+        other.id = "event_conflicting_relink".into();
+        other.created_at = Utc::now();
+        let error = db
+            .evidence()
+            .append_brief_with_created_event(Some("agent-a"), &brief, &other, &[])
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("refusing relink"),
+            "unexpected error: {error:#}"
+        );
+
+        let events = db.audit_events().recent(Some("agent-a"), 10)?;
+        let brief_created: Vec<_> = events
+            .iter()
+            .filter(|event| event.kind == "brief_created")
+            .collect();
+        assert_eq!(brief_created.len(), 1);
+        let stored = db
+            .evidence()
+            .brief_by_id("agent-a", &brief.id)?
+            .expect("brief stored");
+        assert_eq!(stored.created_event_seq, Some(commit.event.event_seq));
+        Ok(())
+    }
+
+    #[test]
+    fn migration_49_backfills_unique_linkage_and_marks_uncertain_history() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        {
+            let mut connection = open_connection(&db_path)?;
+            migrate_through(&mut connection, 48)?;
+            let seed_brief = |evidence_id: &str, text: &str| -> Result<BriefRecord> {
+                let mut brief =
+                    BriefRecord::new("agent-a", crate::types::BriefKind::Result, text, None, None);
+                brief.id = evidence_id.into();
+                connection.execute(
+                    "INSERT INTO briefs (
+                       evidence_id, agent_id, created_at, kind, preview, payload_json
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        brief.id,
+                        brief.agent_id,
+                        timestamp(brief.created_at),
+                        "result",
+                        text,
+                        serde_json::to_string(&brief)?
+                    ],
+                )?;
+                Ok(brief)
+            };
+            let linked = seed_brief("brief-linked", "unique candidate")?;
+            let _missing = seed_brief("brief-missing", "no candidate")?;
+            let ambiguous = seed_brief("brief-ambiguous", "two candidates")?;
+            let seed_event = |audit_event_id: &str, event_seq: i64, brief_id: &str| -> Result<()> {
+                connection.execute(
+                    "INSERT INTO audit_events (
+                           audit_event_id, event_seq, agent_id, kind, created_at, data_json
+                         ) VALUES (?1, ?2, ?3, 'brief_created', ?4, ?5)",
+                    params![
+                        audit_event_id,
+                        event_seq,
+                        "agent-a",
+                        timestamp(Utc::now()),
+                        serde_json::json!({
+                            "brief_id": brief_id,
+                            "agent_id": "agent-a",
+                        })
+                        .to_string()
+                    ],
+                )?;
+                Ok(())
+            };
+            seed_event("event-linked", 11, &linked.id)?;
+            seed_event("event-ambiguous-a", 21, &ambiguous.id)?;
+            seed_event("event-ambiguous-b", 22, &ambiguous.id)?;
+
+            apply_migration(&mut connection, &MIGRATIONS[48])?;
+
+            let linkage: (Option<i64>, String) = connection.query_row(
+                "SELECT created_event_seq, payload_json FROM briefs
+                 WHERE evidence_id = 'brief-linked'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(linkage.0, Some(11));
+            let stored: BriefRecord = serde_json::from_str(&linkage.1)?;
+            assert_eq!(stored.created_event_seq, Some(11));
+            // Migration must not modify Brief content or timestamps.
+            assert_eq!(stored.text, linked.text);
+            assert_eq!(stored.created_at, linked.created_at);
+            assert_eq!(stored.kind, linked.kind);
+            assert_eq!(stored.agent_id, linked.agent_id);
+
+            for (brief_id, expected_reason) in [
+                ("brief-missing", "no_candidate_event"),
+                ("brief-ambiguous", "ambiguous_candidate_events"),
+            ] {
+                let linkage: Option<i64> = connection.query_row(
+                    "SELECT created_event_seq FROM briefs WHERE evidence_id = ?1",
+                    [brief_id],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(linkage, None, "{brief_id} must stay unlinked");
+                let (reason, payload_json): (String, String) = connection.query_row(
+                    "SELECT reason, payload_json FROM brief_created_linkage_uncertain
+                     JOIN briefs ON briefs.evidence_id = brief_created_linkage_uncertain.evidence_id
+                     WHERE brief_created_linkage_uncertain.evidence_id = ?1",
+                    [brief_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                assert_eq!(reason, expected_reason);
+                let stored: BriefRecord = serde_json::from_str(&payload_json)?;
+                assert_eq!(stored.created_event_seq, None);
+            }
+
+            // Fresh reopen persists the capability verification for the
+            // sound linkage state.
+            let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+            let foundations = db.observer_sync_foundations()?;
+            assert!(foundations.brief_atomic_linkage_verified);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn fresh_runtime_db_verifies_brief_atomic_linkage_capability() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let foundations = db.observer_sync_foundations()?;
+        assert!(foundations.brief_atomic_linkage_verified);
+        Ok(())
+    }
+
+    #[test]
     fn release_baseline_matches_compatibility_migration_schema() -> Result<()> {
         let (_baseline_temp, baseline_path, baseline_lock) = temp_paths()?;
         let baseline = RuntimeDb::open_and_migrate(&baseline_path, &baseline_lock)?;
@@ -1387,7 +1583,7 @@ INSERT INTO storage_domains (
         assert!(
             error
                 .to_string()
-                .contains("supports runtime db schemas 46 through 48, found 45"),
+                .contains("supports runtime db schemas 46 through 49, found 45"),
             "{error:#}"
         );
         Ok(())
@@ -1510,7 +1706,7 @@ INSERT INTO scheduler_rollout_command_results (
         RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
 
         let connection = open_connection(&db_path)?;
-        assert_eq!(current_schema_version(&connection)?, 48);
+        assert_eq!(current_schema_version(&connection)?, 49);
         for table in RETIRED_SCHEDULER_TABLES {
             assert!(
                 !table_exists(&connection, table)?,
@@ -1664,7 +1860,7 @@ INSERT INTO scheduler_rollout_command_results (
 
             RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
             let connection = open_connection(&db_path)?;
-            assert_eq!(current_schema_version(&connection)?, 48);
+            assert_eq!(current_schema_version(&connection)?, 49);
             for table in RETIRED_SCHEDULER_TABLES {
                 assert!(
                     !table_exists(&connection, table)?,
@@ -1778,7 +1974,7 @@ INSERT INTO scheduler_rollout_command_results (
         drop(db);
 
         RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        assert_eq!(current_schema_version(&open_connection(&db_path)?)?, 48);
+        assert_eq!(current_schema_version(&open_connection(&db_path)?)?, 49);
         Ok(())
     }
 
@@ -1885,7 +2081,7 @@ INSERT INTO scheduler_rollout_command_results (
             RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
             assert_eq!(
                 current_schema_version(&open_connection(&db_path)?)?,
-                48,
+                49,
                 "{case}"
             );
         }
@@ -1944,7 +2140,7 @@ INSERT INTO scheduler_rollout_command_results (
         drop(db);
 
         RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        assert_eq!(current_schema_version(&open_connection(&db_path)?)?, 48);
+        assert_eq!(current_schema_version(&open_connection(&db_path)?)?, 49);
         Ok(())
     }
 
@@ -2004,7 +2200,7 @@ INSERT INTO scheduler_rollout_command_results (
         drop(db);
 
         RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        assert_eq!(current_schema_version(&open_connection(&db_path)?)?, 48);
+        assert_eq!(current_schema_version(&open_connection(&db_path)?)?, 49);
         Ok(())
     }
 

@@ -19,6 +19,7 @@ use crate::types::{
 pub(crate) const RUNTIME_IDENTITY_STABLE: &str = "runtime_identity_stable";
 pub(crate) const AGENT_IDENTITY_RESERVED: &str = "agent_identity_reserved";
 pub(crate) const EVENT_PROJECTION_EFFECT_COMPLETE: &str = "event_projection_effect_complete";
+pub(crate) const BRIEF_ATOMIC_LINKAGE_VERIFIED: &str = "brief_atomic_linkage_verified";
 
 /// Principal and entitlement used to derive the runtime-local public scope
 /// for unauthenticated local mode.
@@ -35,6 +36,11 @@ pub struct ObserverSyncFoundationVerification {
     /// `projection_effect` envelope field: registry-known kinds match their
     /// declared payload schema, and unknown kinds carry legacy markers.
     pub event_projection_effect_complete: bool,
+    /// Every Brief publication path commits the Brief record and its unique
+    /// `brief_created` event in one runtime DB transition, and every stored
+    /// linkage resolves to exactly one matching event. Retention-pruned
+    /// history with no linkage stays acceptable.
+    pub brief_atomic_linkage_verified: bool,
 }
 
 /// Per-Agent committed event recovery window used by the rich
@@ -191,7 +197,74 @@ pub(crate) fn verify_observer_sync_foundations(connection: &mut Connection) -> R
         &now,
         &inventory_detail,
     )?;
+    let linkage = verify_brief_atomic_linkage(connection);
+    let linkage_detail = match &linkage {
+        Ok(verified) => serde_json::json!({
+            "unmatched_linkages": 0,
+            "shared_sequences": 0,
+            "verified": verified,
+        })
+        .to_string(),
+        Err(error) => serde_json::json!({ "error": format!("{error:#}") }).to_string(),
+    };
+    persist_verification(
+        connection,
+        BRIEF_ATOMIC_LINKAGE_VERIFIED,
+        linkage.unwrap_or(false),
+        &now,
+        &linkage_detail,
+    )?;
     Ok(())
+}
+
+/// Proves the stored Brief linkage is sound for the atomic created-event
+/// contract: every `created_event_seq` resolves to exactly one
+/// `brief_created` audit event of the same Agent referencing that Brief,
+/// and no sequence is claimed by two Briefs. Events whose records were
+/// pruned by retention carry no linkage and therefore stay acceptable.
+fn verify_brief_atomic_linkage(connection: &Connection) -> Result<bool> {
+    if !table_exists(connection, "briefs")? || !table_exists(connection, "audit_events")? {
+        return Ok(false);
+    }
+    let linkage_column: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('briefs')
+         WHERE name = 'created_event_seq'",
+        [],
+        |row| row.get(0),
+    )?;
+    if linkage_column == 0 {
+        return Ok(false);
+    }
+    let unmatched: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM briefs b
+         WHERE b.created_event_seq IS NOT NULL AND (
+           SELECT COUNT(*) FROM audit_events e
+           WHERE e.kind = 'brief_created'
+             AND e.event_seq = b.created_event_seq
+             AND COALESCE(e.agent_id, json_extract(e.data_json, '$.agent_id')) = b.agent_id
+             AND json_extract(e.data_json, '$.brief_id') = b.evidence_id
+         ) != 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let shared_sequences: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM (
+           SELECT created_event_seq FROM briefs
+           WHERE created_event_seq IS NOT NULL
+           GROUP BY created_event_seq HAVING COUNT(*) > 1
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if unmatched > 0 || shared_sequences > 0 {
+        tracing::warn!(
+            unmatched,
+            shared_sequences,
+            "brief created_event_seq linkage verification failed"
+        );
+        return Ok(false);
+    }
+    Ok(true)
 }
 
 /// Proves every stored audit event classifies soundly under the registry
@@ -382,6 +455,7 @@ impl crate::runtime_db::RuntimeDb {
             runtime_identity_stable: verified(RUNTIME_IDENTITY_STABLE)?,
             agent_identity_reserved: verified(AGENT_IDENTITY_RESERVED)?,
             event_projection_effect_complete: verified(EVENT_PROJECTION_EFFECT_COMPLETE)?,
+            brief_atomic_linkage_verified: verified(BRIEF_ATOMIC_LINKAGE_VERIFIED)?,
         })
     }
 

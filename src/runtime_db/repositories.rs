@@ -2312,6 +2312,21 @@ impl EvidenceRepository<'_> {
         })
     }
 
+    /// Single-transaction Brief publication: audit event sequence
+    /// allocation, the `brief_created` event, the Brief record, and its
+    /// immutable `created_event_seq` linkage commit together.
+    pub fn append_brief_with_created_event(
+        &self,
+        agent_id: Option<&str>,
+        brief: &BriefRecord,
+        event: &crate::types::AuditEvent,
+        changes: &[RuntimeIndexChange],
+    ) -> Result<crate::runtime_db::evidence::BriefCreatedCommit> {
+        self.db.transaction(|tx| {
+            append_brief_with_created_event_tx(tx, agent_id, brief, event, changes)
+        })
+    }
+
     pub fn append_delivery_summary(&self, record: &DeliverySummaryRecord) -> Result<()> {
         self.db
             .transaction(|tx| insert_delivery_summary_evidence_tx(tx, record))

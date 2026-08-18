@@ -973,6 +973,7 @@ fn build_chat_text_includes_structured_operator_messages() {
             attachments: None,
             related_message_id: None,
             related_task_id: None,
+            created_event_seq: None,
         },
     );
 
@@ -1014,6 +1015,7 @@ fn build_chat_text_renders_message_block_header_above_body() {
             attachments: None,
             related_message_id: None,
             related_task_id: None,
+            created_event_seq: None,
         },
     );
 
@@ -1168,6 +1170,7 @@ fn build_chat_text_groups_agent_cells_by_turn_index() {
         attachments: None,
         related_message_id: None,
         related_task_id: None,
+        created_event_seq: None,
     };
     let brief_event = StreamEventEnvelope {
         projection_effect: None,
@@ -2757,6 +2760,7 @@ fn chat_text_renders_markdown_body() {
             attachments: None,
             related_message_id: None,
             related_task_id: None,
+            created_event_seq: None,
         },
     );
 
@@ -2795,6 +2799,7 @@ fn chat_text_renders_brief_events_from_projection() {
             attachments: None,
             related_message_id: None,
             related_task_id: None,
+            created_event_seq: None,
         },
     );
 
@@ -2841,6 +2846,7 @@ fn chat_text_ignores_ack_lifecycle_event_but_keeps_result_brief_events() {
             attachments: None,
             related_message_id: None,
             related_task_id: None,
+            created_event_seq: None,
         },
     );
 
@@ -2878,6 +2884,7 @@ fn chat_text_summarizes_task_brief_output() {
             attachments: None,
             related_message_id: None,
             related_task_id: Some("task-1".into()),
+            created_event_seq: None,
         },
     );
 
@@ -3613,6 +3620,7 @@ fn active_activity_timestamp_does_not_sort_before_tail_history() {
             attachments: None,
             related_message_id: None,
             related_task_id: None,
+            created_event_seq: None,
         },
     );
     let projection = app.projection.as_mut().expect("projection");
@@ -3807,6 +3815,7 @@ fn collect_chat_items_orders_equal_timestamps_deterministically() {
             attachments: None,
             related_message_id: None,
             related_task_id: None,
+            created_event_seq: None,
         },
     );
 
@@ -4535,6 +4544,7 @@ fn chat_text_renders_full_long_brief_events() {
             attachments: None,
             related_message_id: None,
             related_task_id: None,
+            created_event_seq: None,
         },
     );
 
@@ -4599,6 +4609,7 @@ fn chat_text_cache_reuses_unchanged_content_and_replaces_stale_entries() {
             attachments: None,
             related_message_id: None,
             related_task_id: None,
+            created_event_seq: None,
         },
     );
 
@@ -4637,6 +4648,7 @@ fn chat_text_cache_reuses_unchanged_content_and_replaces_stale_entries() {
             attachments: None,
             related_message_id: None,
             related_task_id: None,
+            created_event_seq: None,
         },
     );
 
@@ -4942,6 +4954,7 @@ fn apply_agent_list_clears_stale_projection_when_selected_agent_disappears() {
             attachments: None,
             related_message_id: None,
             related_task_id: None,
+            created_event_seq: None,
         },
     );
 

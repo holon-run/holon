@@ -4685,6 +4685,12 @@ pub struct BriefRecord {
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub citations: Option<Vec<Citation>>,
+    /// Immutable linkage to the unique `brief_created` audit event committed
+    /// in the same runtime DB transition as this record. `None` for records
+    /// whose creating event cannot be identified (pre-linkage history or
+    /// ambiguous backfill candidates).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_event_seq: Option<u64>,
     pub attachments: Option<Vec<BriefAttachment>>,
     pub related_message_id: Option<String>,
     pub related_task_id: Option<String>,
@@ -4713,10 +4719,40 @@ impl BriefRecord {
             text: text.into(),
             citations: None,
             attachments: None,
+            created_event_seq: None,
             related_message_id,
             related_task_id,
         }
     }
+}
+
+/// Deterministic idempotency identity for a brief's `brief_created` audit
+/// event. Retry of a Brief publication must reuse the same event id (and
+/// brief-sourced `created_at`) so the transactional append sees one event,
+/// not one per attempt.
+pub fn stable_brief_created_event_id(agent_id: &str, brief_id: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update("brief_created".as_bytes());
+    hasher.update([0]);
+    hasher.update(agent_id.as_bytes());
+    hasher.update([0]);
+    hasher.update(brief_id.as_bytes());
+    let digest = format!("{:x}", hasher.finalize());
+    format!("event_{}", &digest[..15])
+}
+
+/// Builds the deterministic `brief_created` audit event for a Brief record.
+/// The event id and `created_at` are derived from the Brief so retries are
+/// content-identical and deduplicate at the storage layer.
+pub fn brief_created_event_for(brief: &BriefRecord) -> anyhow::Result<AuditEvent> {
+    let mut event = AuditEvent::typed(
+        crate::runtime_event::RuntimeEventKind::BriefCreated,
+        &BriefCreatedAuditEvent::from_brief(brief),
+    )?;
+    event.id = stable_brief_created_event_id(&brief.agent_id, &brief.id);
+    event.created_at = brief.created_at;
+    Ok(event)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

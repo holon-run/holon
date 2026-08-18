@@ -166,6 +166,7 @@ pub(crate) fn load_observer_sync_verification(
             verification.agent_identity_reserved = foundations.agent_identity_reserved;
             verification.event_projection_effect_complete =
                 foundations.event_projection_effect_complete;
+            verification.brief_atomic_linkage_verified = foundations.brief_atomic_linkage_verified;
         }
         Err(error) => {
             tracing::warn!(

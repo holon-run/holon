@@ -17,7 +17,7 @@ use crate::{
         evidence::{
             append_audit_event_tx, append_message_tx, append_transcript_entry_tx,
             insert_brief_evidence_tx, insert_runtime_index_changes_tx, insert_tool_evidence_tx,
-            upsert_agent_state_tx,
+            link_transition_brief_created_events_tx, upsert_agent_state_tx,
         },
         repositories::{
             compare_and_set_queue_entry_tx, insert_new_work_item_tx, queue_entry_transition,
@@ -772,7 +772,7 @@ impl RuntimeTransitionRepository<'_> {
             }
             inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
 
-            finish_transition_tx(
+            let commit = finish_transition_tx(
                 tx,
                 applied,
                 &command.agent_id,
@@ -785,7 +785,13 @@ impl RuntimeTransitionRepository<'_> {
                     notify_scheduler: command.notify_scheduler,
                     ..PostCommitEffects::default()
                 },
-            )
+            )?;
+            link_transition_brief_created_events_tx(
+                tx,
+                &command.brief_evidence,
+                &commit.effects.audit_events,
+            )?;
+            Ok(commit)
         })
     }
 
@@ -850,7 +856,7 @@ impl RuntimeTransitionRepository<'_> {
                 insert_brief_evidence_tx(tx, brief)?;
             }
             inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
-            finish_transition_tx(
+            let commit = finish_transition_tx(
                 tx,
                 applied,
                 &command.agent_id,
@@ -865,7 +871,13 @@ impl RuntimeTransitionRepository<'_> {
                     notify_scheduler: command.notify_scheduler,
                     ..PostCommitEffects::default()
                 },
-            )
+            )?;
+            link_transition_brief_created_events_tx(
+                tx,
+                &command.brief_evidence,
+                &commit.effects.audit_events,
+            )?;
+            Ok(commit)
         })
     }
 
@@ -1289,7 +1301,7 @@ impl RuntimeTransitionRepository<'_> {
                 insert_brief_evidence_tx(tx, brief)?;
             }
             inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
-            finish_transition_tx(
+            let commit = finish_transition_tx(
                 tx,
                 applied,
                 &command.agent_id,
@@ -1310,7 +1322,13 @@ impl RuntimeTransitionRepository<'_> {
                     notify_scheduler: command.notify_scheduler,
                     ..PostCommitEffects::default()
                 },
-            )
+            )?;
+            link_transition_brief_created_events_tx(
+                tx,
+                &command.brief_evidence,
+                &commit.effects.audit_events,
+            )?;
+            Ok(commit)
         })
     }
 
@@ -2412,6 +2430,125 @@ mod tests {
                     .high_watermark_for_agent("agent-a")?,
                 0
             );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn work_item_transition_links_brief_created_event_evidence() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        let record = work_item("work-brief-link");
+        let mut brief = BriefRecord::new(
+            "agent-a",
+            crate::types::BriefKind::Result,
+            "transition linked brief",
+            None,
+            None,
+        );
+        brief.work_item_id = Some(record.id.clone());
+        let event = crate::types::brief_created_event_for(&brief)?;
+
+        db.transitions()
+            .commit_work_item(&WorkItemTransitionCommand {
+                agent_id: "agent-a".into(),
+                mutation: WorkItemMutation::Insert {
+                    record: record.clone(),
+                },
+                agent_state: None,
+                brief_evidence: vec![brief.clone()],
+                audit_events: vec![event],
+                index_changes: vec![index_change("work_item", &record.id)],
+                notify_scheduler: true,
+                fault: None,
+            })?;
+
+        let stored = db
+            .evidence()
+            .brief_by_id("agent-a", &brief.id)?
+            .expect("brief evidence stored");
+        let linkage = stored.created_event_seq.expect("brief linked to event");
+        let events = db.audit_events().recent(Some("agent-a"), 10)?;
+        let brief_created: Vec<&crate::types::AuditEvent> = events
+            .iter()
+            .filter(|event| event.kind == "brief_created")
+            .collect();
+        assert_eq!(brief_created.len(), 1);
+        assert_eq!(brief_created[0].event_seq, linkage);
+        Ok(())
+    }
+
+    #[test]
+    fn work_item_transition_brief_linkage_faults_roll_back_record_and_event() -> Result<()> {
+        // Crash points before commit cover: before the record write
+        // (AfterValidation), after the record but before event/seq writes
+        // (AfterCanonicalWrites), after the event and sequence writes
+        // (AfterAuditWrites), and immediately before commit (BeforeCommit).
+        // Every one must leave neither the Brief, its event, nor its
+        // linkage behind; a retry then reuses the stable identity.
+        for fault in [
+            TransitionFaultPoint::AfterValidation,
+            TransitionFaultPoint::AfterCanonicalWrites,
+            TransitionFaultPoint::AfterAuditWrites,
+            TransitionFaultPoint::BeforeCommit,
+        ] {
+            let (_dir, db) = runtime_db()?;
+            let record = work_item("work-brief-fault");
+            let mut brief = BriefRecord::new(
+                "agent-a",
+                crate::types::BriefKind::Result,
+                "faulted brief",
+                None,
+                None,
+            );
+            brief.work_item_id = Some(record.id.clone());
+            let event = crate::types::brief_created_event_for(&brief)?;
+            let error = db
+                .transitions()
+                .commit_work_item(&WorkItemTransitionCommand {
+                    agent_id: "agent-a".into(),
+                    mutation: WorkItemMutation::Insert {
+                        record: record.clone(),
+                    },
+                    agent_state: None,
+                    brief_evidence: vec![brief.clone()],
+                    audit_events: vec![event],
+                    index_changes: Vec::new(),
+                    notify_scheduler: true,
+                    fault: Some(fault),
+                })
+                .unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("injected runtime transition fault"));
+            assert!(db.evidence().brief_by_id("agent-a", &brief.id)?.is_none());
+            assert!(db.audit_events().recent(Some("agent-a"), 10)?.is_empty());
+
+            // The retry after the simulated crash commits exactly one
+            // linked event.
+            db.transitions()
+                .commit_work_item(&WorkItemTransitionCommand {
+                    agent_id: "agent-a".into(),
+                    mutation: WorkItemMutation::Insert {
+                        record: record.clone(),
+                    },
+                    agent_state: None,
+                    brief_evidence: vec![brief.clone()],
+                    audit_events: vec![crate::types::brief_created_event_for(&brief)?],
+                    index_changes: Vec::new(),
+                    notify_scheduler: true,
+                    fault: None,
+                })?;
+            let stored = db
+                .evidence()
+                .brief_by_id("agent-a", &brief.id)?
+                .expect("brief stored after retry");
+            let events = db.audit_events().recent(Some("agent-a"), 10)?;
+            let brief_created: Vec<_> = events
+                .iter()
+                .filter(|event| event.kind == "brief_created")
+                .collect();
+            assert_eq!(brief_created.len(), 1);
+            assert_eq!(stored.created_event_seq, Some(brief_created[0].event_seq));
         }
         Ok(())
     }

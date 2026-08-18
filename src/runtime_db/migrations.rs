@@ -3115,6 +3115,22 @@ CREATE TABLE IF NOT EXISTS observer_sync_capability_verifications (
 );
 "#,
     },
+    Migration {
+        version: 49,
+        name: "brief_created_event_linkage",
+        // The `briefs` column and index live in
+        // `ensure_brief_created_event_linkage_schema` so name-accepted
+        // upgrade paths without historical evidence tables still apply.
+        sql: r#"
+CREATE TABLE IF NOT EXISTS brief_created_linkage_uncertain (
+  evidence_id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  candidate_count INTEGER NOT NULL,
+  reason TEXT NOT NULL,
+  discovered_at TEXT NOT NULL
+);
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -3357,6 +3373,9 @@ fn apply_migration_transaction(transaction: &Transaction<'_>, migration: &Migrat
     if migration.name == "execution_protocol_authority" {
         ensure_execution_protocol_authority_columns(transaction)?;
     }
+    if migration.name == "brief_created_event_linkage" {
+        ensure_brief_created_event_linkage_schema(transaction)?;
+    }
     transaction.execute_batch(migration.sql)?;
     if migration.name == "execution_protocol_authority" {
         backfill_execution_protocol_authority(transaction)?;
@@ -3372,6 +3391,9 @@ fn apply_migration_transaction(transaction: &Transaction<'_>, migration: &Migrat
     }
     if migration.name == "observer_sync_identity_foundations" {
         backfill_observer_sync_identity_foundations(transaction)?;
+    }
+    if migration.name == "brief_created_event_linkage" {
+        backfill_brief_created_event_linkage(transaction)?;
     }
     transaction.execute(
         "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
@@ -3404,6 +3426,125 @@ fn table_exists_tx(transaction: &Transaction<'_>, table: &str) -> Result<bool> {
         |row| row.get(0),
     )?;
     Ok(count == 1)
+}
+
+/// Adds the immutable `created_event_seq` linkage column and its uniqueness
+/// index. Name-accepted upgrade paths can reach this migration without the
+/// historical evidence tables, so the column work is gated on `briefs`
+/// existing and is idempotent under downgrade/re-upgrade cycles that keep
+/// the column while losing the migration record.
+fn ensure_brief_created_event_linkage_schema(transaction: &Transaction<'_>) -> Result<()> {
+    if !table_exists_tx(transaction, "briefs")? {
+        return Ok(());
+    }
+    let columns = transaction
+        .prepare("PRAGMA table_info(briefs)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    if !columns.iter().any(|column| column == "created_event_seq") {
+        transaction.execute_batch("ALTER TABLE briefs ADD COLUMN created_event_seq INTEGER;")?;
+    }
+    transaction.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS briefs_agent_created_event_seq
+           ON briefs(agent_id, created_event_seq)
+           WHERE created_event_seq IS NOT NULL;",
+    )?;
+    Ok(())
+}
+
+/// Backfills the immutable `created_event_seq` linkage from historical
+/// `brief_created` audit events. A Brief with exactly one candidate event
+/// carrying a sequence is linked; zero candidates, multiple candidates, or a
+/// candidate without a sequence keep `NULL` linkage and are recorded in
+/// `brief_created_linkage_uncertain`, so ambiguous history stays visibly
+/// absent instead of silently linked. Brief content and timestamps are
+/// never rewritten: only the additive linkage field changes.
+fn backfill_brief_created_event_linkage(transaction: &Transaction<'_>) -> Result<()> {
+    // Without the historical evidence tables there is nothing to link and no
+    // way to classify candidates, so ambiguous-history bookkeeping stays
+    // empty instead of misreporting every Brief as uncertain.
+    if !table_exists_tx(transaction, "briefs")? || !table_exists_tx(transaction, "audit_events")? {
+        return Ok(());
+    }
+    let rows: Vec<(String, String, String)> = {
+        let mut statement =
+            transaction.prepare("SELECT evidence_id, agent_id, payload_json FROM briefs")?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        rows
+    };
+    let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let mut linked = 0usize;
+    let mut uncertain = 0usize;
+    for (evidence_id, agent_id, payload_json) in rows {
+        let candidates: Vec<(String, Option<i64>)> = {
+            let mut statement = transaction.prepare(
+                "SELECT audit_event_id, event_seq FROM audit_events
+                 WHERE kind = 'brief_created'
+                   AND COALESCE(json_extract(data_json, '$.brief_id'), '') = ?1
+                   AND (agent_id = ?2
+                        OR COALESCE(json_extract(data_json, '$.agent_id'), '') = ?2)",
+            )?;
+            let rows = statement
+                .query_map(params![evidence_id, agent_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            rows
+        };
+        let (candidate_count, reason) = if candidates.len() == 1 {
+            match candidates[0].1 {
+                Some(event_seq) => {
+                    let mut brief: crate::types::BriefRecord = serde_json::from_str(&payload_json)
+                        .context("decoding brief payload for created_event_seq backfill")?;
+                    if brief.created_event_seq.is_none() {
+                        brief.created_event_seq =
+                            Some(u64::try_from(event_seq).with_context(|| {
+                                format!("brief_created event_seq {event_seq} must be non-negative")
+                            })?);
+                        transaction.execute(
+                            "UPDATE briefs SET created_event_seq = ?1, payload_json = ?2
+                             WHERE evidence_id = ?3",
+                            params![event_seq, serde_json::to_string(&brief)?, evidence_id],
+                        )?;
+                        linked += 1;
+                    }
+                    continue;
+                }
+                None => (1, "candidate_event_missing_seq"),
+            }
+        } else if candidates.is_empty() {
+            (0, "no_candidate_event")
+        } else {
+            (candidates.len(), "ambiguous_candidate_events")
+        };
+        transaction.execute(
+            "INSERT INTO brief_created_linkage_uncertain
+               (evidence_id, agent_id, candidate_count, reason, discovered_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(evidence_id) DO UPDATE SET
+               candidate_count = excluded.candidate_count,
+               reason = excluded.reason,
+               discovered_at = excluded.discovered_at",
+            params![evidence_id, agent_id, candidate_count, reason, now],
+        )?;
+        uncertain += 1;
+    }
+    if linked > 0 || uncertain > 0 {
+        tracing::info!(
+            linked,
+            uncertain,
+            "backfilled brief created_event_seq linkage"
+        );
+    }
+    Ok(())
 }
 
 fn backfill_observer_sync_identity_foundations(transaction: &Transaction<'_>) -> Result<()> {

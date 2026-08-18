@@ -108,13 +108,16 @@ impl RuntimeHandle {
             bound_brief.work_item_id = default_turn_work_item_id;
         }
         self.attach_generated_image_brief_attachments(&mut bound_brief)?;
-        let event_payload = BriefCreatedAuditEvent::from_brief(&bound_brief);
-        let evidence_brief = bound_brief.clone();
-        self.persist_brief_evidence(&evidence_brief)?;
-        self.inner.storage.append_event(&AuditEvent::typed(
-            RuntimeEventKind::BriefCreated,
-            &event_payload,
-        )?)?;
+        // Single runtime DB transition: the Brief record, the audit event
+        // sequence allocation, and the unique `brief_created` event commit
+        // atomically. The deterministic event identity makes a retry of the
+        // same Brief reuse the committed event instead of appending a
+        // duplicate.
+        let created_event = brief_created_event_for(&bound_brief)?;
+        self.inner
+            .storage
+            .append_brief_with_created_event(&bound_brief, &created_event)?;
+        self.inner.notify.notify_one();
         let mut guard = self.inner.agent.lock().await;
         guard.state.last_brief_at = Some(bound_brief.created_at);
         guard.persist_state(&self.inner.storage)?;

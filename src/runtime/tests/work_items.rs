@@ -2073,6 +2073,51 @@ async fn persist_brief_binds_current_turn_work_item() {
 }
 
 #[tokio::test]
+async fn persist_brief_commits_record_and_unique_created_event() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let brief = BriefRecord::new(
+        "default",
+        BriefKind::Result,
+        "atomic publication",
+        None,
+        None,
+    );
+    runtime.persist_brief(&brief).await.unwrap();
+    // Duplicate publication (for example a retry after a crash between the
+    // old record/event steps) must not produce a second brief_created event.
+    runtime.persist_brief(&brief).await.unwrap();
+
+    let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
+    let brief_created: Vec<_> = events
+        .iter()
+        .filter(|event| event.kind == "brief_created")
+        .collect();
+    assert_eq!(brief_created.len(), 1);
+    let stored = runtime
+        .brief_by_id(&brief.id)
+        .await
+        .unwrap()
+        .expect("brief readable");
+    assert_eq!(
+        stored.created_event_seq,
+        Some(brief_created[0].event_seq),
+        "brief must link to its unique created event"
+    );
+}
+
+#[tokio::test]
 async fn create_callback_returns_default_ingress_with_current_turn_work_item() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
