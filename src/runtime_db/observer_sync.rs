@@ -457,14 +457,14 @@ fn verify_projection_snapshot_view(connection: &Connection) -> Result<bool> {
     Ok(true)
 }
 
-fn parse_work_item_state(value: &str) -> Result<crate::types::WorkItemState> {
+pub(crate) fn parse_work_item_state(value: &str) -> Result<crate::types::WorkItemState> {
     serde_json::from_value(serde_json::Value::String(value.to_string()))
-        .with_context(|| format!("invalid work item state {value}"))
+        .map_err(|error| anyhow::anyhow!("invalid work item state {value}: {error}"))
 }
 
-fn parse_work_item_plan_status(value: &str) -> Result<crate::types::WorkItemPlanStatus> {
+pub(crate) fn parse_work_item_plan_status(value: &str) -> Result<crate::types::WorkItemPlanStatus> {
     serde_json::from_value(serde_json::Value::String(value.to_string()))
-        .with_context(|| format!("invalid work item plan status {value}"))
+        .map_err(|error| anyhow::anyhow!("invalid work item plan status {value}: {error}"))
 }
 
 /// Collects one Agent's canonical projection anchors from one connection.

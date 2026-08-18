@@ -152,16 +152,6 @@ pub(crate) enum ObserverSyncRecordKindData {
     TranscriptEntry,
 }
 
-fn work_item_state(value: &str) -> Result<crate::types::WorkItemState> {
-    serde_json::from_value(serde_json::Value::String(value.to_string()))
-        .map_err(|error| anyhow!("invalid work item state {value}: {error}"))
-}
-
-fn work_item_plan_status(value: &str) -> Result<crate::types::WorkItemPlanStatus> {
-    serde_json::from_value(serde_json::Value::String(value.to_string()))
-        .map_err(|error| anyhow!("invalid work item plan status {value}: {error}"))
-}
-
 /// Bounds a stored Brief preview to the roster contract's UTF-8 byte limit,
 /// cutting on a char boundary so the value stays valid UTF-8.
 fn brief_preview(preview: &Option<String>) -> String {
@@ -2441,13 +2431,15 @@ impl RuntimeHost {
             .map(|work_item| -> Result<AgentWorkItemAnchorData> {
                 Ok(AgentWorkItemAnchorData {
                     work_item_id: work_item.work_item_id,
-                    state: work_item_state(&work_item.state)?,
+                    state: crate::runtime_db::observer_sync::parse_work_item_state(
+                        &work_item.state,
+                    )?,
                     // A stored NULL is the pre-plan state; the wire anchor
                     // is non-optional and maps it to the draft baseline.
                     plan_status: work_item
                         .plan_status
                         .as_deref()
-                        .map(work_item_plan_status)
+                        .map(crate::runtime_db::observer_sync::parse_work_item_plan_status)
                         .transpose()?
                         .unwrap_or(crate::types::WorkItemPlanStatus::Draft),
                     revision: u64::try_from(work_item.revision)
