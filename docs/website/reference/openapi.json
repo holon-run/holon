@@ -2500,6 +2500,15 @@
             "format": "date-time",
             "type": "string"
           },
+          "created_event_seq": {
+            "description": "Immutable linkage to the unique `brief_created` audit event committed\n in the same runtime DB transition as this record. `None` for records\n whose creating event cannot be identified (pre-linkage history or\n ambiguous backfill candidates).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "finalizes_assistant_round_id": {
             "type": [
               "string",
