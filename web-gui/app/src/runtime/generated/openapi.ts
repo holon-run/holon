@@ -2033,6 +2033,18 @@ export interface components {
                 skill?: string | null;
             };
         };
+        /** @description First concrete AgentCanonicalProjection: compact current state plus stable revision anchors only. Deliberately excludes verbose timelines and full transcript/message history (see docs/implementation-decisions/104-agent-canonical-projection-v1-boundary.md). */
+        AgentCanonicalProjection: {
+            agent: components["schemas"]["AgentListEntry"];
+            conversation: components["schemas"]["ConversationRevisionAnchors"];
+            /** @description Current WorkItem anchor; null when the Agent has no current WorkItem. */
+            current_work_item: components["schemas"]["AgentWorkItemAnchor"] | null;
+            /** @description Records referenced by the projection but still resolvable through the batch record APIs. */
+            hydration_references: components["schemas"]["AgentHydrationKey"][];
+            /** @description Records deleted at or before the snapshot boundary; they terminate pending hydration without fetching a record that no longer exists. */
+            hydration_tombstones: components["schemas"]["AgentHydrationKey"][];
+            latest_brief: components["schemas"]["AgentLatestBrief"] | null;
+        };
         /** AgentDeletionResponse */
         AgentDeletionResponse: {
             created: boolean;
@@ -2116,6 +2128,67 @@ export interface components {
                 /** Format: date-time */
                 updated_at: string;
             } | null;
+        };
+        /** @description Committed event window for one Agent inside one snapshot read view. Values come from a committed database view, never from an in-memory watcher or a sequence allocator. */
+        AgentEventWindow: {
+            /** @description Greatest committed event_seq visible in the response read view. */
+            event_head_seq: number;
+            /** @description First raw event still replayable in that view; null when the Agent has no events (event_head_seq = 0). */
+            oldest_retained_seq: number | null;
+        };
+        /** @description Identifies one canonical record for hydration termination (tombstone) or batch resolution (reference). */
+        AgentHydrationKey: {
+            record_id: string;
+            /** @enum {string} */
+            record_kind: "message" | "brief" | "transcript_entry";
+        };
+        /** @description Latest Brief anchor derived from canonical Brief storage, not a second UI-summary table. */
+        AgentLatestBrief: {
+            brief_id: string;
+            /** Format: date-time */
+            created_at: string;
+            /** @description Immutable brief_created event linkage; null when the Brief cannot be linked to a unique retained event. Null-linked Briefs do not participate in exact unread calculation. */
+            created_event_seq: number | null;
+            /** @description Bounded to 512 UTF-8 bytes. Full Brief content remains available from the canonical Brief APIs. */
+            preview: string;
+        };
+        /** @description Public Agent entry, same shape as GET /api/agents/list response entries. Baseline object schema until the agents/list DTO stabilizes under a named schema. */
+        AgentListEntry: {
+            [key: string]: unknown;
+        };
+        /** @description Per-Agent canonical projection snapshot at one consistency boundary (RFC: observer sync). Served by GET /api/agents/{agent_id}/projection-snapshot only while the agents.projection-snapshot.v1 capability is advertised. */
+        AgentProjectionSnapshot: {
+            agent_id: string;
+            /** @constant */
+            contract_version: 1;
+            /** @description May exceed snapshot_through_seq; names a committed event available through the event page. Clients replay (snapshot_through_seq, event_head_seq] and later events. */
+            event_head_seq: number;
+            event_log_epoch: string;
+            oldest_retained_seq: number | null;
+            projection: components["schemas"]["AgentCanonicalProjection"];
+            runtime_id: string;
+            /** @description Every event with event_seq <= snapshot_through_seq that affects current canonical state is already reflected in the projection or its revision anchors. */
+            snapshot_through_seq: number;
+            visibility_scope_id: string;
+        };
+        AgentRosterEntry: {
+            agent: components["schemas"]["AgentListEntry"];
+            event_window: components["schemas"]["AgentEventWindow"];
+            /** @description Latest canonical Brief; null when the Agent has no Brief yet. */
+            latest_brief: components["schemas"]["AgentLatestBrief"] | null;
+        };
+        /** @description Authoritative roster snapshot (RFC: observer sync). All-or-nothing membership with per-Agent event windows and latest Brief anchors. Served by GET /api/agents/snapshot only while the agents.roster-snapshot.v1 capability is advertised; route registration alone is never sufficient. */
+        AgentRosterSnapshot: {
+            /** @description Active public Agents visible to the caller in one committed read view. Private child Agents are never included. A failure to assemble one Agent fails the whole response. */
+            agents: components["schemas"]["AgentRosterEntry"][];
+            /** @constant */
+            contract_version: 1;
+            /** @description Current event log epoch; a changed value means historical event continuity is intentionally reset. */
+            event_log_epoch: string;
+            /** @description Stable public identity of the runtime installation. Distinguishes a replaced server at the same URL from an ordinary restart. Not a secret. */
+            runtime_id: string;
+            /** @description Server-generated scope id derived from stable runtime identity, resolved authority, normalized visibility entitlement, and policy generation. Never contains credentials or tokens. */
+            visibility_scope_id: string;
         };
         /** AgentStateSnapshotDto */
         AgentStateSnapshotDto: {
@@ -2495,6 +2568,15 @@ export interface components {
                 }[];
             };
         };
+        AgentWorkItemAnchor: {
+            plan_status: string;
+            /** @description Canonical WorkItem revision at the snapshot boundary. */
+            revision: number;
+            state: string;
+            /** Format: date-time */
+            updated_at: string;
+            work_item_id: string;
+        };
         /** @description Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize. */
         AttachWorkspaceRequest: {
             [key: string]: unknown;
@@ -2610,6 +2692,11 @@ export interface components {
         ControlWakeRequest: {
             [key: string]: unknown;
         };
+        /** @description Latest-record anchors for conversation families whose canonical records carry no per-record revision counter. Always present; null fields mean the family has no record at the boundary. */
+        ConversationRevisionAnchors: {
+            latest_message_id: string | null;
+            latest_transcript_entry_id: string | null;
+        };
         /** @description Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize. */
         CreateAgentRequest: {
             [key: string]: unknown;
@@ -2635,6 +2722,20 @@ export interface components {
         };
         /** @description Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize. */
         CreateWorkItemRequest: {
+            [key: string]: unknown;
+        };
+        /** @description Rich cursor_not_found body for event pages and SSE. event_log_epoch, oldest_retained_seq, and event_head_seq must come from one committed read view so clients can distinguish a retained-prefix gap from an epoch change and select the correct reset path. */
+        CursorNotFoundError: {
+            after_seq: number;
+            /** @constant */
+            code: "cursor_not_found";
+            error: string;
+            event_head_seq: number;
+            event_log_epoch: string;
+            /** @constant */
+            ok: false;
+            oldest_retained_seq: number | null;
+        } & {
             [key: string]: unknown;
         };
         /** @description Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize. */
@@ -3142,6 +3243,11 @@ export interface components {
                 }[];
             };
         };
+        /**
+         * @description Additive top-level StreamEventEnvelope classification shared by event pages and SSE. The runtime event registry is the source of truth; legacy or otherwise unclassified events default conservatively to display_invalidation. Emitted only while events.projection-effect.v1 is advertised; introducing the field increments the envelope contract version.
+         * @enum {string}
+         */
+        ProjectionEffect: "none" | "display_invalidation";
         /** ReconcileSkillRequest */
         ReconcileSkillRequest: {
             name?: string | null;

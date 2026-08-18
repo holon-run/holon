@@ -1,0 +1,9 @@
+{
+  "ok": false,
+  "error": "after_seq 12 was not found in the replay window",
+  "code": "cursor_not_found",
+  "after_seq": 12,
+  "event_log_epoch": "epoch_2026_08_18_example",
+  "oldest_retained_seq": 40,
+  "event_head_seq": 128
+}

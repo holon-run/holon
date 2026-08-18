@@ -97,6 +97,10 @@ mod control;
 mod events;
 mod ingress;
 mod jobs;
+// S0 contract skeleton: DTOs/fixtures/capability evaluator are exercised by
+// unit tests now and wired into handlers by the S2/S4/S5 slices.
+#[cfg_attr(not(test), allow(dead_code))]
+mod observer_sync;
 mod projection_gate;
 mod skills;
 mod state;
@@ -107,6 +111,9 @@ mod web;
 mod workspace_files;
 
 // Re-export shared helpers used across submodules.
+pub(crate) use observer_sync::{
+    advertised_observer_sync_capabilities, ObserverSyncCapabilityVerification,
+};
 pub(crate) use projection_gate::{
     ProjectionFailure, ProjectionGate, ProjectionGateError, ProjectionKey,
 };

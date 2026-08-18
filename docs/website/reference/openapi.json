@@ -97,6 +97,62 @@
         "title": "AddSkillRequest",
         "type": "object"
       },
+      "AgentCanonicalProjection": {
+        "additionalProperties": false,
+        "description": "First concrete AgentCanonicalProjection: compact current state plus stable revision anchors only. Deliberately excludes verbose timelines and full transcript/message history (see docs/implementation-decisions/104-agent-canonical-projection-v1-boundary.md).",
+        "properties": {
+          "agent": {
+            "$ref": "#/components/schemas/AgentListEntry"
+          },
+          "conversation": {
+            "$ref": "#/components/schemas/ConversationRevisionAnchors"
+          },
+          "current_work_item": {
+            "description": "Current WorkItem anchor; null when the Agent has no current WorkItem.",
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AgentWorkItemAnchor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hydration_references": {
+            "description": "Records referenced by the projection but still resolvable through the batch record APIs.",
+            "items": {
+              "$ref": "#/components/schemas/AgentHydrationKey"
+            },
+            "type": "array"
+          },
+          "hydration_tombstones": {
+            "description": "Records deleted at or before the snapshot boundary; they terminate pending hydration without fetching a record that no longer exists.",
+            "items": {
+              "$ref": "#/components/schemas/AgentHydrationKey"
+            },
+            "type": "array"
+          },
+          "latest_brief": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AgentLatestBrief"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "agent",
+          "current_work_item",
+          "conversation",
+          "latest_brief",
+          "hydration_tombstones",
+          "hydration_references"
+        ],
+        "type": "object"
+      },
       "AgentDeletionResponse": {
         "properties": {
           "created": {
@@ -439,6 +495,221 @@
           "identity"
         ],
         "title": "AgentDeletionStatusResponse",
+        "type": "object"
+      },
+      "AgentEventWindow": {
+        "additionalProperties": false,
+        "description": "Committed event window for one Agent inside one snapshot read view. Values come from a committed database view, never from an in-memory watcher or a sequence allocator.",
+        "properties": {
+          "event_head_seq": {
+            "description": "Greatest committed event_seq visible in the response read view.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "oldest_retained_seq": {
+            "description": "First raw event still replayable in that view; null when the Agent has no events (event_head_seq = 0).",
+            "oneOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "event_head_seq",
+          "oldest_retained_seq"
+        ],
+        "type": "object"
+      },
+      "AgentHydrationKey": {
+        "additionalProperties": false,
+        "description": "Identifies one canonical record for hydration termination (tombstone) or batch resolution (reference).",
+        "properties": {
+          "record_id": {
+            "type": "string"
+          },
+          "record_kind": {
+            "enum": [
+              "message",
+              "brief",
+              "transcript_entry"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "record_kind",
+          "record_id"
+        ],
+        "type": "object"
+      },
+      "AgentLatestBrief": {
+        "additionalProperties": false,
+        "description": "Latest Brief anchor derived from canonical Brief storage, not a second UI-summary table.",
+        "properties": {
+          "brief_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_event_seq": {
+            "description": "Immutable brief_created event linkage; null when the Brief cannot be linked to a unique retained event. Null-linked Briefs do not participate in exact unread calculation.",
+            "oneOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "preview": {
+            "description": "Bounded to 512 UTF-8 bytes. Full Brief content remains available from the canonical Brief APIs.",
+            "maxLength": 512,
+            "type": "string"
+          }
+        },
+        "required": [
+          "brief_id",
+          "created_event_seq",
+          "created_at",
+          "preview"
+        ],
+        "type": "object"
+      },
+      "AgentListEntry": {
+        "additionalProperties": true,
+        "description": "Public Agent entry, same shape as GET /api/agents/list response entries. Baseline object schema until the agents/list DTO stabilizes under a named schema.",
+        "type": "object"
+      },
+      "AgentProjectionSnapshot": {
+        "additionalProperties": false,
+        "description": "Per-Agent canonical projection snapshot at one consistency boundary (RFC: observer sync). Served by GET /api/agents/{agent_id}/projection-snapshot only while the agents.projection-snapshot.v1 capability is advertised.",
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "contract_version": {
+            "const": 1,
+            "type": "integer"
+          },
+          "event_head_seq": {
+            "description": "May exceed snapshot_through_seq; names a committed event available through the event page. Clients replay (snapshot_through_seq, event_head_seq] and later events.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "event_log_epoch": {
+            "type": "string"
+          },
+          "oldest_retained_seq": {
+            "oneOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "projection": {
+            "$ref": "#/components/schemas/AgentCanonicalProjection"
+          },
+          "runtime_id": {
+            "type": "string"
+          },
+          "snapshot_through_seq": {
+            "description": "Every event with event_seq <= snapshot_through_seq that affects current canonical state is already reflected in the projection or its revision anchors.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "visibility_scope_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "contract_version",
+          "runtime_id",
+          "event_log_epoch",
+          "visibility_scope_id",
+          "agent_id",
+          "snapshot_through_seq",
+          "event_head_seq",
+          "oldest_retained_seq",
+          "projection"
+        ],
+        "type": "object"
+      },
+      "AgentRosterEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "agent": {
+            "$ref": "#/components/schemas/AgentListEntry"
+          },
+          "event_window": {
+            "$ref": "#/components/schemas/AgentEventWindow"
+          },
+          "latest_brief": {
+            "description": "Latest canonical Brief; null when the Agent has no Brief yet.",
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AgentLatestBrief"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "agent",
+          "event_window",
+          "latest_brief"
+        ],
+        "type": "object"
+      },
+      "AgentRosterSnapshot": {
+        "additionalProperties": false,
+        "description": "Authoritative roster snapshot (RFC: observer sync). All-or-nothing membership with per-Agent event windows and latest Brief anchors. Served by GET /api/agents/snapshot only while the agents.roster-snapshot.v1 capability is advertised; route registration alone is never sufficient.",
+        "properties": {
+          "agents": {
+            "description": "Active public Agents visible to the caller in one committed read view. Private child Agents are never included. A failure to assemble one Agent fails the whole response.",
+            "items": {
+              "$ref": "#/components/schemas/AgentRosterEntry"
+            },
+            "type": "array"
+          },
+          "contract_version": {
+            "const": 1,
+            "type": "integer"
+          },
+          "event_log_epoch": {
+            "description": "Current event log epoch; a changed value means historical event continuity is intentionally reset.",
+            "type": "string"
+          },
+          "runtime_id": {
+            "description": "Stable public identity of the runtime installation. Distinguishes a replaced server at the same URL from an ordinary restart. Not a secret.",
+            "type": "string"
+          },
+          "visibility_scope_id": {
+            "description": "Server-generated scope id derived from stable runtime identity, resolved authority, normalized visibility entitlement, and policy generation. Never contains credentials or tokens.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "contract_version",
+          "runtime_id",
+          "event_log_epoch",
+          "visibility_scope_id",
+          "agents"
+        ],
         "type": "object"
       },
       "AgentStateSnapshotDto": {
@@ -1987,6 +2258,37 @@
         "title": "AgentStateSnapshotDto",
         "type": "object"
       },
+      "AgentWorkItemAnchor": {
+        "additionalProperties": false,
+        "properties": {
+          "plan_status": {
+            "type": "string"
+          },
+          "revision": {
+            "description": "Canonical WorkItem revision at the snapshot boundary.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "state": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "work_item_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "work_item_id",
+          "state",
+          "plan_status",
+          "revision",
+          "updated_at"
+        ],
+        "type": "object"
+      },
       "AttachWorkspaceRequest": {
         "additionalProperties": true,
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
@@ -2351,6 +2653,37 @@
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
         "type": "object"
       },
+      "ConversationRevisionAnchors": {
+        "additionalProperties": false,
+        "description": "Latest-record anchors for conversation families whose canonical records carry no per-record revision counter. Always present; null fields mean the family has no record at the boundary.",
+        "properties": {
+          "latest_message_id": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "latest_transcript_entry_id": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "latest_message_id",
+          "latest_transcript_entry_id"
+        ],
+        "type": "object"
+      },
       "CreateAgentRequest": {
         "additionalProperties": true,
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
@@ -2426,6 +2759,55 @@
       "CreateWorkItemRequest": {
         "additionalProperties": true,
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
+        "type": "object"
+      },
+      "CursorNotFoundError": {
+        "additionalProperties": true,
+        "description": "Rich cursor_not_found body for event pages and SSE. event_log_epoch, oldest_retained_seq, and event_head_seq must come from one committed read view so clients can distinguish a retained-prefix gap from an epoch change and select the correct reset path.",
+        "properties": {
+          "after_seq": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "code": {
+            "const": "cursor_not_found",
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "event_head_seq": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "event_log_epoch": {
+            "type": "string"
+          },
+          "ok": {
+            "const": false,
+            "type": "boolean"
+          },
+          "oldest_retained_seq": {
+            "oneOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "ok",
+          "error",
+          "code",
+          "after_seq",
+          "event_log_epoch",
+          "oldest_retained_seq",
+          "event_head_seq"
+        ],
         "type": "object"
       },
       "DebugPromptRequest": {
@@ -4124,6 +4506,14 @@
         ],
         "title": "PickWorkItemResponse",
         "type": "object"
+      },
+      "ProjectionEffect": {
+        "description": "Additive top-level StreamEventEnvelope classification shared by event pages and SSE. The runtime event registry is the source of truth; legacy or otherwise unclassified events default conservatively to display_invalidation. Emitted only while events.projection-effect.v1 is advertised; introducing the field increments the envelope contract version.",
+        "enum": [
+          "none",
+          "display_invalidation"
+        ],
+        "type": "string"
       },
       "ReconcileSkillRequest": {
         "properties": {

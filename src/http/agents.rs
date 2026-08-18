@@ -135,6 +135,23 @@ fn normalize_search_agent_ids(
     Ok(normalized)
 }
 
+/// Legacy control-plane capabilities plus the observer-sync capabilities
+/// evaluated from durable verification results. Until a verification source
+/// exists the evaluator keeps all observer-sync capabilities disabled.
+fn handshake_capabilities() -> Vec<&'static str> {
+    let mut capabilities = vec![
+        "agents.list",
+        "agents.state",
+        "agents.events",
+        "agents.control",
+        "tui.remote",
+    ];
+    capabilities.extend(advertised_observer_sync_capabilities(
+        &ObserverSyncCapabilityVerification::default(),
+    ));
+    capabilities
+}
+
 pub async fn handshake(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -151,13 +168,7 @@ pub async fn handshake(
             "mode": if state.require_control_token { "bearer" } else { "local" },
             "required": state.require_control_token,
         },
-        "capabilities": [
-            "agents.list",
-            "agents.state",
-            "agents.events",
-            "agents.control",
-            "tui.remote"
-        ],
+        "capabilities": handshake_capabilities(),
         "runtime": {
             "default_agent": config.default_agent_id,
             "workspace_dir": config.workspace_dir,
