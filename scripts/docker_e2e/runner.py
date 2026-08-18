@@ -4485,7 +4485,11 @@ def run_scheduler_checkpoint_replay_case(
         harness,
         snapshot,
         work_item_id=work_item_a_id,
-        expected_source_kinds=("work_item_continuation", "triggered_wait"),
+        expected_source_kinds=(
+            "work_item_continuation",
+            "work_item_continuation",
+            "triggered_wait",
+        ),
         lifecycle_message_ids={
             harness.prompt_scope("scheduler-replay-create")["message_id"]
         },

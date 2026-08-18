@@ -2333,6 +2333,17 @@ class DockerE2ERunnerTests(unittest.TestCase):
             source.index('harness.runtime_db_snapshot("scheduler-external")'),
         )
 
+    def test_checkpoint_replay_tracks_wait_and_completion_continuations(self) -> None:
+        source = inspect.getsource(runner.run_scheduler_checkpoint_replay_case)
+        self.assertIn(
+            'expected_source_kinds=(\n'
+            '            "work_item_continuation",\n'
+            '            "work_item_continuation",\n'
+            '            "triggered_wait",\n'
+            "        )",
+            source,
+        )
+
     def test_result_brief_waits_for_its_source_turn_to_reach_terminal(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             harness = runner.CaseHarness(
