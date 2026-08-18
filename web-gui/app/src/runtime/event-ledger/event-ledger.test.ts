@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   LEDGER_DB_NAME,
+  LEDGER_DB_VERSION,
   LEDGER_STORES,
   type LedgerScopeKey,
   type LedgerRemoteScopeKey,
@@ -168,7 +169,7 @@ describe("event ledger open/upgrade", () => {
     const ledger = await openLedger();
 
     const upgrade = new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open(LEDGER_DB_NAME, 2);
+      const request = indexedDB.open(LEDGER_DB_NAME, LEDGER_DB_VERSION + 1);
       request.onupgradeneeded = () => {
         // Future-version migration is not under test; nothing to add.
       };
@@ -195,7 +196,7 @@ describe("event ledger open/upgrade", () => {
 
     let blockedFired = false;
     const upgrade = new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open(LEDGER_DB_NAME, 2);
+      const request = indexedDB.open(LEDGER_DB_NAME, LEDGER_DB_VERSION + 1);
       request.onupgradeneeded = () => {
         // Nothing to add for this test's synthetic version.
       };

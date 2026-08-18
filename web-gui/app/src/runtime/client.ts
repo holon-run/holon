@@ -234,9 +234,11 @@ type WorkItemDto = components["schemas"]["WorkItemRecord"];
 type WorkItemTransportDto = SlimWorkItemDto | WorkItemDto;
 
 type BriefRecordDto = RuntimeBriefRecord;
+type AgentRosterSnapshotGeneratedDto = components["schemas"]["AgentRosterSnapshot"];
 
 export type EventPageResponseDto = components["schemas"]["EventsPageResponse"];
 export type AgentProjectionSnapshotDto = components["schemas"]["AgentProjectionSnapshot"];
+export type AgentRosterSnapshotDto = AgentRosterSnapshotGeneratedDto;
 type GeneratedStreamEventEnvelopeDto = components["schemas"]["StreamEventEnvelope"];
 export type StreamEventEnvelopeDto = Partial<GeneratedStreamEventEnvelopeDto>;
 type EventEnvelopeDto = StreamEventEnvelopeDto;
@@ -738,6 +740,29 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         `/agents/${encodeURIComponent(agentId)}/projection-snapshot`,
         { headers: requestHeaders },
       );
+    },
+    /**
+     * Authoritative roster snapshot (W4 discovery). Returns null when the
+     * remote does not serve the roster contract: capability unverified
+     * (503 capability_unavailable) or an older server without the route.
+     */
+    async getAgentRosterSnapshot(): Promise<AgentRosterSnapshotDto | null> {
+      if (!baseUrl) {
+        return null;
+      }
+      try {
+        return await getJson<AgentRosterSnapshotDto>(
+          fetchImpl,
+          baseUrl,
+          "/agents/snapshot",
+          { headers: requestHeaders },
+        );
+      } catch (error) {
+        if (isSnapshotCapabilityUnavailableError(error) || isSnapshotRouteMissingError(error)) {
+          return null;
+        }
+        throw error;
+      }
     },
     async getAgentMessagesBatch(agentId: string, messageIds: string[]): Promise<AgentMessagesBatchGetResponseDto> {
       if (!baseUrl || !messageIds.length) {
@@ -1547,7 +1572,10 @@ async function fetchRuntimeBootstrap(
   connectionMode: "local" | "remote",
   hasToken: boolean,
 ): Promise<RuntimeBootstrap> {
-  await getJson<{ auth?: { mode?: string } }>(fetchImpl, baseUrl, "/handshake", { headers });
+  const handshake = await getJson<{
+    auth?: { mode?: string };
+    capabilities?: string[];
+  }>(fetchImpl, baseUrl, "/handshake", { headers });
   const agentEntries = await getJson<AgentListEntryDto[]>(fetchImpl, baseUrl, "/agents/list", { headers });
 
   const agents = agentEntries.map((entry) => projectAgent(entry));
@@ -1564,6 +1592,7 @@ async function fetchRuntimeBootstrap(
 
   return {
     attentionCount,
+    capabilities: handshake.capabilities ?? [],
     connection,
     metrics: buildMetrics(agents.length, attentionCount, activeTaskCount, currentWorkCount),
     agents,
@@ -2023,6 +2052,53 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
   };
 }
 
+/** Handshake capability name for the authoritative roster snapshot. */
+export const ROSTER_SNAPSHOT_CAPABILITY = "agents.roster-snapshot.v1";
+
+/** One authoritative roster entry narrowed to the local list-entry shape. */
+export interface RosterAgentEntry {
+  agentId: string;
+  entry: AgentListEntryDto;
+  latestBriefPreview?: string;
+  eventWindow: {
+    eventHeadSeq?: number;
+    oldestRetainedSeq?: number | null;
+  };
+}
+
+/** Narrow generated roster DTOs once, at the client boundary. */
+export function rosterAgentEntries(snapshot: AgentRosterSnapshotDto): RosterAgentEntry[] {
+  return snapshot.agents.flatMap((generated) => {
+    const entry = generated.agent as AgentListEntryDto | undefined;
+    const agentId = entry?.identity?.agent_id;
+    if (!agentId) return [];
+    return [{
+      agentId,
+      entry,
+      latestBriefPreview: generated.latest_brief?.preview || undefined,
+      eventWindow: {
+        eventHeadSeq: generated.event_window?.event_head_seq,
+        oldestRetainedSeq: generated.event_window?.oldest_retained_seq ?? null,
+      },
+    }];
+  });
+}
+
+/**
+ * Project authoritative roster entries to dashboard agent summaries. The
+ * roster entry carries the same list-entry shape as /agents/list plus a
+ * latest-Brief preview used for the roster line.
+ */
+export function projectRosterAgents(snapshot: AgentRosterSnapshotDto): AgentSummary[] {
+  return rosterAgentEntries(snapshot).flatMap(({ entry, latestBriefPreview }) => {
+    const projected = projectAgent(entry);
+    return [{
+      ...projected,
+      lastBrief: latestBriefPreview || projected.lastBrief,
+    }];
+  });
+}
+
 function projectWorkspaceFromInfo(ws: AgentStateDto["workspace"]["workspaces"][number]): WorkspaceSummary {
   const anchor = ws.workspace_anchor ?? ws.execution_root ?? ws.cwd ?? "—";
   const name = ws.workspace_alias ?? basename(anchor) ?? ws.workspace_id ?? "not bound";
@@ -2376,7 +2452,8 @@ async function readErrorEnvelope(
   }
 }
 
-function isAuthRequiredError(error: unknown): boolean {
+/** True when the remote rejected the request's authorization. */
+export function isAuthRequiredError(error: unknown): boolean {
   return error instanceof RuntimeHttpError && error.code === "auth_required";
 }
 
@@ -2391,6 +2468,11 @@ export function isSnapshotCapabilityUnavailableError(error: unknown): boolean {
     error.status === 503 &&
     error.code === "capability_unavailable"
   );
+}
+
+/** True for an older server whose router has no roster snapshot route. */
+export function isSnapshotRouteMissingError(error: unknown): boolean {
+  return error instanceof RuntimeHttpError && error.status === 404 && !error.code;
 }
 
 /** True when the snapshot target agent is unknown or not a member. */

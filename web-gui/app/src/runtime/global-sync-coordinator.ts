@@ -1,6 +1,9 @@
 import {
   createRuntimeClient,
+  isAuthRequiredError,
+  rosterAgentEntries,
   type AgentEventStreamSubscription,
+  type AgentRosterSnapshotDto,
   type StreamEventEnvelopeDto,
 } from "./client";
 import {
@@ -13,6 +16,10 @@ import {
   startRuntimeSpan,
 } from "./runtime-trace";
 import type {
+  RosterDiscoveryIdentity,
+  RosterDiscoveryState,
+} from "./types";
+import type {
   AgentLiveStatus,
   AgentSessionState,
 } from "./runtime-store-helpers";
@@ -22,8 +29,10 @@ type RuntimeClient = ReturnType<typeof createRuntimeClient>;
 export type GlobalSyncStoreState = {
   bootstrap: {
     agents: Array<{ id: string }>;
+    capabilities?: string[];
   };
   globalStreamStatus: "idle" | "connecting" | "catching_up" | "streaming" | "reconnecting";
+  discovery: RosterDiscoveryState;
   sessionsByAgentId: Record<string, AgentSessionState>;
 };
 
@@ -59,6 +68,28 @@ interface GlobalSyncCoordinatorDependencies<State extends GlobalSyncStoreState> 
     liveStatus: AgentLiveStatus,
     updates?: Partial<AgentSessionState>,
   ) => void;
+  /**
+   * Fetch the authoritative roster snapshot. Resolves null when the remote
+   * does not serve the roster contract (capability unverified or an older
+   * server), so the caller keeps the /agents/list legacy path.
+   */
+  fetchRosterSnapshot: (request: ClientRequest) => Promise<AgentRosterSnapshotDto | null>;
+  /**
+   * Atomically apply one complete roster snapshot: validate identity,
+   * replace the roster, reset stale-scope sessions, and purge omitted
+   * agents. Returns the ids of agents that were present before and are
+   * omitted now; the coordinator unregisters them.
+   */
+  applyRosterSnapshot: (
+    set: GlobalSyncStoreSet<State>,
+    snapshot: AgentRosterSnapshotDto,
+    context: { previousIdentity?: RosterDiscoveryIdentity; request: ClientRequest },
+  ) => string[];
+  /** Register per-Agent recovery (W3) anchored on the roster event window. */
+  registerAgentRecovery: (
+    agentId: string,
+    hint: { eventHeadSeq?: number; oldestRetainedSeq?: number | null },
+  ) => void;
 }
 
 const STREAM_FLUSH_INTERVAL_MS = 100;
@@ -68,6 +99,8 @@ const GLOBAL_STREAM_STALE_TIMEOUT_MS = 45_000;
 const GLOBAL_BACKFILL_LIMIT = 100;
 const GLOBAL_BACKFILL_MAX_PAGES = 10;
 const GLOBAL_BACKFILL_CONCURRENCY = 4;
+/** Low-rate safety net: full roster reconciliation at most this often. */
+const ROSTER_RECONCILIATION_INTERVAL_MS = 5 * 60_000;
 
 export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
   private readonly pendingStreamEvents = new Map<string, StreamEventEnvelopeDto[]>();
@@ -82,6 +115,13 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
   private readonly backfillRetryTimers = new Map<string, number>();
   private readonly backfillRetryAttempts = new Map<string, number>();
   private readonly recoveryBaselineInFlight = new Map<string, Promise<void>>();
+  /** Authoritative discovery cycle (W4): in-flight snapshot + coalescing. */
+  private rosterRefreshPromise: Promise<void> | undefined;
+  private rosterDirty = false;
+  private rosterIdentity: RosterDiscoveryIdentity | undefined;
+  private rosterRetryTimer: number | undefined;
+  private rosterRetryAttempt = 0;
+  private lastRosterAppliedAt = 0;
 
   constructor(private readonly dependencies: GlobalSyncCoordinatorDependencies<State>) {}
 
@@ -98,7 +138,10 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
         this.globalStreamReconnectAttempt = 0;
         connectSpan.end("ok");
         this.scheduleStaleWatchdog(get, set);
-        void Promise.resolve().then(() => this.catchUp(get, set, request));
+        // Discovery first: the authoritative roster (when the capability is
+        // served) settles before per-agent catch-up registers its agents.
+        // Every successful reconnect repeats the roster snapshot.
+        void Promise.resolve().then(() => this.beginDiscovery(get, set, request));
       },
       onActivity: () => {
         if (!this.dependencies.isCurrentClientRequest(request)) return;
@@ -127,6 +170,7 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
   stop(set: GlobalSyncStoreSet<State>): void {
     this.globalEventStream?.close();
     this.globalEventStream = undefined;
+    this.clearRosterRetrySchedule();
     if (this.globalStreamReconnectTimer != null) {
       window.clearTimeout(this.globalStreamReconnectTimer);
       this.globalStreamReconnectTimer = undefined;
@@ -184,6 +228,229 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
     for (const agentId of agentIds) {
       this.register(get, set, agentId);
     }
+  }
+
+  /**
+   * Request one authoritative roster refresh outside the stream lifecycle,
+   * for example after a local create/delete. Legacy mode keeps its own
+   * /agents/list path, so this is a no-op there.
+   */
+  refreshRoster(get: () => State, set: GlobalSyncStoreSet<State>): void {
+    if (!this.globalEventStream || get().discovery.mode === "legacy") return;
+    void this.refreshRosterInner(
+      get,
+      set,
+      this.dependencies.captureClientRequest(),
+      "local_change",
+    );
+  }
+
+  /**
+   * Discovery state machine (W4): request the authoritative roster after
+   * the stream opens, apply it atomically, register per-Agent recovery,
+   * then run the legacy in-memory catch-up for the UI projection. A remote
+   * without the roster capability keeps the legacy /agents/list path and
+   * never purges from an authoritative claim.
+   */
+  private async beginDiscovery(
+    get: () => State,
+    set: GlobalSyncStoreSet<State>,
+    request: ClientRequest,
+  ): Promise<void> {
+    if (get().discovery.mode !== "legacy") {
+      await this.refreshRosterInner(get, set, request, "stream_open");
+    }
+    if (
+      !this.dependencies.isCurrentClientRequest(request)
+      || !this.globalEventStream
+    ) return;
+    await this.catchUp(get, set, request);
+  }
+
+  private async refreshRosterInner(
+    get: () => State,
+    set: GlobalSyncStoreSet<State>,
+    request: ClientRequest,
+    trigger: string,
+  ): Promise<void> {
+    if (get().discovery.mode === "legacy") return;
+    if (this.rosterRefreshPromise) {
+      // A hint while the snapshot is in flight coalesces into exactly one
+      // additional refresh inside the running cycle.
+      this.rosterDirty = true;
+      return this.rosterRefreshPromise;
+    }
+    const span = startRuntimeSpan(
+      createRuntimeTrace("roster.refresh", { trigger }),
+      "roster.snapshot",
+    );
+    const cycle = (async () => {
+      let refreshAgain = true;
+      while (
+        refreshAgain
+        && this.dependencies.isCurrentClientRequest(request)
+        && this.globalEventStream
+      ) {
+        refreshAgain = false;
+        this.rosterDirty = false;
+        let snapshot: AgentRosterSnapshotDto | null;
+        try {
+          snapshot = await this.dependencies.fetchRosterSnapshot(request);
+        } catch (error) {
+          if (!this.dependencies.isCurrentClientRequest(request)) return;
+          span.end("error");
+          this.handleRosterSnapshotFailure(get, set, error);
+          return;
+        }
+        if (!this.dependencies.isCurrentClientRequest(request)) return;
+        if (snapshot == null) {
+          // The remote does not serve the authoritative roster contract:
+          // keep the /agents/list legacy path and never purge from it.
+          this.clearRosterRetrySchedule();
+          set((state) => ({
+            discovery: {
+              ...state.discovery,
+              mode: "legacy",
+              freshness: "fresh",
+              staleReason: undefined,
+              unauthorizedReason: undefined,
+              retryAttempt: 0,
+              retryAt: undefined,
+            },
+          } as Partial<State>));
+          span.end("skipped", { reason: "capability_absent" });
+          return;
+        }
+        this.clearRosterRetrySchedule();
+        this.rosterRetryAttempt = 0;
+        const identity: RosterDiscoveryIdentity = {
+          runtimeId: snapshot.runtime_id,
+          visibilityScopeId: snapshot.visibility_scope_id,
+          eventLogEpoch: snapshot.event_log_epoch,
+        };
+        const omittedAgentIds = this.dependencies.applyRosterSnapshot(
+          set,
+          snapshot,
+          { previousIdentity: this.rosterIdentity, request },
+        );
+        this.rosterIdentity = identity;
+        this.lastRosterAppliedAt = Date.now();
+        for (const agentId of omittedAgentIds) {
+          this.unregister(agentId);
+        }
+        for (const { agentId, eventWindow } of rosterAgentEntries(snapshot)) {
+          this.dependencies.registerAgentRecovery(agentId, {
+            eventHeadSeq: eventWindow.eventHeadSeq,
+            oldestRetainedSeq: eventWindow.oldestRetainedSeq,
+          });
+        }
+        // Align in-memory subscriptions with the applied roster.
+        this.syncRoster(get, set);
+        if (this.rosterDirty) refreshAgain = true;
+        span.end("ok", { agentCount: snapshot.agents.length, omitted: omittedAgentIds.length });
+      }
+      // Discovery is marked fresh only after the settle of the last
+      // (possibly coalesced) successful refresh.
+      set((state) => ({
+        discovery: {
+          ...state.discovery,
+          mode: "authoritative",
+          freshness: "fresh",
+          identity: this.rosterIdentity,
+          staleReason: undefined,
+          unauthorizedReason: undefined,
+          retryAttempt: 0,
+          retryAt: undefined,
+        },
+      } as Partial<State>));
+    })();
+    const tracked = cycle.finally(() => {
+      if (this.rosterRefreshPromise === tracked) this.rosterRefreshPromise = undefined;
+    });
+    this.rosterRefreshPromise = tracked;
+    return tracked;
+  }
+
+  private handleRosterSnapshotFailure(
+    get: () => State,
+    set: GlobalSyncStoreSet<State>,
+    error: unknown,
+  ): void {
+    const message = error instanceof Error ? error.message : String(error);
+    if (isAuthRequiredError(error)) {
+      // Authorization failed: the cached roster must stop being presented
+      // as currently authorized data. No automatic retries; a successful
+      // reauthentication followed by a reconnect restarts discovery.
+      this.clearRosterRetrySchedule();
+      this.rosterRetryAttempt = 0;
+      set((state) => ({
+        discovery: {
+          ...state.discovery,
+          mode: "authoritative",
+          freshness: "unauthorized",
+          unauthorizedReason: message,
+          staleReason: undefined,
+          retryAttempt: 0,
+          retryAt: undefined,
+        },
+      } as Partial<State>));
+      return;
+    }
+    // Transient failure: keep the last complete roster, mark discovery
+    // stale, and retry with bounded backoff. Nothing is purged.
+    this.rosterRetryAttempt += 1;
+    const delay = backfillRetryDelayMs(this.rosterRetryAttempt);
+    if (this.rosterRetryTimer != null) window.clearTimeout(this.rosterRetryTimer);
+    set((state) => ({
+      discovery: {
+        ...state.discovery,
+        mode: "authoritative",
+        freshness: "stale",
+        staleReason: message,
+        retryAttempt: this.rosterRetryAttempt,
+        retryAt: Date.now() + delay,
+      },
+    } as Partial<State>));
+    this.rosterRetryTimer = window.setTimeout(() => {
+      this.rosterRetryTimer = undefined;
+      void this.refreshRosterInner(
+        get,
+        set,
+        this.dependencies.captureClientRequest(),
+        "roster_retry",
+      );
+    }, delay);
+  }
+
+  private clearRosterRetrySchedule(): void {
+    if (this.rosterRetryTimer != null) {
+      window.clearTimeout(this.rosterRetryTimer);
+      this.rosterRetryTimer = undefined;
+    }
+  }
+
+  /**
+   * Live envelopes are roster hints. Events for agents outside the roster
+   * trigger one immediate (coalesced) refresh; events for known agents
+   * only allow the low-rate full-reconciliation safety net, because a
+   * deletion may emit no stream event at all.
+   */
+  private noteRosterHint(get: () => State, set: GlobalSyncStoreSet<State>, agentId: string | undefined): void {
+    if (get().discovery.mode === "legacy" || !this.globalEventStream) return;
+    if (this.rosterRefreshPromise) {
+      this.rosterDirty = true;
+      return;
+    }
+    const known = agentId != null && this.subscribedAgents.has(agentId);
+    if (known && Date.now() - this.lastRosterAppliedAt < ROSTER_RECONCILIATION_INTERVAL_MS) {
+      return;
+    }
+    void this.refreshRosterInner(
+      get,
+      set,
+      this.dependencies.captureClientRequest(),
+      known ? "safety_reconciliation" : "unknown_agent_hint",
+    );
   }
 
   retryAgentSync(get: () => State, set: GlobalSyncStoreSet<State>, agentId: string): void {
@@ -286,6 +553,12 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
     this.cancelClientGenerationWork();
     this.globalEventStream?.close();
     this.globalEventStream = undefined;
+    this.clearRosterRetrySchedule();
+    this.rosterRefreshPromise = undefined;
+    this.rosterDirty = false;
+    this.rosterIdentity = undefined;
+    this.rosterRetryAttempt = 0;
+    this.lastRosterAppliedAt = 0;
     if (this.globalStreamReconnectTimer != null) {
       window.clearTimeout(this.globalStreamReconnectTimer);
       this.globalStreamReconnectTimer = undefined;
@@ -304,6 +577,7 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
 
   closeForResume(set: GlobalSyncStoreSet<State>): void {
     this.stop(set);
+    this.clearRosterRetrySchedule();
     for (const timer of this.streamFlushTimers.values()) window.clearTimeout(timer);
     this.streamFlushTimers.clear();
     this.pendingStreamEvents.clear();
@@ -422,6 +696,7 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
     event: StreamEventEnvelopeDto,
   ): void {
     const agentId = event.agent_id;
+    this.noteRosterHint(get, set, agentId);
     if (!agentId || !this.subscribedAgents.has(agentId)) return;
 
     const incomingEpoch = event.event_log_epoch || undefined;

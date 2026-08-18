@@ -455,6 +455,69 @@ export class AgentSessionRepository<State extends AgentSessionRepositoryState> {
   }
 
   /**
+   * Clear every durable ledger scope of the current remote whose identity
+   * (runtime, visibility scope, or epoch) no longer matches the
+   * authoritative roster. Called when the roster reports an identity
+   * change so old-scope data is never joined with the new scope.
+   */
+  async clearLedgerScopesNotMatching(identity: {
+    runtimeId: string;
+    visibilityScopeId: string;
+    eventLogEpoch: string;
+  }): Promise<void> {
+    await this.initializeLedgerIngestion();
+    const pipeline = this.ledgerPipeline;
+    if (!pipeline) return;
+    const remoteKey = currentRemoteKey(this.dependencies.getConnectionConfig());
+    for (const scope of await pipeline.listKnownScopes(remoteKey)) {
+      if (
+        scope.runtimeId === identity.runtimeId &&
+        scope.visibilityScopeId === identity.visibilityScopeId &&
+        scope.eventLogEpoch === identity.eventLogEpoch
+      ) {
+        continue;
+      }
+      await pipeline.clearRuntimeScope({
+        remoteKey: scope.remoteKey,
+        runtimeId: scope.runtimeId,
+        visibilityScopeId: scope.visibilityScopeId,
+        eventLogEpoch: scope.eventLogEpoch,
+      });
+      this.recoveryScopeRegistry.delete(scope.agentId);
+      this.recoveryTriggered.delete(scope.agentId);
+    }
+  }
+
+  /**
+   * Purge one agent's durable ledger state and cache after the
+   * authoritative roster omitted it (deletion or lost visibility).
+   */
+  async purgeAgentLedger(agentId: string): Promise<void> {
+    await this.initializeLedgerIngestion();
+    const pipeline = this.ledgerPipeline;
+    if (!pipeline) return;
+    const remoteKey = currentRemoteKey(this.dependencies.getConnectionConfig());
+    const scopes = (await pipeline.listKnownScopes(remoteKey))
+      .filter((scope) => scope.agentId === agentId);
+    const cleared = new Set<string>();
+    for (const scope of scopes) {
+      const remoteScope = {
+        remoteKey: scope.remoteKey,
+        runtimeId: scope.runtimeId,
+        visibilityScopeId: scope.visibilityScopeId,
+        eventLogEpoch: scope.eventLogEpoch,
+      };
+      const key = [remoteScope.remoteKey, remoteScope.runtimeId, remoteScope.visibilityScopeId, remoteScope.eventLogEpoch].join("\u0000");
+      if (cleared.has(key)) continue;
+      cleared.add(key);
+      await pipeline.clearRuntimeScope(remoteScope);
+    }
+    this.recoveryScopeRegistry.delete(agentId);
+    this.recoveryTriggered.delete(agentId);
+    await this.deleteCachedSession(agentId);
+  }
+
+  /**
    * Ingest raw envelopes for one agent into the durable ledger. Returns
    * null when ledger ingestion is unavailable or the agent's runtime
    * identity is not resolvable yet.

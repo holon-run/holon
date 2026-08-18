@@ -3,8 +3,11 @@ import { create } from "zustand";
 import {
   createRuntimeClient,
   isProjectionBusyError,
+  projectRosterAgents,
+  ROSTER_SNAPSHOT_CAPABILITY,
   type AgentEventStreamSubscription,
   type OperatorPromptAttachment,
+  type AgentRosterSnapshotDto,
   type StreamEventEnvelopeDto,
 } from "./client";
 import {
@@ -95,6 +98,8 @@ import type {
   RuntimeTaskOutputResult,
   RuntimeMessageEnvelope,
   RuntimeModelCatalog,
+  RosterDiscoveryIdentity,
+  RosterDiscoveryState,
   RuntimeSearchOptions,
   SkillCatalogState,
   SkillDetailState,
@@ -317,6 +322,7 @@ export interface RuntimeStoreState {
   bootstrapLoading: boolean;
   bootstrapError?: string;
   globalStreamStatus: "idle" | "connecting" | "catching_up" | "streaming" | "reconnecting";
+  discovery: RosterDiscoveryState;
   modelCatalog: RuntimeModelCatalog;
   modelCatalogLoading: boolean;
   modelCatalogError?: string;
@@ -944,12 +950,118 @@ function filterDismissedDiagnostics(
   };
 }
 
+/**
+ * Atomically apply one authoritative roster snapshot (W4 discovery):
+ * validate identity against the last applied roster, replace the roster,
+ * reset sessions when the runtime/scope/epoch rotated, and purge the
+ * cache of agents the authoritative roster omitted. Returns the omitted
+ * agent ids so the coordinator can unregister them.
+ */
+function applyRosterSnapshotToStore(
+  set: StoreSet,
+  snapshot: AgentRosterSnapshotDto,
+  context: { previousIdentity?: RosterDiscoveryIdentity },
+): string[] {
+  const identity: RosterDiscoveryIdentity = {
+    runtimeId: snapshot.runtime_id,
+    visibilityScopeId: snapshot.visibility_scope_id,
+    eventLogEpoch: snapshot.event_log_epoch,
+  };
+  const identityReset =
+    context.previousIdentity != null &&
+    (context.previousIdentity.runtimeId !== identity.runtimeId ||
+      context.previousIdentity.visibilityScopeId !== identity.visibilityScopeId ||
+      context.previousIdentity.eventLogEpoch !== identity.eventLogEpoch);
+  let omittedAgentIds: string[] = [];
+  set((state) => {
+    const rosterAgents = projectRosterAgents(snapshot).map((agent) => {
+      const cached = cachedAgentsByIdFromState(state)[agent.id];
+      return cached ? mergeBootstrapAgentState(agent, cached) : agent;
+    });
+    const rosterIds = new Set(rosterAgents.map((agent) => agent.id));
+    const previousIds = state.bootstrap.agents.map((agent) => agent.id);
+    omittedAgentIds = identityReset
+      ? previousIds
+      : previousIds.filter((id) => !rosterIds.has(id));
+    const dropIds = new Set([...omittedAgentIds, ...(identityReset ? previousIds : [])]);
+    const sessionsByAgentId = dropIds.size
+      ? Object.fromEntries(
+          Object.entries(state.sessionsByAgentId).filter(([id]) => !dropIds.has(id)),
+        )
+      : state.sessionsByAgentId;
+    const rosterActivityByAgentId = dropIds.size
+      ? Object.fromEntries(
+          Object.entries(state.rosterActivityByAgentId).filter(([id]) => !dropIds.has(id)),
+        )
+      : state.rosterActivityByAgentId;
+    if (rosterActivityByAgentId !== state.rosterActivityByAgentId) {
+      writeStoredRosterActivity(currentRemoteKey(runtimeConnectionConfig), rosterActivityByAgentId);
+    }
+    const timelineEventsByAgentId = dropIds.size
+      ? Object.fromEntries(
+          Object.entries(state.timelineEventsByAgentId).filter(([id]) => !dropIds.has(id)),
+        )
+      : state.timelineEventsByAgentId;
+    const attentionCount = countAgentsNeedingAttention(rosterAgents);
+    return {
+      bootstrap: sortBootstrapAgents(
+        {
+          ...state.bootstrap,
+          agents: rosterAgents,
+          attentionCount,
+          metrics: buildBootstrapMetrics(rosterAgents),
+        },
+        rosterActivityByAgentId,
+      ),
+      discovery: {
+        ...state.discovery,
+        mode: "authoritative",
+        identity,
+      },
+      sessionsByAgentId,
+      rosterActivityByAgentId,
+      timelineEventsByAgentId,
+    };
+  });
+  if (identityReset) {
+    // Old-identity ledger scopes must never join the new scope's data.
+    void agentSessionRepository
+      .clearLedgerScopesNotMatching(identity)
+      .catch((error) => console.warn("Failed to clear old ledger scopes.", error));
+  }
+  for (const agentId of omittedAgentIds) {
+    stopAgentEventStream(agentId, set);
+    void agentSessionRepository
+      .purgeAgentLedger(agentId)
+      .catch((error) => console.warn("Failed to purge omitted agent ledger.", error));
+  }
+  return omittedAgentIds;
+}
+
 const globalSyncCoordinator = new GlobalSyncCoordinator<RuntimeStoreState>({
   applyStreamEvents,
   captureClientRequest,
   isCurrentClientRequest,
   setAgentLiveStatus,
   setStreamState,
+  fetchRosterSnapshot: async (request) => {
+    const capabilities = useRuntimeStore.getState().bootstrap.capabilities;
+    if (capabilities && !capabilities.includes(ROSTER_SNAPSHOT_CAPABILITY)) {
+      // A known capability set without the roster contract: an older or
+      // unverified server keeps the legacy path without a doomed request.
+      return null;
+    }
+    return request.client.getAgentRosterSnapshot();
+  },
+  applyRosterSnapshot: (set, snapshot, context) =>
+    applyRosterSnapshotToStore(set, snapshot, {
+      previousIdentity: context.previousIdentity,
+    }),
+  registerAgentRecovery: (agentId, hint) => {
+    void agentSessionRepository
+      .syncAgentRecovery(agentId, hint)
+      .catch((error) => console.warn(`Agent ledger recovery failed for ${agentId}.`, error));
+  },
 });
 
 let agentSessionRepository!: AgentSessionRepository<RuntimeStoreState>;
@@ -1141,6 +1253,11 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
   bootstrap: pendingBootstrap(runtimeConnectionConfig),
   bootstrapLoading: true,
   globalStreamStatus: "idle",
+  discovery: {
+    mode: "pending",
+    freshness: "fresh",
+    retryAttempt: 0,
+  } satisfies RosterDiscoveryState,
   modelCatalog: emptyModelCatalog,
   modelCatalogLoading: false,
   runtimeConfig: emptyRuntimeConfig,
@@ -1544,6 +1661,11 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
       bootstrap: pendingBootstrap(normalizedConfig),
       bootstrapLoading: true,
       bootstrapError: undefined,
+      discovery: {
+        mode: "pending",
+        freshness: "fresh",
+        retryAttempt: 0,
+      },
       modelCatalog: emptyModelCatalog,
       modelCatalogLoading: false,
       modelCatalogError: undefined,
@@ -1620,6 +1742,19 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
               bootstrapError: bootstrap.connection.error,
             };
           }
+          if (state.discovery.mode === "authoritative") {
+            // Authoritative discovery owns roster membership; keep the
+            // applied roster and refresh only connection metadata here.
+            return {
+              bootstrap: {
+                ...state.bootstrap,
+                connection: bootstrap.connection,
+                capabilities: bootstrap.capabilities,
+              },
+              bootstrapLoading: false,
+              bootstrapError: bootstrap.connection.error,
+            };
+          }
           const cachedAgentsById = cachedAgentsByIdFromState(state);
           const agents = bootstrap.agents.map((agent) => {
             const cachedAgent = cachedAgentsById[agent.id];
@@ -1649,7 +1784,11 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
           return updated ? { sessionsByAgentId: updated } : {};
         });
         if (options.syncEvents !== false) {
-          globalSyncCoordinator.syncRoster(get, set);
+          if (get().discovery.mode === "authoritative") {
+            globalSyncCoordinator.refreshRoster(get, set);
+          } else {
+            globalSyncCoordinator.syncRoster(get, set);
+          }
         }
         span.end("ok", { agentCount: bootstrap.agents.length });
       } catch (error) {
@@ -1986,6 +2125,12 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     try {
       await request.client.createAgentFromTemplate(agentId, template);
       if (!isCurrentClientRequest(request)) return false;
+      if (get().discovery.mode === "authoritative") {
+        // The authoritative roster owns membership; refresh the snapshot
+        // so the new agent appears through the same atomic apply.
+        globalSyncCoordinator.refreshRoster(get, set);
+        return true;
+      }
       await get().refreshBootstrap({ background: true });
       return true;
     } catch (error) {
@@ -3089,7 +3234,13 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
           rosterActivityByAgentId,
         };
       });
-      await get().refreshBootstrap({ background: true });
+      if (get().discovery.mode === "authoritative") {
+        // The authoritative roster owns membership; one snapshot refresh
+        // applies the deletion (and any concurrent roster change) atomically.
+        globalSyncCoordinator.refreshRoster(get, set);
+      } else {
+        await get().refreshBootstrap({ background: true });
+      }
       // If we deleted the currently selected agent, clean up and reset to dashboard
       // so the UI doesn't stay on a stale agent page that errors on refresh.
       if (get().selectedAgentId === agentId) {

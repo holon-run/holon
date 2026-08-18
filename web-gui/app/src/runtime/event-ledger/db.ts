@@ -9,7 +9,7 @@
 import { LedgerUnavailableError } from "./errors";
 
 export const LEDGER_DB_NAME = "holon.webGui.eventLedger.v1";
-export const LEDGER_DB_VERSION = 1;
+export const LEDGER_DB_VERSION = 2;
 
 export const RUNTIME_SCOPES_STORE = "runtime_scopes";
 export const AGENT_SESSIONS_STORE = "agent_sessions";
@@ -35,12 +35,18 @@ export type LedgerStoreName = (typeof LEDGER_STORES)[number];
 export const BY_SCOPE_INDEX = "byScope";
 /** Index on runtime_scopes covering (remoteKey, runtimeId, visibilityScopeId). */
 export const BY_REMOTE_RUNTIME_INDEX = "byRemoteRuntime";
+/** Index on agent_sessions covering (remoteKey, agentId) across scopes. */
+export const BY_AGENT_INDEX = "byAgent";
 
 /**
  * Apply schema migrations inside one upgrade transaction. Kept as an
  * explicit function so every future version bump has one obvious home.
  */
-export function applyLedgerUpgrade(db: IDBDatabase, oldVersion: number): void {
+export function applyLedgerUpgrade(
+  db: IDBDatabase,
+  oldVersion: number,
+  upgradeTransaction?: IDBTransaction,
+): void {
   if (oldVersion < 1) {
     const runtimeScopes = db.createObjectStore(RUNTIME_SCOPES_STORE, {
       keyPath: ["remoteKey", "runtimeId", "visibilityScopeId", "eventLogEpoch"],
@@ -106,6 +112,14 @@ export function applyLedgerUpgrade(db: IDBDatabase, oldVersion: number): void {
 
     db.createObjectStore(MIGRATION_META_STORE, { keyPath: "metaKey" });
   }
+  if (oldVersion < 2) {
+    // v2: per-agent secondary index so recovery lookups stop scanning every
+    // runtime scope's sessions for one agent id.
+    const store = upgradeTransaction?.objectStore(AGENT_SESSIONS_STORE);
+    if (store && !store.indexNames.contains(BY_AGENT_INDEX)) {
+      store.createIndex(BY_AGENT_INDEX, ["remoteKey", "agentId"], { unique: false });
+    }
+  }
 }
 
 export interface OpenLedgerDatabaseEvents {
@@ -138,7 +152,7 @@ export function openLedgerDatabase(events: OpenLedgerDatabaseEvents = {}): Promi
     }
     request.onupgradeneeded = (event) => {
       const oldVersion = (event as IDBVersionChangeEvent).oldVersion;
-      applyLedgerUpgrade(request.result, oldVersion);
+      applyLedgerUpgrade(request.result, oldVersion, request.transaction ?? undefined);
     };
     request.onsuccess = () => {
       const db = request.result;

@@ -1159,6 +1159,27 @@ button {
   align-content: start;
 }
 
+.roster-discovery-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.roster-discovery-banner.stale {
+  border: 1px solid var(--warning-border, #b58100);
+  background: var(--warning-surface, rgba(181, 129, 0, 0.08));
+}
+
+.roster-discovery-banner.unauthorized {
+  border: 1px solid var(--danger-border, #b3372f);
+  background: var(--danger-surface, rgba(179, 55, 47, 0.08));
+}
+
 .dashboard-head {
   gap: 18px;
   margin-bottom: 0;

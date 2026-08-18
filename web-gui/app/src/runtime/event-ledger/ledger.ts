@@ -17,6 +17,7 @@
 
 import {
   AGENT_SESSIONS_STORE,
+  BY_AGENT_INDEX,
   BY_REMOTE_RUNTIME_INDEX,
   BY_SCOPE_INDEX,
   CANONICAL_RECORDS_STORE,
@@ -917,20 +918,12 @@ export class EventLedger {
     agentId: string,
   ): Promise<LedgerAgentSessionRecord[]> {
     const db = this.requireOpenDb();
-    const scopes = await this.listRuntimeScopesByRemoteKey(remoteKey);
-    const result: LedgerAgentSessionRecord[] = [];
-    for (const runtimeScope of scopes) {
-      const sessions = await this.listAgentSessions({
-        remoteKey: runtimeScope.remoteKey,
-        runtimeId: runtimeScope.runtimeId,
-        visibilityScopeId: runtimeScope.visibilityScopeId,
-        eventLogEpoch: runtimeScope.eventLogEpoch,
-      });
-      for (const session of sessions) {
-        if (session.agentId === agentId) result.push(session);
-      }
-    }
-    return result;
+    return collectIndex<LedgerAgentSessionRecord>(
+      db,
+      AGENT_SESSIONS_STORE,
+      BY_AGENT_INDEX,
+      IDBKeyRange.only([remoteKey, agentId]),
+    );
   }
 
   async getReadState(scope: LedgerScopeKey): Promise<LedgerReadStateRecord | undefined> {

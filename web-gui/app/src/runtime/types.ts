@@ -844,7 +844,42 @@ export interface AgentDeletionStatus {
 
 export interface RuntimeBootstrap {
   attentionCount: number;
+  /** Capabilities advertised by the remote handshake, when known. */
+  capabilities?: string[];
   connection: RuntimeConnection;
   metrics: DashboardMetric[];
   agents: AgentSummary[];
+}
+
+/** How the Web GUI currently discovers the Agent roster. */
+export type RosterDiscoveryMode =
+  | "pending"
+  | "legacy"
+  | "authoritative";
+
+/**
+ * Roster discovery health. `stale` keeps the last complete roster visible
+ * while a transient snapshot failure retries; `unauthorized` stops
+ * presenting the cached roster as currently authorized data until the
+ * operator reauthenticates.
+ */
+export type RosterDiscoveryFreshness = "fresh" | "stale" | "unauthorized";
+
+/** Roster identity anchors from the last applied authoritative snapshot. */
+export interface RosterDiscoveryIdentity {
+  runtimeId: string;
+  visibilityScopeId: string;
+  eventLogEpoch: string;
+}
+
+export interface RosterDiscoveryState {
+  mode: RosterDiscoveryMode;
+  freshness: RosterDiscoveryFreshness;
+  identity?: RosterDiscoveryIdentity;
+  /** Transient snapshot failure message; the roster stays visible but stale. */
+  staleReason?: string;
+  /** Authorization failure message; cached data is not currently authorized. */
+  unauthorizedReason?: string;
+  retryAttempt: number;
+  retryAt?: number;
 }

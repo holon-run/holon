@@ -21,6 +21,7 @@
 import type { LedgerIngestionPipeline, LedgerIngestionStatus } from "./ingestion-pipeline";
 import type { LedgerReadStateRecord } from "./ledger";
 import { LedgerIdentityConflictError } from "./errors";
+import { remoteScopeKeyParts } from "./keys";
 import type {
   LedgerRecordKind,
   LedgerRemoteScopeKey,
@@ -268,6 +269,20 @@ export class AgentRecoveryCoordinator {
   ): Promise<AgentRecoveryUpdate> {
     const state = this.stateFor(agentId);
     state.error = undefined;
+    // Cached-scope shortcut: a live agent answers its contiguous cursor
+    // from the pipeline tracker without the durable session scan. The scan
+    // still runs when the scope is unknown, may be replaced by a reset, or
+    // the tracker cannot answer; identity drift surfaces through the same
+    // page-metadata escalation paths during replay.
+    if (state.scope && state.phase === "live" && options.forceReset == null) {
+      const status = this.dependencies.pipeline.status(state.scope);
+      if (status && status.ingestedThroughSeq != null) {
+        const contiguous = status.ingestedThroughSeq;
+        return this.replay(agentId, state.scope, contiguous, {
+          targetHeadSeq: Math.max(hint.eventHeadSeq ?? 0, contiguous),
+        });
+      }
+    }
     const sessions = await this.dependencies.pipeline.findAgentSessions(
       this.dependencies.remoteKey,
       agentId,
@@ -335,6 +350,9 @@ export class AgentRecoveryCoordinator {
       agentId,
     );
     let identityReset: LedgerResetReason | undefined;
+    // One agent may hold sessions in several old scopes; each distinct
+    // runtime scope is cleared exactly once.
+    const clearedScopes = new Set<string>();
     for (const session of stale) {
       if (sameRemoteScope(session.scope, scope)) continue;
       const remoteScope: LedgerRemoteScopeKey = {
@@ -343,6 +361,9 @@ export class AgentRecoveryCoordinator {
         visibilityScopeId: session.scope.visibilityScopeId,
         eventLogEpoch: session.scope.eventLogEpoch,
       };
+      const scopeKey = remoteScopeKeyParts(remoteScope).join("\u0000");
+      if (clearedScopes.has(scopeKey)) continue;
+      clearedScopes.add(scopeKey);
       await this.dependencies.pipeline.clearRuntimeScope(remoteScope);
       identityReset =
         session.scope.runtimeId === scope.runtimeId &&
@@ -500,6 +521,17 @@ export class AgentRecoveryCoordinator {
         throw error;
       }
       const contiguous = status?.ingestedThroughSeq ?? after;
+      if (events.length === 0) {
+        // An empty page without newer events ends the replay. An empty
+        // page that still claims newer events is spin: fail after bounded
+        // rounds instead of paging toward maxPages.
+        if (page.hasNewer !== true) break;
+        staleRounds += 1;
+        if (staleRounds >= MAX_STALE_REPLAY_ROUNDS) {
+          return this.failReplay(state, agentId, scope, "empty_replay_page_no_progress", context.reset);
+        }
+        continue;
+      }
       if (events.length > 0 && contiguous <= after) {
         staleRounds += 1;
         if (staleRounds >= MAX_STALE_REPLAY_ROUNDS) {
@@ -509,20 +541,16 @@ export class AgentRecoveryCoordinator {
         staleRounds = 0;
       }
       after = Math.max(after, contiguous);
-      if (events.length === 0 && page.hasNewer !== true) break;
     }
 
     // Buffered live hints replay through the same ingest path before the
     // live transition, so concurrent activity is not lost and cannot
     // duplicate (immutable identity is idempotent).
-    const hints = state.pendingHints.splice(0);
-    if (hints.length > 0) {
-      status = await this.dependencies.pipeline.ingest(scope, hints);
-    }
+    status = (await this.drainPendingHints(state, scope)) ?? status;
 
     state.phase = "live";
     state.lastResetReason = context.reset;
-    return this.emit(state, {
+    const update = this.emit(state, {
       agentId,
       scope,
       phase: "live",
@@ -530,6 +558,29 @@ export class AgentRecoveryCoordinator {
       projectionReadyThroughSeq: status?.projectionReadyThroughSeq,
       resetReason: context.reset,
     });
+    // Hints offered while the pre-live drain was awaiting keep buffering
+    // until this sync promise settles. Drain once more after the live
+    // transition so nothing strands between the transition and settle.
+    const lateStatus = await this.drainPendingHints(state, scope);
+    if (lateStatus) {
+      update.ingestedThroughSeq = lateStatus.ingestedThroughSeq;
+      update.projectionReadyThroughSeq = lateStatus.projectionReadyThroughSeq;
+    }
+    return update;
+  }
+
+  /** Ingest buffered live hints until the buffer stays empty. */
+  private async drainPendingHints(
+    state: AgentRecoveryState,
+    scope: LedgerScopeKey,
+  ): Promise<LedgerIngestionStatus | null> {
+    let status: LedgerIngestionStatus | null = null;
+    let hints = state.pendingHints.splice(0);
+    while (hints.length > 0) {
+      status = await this.dependencies.pipeline.ingest(scope, hints);
+      hints = state.pendingHints.splice(0);
+    }
+    return status;
   }
 
   private failReplay(

@@ -60,6 +60,7 @@ const APP_WINDOW_TITLE = "Holon";
 
 export function App() {
   const { bootstrap, loading, refresh } = useRuntimeDashboard();
+  const discovery = useRuntimeStore((state) => state.discovery);
   const { t } = useTranslation();
   useSyncExternalStore(subscribeRuntimeTrace, getRuntimeTraceRevision, getRuntimeTraceRevision);
   const developerDiagnosticsEnabled = isRuntimeTraceEnabled();
@@ -640,6 +641,7 @@ export function App() {
             agents={visibleAgents}
             metrics={bootstrap.metrics}
             connection={bootstrap.connection}
+            discovery={discovery}
             loading={loading}
             onRefresh={() => {
               void refresh();

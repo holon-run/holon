@@ -451,4 +451,115 @@ describe("agent recovery coordinator", () => {
     // A second escalation before another live stretch is refused.
     expect(coordinator.requestDivergenceReset("agent-1")).toBe(false);
   });
+
+  it("drains hints that arrive during the pre-live drain after the live transition", async () => {
+    const pipeline = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
+    await pipeline.open();
+    const source = pageSource({ 5: page([envelope(6), envelope(7), envelope(8)]) });
+    let releaseReplay: ((value: RecoveryEventPage) => void) | null = null;
+    const replayGate = new Promise<RecoveryEventPage>((resolve) => {
+      releaseReplay = resolve;
+    });
+    const fetchEventPage = (): Promise<RecoveryEventPage> => replayGate;
+    const coordinator = makeCoordinator(pipeline, async () => snapshot(), fetchEventPage);
+
+    // Re-entrancy: while the pre-live drain ingests seq 9, a later live
+    // event (10) is offered and buffers behind the still-settling sync.
+    const realIngest = pipeline.ingest.bind(pipeline);
+    let drainedNine = false;
+    const ingestSpy = vi.spyOn(pipeline, "ingest").mockImplementation(async (scope, events) => {
+      const result = await realIngest(scope, events);
+      if (!drainedNine && events.some((event) => (event as { event_seq?: number }).event_seq === 9)) {
+        drainedNine = true;
+        void coordinator.offer("agent-1", [envelope(10)]).then(() => undefined);
+      }
+      return result;
+    });
+
+    const syncPromise = coordinator.sync("agent-1");
+    await vi.waitFor(() => expect(coordinator.phaseOf("agent-1")).toBe("replaying"));
+    const bufferedNine = await coordinator.offer("agent-1", [envelope(9)]);
+    expect(bufferedNine).toBeNull();
+    releaseReplay!(page([envelope(6), envelope(7), envelope(8)]));
+    const update = await syncPromise;
+    expect(update.phase).toBe("live");
+    expect(update.ingestedThroughSeq).toBe(10);
+    ingestSpy.mockRestore();
+
+    const ledger = await openLedgerHandle();
+    const events = await ledger.getRawEvents(makeScope());
+    ledger.close();
+    expect(events.map((event) => event.eventSeq)).toContain(10);
+  });
+
+  it("fails an empty-page spin early instead of paging toward maxPages", async () => {
+    const pipeline = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
+    await pipeline.open();
+    const scope = makeScope();
+    await pipeline.ingest(scope, [envelope(1), envelope(2)]);
+    const source = pageSource({ 2: page([], { hasNewer: true }) });
+    const coordinator = makeCoordinator(pipeline, async () => snapshot(), source.fetch);
+
+    const update = await coordinator.sync("agent-1", { eventHeadSeq: 50 });
+    expect(update.phase).toBe("error");
+    expect(update.error).toBe("empty_replay_page_no_progress");
+    // Bounded: the stale-round guard stops the loop after three empty pages.
+    expect(source.requests).toHaveLength(3);
+  });
+
+  it("clears each distinct stale runtime scope exactly once during an identity reset", async () => {
+    const pipeline = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
+    await pipeline.open();
+    // The same agent holds sessions in two distinct stale scopes; each is
+    // cleared exactly once and the current scope is never cleared.
+    const staleEpochScope = makeScope({ eventLogEpoch: "epoch-0" });
+    const staleVisibilityScope = makeScope({ eventLogEpoch: "epoch-x" });
+    await pipeline.ingest(staleEpochScope, [envelope(1, { event_log_epoch: "epoch-0" })]);
+    await pipeline.ingest(staleVisibilityScope, [envelope(1, { event_log_epoch: "epoch-x" })]);
+
+    const clearSpy = vi.spyOn(pipeline, "clearRuntimeScope");
+    // Catch-up page metadata reveals the current epoch, so the catch-up
+    // escalates into an identity reset bootstrap.
+    const source = pageSource({
+      1: page([], { eventLogEpoch: "epoch-1", eventHeadSeq: 8 }),
+      5: page([envelope(6)]),
+    });
+    const coordinator = makeCoordinator(pipeline, async () => snapshot(), source.fetch);
+
+    const update = await coordinator.sync("agent-1", { eventHeadSeq: 8 });
+    expect(update.phase).toBe("live");
+    const cleared = clearSpy.mock.calls.map(([scope]) => scope);
+    expect(cleared).toHaveLength(2);
+    expect(cleared).toContainEqual({
+      remoteKey: staleEpochScope.remoteKey,
+      runtimeId: staleEpochScope.runtimeId,
+      visibilityScopeId: staleEpochScope.visibilityScopeId,
+      eventLogEpoch: "epoch-0",
+    });
+    expect(cleared).toContainEqual({
+      remoteKey: staleVisibilityScope.remoteKey,
+      runtimeId: staleVisibilityScope.runtimeId,
+      visibilityScopeId: staleVisibilityScope.visibilityScopeId,
+      eventLogEpoch: staleVisibilityScope.eventLogEpoch,
+    });
+  });
+
+  it("answers a live catch-up from the cached scope without the session scan", async () => {
+    const pipeline = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
+    await pipeline.open();
+    const scope = makeScope();
+    await pipeline.ingest(scope, [envelope(1), envelope(2), envelope(3)]);
+    const source = pageSource({ 3: page([envelope(4)]) });
+    const coordinator = makeCoordinator(pipeline, async () => snapshot(), source.fetch);
+
+    const first = await coordinator.sync("agent-1");
+    expect(first.phase).toBe("live");
+    const findSpy = vi.spyOn(pipeline, "findAgentSessions");
+
+    const second = await coordinator.sync("agent-1", { eventHeadSeq: 4 });
+    expect(second.phase).toBe("live");
+    expect(second.ingestedThroughSeq).toBe(4);
+    expect(source.requests).toEqual([3]);
+    expect(findSpy).not.toHaveBeenCalled();
+  });
 });
