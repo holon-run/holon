@@ -2076,10 +2076,10 @@ def require_checkpoint_restart_activation_lineage(
         key=lambda attempt: attempt["admitted_fences"]["work_item_generation"],
     )
     require(
-        len(attempts) == 2,
-        f"checkpoint replay expected exactly two WorkItem attempts: {attempts}",
+        len(attempts) == 3,
+        f"checkpoint replay expected exactly three WorkItem attempts: {attempts}",
     )
-    scheduling, wait_resume = attempts
+    scheduling, wait_resume, completion = attempts
     require(
         scheduling["admitted_fences"]["work_item_generation"] == 1
         and scheduling["source"]["identity"]["kind"] == "work_item_continuation",
@@ -2094,6 +2094,15 @@ def require_checkpoint_restart_activation_lineage(
             "trigger_message_id": wait_resume["source_message_id"],
         },
         f"checkpoint replay wait-resume attempt mismatch: {wait_resume}",
+    )
+    require(
+        completion["admitted_fences"]["work_item_generation"] == 3
+        and completion["source"]["identity"]
+        == {
+            "kind": "work_item_continuation",
+            "work_item_id": work_item_id,
+        },
+        f"checkpoint replay completion attempt mismatch: {completion}",
     )
     waits = [
         row

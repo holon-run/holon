@@ -2508,6 +2508,19 @@ class DockerE2ERunnerTests(unittest.TestCase):
                         )
                     ),
                 },
+                {
+                    "payload_json": json.dumps(
+                        attempt(
+                            "attempt-completion",
+                            "message-completion",
+                            3,
+                            {
+                                "kind": "work_item_continuation",
+                                "work_item_id": "work-1",
+                            },
+                        )
+                    ),
+                },
             ],
             "wait_conditions": [
                 {
