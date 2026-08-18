@@ -182,6 +182,7 @@ const zh: Record<string, any> = {
     statePreviewBody: "配置或连接本地 Holon API，将此仪表盘切换到实时数据。",
     rosterStaleTitle: "智能体列表连接中断",
     rosterStaleBody: "后台正在重试发现流程，当前显示最近一次完整的智能体列表。",
+    rosterStaleExtendedBody: "后台已连续重试 {{attempt}} 次仍未成功，下方列表可能已过期。",
     rosterUnauthorizedTitle: "授权已失效",
     rosterUnauthorizedBody: "缓存的智能体列表已不再是当前授权数据。请重新认证后再刷新。",
     dashboardAria: "仪表盘",

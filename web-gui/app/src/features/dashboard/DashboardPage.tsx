@@ -6,6 +6,7 @@ import { Card } from "../../components/ui/Card";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { Skeleton } from "../../components/ui/Skeleton";
 import { AgentStateBadge, StatusBadge } from "../../components/ui/StatusChip";
+import { ROSTER_STALE_EXTENDED_RETRY_ATTEMPTS } from "../../runtime/global-sync-coordinator";
 import type { RosterDiscoveryState } from "../../runtime/types";
 import { compactModelRouteDisplay } from "../../lib/model-route-ref";
 import type { AgentSummary, DashboardMetric, RuntimeConnection } from "../../runtime/types";
@@ -52,7 +53,11 @@ export function DashboardPage({ agents, metrics, connection, discovery, loading,
           {discovery?.freshness === "stale" ? (
             <div className="roster-discovery-banner stale" role="status">
               <strong>{t("dashboard.rosterStaleTitle")}</strong>
-              <span>{t("dashboard.rosterStaleBody")}</span>
+              <span>
+                {discovery.retryAttempt >= ROSTER_STALE_EXTENDED_RETRY_ATTEMPTS
+                  ? t("dashboard.rosterStaleExtendedBody", { attempt: discovery.retryAttempt })
+                  : t("dashboard.rosterStaleBody")}
+              </span>
             </div>
           ) : null}
           {discovery?.freshness === "unauthorized" ? (

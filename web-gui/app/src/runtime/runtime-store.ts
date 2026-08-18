@@ -974,8 +974,9 @@ function applyRosterSnapshotToStore(
       context.previousIdentity.eventLogEpoch !== identity.eventLogEpoch);
   let omittedAgentIds: string[] = [];
   set((state) => {
+    const cachedAgentsById = cachedAgentsByIdFromState(state);
     const rosterAgents = projectRosterAgents(snapshot).map((agent) => {
-      const cached = cachedAgentsByIdFromState(state)[agent.id];
+      const cached = cachedAgentsById[agent.id];
       return cached ? mergeBootstrapAgentState(agent, cached) : agent;
     });
     const rosterIds = new Set(rosterAgents.map((agent) => agent.id));
@@ -983,7 +984,7 @@ function applyRosterSnapshotToStore(
     omittedAgentIds = identityReset
       ? previousIds
       : previousIds.filter((id) => !rosterIds.has(id));
-    const dropIds = new Set([...omittedAgentIds, ...(identityReset ? previousIds : [])]);
+    const dropIds = new Set(identityReset ? previousIds : omittedAgentIds);
     const sessionsByAgentId = dropIds.size
       ? Object.fromEntries(
           Object.entries(state.sessionsByAgentId).filter(([id]) => !dropIds.has(id)),

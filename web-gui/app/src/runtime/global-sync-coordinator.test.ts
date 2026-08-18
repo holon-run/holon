@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { ROSTER_STALE_EXTENDED_RETRY_ATTEMPTS } from "./global-sync-coordinator";
 import { useRuntimeStore, type AgentSessionState } from "./runtime-store";
 import { createSessionProjectionState } from "./session-projection";
 
@@ -561,6 +562,77 @@ describe("authoritative discovery cutover", () => {
         freshness: "fresh",
       });
     });
+  });
+
+  it("escalates extended transient snapshot failure streaks without purging the roster", async () => {
+    const retryCallbacks: Array<() => void> = [];
+    vi.stubGlobal("window", {
+      localStorage: new MemoryStorage(),
+      sessionStorage: new MemoryStorage(),
+      setTimeout: (callback: () => void, _delay?: number) => {
+        retryCallbacks.push(callback);
+        return retryCallbacks.length;
+      },
+      clearTimeout: () => undefined,
+      location: { hostname: "localhost", protocol: "http:" },
+    });
+    const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname.endsWith("/handshake")) {
+        return Promise.resolve(jsonResponse({ capabilities: ["agents.list", "agents.roster-snapshot.v1"] }));
+      }
+      if (url.pathname.endsWith("/agents/list")) {
+        return Promise.resolve(jsonResponse([listEntry("agent-a"), listEntry("agent-b")]));
+      }
+      if (url.pathname.endsWith("/agents/snapshot")) {
+        return Promise.resolve(errorJsonResponse(500, { error: "snapshot assembly failed" }));
+      }
+      if (url.pathname.endsWith("/projection-snapshot")) {
+        return Promise.resolve(errorJsonResponse(503, { error: "capability unavailable", code: "capability_unavailable" }));
+      }
+      if (url.pathname.endsWith("/events/stream")) {
+        return Promise.resolve(sseResponse(init, () => undefined));
+      }
+      if (url.pathname.endsWith("/agents/agent-a/events")) {
+        if (url.searchParams.get("order") === "desc") return Promise.resolve(jsonResponse(baselinePage("agent-a")));
+        return Promise.resolve(jsonResponse(emptyEventsPage("agent-a")));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+
+    useRuntimeStore.getState().registerAgentForEvents("agent-a");
+
+    await vi.waitFor(() => {
+      expect(useRuntimeStore.getState().discovery).toMatchObject({
+        mode: "authoritative",
+        freshness: "stale",
+        retryAttempt: 1,
+      });
+    });
+    // A long transient streak keeps the previous roster and lets the retry
+    // counter climb past the dashboard's extended-stale threshold.
+    while (
+      (useRuntimeStore.getState().discovery?.retryAttempt ?? 0)
+        < ROSTER_STALE_EXTENDED_RETRY_ATTEMPTS
+    ) {
+      const pending = retryCallbacks.splice(0);
+      expect(pending.length).toBeGreaterThan(0);
+      for (const retry of pending) retry();
+      await vi.waitFor(() => {
+        expect(
+          (useRuntimeStore.getState().discovery?.retryAttempt ?? 0)
+            >= ROSTER_STALE_EXTENDED_RETRY_ATTEMPTS
+            || retryCallbacks.length > 0,
+        ).toBe(true);
+      });
+    }
+    expect(useRuntimeStore.getState().discovery).toMatchObject({
+      mode: "authoritative",
+      freshness: "stale",
+    });
+    expect(useRuntimeStore.getState().bootstrap.agents.map((agent) => agent.id)).toEqual(["agent-a", "agent-b"]);
   });
 
   it("separates authorization failure from transient failure and stops retrying", async () => {

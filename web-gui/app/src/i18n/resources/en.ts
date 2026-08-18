@@ -180,6 +180,8 @@ const en = {
     statePreviewBody: "Configure or reach the local Holon API to switch this dashboard to live data.",
     rosterStaleTitle: "Roster connection interrupted",
     rosterStaleBody: "Showing the last complete agent roster while discovery retries in the background.",
+    rosterStaleExtendedBody:
+      "Discovery has retried {{attempt}} times without success. The roster below may be outdated.",
     rosterUnauthorizedTitle: "Authorization lost",
     rosterUnauthorizedBody: "The cached agent roster is no longer currently authorized data. Reauthenticate, then refresh.",
     dashboardAria: "Dashboard",

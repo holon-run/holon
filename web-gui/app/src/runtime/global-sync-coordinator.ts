@@ -97,6 +97,12 @@ const STREAM_RECONNECT_BASE_MS = 1_000;
 const STREAM_RECONNECT_MAX_MS = 15_000;
 const GLOBAL_STREAM_STALE_TIMEOUT_MS = 45_000;
 const GLOBAL_BACKFILL_LIMIT = 100;
+
+// Once transient roster retries pass this attempt count (backoff fully
+// saturated at STREAM_RECONNECT_MAX_MS), the dashboard escalates the stale
+// banner so an extended outage stays visible to the operator.
+export const ROSTER_STALE_EXTENDED_RETRY_ATTEMPTS = 6;
+
 const GLOBAL_BACKFILL_MAX_PAGES = 10;
 const GLOBAL_BACKFILL_CONCURRENCY = 4;
 /** Low-rate safety net: full roster reconciliation at most this often. */
@@ -286,6 +292,7 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
     );
     const cycle = (async () => {
       let refreshAgain = true;
+      let settledFromSnapshot = false;
       while (
         refreshAgain
         && this.dependencies.isCurrentClientRequest(request)
@@ -321,6 +328,7 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
           span.end("skipped", { reason: "capability_absent" });
           return;
         }
+        settledFromSnapshot = true;
         this.clearRosterRetrySchedule();
         this.rosterRetryAttempt = 0;
         const identity: RosterDiscoveryIdentity = {
@@ -348,6 +356,14 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
         this.syncRoster(get, set);
         if (this.rosterDirty) refreshAgain = true;
         span.end("ok", { agentCount: snapshot.agents.length, omitted: omittedAgentIds.length });
+      }
+      // A cycle that never applied a snapshot (for example a roster retry
+      // firing while the stream is down and reconnecting) must not mark
+      // discovery fresh; the previous stale state stays authoritative
+      // until a real snapshot settles.
+      if (!settledFromSnapshot) {
+        span.end("skipped", { reason: "stream_unavailable" });
+        return;
       }
       // Discovery is marked fresh only after the settle of the last
       // (possibly coalesced) successful refresh.
