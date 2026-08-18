@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 
 use crate::runtime_db::index_outbox::RuntimeIndexChange;
 use crate::runtime_db::EVIDENCE_PREVIEW_LIMIT;
+use crate::types::AgentRegistryStatus;
 use crate::types::{
     AgentDeletionJob, AgentIdentityRecord, AgentState, AuditEvent, BriefRecord,
     DeliverySummaryRecord, ExecutionRootEntry, MessageEnvelope, ToolExecutionRecord,
@@ -368,10 +369,62 @@ pub(crate) fn upsert_execution_root_entry_tx(
     Ok(())
 }
 
+/// Enforces the durable Agent identity reservation invariant inside every
+/// registry write: an id retired in this runtime event-log epoch can never
+/// regain availability. Deletion only moves the reservation to `retired`;
+/// the reservation row itself is never removed.
+pub(crate) fn reserve_agent_identity_tx(
+    tx: &Transaction<'_>,
+    record: &AgentIdentityRecord,
+) -> Result<()> {
+    let retired: Option<bool> = tx
+        .query_row(
+            "SELECT reservation_state = 'retired'
+             FROM agent_identity_reservations
+             WHERE agent_id = ?1",
+            [&record.agent_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    if retired == Some(true) {
+        if record.status != AgentRegistryStatus::Deleted {
+            return Err(anyhow!(
+                "agent id {} was retired in this runtime event-log epoch; \
+                 retired agent ids are never reused",
+                record.agent_id
+            ));
+        }
+        // Re-asserting the tombstone keeps the reservation retired; the
+        // registry write below remains an idempotent stale-safe no-op.
+        return Ok(());
+    }
+    if record.status == AgentRegistryStatus::Deleted {
+        tx.execute(
+            "INSERT INTO agent_identity_reservations (agent_id, reservation_state, reserved_at, retired_at, source)
+             VALUES (?1, 'retired', ?2, ?2, 'agent_registry')
+             ON CONFLICT(agent_id) DO UPDATE SET
+               reservation_state = 'retired',
+               retired_at = excluded.retired_at",
+            params![record.agent_id, now],
+        )?;
+        return Ok(());
+    }
+    tx.execute(
+        "INSERT OR IGNORE INTO agent_identity_reservations (agent_id, reservation_state, reserved_at, retired_at, source)
+         VALUES (?1, 'active', ?2, NULL, 'agent_registry')",
+        params![record.agent_id, now],
+    )?;
+    Ok(())
+}
+
 pub(crate) fn upsert_agent_identity_tx(
     tx: &Transaction<'_>,
     record: &AgentIdentityRecord,
 ) -> Result<()> {
+    // The reservation guard runs before the registry write so a retired id
+    // can never regain availability, not even through a stale replay.
+    reserve_agent_identity_tx(tx, record)?;
     let payload_json = serde_json::to_string(record)?;
     let kind = enum_string(&record.kind)?;
     let visibility = enum_string(&record.visibility)?;

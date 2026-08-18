@@ -106,6 +106,39 @@ pub(crate) fn event_log_epoch_id() -> String {
     runtime_id("epoch")
 }
 
+pub(crate) fn runtime_installation_id() -> String {
+    runtime_id("runtime")
+}
+
+/// Derives the opaque `visibility_scope_id` from stable server-side facts:
+/// the runtime installation identity, the server-resolved authority
+/// principal, the normalized visibility entitlement, and the visibility
+/// policy generation. Credential material is never an input: rotating a
+/// credential with unchanged entitlement keeps the scope stable, while a
+/// principal, entitlement, or policy change rotates it.
+pub(crate) fn visibility_scope_id(
+    runtime_id: &str,
+    authority_principal: &str,
+    authority_entitlement: &str,
+    policy_generation: u64,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"holon.visibility-scope.v1\x00");
+    hasher.update(runtime_id.as_bytes());
+    hasher.update(b"\x00");
+    hasher.update(authority_principal.as_bytes());
+    hasher.update(b"\x00");
+    hasher.update(authority_entitlement.as_bytes());
+    hasher.update(b"\x00");
+    hasher.update(policy_generation.to_string().as_bytes());
+    let digest = hasher.finalize();
+    format!("vscope1_{}", &hex(&digest[..16]))
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 pub fn work_item_delegation_id() -> String {
     runtime_id("delegation")
 }
@@ -202,6 +235,37 @@ mod tests {
         assert!(
             hex.chars().all(|ch| ch.is_ascii_hexdigit()),
             "hex portion should only contain hex digits"
+        );
+    }
+
+    #[test]
+    fn visibility_scope_id_is_stable_and_rotates_only_on_contract_inputs() {
+        let scope = visibility_scope_id("runtime_fixture", "control", "control", 0);
+        assert!(scope.starts_with("vscope1_"));
+        assert_eq!(scope.len(), "vscope1_".len() + 32);
+        // Deterministic: credential rotation with unchanged principal and
+        // entitlement has no input at all, so the scope cannot move.
+        assert_eq!(
+            scope,
+            visibility_scope_id("runtime_fixture", "control", "control", 0)
+        );
+        // Principal, entitlement, policy generation, and runtime identity
+        // changes each rotate the scope.
+        assert_ne!(
+            scope,
+            visibility_scope_id("runtime_fixture", "public", "control", 0)
+        );
+        assert_ne!(
+            scope,
+            visibility_scope_id("runtime_fixture", "control", "public", 0)
+        );
+        assert_ne!(
+            scope,
+            visibility_scope_id("runtime_fixture", "control", "control", 1)
+        );
+        assert_ne!(
+            scope,
+            visibility_scope_id("runtime_other", "control", "control", 0)
         );
     }
 }

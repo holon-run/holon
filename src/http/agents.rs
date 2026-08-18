@@ -136,9 +136,11 @@ fn normalize_search_agent_ids(
 }
 
 /// Legacy control-plane capabilities plus the observer-sync capabilities
-/// evaluated from durable verification results. Until a verification source
-/// exists the evaluator keeps all observer-sync capabilities disabled.
-fn handshake_capabilities() -> Vec<&'static str> {
+/// evaluated from durable verification results. Observer-sync capabilities
+/// require their storage and consistency invariants to be verified for the
+/// current database; a verification load failure degrades to the all-disabled
+/// evaluator instead of failing the handshake.
+fn handshake_capabilities(state: &AppState) -> Vec<&'static str> {
     let mut capabilities = vec![
         "agents.list",
         "agents.state",
@@ -146,9 +148,20 @@ fn handshake_capabilities() -> Vec<&'static str> {
         "agents.control",
         "tui.remote",
     ];
-    capabilities.extend(advertised_observer_sync_capabilities(
-        &ObserverSyncCapabilityVerification::default(),
-    ));
+    let mut verification = ObserverSyncCapabilityVerification::default();
+    match state.host.runtime_db().observer_sync_foundations() {
+        Ok(foundations) => {
+            verification.runtime_identity_stable = foundations.runtime_identity_stable;
+            verification.agent_identity_reserved = foundations.agent_identity_reserved;
+        }
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "observer-sync foundation verification unavailable; keeping capabilities disabled"
+            );
+        }
+    }
+    capabilities.extend(advertised_observer_sync_capabilities(&verification));
     capabilities
 }
 
@@ -168,7 +181,7 @@ pub async fn handshake(
             "mode": if state.require_control_token { "bearer" } else { "local" },
             "required": state.require_control_token,
         },
-        "capabilities": handshake_capabilities(),
+        "capabilities": handshake_capabilities(&state),
         "runtime": {
             "default_agent": config.default_agent_id,
             "workspace_dir": config.workspace_dir,

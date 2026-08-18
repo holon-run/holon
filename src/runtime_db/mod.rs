@@ -22,6 +22,8 @@ pub(crate) mod transitions;
 pub mod types;
 pub mod write_queue;
 
+pub mod observer_sync;
+
 mod index_outbox;
 
 // Re-export public types that are referenced as `crate::runtime_db::Type`.
@@ -804,9 +806,10 @@ impl RuntimeDb {
                 apply_migration(&mut connection, migration)?;
             }
         }
-        ensure_event_log_epoch(&connection)?;
+        ensure_runtime_identity_metadata(&connection)?;
         backfill_wait_condition_payload_columns(&connection)?;
         backfill_work_item_recheck_columns(&connection)?;
+        observer_sync::verify_observer_sync_foundations(&mut connection)?;
         Ok(())
     }
 
@@ -820,14 +823,54 @@ impl RuntimeDb {
             )
             .context("runtime event-log epoch is missing")
     }
+
+    /// Stable public identity of this runtime installation. Survives
+    /// restarts and ordinary reopens; a replaced or rebuilt database mints a
+    /// new one. Not a secret.
+    pub fn runtime_id(&self) -> Result<String> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                "SELECT value FROM runtime_metadata WHERE key = 'runtime_id'",
+                [],
+                |row| row.get(0),
+            )
+            .context("runtime installation id is missing")
+    }
+
+    /// Monotone visibility policy generation. Bumping it rotates every
+    /// derived `visibility_scope_id` without touching the event-log epoch.
+    pub fn visibility_policy_generation(&self) -> Result<u64> {
+        let connection = self.connection()?;
+        let value: String = connection
+            .query_row(
+                "SELECT value FROM runtime_metadata WHERE key = 'visibility_policy_generation'",
+                [],
+                |row| row.get(0),
+            )
+            .context("visibility policy generation is missing")?;
+        value
+            .parse()
+            .with_context(|| format!("invalid visibility policy generation {value}"))
+    }
 }
 
-fn ensure_event_log_epoch(connection: &Connection) -> Result<()> {
+fn ensure_runtime_identity_metadata(connection: &Connection) -> Result<()> {
     let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     connection.execute(
         "INSERT OR IGNORE INTO runtime_metadata (key, value, created_at, updated_at)
          VALUES ('event_log_epoch', ?1, ?2, ?2)",
         rusqlite::params![crate::ids::event_log_epoch_id(), now],
+    )?;
+    connection.execute(
+        "INSERT OR IGNORE INTO runtime_metadata (key, value, created_at, updated_at)
+         VALUES ('runtime_id', ?1, ?2, ?2)",
+        rusqlite::params![crate::ids::runtime_installation_id(), now],
+    )?;
+    connection.execute(
+        "INSERT OR IGNORE INTO runtime_metadata (key, value, created_at, updated_at)
+         VALUES ('visibility_policy_generation', '0', ?1, ?1)",
+        rusqlite::params![now],
     )?;
     Ok(())
 }

@@ -100,6 +100,7 @@ mod tests {
             AgentVisibility, BriefKind,
         },
     };
+    use rusqlite::OptionalExtension;
     use std::process::Command;
     use tempfile::tempdir;
 
@@ -532,6 +533,8 @@ mod tests {
             "workspace_entries",
             "workspace_occupancies",
             "agent_identities",
+            "agent_identity_reservations",
+            "observer_sync_capability_verifications",
             "context_episode_anchors",
             "scheduler_activations",
             "scheduler_activation_settlements",
@@ -1384,7 +1387,7 @@ INSERT INTO storage_domains (
         assert!(
             error
                 .to_string()
-                .contains("supports runtime db schemas 46 through 47, found 45"),
+                .contains("supports runtime db schemas 46 through 48, found 45"),
             "{error:#}"
         );
         Ok(())
@@ -1507,7 +1510,7 @@ INSERT INTO scheduler_rollout_command_results (
         RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
 
         let connection = open_connection(&db_path)?;
-        assert_eq!(current_schema_version(&connection)?, 47);
+        assert_eq!(current_schema_version(&connection)?, 48);
         for table in RETIRED_SCHEDULER_TABLES {
             assert!(
                 !table_exists(&connection, table)?,
@@ -1661,7 +1664,7 @@ INSERT INTO scheduler_rollout_command_results (
 
             RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
             let connection = open_connection(&db_path)?;
-            assert_eq!(current_schema_version(&connection)?, 47);
+            assert_eq!(current_schema_version(&connection)?, 48);
             for table in RETIRED_SCHEDULER_TABLES {
                 assert!(
                     !table_exists(&connection, table)?,
@@ -1775,7 +1778,7 @@ INSERT INTO scheduler_rollout_command_results (
         drop(db);
 
         RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        assert_eq!(current_schema_version(&open_connection(&db_path)?)?, 47);
+        assert_eq!(current_schema_version(&open_connection(&db_path)?)?, 48);
         Ok(())
     }
 
@@ -1882,7 +1885,7 @@ INSERT INTO scheduler_rollout_command_results (
             RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
             assert_eq!(
                 current_schema_version(&open_connection(&db_path)?)?,
-                47,
+                48,
                 "{case}"
             );
         }
@@ -1941,7 +1944,7 @@ INSERT INTO scheduler_rollout_command_results (
         drop(db);
 
         RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        assert_eq!(current_schema_version(&open_connection(&db_path)?)?, 47);
+        assert_eq!(current_schema_version(&open_connection(&db_path)?)?, 48);
         Ok(())
     }
 
@@ -2001,7 +2004,7 @@ INSERT INTO scheduler_rollout_command_results (
         drop(db);
 
         RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        assert_eq!(current_schema_version(&open_connection(&db_path)?)?, 47);
+        assert_eq!(current_schema_version(&open_connection(&db_path)?)?, 48);
         Ok(())
     }
 
@@ -5661,6 +5664,263 @@ CREATE TABLE working_memory_deltas (
 
         let result = repo.get("nonexistent")?;
         assert!(result.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn observer_sync_fresh_database_mints_and_preserves_runtime_identity() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        {
+            let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+            let runtime_id = db.runtime_id()?;
+            let epoch = db.event_log_epoch()?;
+            assert!(runtime_id.starts_with("runtime_"));
+            assert!(epoch.starts_with("epoch_"));
+            assert_ne!(runtime_id, epoch);
+            assert_eq!(db.visibility_policy_generation()?, 0);
+            let foundations = db.observer_sync_foundations()?;
+            assert!(foundations.runtime_identity_stable);
+            assert!(foundations.agent_identity_reserved);
+        }
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        assert!(reopened.runtime_id()?.starts_with("runtime_"));
+        assert!(reopened.event_log_epoch()?.starts_with("epoch_"));
+        let foundations = reopened.observer_sync_foundations()?;
+        assert!(foundations.runtime_identity_stable);
+        assert!(foundations.agent_identity_reserved);
+        Ok(())
+    }
+
+    #[test]
+    fn observer_sync_fresh_databases_mint_distinct_identity() -> Result<()> {
+        let (_first_dir, first_path, first_lock) = temp_paths()?;
+        let (_second_dir, second_path, second_lock) = temp_paths()?;
+        let first = RuntimeDb::open_and_migrate(&first_path, &first_lock)?;
+        let second = RuntimeDb::open_and_migrate(&second_path, &second_lock)?;
+        assert_ne!(first.runtime_id()?, second.runtime_id()?);
+        assert_ne!(first.event_log_epoch()?, second.event_log_epoch()?);
+        Ok(())
+    }
+
+    #[test]
+    fn observer_sync_retired_agent_ids_are_never_reusable() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let mut identity = agent_identity("agent-doomed", 0);
+        db.agent_identities().upsert(&identity)?;
+
+        identity.status = AgentRegistryStatus::Deleted;
+        identity.deleted_at = Some(Utc::now());
+        identity.updated_at = Utc::now();
+        db.agent_identities().upsert(&identity)?;
+
+        let reservation: Option<(String, String)> = db
+            .connection()?
+            .query_row(
+                "SELECT reservation_state, source FROM agent_identity_reservations
+                 WHERE agent_id = 'agent-doomed'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        assert_eq!(
+            reservation,
+            Some(("retired".to_string(), "agent_registry".to_string()))
+        );
+
+        let mut revived = agent_identity("agent-doomed", 10);
+        let error = db
+            .agent_identities()
+            .upsert(&revived)
+            .expect_err("retired agent id must not be reusable");
+        assert!(error.to_string().contains("never reused"));
+        revived.status = AgentRegistryStatus::Deleting;
+        assert!(db.agent_identities().upsert(&revived).is_err());
+
+        // Re-asserting the tombstone stays idempotent.
+        let mut tombstone = agent_identity("agent-doomed", 20);
+        tombstone.status = AgentRegistryStatus::Deleted;
+        tombstone.deleted_at = Some(Utc::now());
+        db.agent_identities().upsert(&tombstone)?;
+        Ok(())
+    }
+
+    fn reservation_state(
+        db: &RuntimeDb,
+        agent_id: &str,
+    ) -> Result<Option<(String, String, Option<String>)>> {
+        db.connection()?
+            .query_row(
+                "SELECT reservation_state, source, retired_at
+                 FROM agent_identity_reservations WHERE agent_id = ?1",
+                [agent_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    #[test]
+    fn observer_sync_migration_backfills_reservations_from_history() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        if let Some(parent) = db_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        {
+            let mut connection = open_connection(&db_path)?;
+            migrate_through(&mut connection, 47)?;
+            let now = "2026-01-01T00:00:00.000Z";
+            connection.execute(
+                "INSERT INTO agent_identities (
+                    agent_id, kind, visibility, ownership, profile_preset, status,
+                    parent_agent_id, lineage_parent_agent_id, delegated_from_task_id,
+                    created_at, updated_at, archived_at, payload_json
+                 ) VALUES
+                    ('agent-keep', 'named', 'public', 'self_owned', 'public_named', 'active',
+                     NULL, NULL, NULL, ?1, ?1, NULL, '{}'),
+                    ('agent-gone', 'named', 'public', 'self_owned', 'public_named', 'deleted',
+                     NULL, NULL, NULL, ?1, ?1, ?1, '{}'),
+                    ('agent-del-only', 'named', 'public', 'self_owned', 'public_named', 'deleted',
+                     NULL, NULL, NULL, ?1, ?1, NULL, '{}')",
+                [now],
+            )?;
+            connection.execute(
+                "INSERT INTO agent_states (agent_id, status, updated_at, payload_json) VALUES
+                    ('agent-state-only', 'idle', ?1, '{\"agent_id\":\"agent-state-only\"}')",
+                [now],
+            )?;
+            connection.execute(
+                "INSERT INTO audit_events (audit_event_id, agent_id, kind, created_at, data_json)
+                 VALUES ('event-audit', 'agent-audit-only', 'fixture', ?1, '{}')",
+                [now],
+            )?;
+            connection.execute(
+                "INSERT INTO agent_deletion_jobs (
+                    deletion_id, agent_id, status, phase, created_at, updated_at,
+                    completed_at, payload_json
+                 ) VALUES ('del-job', 'agent-del-only', 'completed', 'finalize', ?1, ?1, ?1, '{}')",
+                [now],
+            )?;
+            connection.execute(
+                "INSERT INTO agents (
+                    agent_id, status, visibility, ownership, profile_preset,
+                    created_at, updated_at, payload_json
+                 ) VALUES ('agent-legacy-only', 'active', 'public', NULL, NULL, ?1, ?1, '{}')",
+                [now],
+            )?;
+        }
+
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        assert_eq!(
+            reservation_state(&db, "agent-keep")?,
+            Some(("active".to_string(), "agent_registry".to_string(), None))
+        );
+        assert_eq!(
+            reservation_state(&db, "agent-gone")?,
+            Some((
+                "retired".to_string(),
+                "agent_registry".to_string(),
+                Some("2026-01-01T00:00:00.000Z".to_string())
+            ))
+        );
+        assert_eq!(
+            reservation_state(&db, "agent-state-only")?,
+            Some((
+                "retired".to_string(),
+                "backfill:agent-state".to_string(),
+                None
+            ))
+        );
+        assert_eq!(
+            reservation_state(&db, "agent-audit-only")?,
+            Some(("retired".to_string(), "backfill:audit".to_string(), None))
+        );
+        assert_eq!(
+            reservation_state(&db, "agent-del-only")?,
+            Some((
+                "retired".to_string(),
+                "agent_registry".to_string(),
+                Some("2026-01-01T00:00:00.000Z".to_string())
+            ))
+        );
+        assert_eq!(
+            reservation_state(&db, "agent-legacy-only")?,
+            Some((
+                "retired".to_string(),
+                "backfill:legacy-agents".to_string(),
+                None
+            ))
+        );
+        let foundations = db.observer_sync_foundations()?;
+        assert!(foundations.runtime_identity_stable);
+        assert!(foundations.agent_identity_reserved);
+        Ok(())
+    }
+
+    #[test]
+    fn observer_sync_backfill_ambiguity_blocks_agent_identity_capability() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        if let Some(parent) = db_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        {
+            let mut connection = open_connection(&db_path)?;
+            migrate_through(&mut connection, 47)?;
+            let now = "2026-01-01T00:00:00.000Z";
+            connection.execute(
+                "INSERT INTO agent_states (agent_id, status, updated_at, payload_json) VALUES
+                    ('agent-broken', 'idle', ?1, '{\"agent_id\":\"agent-other\"}')",
+                [now],
+            )?;
+            connection.execute(
+                "INSERT INTO agent_identities (
+                    agent_id, kind, visibility, ownership, profile_preset, status,
+                    parent_agent_id, lineage_parent_agent_id, delegated_from_task_id,
+                    created_at, updated_at, archived_at, payload_json
+                 ) VALUES ('agent-reused', 'named', 'public', 'self_owned', 'public_named',
+                     'active', NULL, NULL, NULL, ?1, ?1, NULL, '{}')",
+                [now],
+            )?;
+            connection.execute(
+                "INSERT INTO agent_deletion_jobs (
+                    deletion_id, agent_id, status, phase, created_at, updated_at,
+                    completed_at, payload_json
+                 ) VALUES ('del-reused', 'agent-reused', 'completed', 'finalize', ?1, ?1, ?1, '{}')",
+                [now],
+            )?;
+        }
+
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let foundations = db.observer_sync_foundations()?;
+        assert!(foundations.runtime_identity_stable);
+        assert!(!foundations.agent_identity_reserved);
+        let detail: String = db.connection()?.query_row(
+            "SELECT detail FROM observer_sync_capability_verifications
+             WHERE capability = 'agent_identity_reserved'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(detail.contains("agent_state_identity_mismatch"));
+        assert!(detail.contains("completed_deletion_with_available_registry"));
+        Ok(())
+    }
+
+    #[test]
+    fn observer_sync_reservation_drift_blocks_capability() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        {
+            let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+            db.agent_identities()
+                .upsert(&agent_identity("agent-drift", 0))?;
+            let foundations = db.observer_sync_foundations()?;
+            assert!(foundations.agent_identity_reserved);
+            db.connection()?
+                .execute("DELETE FROM agent_identity_reservations", [])?;
+        }
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let foundations = reopened.observer_sync_foundations()?;
+        assert!(foundations.runtime_identity_stable);
+        assert!(!foundations.agent_identity_reserved);
         Ok(())
     }
 }

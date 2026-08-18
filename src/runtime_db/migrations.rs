@@ -3095,6 +3095,26 @@ CREATE INDEX IF NOT EXISTS idx_queue_head_no_progress_agent_status
         name: "drop_retired_scheduler_schema",
         sql: "",
     },
+    Migration {
+        version: 48,
+        name: "observer_sync_identity_foundations",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS agent_identity_reservations (
+  agent_id TEXT PRIMARY KEY,
+  reservation_state TEXT NOT NULL CHECK (reservation_state IN ('active', 'retired')),
+  reserved_at TEXT NOT NULL,
+  retired_at TEXT,
+  source TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS observer_sync_capability_verifications (
+  capability TEXT PRIMARY KEY,
+  verified INTEGER NOT NULL,
+  verified_at TEXT NOT NULL,
+  detail TEXT NOT NULL
+);
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -3350,6 +3370,9 @@ fn apply_migration_transaction(transaction: &Transaction<'_>, migration: &Migrat
     if migration.name == "runtime_retention_created_at_indexes" {
         migrate_runtime_retention_created_at_indexes(transaction)?;
     }
+    if migration.name == "observer_sync_identity_foundations" {
+        backfill_observer_sync_identity_foundations(transaction)?;
+    }
     transaction.execute(
         "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
         (
@@ -3358,6 +3381,187 @@ fn apply_migration_transaction(transaction: &Transaction<'_>, migration: &Migrat
             Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         ),
     )?;
+    Ok(())
+}
+
+/// Backfills the durable Agent identity reservation registry and seeds the
+/// observer-sync capability verification table.
+///
+/// The registry (`agent_identities`) is authoritative for current
+/// availability: an Active row keeps the id reserved and available, any other
+/// status is a tombstone. Historical sources (`agent_states`, deletion jobs,
+/// audit scopes, the legacy `agents` table) only add reservations the
+/// registry lacks, always as retired tombstones, so a historical id can never
+/// be silently reused after migration.
+///
+/// Reservations are deliberately not epoch-scoped: the existing deletion
+/// contract already promises ids stay reserved forever, so an epoch rotation
+/// never releases them.
+fn table_exists_tx(transaction: &Transaction<'_>, table: &str) -> Result<bool> {
+    let count: i64 = transaction.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        [table],
+        |row| row.get(0),
+    )?;
+    Ok(count == 1)
+}
+
+fn backfill_observer_sync_identity_foundations(transaction: &Transaction<'_>) -> Result<()> {
+    // Name-accepted upgrade paths can reach this migration without every
+    // historical source table present; each source is gated so backfill
+    // never fails an otherwise acceptable database.
+    if table_exists_tx(transaction, "agent_identities")? {
+        // The registry mapping must stay idempotent under downgrade and
+        // re-upgrade cycles, so re-runs only add missing rows and converge
+        // tombstones instead of rewriting reservation history.
+        transaction.execute(
+            r#"
+INSERT OR IGNORE INTO agent_identity_reservations (agent_id, reservation_state, reserved_at, retired_at, source)
+SELECT agent_id,
+       CASE WHEN status = 'deleted' THEN 'retired' ELSE 'active' END,
+       created_at,
+       CASE WHEN status = 'deleted' THEN COALESCE(archived_at, updated_at) ELSE NULL END,
+       'agent_registry'
+FROM agent_identities
+"#,
+            [],
+        )?;
+        transaction.execute(
+            r#"
+UPDATE agent_identity_reservations
+SET reservation_state = 'retired',
+    retired_at = COALESCE(
+        retired_at,
+        (SELECT COALESCE(i.archived_at, i.updated_at)
+         FROM agent_identities i
+         WHERE i.agent_id = agent_identity_reservations.agent_id)
+    )
+WHERE reservation_state != 'retired'
+  AND agent_id IN (SELECT agent_id FROM agent_identities WHERE status = 'deleted')
+"#,
+            [],
+        )?;
+    }
+    if table_exists_tx(transaction, "agent_states")? {
+        transaction.execute(
+            r#"
+INSERT OR IGNORE INTO agent_identity_reservations (agent_id, reservation_state, reserved_at, retired_at, source)
+SELECT agent_id, 'retired', updated_at, NULL, 'backfill:agent-state'
+FROM agent_states
+"#,
+            [],
+        )?;
+    }
+    if table_exists_tx(transaction, "agent_deletion_jobs")? {
+        transaction.execute(
+            r#"
+INSERT OR IGNORE INTO agent_identity_reservations (agent_id, reservation_state, reserved_at, retired_at, source)
+SELECT agent_id, 'retired', created_at, completed_at, 'backfill:deletion-evidence'
+FROM agent_deletion_jobs
+"#,
+            [],
+        )?;
+    }
+    if table_exists_tx(transaction, "audit_events")? {
+        transaction.execute(
+            r#"
+INSERT OR IGNORE INTO agent_identity_reservations (agent_id, reservation_state, reserved_at, retired_at, source)
+SELECT agent_id, 'retired', MIN(created_at), NULL, 'backfill:audit'
+FROM audit_events
+WHERE agent_id IS NOT NULL
+GROUP BY agent_id
+"#,
+            [],
+        )?;
+    }
+    if table_exists_tx(transaction, "agents")? {
+        transaction.execute(
+            r#"
+INSERT OR IGNORE INTO agent_identity_reservations (agent_id, reservation_state, reserved_at, retired_at, source)
+SELECT agent_id, 'retired', created_at, NULL, 'backfill:legacy-agents'
+FROM agents
+"#,
+            [],
+        )?;
+    }
+
+    let mut anomalies = serde_json::Map::new();
+
+    // An agent_states payload that names a different agent than its row key
+    // means the historical identity of at least one of the two rows is
+    // untrustworthy.
+    let mut identity_mismatches = Vec::new();
+    if table_exists_tx(transaction, "agent_states")? {
+        let mut statement = transaction
+            .prepare("SELECT agent_id, payload_json FROM agent_states ORDER BY agent_id ASC")?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (row_agent_id, payload_json) = row?;
+            let payload_agent_id = serde_json::from_str::<serde_json::Value>(&payload_json)
+                .ok()
+                .and_then(|payload| {
+                    payload
+                        .get("agent_id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                });
+            if payload_agent_id.as_deref() != Some(row_agent_id.as_str())
+                && identity_mismatches.len() < 20
+            {
+                identity_mismatches.push(row_agent_id);
+            }
+        }
+    }
+    if !identity_mismatches.is_empty() {
+        anomalies.insert(
+            "agent_state_identity_mismatch".to_string(),
+            serde_json::json!(identity_mismatches),
+        );
+    }
+
+    // A completed deletion job whose registry row is still available means
+    // the id was reused after retirement before this invariant existed.
+    let completed_deletions_with_available_registry: Vec<String> =
+        if table_exists_tx(transaction, "agent_deletion_jobs")?
+            && table_exists_tx(transaction, "agent_identities")?
+        {
+            let mut statement = transaction.prepare(
+                r#"
+SELECT d.agent_id
+FROM agent_deletion_jobs d
+JOIN agent_identities i ON i.agent_id = d.agent_id
+WHERE d.status = 'completed' AND i.status != 'deleted'
+ORDER BY d.agent_id ASC
+LIMIT 20
+"#,
+            )?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            rows.collect::<std::result::Result<_, _>>()?
+        } else {
+            Vec::new()
+        };
+    if !completed_deletions_with_available_registry.is_empty() {
+        anomalies.insert(
+            "completed_deletion_with_available_registry".to_string(),
+            serde_json::json!(completed_deletions_with_available_registry),
+        );
+    }
+
+    let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let detail = serde_json::json!({
+        "stage": "migration-backfill",
+        "anomalies": anomalies,
+    })
+    .to_string();
+    for capability in ["runtime_identity_stable", "agent_identity_reserved"] {
+        transaction.execute(
+            "INSERT OR REPLACE INTO observer_sync_capability_verifications (capability, verified, verified_at, detail)
+             VALUES (?1, 0, ?2, ?3)",
+            params![capability, now, detail],
+        )?;
+    }
     Ok(())
 }
 
