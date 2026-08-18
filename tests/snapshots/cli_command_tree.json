@@ -768,6 +768,23 @@
           "external-evidence"
         ],
         "required": false
+      },
+      {
+        "long": "budget",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "manifest",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
       }
     ],
     "aliases": []
