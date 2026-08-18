@@ -1,0 +1,235 @@
+{
+  "schema_version": 1,
+  "projector": "legacy_context_sections_v1",
+  "activation_owner": {
+    "kind": "work_item",
+    "work_item_id": "a"
+  },
+  "activation_binding": {
+    "source_message_id": "message:a-input",
+    "turn_id": "turn-1",
+    "work_item_id": "a",
+    "claimed_work_revision": null
+  },
+  "turn_id": "turn-return-b-a",
+  "prompt_budget_estimated_tokens": 2048,
+  "allocated_estimated_tokens": 7,
+  "system_sections": [
+    {
+      "order": 0,
+      "section_id": "identity",
+      "section_name": "identity",
+      "stability": "stable",
+      "representation": "full",
+      "reason": "system_section",
+      "requested_estimated_tokens": 11,
+      "allocated_estimated_tokens": 11,
+      "rendered_chars": 43,
+      "content_sha256": "cc23f147f831d7144b950676211369df343b3d347f4a8067767090b5c77ecbe2",
+      "selected_evidence_refs": [],
+      "omitted_evidence_refs": []
+    }
+  ],
+  "context_sections": [
+    {
+      "order": 0,
+      "section_id": "work_item:a",
+      "section_name": "work_item:a",
+      "stability": "turn_scoped",
+      "representation": "omitted",
+      "reason": "omitted_lower_priority",
+      "requested_estimated_tokens": 5,
+      "allocated_estimated_tokens": 0,
+      "rendered_chars": 0,
+      "content_sha256": null,
+      "selected_evidence_refs": [],
+      "omitted_evidence_refs": [
+        {
+          "reference": "work_item:a",
+          "role": "work_item_state",
+          "owner": {
+            "kind": "work_item",
+            "work_item_id": "a"
+          }
+        }
+      ]
+    },
+    {
+      "order": 1,
+      "section_id": "message:a-input",
+      "section_name": "message:a-input",
+      "stability": "turn_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 7,
+      "allocated_estimated_tokens": 7,
+      "rendered_chars": 26,
+      "content_sha256": "a70edfe35449a6b1fe74918cb5be3c866d2b14e8ce89444ece8c13b463c936a4",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:a-input",
+          "role": "current_input",
+          "owner": {
+            "kind": "work_item",
+            "work_item_id": "a"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 2,
+      "section_id": "work_item:b",
+      "section_name": "work_item:b",
+      "stability": "turn_scoped",
+      "representation": "omitted",
+      "reason": "omitted_lower_priority",
+      "requested_estimated_tokens": 5,
+      "allocated_estimated_tokens": 0,
+      "rendered_chars": 0,
+      "content_sha256": null,
+      "selected_evidence_refs": [],
+      "omitted_evidence_refs": [
+        {
+          "reference": "work_item:b",
+          "role": "work_item_state",
+          "owner": {
+            "kind": "work_item",
+            "work_item_id": "b"
+          }
+        }
+      ]
+    },
+    {
+      "order": 3,
+      "section_id": "turn:switch-a-b",
+      "section_name": "turn:switch-a-b",
+      "stability": "turn_scoped",
+      "representation": "omitted",
+      "reason": "omitted_lower_priority",
+      "requested_estimated_tokens": 5,
+      "allocated_estimated_tokens": 0,
+      "rendered_chars": 0,
+      "content_sha256": null,
+      "selected_evidence_refs": [],
+      "omitted_evidence_refs": [
+        {
+          "reference": "turn:switch-a-b",
+          "role": "turn",
+          "owner": {
+            "kind": "work_item",
+            "work_item_id": "b"
+          }
+        }
+      ]
+    },
+    {
+      "order": 4,
+      "section_id": "message:b-task-result",
+      "section_name": "message:b-task-result",
+      "stability": "turn_scoped",
+      "representation": "omitted",
+      "reason": "omitted_lower_priority",
+      "requested_estimated_tokens": 6,
+      "allocated_estimated_tokens": 0,
+      "rendered_chars": 0,
+      "content_sha256": null,
+      "selected_evidence_refs": [],
+      "omitted_evidence_refs": [
+        {
+          "reference": "message:b-task-result",
+          "role": "tool_result",
+          "owner": {
+            "kind": "work_item",
+            "work_item_id": "b"
+          }
+        }
+      ]
+    },
+    {
+      "order": 5,
+      "section_id": "brief:b-complete",
+      "section_name": "brief:b-complete",
+      "stability": "turn_scoped",
+      "representation": "omitted",
+      "reason": "omitted_lower_priority",
+      "requested_estimated_tokens": 6,
+      "allocated_estimated_tokens": 0,
+      "rendered_chars": 0,
+      "content_sha256": null,
+      "selected_evidence_refs": [],
+      "omitted_evidence_refs": [
+        {
+          "reference": "brief:b-complete",
+          "role": "work_item_state",
+          "owner": {
+            "kind": "work_item",
+            "work_item_id": "b"
+          }
+        }
+      ]
+    },
+    {
+      "order": 6,
+      "section_id": "turn:return-b-a",
+      "section_name": "turn:return-b-a",
+      "stability": "turn_scoped",
+      "representation": "omitted",
+      "reason": "omitted_lower_priority",
+      "requested_estimated_tokens": 5,
+      "allocated_estimated_tokens": 0,
+      "rendered_chars": 0,
+      "content_sha256": null,
+      "selected_evidence_refs": [],
+      "omitted_evidence_refs": [
+        {
+          "reference": "turn:return-b-a",
+          "role": "turn",
+          "owner": {
+            "kind": "work_item",
+            "work_item_id": "a"
+          }
+        }
+      ]
+    }
+  ],
+  "invariant_results": [
+    {
+      "code": "prompt_budget_respected",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "activation_binding_consistent",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "current_input_retained",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "direct_predecessor_retained",
+      "status": "not_applicable",
+      "details": [
+        "fixture does not identify a direct predecessor"
+      ]
+    },
+    {
+      "code": "canonical_evidence_unique",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "evidence_owner_consistent",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "section_representation_exclusive",
+      "status": "pass",
+      "details": []
+    }
+  ]
+}

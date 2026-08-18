@@ -1,0 +1,212 @@
+{
+  "schema_version": 1,
+  "projector": "legacy_context_sections_v1",
+  "activation_owner": {
+    "kind": "legacy_unbound",
+    "agent_id": "agent-1"
+  },
+  "activation_binding": {
+    "source_message_id": "message:return-topic-a",
+    "turn_id": "turn-12",
+    "work_item_id": null,
+    "claimed_work_revision": null
+  },
+  "turn_id": "turn-12",
+  "prompt_budget_estimated_tokens": 2048,
+  "allocated_estimated_tokens": 21,
+  "system_sections": [
+    {
+      "order": 0,
+      "section_id": "identity",
+      "section_name": "identity",
+      "stability": "stable",
+      "representation": "full",
+      "reason": "system_section",
+      "requested_estimated_tokens": 11,
+      "allocated_estimated_tokens": 11,
+      "rendered_chars": 43,
+      "content_sha256": "cc23f147f831d7144b950676211369df343b3d347f4a8067767090b5c77ecbe2",
+      "selected_evidence_refs": [],
+      "omitted_evidence_refs": []
+    }
+  ],
+  "context_sections": [
+    {
+      "order": 0,
+      "section_id": "message:topic-a-start",
+      "section_name": "message:topic-a-start",
+      "stability": "agent_scoped",
+      "representation": "truncated",
+      "reason": "truncated_to_remaining_budget",
+      "requested_estimated_tokens": 4,
+      "allocated_estimated_tokens": 7,
+      "rendered_chars": 26,
+      "content_sha256": "e23cf8bc4f9f8feed26443317453f882699198e0fe1a12123f89e2fe41c1e4de",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:topic-a-start",
+          "role": "input",
+          "owner": {
+            "kind": "legacy_unbound",
+            "agent_id": "agent-1"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 1,
+      "section_id": "brief:topic-a-decision",
+      "section_name": "brief:topic-a-decision",
+      "stability": "agent_scoped",
+      "representation": "compact",
+      "reason": "selected_compact_for_budget",
+      "requested_estimated_tokens": 6,
+      "allocated_estimated_tokens": 9,
+      "rendered_chars": 33,
+      "content_sha256": "2ec53b21886b9a0562b3fa429b2b5c5bc9cda800a9f20e96c56536a7b1ad129e",
+      "selected_evidence_refs": [
+        {
+          "reference": "brief:topic-a-decision",
+          "role": "result",
+          "owner": {
+            "kind": "legacy_unbound",
+            "agent_id": "agent-1"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 2,
+      "section_id": "message:topic-b-start",
+      "section_name": "message:topic-b-start",
+      "stability": "turn_scoped",
+      "representation": "omitted",
+      "reason": "omitted_lower_priority",
+      "requested_estimated_tokens": 4,
+      "allocated_estimated_tokens": 0,
+      "rendered_chars": 0,
+      "content_sha256": null,
+      "selected_evidence_refs": [],
+      "omitted_evidence_refs": [
+        {
+          "reference": "message:topic-b-start",
+          "role": "input",
+          "owner": {
+            "kind": "legacy_unbound",
+            "agent_id": "agent-1"
+          }
+        }
+      ]
+    },
+    {
+      "order": 3,
+      "section_id": "brief:topic-b-unrelated-detail",
+      "section_name": "brief:topic-b-unrelated-detail",
+      "stability": "turn_scoped",
+      "representation": "omitted",
+      "reason": "omitted_lower_priority",
+      "requested_estimated_tokens": 7,
+      "allocated_estimated_tokens": 0,
+      "rendered_chars": 0,
+      "content_sha256": null,
+      "selected_evidence_refs": [],
+      "omitted_evidence_refs": [
+        {
+          "reference": "brief:topic-b-unrelated-detail",
+          "role": "result",
+          "owner": {
+            "kind": "legacy_unbound",
+            "agent_id": "agent-1"
+          }
+        }
+      ]
+    },
+    {
+      "order": 4,
+      "section_id": "message:topic-b-more",
+      "section_name": "message:topic-b-more",
+      "stability": "turn_scoped",
+      "representation": "omitted",
+      "reason": "omitted_lower_priority",
+      "requested_estimated_tokens": 4,
+      "allocated_estimated_tokens": 0,
+      "rendered_chars": 0,
+      "content_sha256": null,
+      "selected_evidence_refs": [],
+      "omitted_evidence_refs": [
+        {
+          "reference": "message:topic-b-more",
+          "role": "input",
+          "owner": {
+            "kind": "legacy_unbound",
+            "agent_id": "agent-1"
+          }
+        }
+      ]
+    },
+    {
+      "order": 5,
+      "section_id": "message:return-topic-a",
+      "section_name": "message:return-topic-a",
+      "stability": "turn_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 5,
+      "allocated_estimated_tokens": 5,
+      "rendered_chars": 18,
+      "content_sha256": "6fa16434c436336c1214c3cafe09727a55504515e3760d5de3ae8ea1dcf97819",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:return-topic-a",
+          "role": "current_input",
+          "owner": {
+            "kind": "legacy_unbound",
+            "agent_id": "agent-1"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    }
+  ],
+  "invariant_results": [
+    {
+      "code": "prompt_budget_respected",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "activation_binding_consistent",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "current_input_retained",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "direct_predecessor_retained",
+      "status": "not_applicable",
+      "details": [
+        "fixture does not identify a direct predecessor"
+      ]
+    },
+    {
+      "code": "canonical_evidence_unique",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "evidence_owner_consistent",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "section_representation_exclusive",
+      "status": "pass",
+      "details": []
+    }
+  ]
+}

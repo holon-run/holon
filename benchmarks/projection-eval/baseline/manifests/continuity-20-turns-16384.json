@@ -1,0 +1,534 @@
+{
+  "schema_version": 1,
+  "projector": "legacy_context_sections_v1",
+  "activation_owner": {
+    "kind": "legacy_unbound",
+    "agent_id": "agent-1"
+  },
+  "activation_binding": {
+    "source_message_id": "message:turn-20",
+    "turn_id": "turn-20",
+    "work_item_id": null,
+    "claimed_work_revision": null
+  },
+  "turn_id": "turn-20",
+  "prompt_budget_estimated_tokens": 16384,
+  "allocated_estimated_tokens": 189,
+  "system_sections": [
+    {
+      "order": 0,
+      "section_id": "identity",
+      "section_name": "identity",
+      "stability": "stable",
+      "representation": "full",
+      "reason": "system_section",
+      "requested_estimated_tokens": 11,
+      "allocated_estimated_tokens": 11,
+      "rendered_chars": 43,
+      "content_sha256": "cc23f147f831d7144b950676211369df343b3d347f4a8067767090b5c77ecbe2",
+      "selected_evidence_refs": [],
+      "omitted_evidence_refs": []
+    }
+  ],
+  "context_sections": [
+    {
+      "order": 0,
+      "section_id": "message:turn-1",
+      "section_name": "message:turn-1",
+      "stability": "agent_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 8,
+      "allocated_estimated_tokens": 8,
+      "rendered_chars": 32,
+      "content_sha256": "f89288ed451890504fadd9c8d20b1e740016d6d38ffe7ede66d7a8ca1ddd9f7c",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:turn-1",
+          "role": "input",
+          "owner": {
+            "kind": "legacy_unbound",
+            "agent_id": "agent-1"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 1,
+      "section_id": "brief:turn-2-response",
+      "section_name": "brief:turn-2-response",
+      "stability": "agent_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 10,
+      "allocated_estimated_tokens": 10,
+      "rendered_chars": 40,
+      "content_sha256": "c4ec0642e10622b9351e42a3a3287d427a1a57df0af9a2388e08956392dfeb05",
+      "selected_evidence_refs": [
+        {
+          "reference": "brief:turn-2-response",
+          "role": "result",
+          "owner": {
+            "kind": "legacy_unbound",
+            "agent_id": "agent-1"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 2,
+      "section_id": "message:turn-3",
+      "section_name": "message:turn-3",
+      "stability": "agent_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 8,
+      "allocated_estimated_tokens": 8,
+      "rendered_chars": 32,
+      "content_sha256": "4bb1a6a25c3fe86870bcb6cdceb32199c60a91e6cd049c3700a7ddc9cbb5be36",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:turn-3",
+          "role": "input",
+          "owner": {
+            "kind": "legacy_unbound",
+            "agent_id": "agent-1"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 3,
+      "section_id": "brief:turn-4-response",
+      "section_name": "brief:turn-4-response",
+      "stability": "agent_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 10,
+      "allocated_estimated_tokens": 10,
+      "rendered_chars": 40,
+      "content_sha256": "4038f06eaeba962626fe33776a4c296613e0bf43ac8166e36f7992a7a3a7071f",
+      "selected_evidence_refs": [
+        {
+          "reference": "brief:turn-4-response",
+          "role": "result",
+          "owner": {
+            "kind": "legacy_unbound",
+            "agent_id": "agent-1"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 4,
+      "section_id": "message:turn-5",
+      "section_name": "message:turn-5",
+      "stability": "agent_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 8,
+      "allocated_estimated_tokens": 8,
+      "rendered_chars": 32,
+      "content_sha256": "d58a372ea4d8eb1235d027e38e8a2a1a03cb8d099ccc28567c73283df6ec5f16",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:turn-5",
+          "role": "input",
+          "owner": {
+            "kind": "legacy_unbound",
+            "agent_id": "agent-1"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 5,
+      "section_id": "brief:turn-6-response",
+      "section_name": "brief:turn-6-response",
+      "stability": "agent_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 10,
+      "allocated_estimated_tokens": 10,
+      "rendered_chars": 40,
+      "content_sha256": "c2d1e4cb2b1728e9d7e3c72bf6ebbf447be5417047a7fc0757773e4b49ae7aba",
+      "selected_evidence_refs": [
+        {
+          "reference": "brief:turn-6-response",
+          "role": "result",
+          "owner": {
+            "kind": "legacy_unbound",
+            "agent_id": "agent-1"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 6,
+      "section_id": "message:turn-7",
+      "section_name": "message:turn-7",
+      "stability": "agent_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 8,
+      "allocated_estimated_tokens": 8,
+      "rendered_chars": 32,
+      "content_sha256": "97bf927becf4cc34092138e41029cd6b9c8835cfff4a45f9aa5ff2ef9e93434a",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:turn-7",
+          "role": "input",
+          "owner": {
+            "kind": "legacy_unbound",
+            "agent_id": "agent-1"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 7,
+      "section_id": "brief:turn-8-response",
+      "section_name": "brief:turn-8-response",
+      "stability": "agent_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 10,
+      "allocated_estimated_tokens": 10,
+      "rendered_chars": 40,
+      "content_sha256": "64ae50aac51cf421706ef44638ce436814a6469989f4ec89234bd6248114c58e",
+      "selected_evidence_refs": [
+        {
+          "reference": "brief:turn-8-response",
+          "role": "result",
+          "owner": {
+            "kind": "legacy_unbound",
+            "agent_id": "agent-1"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 8,
+      "section_id": "message:turn-9",
+      "section_name": "message:turn-9",
+      "stability": "agent_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 8,
+      "allocated_estimated_tokens": 8,
+      "rendered_chars": 32,
+      "content_sha256": "7a59c4faf85da6ccc044f7c2b2a2e88e2edbeaa33c1f633ac7c046a8a38b7f2c",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:turn-9",
+          "role": "input",
+          "owner": {
+            "kind": "legacy_unbound",
+            "agent_id": "agent-1"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 9,
+      "section_id": "brief:turn-10-response",
+      "section_name": "brief:turn-10-response",
+      "stability": "agent_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 11,
+      "allocated_estimated_tokens": 11,
+      "rendered_chars": 41,
+      "content_sha256": "536c1028f444c9ad7e6554c06cc3c17f34346c3589786676e20b1f914a292ab3",
+      "selected_evidence_refs": [
+        {
+          "reference": "brief:turn-10-response",
+          "role": "result",
+          "owner": {
+            "kind": "legacy_unbound",
+            "agent_id": "agent-1"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 10,
+      "section_id": "message:turn-11",
+      "section_name": "message:turn-11",
+      "stability": "agent_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 9,
+      "allocated_estimated_tokens": 9,
+      "rendered_chars": 33,
+      "content_sha256": "29e1bd8ae9e4fc18f07b8d8fd6b566cf87022e233d1b7496e20eb429e97e742c",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:turn-11",
+          "role": "input",
+          "owner": {
+            "kind": "legacy_unbound",
+            "agent_id": "agent-1"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 11,
+      "section_id": "brief:turn-12-response",
+      "section_name": "brief:turn-12-response",
+      "stability": "agent_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 11,
+      "allocated_estimated_tokens": 11,
+      "rendered_chars": 41,
+      "content_sha256": "0abb67e23245a221add68b2435491905dfd11f0db263b8d2d540c8f2d81cf937",
+      "selected_evidence_refs": [
+        {
+          "reference": "brief:turn-12-response",
+          "role": "result",
+          "owner": {
+            "kind": "legacy_unbound",
+            "agent_id": "agent-1"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 12,
+      "section_id": "message:turn-13",
+      "section_name": "message:turn-13",
+      "stability": "agent_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 9,
+      "allocated_estimated_tokens": 9,
+      "rendered_chars": 33,
+      "content_sha256": "ccb6c86acc61dc1da0575d45ac938c81d578483aff6fdb5804e4aa3352017635",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:turn-13",
+          "role": "input",
+          "owner": {
+            "kind": "legacy_unbound",
+            "agent_id": "agent-1"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 13,
+      "section_id": "brief:turn-14-response",
+      "section_name": "brief:turn-14-response",
+      "stability": "agent_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 11,
+      "allocated_estimated_tokens": 11,
+      "rendered_chars": 41,
+      "content_sha256": "7d9dc846f72b4b414fb8a94776b77bd8e2f22812e2e0f9308fb6b69dd77b313e",
+      "selected_evidence_refs": [
+        {
+          "reference": "brief:turn-14-response",
+          "role": "result",
+          "owner": {
+            "kind": "legacy_unbound",
+            "agent_id": "agent-1"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 14,
+      "section_id": "message:turn-15",
+      "section_name": "message:turn-15",
+      "stability": "agent_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 9,
+      "allocated_estimated_tokens": 9,
+      "rendered_chars": 33,
+      "content_sha256": "068be12ed8b4895574731c639b67c83a00f4111227e6b3ebc10f24d734cc276a",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:turn-15",
+          "role": "input",
+          "owner": {
+            "kind": "legacy_unbound",
+            "agent_id": "agent-1"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 15,
+      "section_id": "brief:turn-16-response",
+      "section_name": "brief:turn-16-response",
+      "stability": "agent_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 11,
+      "allocated_estimated_tokens": 11,
+      "rendered_chars": 41,
+      "content_sha256": "0f8dcfb8ece716542330fd024545ae6ec65ab5013e8d68ceb11995ac45909140",
+      "selected_evidence_refs": [
+        {
+          "reference": "brief:turn-16-response",
+          "role": "result",
+          "owner": {
+            "kind": "legacy_unbound",
+            "agent_id": "agent-1"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 16,
+      "section_id": "message:turn-17",
+      "section_name": "message:turn-17",
+      "stability": "agent_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 9,
+      "allocated_estimated_tokens": 9,
+      "rendered_chars": 33,
+      "content_sha256": "31110ee4df305b3a652168aa61b3e915f41feea55fc7521f2b3b51059919038c",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:turn-17",
+          "role": "input",
+          "owner": {
+            "kind": "legacy_unbound",
+            "agent_id": "agent-1"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 17,
+      "section_id": "brief:turn-18-response",
+      "section_name": "brief:turn-18-response",
+      "stability": "agent_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 11,
+      "allocated_estimated_tokens": 11,
+      "rendered_chars": 41,
+      "content_sha256": "6b779b5c43f65a6da79d0a463e9062d44c2e4a98ec58df37d7d770252bf712b3",
+      "selected_evidence_refs": [
+        {
+          "reference": "brief:turn-18-response",
+          "role": "result",
+          "owner": {
+            "kind": "legacy_unbound",
+            "agent_id": "agent-1"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 18,
+      "section_id": "message:turn-19",
+      "section_name": "message:turn-19",
+      "stability": "agent_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 9,
+      "allocated_estimated_tokens": 9,
+      "rendered_chars": 33,
+      "content_sha256": "bfd7576301636d0998f28f07b3591a21e3de2748bab690e02e4a5cef56106e2e",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:turn-19",
+          "role": "input",
+          "owner": {
+            "kind": "legacy_unbound",
+            "agent_id": "agent-1"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 19,
+      "section_id": "message:turn-20",
+      "section_name": "message:turn-20",
+      "stability": "turn_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 9,
+      "allocated_estimated_tokens": 9,
+      "rendered_chars": 33,
+      "content_sha256": "2a03977de97e635cd978c963e877f0818e84b67815d1b6fd14f609e02334101d",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:turn-20",
+          "role": "current_input",
+          "owner": {
+            "kind": "legacy_unbound",
+            "agent_id": "agent-1"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    }
+  ],
+  "invariant_results": [
+    {
+      "code": "prompt_budget_respected",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "activation_binding_consistent",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "current_input_retained",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "direct_predecessor_retained",
+      "status": "not_applicable",
+      "details": [
+        "fixture does not identify a direct predecessor"
+      ]
+    },
+    {
+      "code": "canonical_evidence_unique",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "evidence_owner_consistent",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "section_representation_exclusive",
+      "status": "pass",
+      "details": []
+    }
+  ]
+}

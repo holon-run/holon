@@ -1,0 +1,189 @@
+{
+  "schema_version": 1,
+  "projector": "legacy_context_sections_v1",
+  "activation_owner": {
+    "kind": "legacy_unbound",
+    "agent_id": "agent-1"
+  },
+  "activation_binding": {
+    "source_message_id": "message:discussion-followup",
+    "turn_id": "turn-11",
+    "work_item_id": null,
+    "claimed_work_revision": null
+  },
+  "turn_id": "turn-11",
+  "prompt_budget_estimated_tokens": 2048,
+  "allocated_estimated_tokens": 17,
+  "system_sections": [
+    {
+      "order": 0,
+      "section_id": "identity",
+      "section_name": "identity",
+      "stability": "stable",
+      "representation": "full",
+      "reason": "system_section",
+      "requested_estimated_tokens": 11,
+      "allocated_estimated_tokens": 11,
+      "rendered_chars": 43,
+      "content_sha256": "cc23f147f831d7144b950676211369df343b3d347f4a8067767090b5c77ecbe2",
+      "selected_evidence_refs": [],
+      "omitted_evidence_refs": []
+    }
+  ],
+  "context_sections": [
+    {
+      "order": 0,
+      "section_id": "message:discussion-anchor",
+      "section_name": "message:discussion-anchor",
+      "stability": "agent_scoped",
+      "representation": "compact",
+      "reason": "selected_compact_for_budget",
+      "requested_estimated_tokens": 7,
+      "allocated_estimated_tokens": 9,
+      "rendered_chars": 36,
+      "content_sha256": "f8f7d50a8743265da213264001d9e8de57c5501e4175bf6fb4fe95b893114560",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:discussion-anchor",
+          "role": "input",
+          "owner": {
+            "kind": "legacy_unbound",
+            "agent_id": "agent-1"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 1,
+      "section_id": "message:external-wake",
+      "section_name": "message:external-wake",
+      "stability": "turn_scoped",
+      "representation": "omitted",
+      "reason": "omitted_lower_priority",
+      "requested_estimated_tokens": 5,
+      "allocated_estimated_tokens": 0,
+      "rendered_chars": 0,
+      "content_sha256": null,
+      "selected_evidence_refs": [],
+      "omitted_evidence_refs": [
+        {
+          "reference": "message:external-wake",
+          "role": "supporting",
+          "owner": {
+            "kind": "legacy_unbound",
+            "agent_id": "agent-1"
+          }
+        }
+      ]
+    },
+    {
+      "order": 2,
+      "section_id": "message:timer-wake",
+      "section_name": "message:timer-wake",
+      "stability": "turn_scoped",
+      "representation": "omitted",
+      "reason": "omitted_lower_priority",
+      "requested_estimated_tokens": 5,
+      "allocated_estimated_tokens": 0,
+      "rendered_chars": 0,
+      "content_sha256": null,
+      "selected_evidence_refs": [],
+      "omitted_evidence_refs": [
+        {
+          "reference": "message:timer-wake",
+          "role": "supporting",
+          "owner": {
+            "kind": "legacy_unbound",
+            "agent_id": "agent-1"
+          }
+        }
+      ]
+    },
+    {
+      "order": 3,
+      "section_id": "message:lifecycle-wake",
+      "section_name": "message:lifecycle-wake",
+      "stability": "turn_scoped",
+      "representation": "omitted",
+      "reason": "omitted_lower_priority",
+      "requested_estimated_tokens": 6,
+      "allocated_estimated_tokens": 0,
+      "rendered_chars": 0,
+      "content_sha256": null,
+      "selected_evidence_refs": [],
+      "omitted_evidence_refs": [
+        {
+          "reference": "message:lifecycle-wake",
+          "role": "supporting",
+          "owner": {
+            "kind": "legacy_unbound",
+            "agent_id": "agent-1"
+          }
+        }
+      ]
+    },
+    {
+      "order": 4,
+      "section_id": "message:discussion-followup",
+      "section_name": "message:discussion-followup",
+      "stability": "turn_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 8,
+      "allocated_estimated_tokens": 8,
+      "rendered_chars": 29,
+      "content_sha256": "a807f8adbefa32addde6408785929e07de649c05f304dc0cf195d00b169c31a8",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:discussion-followup",
+          "role": "current_input",
+          "owner": {
+            "kind": "legacy_unbound",
+            "agent_id": "agent-1"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    }
+  ],
+  "invariant_results": [
+    {
+      "code": "prompt_budget_respected",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "activation_binding_consistent",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "current_input_retained",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "direct_predecessor_retained",
+      "status": "not_applicable",
+      "details": [
+        "fixture does not identify a direct predecessor"
+      ]
+    },
+    {
+      "code": "canonical_evidence_unique",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "evidence_owner_consistent",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "section_representation_exclusive",
+      "status": "pass",
+      "details": []
+    }
+  ]
+}

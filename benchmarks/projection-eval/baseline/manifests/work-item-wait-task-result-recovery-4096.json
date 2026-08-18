@@ -1,0 +1,189 @@
+{
+  "schema_version": 1,
+  "projector": "legacy_context_sections_v1",
+  "activation_owner": {
+    "kind": "work_item",
+    "work_item_id": "recovery"
+  },
+  "activation_binding": {
+    "source_message_id": "message:work-request",
+    "turn_id": "turn-1",
+    "work_item_id": "recovery",
+    "claimed_work_revision": null
+  },
+  "turn_id": "turn-recovery",
+  "prompt_budget_estimated_tokens": 4096,
+  "allocated_estimated_tokens": 29,
+  "system_sections": [
+    {
+      "order": 0,
+      "section_id": "identity",
+      "section_name": "identity",
+      "stability": "stable",
+      "representation": "full",
+      "reason": "system_section",
+      "requested_estimated_tokens": 11,
+      "allocated_estimated_tokens": 11,
+      "rendered_chars": 43,
+      "content_sha256": "cc23f147f831d7144b950676211369df343b3d347f4a8067767090b5c77ecbe2",
+      "selected_evidence_refs": [],
+      "omitted_evidence_refs": []
+    }
+  ],
+  "context_sections": [
+    {
+      "order": 0,
+      "section_id": "message:work-request",
+      "section_name": "message:work-request",
+      "stability": "turn_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 6,
+      "allocated_estimated_tokens": 6,
+      "rendered_chars": 21,
+      "content_sha256": "3fec216bb6203e4f0fd49564062faf4a0763b54c7d6849aff26845bda2595af0",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:work-request",
+          "role": "current_input",
+          "owner": {
+            "kind": "work_item",
+            "work_item_id": "recovery"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 1,
+      "section_id": "wait:task-1",
+      "section_name": "wait:task-1",
+      "stability": "agent_scoped",
+      "representation": "compact",
+      "reason": "selected_compact_for_budget",
+      "requested_estimated_tokens": 7,
+      "allocated_estimated_tokens": 9,
+      "rendered_chars": 36,
+      "content_sha256": "dd689ecba045b0a76e1939701d5b194fe950af77509da4c30233abcb6190a25d",
+      "selected_evidence_refs": [
+        {
+          "reference": "wait:task-1",
+          "role": "wait_state",
+          "owner": {
+            "kind": "work_item",
+            "work_item_id": "recovery"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 2,
+      "section_id": "turn:daemon-restart",
+      "section_name": "turn:daemon-restart",
+      "stability": "turn_scoped",
+      "representation": "omitted",
+      "reason": "omitted_lower_priority",
+      "requested_estimated_tokens": 6,
+      "allocated_estimated_tokens": 0,
+      "rendered_chars": 0,
+      "content_sha256": null,
+      "selected_evidence_refs": [],
+      "omitted_evidence_refs": [
+        {
+          "reference": "turn:daemon-restart",
+          "role": "lifecycle",
+          "owner": {
+            "kind": "legacy_unbound",
+            "agent_id": "agent-1"
+          }
+        }
+      ]
+    },
+    {
+      "order": 3,
+      "section_id": "message:task-1-result",
+      "section_name": "message:task-1-result",
+      "stability": "agent_scoped",
+      "representation": "compact",
+      "reason": "selected_compact_for_budget",
+      "requested_estimated_tokens": 6,
+      "allocated_estimated_tokens": 8,
+      "rendered_chars": 32,
+      "content_sha256": "dcb2ad73199e10e15a36a89e74a32caa2f687980bca5c18e2c39df4a1ac81edc",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:task-1-result",
+          "role": "tool_result",
+          "owner": {
+            "kind": "work_item",
+            "work_item_id": "recovery"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 4,
+      "section_id": "turn:recovery",
+      "section_name": "turn:recovery",
+      "stability": "agent_scoped",
+      "representation": "compact",
+      "reason": "selected_compact_for_budget",
+      "requested_estimated_tokens": 4,
+      "allocated_estimated_tokens": 6,
+      "rendered_chars": 24,
+      "content_sha256": "5eff4772500f54e4448ccf61af4428978f982f1c208e0b633eb2cb247584b5a2",
+      "selected_evidence_refs": [
+        {
+          "reference": "turn:recovery",
+          "role": "turn",
+          "owner": {
+            "kind": "work_item",
+            "work_item_id": "recovery"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    }
+  ],
+  "invariant_results": [
+    {
+      "code": "prompt_budget_respected",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "activation_binding_consistent",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "current_input_retained",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "direct_predecessor_retained",
+      "status": "not_applicable",
+      "details": [
+        "fixture does not identify a direct predecessor"
+      ]
+    },
+    {
+      "code": "canonical_evidence_unique",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "evidence_owner_consistent",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "section_representation_exclusive",
+      "status": "pass",
+      "details": []
+    }
+  ]
+}

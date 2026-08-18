@@ -4,27 +4,301 @@
   "projector": "legacy_context_sections_v1",
   "corpus": "../corpus/cases.json",
   "rubric": "../corpus/rubric.json",
-  "frozen_at": "2026-08-07",
+  "frozen_at": "2026-08-18",
   "status": "frozen_observation",
-  "candidate_gate": false,
-  "cases": [
-    {"id": "issue-2512-short-reference-need", "budgets": [2048, 4096, 16384]},
-    {"id": "issue-2512-short-reference-can", "budgets": [2048, 4096, 16384]},
-    {"id": "issue-2512-ordinal-reference", "budgets": [2048, 4096, 16384]},
-    {"id": "continuity-10-turns", "budgets": [2048, 4096, 16384]},
-    {"id": "continuity-20-turns", "budgets": [2048, 4096, 16384]},
-    {"id": "continuity-40-turns", "budgets": [2048, 4096, 16384]},
-    {"id": "new-topic-no-false-carry-over", "budgets": [2048, 4096, 16384]},
-    {"id": "return-to-old-topic", "budgets": [2048, 4096, 16384]},
-    {"id": "work-item-switch-return", "budgets": [2048, 4096, 16384]},
-    {"id": "work-item-wait-task-result-recovery", "budgets": [2048, 4096, 16384]},
-    {"id": "discussion-interleaved-runtime-wakes", "budgets": [2048, 4096, 16384]},
-    {"id": "restart-compaction-equivalence", "budgets": [2048, 4096, 16384]}
-  ],
-  "notes": [
-    "This file freezes the corpus and matrix used to observe the legacy projector.",
-    "Per-activation manifests are byte-stable artifacts produced by EffectivePrompt::projection_manifest().",
-    "A future candidate must use this corpus and rubric without changing thresholds.",
-    "Model-based repeated runs and pairwise judgments are diagnostic and cannot override hard failures."
+  "manifest_count": 36,
+  "entries": [
+    {
+      "case_id": "issue-2512-short-reference-need",
+      "budget": 2048,
+      "manifest": "issue-2512-short-reference-need-2048.json",
+      "sha256": "cbbf09835d27812464039b81f1c20057edba6bdd31da6a8034d8475845d95a32",
+      "invariants_pass": true,
+      "failed_invariants": []
+    },
+    {
+      "case_id": "issue-2512-short-reference-need",
+      "budget": 4096,
+      "manifest": "issue-2512-short-reference-need-4096.json",
+      "sha256": "e4b4184ea388b45571da1368c4629ae4e2d6064906572358c9cd4baa5da49b90",
+      "invariants_pass": true,
+      "failed_invariants": []
+    },
+    {
+      "case_id": "issue-2512-short-reference-need",
+      "budget": 16384,
+      "manifest": "issue-2512-short-reference-need-16384.json",
+      "sha256": "fa9a07db50e6e99378dcacc29fa3c61b0166eb3cff8e1ac7bf29cb7ad96bb874",
+      "invariants_pass": true,
+      "failed_invariants": []
+    },
+    {
+      "case_id": "issue-2512-short-reference-can",
+      "budget": 2048,
+      "manifest": "issue-2512-short-reference-can-2048.json",
+      "sha256": "fb787f9f53b64bec884000cdad8438faef8b00a7069bb1b96582c7553bf280cd",
+      "invariants_pass": true,
+      "failed_invariants": []
+    },
+    {
+      "case_id": "issue-2512-short-reference-can",
+      "budget": 4096,
+      "manifest": "issue-2512-short-reference-can-4096.json",
+      "sha256": "d397c67b7273619dd2e2ef786dd46717283cf709d56d017d3ca3dc16c61393b9",
+      "invariants_pass": true,
+      "failed_invariants": []
+    },
+    {
+      "case_id": "issue-2512-short-reference-can",
+      "budget": 16384,
+      "manifest": "issue-2512-short-reference-can-16384.json",
+      "sha256": "36da985ab72665f9a2edb3813f6b0ae6599e813095d5af82d0daf3326f77eb32",
+      "invariants_pass": true,
+      "failed_invariants": []
+    },
+    {
+      "case_id": "issue-2512-ordinal-reference",
+      "budget": 2048,
+      "manifest": "issue-2512-ordinal-reference-2048.json",
+      "sha256": "f90790f2f27d5a88a99cfaf08670ef6ec0539375b7358c3b6af935cdee049b83",
+      "invariants_pass": true,
+      "failed_invariants": []
+    },
+    {
+      "case_id": "issue-2512-ordinal-reference",
+      "budget": 4096,
+      "manifest": "issue-2512-ordinal-reference-4096.json",
+      "sha256": "b50449c372b21cfb9190dd45e47ec7cf83b9b630f19cc941c8102a485f5a05f6",
+      "invariants_pass": true,
+      "failed_invariants": []
+    },
+    {
+      "case_id": "issue-2512-ordinal-reference",
+      "budget": 16384,
+      "manifest": "issue-2512-ordinal-reference-16384.json",
+      "sha256": "7a1a35ad60ee85a87ce3addd3fcc98412fc91bc27cfcb339b769dc07b41883fc",
+      "invariants_pass": true,
+      "failed_invariants": []
+    },
+    {
+      "case_id": "continuity-10-turns",
+      "budget": 2048,
+      "manifest": "continuity-10-turns-2048.json",
+      "sha256": "34813093f6e225e0518b718729f5d83c8304884e13d5954520cb74db76bd022c",
+      "invariants_pass": true,
+      "failed_invariants": []
+    },
+    {
+      "case_id": "continuity-10-turns",
+      "budget": 4096,
+      "manifest": "continuity-10-turns-4096.json",
+      "sha256": "7a2352ddcf0b9e926a2ebfc32c8ca71124705f273a9edccdb1908e953d74a605",
+      "invariants_pass": true,
+      "failed_invariants": []
+    },
+    {
+      "case_id": "continuity-10-turns",
+      "budget": 16384,
+      "manifest": "continuity-10-turns-16384.json",
+      "sha256": "6494ed83b3deb8a28b0790a272f946f2d9b0bb19145d56700a1e81e2a4fb32f6",
+      "invariants_pass": true,
+      "failed_invariants": []
+    },
+    {
+      "case_id": "continuity-20-turns",
+      "budget": 2048,
+      "manifest": "continuity-20-turns-2048.json",
+      "sha256": "5292707976b2fb4e8042e1c81e07fc56eb68ca762fc445b0b372ff608f775d98",
+      "invariants_pass": true,
+      "failed_invariants": []
+    },
+    {
+      "case_id": "continuity-20-turns",
+      "budget": 4096,
+      "manifest": "continuity-20-turns-4096.json",
+      "sha256": "dab90b2d3953301192db9b2076f33323c91e35f226c02f67f29f07e18da45bda",
+      "invariants_pass": true,
+      "failed_invariants": []
+    },
+    {
+      "case_id": "continuity-20-turns",
+      "budget": 16384,
+      "manifest": "continuity-20-turns-16384.json",
+      "sha256": "ac5210df61af1ca8b6c2987c486fba1e1cbe3f41bc7574f67595afed52bd1602",
+      "invariants_pass": true,
+      "failed_invariants": []
+    },
+    {
+      "case_id": "continuity-40-turns",
+      "budget": 2048,
+      "manifest": "continuity-40-turns-2048.json",
+      "sha256": "ae0f24a5765181f4717bf95dd590d2655ea344c39e86d5d2c899c238822cf48b",
+      "invariants_pass": true,
+      "failed_invariants": []
+    },
+    {
+      "case_id": "continuity-40-turns",
+      "budget": 4096,
+      "manifest": "continuity-40-turns-4096.json",
+      "sha256": "0873b77897b4f2e0c97c80ceea804e800db5586da8b43139d2a979d8c272fa14",
+      "invariants_pass": true,
+      "failed_invariants": []
+    },
+    {
+      "case_id": "continuity-40-turns",
+      "budget": 16384,
+      "manifest": "continuity-40-turns-16384.json",
+      "sha256": "0375b5b1928d133c68eb2ba8e65d96f92f2974959e569fcea22905b2b949a412",
+      "invariants_pass": true,
+      "failed_invariants": []
+    },
+    {
+      "case_id": "new-topic-no-false-carry-over",
+      "budget": 2048,
+      "manifest": "new-topic-no-false-carry-over-2048.json",
+      "sha256": "515a7dbbce215c331838028757b448e91f81ef03c69f8076791004537152111f",
+      "invariants_pass": true,
+      "failed_invariants": []
+    },
+    {
+      "case_id": "new-topic-no-false-carry-over",
+      "budget": 4096,
+      "manifest": "new-topic-no-false-carry-over-4096.json",
+      "sha256": "994fd5f8400b578246abaf416b43fd69bc4ef94e35b0ff8a4eb74127a33b4f44",
+      "invariants_pass": true,
+      "failed_invariants": []
+    },
+    {
+      "case_id": "new-topic-no-false-carry-over",
+      "budget": 16384,
+      "manifest": "new-topic-no-false-carry-over-16384.json",
+      "sha256": "04b8fb64dfac596e1cf8e4a1077cd788b13046172a038b13b2de4df4ec128452",
+      "invariants_pass": true,
+      "failed_invariants": []
+    },
+    {
+      "case_id": "return-to-old-topic",
+      "budget": 2048,
+      "manifest": "return-to-old-topic-2048.json",
+      "sha256": "06519b4c9bf2b31b4268b3fd80ca3466eacd5233af5983017c4518c70d3d40f6",
+      "invariants_pass": true,
+      "failed_invariants": []
+    },
+    {
+      "case_id": "return-to-old-topic",
+      "budget": 4096,
+      "manifest": "return-to-old-topic-4096.json",
+      "sha256": "6db3fc561bc1be7699d9e5b0c0d1dda0201ee592d016bf120a2bd1d0775f2ccd",
+      "invariants_pass": true,
+      "failed_invariants": []
+    },
+    {
+      "case_id": "return-to-old-topic",
+      "budget": 16384,
+      "manifest": "return-to-old-topic-16384.json",
+      "sha256": "55ccde1584f44bab400b3d7419845f67a0bd9314ce467f5f630b4d63259fefc8",
+      "invariants_pass": true,
+      "failed_invariants": []
+    },
+    {
+      "case_id": "work-item-switch-return",
+      "budget": 2048,
+      "manifest": "work-item-switch-return-2048.json",
+      "sha256": "1da3c9711765646c3e77b053930b0ae87eeda4bc31c62168b324eb9b8eb13f4d",
+      "invariants_pass": true,
+      "failed_invariants": []
+    },
+    {
+      "case_id": "work-item-switch-return",
+      "budget": 4096,
+      "manifest": "work-item-switch-return-4096.json",
+      "sha256": "fd88d49299fc6cdb20afab23e5f6b1280adf966fab83907125b6bd13e3192b9c",
+      "invariants_pass": true,
+      "failed_invariants": []
+    },
+    {
+      "case_id": "work-item-switch-return",
+      "budget": 16384,
+      "manifest": "work-item-switch-return-16384.json",
+      "sha256": "15a0a60ecb6befb4242186a21a1da1a36797c4dea607fff3e9f0553648324fe4",
+      "invariants_pass": false,
+      "failed_invariants": [
+        "evidence_owner_consistent"
+      ]
+    },
+    {
+      "case_id": "work-item-wait-task-result-recovery",
+      "budget": 2048,
+      "manifest": "work-item-wait-task-result-recovery-2048.json",
+      "sha256": "ba621c04c59a4d645bcba316aa4efb9725fa1a944d515e1d95a9330bd625bb2d",
+      "invariants_pass": true,
+      "failed_invariants": []
+    },
+    {
+      "case_id": "work-item-wait-task-result-recovery",
+      "budget": 4096,
+      "manifest": "work-item-wait-task-result-recovery-4096.json",
+      "sha256": "600c738e9d65a31bbb39bfc493961353952a47783faca8fbdf0affc6dbbd3321",
+      "invariants_pass": true,
+      "failed_invariants": []
+    },
+    {
+      "case_id": "work-item-wait-task-result-recovery",
+      "budget": 16384,
+      "manifest": "work-item-wait-task-result-recovery-16384.json",
+      "sha256": "0f68b541b7015200b515f408270f04833c025bc3c08bb4af7384f17379c05fd9",
+      "invariants_pass": false,
+      "failed_invariants": [
+        "evidence_owner_consistent"
+      ]
+    },
+    {
+      "case_id": "discussion-interleaved-runtime-wakes",
+      "budget": 2048,
+      "manifest": "discussion-interleaved-runtime-wakes-2048.json",
+      "sha256": "9f060ba978102d32fddb2924a2afd8c164818ed5a7bb12cab40204bfa2706ca6",
+      "invariants_pass": true,
+      "failed_invariants": []
+    },
+    {
+      "case_id": "discussion-interleaved-runtime-wakes",
+      "budget": 4096,
+      "manifest": "discussion-interleaved-runtime-wakes-4096.json",
+      "sha256": "023f5194bd2104ea8e11bd063d30d280ca61986efb3335112254d65d5b81e7b0",
+      "invariants_pass": true,
+      "failed_invariants": []
+    },
+    {
+      "case_id": "discussion-interleaved-runtime-wakes",
+      "budget": 16384,
+      "manifest": "discussion-interleaved-runtime-wakes-16384.json",
+      "sha256": "14bf662e46722a38e95d97ea096c3117905beee2aad5042c3e07a40bdacd4624",
+      "invariants_pass": true,
+      "failed_invariants": []
+    },
+    {
+      "case_id": "restart-compaction-equivalence",
+      "budget": 2048,
+      "manifest": "restart-compaction-equivalence-2048.json",
+      "sha256": "23f54bca16b5fbc5ef97f5e129ff0819af47f9e9bffa7572777fed2653678c88",
+      "invariants_pass": true,
+      "failed_invariants": []
+    },
+    {
+      "case_id": "restart-compaction-equivalence",
+      "budget": 4096,
+      "manifest": "restart-compaction-equivalence-4096.json",
+      "sha256": "9b498aa262d7d899380b83cb234c49ec2cb143ec1f9fcbbc652d2fae8a061f29",
+      "invariants_pass": true,
+      "failed_invariants": []
+    },
+    {
+      "case_id": "restart-compaction-equivalence",
+      "budget": 16384,
+      "manifest": "restart-compaction-equivalence-16384.json",
+      "sha256": "4785fb4a1e92b008218354541ab85101dee83ab069735b141083586e1706bf1d",
+      "invariants_pass": true,
+      "failed_invariants": []
+    }
   ]
 }

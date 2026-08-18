@@ -178,6 +178,8 @@ pub struct OperatorIngressRequest {
 pub struct DebugPromptRequest {
     pub text: String,
     pub authority_class: Option<AuthorityClass>,
+    pub manifest: Option<bool>,
+    pub budget: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]

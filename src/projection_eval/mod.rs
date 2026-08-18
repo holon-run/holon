@@ -4,6 +4,9 @@
 //! does not parse rendered Markdown and does not participate in provider
 //! request lowering.
 
+pub mod baseline;
+pub(crate) mod baseline_specs;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};

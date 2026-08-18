@@ -1049,13 +1049,23 @@ async fn dump_prompt(
     text: String,
     agent: Option<String>,
     authority_class: AuthorityClass,
+    manifest: bool,
+    budget: Option<usize>,
 ) -> Result<()> {
     let host = RuntimeHost::new(config.clone())?;
     let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
-    let prompt = host
-        .preview_agent_prompt(&agent, text, authority_class)
-        .await?;
-    println!("{}", prompt.render_dump());
+    let prompt = if let Some(budget) = budget {
+        host.preview_agent_prompt_with_budget(&agent, text, authority_class, budget)
+            .await?
+    } else {
+        host.preview_agent_prompt(&agent, text, authority_class)
+            .await?
+    };
+    if manifest {
+        print!("{}", prompt.projection_manifest().canonical_json()?);
+    } else {
+        println!("{}", prompt.render_dump());
+    }
     Ok(())
 }
 
@@ -2567,7 +2577,9 @@ async fn handle_debug_command(config: AppConfig, command: DebugCommands) -> Resu
             text,
             agent,
             authority_class,
-        } => dump_prompt(config, text, agent, authority_class).await,
+            manifest,
+            budget,
+        } => dump_prompt(config, text, agent, authority_class, manifest, budget).await,
         DebugCommands::Latency {
             agent,
             limit,

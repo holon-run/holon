@@ -747,6 +747,8 @@ impl LocalClient {
                 &DebugPromptRequest {
                     text: text.into(),
                     authority_class: Some(authority_class),
+                    manifest: None,
+                    budget: None,
                 },
             )
             .await?;

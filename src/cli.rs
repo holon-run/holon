@@ -558,6 +558,16 @@ pub enum DebugCommands {
             default_value = "operator-instruction"
         )]
         authority_class: AuthorityClass,
+        #[arg(
+            long,
+            help = "Output canonical ProjectionManifest JSON instead of the text dump"
+        )]
+        manifest: bool,
+        #[arg(
+            long,
+            help = "Override the prompt budget (estimated tokens) for this debug prompt"
+        )]
+        budget: Option<usize>,
     },
     Latency {
         #[arg(long)]

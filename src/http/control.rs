@@ -1352,12 +1352,37 @@ pub async fn control_debug_prompt(
         .host
         .public_agent_boundary_metadata(&agent_id)
         .map_err(agent_access_error)?;
-    let dump = state
+    let prompt = state
         .host
-        .preview_public_agent_prompt(&agent_id, request.text.clone(), effective_trust.clone())
+        .preview_public_agent_prompt(
+            &agent_id,
+            request.text.clone(),
+            effective_trust.clone(),
+            request.budget,
+        )
         .await
-        .map_err(agent_access_error)?
-        .render_dump();
+        .map_err(agent_access_error)?;
+    let manifest_requested = request.manifest.unwrap_or(false);
+    let manifest_json = if manifest_requested {
+        Some(
+            prompt
+                .projection_manifest()
+                .canonical_json()
+                .map_err(|err| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"error": err.to_string()})),
+                    )
+                })?,
+        )
+    } else {
+        None
+    };
+    let dump = if manifest_requested {
+        None
+    } else {
+        Some(prompt.render_dump())
+    };
     Ok(Json(json!({
         "ok": true,
         "agent_id": agent_id,
@@ -1365,6 +1390,7 @@ pub async fn control_debug_prompt(
         "effective_trust": effective_trust,
         "boundary": boundary,
         "dump": dump,
+        "manifest": manifest_json,
     })))
 }
 

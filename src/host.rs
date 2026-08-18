@@ -2266,9 +2266,10 @@ impl RuntimeHost {
         agent_id: &str,
         text: String,
         authority_class: AuthorityClass,
+        budget_override: Option<usize>,
     ) -> std::result::Result<EffectivePrompt, PublicAgentError> {
         let identity = self.public_agent_identity(agent_id)?;
-        self.preview_agent_prompt_from_storage(&identity, text, authority_class)
+        self.preview_agent_prompt_from_storage(&identity, text, authority_class, budget_override)
             .await
             .map_err(PublicAgentError::Runtime)
     }
@@ -2299,7 +2300,26 @@ impl RuntimeHost {
         };
         self.active_agent_identity(agent_id)
             .map_err(anyhow::Error::new)?;
-        self.preview_agent_prompt_from_storage(&identity, text, authority_class)
+        self.preview_agent_prompt_from_storage(&identity, text, authority_class, None)
+            .await
+    }
+
+    pub async fn preview_agent_prompt_with_budget(
+        &self,
+        agent_id: &str,
+        text: String,
+        authority_class: AuthorityClass,
+        budget: usize,
+    ) -> Result<EffectivePrompt> {
+        self.validate_agent_id(agent_id)?;
+        let identity = self.agent_identity_record(agent_id)?.ok_or_else(|| {
+            anyhow!(
+                "agent {agent_id} not found; create it first with 'holon agent create {agent_id}'"
+            )
+        })?;
+        self.active_agent_identity(agent_id)
+            .map_err(anyhow::Error::new)?;
+        self.preview_agent_prompt_from_storage(&identity, text, authority_class, Some(budget))
             .await
     }
 
@@ -2317,6 +2337,7 @@ impl RuntimeHost {
         identity: &AgentIdentityRecord,
         text: String,
         authority_class: AuthorityClass,
+        budget_override: Option<usize>,
     ) -> Result<EffectivePrompt> {
         let storage = self.agent_storage_read_only(&identity.agent_id)?;
         let state = storage
@@ -2414,12 +2435,16 @@ impl RuntimeHost {
             .map(|(_, tool)| tool)
             .collect::<Vec<_>>();
         let prompt_tools = provider.prompt_tool_specs(&available_tools);
+        let mut context_config = self.runtime_context_config();
+        if let Some(budget) = budget_override {
+            context_config.prompt_budget_estimated_tokens = budget;
+        }
         build_effective_prompt_with_apply_patch_surface(
             &storage,
             &state,
             &execution,
             &message,
-            &self.runtime_context_config(),
+            &context_config,
             &execution.execution_root,
             agent_home.as_path(),
             &identity_view,

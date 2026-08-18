@@ -1,0 +1,143 @@
+{
+  "schema_version": 1,
+  "projector": "legacy_context_sections_v1",
+  "activation_owner": {
+    "kind": "legacy_unbound",
+    "agent_id": "agent-1"
+  },
+  "activation_binding": {
+    "source_message_id": "message:2512-need",
+    "turn_id": "turn-3",
+    "work_item_id": null,
+    "claimed_work_revision": null
+  },
+  "turn_id": "turn-3",
+  "prompt_budget_estimated_tokens": 2048,
+  "allocated_estimated_tokens": 24,
+  "system_sections": [
+    {
+      "order": 0,
+      "section_id": "identity",
+      "section_name": "identity",
+      "stability": "stable",
+      "representation": "full",
+      "reason": "system_section",
+      "requested_estimated_tokens": 11,
+      "allocated_estimated_tokens": 11,
+      "rendered_chars": 43,
+      "content_sha256": "cc23f147f831d7144b950676211369df343b3d347f4a8067767090b5c77ecbe2",
+      "selected_evidence_refs": [],
+      "omitted_evidence_refs": []
+    }
+  ],
+  "context_sections": [
+    {
+      "order": 0,
+      "section_id": "message:2512-plan",
+      "section_name": "message:2512-plan",
+      "stability": "agent_scoped",
+      "representation": "truncated",
+      "reason": "truncated_to_remaining_budget",
+      "requested_estimated_tokens": 9,
+      "allocated_estimated_tokens": 12,
+      "rendered_chars": 23,
+      "content_sha256": "9022e5e6548340e207d14228370f58e4ea4e976584d3afead4996c369b24b4b1",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:2512-plan",
+          "role": "input",
+          "owner": {
+            "kind": "legacy_unbound",
+            "agent_id": "agent-1"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 1,
+      "section_id": "brief:2512-plan",
+      "section_name": "brief:2512-plan",
+      "stability": "agent_scoped",
+      "representation": "compact",
+      "reason": "selected_compact_for_budget",
+      "requested_estimated_tokens": 8,
+      "allocated_estimated_tokens": 10,
+      "rendered_chars": 31,
+      "content_sha256": "1b4b8829bd64b58aaf595e57bd058c3009ccbe51e26aa941e7b7bd83d8a51eee",
+      "selected_evidence_refs": [
+        {
+          "reference": "brief:2512-plan",
+          "role": "result",
+          "owner": {
+            "kind": "legacy_unbound",
+            "agent_id": "agent-1"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 2,
+      "section_id": "message:2512-need",
+      "section_name": "message:2512-need",
+      "stability": "turn_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 2,
+      "allocated_estimated_tokens": 2,
+      "rendered_chars": 2,
+      "content_sha256": "c9e9a062f5d588f3adb481458f2b719b1a133ffb48b468eb0f61be6004dae9de",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:2512-need",
+          "role": "current_input",
+          "owner": {
+            "kind": "legacy_unbound",
+            "agent_id": "agent-1"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    }
+  ],
+  "invariant_results": [
+    {
+      "code": "prompt_budget_respected",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "activation_binding_consistent",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "current_input_retained",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "direct_predecessor_retained",
+      "status": "not_applicable",
+      "details": [
+        "fixture does not identify a direct predecessor"
+      ]
+    },
+    {
+      "code": "canonical_evidence_unique",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "evidence_owner_consistent",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "section_representation_exclusive",
+      "status": "pass",
+      "details": []
+    }
+  ]
+}
