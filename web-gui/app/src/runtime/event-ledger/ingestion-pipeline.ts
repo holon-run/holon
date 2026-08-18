@@ -22,6 +22,7 @@ import {
   EventLedger,
   type EventLedgerWriteBatch,
   type LedgerHydrationJobRecord,
+  type LedgerReadStateRecord,
 } from "./ledger";
 import type { EventLedgerOpenResult } from "./ledger";
 import type { LedgerDurability } from "./errors";
@@ -29,6 +30,7 @@ import {
   classifyEnvelope,
   type ClassifiedEnvelope,
 } from "./classification";
+import { remoteScopeKeyParts, type LedgerRemoteScopeKey } from "./keys";
 import type { LedgerRecordKind, LedgerScopeKey } from "./keys";
 
 /** How far above the contiguous cursor resume() scans for stored stragglers. */
@@ -66,6 +68,48 @@ export interface ProjectionSnapshotRepairSource {
       revision?: string | number;
     }>;
   } | null>;
+}
+
+/** Projection snapshot content for a bootstrap install (W3 recovery). */
+export interface ProjectionSnapshotInstall {
+  /** Authoritative boundary: every display event <= it is in the snapshot. */
+  snapshotThroughSeq: number;
+  /** Committed event head named by the snapshot; may exceed the boundary. */
+  eventHeadSeq: number;
+  /** Canonical records carried by the snapshot (e.g. the latest Brief). */
+  canonicalRecords: Array<{
+    recordKind: LedgerRecordKind;
+    recordId: string;
+    record: unknown;
+    revision?: string | number;
+  }>;
+  /** Records the projection references but the snapshot does not carry. */
+  hydrationReferences: Array<{
+    recordKind: LedgerRecordKind;
+    recordId: string;
+    revision?: string | number;
+  }>;
+  /** Records deleted at or before the boundary; they end hydration demand. */
+  hydrationTombstones: Array<{
+    recordKind: LedgerRecordKind;
+    recordId: string;
+  }>;
+}
+
+/** Read-state fields installable with a snapshot in the same transaction. */
+export type ProjectionInstallReadState = Partial<{
+  unreadBaselineSeq: number;
+  readThroughEventSeq: number;
+  certainty: "exact" | "truncated";
+  historyTruncatedBeforeSeq: number;
+  acknowledgedTruncationBeforeSeq: number;
+}>;
+
+export interface ProjectionInstallOptions {
+  /** Discard the agent's raw/projection cache first (reset path). */
+  clearFirst?: { preserveReadState?: boolean };
+  /** Browser-local read-state patch committed atomically with the install. */
+  readState?: ProjectionInstallReadState;
 }
 
 export type LedgerIngestionState =
@@ -170,6 +214,21 @@ function revisionSatisfies(
     return actual >= expected;
   }
   return String(actual) >= String(expected);
+}
+
+/**
+ * Merge two expected revisions by keeping whichever demands more: an
+ * out-of-order invalidation carrying a lower revision must never weaken a
+ * demand already merged from a later event (W2 review note).
+ */
+function strictestRevision(
+  a: string | number | undefined,
+  b: string | number | undefined,
+): string | number | undefined {
+  if (a === undefined) return b;
+  if (b === undefined) return a;
+  // a is the strictest when it already covers b's demand.
+  return revisionSatisfies(b, a) ? a : b;
 }
 
 /**
@@ -299,8 +358,12 @@ export class LedgerIngestionPipeline {
           ? {
               ...existing,
               createdByEventSeq: Math.min(existing.createdByEventSeq, item.classified.eventSeq),
-              expectedRevision:
-                item.classified.reference.expectedRevision ?? existing.expectedRevision,
+              // Strictest (max) revision across every merged event, so a
+              // late out-of-order invalidation cannot weaken the job.
+              expectedRevision: strictestRevision(
+                item.classified.reference.expectedRevision,
+                existing.expectedRevision,
+              ),
               state: "pending",
             }
           : {
@@ -397,6 +460,168 @@ export class LedgerIngestionPipeline {
       throw error;
     }
     this.emit(scope, tracker);
+  }
+
+  /**
+   * Atomically install an authoritative projection snapshot (W3 bootstrap):
+   * canonical records, tombstones, boundary hydration jobs, both cursors at
+   * the snapshot boundary, the observed event head, and the browser-local
+   * read baseline land in one transaction. An optional `clearFirst` discards
+   * a previous cache for the same scope key inside the same transaction, so
+   * a reset followed by the install is all-or-nothing.
+   */
+  async installProjectionSnapshot(
+    scope: LedgerScopeKey,
+    install: ProjectionSnapshotInstall,
+    options: ProjectionInstallOptions = {},
+  ): Promise<LedgerIngestionStatus> {
+    if (!(await this.ensureExactHandle())) {
+      return this.statusFor(scope, this.freshTracker());
+    }
+    const ledger = this.ledger!;
+    const now = Date.now();
+    const batch = ledger.beginWrite();
+    if (options.clearFirst) {
+      batch.clearAgentScope(scope, { preserveReadState: options.clearFirst.preserveReadState });
+    }
+    for (const record of install.canonicalRecords) {
+      batch.putCanonicalRecord(
+        scope,
+        record.recordKind,
+        record.recordId,
+        record.record,
+        record.revision,
+      );
+    }
+    for (const tombstone of install.hydrationTombstones) {
+      batch.putCanonicalRecord(scope, tombstone.recordKind, tombstone.recordId, {
+        tombstone: true,
+        deletedAt: now,
+        deletedByEventSeq: install.snapshotThroughSeq,
+      } satisfies CanonicalTombstone);
+    }
+    for (const reference of install.hydrationReferences) {
+      batch.putHydrationJob(scope, {
+        ...scope,
+        jobId: jobIdFor(reference.recordKind, reference.recordId),
+        recordKind: reference.recordKind,
+        recordId: reference.recordId,
+        createdByEventSeq: install.snapshotThroughSeq,
+        expectedRevision: reference.revision,
+        attemptCount: 0,
+        state: "pending",
+        createdAt: now,
+      });
+    }
+    // The snapshot is authoritative through its boundary: both cursors sit
+    // at the boundary regardless of any prior cache for this scope key.
+    batch.advanceIngestionCursor(scope, install.snapshotThroughSeq);
+    batch.applyProjectionChange(scope, { projectionReadyThroughSeq: install.snapshotThroughSeq });
+    batch.putRuntimeScope(remoteScopeOf(scope), { eventHeadSeq: install.eventHeadSeq });
+    if (options.readState) {
+      batch.putReadState(scope, options.readState);
+    }
+    try {
+      await batch.commit();
+    } catch (error) {
+      this.trackers.delete(this.trackerKey(scope));
+      if (this.isDurabilityFailure(error)) {
+        return this.statusFor(scope, this.freshTracker());
+      }
+      throw error;
+    }
+    // Reload the tracker from the installed durable state; boundary
+    // references become ordinary pending demand the drain can service.
+    this.trackers.delete(this.trackerKey(scope));
+    const tracker = await this.ensureTracker(scope);
+    if (tracker.jobs.size > 0) {
+      void this.drainHydration(scope).catch(() => undefined);
+    }
+    const status = this.statusFor(scope, tracker);
+    this.dependencies.onStatus?.(status);
+    return status;
+  }
+
+  /**
+   * Clear an entire runtime scope durably (epoch or visibility reset) and
+   * forget its in-memory trackers. Old-scope data must never join the new
+   * scope's projection, so this removes sessions, raw events, jobs,
+   * canonical records, and read states in one transaction.
+   */
+  async clearRuntimeScope(remoteScope: LedgerRemoteScopeKey): Promise<void> {
+    if (!(await this.ensureExactHandle())) return;
+    const batch = this.ledger!.beginWrite();
+    batch.clearRuntimeScope(remoteScope);
+    await batch.commit();
+    this.forgetRuntimeScope(remoteScope);
+  }
+
+  /** Stored sessions for one agent under one remote, across scopes. */
+  async findAgentSessions(
+    remoteKey: string,
+    agentId: string,
+  ): Promise<Array<{ scope: LedgerScopeKey; ingestedThroughSeq?: number; projectionReadyThroughSeq?: number }>> {
+    if (!(await this.ensureExactHandle())) return [];
+    const sessions = await this.ledger!.findAgentSessionsByAgent(remoteKey, agentId);
+    return sessions.map((session) => ({
+      scope: {
+        remoteKey: session.remoteKey,
+        runtimeId: session.runtimeId,
+        visibilityScopeId: session.visibilityScopeId,
+        eventLogEpoch: session.eventLogEpoch,
+        agentId: session.agentId,
+      },
+      ingestedThroughSeq: session.ingestedThroughSeq,
+      projectionReadyThroughSeq: session.projectionReadyThroughSeq,
+    }));
+  }
+
+  /** Forget the in-memory tracker of one agent scope (after a clear). */
+  forgetAgentScope(scope: LedgerScopeKey): void {
+    this.trackers.delete(this.trackerKey(scope));
+  }
+
+  /** Browser-local read state of one scope, if recorded. */
+  async readStateOf(scope: LedgerScopeKey): Promise<LedgerReadStateRecord | undefined> {
+    if (!(await this.ensureExactHandle())) return undefined;
+    return this.ledger!.getReadState(scope);
+  }
+
+  /**
+   * Every agent scope with durable state under one remote. Used to seed the
+   * repository's scope registry from the restart scan without knowing the
+   * server's roster in advance.
+   */
+  async listKnownScopes(remoteKey: string): Promise<LedgerScopeKey[]> {
+    if (!(await this.ensureExactHandle())) return [];
+    const runtimeScopes = await this.ledger!.listRuntimeScopesByRemoteKey(remoteKey);
+    const result: LedgerScopeKey[] = [];
+    for (const runtimeScope of runtimeScopes) {
+      const sessions = await this.ledger!.listAgentSessions({
+        remoteKey: runtimeScope.remoteKey,
+        runtimeId: runtimeScope.runtimeId,
+        visibilityScopeId: runtimeScope.visibilityScopeId,
+        eventLogEpoch: runtimeScope.eventLogEpoch,
+      });
+      for (const session of sessions) {
+        result.push({
+          remoteKey: session.remoteKey,
+          runtimeId: session.runtimeId,
+          visibilityScopeId: session.visibilityScopeId,
+          eventLogEpoch: session.eventLogEpoch,
+          agentId: session.agentId,
+        });
+      }
+    }
+    return result;
+  }
+
+  /** Forget every in-memory tracker under one runtime scope. */
+  forgetRuntimeScope(remoteScope: LedgerRemoteScopeKey): void {
+    const prefix = `${remoteScopeKeyParts(remoteScope).join("\u0000")}\u0000`;
+    for (const key of Array.from(this.trackers.keys())) {
+      if (key.startsWith(prefix)) this.trackers.delete(key);
+    }
   }
 
   /**

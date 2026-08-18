@@ -1,4 +1,10 @@
-import type { StreamEventEnvelopeDto } from "./client";
+import {
+  cursorNotFoundPayload,
+  isSnapshotAgentMissingError,
+  isSnapshotCapabilityUnavailableError,
+  type AgentProjectionSnapshotDto,
+  type StreamEventEnvelopeDto,
+} from "./client";
 import { cacheDeleteSession } from "./idb-cache";
 import {
   currentRemoteKey,
@@ -14,6 +20,12 @@ import {
   startRuntimeSpan,
   type RuntimeTraceContext,
 } from "./runtime-trace";
+import {
+  AgentRecoveryCoordinator,
+  type AgentRecoveryHint,
+  type AgentRecoveryUpdate,
+  type RecoveryProjectionSnapshot,
+} from "./event-ledger/agent-recovery";
 import {
   LedgerIngestionPipeline,
   type LedgerHydrationFetchers,
@@ -100,6 +112,9 @@ interface RuntimeClientLike {
     has_older?: boolean;
     has_newer?: boolean;
   }>;
+  getAgentProjectionSnapshot: (
+    agentId: string,
+  ) => Promise<AgentProjectionSnapshotDto | null>;
   getAgentMessagesBatch: (
     agentId: string,
     ids: string[],
@@ -211,6 +226,11 @@ export class AgentSessionRepository<State extends AgentSessionRepositoryState> {
 
   private ledgerPipeline: LedgerIngestionPipeline | null = null;
   private ledgerInitPromise: Promise<void> | null = null;
+  private recoveryCoordinator: AgentRecoveryCoordinator | null = null;
+  /** agentId -> durable scope discovered by recovery or the restart scan. */
+  private readonly recoveryScopeRegistry = new Map<string, LedgerScopeKey>();
+  /** Agents whose ledger recovery was triggered this generation. */
+  private readonly recoveryTriggered = new Set<string>();
 
   constructor(private readonly dependencies: AgentSessionRepositoryDependencies<State>) {}
 
@@ -320,6 +340,9 @@ export class AgentSessionRepository<State extends AgentSessionRepositoryState> {
     this.ledgerPipeline?.dispose();
     this.ledgerPipeline = null;
     this.ledgerInitPromise = null;
+    this.recoveryCoordinator = null;
+    this.recoveryScopeRegistry.clear();
+    this.recoveryTriggered.clear();
     this.cancelClientGenerationWork();
   }
 
@@ -335,18 +358,100 @@ export class AgentSessionRepository<State extends AgentSessionRepositoryState> {
     const pipeline = new LedgerIngestionPipeline({
       fetchers: integration.fetchers,
       snapshotRepair: integration.snapshotRepair,
-      onStatus: integration.onStatus,
+      onStatus: (status) => {
+        integration.onStatus?.(status);
+        // Bounded escalation: a durable sync_error that survived the
+        // pipeline's own snapshot repair re-bootstraps once via recovery.
+        if (status.state === "sync_error") {
+          this.recoveryCoordinator?.requestDivergenceReset(status.scope.agentId);
+        }
+      },
     });
     this.ledgerPipeline = pipeline;
+    this.recoveryCoordinator = this.createRecoveryCoordinator(pipeline);
     this.ledgerInitPromise = (async () => {
       if (!(await pipeline.open())) return;
       await pipeline.resumeRemote(
         currentRemoteKey(this.dependencies.getConnectionConfig()),
       );
+      await this.seedRecoveryScopes(pipeline);
     })().catch((error) => {
       console.warn("Failed to initialize the event ledger pipeline.", error);
     });
     return this.ledgerInitPromise;
+  }
+
+  private createRecoveryCoordinator(
+    pipeline: LedgerIngestionPipeline,
+  ): AgentRecoveryCoordinator {
+    const remoteKey = currentRemoteKey(this.dependencies.getConnectionConfig());
+    const client = this.dependencies.getClient();
+    return new AgentRecoveryCoordinator({
+      remoteKey,
+      pipeline,
+      fetchProjectionSnapshot: async (agentId) => {
+        try {
+          const dto = await client.getAgentProjectionSnapshot(agentId);
+          return dto ? recoverySnapshotFromDto(dto) : null;
+        } catch (error) {
+          if (
+            isSnapshotCapabilityUnavailableError(error) ||
+            isSnapshotAgentMissingError(error)
+          ) {
+            return null;
+          }
+          throw error;
+        }
+      },
+      fetchEventPage: async (agentId, afterSeq, limit) => {
+        try {
+          const page = await client.getAgentEvents(agentId, { afterSeq, limit, order: "asc" });
+          return {
+            events: (page.events ?? []) as Array<Record<string, unknown>>,
+            eventLogEpoch: page.event_log_epoch || undefined,
+            eventHeadSeq: page.newest_seq ?? page.cursor_seq ?? undefined,
+            oldestRetainedSeq: page.oldest_seq ?? null,
+            hasNewer: page.has_newer,
+          };
+        } catch (error) {
+          const cursorNotFound = cursorNotFoundPayload(error);
+          if (cursorNotFound) return { events: [], cursorNotFound };
+          throw error;
+        }
+      },
+      onPhase: (update) => {
+        if (update.scope && update.phase !== "idle") {
+          this.recoveryScopeRegistry.set(update.agentId, update.scope);
+        }
+      },
+    });
+  }
+
+  private async seedRecoveryScopes(pipeline: LedgerIngestionPipeline): Promise<void> {
+    const remoteKey = currentRemoteKey(this.dependencies.getConnectionConfig());
+    for (const scope of await pipeline.listKnownScopes(remoteKey)) {
+      if (!this.recoveryScopeRegistry.has(scope.agentId)) {
+        this.recoveryScopeRegistry.set(scope.agentId, scope);
+      }
+    }
+  }
+
+  /** Durable ledger scope for one agent, once recovery discovered it. */
+  knownLedgerScope(agentId: string): LedgerScopeKey | null {
+    return this.recoveryScopeRegistry.get(agentId) ?? null;
+  }
+
+  /** Bring one agent's durable ledger to live state (W3 recovery). */
+  async syncAgentRecovery(
+    agentId: string,
+    hint: AgentRecoveryHint = {},
+  ): Promise<AgentRecoveryUpdate | null> {
+    await this.initializeLedgerIngestion();
+    const coordinator = this.recoveryCoordinator;
+    if (!coordinator) return null;
+    if (coordinator.capabilitySkipped(agentId)) return null;
+    this.recoveryTriggered.add(agentId);
+    return coordinator.sync(agentId, hint);
   }
 
   /**
@@ -360,6 +465,12 @@ export class AgentSessionRepository<State extends AgentSessionRepositoryState> {
   ): Promise<LedgerIngestionStatus | null> {
     const integration = this.dependencies.ledgerIngestion;
     if (!integration || !this.ledgerPipeline || events.length === 0) return null;
+    const coordinator = this.recoveryCoordinator;
+    if (coordinator?.scopeOf(agentId)) {
+      // Live hints route through the recovery coordinator so envelopes that
+      // arrive during a bootstrap or reset buffer instead of bypassing it.
+      return coordinator.offer(agentId, events as Array<Record<string, unknown>>);
+    }
     const scope = integration.resolveScope(agentId);
     if (!scope) return null;
     await this.initializeLedgerIngestion();
@@ -574,6 +685,12 @@ export class AgentSessionRepository<State extends AgentSessionRepositoryState> {
       append: true,
       eventLogEpoch: tailPage.event_log_epoch,
     });
+    // Opportunistic durable-ledger recovery: the catch-up page already
+    // observed the head and floor, so bootstrap/catch-up can reuse them.
+    this.scheduleLedgerRecovery(agentId, {
+      eventHeadSeq: tailConsumedSeq,
+      oldestRetainedSeq: tailOldestSeq,
+    });
     if (this.dependencies.get().selectedAgentId === agentId) {
       this.hydrateSession(agentId, "debug");
     }
@@ -653,6 +770,22 @@ export class AgentSessionRepository<State extends AgentSessionRepositoryState> {
       eventCount,
       pageCount,
     });
+  }
+
+  /**
+   * Trigger durable ledger recovery for one agent at most once per
+   * generation, and only while the remote serves the snapshot contract.
+   */
+  private scheduleLedgerRecovery(
+    agentId: string,
+    hint: AgentRecoveryHint,
+  ): void {
+    const coordinator = this.recoveryCoordinator;
+    if (!coordinator) return;
+    if (this.recoveryTriggered.has(agentId)) return;
+    if (coordinator.capabilitySkipped(agentId)) return;
+    this.recoveryTriggered.add(agentId);
+    void coordinator.sync(agentId, hint).catch(() => undefined);
   }
 
   private scheduleMessageHydration(agentId: string, displayLevel: DisplayLevel): void {
@@ -913,4 +1046,72 @@ function briefHydrationErrorKind(error: unknown): string {
   if (error instanceof DOMException && error.name === "AbortError") return "timeout";
   if (error instanceof Error && /timeout|aborted/i.test(error.message)) return "timeout";
   return "request_failed";
+}
+
+/** Map an S5 projection snapshot DTO into the recovery-layer shape. */
+export function recoverySnapshotFromDto(
+  snapshot: AgentProjectionSnapshotDto,
+): RecoveryProjectionSnapshot {
+  const projection = snapshot.projection ?? {
+    hydration_references: [],
+    hydration_tombstones: [],
+    latest_brief: null,
+  };
+  const brief = projection.latest_brief ?? null;
+  return {
+    runtimeId: snapshot.runtime_id,
+    visibilityScopeId: snapshot.visibility_scope_id,
+    eventLogEpoch: snapshot.event_log_epoch,
+    snapshotThroughSeq: snapshot.snapshot_through_seq,
+    eventHeadSeq: snapshot.event_head_seq,
+    oldestRetainedSeq: snapshot.oldest_retained_seq ?? null,
+    canonicalRecords: brief
+      ? [
+          {
+            recordKind: "brief",
+            recordId: brief.brief_id,
+            record: brief,
+            revision: brief.created_event_seq ?? undefined,
+          },
+        ]
+      : [],
+    hydrationReferences: (projection.hydration_references ?? []).map((key) => ({
+      recordKind: key.record_kind,
+      recordId: key.record_id,
+    })),
+    hydrationTombstones: (projection.hydration_tombstones ?? []).map((key) => ({
+      recordKind: key.record_kind,
+      recordId: key.record_id,
+    })),
+  };
+}
+
+/**
+ * Snapshot repair source over the S5 endpoint. Capability-unavailable and
+ * unknown-agent responses map to null: repair is explicitly absent.
+ */
+export function snapshotRepairFromClient(
+  fetchSnapshot: (agentId: string) => Promise<AgentProjectionSnapshotDto | null>,
+): ProjectionSnapshotRepairSource {
+  return {
+    fetchProjectionSnapshot: async (scope) => {
+      try {
+        const dto = await fetchSnapshot(scope.agentId);
+        if (!dto) return null;
+        const snapshot = recoverySnapshotFromDto(dto);
+        return {
+          snapshotThroughSeq: snapshot.snapshotThroughSeq,
+          canonicalRecords: snapshot.canonicalRecords,
+        };
+      } catch (error) {
+        if (
+          isSnapshotCapabilityUnavailableError(error) ||
+          isSnapshotAgentMissingError(error)
+        ) {
+          return null;
+        }
+        throw error;
+      }
+    },
+  };
 }

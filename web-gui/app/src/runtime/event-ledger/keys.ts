@@ -39,6 +39,11 @@ export function remoteScopeKeyParts(key: LedgerRemoteScopeKey): string[] {
   return [key.remoteKey, key.runtimeId, key.visibilityScopeId, key.eventLogEpoch];
 }
 
+/** Primary key of one runtime scope record. */
+export function remoteScopeRecordKey(key: LedgerRemoteScopeKey): IDBValidKey {
+  return remoteScopeKeyParts(key);
+}
+
 /** Compound in-line key for agent-scoped records. */
 export function agentRecordKey(key: LedgerScopeKey): IDBValidKey {
   return scopeKeyParts(key);

@@ -10,6 +10,7 @@ import {
 import {
   AgentSessionRepository,
   isSessionCacheContextCurrent,
+  snapshotRepairFromClient,
 } from "./agent-session-repository";
 import {
   applyProjectionAction,
@@ -1079,11 +1080,15 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     isAgentStateInvalidationEvent: isAgentStateCacheInvalidationEvent,
     catchUpErrorKind: agentDetailErrorKind,
     ledgerIngestion: {
-      // Stable runtime identity (runtime id + visibility scope) reaches the
-      // client with the W3/W4 roster and projection snapshot cutover. Until
-      // then the ledger scope is unresolvable and durable ingestion stays
-      // dormant: the in-memory path is unchanged.
-      resolveScope: () => null,
+      // Stable runtime identity (runtime id + visibility scope) is learned
+      // from the per-Agent projection snapshot during W3 recovery; the
+      // repository also seeds it from the durable restart scan. The
+      // registry stays empty for remotes without the snapshot capability,
+      // so the in-memory path is unchanged until the W4/W6 cutover.
+      resolveScope: (agentId) => agentSessionRepository.knownLedgerScope(agentId),
+      snapshotRepair: snapshotRepairFromClient((agentId) =>
+        runtimeClient.getAgentProjectionSnapshot(agentId),
+      ),
       fetchers: {
         fetchCanonicalRecords: async (agentId, recordKind, recordIds) => {
           if (recordKind === "message") {

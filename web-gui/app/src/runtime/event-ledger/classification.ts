@@ -11,6 +11,11 @@
  * - envelopes with a contract version above the highest supported version
  *   block readiness outright: their semantics are unknowable.
  *
+ * One explicit exception: an authoritative projection snapshot install
+ * (repair or bootstrap) may move readiness past an
+ * `unknown_envelope_version` blocker below the snapshot boundary, because
+ * the snapshot already encodes the server's semantics for that window.
+ *
  * Display level never changes classification. Info/verbose/debug timelines
  * consume the same raw cache; display level only changes projection and
  * hydration demand at the render layer.

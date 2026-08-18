@@ -4,6 +4,18 @@
  */
 
 export {
+  AgentRecoveryCoordinator,
+  type AgentRecoveryDependencies,
+  type AgentRecoveryHint,
+  type AgentRecoveryPhase,
+  type AgentRecoveryUpdate,
+  type LedgerResetReason,
+  type RecoveryCursorError,
+  type RecoveryEventPage,
+  type RecoveryProjectionSnapshot,
+} from "./agent-recovery";
+
+export {
   LEDGER_DB_NAME,
   LEDGER_DB_VERSION,
   LEDGER_STORES,
@@ -62,6 +74,8 @@ export {
   type LedgerHydrationFetchers,
   type LedgerIngestionState,
   type LedgerIngestionStatus,
+  type ProjectionSnapshotInstall,
+  type ProjectionInstallOptions,
   type ProjectionSnapshotRepairSource,
 } from "./ingestion-pipeline";
 export {

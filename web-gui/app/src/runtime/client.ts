@@ -236,6 +236,7 @@ type WorkItemTransportDto = SlimWorkItemDto | WorkItemDto;
 type BriefRecordDto = RuntimeBriefRecord;
 
 export type EventPageResponseDto = components["schemas"]["EventsPageResponse"];
+export type AgentProjectionSnapshotDto = components["schemas"]["AgentProjectionSnapshot"];
 type GeneratedStreamEventEnvelopeDto = components["schemas"]["StreamEventEnvelope"];
 export type StreamEventEnvelopeDto = Partial<GeneratedStreamEventEnvelopeDto>;
 type EventEnvelopeDto = StreamEventEnvelopeDto;
@@ -726,6 +727,17 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         return emptyEventPage();
       }
       return fetchAgentEvents(baseUrl, fetchImpl, requestHeaders, agentId, options);
+    },
+    async getAgentProjectionSnapshot(agentId: string): Promise<AgentProjectionSnapshotDto | null> {
+      if (!baseUrl) {
+        return null;
+      }
+      return getJson<AgentProjectionSnapshotDto>(
+        fetchImpl,
+        baseUrl,
+        `/agents/${encodeURIComponent(agentId)}/projection-snapshot`,
+        { headers: requestHeaders },
+      );
     },
     async getAgentMessagesBatch(agentId: string, messageIds: string[]): Promise<AgentMessagesBatchGetResponseDto> {
       if (!baseUrl || !messageIds.length) {
@@ -2292,27 +2304,73 @@ function stringValue(value: unknown): string | undefined {
 class RuntimeHttpError extends Error {
   readonly status: number;
   readonly code?: string;
+  /**
+   * Known rich cursor extensions from `cursor_not_found` bodies (S2): the
+   * recovery layer uses them to distinguish a retained-prefix gap from an
+   * epoch change.
+   */
+  readonly cursorExtensions?: {
+    afterSeq?: number;
+    eventLogEpoch?: string;
+    oldestRetainedSeq?: number | null;
+    eventHeadSeq?: number;
+  };
 
-  constructor(method: string, path: string, status: number, reason?: string, code?: string) {
+  constructor(
+    method: string,
+    path: string,
+    status: number,
+    reason?: string,
+    code?: string,
+    cursorExtensions?: RuntimeHttpError["cursorExtensions"],
+  ) {
     super(reason ? `${method} ${path} failed with ${status}: ${reason}` : `${method} ${path} failed with ${status}`);
     this.name = "RuntimeHttpError";
     this.status = status;
     this.code = code;
+    this.cursorExtensions = cursorExtensions;
   }
 }
 
 async function httpRequestError(method: string, path: string, response: Response): Promise<RuntimeHttpError> {
   const envelope = await readErrorEnvelope(response);
-  return new RuntimeHttpError(method, path, response.status, envelope?.error, envelope?.code);
+  return new RuntimeHttpError(
+    method,
+    path,
+    response.status,
+    envelope?.error,
+    envelope?.code,
+    envelope?.extensions,
+  );
 }
 
-async function readErrorEnvelope(response: Response): Promise<{ error?: string; code?: string } | undefined> {
+async function readErrorEnvelope(
+  response: Response,
+): Promise<
+  | { error?: string; code?: string; extensions?: RuntimeHttpError["cursorExtensions"] }
+  | undefined
+> {
   const contentType = response.headers.get("content-type") ?? "";
   if (!contentType.includes("application/json")) return undefined;
   try {
     const value = await response.json();
     const record = asRecord(value);
-    return record ? { error: stringValue(record.error), code: stringValue(record.code) } : undefined;
+    if (!record) return undefined;
+    const numberValue = (input: unknown): number | undefined =>
+      typeof input === "number" && Number.isFinite(input) ? input : undefined;
+    const extensions: RuntimeHttpError["cursorExtensions"] = {
+      afterSeq: numberValue(record.after_seq),
+      eventLogEpoch: stringValue(record.event_log_epoch),
+      oldestRetainedSeq:
+        record.oldest_retained_seq == null ? null : numberValue(record.oldest_retained_seq),
+      eventHeadSeq: numberValue(record.event_head_seq),
+    };
+    const hasExtensions = Object.values(extensions).some((entry) => entry !== undefined);
+    return {
+      error: stringValue(record.error),
+      code: stringValue(record.code),
+      extensions: hasExtensions ? extensions : undefined,
+    };
   } catch {
     return undefined;
   }
@@ -2324,6 +2382,49 @@ function isAuthRequiredError(error: unknown): boolean {
 
 export function isProjectionBusyError(error: unknown): boolean {
   return error instanceof RuntimeHttpError && error.status === 429 && error.code === "projection_busy";
+}
+
+/** True when the remote does not serve the projection snapshot contract. */
+export function isSnapshotCapabilityUnavailableError(error: unknown): boolean {
+  return (
+    error instanceof RuntimeHttpError &&
+    error.status === 503 &&
+    error.code === "capability_unavailable"
+  );
+}
+
+/** True when the snapshot target agent is unknown or not a member. */
+export function isSnapshotAgentMissingError(error: unknown): boolean {
+  return error instanceof RuntimeHttpError && error.status === 404;
+}
+
+/** Extract a rich cursor_not_found payload, when the error carries one. */
+export function cursorNotFoundPayload(
+  error: unknown,
+):
+  | {
+      afterSeq: number;
+      eventLogEpoch: string;
+      oldestRetainedSeq: number | null;
+      eventHeadSeq: number;
+    }
+  | undefined {
+  if (!(error instanceof RuntimeHttpError) || error.code !== "cursor_not_found") return undefined;
+  const extensions = error.cursorExtensions;
+  if (
+    !extensions ||
+    extensions.afterSeq == null ||
+    !extensions.eventLogEpoch ||
+    extensions.eventHeadSeq == null
+  ) {
+    return undefined;
+  }
+  return {
+    afterSeq: extensions.afterSeq,
+    eventLogEpoch: extensions.eventLogEpoch,
+    oldestRetainedSeq: extensions.oldestRetainedSeq ?? null,
+    eventHeadSeq: extensions.eventHeadSeq,
+  };
 }
 
 function buildDisconnectedBootstrap(

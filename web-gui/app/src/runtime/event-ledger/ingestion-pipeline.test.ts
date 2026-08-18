@@ -271,6 +271,32 @@ describe("ledger ingestion pipeline", () => {
     expect(status.projectionReadyThroughSeq).toBe(2);
   });
 
+  it("keeps the strictest expected revision when a lower revision arrives late", async () => {
+    const pipeline = new LedgerIngestionPipeline({
+      fetchers: {
+        fetchCanonicalRecords: async () => ({
+          recordsById: { "brief-1": { record: { id: "brief-1" }, revision: 3 } },
+          missingIds: [],
+        }),
+      },
+    });
+    await pipeline.open();
+    const scope = makeScope();
+
+    // A later event names revision 5; a late lower-revision invalidation
+    // for the same record must not weaken the merged demand back to 2.
+    await pipeline.ingest(scope, [briefEvent(10, "brief-1", { revision: 5 })]);
+    const status = await pipeline.ingest(scope, [
+      briefEvent(3, "brief-1", { revision: 2 }),
+    ]);
+
+    expect(status.blockedReason).toBe("pending_hydration");
+    const ledger = await openLedgerHandle();
+    const jobs = await ledger.getPendingHydrationJobs(scope);
+    expect(jobs.find((job) => job.jobId === "brief:brief-1")?.expectedRevision).toBe(5);
+    ledger.close();
+  });
+
   it("keeps a revision-expecting job pending until the revision is proven", async () => {
     const fetchers: LedgerHydrationFetchers = {
       fetchCanonicalRecords: async () => ({

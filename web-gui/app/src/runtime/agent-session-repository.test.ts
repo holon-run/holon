@@ -9,7 +9,7 @@ import {
   type AgentSessionRepositoryState,
 } from "./agent-session-repository";
 import { LEDGER_DB_NAME, type LedgerScopeKey } from "./event-ledger";
-import type { StreamEventEnvelopeDto } from "./client";
+import type { AgentProjectionSnapshotDto, StreamEventEnvelopeDto } from "./client";
 import { emptyAgentSession } from "./conversation-store";
 import type { AgentSessionState } from "./runtime-store-helpers";
 import type { RuntimeMessageEnvelope } from "./types";
@@ -62,6 +62,9 @@ function createHarness(
       missing_entry_ids: [],
     })),
     getAgentBriefsById: vi.fn(async () => ({ recordsById: {}, notFoundIds: [] })),
+    getAgentProjectionSnapshot: vi.fn(
+      async (_agentId: string): Promise<AgentProjectionSnapshotDto | null> => null,
+    ),
   };
   const mergedPages: Array<{
     events: StreamEventEnvelopeDto[];
@@ -408,5 +411,63 @@ describe("AgentSessionRepository ledger ingestion", () => {
 
     const status = await harness.repository.ingestSessionEvents("agent-a", [event(1)]);
     expect(status).toBeNull();
+  });
+
+  it("catch-up bootstraps the durable ledger through recovery and routes live events through it", async () => {
+    const harness = createHarness(
+      emptyAgentSession(),
+      { ledgerIngestion: ledgerIntegration({ resolveScope: () => null }) },
+    );
+    harness.client.getAgentEvents.mockResolvedValue({
+      events: [event(2)],
+      event_log_epoch: "epoch-1",
+      newest_seq: 2,
+      oldest_seq: 1,
+      has_older: false,
+      has_newer: false,
+    });
+    harness.client.getAgentProjectionSnapshot.mockResolvedValue({
+      agent_id: "agent-a",
+      contract_version: 1,
+      runtime_id: "rt_test",
+      visibility_scope_id: "vis_test",
+      event_log_epoch: "epoch-1",
+      snapshot_through_seq: 2,
+      event_head_seq: 2,
+      oldest_retained_seq: null,
+      projection: {
+        agent: {},
+        conversation: { latest_message_id: null, latest_transcript_entry_id: null },
+        current_work_item: null,
+        hydration_references: [],
+        hydration_tombstones: [],
+        latest_brief: null,
+      },
+    });
+
+    await harness.repository.catchUpEvents("agent-a", "debug");
+
+    // The opportunistic trigger bootstrapped the ledger and registered the
+    // discovered scope even though resolveScope stays dormant.
+    await harness.repository.syncAgentRecovery("agent-a");
+    const scope = harness.repository.knownLedgerScope("agent-a");
+    expect(scope).toMatchObject({
+      runtimeId: "rt_test",
+      visibilityScopeId: "vis_test",
+      eventLogEpoch: "epoch-1",
+      agentId: "agent-a",
+    });
+
+    // Live envelopes now route through the recovery coordinator's offer
+    // path and land in the durable ledger under the discovered scope.
+    const status = await harness.repository.ingestSessionEvents("agent-a", [event(3)]);
+    expect(status?.ingestedThroughSeq).toBe(3);
+    expect(status?.scope).toEqual(scope);
+
+    // A second catch-up in the same generation does not re-trigger sync.
+    const before = harness.client.getAgentProjectionSnapshot.mock.calls.length;
+    await harness.repository.catchUpEvents("agent-a", "debug");
+    await Promise.resolve();
+    expect(harness.client.getAgentProjectionSnapshot.mock.calls.length).toBe(before);
   });
 });

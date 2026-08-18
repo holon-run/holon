@@ -44,6 +44,7 @@ import {
   canonicalRecordKey,
   computeEnvelopeFingerprint,
   hydrationJobKey,
+  remoteScopeRecordKey,
   rawEventKey,
   rawEventRange,
   rawEventRangeBetween,
@@ -147,6 +148,20 @@ export interface LedgerReadStateRecord {
   agentId: string;
   lastReadDeliverySeq?: number;
   lastUnreadDeliverySeq?: number;
+  /**
+   * RFC LocalReadState (observer sync): fresh unread baseline established
+   * at bootstrap. Unread is counted from qualifying brief events above
+   * `max(unreadBaselineSeq, readThroughEventSeq ?? 0)`.
+   */
+  unreadBaselineSeq?: number;
+  /** Highest delivery seq the reader has consumed; absent until first read. */
+  readThroughEventSeq?: number;
+  /** Whether unread counts above the boundary are exact or a lower bound. */
+  certainty?: "exact" | "truncated";
+  /** Retention floor of the last retention-gap reset; history below is lost. */
+  historyTruncatedBeforeSeq?: number;
+  /** User acknowledgement of unknown history after a truncation (W5 action). */
+  acknowledgedTruncationBeforeSeq?: number;
   updatedAt: number;
 }
 
@@ -184,7 +199,15 @@ type WriteOperation =
     }
   | { kind: "agent_session"; scope: LedgerScopeKey; patch: AgentSessionPatch }
   | { kind: "runtime_scope"; scope: LedgerRemoteScopeKey; patch: RuntimeScopePatch }
-  | { kind: "read_state"; scope: LedgerScopeKey; patch: ReadStatePatch };
+  | { kind: "read_state"; scope: LedgerScopeKey; patch: ReadStatePatch }
+  /**
+   * Discard every durable record of one agent scope (raw events, hydration
+   * jobs, canonical records, session). Read state survives when preserved:
+   * retention resets keep the marker to record truncation against it.
+   */
+  | { kind: "clear_agent_scope"; scope: LedgerScopeKey; preserveReadState: boolean }
+  /** Discard every agent scope and the runtime scope record itself. */
+  | { kind: "clear_runtime_scope"; scope: LedgerRemoteScopeKey };
 
 /*
  * Agent-session patches share one patch channel: per-scope patches inside one
@@ -281,6 +304,37 @@ export class EventLedgerWriteBatch {
   }
 
   /**
+   * Clear one agent scope: raw events, hydration jobs, canonical records,
+   * and the agent session land in one transaction with everything else in
+   * this batch, so a reset followed by an install is all-or-nothing. Read
+   * state is preserved for retention resets and discarded for identity
+   * resets, which must not migrate markers.
+   */
+  clearAgentScope(
+    scope: LedgerScopeKey,
+    options: { preserveReadState?: boolean } = {},
+  ): this {
+    this.assertNotCommitted();
+    this.ops.push({
+      kind: "clear_agent_scope",
+      scope,
+      preserveReadState: options.preserveReadState ?? false,
+    });
+    return this;
+  }
+
+  /**
+   * Clear an entire runtime scope: every agent scope under it plus the
+   * runtime scope record. Used for epoch and visibility resets, where no
+   * old-scope data may ever join the new scope's projection.
+   */
+  clearRuntimeScope(scope: LedgerRemoteScopeKey): this {
+    this.assertNotCommitted();
+    this.ops.push({ kind: "clear_runtime_scope", scope });
+    return this;
+  }
+
+  /**
    * Commit atomically. Rejects with a typed error on any failure; on
    * conflict, regression, or storage failure nothing is committed,
    * including the cursor.
@@ -318,6 +372,21 @@ export class EventLedgerWriteBatch {
           break;
         case "read_state":
           storeNames.add(READ_STATES_STORE);
+          break;
+        case "clear_agent_scope":
+          storeNames.add(RAW_EVENTS_STORE);
+          storeNames.add(PENDING_HYDRATION_STORE);
+          storeNames.add(CANONICAL_RECORDS_STORE);
+          storeNames.add(AGENT_SESSIONS_STORE);
+          storeNames.add(READ_STATES_STORE);
+          break;
+        case "clear_runtime_scope":
+          storeNames.add(RAW_EVENTS_STORE);
+          storeNames.add(PENDING_HYDRATION_STORE);
+          storeNames.add(CANONICAL_RECORDS_STORE);
+          storeNames.add(AGENT_SESSIONS_STORE);
+          storeNames.add(READ_STATES_STORE);
+          storeNames.add(RUNTIME_SCOPES_STORE);
           break;
       }
     }
@@ -482,6 +551,69 @@ export class EventLedgerWriteBatch {
           });
           break;
         }
+      }
+    }
+
+    /** Range-delete agent-scoped rows through the byScope index. */
+    const deleteByScopeRange = (storeName: LedgerStoreName, range: IDBKeyRange) => {
+      const index = tx.objectStore(storeName).index(BY_SCOPE_INDEX);
+      const scan = issue(() => index.openCursor(range));
+      if (!scan) return;
+      scan.onsuccess = () => {
+        const cursor = scan.result;
+        if (!cursor) return;
+        const del = issue(() => cursor.delete());
+        del?.addEventListener("error", () => {
+          failure = failure ?? (del.error ?? new Error(`${storeName} scope clear failed`));
+        });
+        try {
+          cursor.continue();
+        } catch (error) {
+          failure = failure ?? error;
+          tryAbort(tx);
+        }
+      };
+      scan.addEventListener("error", () => {
+        failure = failure ?? (scan.error ?? new Error(`${storeName} scope scan failed`));
+      });
+    };
+
+    for (const op of this.ops) {
+      if (op.kind === "clear_agent_scope") {
+        const scopeOnly = IDBKeyRange.only(scopeKeyParts(op.scope));
+        deleteByScopeRange(RAW_EVENTS_STORE, scopeOnly);
+        deleteByScopeRange(PENDING_HYDRATION_STORE, scopeOnly);
+        deleteByScopeRange(CANONICAL_RECORDS_STORE, scopeOnly);
+        const sessionDelete = issue(() =>
+          tx.objectStore(AGENT_SESSIONS_STORE).delete(agentRecordKey(op.scope)),
+        );
+        sessionDelete?.addEventListener("error", () => {
+          failure =
+            failure ?? (sessionDelete.error ?? new Error("agent session clear failed"));
+        });
+        if (!op.preserveReadState) {
+          const stateDelete = issue(() =>
+            tx.objectStore(READ_STATES_STORE).delete(agentRecordKey(op.scope)),
+          );
+          stateDelete?.addEventListener("error", () => {
+            failure =
+              failure ?? (stateDelete.error ?? new Error("read state clear failed"));
+          });
+        }
+      } else if (op.kind === "clear_runtime_scope") {
+        const scopeRange = agentScopeRange(op.scope);
+        deleteByScopeRange(RAW_EVENTS_STORE, scopeRange);
+        deleteByScopeRange(PENDING_HYDRATION_STORE, scopeRange);
+        deleteByScopeRange(CANONICAL_RECORDS_STORE, scopeRange);
+        deleteByScopeRange(AGENT_SESSIONS_STORE, scopeRange);
+        deleteByScopeRange(READ_STATES_STORE, scopeRange);
+        const runtimeDelete = issue(() =>
+          tx.objectStore(RUNTIME_SCOPES_STORE).delete(remoteScopeRecordKey(op.scope)),
+        );
+        runtimeDelete?.addEventListener("error", () => {
+          failure =
+            failure ?? (runtimeDelete.error ?? new Error("runtime scope clear failed"));
+        });
       }
     }
 
@@ -773,6 +905,32 @@ export class EventLedger {
       BY_SCOPE_INDEX,
       IDBKeyRange.only(scopeKeyParts(scope)),
     );
+  }
+
+  /**
+   * Every stored session for one agent id under one remote, across runtime
+   * scopes, epochs, and visibility scopes. Recovery uses this to find the
+   * current scope and to detect identity changes that require a reset.
+   */
+  async findAgentSessionsByAgent(
+    remoteKey: string,
+    agentId: string,
+  ): Promise<LedgerAgentSessionRecord[]> {
+    const db = this.requireOpenDb();
+    const scopes = await this.listRuntimeScopesByRemoteKey(remoteKey);
+    const result: LedgerAgentSessionRecord[] = [];
+    for (const runtimeScope of scopes) {
+      const sessions = await this.listAgentSessions({
+        remoteKey: runtimeScope.remoteKey,
+        runtimeId: runtimeScope.runtimeId,
+        visibilityScopeId: runtimeScope.visibilityScopeId,
+        eventLogEpoch: runtimeScope.eventLogEpoch,
+      });
+      for (const session of sessions) {
+        if (session.agentId === agentId) result.push(session);
+      }
+    }
+    return result;
   }
 
   async getReadState(scope: LedgerScopeKey): Promise<LedgerReadStateRecord | undefined> {
