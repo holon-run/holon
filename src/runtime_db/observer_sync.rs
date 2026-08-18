@@ -18,6 +18,7 @@ use crate::types::{
 
 pub(crate) const RUNTIME_IDENTITY_STABLE: &str = "runtime_identity_stable";
 pub(crate) const AGENT_IDENTITY_RESERVED: &str = "agent_identity_reserved";
+pub(crate) const EVENT_PROJECTION_EFFECT_COMPLETE: &str = "event_projection_effect_complete";
 
 /// Principal and entitlement used to derive the runtime-local public scope
 /// for unauthenticated local mode.
@@ -30,6 +31,22 @@ pub(crate) const PUBLIC_SCOPE_ENTITLEMENT: &str = "public";
 pub struct ObserverSyncFoundationVerification {
     pub runtime_identity_stable: bool,
     pub agent_identity_reserved: bool,
+    /// Every stored audit event classifies soundly for the additive
+    /// `projection_effect` envelope field: registry-known kinds match their
+    /// declared payload schema, and unknown kinds carry legacy markers.
+    pub event_projection_effect_complete: bool,
+}
+
+/// Per-Agent committed event recovery window used by the rich
+/// `cursor_not_found` error. All three values come from one SQL statement
+/// and therefore one committed read view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentEventRecoveryWindow {
+    pub event_log_epoch: String,
+    /// First raw event still replayable; `None` when the Agent has no events.
+    pub oldest_retained_seq: Option<u64>,
+    /// Greatest committed `event_seq` in the same read view.
+    pub event_head_seq: u64,
 }
 
 /// Recomputes the S1 foundation verifications and persists the results.
@@ -158,7 +175,85 @@ pub(crate) fn verify_observer_sync_foundations(connection: &mut Connection) -> R
         &now,
         &reserved_detail,
     )?;
+    let inventory = verify_event_projection_effect_inventory(connection);
+    let inventory_detail = match &inventory {
+        Ok(complete) => serde_json::json!({
+            "registry_kinds": crate::runtime_event::ALL_RUNTIME_EVENT_KINDS.len(),
+            "complete": complete,
+        })
+        .to_string(),
+        Err(error) => serde_json::json!({ "error": format!("{error:#}") }).to_string(),
+    };
+    persist_verification(
+        connection,
+        EVENT_PROJECTION_EFFECT_COMPLETE,
+        inventory.unwrap_or(false),
+        &now,
+        &inventory_detail,
+    )?;
     Ok(())
+}
+
+/// Proves every stored audit event classifies soundly under the registry
+/// classification used for the additive `projection_effect` field. A
+/// registry-known kind must match its declared payload schema identity and
+/// carry a payload schema version this binary knows; an unknown kind must
+/// be recognizably legacy. Events that are neither cannot be inventoried by
+/// this binary, so `events.projection-effect.v1` stays unadvertised.
+fn verify_event_projection_effect_inventory(connection: &Connection) -> Result<bool> {
+    if !table_exists(connection, "audit_events")? {
+        return Ok(false);
+    }
+    let mut statement = connection.prepare(
+        "SELECT kind,
+                COALESCE(json_extract(data_json, '$.payload_schema'), ''),
+                COALESCE(json_extract(data_json, '$.payload_schema_version'), 0),
+                COALESCE(json_extract(data_json, '$.contract_version'), 1)
+         FROM audit_events
+         GROUP BY kind,
+                  COALESCE(json_extract(data_json, '$.payload_schema'), ''),
+                  COALESCE(json_extract(data_json, '$.payload_schema_version'), 0),
+                  COALESCE(json_extract(data_json, '$.contract_version'), 1)",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, i64>(3)?,
+        ))
+    })?;
+    let mut unclassified = Vec::new();
+    for row in rows {
+        let (kind, payload_schema, payload_schema_version, contract_version) = row?;
+        let sound = match crate::runtime_event::RuntimeEventKind::from_wire_name(&kind) {
+            Some(event_kind) => {
+                let descriptor = event_kind.descriptor();
+                payload_schema_version >= 0
+                    && (payload_schema_version as u64)
+                        <= u64::from(descriptor.payload_schema_version)
+                    && descriptor.payload_schema == payload_schema
+            }
+            None => crate::runtime_event::is_legacy_event_shape(
+                &payload_schema,
+                u32::try_from(contract_version.max(0)).unwrap_or(u32::MAX),
+            ),
+        };
+        if !sound {
+            unclassified.push(format!(
+                "{kind}@{payload_schema}v{payload_schema_version}/cv{contract_version}"
+            ));
+        }
+    }
+    if unclassified.is_empty() {
+        return Ok(true);
+    }
+    // Logged, not failed: the capability degrades, startup does not.
+    tracing::warn!(
+        unclassified = %unclassified.join(", "),
+        "audit events outside the projection-effect inventory"
+    );
+    Ok(false)
 }
 
 /// Proves the creation guard is wired into the registry write path: an
@@ -268,7 +363,7 @@ fn persist_verification(
 }
 
 impl crate::runtime_db::RuntimeDb {
-    /// Loads the durable S1 foundation verification results. Missing rows
+    /// Loads the durable observer-sync verification results. Missing rows
     /// read as false; load errors should degrade, not fail, the caller.
     pub fn observer_sync_foundations(&self) -> Result<ObserverSyncFoundationVerification> {
         let connection = self.connection()?;
@@ -286,6 +381,37 @@ impl crate::runtime_db::RuntimeDb {
         Ok(ObserverSyncFoundationVerification {
             runtime_identity_stable: verified(RUNTIME_IDENTITY_STABLE)?,
             agent_identity_reserved: verified(AGENT_IDENTITY_RESERVED)?,
+            event_projection_effect_complete: verified(EVENT_PROJECTION_EFFECT_COMPLETE)?,
+        })
+    }
+
+    /// Reads one Agent's committed event recovery window — epoch, oldest
+    /// retained `event_seq`, and head `event_seq` — from a single SQL
+    /// statement so all three values share one committed read view. Rich
+    /// `cursor_not_found` errors and snapshot anchors must use this view,
+    /// never a watcher or the sequence allocator's next value.
+    pub fn agent_event_recovery_window(
+        &self,
+        agent_id: Option<&str>,
+    ) -> Result<AgentEventRecoveryWindow> {
+        let connection = self.connection()?;
+        let (epoch, oldest, head): (String, Option<i64>, Option<i64>) = connection.query_row(
+            "SELECT
+                (SELECT value FROM runtime_metadata WHERE key = 'event_log_epoch'),
+                (SELECT MIN(event_seq) FROM audit_events WHERE agent_id = ?1),
+                (SELECT MAX(event_seq) FROM audit_events WHERE agent_id = ?1)",
+            [agent_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        let to_seq = |value: Option<i64>| -> Result<Option<u64>> {
+            value
+                .map(|seq| u64::try_from(seq).context("stored audit event sequence is negative"))
+                .transpose()
+        };
+        Ok(AgentEventRecoveryWindow {
+            event_log_epoch: epoch,
+            oldest_retained_seq: to_seq(oldest)?,
+            event_head_seq: to_seq(head)?.unwrap_or(0),
         })
     }
 }

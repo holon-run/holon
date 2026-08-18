@@ -1220,6 +1220,294 @@ pub async fn events_stream_with_missing_cursor_returns_not_found() -> Result<()>
     let body: serde_json::Value = response.json().await?;
     assert_eq!(status, reqwest::StatusCode::NOT_FOUND);
     assert_eq!(body["code"], "cursor_not_found");
+    // Rich cursor error fields come from one committed read view.
+    assert!(body["event_log_epoch"]
+        .as_str()
+        .is_some_and(|epoch| !epoch.is_empty()));
+    assert!(body["event_head_seq"].as_u64().is_some());
+    assert!(
+        body["oldest_retained_seq"].is_null() || body["oldest_retained_seq"].as_u64().is_some()
+    );
+    if let Some(head) = body["event_head_seq"].as_u64() {
+        assert!(head < 999, "after_seq 999 is beyond the head {head}");
+    }
+    server.abort();
+    Ok(())
+}
+
+fn typed_event_from_registry(kind: holon::runtime_event::RuntimeEventKind) -> Result<AuditEvent> {
+    let descriptor = kind.descriptor();
+    Ok(AuditEvent {
+        id: format!("evt_{}", descriptor.wire_name),
+        event_seq: 0,
+        event_log_epoch: String::new(),
+        created_at: chrono::Utc::now(),
+        kind: descriptor.wire_name.into(),
+        contract_version: holon::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
+        payload_schema: descriptor.payload_schema.into(),
+        payload_schema_version: descriptor.payload_schema_version,
+        data: serde_json::from_str(descriptor.fixture_json)?,
+    })
+}
+
+async fn handshake_capabilities(base: &str, client: &Client) -> Result<Vec<String>> {
+    let handshake: serde_json::Value = client
+        .get(format!("{base}/api/handshake"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    Ok(handshake["capabilities"]
+        .as_array()
+        .map(|capabilities| {
+            capabilities
+                .iter()
+                .filter_map(|capability| capability.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+pub async fn events_page_and_stream_emit_matching_projection_effects() -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
+    let runtime = host.default_runtime().await?;
+    let client = reqwest::Client::new();
+
+    // A fresh, classifiable database advertises the capability.
+    let capabilities = handshake_capabilities(&base, &client).await?;
+    assert!(
+        capabilities
+            .iter()
+            .any(|capability| capability == "events.projection-effect.v1"),
+        "fresh database should advertise events.projection-effect.v1: {capabilities:?}"
+    );
+
+    // One legacy family plus three registry families: a projection-neutral
+    // scheduler diagnostic, a display-invalidating brief, and a historical
+    // contract-version-2 typed brief that must still classify from the
+    // registry.
+    runtime.storage().append_event(&AuditEvent::legacy(
+        "turn_started",
+        serde_json::json!({ "agent_id": "default" }),
+    ))?;
+    runtime.storage().append_event(&typed_event_from_registry(
+        holon::runtime_event::RuntimeEventKind::SchedulerDiagnostic,
+    )?)?;
+    let mut historical =
+        typed_event_from_registry(holon::runtime_event::RuntimeEventKind::BriefCreated)?;
+    historical.contract_version = 2;
+    runtime.storage().append_event(&historical)?;
+
+    let page: serde_json::Value = client
+        .get(format!(
+            "{base}/api/agents/default/events?order=asc&limit=50"
+        ))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let events = page["events"].as_array().expect("events");
+    let find = |kind: &str| {
+        events
+            .iter()
+            .find(|event| event["type"] == kind)
+            .unwrap_or_else(|| panic!("expected a {kind} event in {page}"))
+            .clone()
+    };
+    // Every envelope carries a classification: startup legacy families,
+    // appended legacy families, projection-neutral diagnostics, and a
+    // historical contract-version-2 typed brief all classify.
+    for event in events {
+        assert!(
+            event["projection_effect"].is_string(),
+            "every envelope must carry projection_effect while the capability is on: {event}"
+        );
+    }
+    assert_eq!(
+        find("turn_started")["projection_effect"],
+        "display_invalidation"
+    );
+    assert_eq!(find("scheduler_diagnostic")["projection_effect"], "none");
+    assert_eq!(
+        find("brief_created")["projection_effect"],
+        "display_invalidation"
+    );
+
+    // The same event must carry the same effect over SSE.
+    let scheduler_seq = find("scheduler_diagnostic")["event_seq"]
+        .as_u64()
+        .expect("seq");
+    let mut stream = client
+        .get(format!(
+            "{base}/api/agents/default/events/stream?after_seq=0"
+        ))
+        .send()
+        .await?;
+    let matched = loop {
+        let event = read_next_sse_event(&mut stream).await?;
+        if event.data["event_seq"].as_u64() == Some(scheduler_seq) {
+            break event;
+        }
+    };
+    assert_eq!(matched.data["projection_effect"], "none");
+
+    // The rich cursor error reports the same committed window the page sees.
+    let oldest = page["oldest_seq"].as_u64().expect("oldest_seq");
+    let head = page["cursor_seq"].as_u64().expect("cursor_seq");
+    let missing = client
+        .get(format!(
+            "{base}/api/agents/default/events/stream?after_seq={}",
+            head + 100
+        ))
+        .send()
+        .await?;
+    assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+    let body: serde_json::Value = missing.json().await?;
+    assert_eq!(body["code"], "cursor_not_found");
+    assert_eq!(body["event_head_seq"].as_u64(), Some(head));
+    assert_eq!(body["oldest_retained_seq"].as_u64(), Some(oldest));
+    assert_eq!(
+        body["event_log_epoch"].as_str(),
+        page["event_log_epoch"].as_str()
+    );
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn projection_effect_capability_gates_envelope_emission() -> Result<()> {
+    let data_dir = tempdir()?.keep();
+    let workspace_dir = tempdir()?.keep();
+    std::fs::create_dir_all(&workspace_dir)?;
+    init_git_repo(&workspace_dir)?;
+    let config = test_config_with_paths(
+        data_dir,
+        workspace_dir,
+        "127.0.0.1:0".into(),
+        ControlAuthMode::Auto,
+    );
+    let host = RuntimeHost::new_with_provider(config.clone(), Arc::new(StubProvider::new("s2")))?;
+    attach_default_workspace(&host).await?;
+    let runtime = host.default_runtime().await?;
+    let (base, server) = spawn_server_for_host(host.clone()).await?;
+    let client = reqwest::Client::new();
+
+    // Before any unclassifiable event lands, the capability is advertised
+    // and envelopes carry the field.
+    runtime.storage().append_event(&AuditEvent::legacy(
+        "turn_started",
+        serde_json::json!({ "agent_id": "default" }),
+    ))?;
+    let page: serde_json::Value = client
+        .get(format!("{base}/api/agents/default/events?order=asc"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert!(page["events"][0]
+        .as_object()
+        .expect("event")
+        .contains_key("projection_effect"));
+
+    // A typed-shaped event this binary cannot inventory flips the durable
+    // verification after reopen.
+    let mut future = AuditEvent::legacy("future_kind", serde_json::json!({ "opaque": true }));
+    future.contract_version = holon::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION;
+    future.payload_schema = "holon.runtime_event.future".into();
+    runtime.storage().append_event(&future)?;
+
+    host.shutdown().await?;
+    server.abort();
+
+    let host2 = RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("s2")))?;
+    attach_default_workspace(&host2).await?;
+    let (base2, server2) = spawn_server_for_host(host2.clone()).await?;
+
+    let capabilities = handshake_capabilities(&base2, &client).await?;
+    assert!(
+        !capabilities
+            .iter()
+            .any(|capability| capability == "events.projection-effect.v1"),
+        "unclassifiable stored event must disable the capability: {capabilities:?}"
+    );
+    let page_after: serde_json::Value = client
+        .get(format!("{base2}/api/agents/default/events?order=asc"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let events = page_after["events"].as_array().expect("events");
+    for event in events {
+        assert!(
+            !event
+                .as_object()
+                .expect("event")
+                .contains_key("projection_effect"),
+            "envelope must omit projection_effect while the capability is off: {event}"
+        );
+    }
+    assert!(
+        events.iter().any(|event| event["type"] == "future_kind"),
+        "the unclassifiable event must still be served as raw evidence: {page_after}"
+    );
+
+    server2.abort();
+    Ok(())
+}
+
+pub async fn filtered_event_page_does_not_claim_raw_continuity() -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
+    let runtime = host.default_runtime().await?;
+    let client = reqwest::Client::new();
+
+    let operator_message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator { actor_id: None },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "visible operator input".into(),
+        },
+    );
+    runtime.storage().append_event(&AuditEvent::legacy(
+        "message_enqueued",
+        serde_json::to_value(operator_message)?,
+    ))?;
+    // Non-matching raw events both below and above the visible window.
+    for index in 0..5 {
+        runtime.storage().append_event(&AuditEvent::legacy(
+            "callback_delivered",
+            serde_json::json!({ "waiting_intent_id": format!("wait-{index}"), "source": "github" }),
+        ))?;
+    }
+
+    let page: serde_json::Value = client
+        .get(format!(
+            "{base}/api/agents/default/events?limit=10&order=desc&max_level=info"
+        ))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let events = page["events"].as_array().expect("events");
+    assert!(!events.is_empty());
+    for event in events {
+        assert_eq!(event["type"], "message_enqueued");
+        // Filtering changes presentation, never per-event classification.
+        assert_eq!(event["projection_effect"], "display_invalidation");
+    }
+    // The filtered page's newest sequence is not the raw head, and nothing
+    // in the response may present it as proof of raw continuity: the raw
+    // cursor stays the page's cursor_seq, which the client must re-derive
+    // from unfiltered replay.
+    let newest = page["newest_seq"].as_u64().expect("newest_seq");
+    let cursor = page["cursor_seq"].as_u64().expect("cursor_seq");
+    assert!(
+        cursor > newest,
+        "filtered newest_seq {newest} must not be confused with raw head {cursor}"
+    );
+
     server.abort();
     Ok(())
 }

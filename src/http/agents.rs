@@ -148,11 +148,24 @@ fn handshake_capabilities(state: &AppState) -> Vec<&'static str> {
         "agents.control",
         "tui.remote",
     ];
+    let verification = load_observer_sync_verification(state);
+    capabilities.extend(advertised_observer_sync_capabilities(&verification));
+    capabilities
+}
+
+/// Loads the durable observer-sync verification rows into the capability
+/// evaluator input. A verification load failure degrades to the
+/// all-disabled evaluator instead of failing the caller.
+pub(crate) fn load_observer_sync_verification(
+    state: &AppState,
+) -> ObserverSyncCapabilityVerification {
     let mut verification = ObserverSyncCapabilityVerification::default();
     match state.host.runtime_db().observer_sync_foundations() {
         Ok(foundations) => {
             verification.runtime_identity_stable = foundations.runtime_identity_stable;
             verification.agent_identity_reserved = foundations.agent_identity_reserved;
+            verification.event_projection_effect_complete =
+                foundations.event_projection_effect_complete;
         }
         Err(error) => {
             tracing::warn!(
@@ -161,8 +174,7 @@ fn handshake_capabilities(state: &AppState) -> Vec<&'static str> {
             );
         }
     }
-    capabilities.extend(advertised_observer_sync_capabilities(&verification));
-    capabilities
+    verification
 }
 
 pub async fn handshake(

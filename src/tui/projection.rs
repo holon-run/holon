@@ -2035,6 +2035,7 @@ mod tests {
     fn projection_bootstrap_seeds_raw_event_log_from_snapshot_tail() {
         let snapshot = sample_snapshot();
         let events_tail = vec![StreamEventEnvelope {
+            projection_effect: None,
             event_log_epoch: Some("epoch-test".into()),
             contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
             payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
@@ -2917,6 +2918,7 @@ mod tests {
                     id: format!("evt-callback-{index}"),
                     event: "callback_delivered".into(),
                     data: StreamEventEnvelope {
+                        projection_effect: None,
                         event_log_epoch: Some("epoch-test".into()),
                         contract_version:
                             crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
@@ -2999,6 +3001,7 @@ mod tests {
                     id: format!("evt-debug-{index}"),
                     event: "provider_round_completed".into(),
                     data: StreamEventEnvelope {
+                        projection_effect: None,
                         event_log_epoch: Some("epoch-test".into()),
                         contract_version:
                             crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
@@ -3610,6 +3613,7 @@ mod tests {
         payload: Value,
     ) -> StreamEventEnvelope {
         StreamEventEnvelope {
+            projection_effect: None,
             event_log_epoch: Some("epoch-test".into()),
             contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
             payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),

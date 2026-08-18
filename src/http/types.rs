@@ -334,6 +334,10 @@ pub(crate) struct StreamEventEnvelope {
     pub(crate) payload_schema_version: u32,
     pub(crate) provenance: EventReplayProvenance,
     pub(crate) payload: Value,
+    /// Additive classification derived from the runtime event registry.
+    /// Present only while `events.projection-effect.v1` is advertised.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) projection_effect: Option<crate::runtime_event::ProjectionEffect>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

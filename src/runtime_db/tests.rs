@@ -5688,6 +5688,81 @@ CREATE TABLE working_memory_deltas (
         let foundations = reopened.observer_sync_foundations()?;
         assert!(foundations.runtime_identity_stable);
         assert!(foundations.agent_identity_reserved);
+        assert!(foundations.event_projection_effect_complete);
+        Ok(())
+    }
+
+    #[test]
+    fn observer_sync_event_projection_effect_accepts_legacy_and_typed_events() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        {
+            let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+            let legacy = crate::types::AuditEvent::legacy(
+                "turn_started",
+                serde_json::json!({ "agent_id": "default" }),
+            );
+            db.audit_events().append(Some("default"), &legacy)?;
+            let descriptor = crate::runtime_event::RuntimeEventKind::WorkItemWritten.descriptor();
+            let typed = crate::types::AuditEvent {
+                id: "evt_typed_fixture".into(),
+                event_seq: 0,
+                event_log_epoch: String::new(),
+                created_at: chrono::Utc::now(),
+                kind: descriptor.wire_name.into(),
+                contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
+                payload_schema: descriptor.payload_schema.into(),
+                payload_schema_version: descriptor.payload_schema_version,
+                data: serde_json::from_str(descriptor.fixture_json)?,
+            };
+            db.audit_events().append(Some("default"), &typed)?;
+        }
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let foundations = reopened.observer_sync_foundations()?;
+        assert!(foundations.event_projection_effect_complete);
+        Ok(())
+    }
+
+    #[test]
+    fn observer_sync_event_projection_effect_rejects_unclassifiable_events() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        {
+            let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+            let mut future = crate::types::AuditEvent::legacy(
+                "future_kind",
+                serde_json::json!({ "opaque": true }),
+            );
+            future.contract_version = crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION;
+            future.payload_schema = "holon.runtime_event.future".into();
+            future.payload_schema_version = 1;
+            db.audit_events().append(Some("default"), &future)?;
+            // The verification row predates this append; the reopen below
+            // re-verifies against committed contents.
+        }
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let foundations = reopened.observer_sync_foundations()?;
+        assert!(!foundations.event_projection_effect_complete);
+        Ok(())
+    }
+
+    #[test]
+    fn agent_event_recovery_window_reads_one_committed_view() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let empty = db.agent_event_recovery_window(Some("default"))?;
+        assert_eq!(empty.event_head_seq, 0);
+        assert_eq!(empty.oldest_retained_seq, None);
+        assert!(empty.event_log_epoch.starts_with("epoch_"));
+        for index in 1..=3 {
+            let event = crate::types::AuditEvent::legacy(
+                format!("legacy_{index}"),
+                serde_json::json!({ "index": index }),
+            );
+            db.audit_events().append(Some("default"), &event)?;
+        }
+        let window = db.agent_event_recovery_window(Some("default"))?;
+        assert_eq!(window.event_head_seq, 3);
+        assert_eq!(window.oldest_retained_seq, Some(1));
+        assert_eq!(window.event_log_epoch, db.event_log_epoch()?);
         Ok(())
     }
 

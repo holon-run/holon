@@ -18,6 +18,7 @@ pub async fn events(
     if state.require_control_token {
         authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     }
+    let emit_projection_effect = projection_effect_emission_enabled(&state);
     let cursor_seq = storage.latest_event_seq().map_err(error_response)?;
     let event_log_epoch = storage.event_log_epoch().map_err(error_response)?;
     let max_level = query.max_level;
@@ -48,7 +49,9 @@ pub async fn events(
     let events = page
         .events
         .iter()
-        .map(|event| stream_event_envelope(&agent_id, &event_log_epoch, event))
+        .map(|event| {
+            stream_event_envelope(&agent_id, &event_log_epoch, event, emit_projection_effect)
+        })
         .collect();
     Ok(Json(EventsPageResponse {
         events,
@@ -137,18 +140,28 @@ pub async fn events_stream(
     }
     let mut live_rx = state.host.subscribe_events();
     let event_log_epoch = storage.event_log_epoch().map_err(error_response)?;
+    let emit_projection_effect = projection_effect_emission_enabled(&state);
+    let recovery_window = storage
+        .agent_event_recovery_window()
+        .map_err(error_response)?;
     let events = storage
         .read_recent_events(event_window_limit.saturating_add(1))
         .map_err(error_response)?;
-    let buffered = initial_buffered_events(&events, after_seq)?;
+    let buffered = initial_buffered_events(&events, after_seq, &recovery_window)?;
     let (tx, out_rx) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(32);
     let runtime_id = agent_id.clone();
     tokio::spawn(async move {
         let mut last_sent_seq = after_seq.unwrap_or(0);
         for event in buffered {
-            if send_stream_event(&tx, &runtime_id, &event_log_epoch, &event)
-                .await
-                .is_err()
+            if send_stream_event(
+                &tx,
+                &runtime_id,
+                &event_log_epoch,
+                &event,
+                emit_projection_effect,
+            )
+            .await
+            .is_err()
             {
                 return;
             }
@@ -160,9 +173,15 @@ pub async fn events_stream(
                     if published.event.event_seq <= last_sent_seq {
                         continue;
                     }
-                    if send_stream_event(&tx, &runtime_id, &event_log_epoch, &published.event)
-                        .await
-                        .is_err()
+                    if send_stream_event(
+                        &tx,
+                        &runtime_id,
+                        &event_log_epoch,
+                        &published.event,
+                        emit_projection_effect,
+                    )
+                    .await
+                    .is_err()
                     {
                         break;
                     }
@@ -191,6 +210,7 @@ pub async fn global_events_stream(
     if state.require_control_token {
         authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     }
+    let emit_projection_effect = projection_effect_emission_enabled(&state);
     let mut rx = state.host.subscribe_events();
     let (tx, rx_out) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(32);
     tokio::spawn(async move {
@@ -205,6 +225,7 @@ pub async fn global_events_stream(
                         agent_id,
                         &published.event.event_log_epoch,
                         &published.event,
+                        emit_projection_effect,
                     )
                     .await
                     .is_err()
@@ -230,6 +251,7 @@ pub async fn global_events_stream(
 fn initial_buffered_events(
     events: &[AuditEvent],
     after_seq: Option<u64>,
+    recovery_window: &crate::runtime_db::AgentEventRecoveryWindow,
 ) -> std::result::Result<VecDeque<AuditEvent>, (StatusCode, Json<Value>)> {
     let start_index = if let Some(after_seq) = after_seq {
         if after_seq == 0 {
@@ -237,7 +259,7 @@ fn initial_buffered_events(
         } else {
             match events.iter().position(|event| event.event_seq == after_seq) {
                 Some(position) => position + 1,
-                None => return Err(event_seq_not_found(after_seq)),
+                None => return Err(event_seq_not_found(after_seq, recovery_window)),
             }
         }
     } else {
@@ -266,6 +288,7 @@ fn stream_event_envelope(
     agent_id: &str,
     event_log_epoch: &str,
     event: &AuditEvent,
+    emit_projection_effect: bool,
 ) -> StreamEventEnvelope {
     StreamEventEnvelope {
         id: event.id.clone(),
@@ -283,7 +306,22 @@ fn stream_event_envelope(
         payload_schema_version: event.payload_schema_version,
         provenance: event_replay_provenance(&event.data),
         payload: event.data.clone(),
+        projection_effect: emit_projection_effect.then(|| {
+            crate::runtime_event::projection_effect_of(
+                &event.kind,
+                &event.payload_schema,
+                event.payload_schema_version,
+            )
+        }),
     }
+}
+
+/// Whether event pages and SSE should emit the additive `projection_effect`
+/// field: only while the durable `event_projection_effect_complete`
+/// verification advertises `events.projection-effect.v1`.
+fn projection_effect_emission_enabled(state: &AppState) -> bool {
+    let verification = load_observer_sync_verification(state);
+    advertised_observer_sync_capabilities(&verification).contains(&PROJECTION_EFFECT_CAPABILITY)
 }
 
 async fn send_stream_event(
@@ -291,11 +329,12 @@ async fn send_stream_event(
     agent_id: &str,
     event_log_epoch: &str,
     event: &AuditEvent,
+    emit_projection_effect: bool,
 ) -> std::result::Result<
     (),
     tokio::sync::mpsc::error::SendError<Result<Event, std::convert::Infallible>>,
 > {
-    let envelope = stream_event_envelope(agent_id, event_log_epoch, event);
+    let envelope = stream_event_envelope(agent_id, event_log_epoch, event, emit_projection_effect);
     let payload = serde_json::to_string(&envelope).unwrap_or_else(|_| "{}".to_string());
     tx.send(Ok(Event::default()
         .id(envelope.event_seq.to_string())
@@ -351,7 +390,10 @@ fn clone_payload_field(payload: &Value, field: &str) -> Option<Value> {
     payload.get(field).filter(|value| !value.is_null()).cloned()
 }
 
-fn event_seq_not_found(after_seq: u64) -> (StatusCode, Json<Value>) {
+fn event_seq_not_found(
+    after_seq: u64,
+    recovery_window: &crate::runtime_db::AgentEventRecoveryWindow,
+) -> (StatusCode, Json<Value>) {
     http_error(
         StatusCode::NOT_FOUND,
         HttpErrorEnvelope::new(format!(
@@ -359,6 +401,9 @@ fn event_seq_not_found(after_seq: u64) -> (StatusCode, Json<Value>) {
         ))
         .code("cursor_not_found")
         .extension("after_seq", after_seq)
-        .extension("event_seq", after_seq),
+        .extension("event_seq", after_seq)
+        .extension("event_log_epoch", recovery_window.event_log_epoch.clone())
+        .extension("oldest_retained_seq", recovery_window.oldest_retained_seq)
+        .extension("event_head_seq", recovery_window.event_head_seq),
     )
 }

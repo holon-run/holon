@@ -12,6 +12,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::types::{AgentListEntry, WorkItemPlanStatus, WorkItemState};
+// The projection-effect classification lives with the runtime event registry
+// (its source of truth); re-exported here to keep the S0 contract surface.
+#[cfg_attr(not(test), allow(unused_imports))]
+pub(crate) use crate::runtime_event::ProjectionEffect;
 
 pub(crate) const ROSTER_SNAPSHOT_CAPABILITY: &str = "agents.roster-snapshot.v1";
 pub(crate) const PROJECTION_SNAPSHOT_CAPABILITY: &str = "agents.projection-snapshot.v1";
@@ -203,20 +207,6 @@ pub(crate) enum ObserverSyncRecordKind {
     Message,
     Brief,
     TranscriptEntry,
-}
-
-/// Additive `StreamEventEnvelope` classification published by event pages
-/// and SSE once `events.projection-effect.v1` is enabled. The runtime event
-/// registry is the source of truth; legacy or otherwise unclassified events
-/// default conservatively to `DisplayInvalidation`.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum ProjectionEffect {
-    /// Does not affect the Web projection; never blocks readiness.
-    None,
-    /// Invalidates display state derived from the referenced record; blocks
-    /// projection readiness until resolved.
-    DisplayInvalidation,
 }
 
 /// Rich `cursor_not_found` body for event pages and SSE. `event_log_epoch`,

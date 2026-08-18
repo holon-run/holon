@@ -521,6 +521,16 @@ impl AppStorage {
         self.store.event_log().epoch()
     }
 
+    /// Committed per-Agent event recovery window (epoch, oldest retained
+    /// seq, head seq) from one committed database read view. Used by rich
+    /// `cursor_not_found` errors.
+    pub fn agent_event_recovery_window(
+        &self,
+    ) -> Result<crate::runtime_db::AgentEventRecoveryWindow> {
+        self.runtime_db
+            .agent_event_recovery_window(self.agent_id.as_deref())
+    }
+
     pub(crate) fn read_event_page_matching<F>(
         &self,
         before_seq: Option<u64>,

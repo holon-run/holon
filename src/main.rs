@@ -2502,6 +2502,7 @@ fn offline_event_page(
     let envelopes = events
         .into_iter()
         .map(|event| holon::client::StreamEventEnvelope {
+            projection_effect: None,
             id: event.id,
             event_seq: event.event_seq,
             event_log_epoch: Some(if event.event_log_epoch.is_empty() {

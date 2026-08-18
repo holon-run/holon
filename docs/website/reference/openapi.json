@@ -2923,6 +2923,29 @@
                   "minimum": 0,
                   "type": "integer"
                 },
+                "projection_effect": {
+                  "anyOf": [
+                    {
+                      "description": "Additive `StreamEventEnvelope` classification published by event pages\n and SSE once `events.projection-effect.v1` is enabled. The runtime event\n registry is the source of truth; legacy or otherwise unclassified events\n default conservatively to `DisplayInvalidation`.",
+                      "oneOf": [
+                        {
+                          "const": "none",
+                          "description": "Does not affect the Web projection; never blocks readiness.",
+                          "type": "string"
+                        },
+                        {
+                          "const": "display_invalidation",
+                          "description": "Invalidates display state derived from the referenced record; blocks\n projection readiness until resolved.",
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Additive classification derived from the runtime event registry.\n Present only while `events.projection-effect.v1` is advertised."
+                },
                 "provenance": {
                   "properties": {
                     "admission_context": true,
@@ -6214,6 +6237,29 @@
             "minimum": 0,
             "type": "integer"
           },
+          "projection_effect": {
+            "anyOf": [
+              {
+                "description": "Additive `StreamEventEnvelope` classification published by event pages\n and SSE once `events.projection-effect.v1` is enabled. The runtime event\n registry is the source of truth; legacy or otherwise unclassified events\n default conservatively to `DisplayInvalidation`.",
+                "oneOf": [
+                  {
+                    "const": "none",
+                    "description": "Does not affect the Web projection; never blocks readiness.",
+                    "type": "string"
+                  },
+                  {
+                    "const": "display_invalidation",
+                    "description": "Invalidates display state derived from the referenced record; blocks\n projection readiness until resolved.",
+                    "type": "string"
+                  }
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Additive classification derived from the runtime event registry.\n Present only while `events.projection-effect.v1` is advertised."
+          },
           "provenance": {
             "properties": {
               "admission_context": true,
@@ -9411,7 +9457,7 @@
     },
     "/api/agents/{agent_id}/events": {
       "get": {
-        "description": "Return a bounded page of versioned runtime event envelopes. Query parameters: before_seq, after_seq, limit, order, max_level. Identity is (event_log_epoch, agent_id, event_seq); unknown kinds retain their opaque payload.",
+        "description": "Return a bounded page of versioned runtime event envelopes. Query parameters: before_seq, after_seq, limit, order, max_level. Identity is (event_log_epoch, agent_id, event_seq); unknown kinds retain their opaque payload. While events.projection-effect.v1 is advertised every envelope carries the additive projection_effect classification derived from the runtime event registry (envelope contract version 3); a max_level-filtered page changes presentation only and is never proof of raw continuity.",
         "operationId": "agentEvents",
         "parameters": [
           {
@@ -9469,7 +9515,7 @@
     },
     "/api/agents/{agent_id}/events/stream": {
       "get": {
-        "description": "Return Server-Sent Events carrying raw StreamEventEnvelope JSON data. Query parameters: after_seq, limit. SSE id is event_seq; SSE event is the audit event kind; missing replay cursors return cursor_not_found before the stream opens. If the receiver lags, the server closes the stream so clients can backfill after the last contiguous SSE id before reconnecting. Breaking change: the projection query parameter and StreamEventEnvelope.projection field have been removed.",
+        "description": "Return Server-Sent Events carrying raw StreamEventEnvelope JSON data. Query parameters: after_seq, limit. SSE id is event_seq; SSE event is the audit event kind; missing replay cursors return cursor_not_found before the stream opens, carrying event_log_epoch, oldest_retained_seq, and event_head_seq from one committed read view so clients can distinguish a retained-prefix gap from an epoch change. Envelopes carry the additive projection_effect field while events.projection-effect.v1 is advertised. If the receiver lags, the server closes the stream so clients can backfill after the last contiguous SSE id before reconnecting. Breaking change: the projection query parameter and StreamEventEnvelope.projection field have been removed.",
         "operationId": "agentEventsStream",
         "parameters": [
           {

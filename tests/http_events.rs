@@ -32,4 +32,7 @@ http_async_tests!(
     state_snapshot_bounds_large_projection_fields,
     events_stream_requires_control_auth_when_configured,
     events_stream_with_missing_cursor_returns_not_found,
+    events_page_and_stream_emit_matching_projection_effects,
+    projection_effect_capability_gates_envelope_emission,
+    filtered_event_page_does_not_claim_raw_continuity,
 );

@@ -201,6 +201,10 @@ pub struct StreamEventEnvelope {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<Value>,
     pub payload: Value,
+    /// Additive classification emitted while `events.projection-effect.v1`
+    /// is advertised; absent on older envelopes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projection_effect: Option<crate::runtime_event::ProjectionEffect>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2023,6 +2027,7 @@ mod tests {
     #[tokio::test]
     async fn sse_comment_heartbeat_does_not_emit_event_and_preserves_liveness() {
         let event = StreamEventEnvelope {
+            projection_effect: None,
             event_log_epoch: Some("epoch-test".into()),
             contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
             payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),

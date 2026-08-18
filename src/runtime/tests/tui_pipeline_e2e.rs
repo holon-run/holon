@@ -122,6 +122,7 @@ fn audit_to_stream_event(
         id: event.id.clone(),
         event: event.kind.clone(),
         data: StreamEventEnvelope {
+            projection_effect: None,
             event_log_epoch: Some("epoch-test".into()),
             contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
             payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),

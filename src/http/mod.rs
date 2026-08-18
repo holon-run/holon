@@ -111,8 +111,10 @@ mod web;
 mod workspace_files;
 
 // Re-export shared helpers used across submodules.
+pub(crate) use agents::load_observer_sync_verification;
 pub(crate) use observer_sync::{
     advertised_observer_sync_capabilities, ObserverSyncCapabilityVerification,
+    PROJECTION_EFFECT_CAPABILITY,
 };
 pub(crate) use projection_gate::{
     ProjectionFailure, ProjectionGate, ProjectionGateError, ProjectionKey,
