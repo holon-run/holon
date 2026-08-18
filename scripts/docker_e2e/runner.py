@@ -3819,11 +3819,13 @@ def run_scheduler_concurrent_claim_fencing_case(
         forbidden + ["CreateWorkItem", "PickWorkItem", "WaitFor"],
         turn_ids=b_turn_ids,
     )
+    # The autonomous continuation claims the WorkItem before the wait wake is
+    # delivered, so it completes the item while the triggered wait still settles.
     require_scheduler_engine_activation_chain(
         harness,
         snapshot,
         work_item_id=work_item_a_id,
-        expected_source_kinds=("triggered_wait",),
+        expected_source_kinds=("work_item_continuation", "triggered_wait"),
         lifecycle_message_ids={
             harness.prompt_scope("scheduler-concurrent-create")["message_id"]
         },
@@ -3999,11 +4001,13 @@ def run_scheduler_operator_interject_during_wait_case(
         forbidden + ["CreateWorkItem", "PickWorkItem", "WaitFor"],
         turn_ids=b_turn_ids,
     )
+    # The autonomous continuation claims the WorkItem before the interjection is
+    # delivered, so it completes the item while the triggered wait still settles.
     require_scheduler_engine_activation_chain(
         harness,
         snapshot,
         work_item_id=work_item_a_id,
-        expected_source_kinds=("triggered_wait",),
+        expected_source_kinds=("work_item_continuation", "triggered_wait"),
         lifecycle_message_ids={
             harness.prompt_scope("scheduler-interject-create")["message_id"]
         },

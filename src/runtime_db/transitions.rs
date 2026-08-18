@@ -2617,7 +2617,7 @@ mod tests {
                 expected_revision: active.revision,
             }],
             wait_conditions: Vec::new(),
-            continuations: vec![frame.cancel("suspended_work_item_unavailable")],
+            continuations: vec![frame.cancel("suspended_work_item_not_open")],
             tool_execution: ToolExecutionRecord {
                 id: "tool-cancel-orphan-continuation".into(),
                 agent_id: "agent-a".into(),

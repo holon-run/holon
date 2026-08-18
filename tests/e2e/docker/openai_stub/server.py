@@ -208,12 +208,6 @@ class Scenario:
                         [text_item(markers[-1])],
                         f"resp_runtime_upgrade_v030_{self.phase}",
                     )
-            if self.phase == self.expected_phase() - 1:
-                self.phase += 1
-                return 200, response(
-                    [text_item("Deterministic scheduler scenario complete.")],
-                    f"resp_{self.name}_complete",
-                )
             if self.phase >= self.expected_phase():
                 self.extra_requests += 1
                 return 409, {
@@ -1019,17 +1013,17 @@ class Scenario:
         return {
             "runtime-upgrade-v030": 2,
             "runtime-upgrade-interrupted-schema47": 0,
-            "scheduler-task-wait": 10,
-            "scheduler-provider-retry": 3,
-            "scheduler-multi": 12,
-            "scheduler-external": 7,
-            "scheduler-operator": 7,
-            "scheduler-concurrent": 11,
-            "scheduler-interject": 13,
-            "scheduler-compaction": 10,
-            "scheduler-worktree": 12,
-            "scheduler-spawn": 7,
-            "scheduler-checkpoint": 13,
+            "scheduler-task-wait": 9,
+            "scheduler-provider-retry": 2,
+            "scheduler-multi": 11,
+            "scheduler-external": 6,
+            "scheduler-operator": 6,
+            "scheduler-concurrent": 10,
+            "scheduler-interject": 12,
+            "scheduler-compaction": 9,
+            "scheduler-worktree": 11,
+            "scheduler-spawn": 6,
+            "scheduler-checkpoint": 12,
         }[self.name]
 
     def status(self) -> dict[str, Any]:

@@ -667,14 +667,11 @@ class DockerE2ERunnerTests(unittest.TestCase):
         )
         self.assertEqual(status, 200)
         self.assertEqual(response["output"][0]["name"], "PickWorkItem")
-        scenario.phase = 6
+        scenario.phase = 5
         status, response = scenario.consume({"input": []})
         self.assertEqual(status, 200)
-        self.assertEqual(
-            response["output"][0]["content"][0]["text"],
-            "Deterministic scheduler scenario complete.",
-        )
-        self.assertEqual(scenario.phase, 7)
+        self.assertEqual(response["output"][1]["name"], "CompleteWorkItem")
+        self.assertEqual(scenario.phase, 6)
         self.assertTrue(scenario.status()["complete"])
         status, response = scenario.consume({"input": []})
         self.assertEqual(status, 409)
