@@ -2867,17 +2867,18 @@ impl TurnExecution<'_> {
             } else {
                 runtime.persist_transcript_evidence(&tool_results_transcript)?;
             }
-            let after_tool_results_interjections = if pending_completion_report.is_some() {
-                Vec::new()
-            } else {
-                runtime
-                    .drain_operator_interjections(
-                        agent_id,
-                        round,
-                        scheduler::InterjectionBoundary::AfterToolResults,
-                    )
-                    .await?
-            };
+            let after_tool_results_interjections =
+                if pending_completion_report.is_some() || prepared_work_item_completion.is_some() {
+                    Vec::new()
+                } else {
+                    runtime
+                        .drain_operator_interjections(
+                            agent_id,
+                            round,
+                            scheduler::InterjectionBoundary::AfterToolResults,
+                        )
+                        .await?
+                };
             let mut interjections = before_tool_execution_interjections;
             interjections.extend(after_tool_results_interjections);
             let has_operator_interjections = !interjections.is_empty();
@@ -2911,9 +2912,10 @@ impl TurnExecution<'_> {
             }
             completed_rounds.push(round_record);
 
-            if (all_tool_results_should_sleep || terminal_tool_transition)
-                && (!has_operator_interjections || terminal_tool_transition)
-                && !checkpoint_state.operator_delivery_pending()
+            if prepared_work_item_completion.is_some()
+                || ((all_tool_results_should_sleep || terminal_tool_transition)
+                    && (!has_operator_interjections || terminal_tool_transition)
+                    && !checkpoint_state.operator_delivery_pending())
             {
                 let terminal_assistant_message = if terminal_wait_without_text {
                     None

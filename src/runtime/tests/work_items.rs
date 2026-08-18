@@ -2258,13 +2258,13 @@ async fn complete_work_item_promotes_same_round_report_and_binds_evidence() {
     .expect("timed out waiting for canonical completion commit");
     assert_eq!(
         *provider.calls.lock().await,
-        2,
-        "standalone completion must allow the provider to consume its tool result"
+        1,
+        "same-round completion must terminate the provider loop"
     );
     let state = runtime.agent_state().await.unwrap();
-    assert_eq!(state.total_model_rounds, 2);
-    assert_eq!(state.total_input_tokens, 20);
-    assert_eq!(state.total_output_tokens, 20);
+    assert_eq!(state.total_model_rounds, 1);
+    assert_eq!(state.total_input_tokens, 10);
+    assert_eq!(state.total_output_tokens, 10);
 
     let completed = runtime
         .latest_work_item(&work_item.id)

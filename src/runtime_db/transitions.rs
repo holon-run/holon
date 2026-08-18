@@ -1834,7 +1834,11 @@ fn validate_completion_transition_tx(
             && existing.suspended_work_item_id == continuation.suspended_work_item_id
             && existing.active_work_item_id == continuation.active_work_item_id;
         let valid_transition = existing.state == crate::types::WorkItemContinuationState::Active
-            && continuation.state == crate::types::WorkItemContinuationState::Resumed;
+            && matches!(
+                continuation.state,
+                crate::types::WorkItemContinuationState::Resumed
+                    | crate::types::WorkItemContinuationState::Cancelled
+            );
         anyhow::ensure!(
             matching_identity && (valid_transition || existing == *continuation),
             "completion continuation transition is stale or mismatched"
@@ -2588,6 +2592,55 @@ mod tests {
             db.work_item_continuations().latest_all()?[0].state,
             WorkItemContinuationState::Resumed
         );
+        Ok(())
+    }
+
+    #[test]
+    fn completion_transition_accepts_matching_active_continuation_cancellation() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        let active = work_item("work-active");
+        let mut completed = active.clone();
+        completed.state = WorkItemState::Completed;
+        completed.revision += 1;
+        let frame = WorkItemContinuationFrame::new_on_completed(
+            "agent-a",
+            "work-completed-caller",
+            active.id.clone(),
+            None,
+        );
+        db.work_item_continuations().upsert(&frame)?;
+        let now = Utc::now();
+        let completion = CompletionTransition {
+            requires_execution_continuation: true,
+            work_items: vec![WorkItemMutation::Update {
+                record: completed,
+                expected_revision: active.revision,
+            }],
+            wait_conditions: Vec::new(),
+            continuations: vec![frame.cancel("suspended_work_item_unavailable")],
+            tool_execution: ToolExecutionRecord {
+                id: "tool-cancel-orphan-continuation".into(),
+                agent_id: "agent-a".into(),
+                work_item_id: Some(active.id),
+                turn_index: 1,
+                turn_id: Some("turn-cancel-orphan-continuation".into()),
+                tool_name: crate::tool::names::COMPLETE_WORK_ITEM.into(),
+                created_at: now,
+                completed_at: Some(now),
+                duration_ms: 1,
+                authority_class: AuthorityClass::RuntimeInstruction,
+                status: ToolExecutionStatus::Success,
+                input: serde_json::json!({}),
+                output: serde_json::json!({}),
+                summary: "completed WorkItem".into(),
+                invocation_surface: None,
+            },
+            index_changes: Vec::new(),
+        };
+        let mut connection = db.connection()?;
+        let tx = connection.transaction()?;
+
+        validate_completion_transition_tx(&tx, "agent-a", &completion)?;
         Ok(())
     }
 
