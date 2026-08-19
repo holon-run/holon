@@ -3466,15 +3466,50 @@ fn backfill_brief_created_event_linkage(transaction: &Transaction<'_>) -> Result
     if !table_exists_tx(transaction, "briefs")? || !table_exists_tx(transaction, "audit_events")? {
         return Ok(());
     }
-    let rows: Vec<(String, String, String)> = {
-        let mut statement =
-            transaction.prepare("SELECT evidence_id, agent_id, payload_json FROM briefs")?;
+    tracing::info!("materializing brief_created candidates for linkage backfill");
+    transaction.execute_batch(
+        "DROP TABLE IF EXISTS temp._brief_created_candidate_agg;
+         DROP TABLE IF EXISTS temp._brief_created_candidates;
+         CREATE TEMP TABLE _brief_created_candidates AS
+         SELECT audit_event_id,
+                event_seq,
+                agent_id AS agent_id_col,
+                COALESCE(json_extract(data_json, '$.agent_id'), '') AS agent_id_json,
+                COALESCE(json_extract(data_json, '$.brief_id'), '') AS brief_id
+         FROM audit_events
+         WHERE kind = 'brief_created';
+         CREATE INDEX _idx_brief_created_candidates_lookup
+           ON _brief_created_candidates(brief_id, agent_id_col, agent_id_json);
+         CREATE TEMP TABLE _brief_created_candidate_agg AS
+         SELECT briefs.evidence_id,
+                briefs.agent_id,
+                briefs.payload_json,
+                COUNT(candidates.audit_event_id) AS candidate_count,
+                CASE WHEN COUNT(candidates.audit_event_id) = 1
+                     THEN MIN(candidates.event_seq)
+                     ELSE NULL
+                END AS single_event_seq
+         FROM briefs
+         LEFT JOIN _brief_created_candidates AS candidates
+           ON candidates.brief_id = briefs.evidence_id
+          AND (candidates.agent_id_col = briefs.agent_id
+               OR candidates.agent_id_json = briefs.agent_id)
+         WHERE briefs.created_event_seq IS NULL
+         GROUP BY briefs.evidence_id, briefs.agent_id, briefs.payload_json;",
+    )?;
+    let rows: Vec<(String, String, String, i64, Option<i64>)> = {
+        let mut statement = transaction.prepare(
+            "SELECT evidence_id, agent_id, payload_json, candidate_count, single_event_seq
+             FROM _brief_created_candidate_agg",
+        )?;
         let rows = statement
             .query_map([], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
                 ))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -3483,47 +3518,30 @@ fn backfill_brief_created_event_linkage(transaction: &Transaction<'_>) -> Result
     let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let mut linked = 0usize;
     let mut uncertain = 0usize;
-    for (evidence_id, agent_id, payload_json) in rows {
-        let candidates: Vec<(String, Option<i64>)> = {
-            let mut statement = transaction.prepare(
-                "SELECT audit_event_id, event_seq FROM audit_events
-                 WHERE kind = 'brief_created'
-                   AND COALESCE(json_extract(data_json, '$.brief_id'), '') = ?1
-                   AND (agent_id = ?2
-                        OR COALESCE(json_extract(data_json, '$.agent_id'), '') = ?2)",
-            )?;
-            let rows = statement
-                .query_map(params![evidence_id, agent_id], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
-                })?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            rows
-        };
-        let (candidate_count, reason) = if candidates.len() == 1 {
-            match candidates[0].1 {
+    for (evidence_id, agent_id, payload_json, candidate_count, single_event_seq) in rows {
+        let reason = if candidate_count == 1 {
+            match single_event_seq {
                 Some(event_seq) => {
                     let mut brief: crate::types::BriefRecord = serde_json::from_str(&payload_json)
                         .context("decoding brief payload for created_event_seq backfill")?;
-                    if brief.created_event_seq.is_none() {
-                        brief.created_event_seq =
-                            Some(u64::try_from(event_seq).with_context(|| {
-                                format!("brief_created event_seq {event_seq} must be non-negative")
-                            })?);
-                        transaction.execute(
-                            "UPDATE briefs SET created_event_seq = ?1, payload_json = ?2
-                             WHERE evidence_id = ?3",
-                            params![event_seq, serde_json::to_string(&brief)?, evidence_id],
-                        )?;
-                        linked += 1;
-                    }
+                    brief.created_event_seq =
+                        Some(u64::try_from(event_seq).with_context(|| {
+                            format!("brief_created event_seq {event_seq} must be non-negative")
+                        })?);
+                    transaction.execute(
+                        "UPDATE briefs SET created_event_seq = ?1, payload_json = ?2
+                         WHERE evidence_id = ?3 AND created_event_seq IS NULL",
+                        params![event_seq, serde_json::to_string(&brief)?, evidence_id],
+                    )?;
+                    linked += 1;
                     continue;
                 }
-                None => (1, "candidate_event_missing_seq"),
+                None => "candidate_event_missing_seq",
             }
-        } else if candidates.is_empty() {
-            (0, "no_candidate_event")
+        } else if candidate_count == 0 {
+            "no_candidate_event"
         } else {
-            (candidates.len(), "ambiguous_candidate_events")
+            "ambiguous_candidate_events"
         };
         transaction.execute(
             "INSERT INTO brief_created_linkage_uncertain
@@ -3537,6 +3555,10 @@ fn backfill_brief_created_event_linkage(transaction: &Transaction<'_>) -> Result
         )?;
         uncertain += 1;
     }
+    transaction.execute_batch(
+        "DROP TABLE temp._brief_created_candidate_agg;
+         DROP TABLE temp._brief_created_candidates;",
+    )?;
     if linked > 0 || uncertain > 0 {
         tracing::info!(
             linked,

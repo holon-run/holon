@@ -730,28 +730,31 @@ mod tests {
             let linked = seed_brief("brief-linked", "unique candidate")?;
             let _missing = seed_brief("brief-missing", "no candidate")?;
             let ambiguous = seed_brief("brief-ambiguous", "two candidates")?;
-            let seed_event = |audit_event_id: &str, event_seq: i64, brief_id: &str| -> Result<()> {
-                connection.execute(
-                    "INSERT INTO audit_events (
+            let missing_seq = seed_brief("brief-missing-seq", "candidate without sequence")?;
+            let seed_event =
+                |audit_event_id: &str, event_seq: Option<i64>, brief_id: &str| -> Result<()> {
+                    connection.execute(
+                        "INSERT INTO audit_events (
                            audit_event_id, event_seq, agent_id, kind, created_at, data_json
                          ) VALUES (?1, ?2, ?3, 'brief_created', ?4, ?5)",
-                    params![
-                        audit_event_id,
-                        event_seq,
-                        "agent-a",
-                        timestamp(Utc::now()),
-                        serde_json::json!({
-                            "brief_id": brief_id,
-                            "agent_id": "agent-a",
-                        })
-                        .to_string()
-                    ],
-                )?;
-                Ok(())
-            };
-            seed_event("event-linked", 11, &linked.id)?;
-            seed_event("event-ambiguous-a", 21, &ambiguous.id)?;
-            seed_event("event-ambiguous-b", 22, &ambiguous.id)?;
+                        params![
+                            audit_event_id,
+                            event_seq,
+                            "agent-a",
+                            timestamp(Utc::now()),
+                            serde_json::json!({
+                                "brief_id": brief_id,
+                                "agent_id": "agent-a",
+                            })
+                            .to_string()
+                        ],
+                    )?;
+                    Ok(())
+                };
+            seed_event("event-linked", Some(11), &linked.id)?;
+            seed_event("event-ambiguous-a", Some(21), &ambiguous.id)?;
+            seed_event("event-ambiguous-b", Some(22), &ambiguous.id)?;
+            seed_event("event-missing-seq", None, &missing_seq.id)?;
 
             apply_migration(&mut connection, &MIGRATIONS[48])?;
 
@@ -773,6 +776,7 @@ mod tests {
             for (brief_id, expected_reason) in [
                 ("brief-missing", "no_candidate_event"),
                 ("brief-ambiguous", "ambiguous_candidate_events"),
+                ("brief-missing-seq", "candidate_event_missing_seq"),
             ] {
                 let linkage: Option<i64> = connection.query_row(
                     "SELECT created_event_seq FROM briefs WHERE evidence_id = ?1",
@@ -798,6 +802,134 @@ mod tests {
             let foundations = db.observer_sync_foundations()?;
             assert!(foundations.brief_atomic_linkage_verified);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn migration_49_backfill_is_bounded() -> Result<()> {
+        let (_temp_dir, db_path, _lock_path) = temp_paths()?;
+        let mut connection = open_connection(&db_path)?;
+        migrate_through(&mut connection, 48)?;
+        connection.execute_batch("ALTER TABLE briefs ADD COLUMN created_event_seq INTEGER;")?;
+
+        const BRIEF_COUNT: i64 = 512;
+        const NOISE_EVENT_COUNT: i64 = 4_096;
+        {
+            let transaction = connection.transaction()?;
+            for index in 0..BRIEF_COUNT {
+                let evidence_id = format!("brief-bounded-{index}");
+                let mut brief = BriefRecord::new(
+                    "agent-a",
+                    crate::types::BriefKind::Result,
+                    format!("bounded candidate {index}"),
+                    None,
+                    None,
+                );
+                brief.id = evidence_id.clone();
+                transaction.execute(
+                    "INSERT INTO briefs (
+                       evidence_id, agent_id, created_at, kind, preview, payload_json
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        evidence_id,
+                        brief.agent_id,
+                        timestamp(brief.created_at),
+                        "result",
+                        brief.text,
+                        serde_json::to_string(&brief)?
+                    ],
+                )?;
+                transaction.execute(
+                    "INSERT INTO audit_events (
+                       audit_event_id, event_seq, agent_id, kind, created_at, data_json
+                     ) VALUES (?1, ?2, ?3, 'brief_created', ?4, ?5)",
+                    params![
+                        format!("event-bounded-{index}"),
+                        index + 1,
+                        "agent-a",
+                        timestamp(Utc::now()),
+                        serde_json::json!({
+                            "brief_id": brief.id,
+                            "agent_id": "agent-a",
+                        })
+                        .to_string()
+                    ],
+                )?;
+            }
+            for index in 0..NOISE_EVENT_COUNT {
+                transaction.execute(
+                    "INSERT INTO audit_events (
+                       audit_event_id, event_seq, agent_id, kind, created_at, data_json
+                     ) VALUES (?1, ?2, ?3, 'task_created', ?4, '{}')",
+                    params![
+                        format!("event-noise-{index}"),
+                        BRIEF_COUNT + index + 1,
+                        "agent-a",
+                        timestamp(Utc::now()),
+                    ],
+                )?;
+            }
+            transaction.commit()?;
+        }
+
+        connection.execute_batch(
+            "CREATE TEMP TABLE _brief_created_candidates AS
+             SELECT audit_event_id,
+                    event_seq,
+                    agent_id AS agent_id_col,
+                    COALESCE(json_extract(data_json, '$.agent_id'), '') AS agent_id_json,
+                    COALESCE(json_extract(data_json, '$.brief_id'), '') AS brief_id
+             FROM audit_events
+             WHERE kind = 'brief_created';
+             CREATE INDEX _idx_brief_created_candidates_lookup
+               ON _brief_created_candidates(brief_id, agent_id_col, agent_id_json);",
+        )?;
+        let query_plan = {
+            let mut statement = connection.prepare(
+                "EXPLAIN QUERY PLAN
+                 SELECT briefs.evidence_id,
+                        briefs.agent_id,
+                        briefs.payload_json,
+                        COUNT(candidates.audit_event_id),
+                        CASE WHEN COUNT(candidates.audit_event_id) = 1
+                             THEN MIN(candidates.event_seq)
+                             ELSE NULL
+                        END
+                 FROM briefs
+                 LEFT JOIN _brief_created_candidates AS candidates
+                   ON candidates.brief_id = briefs.evidence_id
+                  AND (candidates.agent_id_col = briefs.agent_id
+                       OR candidates.agent_id_json = briefs.agent_id)
+                 WHERE briefs.created_event_seq IS NULL
+                 GROUP BY briefs.evidence_id, briefs.agent_id, briefs.payload_json",
+            )?;
+            let payloads = statement
+                .query_map([], |row| row.get::<_, String>(3))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            payloads
+        };
+        assert!(
+            query_plan.iter().any(|detail| {
+                detail
+                    .contains("SEARCH candidates USING INDEX _idx_brief_created_candidates_lookup")
+            }),
+            "candidate aggregation must use the temporary lookup index: {query_plan:?}"
+        );
+        assert!(
+            query_plan
+                .iter()
+                .all(|detail| !detail.contains("audit_events")),
+            "candidate aggregation must not rescan audit_events: {query_plan:?}"
+        );
+        connection.execute_batch("DROP TABLE temp._brief_created_candidates;")?;
+
+        apply_migration(&mut connection, &MIGRATIONS[48])?;
+        let linked_count: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM briefs WHERE created_event_seq IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(linked_count, BRIEF_COUNT);
         Ok(())
     }
 
