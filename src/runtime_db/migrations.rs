@@ -3524,6 +3524,8 @@ fn backfill_brief_created_event_linkage(transaction: &Transaction<'_>) -> Result
                 Some(event_seq) => {
                     let mut brief: crate::types::BriefRecord = serde_json::from_str(&payload_json)
                         .context("decoding brief payload for created_event_seq backfill")?;
+                    // Schema 49's new column is authoritative: when it is NULL, replace any
+                    // payload-only value with the uniquely matched audit event sequence.
                     brief.created_event_seq =
                         Some(u64::try_from(event_seq).with_context(|| {
                             format!("brief_created event_seq {event_seq} must be non-negative")

@@ -872,6 +872,8 @@ mod tests {
             transaction.commit()?;
         }
 
+        // Keep this candidate table and index SQL aligned with
+        // backfill_brief_created_event_linkage.
         connection.execute_batch(
             "CREATE TEMP TABLE _brief_created_candidates AS
              SELECT audit_event_id,
