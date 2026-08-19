@@ -47,6 +47,8 @@ interface AgentPageProps {
   historyError?: string;
   syncError?: string;
   syncRetryAttempt?: number;
+  /** Ledger-backed lower-bound unread state (W5 truncation indicator). */
+  historyTruncated?: boolean;
   targetEventSeq?: number;
   resumeRevision?: number;
   onRefreshModels: () => Promise<void>;
@@ -54,6 +56,7 @@ interface AgentPageProps {
   onClearModel: () => Promise<void>;
   onLoadOlderEvents: () => Promise<void>;
   onRetrySync: () => void;
+  onAcknowledgeTruncation?: () => void;
   onSendPrompt: (text: string, attachments?: OperatorPromptAttachment[]) => Promise<void>;
   onConversationRead: () => void;
   onOpenInspector: () => void;
@@ -317,6 +320,7 @@ export function AgentPage({
   historyError,
   syncError,
   syncRetryAttempt,
+  historyTruncated = false,
   targetEventSeq,
   resumeRevision = 0,
   onRefreshModels,
@@ -324,6 +328,7 @@ export function AgentPage({
   onClearModel,
   onLoadOlderEvents,
   onRetrySync,
+  onAcknowledgeTruncation,
   onSendPrompt,
   onConversationRead,
   onOpenInspector,
@@ -760,6 +765,14 @@ export function AgentPage({
             {historyError ? (
               <div className="history-status" role="alert">
                 {historyError}
+              </div>
+            ) : null}
+            {historyTruncated && onAcknowledgeTruncation ? (
+              <div className="history-status truncation-notice" role="status">
+                <span>{t("app.truncationNotice")}</span>
+                <Button type="button" size="sm" variant="secondary" onClick={onAcknowledgeTruncation}>
+                  {t("app.truncationAcknowledge")}
+                </Button>
               </div>
             ) : null}
             {syncError ? (

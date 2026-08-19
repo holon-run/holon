@@ -42,6 +42,7 @@ import {
   subscribeRuntimeTrace,
 } from "../runtime/runtime-trace";
 import { selectSelectedAgent } from "../runtime/runtime-selectors";
+import { unreadBadgeView, type LedgerUnreadView } from "../runtime/read-state";
 import { canUseRemoteRuntimeConnections, readStoredRemoteConnectionProfiles, skillDetailCacheKey, useRuntimeStore } from "../runtime/runtime-store";
 import { useAgentDetail } from "../runtime/useAgentDetail";
 import { useRuntimeDashboard } from "../runtime/useRuntimeDashboard";
@@ -84,6 +85,7 @@ export function App() {
   const setRoute = useRuntimeStore((state) => state.setRoute);
   const openAgent = useRuntimeStore((state) => state.openAgent);
   const markAgentConversationRead = useRuntimeStore((state) => state.markAgentConversationRead);
+  const acknowledgeAgentTruncation = useRuntimeStore((state) => state.acknowledgeAgentTruncation);
   const openSkill = useRuntimeStore((state) => state.openSkill);
   const openTemplate = useRuntimeStore((state) => state.openTemplate);
   const setDisplayLevel = useRuntimeStore((state) => state.setDisplayLevel);
@@ -104,6 +106,7 @@ export function App() {
   const setRuntimeConnection = useRuntimeStore((state) => state.setRuntimeConnection);
   const selectedAgent = useRuntimeStore(selectSelectedAgent);
   const rosterActivityByAgentId = useRuntimeStore((state) => state.rosterActivityByAgentId);
+  const ledgerUnreadByAgentId = useRuntimeStore((state) => state.ledgerUnreadByAgentId);
   const activeAgentId = route === "agent" ? selectedAgent?.id ?? selectedAgentId : undefined;
   const sidePanelAgentId = selectedAgent?.id ?? selectedAgentId;
   const markSelectedAgentConversationRead = useCallback(() => {
@@ -539,7 +542,10 @@ export function App() {
             visibleAgents.map((agent) => {
               const status = deriveAgentDisplayStatus(agent, t);
               const workSummary = agent.currentWork?.objective;
-              const unreadCount = rosterActivityByAgentId[agent.id]?.unreadCount ?? 0;
+              const unreadView = unreadBadgeView(
+                rosterActivityByAgentId[agent.id]?.unreadCount,
+                ledgerUnreadByAgentId[agent.id],
+              );
 
               return (
                 <button
@@ -553,9 +559,17 @@ export function App() {
                   <span className="agent-row-main">
                     <span className="agent-row-title">
                       <strong>{agent.id}</strong>
-                      {unreadCount > 0 ? (
-                        <span className="agent-row-unread" aria-label={t("app.unreadUpdates", { count: unreadCount })} title={t("app.unreadUpdates", { count: unreadCount })}>
-                          {formatUnreadCount(unreadCount)}
+                      {unreadView?.mode === "stale_sync_error" ? (
+                        <span className="agent-row-unread is-stale" aria-label={t("app.unreadSyncError")} title={t("app.unreadSyncError")}>
+                          !
+                        </span>
+                      ) : unreadView && unreadView.count > 0 ? (
+                        <span
+                          className={`agent-row-unread ${unreadView.mode === "truncated" ? "is-truncated" : ""}`}
+                          aria-label={unreadTitle(unreadView, t)}
+                          title={unreadTitle(unreadView, t)}
+                        >
+                          {formatUnreadCount(unreadView.count)}{unreadView.mode === "truncated" ? "+" : ""}
                         </span>
                       ) : null}
                       <span className={`agent-row-status-dot ${status.tone}`} aria-label={status.title} title={status.title}>
@@ -668,6 +682,10 @@ export function App() {
             historyError={selectedSemanticHistory?.error ?? selectedAgentSession?.targetEventError ?? selectedAgentSession?.error}
             syncError={selectedAgentSession?.syncError}
             syncRetryAttempt={selectedAgentSession?.syncRetryAttempt}
+            historyTruncated={ledgerUnreadByAgentId[activeAgent.id]?.mode === "truncated"}
+            onAcknowledgeTruncation={() => {
+              void acknowledgeAgentTruncation(activeAgent.id);
+            }}
             targetEventSeq={selectedAgentSession?.targetEventSeq}
             resumeRevision={resumeRevision}
             onRefreshModels={refreshModelCatalog}
@@ -1172,6 +1190,14 @@ function MissingAgentPage({ agentId, loading }: { agentId: string; loading: bool
   );
 }
 
+function unreadTitle(
+  view: LedgerUnreadView,
+  t: (key: string, options?: { count?: number }) => string,
+): string {
+  if (view.mode === "truncated") return t("app.unreadTruncated", { count: view.count });
+  if (view.mode === "legacy_uncertain") return t("app.unreadLegacy", { count: view.count });
+  return t("app.unreadUpdates", { count: view.count });
+}
 function formatUnreadCount(count: number): string {
   return count > 99 ? "99+" : String(count);
 }

@@ -39,6 +39,7 @@ import {
 import {
   cachedReadState,
   canMarkConversationRead,
+  evaluateLedgerReadMarkerGate,
   latestBriefDeliverySeq,
   markAgentDeliveriesRead,
   mergeCachedReadState,
@@ -48,7 +49,9 @@ import {
   touchRosterActivityFromEvent,
   writeStoredRosterActivity,
   type AgentRosterActivity,
+  type LedgerUnreadView,
 } from "./read-state";
+import { ReadStateBus } from "./event-ledger";
 import { ResumeReconciliationCoordinator } from "./resume-reconciliation";
 import { currentRemoteKey } from "./session-cache";
 import {
@@ -359,6 +362,8 @@ export interface RuntimeStoreState {
   searchResultContentLoadingBySourceRef: Record<string, boolean>;
   searchResultContentErrorBySourceRef: Record<string, string | undefined>;
   rosterActivityByAgentId: Record<string, AgentRosterActivity>;
+  /** Ledger-backed unread views (W5); absent entries use the legacy path. */
+  ledgerUnreadByAgentId: Record<string, LedgerUnreadView>;
   sessionsByAgentId: Record<string, AgentSessionState>;
   skillInstallJobs: SkillInstallJob[];
   resumeRevision: number;
@@ -366,6 +371,8 @@ export interface RuntimeStoreState {
   setRoute: (route: RouteKey) => void;
   openAgent: (agentId: string, targetEventSeq?: number) => void;
   markAgentConversationRead: (agentId: string) => void;
+  refreshLedgerUnread: (agentId: string) => Promise<void>;
+  acknowledgeAgentTruncation: (agentId: string) => Promise<void>;
   openSkill: (skillId: string, agentId?: string) => void;
   openTemplate: (catalogId: string) => void;
   setDisplayLevel: (displayLevel: DisplayLevel, agentId?: string) => void;
@@ -998,6 +1005,11 @@ function applyRosterSnapshotToStore(
     if (rosterActivityByAgentId !== state.rosterActivityByAgentId) {
       writeStoredRosterActivity(currentRemoteKey(runtimeConnectionConfig), rosterActivityByAgentId);
     }
+    const ledgerUnreadByAgentId = dropIds.size
+      ? Object.fromEntries(
+          Object.entries(state.ledgerUnreadByAgentId).filter(([id]) => !dropIds.has(id)),
+        )
+      : state.ledgerUnreadByAgentId;
     const timelineEventsByAgentId = dropIds.size
       ? Object.fromEntries(
           Object.entries(state.timelineEventsByAgentId).filter(([id]) => !dropIds.has(id)),
@@ -1021,6 +1033,7 @@ function applyRosterSnapshotToStore(
       },
       sessionsByAgentId,
       rosterActivityByAgentId,
+      ledgerUnreadByAgentId,
       timelineEventsByAgentId,
     };
   });
@@ -1066,6 +1079,83 @@ const globalSyncCoordinator = new GlobalSyncCoordinator<RuntimeStoreState>({
 });
 
 let agentSessionRepository!: AgentSessionRepository<RuntimeStoreState>;
+
+/**
+ * Cross-tab read-state invalidation (W5). The IndexedDB record is the
+ * source of truth; the BroadcastChannel only nudges sibling tabs of the
+ * same browser profile to re-read it.
+ */
+let readStateBus: ReadStateBus | null = null;
+
+function publishReadStateInvalidation(agentId: string): void {
+  if (!readStateBus) {
+    readStateBus = new ReadStateBus((message) => {
+      if (message.remoteKey !== currentRemoteKey(runtimeConnectionConfig)) return;
+      void refreshLedgerUnreadInView(message.agentId);
+    });
+  }
+  readStateBus.publish({
+    kind: "read_state_changed",
+    remoteKey: currentRemoteKey(runtimeConnectionConfig),
+    agentId,
+  });
+}
+
+const unreadRefreshInFlight = new Set<string>();
+const unreadRefreshQueued = new Set<string>();
+
+/**
+ * Recompute one agent's ledger-backed unread view from durable state.
+ * Coalesces concurrent refreshes so status bursts produce one read per
+ * agent, with one queued re-run when state changed mid-flight.
+ */
+async function refreshLedgerUnreadInView(agentId: string): Promise<void> {
+  if (unreadRefreshInFlight.has(agentId)) {
+    unreadRefreshQueued.add(agentId);
+    return;
+  }
+  unreadRefreshInFlight.add(agentId);
+  try {
+    const snapshot = await agentSessionRepository
+      .unreadSnapshot(agentId)
+      .catch(() => null);
+    const state = useRuntimeStore.getState();
+    const existing = state.ledgerUnreadByAgentId[agentId];
+    if (!snapshot) {
+      if (existing) {
+        useRuntimeStore.setState((current) => {
+          const next = { ...current.ledgerUnreadByAgentId };
+          delete next[agentId];
+          return { ledgerUnreadByAgentId: next };
+        });
+      }
+      return;
+    }
+    const status = agentSessionRepository.sessionLedgerStatus(agentId);
+    const session = state.sessionsByAgentId[agentId];
+    const stale =
+      status?.state === "sync_error" ||
+      session?.syncStatus === "stale" ||
+      session?.syncStatus === "error";
+    const view: LedgerUnreadView = {
+      mode: stale
+        ? "stale_sync_error"
+        : snapshot.certainty === "truncated"
+          ? "truncated"
+          : "exact",
+      count: snapshot.count,
+    };
+    if (existing?.mode === view.mode && existing.count === view.count) return;
+    useRuntimeStore.setState((current) => ({
+      ledgerUnreadByAgentId: { ...current.ledgerUnreadByAgentId, [agentId]: view },
+    }));
+  } finally {
+    unreadRefreshInFlight.delete(agentId);
+    if (unreadRefreshQueued.delete(agentId)) {
+      void refreshLedgerUnreadInView(agentId);
+    }
+  }
+}
 
 export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
   agentSessionRepository = new AgentSessionRepository<RuntimeStoreState>({
@@ -1231,8 +1321,9 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
           return { recordsById, missingIds: response.notFoundIds ?? [] };
         },
       },
-      onStatus: () => {
-        // W5 wires unread/read-marker gating to these statuses.
+      onStatus: (status) => {
+        // W5: unread counts refresh from durable readiness transitions.
+        void refreshLedgerUnreadInView(status.scope.agentId);
       },
     },
   });
@@ -1291,6 +1382,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
   credentialStoreError: undefined,
   codexDeviceLogin: { status: "idle" as const },
   rosterActivityByAgentId: readStoredRosterActivity(currentRemoteKey(runtimeConnectionConfig)),
+  ledgerUnreadByAgentId: {},
   sessionsByAgentId: {},
   skillInstallJobs: loadSkillInstallJobs(),
   resumeRevision: 0,
@@ -1326,11 +1418,47 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     }),
   markAgentConversationRead: (agentId) => {
     const state = get();
-    const session = state.sessionsByAgentId[agentId];
-    if (!session || !canMarkConversationRead({
+    const context = {
       route: state.route,
       selectedAgentId: state.selectedAgentId,
-      documentVisible: typeof document !== "undefined" && document.visibilityState === "visible",
+      documentVisible:
+        typeof document !== "undefined" && document.visibilityState === "visible",
+    };
+    if (agentSessionRepository.knownLedgerScope(agentId)) {
+      // Ledger-backed path (W5): the durable marker is the only read state;
+      // the legacy roster activity no longer tracks this agent.
+      const status = agentSessionRepository.sessionLedgerStatus(agentId);
+      const readiness = agentSessionRepository.sessionLedgerReadiness(agentId);
+      const decision = evaluateLedgerReadMarkerGate(
+        {
+          ...context,
+          session: state.sessionsByAgentId[agentId],
+          discoveryFresh: state.discovery.freshness === "fresh",
+          readiness: readiness
+            ? { ...readiness, observedHeadSeq: status?.observedEventHeadSeq }
+            : null,
+        },
+        agentId,
+      );
+      if (decision.mayAdvance && decision.candidateSeq != null) {
+        const candidateSeq = decision.candidateSeq;
+        void agentSessionRepository
+          .advanceReadMarker(agentId, candidateSeq)
+          .then((result) => {
+            if (!result?.advanced) return;
+            publishReadStateInvalidation(agentId);
+            void refreshLedgerUnreadInView(agentId);
+          })
+          .catch((error) =>
+            console.warn(`Failed to advance read marker for ${agentId}.`, error),
+          );
+      }
+      return;
+    }
+    // Legacy in-memory path: remotes without the ledger capability.
+    const session = state.sessionsByAgentId[agentId];
+    if (!session || !canMarkConversationRead({
+      ...context,
       session,
     }, agentId)) {
       return;
@@ -1348,6 +1476,36 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
       return { rosterActivityByAgentId };
     });
     agentSessionRepository.scheduleCacheWrite(agentId);
+  },
+  refreshLedgerUnread: async (agentId) => {
+    await refreshLedgerUnreadInView(agentId);
+  },
+  /**
+   * Explicitly acknowledge that truncated history is unknown (W5). Allowed
+   * only after the conversation is open and catch-up reached the observed
+   * head; opens a new exact generation without rewriting history facts.
+   */
+  acknowledgeAgentTruncation: async (agentId) => {
+    const state = get();
+    const session = state.sessionsByAgentId[agentId];
+    if (!session) return;
+    const status = agentSessionRepository.sessionLedgerStatus(agentId);
+    const readiness = agentSessionRepository.sessionLedgerReadiness(agentId);
+    const head = status?.observedEventHeadSeq;
+    if (
+      !readiness ||
+      head == null ||
+      readiness.ingestedThroughSeq < head ||
+      readiness.readyThroughSeq < head
+    ) {
+      return;
+    }
+    const record = await agentSessionRepository
+      .acknowledgeReadTruncation(agentId)
+      .catch(() => null);
+    if (!record) return;
+    publishReadStateInvalidation(agentId);
+    await refreshLedgerUnreadInView(agentId);
   },
   setDisplayLevel: (displayLevel, agentId) =>
     set((state) => {
@@ -1704,6 +1862,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
       searchResultContentErrorBySourceRef: {},
       sessionsByAgentId: {},
       rosterActivityByAgentId: readStoredRosterActivity(currentRemoteKey(normalizedConfig)),
+      ledgerUnreadByAgentId: {},
       selectedAgentId: "",
       selectedSkillId: "",
       selectedSkillAgentId: "",

@@ -573,6 +573,18 @@ button {
   line-height: 1;
 }
 
+.agent-row-unread.is-truncated {
+  border-color: color-mix(in srgb, var(--warning, #b8860b) 40%, transparent);
+  color: var(--warning, #b8860b);
+}
+
+.agent-row-unread.is-stale {
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+  background: color-mix(in srgb, var(--danger) 9%, var(--surface));
+  color: var(--danger);
+  font-size: 10px;
+}
+
 .agent-row strong,
 .connection-status strong {
   display: block;
@@ -1871,6 +1883,19 @@ code {
   font-size: 12px;
   background: var(--surface);
   color: var(--muted);
+}
+
+.history-status.truncation-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-color: color-mix(in srgb, var(--warning, #b8860b) 34%, var(--line));
+  color: var(--muted);
+}
+
+.history-status.truncation-notice span {
+  text-align: left;
 }
 
 .history-status--recovering {

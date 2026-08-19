@@ -4,12 +4,14 @@ import type { StreamEventEnvelopeDto } from "./client";
 import {
   cachedReadState,
   canMarkConversationRead,
+  evaluateLedgerReadMarkerGate,
   latestBriefDeliverySeq,
   markAgentDeliveriesRead,
   mergeCachedReadState,
   mergeCachedReadStates,
   readStoredRosterActivity,
   touchRosterActivityFromEvent,
+  unreadBadgeView,
   writeStoredRosterActivity,
   type AgentRosterActivity,
 } from "./read-state";
@@ -205,5 +207,114 @@ describe("read state", () => {
         "agent-a",
       ),
     ).toBe(false);
+  });
+});
+describe("ledger read-marker gate", () => {
+  const readiness = {
+    readyThroughSeq: 12,
+    ingestedThroughSeq: 12,
+    observedHeadSeq: 12,
+  };
+
+  function gateInput(overrides: Partial<Parameters<typeof evaluateLedgerReadMarkerGate>[0]> = {}) {
+    return {
+      route: "agent",
+      selectedAgentId: "agent-a",
+      documentVisible: true,
+      session: emptyAgentSession(),
+      discoveryFresh: true,
+      readiness,
+      ...overrides,
+    };
+  }
+
+  it("advances to the observed head when every gate condition passes", () => {
+    const decision = evaluateLedgerReadMarkerGate(gateInput(), "agent-a");
+    expect(decision).toEqual({ mayAdvance: true, candidateSeq: 12 });
+  });
+
+  it("blocks when the agent is not selected", () => {
+    const decision = evaluateLedgerReadMarkerGate(
+      gateInput({ route: "dashboard", selectedAgentId: "agent-b" }),
+      "agent-a",
+    );
+    expect(decision.reason).toBe("not_selected");
+  });
+
+  it("blocks while the document is hidden", () => {
+    const decision = evaluateLedgerReadMarkerGate(gateInput({ documentVisible: false }), "agent-a");
+    expect(decision.reason).toBe("document_hidden");
+  });
+
+  it("blocks while the session is loading, gapped, or recovering", () => {
+    const loading = evaluateLedgerReadMarkerGate(
+      gateInput({ session: { ...emptyAgentSession(), loading: true } }),
+      "agent-a",
+    );
+    expect(loading.reason).toBe("session_not_ready");
+    const gapped = evaluateLedgerReadMarkerGate(
+      gateInput({
+        session: { ...emptyAgentSession(), gaps: [{ afterSeq: 1, beforeSeq: 9 }] },
+      }),
+      "agent-a",
+    );
+    expect(gapped.reason).toBe("session_not_ready");
+    const recovering = evaluateLedgerReadMarkerGate(
+      gateInput({ session: { ...emptyAgentSession(), syncStatus: "recovering" } }),
+      "agent-a",
+    );
+    expect(recovering.reason).toBe("session_not_ready");
+  });
+
+  it("blocks while discovery is stale", () => {
+    const decision = evaluateLedgerReadMarkerGate(gateInput({ discoveryFresh: false }), "agent-a");
+    expect(decision.reason).toBe("discovery_stale");
+  });
+
+  it("blocks when the ledger readiness gate is unavailable", () => {
+    const decision = evaluateLedgerReadMarkerGate(gateInput({ readiness: null }), "agent-a");
+    expect(decision.reason).toBe("ledger_unavailable");
+  });
+
+  it("blocks when catch-up has not reached the observed head", () => {
+    const decision = evaluateLedgerReadMarkerGate(
+      gateInput({ readiness: { ...readiness, ingestedThroughSeq: 10 } }),
+      "agent-a",
+    );
+    expect(decision.reason).toBe("not_caught_up");
+  });
+
+  it("blocks when an unresolved display invalidation holds readiness below the head", () => {
+    const decision = evaluateLedgerReadMarkerGate(
+      gateInput({
+        readiness: { ...readiness, readyThroughSeq: 9, blockedByEventSeq: 10 },
+      }),
+      "agent-a",
+    );
+    expect(decision.reason).toBe("blocked_by_invalidation");
+  });
+
+  it("blocks without an observed head", () => {
+    const decision = evaluateLedgerReadMarkerGate(
+      gateInput({ readiness: { ...readiness, observedHeadSeq: undefined } }),
+      "agent-a",
+    );
+    expect(decision.reason).toBe("no_observed_head");
+  });
+});
+
+describe("unread badge view", () => {
+  it("prefers the ledger view over the legacy count", () => {
+    expect(unreadBadgeView(7, { mode: "exact", count: 3 })).toEqual({ mode: "exact", count: 3 });
+  });
+
+  it("degrades to legacy_uncertain without a ledger view", () => {
+    expect(unreadBadgeView(4, undefined)).toEqual({ mode: "legacy_uncertain", count: 4 });
+    expect(unreadBadgeView(0, undefined)).toBeNull();
+    expect(unreadBadgeView(undefined, undefined)).toBeNull();
+  });
+
+  it("keeps a zero ledger view distinct from no view", () => {
+    expect(unreadBadgeView(9, { mode: "exact", count: 0 })).toEqual({ mode: "exact", count: 0 });
   });
 });

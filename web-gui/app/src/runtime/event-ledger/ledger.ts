@@ -54,6 +54,12 @@ import {
   type LedgerRemoteScopeKey,
   type LedgerScopeKey,
 } from "./keys";
+import {
+  isQualifyingUnreadEnvelope,
+  mergeReadMarkerCandidate,
+  mergeTruncationAcknowledgement,
+  type ReadMarkerAdvanceResult,
+} from "./read-markers";
 
 /** Classification attached to a stored raw event (S2 contract). */
 export interface RawEventClassification {
@@ -929,6 +935,178 @@ export class EventLedger {
   async getReadState(scope: LedgerScopeKey): Promise<LedgerReadStateRecord | undefined> {
     const db = this.requireOpenDb();
     return runGet(db, READ_STATES_STORE, (store) => store.get(agentRecordKey(scope)));
+  }
+
+  /**
+   * Advance `readThroughEventSeq` to `candidateSeq` as a monotonic maximum
+   * inside one transaction. Tabs race this concurrently; the stored value
+   * can only move forward. Returns whether a write happened.
+   */
+  async advanceReadMarker(
+    scope: LedgerScopeKey,
+    candidateSeq: number,
+  ): Promise<ReadMarkerAdvanceResult> {
+    if (!Number.isInteger(candidateSeq) || candidateSeq < 0) {
+      throw new Error("read marker candidate must be a non-negative integer");
+    }
+    const db = this.requireOpenDb();
+    return new Promise<ReadMarkerAdvanceResult>((resolve, reject) => {
+      let settled = false;
+      let result: ReadMarkerAdvanceResult | null = null;
+      const tx = db.transaction(READ_STATES_STORE, "readwrite");
+      const store = tx.objectStore(READ_STATES_STORE);
+      const get = store.get(agentRecordKey(scope));
+      get.onsuccess = () => {
+        const current = get.result as LedgerReadStateRecord | undefined;
+        const merged = mergeReadMarkerCandidate(
+          current,
+          scope,
+          candidateSeq,
+          Date.now(),
+        );
+        result = merged;
+        if (!merged.advanced) return;
+        const put = store.put(merged.record);
+        put.onerror = () => {
+          if (settled) return;
+          settled = true;
+          reject(put.error ?? new Error("read state put failed"));
+        };
+      };
+      get.onerror = () => {
+        if (settled) return;
+        settled = true;
+        reject(get.error ?? new Error("read state get failed"));
+      };
+      tx.oncomplete = () => {
+        if (settled) return;
+        settled = true;
+        if (!result) {
+          reject(new Error("read state transaction completed without a result"));
+          return;
+        }
+        resolve(result);
+      };
+      tx.onerror = () => {
+        if (!settled) {
+          settled = true;
+          reject(tx.error ?? new Error("read state transaction failed"));
+        }
+      };
+      tx.onabort = () => {
+        if (!settled) {
+          settled = true;
+          reject(tx.error ?? new Error("read state transaction aborted"));
+        }
+      };
+    });
+  }
+
+  /**
+   * Record an explicit truncation acknowledgement at `headSeq`: open a new
+   * exact generation while keeping the truncation facts. Returns null when
+   * no read state exists yet (nothing to acknowledge).
+   */
+  async acknowledgeReadTruncation(
+    scope: LedgerScopeKey,
+    headSeq: number,
+  ): Promise<LedgerReadStateRecord | null> {
+    if (!Number.isInteger(headSeq) || headSeq < 0) {
+      throw new Error("truncation acknowledgement head must be a non-negative integer");
+    }
+    const db = this.requireOpenDb();
+    return new Promise<LedgerReadStateRecord | null>((resolve, reject) => {
+      let settled = false;
+      let result: LedgerReadStateRecord | null = null;
+      const tx = db.transaction(READ_STATES_STORE, "readwrite");
+      const store = tx.objectStore(READ_STATES_STORE);
+      const get = store.get(agentRecordKey(scope));
+      get.onsuccess = () => {
+        const current = get.result as LedgerReadStateRecord | undefined;
+        if (!current) return;
+        result = mergeTruncationAcknowledgement(current, headSeq, Date.now());
+        const put = store.put(result);
+        put.onerror = () => {
+          if (settled) return;
+          settled = true;
+          reject(put.error ?? new Error("read state put failed"));
+        };
+      };
+      get.onerror = () => {
+        if (settled) return;
+        settled = true;
+        reject(get.error ?? new Error("read state get failed"));
+      };
+      tx.oncomplete = () => {
+        if (settled) return;
+        settled = true;
+        resolve(result);
+      };
+      tx.onerror = () => {
+        if (!settled) {
+          settled = true;
+          reject(tx.error ?? new Error("read state transaction failed"));
+        }
+      };
+      tx.onabort = () => {
+        if (!settled) {
+          settled = true;
+          reject(tx.error ?? new Error("read state transaction aborted"));
+        }
+      };
+    });
+  }
+
+  /**
+   * Count qualifying unread envelopes in (boundaryExclusive, throughSeq].
+   * Uses a cursor so an unbounded backlog above the boundary is not
+   * materialized. Hydration is guaranteed by the caller bounding
+   * `throughSeq` at the projection readiness cursor.
+   */
+  async countQualifyingUnreadEvents(
+    scope: LedgerScopeKey,
+    boundaryExclusive: number,
+    throughSeq: number,
+  ): Promise<number> {
+    if (throughSeq <= boundaryExclusive) return 0;
+    const db = this.requireOpenDb();
+    return new Promise<number>((resolve, reject) => {
+      let settled = false;
+      let count = 0;
+      const tx = db.transaction(RAW_EVENTS_STORE, "readonly");
+      const range = rawEventRangeBetween(scope, boundaryExclusive + 1, throughSeq);
+      const request = tx.objectStore(RAW_EVENTS_STORE).openCursor(range);
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) return;
+        if (isQualifyingUnreadEnvelope((cursor.value as LedgerRawEventRecord).envelope)) {
+          count += 1;
+        }
+        cursor.continue();
+      };
+      request.onerror = () => {
+        if (settled) return;
+        settled = true;
+        reject(request.error ?? new Error("unread count cursor failed"));
+      };
+      tx.oncomplete = () => {
+        if (settled) return;
+        settled = true;
+        resolve(count);
+      };
+      tx.onerror = () => {
+        if (!settled) {
+          settled = true;
+          reject(tx.error ?? new Error("unread count transaction failed"));
+        }
+      };
+      tx.onabort = () => {
+        if (!settled) {
+          settled = true;
+          reject(tx.error ?? new Error("unread count transaction aborted"));
+        }
+      };
+    });
   }
 
   async getMigrationMeta<T extends { metaKey: string }>(

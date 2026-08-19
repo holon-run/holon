@@ -25,6 +25,12 @@ import {
   type LedgerReadStateRecord,
 } from "./ledger";
 import type { EventLedgerOpenResult } from "./ledger";
+import {
+  readMarkerBoundary,
+  unreadSnapshotFromRecord,
+  type LedgerUnreadSnapshot,
+  type ReadMarkerAdvanceResult,
+} from "./read-markers";
 import type { LedgerDurability } from "./errors";
 import {
   classifyEnvelope,
@@ -585,6 +591,51 @@ export class LedgerIngestionPipeline {
   async readStateOf(scope: LedgerScopeKey): Promise<LedgerReadStateRecord | undefined> {
     if (!(await this.ensureExactHandle())) return undefined;
     return this.ledger!.getReadState(scope);
+  }
+
+  /**
+   * Advance the browser-local read marker as a monotonic maximum. Returns
+   * null on memory-only durability (never claims a durable advance there).
+   */
+  async advanceReadMarker(
+    scope: LedgerScopeKey,
+    candidateSeq: number,
+  ): Promise<ReadMarkerAdvanceResult | null> {
+    if (!(await this.ensureExactHandle())) return null;
+    return this.ledger!.advanceReadMarker(scope, candidateSeq);
+  }
+
+  /**
+   * Record an explicit truncation acknowledgement at the current observed
+   * event head. Null on memory-only durability or when no read state exists.
+   */
+  async acknowledgeReadTruncation(
+    scope: LedgerScopeKey,
+  ): Promise<LedgerReadStateRecord | null> {
+    if (!(await this.ensureExactHandle())) return null;
+    const head = this.status(scope)?.observedEventHeadSeq;
+    if (head == null) return null;
+    return this.ledger!.acknowledgeReadTruncation(scope, head);
+  }
+
+  /**
+   * Unread snapshot for one scope: qualifying brief events between the read
+   * boundary and the projection readiness cursor. The count is exact up to
+   * `countedThroughSeq`; a `truncated` certainty makes it a lower bound
+   * because older history was lost to retention. Null on memory-only.
+   */
+  async unreadSnapshot(scope: LedgerScopeKey): Promise<LedgerUnreadSnapshot | null> {
+    if (!(await this.ensureExactHandle())) return null;
+    const record = await this.ledger!.getReadState(scope);
+    const gate = this.readinessGate(scope);
+    const through = Math.max(0, gate.readyThroughSeq);
+    const boundary = readMarkerBoundary(record);
+    const count = await this.ledger!.countQualifyingUnreadEvents(scope, boundary, through);
+    return unreadSnapshotFromRecord(
+      record,
+      count,
+      through,
+    );
   }
 
   /**

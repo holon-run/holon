@@ -107,6 +107,102 @@ export function cachedReadState(
   return Object.keys(readState).length ? readState : undefined;
 }
 
+/**
+ * Unread display modes (W5). `exact` and `truncated` are ledger-backed;
+ * `legacy_uncertain` is the in-memory path that cannot claim restart-stable
+ * exactness; `stale_sync_error` means the sync layer is failing and any
+ * count would be misleading.
+ */
+export type LedgerUnreadMode = "exact" | "truncated" | "legacy_uncertain" | "stale_sync_error";
+
+export interface LedgerUnreadView {
+  mode: LedgerUnreadMode;
+  /**
+   * Qualifying unread briefs. Exact in `exact` mode, a lower bound in
+   * `truncated` mode, unreliable in `stale_sync_error` mode.
+   */
+  count: number;
+}
+
+/** Inputs of the ledger read-marker advance gate. */
+export interface LedgerReadMarkerGateInput extends ConversationReadContext {
+  /** Authoritative discovery settled fresh (W4 roster snapshot). */
+  discoveryFresh: boolean;
+  /** Durable readiness gate; null when the ledger path is unavailable. */
+  readiness: {
+    readyThroughSeq: number;
+    ingestedThroughSeq: number;
+    observedHeadSeq?: number;
+    blockedByEventSeq?: number;
+  } | null;
+}
+
+export type ReadMarkerGateReason =
+  | "not_selected"
+  | "document_hidden"
+  | "session_not_ready"
+  | "discovery_stale"
+  | "ledger_unavailable"
+  | "no_observed_head"
+  | "not_caught_up"
+  | "blocked_by_invalidation";
+
+export interface ReadMarkerDecision {
+  mayAdvance: boolean;
+  candidateSeq?: number;
+  reason?: ReadMarkerGateReason;
+}
+
+/**
+ * Evaluate whether the browser-local read marker may advance (RFC
+ * observer-sync): selected, visible, timeline at the read boundary (checked
+ * by the caller's trigger), discovery fresh, projection contiguous through
+ * the observed head, and readiness covering the candidate. Unresolved
+ * display invalidations block the marker.
+ */
+export function evaluateLedgerReadMarkerGate(
+  input: LedgerReadMarkerGateInput,
+  agentId: string,
+): ReadMarkerDecision {
+  if (input.route !== "agent" || input.selectedAgentId !== agentId) {
+    return { mayAdvance: false, reason: "not_selected" };
+  }
+  if (!input.documentVisible) return { mayAdvance: false, reason: "document_hidden" };
+  if (!canMarkConversationRead(input, agentId)) {
+    return { mayAdvance: false, reason: "session_not_ready" };
+  }
+  if (!input.discoveryFresh) return { mayAdvance: false, reason: "discovery_stale" };
+  if (!input.readiness) return { mayAdvance: false, reason: "ledger_unavailable" };
+  const head = input.readiness.observedHeadSeq;
+  if (head == null || head <= 0) return { mayAdvance: false, reason: "no_observed_head" };
+  if (input.readiness.ingestedThroughSeq < head) {
+    return { mayAdvance: false, reason: "not_caught_up" };
+  }
+  if (input.readiness.readyThroughSeq < head) {
+    return { mayAdvance: false, reason: "blocked_by_invalidation" };
+  }
+  const blockedAt = input.readiness.blockedByEventSeq;
+  if (blockedAt != null && blockedAt <= head) {
+    return { mayAdvance: false, reason: "blocked_by_invalidation" };
+  }
+  return { mayAdvance: true, candidateSeq: head };
+}
+
+/**
+ * Merge the ledger unread view with the legacy roster activity for badge
+ * rendering. The ledger view wins whenever it exists; without it the badge
+ * degrades to `legacy_uncertain` and never claims exactness.
+ */
+export function unreadBadgeView(
+  legacyCount: number | undefined,
+  ledger: LedgerUnreadView | undefined,
+): LedgerUnreadView | null {
+  if (ledger) return ledger;
+  const count = legacyCount ?? 0;
+  if (count <= 0) return null;
+  return { mode: "legacy_uncertain", count };
+}
+
 export function touchRosterActivity(
   current: Record<string, AgentRosterActivity>,
   agentId: string,

@@ -87,3 +87,18 @@ export {
   type LegacyBaselineMeta,
   type UnreadMigrationNoticeMeta,
 } from "./migration";
+export {
+  isQualifyingUnreadEnvelope,
+  mergeReadMarkerCandidate,
+  mergeTruncationAcknowledgement,
+  readMarkerBoundary,
+  unreadSnapshotFromRecord,
+  type LedgerUnreadSnapshot,
+  type ReadCertainty,
+  type ReadMarkerAdvanceResult,
+} from "./read-markers";
+export {
+  READ_STATE_BUS_CHANNEL,
+  ReadStateBus,
+  type ReadStateBusMessage,
+} from "./read-state-bus";
