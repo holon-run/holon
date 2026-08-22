@@ -173,6 +173,7 @@ pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
             ("deepseek-v4-flash", None),
             ("kimi-k2.6", None),
             ("kimi-k2.7-code", None),
+            ("glm-5.3", None),
             ("glm-5.2", None),
         ]
         .into_iter()
@@ -484,6 +485,15 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
             262_144,
             // Volcengine API rejects max_tokens > 32768 for kimi-k2.7-code
             32_768,
+            true,
+            false,
+        ),
+        catalog_model(
+            "volcengine-coding",
+            "glm-5.3",
+            "GLM-5.3",
+            204_800,
+            128_000,
             true,
             false,
         ),
@@ -877,6 +887,15 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
             "DeepSeek V4 Flash 0731",
             1_000_000,
             384_000,
+            true,
+            false,
+        ),
+        catalog_model(
+            "dashscope",
+            "ZHIPU/GLM-5.3",
+            "ZHIPU/GLM-5.3",
+            1_000_000,
+            131_072,
             true,
             false,
         ),

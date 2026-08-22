@@ -2360,6 +2360,9 @@ mod tests {
             .get(&ModelRef::parse("dashscope/ZHIPU/GLM-5.2").unwrap())
             .is_some());
         assert!(catalog
+            .get(&ModelRef::parse("dashscope/ZHIPU/GLM-5.3").unwrap())
+            .is_some());
+        assert!(catalog
             .get(&ModelRef::parse("dashscope/kimi-k2.6").unwrap())
             .is_some());
         assert!(catalog
@@ -3076,7 +3079,11 @@ mod tests {
         for unsupported in [
             "dashscope@token-plan/ZHIPU/GLM-5.2",
             "dashscope@token-plan/MiniMax/MiniMax-M3",
+            // GLM-5.3 is not part of the DashScope subscription plans yet:
+            // the token-plan endpoint reports "Model not exist" (verified 2026-08).
+            "dashscope@token-plan/glm-5.3",
             "dashscope@coding-plan/glm-5.2",
+            "dashscope@coding-plan/glm-5.3",
             "dashscope@coding-plan/kimi-k2.7-code",
         ] {
             assert!(
@@ -3563,7 +3570,7 @@ mod tests {
             );
         }
 
-        for route_ref in ["volcengine@plan/glm-5.2"] {
+        for route_ref in ["volcengine@plan/glm-5.2", "volcengine@plan/glm-5.3"] {
             let policy = catalog.resolve_route_policy(
                 &ModelRouteRef::parse(route_ref).unwrap(),
                 &HashMap::new(),
@@ -3584,7 +3591,9 @@ mod tests {
         for route_ref in [
             "volcengine@default/doubao-seed-2-0-pro-260215",
             "volcengine@coding/glm-5.2",
+            "volcengine@coding/glm-5.3",
             "volcengine@plan/glm-5.2",
+            "volcengine@plan/glm-5.3",
         ] {
             let policy = catalog.resolve_route_policy(
                 &ModelRouteRef::parse(route_ref).unwrap(),
