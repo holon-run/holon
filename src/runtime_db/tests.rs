@@ -740,7 +740,10 @@ mod tests {
             let ambiguous = seed_brief("brief-ambiguous", "two candidates")?;
             let missing_seq = seed_brief("brief-missing-seq", "candidate without sequence")?;
             let seed_event =
-                |audit_event_id: &str, event_seq: Option<i64>, brief_id: &str| -> Result<()> {
+                |audit_event_id: &str, event_seq: Option<i64>, brief: &BriefRecord| -> Result<()> {
+                    let mut event = crate::types::brief_created_event_for(brief)?;
+                    event.id = audit_event_id.into();
+                    event.event_seq = event_seq.unwrap_or_default() as u64;
                     connection.execute(
                         "INSERT INTO audit_events (
                            audit_event_id, event_seq, agent_id, kind, created_at, data_json
@@ -750,19 +753,15 @@ mod tests {
                             event_seq,
                             "agent-a",
                             timestamp(Utc::now()),
-                            serde_json::json!({
-                                "brief_id": brief_id,
-                                "agent_id": "agent-a",
-                            })
-                            .to_string()
+                            serde_json::to_string(&event)?
                         ],
                     )?;
                     Ok(())
                 };
-            seed_event("event-linked", Some(11), &linked.id)?;
-            seed_event("event-ambiguous-a", Some(21), &ambiguous.id)?;
-            seed_event("event-ambiguous-b", Some(22), &ambiguous.id)?;
-            seed_event("event-missing-seq", None, &missing_seq.id)?;
+            seed_event("event-linked", Some(11), &linked)?;
+            seed_event("event-ambiguous-a", Some(21), &ambiguous)?;
+            seed_event("event-ambiguous-b", Some(22), &ambiguous)?;
+            seed_event("event-missing-seq", None, &missing_seq)?;
 
             apply_migration(&mut connection, &MIGRATIONS[48])?;
 
@@ -834,6 +833,9 @@ mod tests {
                     None,
                 );
                 brief.id = evidence_id.clone();
+                let mut event = crate::types::brief_created_event_for(&brief)?;
+                event.id = format!("event-bounded-{index}");
+                event.event_seq = (index + 1) as u64;
                 transaction.execute(
                     "INSERT INTO briefs (
                        evidence_id, agent_id, created_at, kind, preview, payload_json
@@ -852,15 +854,11 @@ mod tests {
                        audit_event_id, event_seq, agent_id, kind, created_at, data_json
                      ) VALUES (?1, ?2, ?3, 'brief_created', ?4, ?5)",
                     params![
-                        format!("event-bounded-{index}"),
+                        event.id,
                         index + 1,
                         "agent-a",
                         timestamp(Utc::now()),
-                        serde_json::json!({
-                            "brief_id": brief.id,
-                            "agent_id": "agent-a",
-                        })
-                        .to_string()
+                        serde_json::to_string(&event)?
                     ],
                 )?;
             }
@@ -887,8 +885,8 @@ mod tests {
              SELECT audit_event_id,
                     event_seq,
                     agent_id AS agent_id_col,
-                    COALESCE(json_extract(data_json, '$.agent_id'), '') AS agent_id_json,
-                    COALESCE(json_extract(data_json, '$.brief_id'), '') AS brief_id
+                    COALESCE(json_extract(data_json, '$.data.agent_id'), '') AS agent_id_json,
+                    COALESCE(json_extract(data_json, '$.data.brief_id'), '') AS brief_id
              FROM audit_events
              WHERE kind = 'brief_created';
              CREATE INDEX _idx_brief_created_candidates_lookup

@@ -3474,8 +3474,8 @@ fn backfill_brief_created_event_linkage(transaction: &Transaction<'_>) -> Result
          SELECT audit_event_id,
                 event_seq,
                 agent_id AS agent_id_col,
-                COALESCE(json_extract(data_json, '$.agent_id'), '') AS agent_id_json,
-                COALESCE(json_extract(data_json, '$.brief_id'), '') AS brief_id
+                COALESCE(json_extract(data_json, '$.data.agent_id'), '') AS agent_id_json,
+                COALESCE(json_extract(data_json, '$.data.brief_id'), '') AS brief_id
          FROM audit_events
          WHERE kind = 'brief_created';
          CREATE INDEX _idx_brief_created_candidates_lookup
