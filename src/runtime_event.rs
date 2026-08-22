@@ -26,6 +26,27 @@ pub enum ProjectionEffect {
     DisplayInvalidation,
 }
 
+/// Sound classification of one persisted runtime event envelope.
+///
+/// Exact typed events use the registry-declared effect. Recognizable legacy
+/// envelopes are safe but intentionally conservative. Unsupported typed
+/// shapes prevent the durable projection-effect capability from being
+/// advertised.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectionEffectClassification {
+    Exact(ProjectionEffect),
+    ConservativeLegacy(ProjectionEffect),
+    Unsupported(UnsupportedProjectionEvent),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnsupportedProjectionEvent {
+    UnknownTypedKind,
+    PayloadSchemaMismatch,
+    FuturePayloadSchemaVersion,
+    InvalidMetadata,
+}
+
 /// Every `RuntimeEventKind` variant, in declaration order. The registry
 /// inventory tests and the durable capability verification use this list to
 /// prove each served event family is classified exactly once.
@@ -223,31 +244,60 @@ pub fn runtime_event_registry() -> &'static [RuntimeEventDescriptor] {
     REGISTRY
 }
 
-/// Classifies one stored audit event for the additive envelope field.
-///
-/// The registry is the source of truth: a kind is classified by its
-/// descriptor only when the payload schema identity matches and the stored
-/// payload schema version is not newer than the registry's. Legacy events,
-/// unknown wire names, unknown schema versions, and schema mismatches all
-/// degrade conservatively to `DisplayInvalidation` so an unclassifiable
-/// event can never silently pass as projection-neutral.
-pub fn projection_effect_of(
+/// Classifies one stored audit event against the registry and legacy
+/// compatibility contract.
+pub fn classify_projection_effect(
     kind: &str,
+    contract_version: u32,
     payload_schema: &str,
     payload_schema_version: u32,
-) -> ProjectionEffect {
+) -> ProjectionEffectClassification {
+    if is_legacy_event_shape(payload_schema, contract_version) {
+        return ProjectionEffectClassification::ConservativeLegacy(
+            ProjectionEffect::DisplayInvalidation,
+        );
+    }
     match RuntimeEventKind::from_wire_name(kind) {
         Some(known) => {
             let descriptor = known.descriptor();
-            if descriptor.payload_schema == payload_schema
-                && payload_schema_version <= descriptor.payload_schema_version
-            {
-                descriptor.projection_effect
+            if descriptor.payload_schema != payload_schema {
+                ProjectionEffectClassification::Unsupported(
+                    UnsupportedProjectionEvent::PayloadSchemaMismatch,
+                )
+            } else if payload_schema_version > descriptor.payload_schema_version {
+                ProjectionEffectClassification::Unsupported(
+                    UnsupportedProjectionEvent::FuturePayloadSchemaVersion,
+                )
             } else {
-                ProjectionEffect::DisplayInvalidation
+                ProjectionEffectClassification::Exact(descriptor.projection_effect)
             }
         }
-        None => ProjectionEffect::DisplayInvalidation,
+        None => ProjectionEffectClassification::Unsupported(
+            UnsupportedProjectionEvent::UnknownTypedKind,
+        ),
+    }
+}
+
+/// Returns the conservative wire effect for a stored event.
+///
+/// Capability verification guarantees this is called only for exact or
+/// recognizable legacy envelopes. The fallback remains defensive so an
+/// unsupported event can never silently pass as projection-neutral.
+pub fn projection_effect_of(
+    kind: &str,
+    contract_version: u32,
+    payload_schema: &str,
+    payload_schema_version: u32,
+) -> ProjectionEffect {
+    match classify_projection_effect(
+        kind,
+        contract_version,
+        payload_schema,
+        payload_schema_version,
+    ) {
+        ProjectionEffectClassification::Exact(effect)
+        | ProjectionEffectClassification::ConservativeLegacy(effect) => effect,
+        ProjectionEffectClassification::Unsupported(_) => ProjectionEffect::DisplayInvalidation,
     }
 }
 
@@ -385,6 +435,7 @@ mod tests {
             assert_eq!(
                 projection_effect_of(
                     entry.wire_name,
+                    RUNTIME_EVENT_CONTRACT_VERSION,
                     entry.payload_schema,
                     entry.payload_schema_version
                 ),
@@ -394,7 +445,12 @@ mod tests {
             );
             // Older payload schema versions of a known schema still classify.
             assert_eq!(
-                projection_effect_of(entry.wire_name, entry.payload_schema, 1),
+                projection_effect_of(
+                    entry.wire_name,
+                    RUNTIME_EVENT_CONTRACT_VERSION,
+                    entry.payload_schema,
+                    1
+                ),
                 entry.projection_effect,
                 "older schema versions of a known schema must stay classified for {}",
                 entry.wire_name
@@ -406,12 +462,22 @@ mod tests {
     fn projection_effect_falls_back_conservatively() {
         // Unknown wire name with a non-legacy schema shape.
         assert_eq!(
-            projection_effect_of("future_kind", "holon.runtime_event.future", 1),
+            projection_effect_of(
+                "future_kind",
+                RUNTIME_EVENT_CONTRACT_VERSION,
+                "holon.runtime_event.future",
+                1
+            ),
             ProjectionEffect::DisplayInvalidation
         );
         // Known wire name with a mismatched payload schema.
         assert_eq!(
-            projection_effect_of("brief_created", "holon.runtime_event.some_other_schema", 1),
+            projection_effect_of(
+                "brief_created",
+                RUNTIME_EVENT_CONTRACT_VERSION,
+                "holon.runtime_event.some_other_schema",
+                1
+            ),
             ProjectionEffect::DisplayInvalidation
         );
         // Known schema identity but a payload schema version newer than the
@@ -420,6 +486,7 @@ mod tests {
         assert_eq!(
             projection_effect_of(
                 brief.wire_name,
+                RUNTIME_EVENT_CONTRACT_VERSION,
                 brief.payload_schema,
                 brief.payload_schema_version + 1
             ),
@@ -427,12 +494,85 @@ mod tests {
         );
         // Legacy markers classify conservatively even for known wire names.
         assert_eq!(
-            projection_effect_of("brief_created", LEGACY_PAYLOAD_SCHEMA, 1),
+            projection_effect_of(
+                "brief_created",
+                LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+                LEGACY_PAYLOAD_SCHEMA,
+                1
+            ),
             ProjectionEffect::DisplayInvalidation
         );
         assert!(is_legacy_event_shape(LEGACY_PAYLOAD_SCHEMA, 2));
         assert!(is_legacy_event_shape("holon.runtime_event.other", 1));
         assert!(!is_legacy_event_shape("holon.runtime_event.other", 2));
+    }
+
+    #[test]
+    fn projection_classification_distinguishes_exact_legacy_and_unsupported() {
+        let scheduler = RuntimeEventKind::SchedulerDiagnostic.descriptor();
+        assert_eq!(
+            classify_projection_effect(
+                scheduler.wire_name,
+                RUNTIME_EVENT_CONTRACT_VERSION,
+                scheduler.payload_schema,
+                scheduler.payload_schema_version,
+            ),
+            ProjectionEffectClassification::Exact(ProjectionEffect::None)
+        );
+
+        for kind in [
+            "agent_state_changed",
+            "brief_created",
+            "scheduler_diagnostic",
+            "future_legacy_kind",
+        ] {
+            assert_eq!(
+                classify_projection_effect(
+                    kind,
+                    LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+                    LEGACY_PAYLOAD_SCHEMA,
+                    1,
+                ),
+                ProjectionEffectClassification::ConservativeLegacy(
+                    ProjectionEffect::DisplayInvalidation
+                ),
+                "{kind} must remain soundly classifiable as legacy"
+            );
+        }
+
+        assert_eq!(
+            classify_projection_effect(
+                "brief_created",
+                RUNTIME_EVENT_CONTRACT_VERSION,
+                "holon.runtime_event.wrong",
+                1,
+            ),
+            ProjectionEffectClassification::Unsupported(
+                UnsupportedProjectionEvent::PayloadSchemaMismatch
+            )
+        );
+        assert_eq!(
+            classify_projection_effect(
+                scheduler.wire_name,
+                RUNTIME_EVENT_CONTRACT_VERSION,
+                scheduler.payload_schema,
+                scheduler.payload_schema_version + 1,
+            ),
+            ProjectionEffectClassification::Unsupported(
+                UnsupportedProjectionEvent::FuturePayloadSchemaVersion
+            )
+        );
+        assert_eq!(
+            classify_projection_effect(
+                "future_typed_kind",
+                RUNTIME_EVENT_CONTRACT_VERSION,
+                "holon.runtime_event.future",
+                1,
+            ),
+            ProjectionEffectClassification::Unsupported(
+                UnsupportedProjectionEvent::UnknownTypedKind
+            )
+        );
     }
 
     #[test]

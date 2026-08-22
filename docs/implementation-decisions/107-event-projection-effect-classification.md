@@ -10,9 +10,10 @@ task, work-item, and agent-state families are `display_invalidation`;
 Served envelopes carry the field only while `events.projection-effect.v1`
 is advertised (envelope contract version 3). A stored event classifies by
 wire name only when the payload schema identity matches and the payload
-schema version is not newer than the registry's; everything else — legacy
-events, unknown kinds, schema mismatches, unknown versions — is
-conservatively `display_invalidation`.
+schema version is not newer than the registry's. Recognizable legacy
+envelopes, including legacy rows whose wire name is now registry-known, are
+classified conservatively as `display_invalidation`. Unknown typed kinds,
+schema mismatches, and future schema versions remain unsupported.
 
 ## Reason
 
@@ -25,8 +26,9 @@ needlessly blocking readiness for events that reference no record.
 
 Gating emission on the durable `event_projection_effect_complete`
 verification keeps the advertisement honest against databases that contain
-typed-shaped events this binary cannot inventory, instead of serving effects
-that only look authoritative.
+typed-shaped events this binary cannot inventory. Completeness means every
+stored event has a sound classification; it does not require legacy events to
+receive the narrowest possible effect.
 
 ## Preserved boundary
 

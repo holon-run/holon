@@ -6033,11 +6033,18 @@ CREATE TABLE working_memory_deltas (
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         {
             let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-            let legacy = crate::types::AuditEvent::legacy(
-                "turn_started",
-                serde_json::json!({ "agent_id": "default" }),
-            );
-            db.audit_events().append(Some("default"), &legacy)?;
+            for kind in [
+                "agent_state_changed",
+                "brief_created",
+                "scheduler_diagnostic",
+                "future_legacy_kind",
+            ] {
+                let legacy = crate::types::AuditEvent::legacy(
+                    kind,
+                    serde_json::json!({ "agent_id": "default" }),
+                );
+                db.audit_events().append(Some("default"), &legacy)?;
+            }
             let descriptor = crate::runtime_event::RuntimeEventKind::WorkItemWritten.descriptor();
             let typed = crate::types::AuditEvent {
                 id: "evt_typed_fixture".into(),
@@ -6059,24 +6066,40 @@ CREATE TABLE working_memory_deltas (
     }
 
     #[test]
-    fn observer_sync_event_projection_effect_rejects_unclassifiable_events() -> Result<()> {
-        let (_temp_dir, db_path, lock_path) = temp_paths()?;
-        {
-            let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-            let mut future = crate::types::AuditEvent::legacy(
-                "future_kind",
-                serde_json::json!({ "opaque": true }),
+    fn observer_sync_event_projection_effect_rejects_unsupported_typed_events() -> Result<()> {
+        for (kind, payload_schema, payload_schema_version) in [
+            ("future_kind", "holon.runtime_event.future", 1),
+            ("brief_created", "holon.runtime_event.wrong", 1),
+            (
+                "scheduler_diagnostic",
+                crate::runtime_event::RuntimeEventKind::SchedulerDiagnostic
+                    .descriptor()
+                    .payload_schema,
+                crate::runtime_event::RuntimeEventKind::SchedulerDiagnostic
+                    .descriptor()
+                    .payload_schema_version
+                    + 1,
+            ),
+        ] {
+            let (_temp_dir, db_path, lock_path) = temp_paths()?;
+            {
+                let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+                let mut event =
+                    crate::types::AuditEvent::legacy(kind, serde_json::json!({ "opaque": true }));
+                event.contract_version = crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION;
+                event.payload_schema = payload_schema.into();
+                event.payload_schema_version = payload_schema_version;
+                db.audit_events().append(Some("default"), &event)?;
+                // The verification row predates this append; the reopen below
+                // re-verifies against committed contents.
+            }
+            let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+            let foundations = reopened.observer_sync_foundations()?;
+            assert!(
+                !foundations.event_projection_effect_complete,
+                "{kind}@{payload_schema}v{payload_schema_version} must stay unsupported"
             );
-            future.contract_version = crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION;
-            future.payload_schema = "holon.runtime_event.future".into();
-            future.payload_schema_version = 1;
-            db.audit_events().append(Some("default"), &future)?;
-            // The verification row predates this append; the reopen below
-            // re-verifies against committed contents.
         }
-        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        let foundations = reopened.observer_sync_foundations()?;
-        assert!(!foundations.event_projection_effect_complete);
         Ok(())
     }
 

@@ -485,6 +485,13 @@ legacy or otherwise unclassified events default conservatively to
 version; clients still accept older envelopes under the compatibility rules
 below.
 
+Capability verification distinguishes recognizable legacy envelopes from
+unsupported typed shapes. A legacy envelope remains complete when it can be
+soundly classified as `display_invalidation`, even if its wire name is now a
+known registry kind; completeness does not imply the most precise effect.
+Unknown typed kinds, mismatched typed schemas, and future schema versions keep
+the capability disabled.
+
 A known self-contained event may be applied directly. A reference event creates
 or updates durable hydration work. A delete event must include enough tombstone
 identity to complete projection without fetching a record that no longer

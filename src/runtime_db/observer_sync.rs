@@ -791,10 +791,9 @@ fn verify_brief_atomic_linkage(connection: &Connection) -> Result<bool> {
 
 /// Proves every stored audit event classifies soundly under the registry
 /// classification used for the additive `projection_effect` field. A
-/// registry-known kind must match its declared payload schema identity and
-/// carry a payload schema version this binary knows; an unknown kind must
-/// be recognizably legacy. Events that are neither cannot be inventoried by
-/// this binary, so `events.projection-effect.v1` stays unadvertised.
+/// exact typed and recognizable legacy events are both soundly classified.
+/// Unsupported typed shapes cannot be inventoried by this binary, so
+/// `events.projection-effect.v1` stays unadvertised.
 fn verify_event_projection_effect_inventory(connection: &Connection) -> Result<bool> {
     if !table_exists(connection, "audit_events")? {
         return Ok(false);
@@ -803,7 +802,8 @@ fn verify_event_projection_effect_inventory(connection: &Connection) -> Result<b
         "SELECT kind,
                 COALESCE(json_extract(data_json, '$.payload_schema'), ''),
                 COALESCE(json_extract(data_json, '$.payload_schema_version'), 0),
-                COALESCE(json_extract(data_json, '$.contract_version'), 1)
+                COALESCE(json_extract(data_json, '$.contract_version'), 1),
+                COUNT(*)
          FROM audit_events
          GROUP BY kind,
                   COALESCE(json_extract(data_json, '$.payload_schema'), ''),
@@ -816,27 +816,34 @@ fn verify_event_projection_effect_inventory(connection: &Connection) -> Result<b
             row.get::<_, String>(1)?,
             row.get::<_, i64>(2)?,
             row.get::<_, i64>(3)?,
+            row.get::<_, i64>(4)?,
         ))
     })?;
     let mut unclassified = Vec::new();
     for row in rows {
-        let (kind, payload_schema, payload_schema_version, contract_version) = row?;
-        let sound = match crate::runtime_event::RuntimeEventKind::from_wire_name(&kind) {
-            Some(event_kind) => {
-                let descriptor = event_kind.descriptor();
-                payload_schema_version >= 0
-                    && (payload_schema_version as u64)
-                        <= u64::from(descriptor.payload_schema_version)
-                    && descriptor.payload_schema == payload_schema
+        let (kind, payload_schema, payload_schema_version, contract_version, count) = row?;
+        let classification = match (
+            u32::try_from(contract_version),
+            u32::try_from(payload_schema_version),
+        ) {
+            (Ok(contract_version), Ok(payload_schema_version)) => {
+                crate::runtime_event::classify_projection_effect(
+                    &kind,
+                    contract_version,
+                    &payload_schema,
+                    payload_schema_version,
+                )
             }
-            None => crate::runtime_event::is_legacy_event_shape(
-                &payload_schema,
-                u32::try_from(contract_version.max(0)).unwrap_or(u32::MAX),
+            _ => crate::runtime_event::ProjectionEffectClassification::Unsupported(
+                crate::runtime_event::UnsupportedProjectionEvent::InvalidMetadata,
             ),
         };
-        if !sound {
+        if let crate::runtime_event::ProjectionEffectClassification::Unsupported(reason) =
+            classification
+        {
             unclassified.push(format!(
-                "{kind}@{payload_schema}v{payload_schema_version}/cv{contract_version}"
+                "{kind}@{payload_schema}v{payload_schema_version}/cv{contract_version}\
+                 /reason={reason:?}/count={count}"
             ));
         }
     }

@@ -313,6 +313,7 @@ fn stream_event_envelope(
         projection_effect: emit_projection_effect.then(|| {
             crate::runtime_event::projection_effect_of(
                 &event.kind,
+                event.contract_version,
                 &event.payload_schema,
                 event.payload_schema_version,
             )
