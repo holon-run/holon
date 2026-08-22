@@ -655,6 +655,14 @@ mod tests {
             .brief_by_id("agent-a", &brief.id)?
             .expect("brief stored");
         assert_eq!(stored.created_event_seq, Some(commit.event.event_seq));
+
+        drop(db);
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        assert!(
+            reopened
+                .observer_sync_foundations()?
+                .brief_atomic_linkage_verified
+        );
         Ok(())
     }
 
@@ -6608,6 +6616,27 @@ CREATE TABLE working_memory_deltas (
         let second = RuntimeDb::open_and_migrate(&second_path, &second_lock)?;
         assert_ne!(first.runtime_id()?, second.runtime_id()?);
         assert_ne!(first.event_log_epoch()?, second.event_log_epoch()?);
+        Ok(())
+    }
+
+    #[test]
+    fn observer_sync_agent_identity_verification_accepts_persisted_agent_state_shape() -> Result<()>
+    {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        {
+            let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+            db.agent_identities()
+                .upsert(&agent_identity("agent-state-shape", 0))?;
+            db.agent_states()
+                .upsert(&AgentState::new("agent-state-shape"))?;
+        }
+
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        assert!(
+            reopened
+                .observer_sync_foundations()?
+                .agent_identity_reserved
+        );
         Ok(())
     }
 

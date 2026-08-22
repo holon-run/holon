@@ -763,8 +763,8 @@ fn verify_brief_atomic_linkage(connection: &Connection) -> Result<bool> {
            SELECT COUNT(*) FROM audit_events e
            WHERE e.kind = 'brief_created'
              AND e.event_seq = b.created_event_seq
-             AND COALESCE(e.agent_id, json_extract(e.data_json, '$.agent_id')) = b.agent_id
-             AND json_extract(e.data_json, '$.brief_id') = b.evidence_id
+             AND COALESCE(e.agent_id, json_extract(e.data_json, '$.data.agent_id')) = b.agent_id
+             AND json_extract(e.data_json, '$.data.brief_id') = b.evidence_id
          ) != 1",
         [],
         |row| row.get(0),
@@ -892,7 +892,7 @@ fn count_agent_state_identity_mismatches(connection: &Connection) -> Result<u64>
             .ok()
             .and_then(|payload| {
                 payload
-                    .get("agent_id")
+                    .get("id")
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_string)
             });
