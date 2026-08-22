@@ -195,22 +195,39 @@ export async function cacheClearRemote(remoteKey: string): Promise<void> {
   const db = await openDB();
   if (!db) return;
   try {
-    const store = db.transaction(SESSIONS_STORE, "readwrite").objectStore(SESSIONS_STORE);
-    const index = store.index("byRemoteKey");
-    const range = IDBKeyRange.only(remoteKey);
-    await new Promise<void>((resolve, reject) => {
-      const request = index.openCursor(range);
-      request.onsuccess = () => {
-        const cursor = request.result;
-        if (cursor) {
-          cursor.delete();
-          cursor.continue();
-        } else {
-          resolve();
-        }
-      };
-      request.onerror = () => reject(request.error);
-    });
+    await Promise.all([
+      new Promise<void>((resolve, reject) => {
+        const store = db.transaction(SESSIONS_STORE, "readwrite").objectStore(SESSIONS_STORE);
+        const request = store.index("byRemoteKey").openCursor(IDBKeyRange.only(remoteKey));
+        request.onsuccess = () => {
+          const cursor = request.result;
+          if (cursor) {
+            cursor.delete();
+            cursor.continue();
+          } else {
+            resolve();
+          }
+        };
+        request.onerror = () => reject(request.error);
+      }),
+      new Promise<void>((resolve, reject) => {
+        const store = db.transaction(MODEL_CATALOG_STORE, "readwrite").objectStore(MODEL_CATALOG_STORE);
+        const request = store.openCursor();
+        request.onsuccess = () => {
+          const cursor = request.result;
+          if (cursor) {
+            const catalog = cursor.value as CachedModelCatalog;
+            if (catalog.remoteKey === remoteKey || catalog.remoteKey.startsWith(`${remoteKey}#`)) {
+              cursor.delete();
+            }
+            cursor.continue();
+          } else {
+            resolve();
+          }
+        };
+        request.onerror = () => reject(request.error);
+      }),
+    ]);
   } catch {
     // Silent fallback.
   }
