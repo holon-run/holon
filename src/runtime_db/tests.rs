@@ -6722,7 +6722,7 @@ CREATE TABLE working_memory_deltas (
             )?;
             connection.execute(
                 "INSERT INTO agent_states (agent_id, status, updated_at, payload_json) VALUES
-                    ('agent-state-only', 'idle', ?1, '{\"agent_id\":\"agent-state-only\"}')",
+                    ('agent-state-only', 'idle', ?1, '{\"id\":\"agent-state-only\"}')",
                 [now],
             )?;
             connection.execute(
@@ -6805,7 +6805,7 @@ CREATE TABLE working_memory_deltas (
             let now = "2026-01-01T00:00:00.000Z";
             connection.execute(
                 "INSERT INTO agent_states (agent_id, status, updated_at, payload_json) VALUES
-                    ('agent-broken', 'idle', ?1, '{\"agent_id\":\"agent-other\"}')",
+                    ('agent-broken', 'idle', ?1, '{\"id\":\"agent-other\"}')",
                 [now],
             )?;
             connection.execute(
