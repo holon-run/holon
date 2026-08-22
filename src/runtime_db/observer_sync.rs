@@ -790,8 +790,8 @@ fn verify_brief_atomic_linkage(connection: &Connection) -> Result<bool> {
 }
 
 /// Proves every stored audit event classifies soundly under the registry
-/// classification used for the additive `projection_effect` field. A
-/// exact typed and recognizable legacy events are both soundly classified.
+/// classification used for the additive `projection_effect` field. Exact typed
+/// and recognizable legacy events are both soundly classified.
 /// Unsupported typed shapes cannot be inventoried by this binary, so
 /// `events.projection-effect.v1` stays unadvertised.
 fn verify_event_projection_effect_inventory(connection: &Connection) -> Result<bool> {
