@@ -52,6 +52,11 @@ import {
   type LedgerUnreadView,
 } from "./read-state";
 import { ReadStateBus } from "./event-ledger";
+import {
+  CACHE_SCHEMA_VERSION,
+  cacheGetModelCatalog,
+  cachePutModelCatalog,
+} from "./idb-cache";
 import { ResumeReconciliationCoordinator } from "./resume-reconciliation";
 import { currentRemoteKey } from "./session-cache";
 import {
@@ -921,6 +926,54 @@ const emptyModelCatalog: RuntimeModelCatalog = {
   options: [],
 };
 
+function freshModelCatalog(catalog: RuntimeModelCatalog): RuntimeModelCatalog {
+  return {
+    ...catalog,
+    source: catalog.source === "fixture" ? "fixture" : "http",
+    stale: false,
+    cachedAt: Date.now(),
+    error: undefined,
+  };
+}
+
+function persistModelCatalog(config: RuntimeConnectionConfig, catalog: RuntimeModelCatalog): void {
+  if (catalog.source !== "http" || catalog.error) return;
+  void cachePutModelCatalog({
+    remoteKey: modelCatalogCacheKey(config),
+    schemaVersion: CACHE_SCHEMA_VERSION,
+    options: catalog.options,
+    cachedAt: catalog.cachedAt ?? Date.now(),
+  });
+}
+
+async function hydrateCachedModelCatalog(
+  config: RuntimeConnectionConfig,
+  generation: number,
+): Promise<void> {
+  const cached = await cacheGetModelCatalog(modelCatalogCacheKey(config));
+  if (!cached || !isCurrentClientGeneration(generation)) return;
+  useRuntimeStore.setState({
+    modelCatalog: {
+      source: "cache",
+      options: cached.options as RuntimeModelCatalog["options"],
+      stale: true,
+      cachedAt: cached.cachedAt,
+    },
+    modelCatalogError: undefined,
+  });
+}
+
+export function modelCatalogCacheKey(config: RuntimeConnectionConfig): string {
+  const token = config.token?.trim();
+  if (!token) return `${currentRemoteKey(config)}#anonymous`;
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < token.length; index += 1) {
+    hash ^= token.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `${currentRemoteKey(config)}#auth-${(hash >>> 0).toString(16).padStart(8, "0")}`;
+}
+
 const emptyRuntimeConfig: RuntimeConfigState = {
   source: "fixture",
 };
@@ -1783,6 +1836,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
 
   setRuntimeConnection: async (config) => {
     nextClientGeneration();
+    const generation = clientGeneration;
     cancelClientGenerationWork();
     const normalizedBaseUrl = config.mode === "remote" ? normalizeConnectionBaseUrl(config.baseUrl) : "";
     const retainedToken =
@@ -1870,6 +1924,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
       route: "dashboard",
       resumeRevision: get().resumeRevision + 1,
     });
+    await hydrateCachedModelCatalog(normalizedConfig, generation);
     await get().refreshBootstrap();
     // Initialize cache for the new remote (async, non-blocking).
     agentSessionRepository.initializeCache();
@@ -2039,14 +2094,15 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     const request = captureClientRequest();
     set({ modelCatalogLoading: true, modelCatalogError: undefined });
     try {
-      const modelCatalog = await request.client.getModels();
+      const modelCatalog = freshModelCatalog(await request.client.getModels());
       if (!isCurrentClientRequest(request)) return;
       set({ modelCatalog, modelCatalogLoading: false, modelCatalogError: modelCatalog.error });
+      persistModelCatalog(runtimeConnectionConfig, modelCatalog);
     } catch (error) {
       if (!isCurrentClientRequest(request)) return;
       const message = error instanceof Error ? error.message : String(error);
       set((state) => ({
-        modelCatalog: { ...state.modelCatalog, error: message },
+        modelCatalog: { ...state.modelCatalog, stale: state.modelCatalog.options.length > 0, error: message },
         modelCatalogLoading: false,
         modelCatalogError: message,
       }));
@@ -2081,14 +2137,15 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
       if (runtimeConfig.changed && !runtimeConfig.error) {
         set({ modelCatalogLoading: true, modelCatalogError: undefined });
         try {
-          const modelCatalog = await request.client.getModels();
+          const modelCatalog = freshModelCatalog(await request.client.getModels());
           if (!isCurrentClientRequest(request)) return runtimeConfig;
           set({ modelCatalog, modelCatalogLoading: false, modelCatalogError: modelCatalog.error });
+          persistModelCatalog(runtimeConnectionConfig, modelCatalog);
         } catch (modelError) {
           if (!isCurrentClientRequest(request)) return runtimeConfig;
           const message = modelError instanceof Error ? modelError.message : String(modelError);
           set((state) => ({
-            modelCatalog: { ...state.modelCatalog, error: message },
+            modelCatalog: { ...state.modelCatalog, stale: state.modelCatalog.options.length > 0, error: message },
             modelCatalogLoading: false,
             modelCatalogError: message,
           }));
@@ -2566,12 +2623,13 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     const request = captureClientRequest();
     try {
       const result = await request.client.setCredential(profile, kind, material);
-      const [credentialStore, runtimeConfig, modelCatalog] = await Promise.all([
+      const [credentialStore, runtimeConfig, fetchedModelCatalog] = await Promise.all([
         request.client.listCredentials(),
         request.client.getRuntimeConfig(),
         request.client.getModels(),
       ]);
       if (!isCurrentClientRequest(request)) return undefined;
+      const modelCatalog = freshModelCatalog(fetchedModelCatalog);
       set({
         credentialStore,
         credentialStoreError: undefined,
@@ -2580,6 +2638,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
         modelCatalog,
         modelCatalogError: modelCatalog.error,
       });
+      persistModelCatalog(runtimeConnectionConfig, modelCatalog);
       return result;
     } catch (error) {
       if (!isCurrentClientRequest(request)) return undefined;
@@ -2593,12 +2652,13 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     const request = captureClientRequest();
     try {
       await request.client.deleteCredential(profile);
-      const [credentialStore, runtimeConfig, modelCatalog] = await Promise.all([
+      const [credentialStore, runtimeConfig, fetchedModelCatalog] = await Promise.all([
         request.client.listCredentials(),
         request.client.getRuntimeConfig(),
         request.client.getModels(),
       ]);
       if (!isCurrentClientRequest(request)) return;
+      const modelCatalog = freshModelCatalog(fetchedModelCatalog);
       set({
         credentialStore,
         credentialStoreError: undefined,
@@ -2607,6 +2667,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
         modelCatalog,
         modelCatalogError: modelCatalog.error,
       });
+      persistModelCatalog(runtimeConnectionConfig, modelCatalog);
     } catch (error) {
       if (!isCurrentClientRequest(request)) return;
       const message = error instanceof Error ? error.message : String(error);
@@ -2645,12 +2706,13 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
           const job = await request.client.getJob(jobId);
           if (!isCurrentClientRequest(request)) return;
           if (job.status === "completed") {
-            const [credentialStore, runtimeConfig, modelCatalog] = await Promise.all([
+            const [credentialStore, runtimeConfig, fetchedModelCatalog] = await Promise.all([
               request.client.listCredentials(),
               request.client.getRuntimeConfig(),
               request.client.getModels(),
             ]);
             if (!isCurrentClientRequest(request)) return;
+            const modelCatalog = freshModelCatalog(fetchedModelCatalog);
             set({
               codexDeviceLogin: { status: "completed" },
               credentialStore,
@@ -2660,6 +2722,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
               modelCatalog,
               modelCatalogError: modelCatalog.error,
             });
+            persistModelCatalog(runtimeConnectionConfig, modelCatalog);
             return;
           }
           if (job.status === "failed") {
@@ -3499,6 +3562,13 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
 // Initialize session cache on first load.
 if (typeof window !== "undefined") {
   installRuntimeTraceDebugApi();
+  const modelCatalogHydrationGeneration = clientGeneration;
+  useRuntimeStore.setState({ modelCatalogLoading: true });
+  void hydrateCachedModelCatalog(runtimeConnectionConfig, modelCatalogHydrationGeneration).finally(() => {
+    if (isCurrentClientGeneration(modelCatalogHydrationGeneration)) {
+      useRuntimeStore.setState({ modelCatalogLoading: false });
+    }
+  });
   agentSessionRepository.initializeCache();
   resumeReconciliationCoordinator = installResumeReconciliationListeners();
   void resumeReconciliationCoordinator;

@@ -316,6 +316,8 @@ interface ModelAvailabilityDto {
   display_name?: string;
   available?: boolean;
   unavailable_reason?: string;
+  failure_kind?: string;
+  failure_disposition?: "retryable" | "fail_fast";
   policy?: {
     supported_parameters?: string[];
     reasoning_effort_options?: string[];
@@ -2190,33 +2192,46 @@ function sortableTime(value: string | undefined): number {
 }
 
 export function projectModelOptions(response: RuntimeModelsDto): RuntimeModelOption[] {
-  if (response.model_availability?.length) {
-    return response.model_availability
-      .filter((entry): entry is ModelAvailabilityDto & { model: string } => Boolean(entry.model))
-      .map((entry) => {
-        const provider = entry.provider ?? entry.model.split("/")[0] ?? "unknown";
-        const providerFamily = entry.provider_family ?? provider;
-        const endpoint = entry.endpoint ?? "default";
-        return {
-          model: entry.model,
-          routeRef: modelRouteRef(entry.model, providerFamily, endpoint),
-          provider,
-          providerFamily,
-          endpoint,
-          routeProvider: entry.route_provider ?? provider,
-          displayName: entry.display_name ?? entry.model,
-          available: entry.available ?? false,
-          unavailableReason: entry.unavailable_reason,
-          supportsImageInput: entry.policy?.capabilities?.image_input ?? false,
-          supportsImageGeneration: entry.policy?.capabilities?.image_generation ?? false,
-          supportsReasoningEffort: supportsReasoningEffort(entry),
-          reasoningEffortOptions: reasoningEffortOptions(entry),
-        };
-      })
-      .sort(compareModelOptions);
+  const optionsByRoute = new Map<string, RuntimeModelOption>();
+  for (const option of projectAvailableModels(response.available_models ?? [])) {
+    optionsByRoute.set(option.routeRef, option);
   }
 
-  return (response.available_models ?? [])
+  for (const entry of response.model_availability ?? []) {
+    if (!entry.model) continue;
+    const provider = entry.provider ?? entry.model.split("/")[0] ?? "unknown";
+    const providerFamily = entry.provider_family ?? provider;
+    const endpoint = entry.endpoint ?? "default";
+    const routeRef = modelRouteRef(entry.model, providerFamily, endpoint);
+    const existing = optionsByRoute.get(routeRef);
+    const retryableFailure = entry.available === false && entry.failure_disposition === "retryable";
+    optionsByRoute.set(routeRef, {
+      model: entry.model,
+      routeRef,
+      provider,
+      providerFamily,
+      endpoint,
+      routeProvider: entry.route_provider ?? provider,
+      displayName: entry.display_name ?? existing?.displayName ?? entry.model,
+      available: retryableFailure ? true : (entry.available ?? existing?.available ?? false),
+      unavailableReason: retryableFailure ? undefined : entry.unavailable_reason,
+      availabilityWarning: retryableFailure ? (entry.unavailable_reason ?? entry.failure_kind) : undefined,
+      supportsImageInput: entry.policy?.capabilities?.image_input ?? existing?.supportsImageInput ?? false,
+      supportsImageGeneration: entry.policy?.capabilities?.image_generation ?? existing?.supportsImageGeneration ?? false,
+      supportsReasoningEffort: supportsReasoningEffort(entry) || (existing?.supportsReasoningEffort ?? false),
+      reasoningEffortOptions: reasoningEffortOptions(entry).length
+        ? reasoningEffortOptions(entry)
+        : (existing?.reasoningEffortOptions ?? []),
+    });
+  }
+
+  return [...optionsByRoute.values()].sort(compareModelOptions);
+}
+
+function projectAvailableModels(
+  entries: Array<string | RuntimeAvailableModelDto>,
+): RuntimeModelOption[] {
+  return entries
     .map((entry) => {
       const model = typeof entry === "string" ? entry : entry.model;
       if (!model) return undefined;
@@ -2238,8 +2253,7 @@ export function projectModelOptions(response: RuntimeModelsDto): RuntimeModelOpt
         reasoningEffortOptions: typeof entry === "string" ? [] : reasoningEffortOptions(entry),
       };
     })
-    .filter((entry): entry is RuntimeModelOption => Boolean(entry))
-    .sort(compareModelOptions);
+    .filter((entry): entry is RuntimeModelOption => Boolean(entry));
 }
 
 function modelRouteRef(model: string, providerFamily: string, endpoint: string): string {

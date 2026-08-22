@@ -348,6 +348,12 @@ fn resolved_model_availability_entry(
         .as_str()
         .or_else(|| availability["failure_kind"].as_str())
         .map(ToString::to_string);
+    let failure_kind = availability["failure_kind"]
+        .as_str()
+        .map(ToString::to_string);
+    let failure_disposition = availability["disposition"]
+        .as_str()
+        .map(ToString::to_string);
     let unavailable_reason = if available {
         None
     } else if !provider_configured {
@@ -387,6 +393,8 @@ fn resolved_model_availability_entry(
         credential_configured: credential_configured || available,
         available,
         unavailable_reason,
+        failure_kind,
+        failure_disposition,
         policy,
         resolved_capabilities,
     }
@@ -642,6 +650,7 @@ mod tests {
             openai.unavailable_reason.as_deref(),
             Some("credential_missing")
         );
+        assert_eq!(openai.failure_disposition.as_deref(), Some("fail_fast"));
     }
 
     #[test]

@@ -4887,6 +4887,10 @@ pub struct ResolvedModelAvailability {
     pub available: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unavailable_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_disposition: Option<String>,
     pub policy: ResolvedRuntimeModelPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_capabilities: Option<crate::config::ResolvedModelCapabilities>,

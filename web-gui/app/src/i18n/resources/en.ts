@@ -909,6 +909,8 @@ const en = {
     available: "available",
     reasoningMeta: "reasoning",
     unavailableMeta: "unavailable",
+    availabilityWarningMeta: "check unavailable",
+    cachedModelCatalog: "Showing cached models because the latest refresh did not complete.",
     // Turn labels
     operatorTurn: "Operator turn",
     turn: "Turn",

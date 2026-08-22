@@ -910,6 +910,8 @@ const zh: Record<string, any> = {
     available: "可用",
     reasoningMeta: "推理",
     unavailableMeta: "不可用",
+    availabilityWarningMeta: "检查暂不可用",
+    cachedModelCatalog: "最新刷新未完成，当前显示并允许使用缓存模型。",
     // 轮次标签
     operatorTurn: "操作者轮次",
     turn: "轮次",

@@ -312,6 +312,8 @@ fn sample_model_availability(
         credential_configured: available,
         available,
         unavailable_reason: (!available).then_some("credential_missing".into()),
+        failure_kind: None,
+        failure_disposition: None,
         policy: crate::model_catalog::ResolvedRuntimeModelPolicy {
             model_ref,
             display_name: display_name.into(),

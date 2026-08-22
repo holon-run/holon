@@ -206,6 +206,67 @@ describe("projectModelOptions", () => {
       }),
     );
   });
+
+  it("keeps cached catalog models selectable when a runtime check fails retryably", () => {
+    const options = projectModelOptions({
+      available_models: [{
+        model: "openai/gpt-5.4",
+        provider: "openai",
+        display_name: "GPT-5.4",
+      }],
+      model_availability: [{
+        model: "openai/gpt-5.4",
+        provider: "openai",
+        available: false,
+        unavailable_reason: "connection failed",
+        failure_kind: "connection",
+        failure_disposition: "retryable",
+      }],
+    });
+
+    expect(options[0]).toEqual(expect.objectContaining({
+      available: true,
+      availabilityWarning: "connection failed",
+      unavailableReason: undefined,
+    }));
+  });
+
+  it("keeps deterministic configuration failures unavailable", () => {
+    const options = projectModelOptions({
+      available_models: ["openai/gpt-5.4"],
+      model_availability: [{
+        model: "openai/gpt-5.4",
+        provider: "openai",
+        available: false,
+        unavailable_reason: "credential_missing",
+        failure_kind: "auth_error",
+        failure_disposition: "fail_fast",
+      }],
+    });
+
+    expect(options[0]).toEqual(expect.objectContaining({
+      available: false,
+      unavailableReason: "credential_missing",
+      availabilityWarning: undefined,
+    }));
+  });
+
+  it("does not drop catalog models that lack an availability entry", () => {
+    const options = projectModelOptions({
+      available_models: ["openai/gpt-5.4", "anthropic/claude-sonnet-4-6"],
+      model_availability: [{
+        model: "openai/gpt-5.4",
+        provider: "openai",
+        available: true,
+      }],
+    });
+
+    expect(options.map((option) => option.model)).toEqual([
+      "anthropic/claude-sonnet-4-6",
+      "openai/gpt-5.4",
+    ]);
+    expect(options.every((option) => option.available)).toBe(true);
+  });
 });
 
 describe("createRuntimeClient", () => {

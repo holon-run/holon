@@ -12,6 +12,7 @@ import {
   materializeProjectionDetail,
   mergeBootstrapAgentState,
   mergeTimelineEventPage,
+  modelCatalogCacheKey,
   missingBriefIdsForHydration,
   readStoredRemoteConnectionProfiles,
   resetSessionsForResume,
@@ -81,6 +82,26 @@ describe("skillDetailCacheKey", () => {
     expect(skillDetailCacheKey("workspace:root:demo", "agent-a")).toBe(
       "agent-a\u0000workspace:root:demo",
     );
+  });
+});
+
+describe("modelCatalogCacheKey", () => {
+  it("isolates model catalogs by runtime and credential without storing the token", () => {
+    const first = modelCatalogCacheKey({
+      mode: "remote",
+      baseUrl: "https://runtime.example/",
+      token: "secret-a",
+    });
+    const second = modelCatalogCacheKey({
+      mode: "remote",
+      baseUrl: "https://runtime.example",
+      token: "secret-b",
+    });
+
+    expect(first).not.toBe(second);
+    expect(first).toContain("https://runtime.example#auth-");
+    expect(first).not.toContain("secret-a");
+    expect(modelCatalogCacheKey({ mode: "local" })).toBe("local#anonymous");
   });
 });
 

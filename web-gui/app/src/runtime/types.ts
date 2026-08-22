@@ -363,6 +363,7 @@ export interface RuntimeModelOption {
   displayName: string;
   available: boolean;
   unavailableReason?: string;
+  availabilityWarning?: string;
   supportsImageInput: boolean;
   supportsImageGeneration: boolean;
   supportsReasoningEffort: boolean;
@@ -370,8 +371,10 @@ export interface RuntimeModelOption {
 }
 
 export interface RuntimeModelCatalog {
-  source: "http" | "fixture";
+  source: "http" | "cache" | "fixture";
   options: RuntimeModelOption[];
+  stale?: boolean;
+  cachedAt?: number;
   error?: string;
 }
 

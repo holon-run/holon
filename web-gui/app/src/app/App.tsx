@@ -313,9 +313,23 @@ export function App() {
   }, [openAgent, openSkill, openTemplate, setRoute]);
 
   useEffect(() => {
-    if ((route !== "agent" && route !== "settings") || modelCatalogLoading || modelCatalog.options.length > 0) return;
+    if (
+      (route !== "agent" && route !== "settings") ||
+      modelCatalogLoading ||
+      modelCatalog.source === "http" ||
+      (modelCatalog.source !== "cache" && modelCatalog.cachedAt !== undefined) ||
+      Boolean(modelCatalog.error)
+    ) return;
     void refreshModelCatalog();
-  }, [modelCatalog.options.length, modelCatalogLoading, refreshModelCatalog, route]);
+  }, [
+    modelCatalog.cachedAt,
+    modelCatalog.error,
+    modelCatalog.source,
+    modelCatalog.stale,
+    modelCatalogLoading,
+    refreshModelCatalog,
+    route,
+  ]);
 
   useEffect(() => {
     if (route !== "settings" || runtimeConfigLoading || runtimeConfig.surface) return;

@@ -982,7 +982,12 @@ export function AgentPage({
                           {modelCatalogLoading ? t("common.loading") : t("common.refresh")}
                         </Button>
                       </div>
-                      {modelCatalogError ? (
+                      {modelCatalog.stale ? (
+                        <div className="model-picker-status" role="alert">
+                          {t("agent.cachedModelCatalog")}
+                          {modelCatalogError ? ` ${modelCatalogError}` : ""}
+                        </div>
+                      ) : modelCatalogError ? (
                         <div className="model-picker-status" role="alert">
                           {modelCatalogError}
                         </div>
@@ -1033,7 +1038,7 @@ export function AgentPage({
                                 key={option.routeRef}
                                 type="button"
                                 disabled={!option.available || changingModel !== null}
-                                title={option.unavailableReason ?? option.model}
+                                title={option.unavailableReason ?? option.availabilityWarning ?? option.model}
                                 onClick={() => void handleSelectModel(option)}
                               >
                                 <span>
@@ -1042,6 +1047,7 @@ export function AgentPage({
                                 </span>
                                 <span className="model-option-meta">
                                   {option.supportsReasoningEffort ? <small>{t("agent.reasoningMeta")}</small> : null}
+                                  {option.availabilityWarning ? <small>{t("agent.availabilityWarningMeta")}</small> : null}
                                   {!option.available ? <small>{t("agent.unavailableMeta")}</small> : null}
                                   {changingModel === option.routeRef ? <em>{t("common.saving")}</em> : null}
                                 </span>
