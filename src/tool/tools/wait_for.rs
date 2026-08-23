@@ -131,6 +131,7 @@ pub(crate) async fn execute(
                     "task result already completed; queued exact result message {result_message_id}"
                 )),
             );
+            result.should_sleep = true;
             result.terminal_transition = true;
             return Ok(result);
         }

@@ -34,7 +34,8 @@ use holon::{
         OperatorTransportBindingStatus, OperatorTransportCapabilities,
         OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind, Priority,
         QueueEntryStatus, TaskStatus, TodoItem, TodoItemState, TokenUsage, TranscriptEntry,
-        TranscriptEntryKind, TurnTerminalKind, WaitConditionKind, WaitingReason, WorkItemState,
+        TranscriptEntryKind, TurnNoBriefReason, TurnTerminalKind, WaitConditionKind, WaitingReason,
+        WorkItemState,
     },
 };
 use serde_json::json;
@@ -108,6 +109,105 @@ impl AgentProvider for WaitForDispatchProvider {
             }),
             kind: holon::provider::ModelToolCallKind::Function,
         });
+
+        Ok(ProviderTurnResponse {
+            blocks,
+            stop_reason: None,
+            input_tokens: 10,
+            output_tokens: 5,
+            cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
+            request_diagnostics: None,
+        })
+    }
+}
+
+struct QueuedTaskResultWaitProvider {
+    calls: Mutex<usize>,
+    task_id: Mutex<Option<String>>,
+}
+
+impl QueuedTaskResultWaitProvider {
+    fn new() -> Self {
+        Self {
+            calls: Mutex::new(0),
+            task_id: Mutex::new(None),
+        }
+    }
+
+    async fn calls(&self) -> usize {
+        *self.calls.lock().await
+    }
+
+    async fn task_id(&self) -> Option<String> {
+        self.task_id.lock().await.clone()
+    }
+}
+
+#[async_trait]
+impl AgentProvider for QueuedTaskResultWaitProvider {
+    async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let mut calls = self.calls.lock().await;
+        *calls += 1;
+        let call = *calls;
+        drop(calls);
+
+        let blocks = match call {
+            1 => vec![ModelBlock::ToolUse {
+                id: "promote-background-command".into(),
+                name: "ExecCommand".into(),
+                input: json!({
+                    "cmd": "sleep 0.4; printf background_done",
+                    "yield_time_ms": 100
+                }),
+                kind: holon::provider::ModelToolCallKind::Function,
+            }],
+            2 => {
+                let task_id = request
+                    .conversation
+                    .iter()
+                    .find_map(|message| match message {
+                        ConversationMessage::UserToolResults(results) => results
+                            .iter()
+                            .find_map(|result| {
+                                result
+                                    .content
+                                    .lines()
+                                    .find_map(|line| line.strip_prefix("Task: "))
+                            })
+                            .map(str::to_string),
+                        _ => None,
+                    })
+                    .expect("promoted command receipt should include the task id");
+                *self.task_id.lock().await = Some(task_id);
+                vec![ModelBlock::ToolUse {
+                    id: "wait-for-background-completion".into(),
+                    name: "ExecCommand".into(),
+                    input: json!({
+                        "cmd": "sleep 0.7",
+                        "yield_time_ms": 2_000
+                    }),
+                    kind: holon::provider::ModelToolCallKind::Function,
+                }]
+            }
+            3 => vec![ModelBlock::ToolUse {
+                id: "wait-for-queued-task-result".into(),
+                name: "WaitFor".into(),
+                input: json!({
+                    "reason": "consume the completed background command result",
+                    "wake": "task_result",
+                    "resource": self
+                        .task_id
+                        .lock()
+                        .await
+                        .clone()
+                        .expect("task id should be captured before WaitFor")
+                }),
+                kind: holon::provider::ModelToolCallKind::Function,
+            }],
+            _ => anyhow::bail!("WaitFor should complete the turn after the third provider call"),
+        };
 
         Ok(ProviderTurnResponse {
             blocks,
@@ -240,6 +340,84 @@ pub async fn wait_for_with_assistant_text_persists_result_brief() -> Result<()> 
     assert_eq!(turn.produced_brief_ids, vec![result_briefs[0].id.clone()]);
     assert_eq!(turn.waiting_condition_ids, vec![waits[0].id.clone()]);
 
+    Ok(())
+}
+
+pub async fn queued_task_result_wait_settles_tool_only_turn_and_reduces_result() -> Result<()> {
+    let provider = Arc::new(QueuedTaskResultWaitProvider::new());
+    let host = RuntimeHost::new_with_provider(test_config(), provider.clone())?;
+    attach_default_workspace(&host).await?;
+    let runtime = host.default_runtime().await?;
+    let message = runtime
+        .enqueue(MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "wait for the promoted command result".into(),
+            },
+        ))
+        .await?;
+
+    wait_until(|| {
+        let queue_entries = runtime.storage().read_recent_queue_entries(20)?;
+        Ok(queue_entries.iter().any(|entry| {
+            entry.message_id == message.id && entry.status == QueueEntryStatus::Processed
+        }))
+    })
+    .await?;
+
+    assert_eq!(provider.calls().await, 3);
+    let task_id = provider
+        .task_id()
+        .await
+        .expect("provider should capture the promoted task id");
+    let task_result = runtime
+        .storage()
+        .read_recent_messages(20)?
+        .into_iter()
+        .find(|message| {
+            message.kind == MessageKind::TaskResult
+                && message.task_id.as_deref() == Some(task_id.as_str())
+        })
+        .expect("background command should enqueue its task result");
+
+    wait_until(|| {
+        let queue_entries = runtime.storage().read_recent_queue_entries(20)?;
+        Ok(queue_entries.iter().any(|entry| {
+            entry.message_id == task_result.id && entry.status == QueueEntryStatus::Processed
+        }))
+    })
+    .await?;
+
+    let turns = runtime.storage().read_recent_turns(20)?;
+    let operator_turn = turns
+        .iter()
+        .find(|turn| turn.input_message_ids.contains(&message.id))
+        .expect("operator turn should settle");
+    assert!(operator_turn.produced_brief_ids.is_empty());
+    assert_eq!(
+        operator_turn
+            .terminal
+            .as_ref()
+            .and_then(|terminal| terminal.no_brief_reason.as_ref()),
+        Some(&TurnNoBriefReason::ToolOnlyWait)
+    );
+
+    let reducer_turn = turns
+        .iter()
+        .find(|turn| turn.input_message_ids.contains(&task_result.id))
+        .expect("queued task result should be consumed by a reducer-only turn");
+    assert!(matches!(
+        reducer_turn
+            .terminal
+            .as_ref()
+            .and_then(|terminal| terminal.no_brief_reason.as_ref()),
+        Some(TurnNoBriefReason::ReducerOnly { reason })
+            if reason == "task_result_without_model_reentry"
+    ));
     Ok(())
 }
 
