@@ -742,8 +742,9 @@ fn collect_agent_roster_rows(connection: &Connection) -> Result<AgentRosterSnaps
 /// Proves the stored Brief linkage is sound for the atomic created-event
 /// contract: every `created_event_seq` resolves to exactly one
 /// `brief_created` audit event of the same Agent referencing that Brief,
-/// and no sequence is claimed by two Briefs. Events whose records were
-/// pruned by retention carry no linkage and therefore stay acceptable.
+/// and no Agent-scoped sequence is claimed by two Briefs. Events whose
+/// records were pruned by retention carry no linkage and therefore stay
+/// acceptable.
 fn verify_brief_atomic_linkage(connection: &Connection) -> Result<bool> {
     if !table_exists(connection, "briefs")? || !table_exists(connection, "audit_events")? {
         return Ok(false);
@@ -771,9 +772,9 @@ fn verify_brief_atomic_linkage(connection: &Connection) -> Result<bool> {
     )?;
     let shared_sequences: i64 = connection.query_row(
         "SELECT COUNT(*) FROM (
-           SELECT created_event_seq FROM briefs
+           SELECT agent_id, created_event_seq FROM briefs
            WHERE created_event_seq IS NOT NULL
-           GROUP BY created_event_seq HAVING COUNT(*) > 1
+           GROUP BY agent_id, created_event_seq HAVING COUNT(*) > 1
          )",
         [],
         |row| row.get(0),
@@ -787,6 +788,73 @@ fn verify_brief_atomic_linkage(connection: &Connection) -> Result<bool> {
         return Ok(false);
     }
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::params;
+
+    fn insert_linked_brief(
+        connection: &Connection,
+        agent_id: &str,
+        brief_id: &str,
+        event_id: &str,
+        event_seq: i64,
+    ) -> Result<()> {
+        connection.execute(
+            "INSERT INTO briefs (
+               evidence_id, agent_id, created_at, kind, preview, payload_json, created_event_seq
+             ) VALUES (?1, ?2, '2026-01-01T00:00:00.000Z', 'result', 'preview', '{}', ?3)",
+            params![brief_id, agent_id, event_seq],
+        )?;
+        connection.execute(
+            "INSERT INTO audit_events (
+               audit_event_id, event_seq, agent_id, kind, created_at, data_json
+             ) VALUES (
+               ?1, ?2, ?3, 'brief_created', '2026-01-01T00:00:00.000Z',
+               json_object('data', json_object('agent_id', ?3, 'brief_id', ?4))
+             )",
+            params![event_id, event_seq, agent_id, brief_id],
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn brief_atomic_linkage_scopes_shared_sequences_by_agent() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let db = crate::runtime_db::RuntimeDb::open_and_migrate(
+            temp_dir.path().join("state/runtime.sqlite"),
+            temp_dir.path().join("state/runtime.lock"),
+        )?;
+        let connection = db.connection()?;
+
+        insert_linked_brief(&connection, "alpha", "brief_alpha", "event_alpha", 1)?;
+        insert_linked_brief(&connection, "beta", "brief_beta", "event_beta", 1)?;
+
+        assert!(verify_brief_atomic_linkage(&connection)?);
+        Ok(())
+    }
+
+    #[test]
+    fn brief_atomic_linkage_rejects_same_agent_shared_sequence() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let db = crate::runtime_db::RuntimeDb::open_and_migrate(
+            temp_dir.path().join("state/runtime.sqlite"),
+            temp_dir.path().join("state/runtime.lock"),
+        )?;
+        let connection = db.connection()?;
+        connection.execute_batch(
+            "DROP INDEX briefs_agent_created_event_seq;
+             DROP INDEX idx_audit_events_agent_event_seq_unique;",
+        )?;
+
+        insert_linked_brief(&connection, "alpha", "brief_one", "event_one", 1)?;
+        insert_linked_brief(&connection, "alpha", "brief_two", "event_two", 1)?;
+
+        assert!(!verify_brief_atomic_linkage(&connection)?);
+        Ok(())
+    }
 }
 
 /// Proves every stored audit event classifies soundly under the registry

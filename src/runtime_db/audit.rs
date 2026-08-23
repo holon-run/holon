@@ -601,7 +601,8 @@ classified AS (
      OR (
        b.created_event_seq IS NOT NULL
        AND (SELECT COUNT(*) FROM briefs shared
-            WHERE shared.created_event_seq = b.created_event_seq) > 1
+            WHERE shared.agent_id = b.agent_id
+              AND shared.created_event_seq = b.created_event_seq) > 1
      )
   UNION ALL
   SELECT b.agent_id, 'D', b.evidence_id, b.created_at
@@ -729,6 +730,35 @@ mod tests {
             params![id, seq, agent_id, kind, created_at, data_json],
         )?;
         Ok(())
+    }
+
+    fn insert_linked_brief(
+        connection: &Connection,
+        agent_id: &str,
+        brief_id: &str,
+        event_id: &str,
+        event_seq: i64,
+    ) -> Result<()> {
+        connection.execute(
+            "INSERT INTO briefs (
+               evidence_id, agent_id, created_at, kind, preview, payload_json, created_event_seq
+             ) VALUES (
+               ?1, ?2, '2026-01-01T00:00:00.000Z', 'result', 'bounded preview', '{}', ?3
+             )",
+            params![brief_id, agent_id, event_seq],
+        )?;
+        insert_event(
+            connection,
+            event_id,
+            event_seq,
+            agent_id,
+            "brief_created",
+            "2026-01-01T00:00:00.000Z",
+            &serde_json::json!({
+                "data": {"agent_id": agent_id, "brief_id": brief_id}
+            })
+            .to_string(),
+        )
     }
 
     #[test]
@@ -936,6 +966,76 @@ mod tests {
         assert!(!category("E").observable_offline);
         assert!(category("E").sample_ids.is_empty());
         assert!(report.has_new_violations());
+        Ok(())
+    }
+
+    #[test]
+    fn brief_integrity_scopes_shared_sequences_by_agent() -> Result<()> {
+        let (_temp_dir, db) = temp_db()?;
+        let connection = db.connection()?;
+        insert_linked_brief(&connection, "alpha", "brief_alpha", "event_alpha", 1)?;
+        insert_linked_brief(&connection, "beta", "brief_beta", "event_beta", 1)?;
+        connection.execute_batch(
+            "DROP INDEX briefs_agent_created_event_seq;
+             DROP INDEX idx_audit_events_agent_event_seq_unique;",
+        )?;
+        insert_linked_brief(
+            &connection,
+            "gamma",
+            "brief_gamma_one",
+            "event_gamma_one",
+            1,
+        )?;
+        insert_linked_brief(
+            &connection,
+            "gamma",
+            "brief_gamma_two",
+            "event_gamma_two",
+            1,
+        )?;
+        drop(connection);
+
+        let report = db.audit(RuntimeDbAuditOptions {
+            check: RuntimeDbAuditCheck::BriefIntegrity,
+            baseline_through: None,
+            sample_limit: 10,
+        })?;
+        let audit = report.brief_integrity.as_ref().expect("brief audit");
+        for agent_id in ["alpha", "beta"] {
+            let agent = audit
+                .agents
+                .iter()
+                .find(|agent| agent.agent_id == agent_id)
+                .expect("agent audit");
+            assert_eq!(agent.counts.valid_linked_briefs, 1);
+            assert_eq!(agent.counts.missing_or_ambiguous_linkage, 0);
+            assert_eq!(
+                agent
+                    .categories
+                    .iter()
+                    .find(|category| category.category == "C")
+                    .expect("category C")
+                    .new_violation,
+                0
+            );
+        }
+        let gamma = audit
+            .agents
+            .iter()
+            .find(|agent| agent.agent_id == "gamma")
+            .expect("gamma audit");
+        assert_eq!(gamma.counts.valid_linked_briefs, 2);
+        assert_eq!(gamma.counts.missing_or_ambiguous_linkage, 2);
+        let category_c = gamma
+            .categories
+            .iter()
+            .find(|category| category.category == "C")
+            .expect("category C");
+        assert_eq!(category_c.new_violation, 2);
+        assert_eq!(
+            category_c.sample_ids,
+            ["brief_gamma_one", "brief_gamma_two"]
+        );
         Ok(())
     }
 
