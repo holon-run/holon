@@ -5385,6 +5385,7 @@ mod tests {
             kind: crate::types::TurnTerminalKind::Completed,
             reason: None,
             last_assistant_message: Some("child finished after restart".into()),
+            no_brief_reason: None,
             checkpoint: None,
             completed_at: chrono::Utc::now(),
             duration_ms: 1,
@@ -5506,6 +5507,7 @@ mod tests {
             kind: crate::types::TurnTerminalKind::Completed,
             reason: None,
             last_assistant_message: Some("child says done before command finished".into()),
+            no_brief_reason: None,
             checkpoint: None,
             completed_at: chrono::Utc::now(),
             duration_ms: 1,
@@ -5635,6 +5637,7 @@ mod tests {
             kind: crate::types::TurnTerminalKind::Completed,
             reason: None,
             last_assistant_message: Some("child says done before wait resolved".into()),
+            no_brief_reason: None,
             checkpoint: None,
             completed_at: chrono::Utc::now(),
             duration_ms: 1,
@@ -7209,6 +7212,7 @@ mod tests {
         turn.terminal = Some(crate::types::TurnTerminalSummary {
             kind: crate::types::TurnTerminalKind::Completed,
             reason: None,
+            no_brief_reason: None,
             completed_at: Utc::now(),
             duration_ms: 100,
         });

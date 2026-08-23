@@ -558,6 +558,7 @@ WITH operator_turns AS (
   JOIN messages m ON m.evidence_id = t.trigger_message_id
   WHERE t.completed_at IS NOT NULL
     AND json_extract(m.payload_json, '$.authority_class') = 'operator_instruction'
+    AND json_extract(t.payload_json, '$.terminal.no_brief_reason') IS NULL
 ),
 deliveries AS (
   SELECT DISTINCT agent_id, turn_id FROM transcript_entries

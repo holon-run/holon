@@ -2003,6 +2003,7 @@ mod tests {
         record.terminal = Some(crate::types::TurnTerminalSummary {
             kind: crate::types::TurnTerminalKind::Completed,
             reason: None,
+            no_brief_reason: None,
             completed_at: Utc::now(),
             duration_ms: 42,
         });

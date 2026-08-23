@@ -23,8 +23,9 @@ use crate::config::ModelRouteRef;
 use crate::provider::{ModelBlock, ToolResultBlock};
 use crate::tool::{spec::ToolResultEnvelope, ToolCall};
 use crate::types::{
-    AuditEvent, BriefKind, Citation, ExecutionAdmissionProvenance, MessageEnvelope, TurnRecord,
-    TurnTerminalKind, TurnTerminalRecord, TurnTerminalSummary, TurnTriggerSummary,
+    AuditEvent, BriefKind, Citation, ExecutionAdmissionProvenance, MessageEnvelope,
+    TurnNoBriefReason, TurnRecord, TurnTerminalKind, TurnTerminalRecord, TurnTerminalSummary,
+    TurnTriggerSummary,
 };
 
 use super::{message_dispatch::message_text, RuntimeHandle};
@@ -198,7 +199,13 @@ impl RuntimeHandle {
     pub(super) async fn build_reducer_only_terminal_transition(
         &self,
         reason: impl Into<String>,
+        produced_brief: bool,
     ) -> Result<TurnTerminalTransition> {
+        let reason = reason.into();
+        let no_brief_reason = reason
+            .strip_prefix("reducer_only/")
+            .unwrap_or(&reason)
+            .to_string();
         let terminal = {
             let guard = self.inner.agent.lock().await;
             let turn_id = guard
@@ -211,8 +218,11 @@ impl RuntimeHandle {
                 turn_id,
                 turn_index: guard.state.turn_index,
                 kind: TurnTerminalKind::Completed,
-                reason: Some(reason.into()),
+                reason: Some(reason.clone()),
                 last_assistant_message: None,
+                no_brief_reason: (!produced_brief).then_some(TurnNoBriefReason::ReducerOnly {
+                    reason: no_brief_reason,
+                }),
                 checkpoint: None,
                 completed_at: chrono::Utc::now(),
                 duration_ms: 0,
@@ -460,6 +470,7 @@ impl RuntimeHandle {
             kind: TurnTerminalKind::Aborted,
             reason: Some(reason.to_string()),
             last_assistant_message,
+            no_brief_reason: Some(TurnNoBriefReason::Aborted),
             checkpoint: None,
             completed_at: chrono::Utc::now(),
             duration_ms,

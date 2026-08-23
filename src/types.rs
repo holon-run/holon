@@ -1665,6 +1665,8 @@ pub struct TurnTerminalRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_assistant_message: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_brief_reason: Option<TurnNoBriefReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint: Option<TurnTerminalCheckpointRecord>,
     pub completed_at: DateTime<Utc>,
     pub duration_ms: u64,
@@ -1703,6 +1705,8 @@ pub struct TurnTerminalSummary {
     pub kind: TurnTerminalKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_brief_reason: Option<TurnNoBriefReason>,
     pub completed_at: DateTime<Utc>,
     pub duration_ms: u64,
 }
@@ -1712,10 +1716,19 @@ impl TurnTerminalSummary {
         Self {
             kind: record.kind,
             reason: record.reason.clone(),
+            no_brief_reason: record.no_brief_reason.clone(),
             completed_at: record.completed_at,
             duration_ms: record.duration_ms,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TurnNoBriefReason {
+    ReducerOnly { reason: String },
+    Aborted,
+    ToolOnlyWait,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -5271,6 +5284,7 @@ mod tests {
             kind: TurnTerminalKind::Completed,
             reason: None,
             last_assistant_message: Some("assistant output that must stay out of the event".into()),
+            no_brief_reason: None,
             checkpoint: None,
             completed_at: Utc::now(),
             duration_ms: 123,

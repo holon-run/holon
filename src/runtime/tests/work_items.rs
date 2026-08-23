@@ -3187,6 +3187,7 @@ async fn turn_end_marks_unbound_completion_report_missing_and_persists_restart()
             kind: TurnTerminalKind::Completed,
             reason: None,
             last_assistant_message: None,
+            no_brief_reason: None,
             checkpoint: None,
             completed_at: Utc::now(),
             duration_ms: 10,
@@ -3840,7 +3841,7 @@ async fn abandoned_completion_report_protocol_interrupts_deferred_tool_atomicall
     );
     message.work_item_id = Some(work_item.id.clone());
 
-    let runtime_task = tokio::spawn(runtime.clone().run());
+    let mut runtime_task = tokio::spawn(runtime.clone().run());
     runtime.enqueue(message).await.unwrap();
     let abandonment = tokio::time::timeout(std::time::Duration::from_secs(3), async {
         loop {
@@ -3871,10 +3872,15 @@ async fn abandoned_completion_report_protocol_interrupts_deferred_tool_atomicall
             if terminal_projected {
                 break;
             }
-            assert!(
-                !runtime_task.is_finished(),
-                "runtime exited before the deferred completion tool and terminal were projected"
-            );
+            if runtime_task.is_finished() {
+                panic!(
+                    "runtime exited before the deferred completion tool and terminal were projected: {:#}",
+                    (&mut runtime_task)
+                        .await
+                        .expect("runtime task join")
+                        .expect_err("runtime unexpectedly completed")
+                );
+            }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     })
@@ -3916,6 +3922,15 @@ async fn abandoned_completion_report_protocol_interrupts_deferred_tool_atomicall
             .all(|brief| brief.kind != BriefKind::Result),
         "abandoned completion report protocol must not create a result brief"
     );
+    assert!(
+        runtime
+            .recent_briefs(10)
+            .await
+            .unwrap()
+            .iter()
+            .any(|brief| brief.kind == BriefKind::Failure),
+        "operator-visible protocol abandonment must promote a failure brief"
+    );
 
     let tools = runtime.storage().read_recent_tool_executions(10).unwrap();
     let completion_tools = tools
@@ -3953,6 +3968,7 @@ async fn abandoned_completion_report_protocol_interrupts_deferred_tool_atomicall
         .and_then(|turn| turn.terminal)
         .expect("protocol abandonment must write a terminal Turn");
     assert_eq!(terminal.kind, TurnTerminalKind::Aborted);
+    assert_eq!(terminal.no_brief_reason, None);
     let events = runtime.storage().read_recent_events(200).unwrap();
     assert!(events
         .iter()
@@ -4732,6 +4748,7 @@ async fn turn_end_work_item_commit_keeps_failed_turn_open_without_blocker() {
             kind: TurnTerminalKind::Aborted,
             reason: None,
             last_assistant_message: Some("provider context_length_exceeded".into()),
+            no_brief_reason: None,
             checkpoint: None,
             completed_at: Utc::now(),
             duration_ms: 42,
@@ -4780,6 +4797,7 @@ async fn turn_end_work_item_commit_preserves_existing_blocker_on_failed_turn() {
             kind: TurnTerminalKind::Aborted,
             reason: None,
             last_assistant_message: Some("provider timeout".into()),
+            no_brief_reason: None,
             checkpoint: None,
             completed_at: Utc::now(),
             duration_ms: 42,

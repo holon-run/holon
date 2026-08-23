@@ -250,6 +250,7 @@ fn provider_recovery_message(runtime: &RuntimeHandle, work_item_id: &str) -> Mes
     source_turn.terminal = Some(crate::types::TurnTerminalSummary {
         kind: TurnTerminalKind::DeferredToFallback,
         reason: None,
+        no_brief_reason: None,
         completed_at: Utc::now(),
         duration_ms: 1,
     });
@@ -1125,6 +1126,7 @@ async fn interrupted_message_replay_creates_new_turn_without_current_focus_drift
             kind: TurnTerminalKind::Completed,
             reason: None,
             last_assistant_message: None,
+            no_brief_reason: None,
             checkpoint: None,
             completed_at: Utc::now(),
             duration_ms: 1,
@@ -1361,9 +1363,21 @@ async fn late_terminal_task_result_for_completed_work_item_settles_without_model
     parent_turn.terminal = Some(crate::types::TurnTerminalSummary {
         kind: TurnTerminalKind::Completed,
         reason: Some("parent_completed".into()),
+        no_brief_reason: None,
         completed_at: Utc::now(),
         duration_ms: 1,
     });
+    let mut parent_brief = BriefRecord::new(
+        "default",
+        BriefKind::Result,
+        "parent completion already delivered",
+        None,
+        None,
+    );
+    parent_brief.turn_index = Some(parent_turn.turn_index);
+    parent_brief.turn_id = Some(parent_turn.turn_id.clone());
+    runtime.storage().append_brief(&parent_brief).unwrap();
+    parent_turn.produced_brief_ids.push(parent_brief.id);
     runtime.storage().append_turn(&parent_turn).unwrap();
     let mut result = task_result_message("task-late-child-result").with_admission(
         MessageDeliverySurface::TaskRejoin,
@@ -1416,7 +1430,7 @@ async fn late_terminal_task_result_for_completed_work_item_settles_without_model
         .into_iter()
         .find(|turn| {
             turn.terminal.as_ref().is_some_and(|terminal| {
-                terminal.reason.as_deref() == Some("reducer_only/task_result_without_model_reentry")
+                terminal.reason.as_deref() == Some("reducer_only/parent_turn_already_delivered")
             })
         })
         .expect("suppressed TaskResult should persist a matching terminal Turn");
@@ -1427,13 +1441,16 @@ async fn late_terminal_task_result_for_completed_work_item_settles_without_model
             .map(|terminal| terminal.kind.clone()),
         Some(TurnTerminalKind::Completed)
     );
-    assert_eq!(terminal_turn.produced_brief_ids.len(), 1);
-    let result_briefs = runtime
-        .storage()
-        .read_briefs_by_ids(&terminal_turn.produced_brief_ids)
-        .unwrap();
-    assert_eq!(result_briefs.len(), 1);
-    assert_eq!(result_briefs[0].kind, BriefKind::Result);
+    assert!(terminal_turn.produced_brief_ids.is_empty());
+    assert_eq!(
+        terminal_turn
+            .terminal
+            .as_ref()
+            .and_then(|terminal| terminal.no_brief_reason.as_ref()),
+        Some(&TurnNoBriefReason::ReducerOnly {
+            reason: "parent_turn_already_delivered".into(),
+        })
+    );
     assert_ne!(terminal_turn.turn_id, parent_turn.turn_id);
     assert_eq!(
         runtime
@@ -13023,6 +13040,21 @@ async fn task_status_routes_only_through_task_state_reduction() {
     assert!(events
         .iter()
         .any(|event| event.kind == "task_status_updated"));
+    let turn = runtime
+        .storage()
+        .read_recent_turns(1)
+        .unwrap()
+        .pop()
+        .expect("task_status reducer turn");
+    assert!(turn.produced_brief_ids.is_empty());
+    assert_eq!(
+        turn.terminal
+            .as_ref()
+            .and_then(|terminal| terminal.no_brief_reason.as_ref()),
+        Some(&TurnNoBriefReason::ReducerOnly {
+            reason: "task_status".into(),
+        })
+    );
 }
 
 #[test]

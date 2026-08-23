@@ -326,6 +326,7 @@ async fn reducer_only_dispatch_preserves_parent_turn_identity() {
     parent.terminal = Some(TurnTerminalSummary {
         kind: TurnTerminalKind::Completed,
         reason: Some("parent_completed".into()),
+        no_brief_reason: None,
         completed_at: Utc::now(),
         duration_ms: 1,
     });
@@ -375,6 +376,16 @@ async fn reducer_only_dispatch_preserves_parent_turn_identity() {
             .as_ref()
             .and_then(|terminal| terminal.reason.as_deref()),
         Some("reducer_only/brief_notification")
+    );
+    assert!(reducer_turn.produced_brief_ids.is_empty());
+    assert_eq!(
+        reducer_turn
+            .terminal
+            .as_ref()
+            .and_then(|terminal| terminal.no_brief_reason.as_ref()),
+        Some(&TurnNoBriefReason::ReducerOnly {
+            reason: "brief_notification".into(),
+        })
     );
 }
 

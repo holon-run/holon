@@ -129,7 +129,7 @@ use crate::{
         SkillActivationSource, SkillActivationState, SkillCatalogEntry, SkillLoadReason,
         SkillsRuntimeView, TaskKind, TaskLifecycleAuditEvent, TaskRecord, TaskRecoverySpec,
         TaskStatus, TimerRecord, TimerStatus, ToolExecutionRecord, TranscriptEntry,
-        TranscriptEntryKind, TurnRecord, TurnTerminalKind, ViewImageObservation,
+        TranscriptEntryKind, TurnNoBriefReason, TurnRecord, TurnTerminalKind, ViewImageObservation,
         WaitConditionRecord, WaitConditionStatus, WaitingReason, WorkItemExecutionBinding,
         WorkItemLifecycleAuditEvent, WorkItemRecord, WorkItemState, WorkspaceEntry,
         AGENT_HOME_WORKSPACE_ID,
@@ -3934,11 +3934,53 @@ impl RuntimeHandle {
         .await
     }
 
+    fn validate_terminal_brief_settlement(
+        &self,
+        transition: &turn::TurnTerminalTransition,
+    ) -> Result<()> {
+        let has_brief = !transition.turn_record.produced_brief_ids.is_empty();
+        let no_brief_reason = transition.terminal.no_brief_reason.as_ref();
+        let valid_no_brief = match (transition.terminal.kind, no_brief_reason) {
+            (TurnTerminalKind::Completed, Some(TurnNoBriefReason::ReducerOnly { reason })) => {
+                !reason.trim().is_empty()
+            }
+            (TurnTerminalKind::Completed, Some(TurnNoBriefReason::ToolOnlyWait)) => true,
+            (TurnTerminalKind::Aborted, Some(TurnNoBriefReason::Aborted)) => true,
+            _ => false,
+        };
+        if has_brief ^ valid_no_brief {
+            return Ok(());
+        }
+
+        let diagnostic = serde_json::json!({
+            "agent_id": transition.turn_record.agent_id,
+            "turn_id": transition.terminal.turn_id,
+            "turn_index": transition.terminal.turn_index,
+            "terminal_kind": transition.terminal.kind,
+            "produced_brief_ids": transition.turn_record.produced_brief_ids,
+            "no_brief_reason": transition.terminal.no_brief_reason,
+            "failure": if has_brief {
+                "brief_and_no_brief_reason_are_mutually_exclusive"
+            } else {
+                "terminal_missing_brief_settlement"
+            },
+        });
+        self.inner.storage.append_event(&AuditEvent::legacy(
+            "turn_terminal_brief_settlement_failed",
+            diagnostic,
+        ))?;
+        Err(anyhow!(
+            "turn {} cannot settle: expected exactly one of canonical Brief or valid typed NoBrief reason",
+            transition.terminal.turn_id
+        ))
+    }
+
     async fn commit_terminal_transition(
         &self,
         terminal_transition: &turn::TurnTerminalTransition,
         audit_events: Vec<AuditEvent>,
     ) -> Result<bool> {
+        self.validate_terminal_brief_settlement(terminal_transition)?;
         for attempt in 0..ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
             let agent_state = {
                 let guard = self.inner.agent.lock().await;
@@ -4006,6 +4048,9 @@ impl RuntimeHandle {
         transcript_entries: Vec<TranscriptEntry>,
         brief_evidence: Vec<BriefRecord>,
     ) -> Result<bool> {
+        if let Some(transition) = terminal_transition {
+            self.validate_terminal_brief_settlement(transition)?;
+        }
         let prepared_completion = terminal_transition
             .and_then(|transition| transition.prepared_work_item_completion.as_ref());
         let mut execution_protocol = if let Some(prepared) = prepared_completion {
@@ -4586,6 +4631,12 @@ impl RuntimeHandle {
                                 .produced_brief_ids
                                 .push(artifacts.brief.id.clone());
                         }
+                    }
+                    let mut terminal = terminal;
+                    if failure_artifacts.is_some() {
+                        terminal.no_brief_reason = None;
+                        turn_record.terminal =
+                            Some(crate::types::TurnTerminalSummary::from_terminal(&terminal));
                     }
                     let terminal_transition = turn::TurnTerminalTransition {
                         terminal,

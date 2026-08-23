@@ -360,6 +360,7 @@ impl RuntimeHandle {
             None => {
                 self.build_reducer_only_terminal_transition(
                     reducer_only_reason.unwrap_or("reducer_only/message_consumed"),
+                    false,
                 )
                 .await
             }

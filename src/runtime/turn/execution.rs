@@ -24,9 +24,11 @@ use crate::types::{
     AdmissionContext, AssistantRoundPurpose, AuditEvent, AuthorityClass, Citation, MessageBody,
     MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, Priority,
     QueueEntryRecord, QueueEntryStatus, TokenUsage, ToolExecutionAuditEvent, ToolExecutionRecord,
-    ToolExecutionStatus, TranscriptEntry, TranscriptEntryKind, TurnTerminalKind,
+    ToolExecutionStatus, TranscriptEntry, TranscriptEntryKind, TurnNoBriefReason, TurnTerminalKind,
     TurnTerminalRecord, WorkItemExecutionBinding,
 };
+#[cfg(test)]
+use crate::types::{BriefKind, BriefRecord};
 
 use super::checkpoint::{
     build_checkpoint_resume_round, checkpoint_state_from_last_terminal,
@@ -156,6 +158,7 @@ impl RuntimeHandle {
             .persist_turn_terminal_record(
                 TurnTerminalKind::Aborted,
                 Some(final_text.clone()),
+                None,
                 duration_ms,
                 None,
                 persist_terminal,
@@ -180,6 +183,7 @@ impl RuntimeHandle {
         &self,
         kind: TurnTerminalKind,
         last_assistant_message: Option<String>,
+        no_brief_reason: Option<TurnNoBriefReason>,
         duration_ms: u64,
         checkpoint_state: Option<&TurnLocalCheckpointState>,
         persist: bool,
@@ -187,6 +191,7 @@ impl RuntimeHandle {
         self.persist_turn_terminal_record_with_tool_executions(
             kind,
             last_assistant_message,
+            no_brief_reason,
             duration_ms,
             checkpoint_state,
             persist,
@@ -199,6 +204,7 @@ impl RuntimeHandle {
         &self,
         kind: TurnTerminalKind,
         last_assistant_message: Option<String>,
+        no_brief_reason: Option<TurnNoBriefReason>,
         duration_ms: u64,
         checkpoint_state: Option<&TurnLocalCheckpointState>,
         persist: bool,
@@ -224,6 +230,7 @@ impl RuntimeHandle {
                 kind,
                 reason: None,
                 last_assistant_message,
+                no_brief_reason,
                 checkpoint,
                 completed_at: chrono::Utc::now(),
                 duration_ms,
@@ -269,6 +276,7 @@ impl RuntimeHandle {
             .persist_turn_terminal_record_with_tool_executions(
                 TurnTerminalKind::Aborted,
                 last_assistant_message.clone(),
+                Some(TurnNoBriefReason::Aborted),
                 duration_ms,
                 None,
                 persist_terminal,
@@ -342,6 +350,7 @@ impl RuntimeHandle {
                 last_assistant_message
                     .clone()
                     .or_else(|| Some(final_text.clone())),
+                None,
                 duration_ms,
                 None,
                 persist_terminal,
@@ -827,7 +836,7 @@ impl RuntimeHandle {
         loop_control: LoopControlOptions,
     ) -> Result<AgentLoopOutcome> {
         self.reconfigure_provider_for_turn(None).await?;
-        Box::pin(
+        let result = Box::pin(
             TurnExecution {
                 runtime: self,
                 agent_id,
@@ -835,11 +844,89 @@ impl RuntimeHandle {
                 effective_prompt,
                 model_selection: TurnModelSelection::default(),
                 loop_control,
-                persist_terminal: true,
+                persist_terminal: false,
             }
             .run(),
         )
-        .await
+        .await;
+        let mut outcome = match result {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                if let Some(aborted) = error.downcast_ref::<CurrentRunAborted>() {
+                    self.persist_turn_aborted_record(
+                        &aborted.run_id,
+                        &aborted.reason,
+                        None,
+                        0,
+                        true,
+                    )
+                    .await?;
+                } else {
+                    self.persist_turn_terminal_record(
+                        TurnTerminalKind::Aborted,
+                        None,
+                        Some(TurnNoBriefReason::Aborted),
+                        0,
+                        None,
+                        true,
+                    )
+                    .await?;
+                }
+                return Err(error);
+            }
+        };
+
+        if outcome.prepared_work_item_completion.is_none()
+            && (outcome.terminal_kind.is_failure() || !outcome.final_text.trim().is_empty())
+        {
+            let kind = if outcome.terminal_kind.is_failure() {
+                BriefKind::Failure
+            } else {
+                BriefKind::Result
+            };
+            let mut brief =
+                BriefRecord::new(agent_id, kind, outcome.final_text.clone(), None, None);
+            brief.turn_id = Some(outcome.terminal.turn_id.clone());
+            brief.turn_index = Some(outcome.turn_index);
+            brief.citations =
+                (!outcome.final_citations.is_empty()).then(|| outcome.final_citations.clone());
+            brief.finalizes_assistant_round_id =
+                outcome.final_text_source_assistant_round_id.clone();
+            self.persist_brief(&brief).await?;
+            outcome.terminal.no_brief_reason = None;
+        }
+
+        let mut turn_record = self.build_turn_record(&outcome.terminal).await?;
+        if let Some(prepared) = outcome.prepared_work_item_completion.as_ref() {
+            if !turn_record.produced_brief_ids.contains(&prepared.brief.id) {
+                turn_record
+                    .produced_brief_ids
+                    .push(prepared.brief.id.clone());
+            }
+            if !turn_record
+                .completed_work_item_ids
+                .contains(&prepared.record.id)
+            {
+                turn_record
+                    .completed_work_item_ids
+                    .push(prepared.record.id.clone());
+            }
+            if let Some(tool_execution) = prepared.tool_execution.as_ref() {
+                if !turn_record.tool_execution_ids.contains(&tool_execution.id) {
+                    turn_record
+                        .tool_execution_ids
+                        .push(tool_execution.id.clone());
+                }
+            }
+        }
+        self.persist_terminal_transition(&super::TurnTerminalTransition {
+            terminal: outcome.terminal.clone(),
+            turn_record,
+            prepared_work_item_completion: outcome.prepared_work_item_completion.clone(),
+            terminal_tool_executions: outcome.terminal_tool_executions.clone(),
+        })
+        .await?;
+        Ok(outcome)
     }
 
     pub(crate) async fn run_agent_loop_deferred(
@@ -1094,6 +1181,7 @@ impl TurnExecution<'_> {
                         .persist_turn_terminal_record(
                             TurnTerminalKind::Aborted,
                             Some(final_text.clone()),
+                            None,
                             turn_started_at.elapsed().as_millis() as u64,
                             None,
                             persist_terminal,
@@ -1206,6 +1294,7 @@ impl TurnExecution<'_> {
                             .persist_turn_terminal_record(
                                 TurnTerminalKind::Aborted,
                                 last_assistant_message.clone(),
+                                Some(TurnNoBriefReason::Aborted),
                                 turn_started_at.elapsed().as_millis() as u64,
                                 None,
                                 persist_terminal,
@@ -1421,6 +1510,7 @@ impl TurnExecution<'_> {
                                 .persist_turn_terminal_record(
                                     TurnTerminalKind::BaselineOverBudget,
                                     Some(final_text.clone()),
+                                    None,
                                     turn_started_at.elapsed().as_millis() as u64,
                                     None,
                                     persist_terminal,
@@ -1593,6 +1683,7 @@ impl TurnExecution<'_> {
                             .persist_turn_terminal_record(
                                 TurnTerminalKind::Aborted,
                                 last_assistant_message.clone(),
+                                Some(TurnNoBriefReason::Aborted),
                                 turn_started_at.elapsed().as_millis() as u64,
                                 None,
                                 persist_terminal,
@@ -2103,6 +2194,7 @@ impl TurnExecution<'_> {
                     kind: TurnTerminalKind::Completed,
                     reason: None,
                     last_assistant_message: Some(final_text.clone()),
+                    no_brief_reason: None,
                     checkpoint: terminal_checkpoint_from_state(&checkpoint_state, turn_index),
                     completed_at: Utc::now(),
                     duration_ms: turn_started_at.elapsed().as_millis() as u64,
@@ -2305,6 +2397,7 @@ impl TurnExecution<'_> {
                     .persist_turn_terminal_record(
                         TurnTerminalKind::Completed,
                         last_assistant_message.clone(),
+                        None,
                         turn_started_at.elapsed().as_millis() as u64,
                         Some(&checkpoint_state),
                         persist_terminal,
@@ -2883,8 +2976,7 @@ impl TurnExecution<'_> {
             interjections.extend(after_tool_results_interjections);
             let has_operator_interjections = !interjections.is_empty();
             let terminal_wait_without_text =
-                round_tool_calls.iter().any(|call| call.name == "WaitFor")
-                    && !current_round_has_assistant_text;
+                all_tool_results_should_sleep && last_assistant_message.is_none();
             let round_record = TurnRoundRecord {
                 round,
                 estimated_tokens: build_round_estimated_tokens(
@@ -2927,6 +3019,7 @@ impl TurnExecution<'_> {
                     .persist_turn_terminal_record(
                         TurnTerminalKind::Completed,
                         terminal_assistant_message,
+                        terminal_wait_without_text.then_some(TurnNoBriefReason::ToolOnlyWait),
                         turn_started_at.elapsed().as_millis() as u64,
                         Some(&checkpoint_state),
                         persist_terminal,

@@ -525,7 +525,7 @@ impl RuntimeHandle {
             self.begin_reducer_only_turn(message, execution_admission_provenance)
                 .await?;
             return self
-                .build_reducer_only_terminal_transition("reducer_only/duplicate_task_result")
+                .build_reducer_only_terminal_transition("reducer_only/duplicate_task_result", false)
                 .await;
         }
         let parent_turn_already_delivered =
@@ -600,11 +600,14 @@ impl RuntimeHandle {
                 }),
             ))?;
         }
-        self.build_reducer_only_terminal_transition(if parent_turn_already_delivered {
-            "reducer_only/parent_turn_already_delivered"
-        } else {
-            "reducer_only/task_result_without_model_reentry"
-        })
+        self.build_reducer_only_terminal_transition(
+            if parent_turn_already_delivered {
+                "reducer_only/parent_turn_already_delivered"
+            } else {
+                "reducer_only/task_result_without_model_reentry"
+            },
+            emit_result_brief,
+        )
         .await
     }
 }

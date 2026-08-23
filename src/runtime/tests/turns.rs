@@ -8,6 +8,137 @@ struct PickThenExecProvider {
 
 struct StablePrefixDiagnosticsProvider;
 
+fn terminal_settlement_transition(
+    kind: TurnTerminalKind,
+    produced_brief_ids: Vec<String>,
+    no_brief_reason: Option<TurnNoBriefReason>,
+) -> turn::TurnTerminalTransition {
+    let terminal = TurnTerminalRecord {
+        turn_id: "turn-settlement".into(),
+        turn_index: 7,
+        kind,
+        reason: None,
+        last_assistant_message: None,
+        no_brief_reason,
+        checkpoint: None,
+        completed_at: Utc::now(),
+        duration_ms: 1,
+    };
+    let mut turn_record = TurnRecord::new("default", terminal.turn_id.clone(), terminal.turn_index);
+    turn_record.produced_brief_ids = produced_brief_ids;
+    turn_record.terminal = Some(crate::types::TurnTerminalSummary::from_terminal(&terminal));
+    turn::TurnTerminalTransition {
+        terminal,
+        turn_record,
+        prepared_work_item_completion: None,
+        terminal_tool_executions: Vec::new(),
+    }
+}
+
+#[test]
+fn terminal_settlement_accepts_exactly_one_brief_or_typed_no_brief_reason() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    for transition in [
+        terminal_settlement_transition(
+            TurnTerminalKind::Completed,
+            vec!["brief-result".into()],
+            None,
+        ),
+        terminal_settlement_transition(
+            TurnTerminalKind::Completed,
+            Vec::new(),
+            Some(TurnNoBriefReason::ReducerOnly {
+                reason: "task_status".into(),
+            }),
+        ),
+        terminal_settlement_transition(
+            TurnTerminalKind::Completed,
+            Vec::new(),
+            Some(TurnNoBriefReason::ToolOnlyWait),
+        ),
+        terminal_settlement_transition(
+            TurnTerminalKind::Aborted,
+            Vec::new(),
+            Some(TurnNoBriefReason::Aborted),
+        ),
+    ] {
+        runtime
+            .validate_terminal_brief_settlement(&transition)
+            .unwrap();
+    }
+}
+
+#[test]
+fn terminal_settlement_rejects_missing_or_ambiguous_settlement_with_diagnostic() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    for transition in [
+        terminal_settlement_transition(TurnTerminalKind::Completed, Vec::new(), None),
+        terminal_settlement_transition(
+            TurnTerminalKind::Completed,
+            vec!["brief-result".into()],
+            Some(TurnNoBriefReason::ToolOnlyWait),
+        ),
+        terminal_settlement_transition(
+            TurnTerminalKind::Completed,
+            Vec::new(),
+            Some(TurnNoBriefReason::ReducerOnly {
+                reason: "  ".into(),
+            }),
+        ),
+    ] {
+        let error = runtime
+            .validate_terminal_brief_settlement(&transition)
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("expected exactly one of canonical Brief or valid typed NoBrief reason"));
+    }
+
+    let diagnostics = runtime
+        .all_events()
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.kind == "turn_terminal_brief_settlement_failed")
+        .collect::<Vec<_>>();
+    assert_eq!(diagnostics.len(), 3);
+    assert_eq!(
+        diagnostics[0].data["failure"],
+        "terminal_missing_brief_settlement"
+    );
+    assert_eq!(
+        diagnostics[1].data["failure"],
+        "brief_and_no_brief_reason_are_mutually_exclusive"
+    );
+    assert_eq!(
+        diagnostics[2].data["failure"],
+        "terminal_missing_brief_settlement"
+    );
+}
+
 #[async_trait]
 impl AgentProvider for StablePrefixDiagnosticsProvider {
     async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
@@ -277,6 +408,63 @@ async fn runtime_records_text_only_round_observations() {
 }
 
 #[tokio::test]
+async fn ordinary_final_response_persists_canonical_brief_settlement() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("Final operator-visible response.")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator { actor_id: None },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "finish the turn".into(),
+        },
+    );
+
+    runtime
+        .process_interactive_message(
+            &message,
+            None,
+            LoopControlOptions {
+                max_tool_rounds: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let turn = runtime
+        .storage()
+        .read_recent_turns(1)
+        .unwrap()
+        .pop()
+        .expect("terminal turn");
+    assert_eq!(turn.produced_brief_ids.len(), 1);
+    assert_eq!(
+        turn.terminal
+            .as_ref()
+            .and_then(|terminal| terminal.no_brief_reason.as_ref()),
+        None
+    );
+    let brief = runtime
+        .storage()
+        .read_brief_by_id(&turn.produced_brief_ids[0])
+        .unwrap()
+        .expect("canonical result brief");
+    assert_eq!(brief.text, "Final operator-visible response.");
+}
+
+#[tokio::test]
 async fn first_provider_round_records_prompt_cache_identity_fields() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
@@ -441,6 +629,19 @@ async fn sleep_only_tool_round_completes_without_extra_provider_turn() {
             .map(|terminal| terminal.kind),
         Some(TurnTerminalKind::Completed)
     );
+    let turn = runtime
+        .storage()
+        .read_recent_turns(1)
+        .unwrap()
+        .pop()
+        .expect("sleep-only terminal turn");
+    assert!(turn.produced_brief_ids.is_empty());
+    assert_eq!(
+        turn.terminal
+            .as_ref()
+            .and_then(|terminal| terminal.no_brief_reason.as_ref()),
+        Some(&TurnNoBriefReason::ToolOnlyWait)
+    );
 }
 
 #[tokio::test]
@@ -488,6 +689,19 @@ async fn wait_for_only_tool_round_completes_without_extra_provider_turn() {
     assert_eq!(
         waiting[0].subject_ref.as_deref(),
         Some("github:holon-run/holon#1939")
+    );
+    let turn = runtime
+        .storage()
+        .read_recent_turns(1)
+        .unwrap()
+        .pop()
+        .expect("wait-only terminal turn");
+    assert!(turn.produced_brief_ids.is_empty());
+    assert_eq!(
+        turn.terminal
+            .as_ref()
+            .and_then(|terminal| terminal.no_brief_reason.as_ref()),
+        Some(&TurnNoBriefReason::ToolOnlyWait)
     );
 }
 
@@ -819,6 +1033,8 @@ async fn turn_local_compaction_rewrites_older_rounds_into_runtime_recap() {
     assert_eq!(outcome.terminal_kind, TurnTerminalKind::Completed);
     assert_eq!(outcome.final_text, "Finished after compacted continuation.");
     assert!(outcome.final_text_source_assistant_round_id.is_some());
+    assert!(outcome.terminal.checkpoint.is_some());
+    assert_eq!(outcome.terminal.no_brief_reason, None);
     assert_eq!(*provider.calls.lock().await, 6);
 
     let requests = provider.requests.lock().await;
@@ -1428,6 +1644,19 @@ async fn context_length_exceeded_turn_fails_fast_without_runtime_error() {
         .expect("failure brief should exist");
     assert!(failure.text.contains("context_length_exceeded"));
     assert_eq!(failure.turn_index, Some(1));
+    let turn = runtime
+        .storage()
+        .read_recent_turns(1)
+        .unwrap()
+        .pop()
+        .expect("aborted terminal turn");
+    assert_eq!(turn.produced_brief_ids, vec![failure.id.clone()]);
+    assert_eq!(
+        turn.terminal
+            .as_ref()
+            .and_then(|terminal| terminal.no_brief_reason.as_ref()),
+        None
+    );
 
     let events = runtime.storage().read_recent_events(20).unwrap();
     assert!(events
@@ -2229,6 +2458,7 @@ async fn runtime_failure_artifacts_append_turn_record_after_failure_brief() {
         .last_turn_terminal
         .expect("missing aborted turn terminal");
     assert_eq!(terminal.kind, TurnTerminalKind::Aborted);
+    assert_eq!(terminal.no_brief_reason, Some(TurnNoBriefReason::Aborted));
 
     runtime
         .persist_runtime_failure_artifacts(&message, &error)
@@ -2252,6 +2482,13 @@ async fn runtime_failure_artifacts_append_turn_record_after_failure_brief() {
     assert_eq!(
         turns[0].terminal.as_ref().map(|terminal| terminal.kind),
         Some(TurnTerminalKind::Aborted)
+    );
+    assert_eq!(
+        turns[0]
+            .terminal
+            .as_ref()
+            .and_then(|terminal| terminal.no_brief_reason.as_ref()),
+        None
     );
     assert_eq!(turns[0].produced_brief_ids, vec![failure_brief.id.clone()]);
 }

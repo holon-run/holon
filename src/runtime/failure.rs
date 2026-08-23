@@ -339,11 +339,12 @@ impl RuntimeHandle {
         message: &MessageEnvelope,
         error: &anyhow::Error,
     ) -> Result<()> {
-        let terminal = self.ensure_runtime_failure_terminal(None, 0).await?;
+        let mut terminal = self.ensure_runtime_failure_terminal(None, 0).await?;
         let artifacts = self
             .build_runtime_failure_artifacts(message, error, &terminal)
             .await?;
         self.persist_brief(&artifacts.brief).await?;
+        terminal.no_brief_reason = None;
         self.persist_turn_record(&terminal).await?;
         self.persist_transcript_evidence(&artifacts.transcript)?;
         {

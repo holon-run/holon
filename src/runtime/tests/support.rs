@@ -115,6 +115,9 @@ pub(crate) fn terminal_transition(
         kind: TurnTerminalKind::Completed,
         reason: None,
         last_assistant_message: Some("terminal transition committed".into()),
+        no_brief_reason: Some(crate::types::TurnNoBriefReason::ReducerOnly {
+            reason: "test_terminal_transition".into(),
+        }),
         checkpoint: None,
         completed_at: Utc::now(),
         duration_ms: 1,
@@ -254,6 +257,7 @@ pub(crate) async fn bind_turn_to_work_item(runtime: &RuntimeHandle, work_item_id
         kind: TurnTerminalKind::Completed,
         reason: None,
         last_assistant_message: Some("done".into()),
+        no_brief_reason: None,
         checkpoint: None,
         completed_at: Utc::now(),
         duration_ms: 10,

@@ -168,7 +168,7 @@ impl RuntimeHandle {
                 "rendered_system_chars": built.rendered_system_prompt.chars().count(),
             }),
         ))?;
-        let outcome = self
+        let mut outcome = self
             .run_agent_loop_deferred(
                 &message.agent_id,
                 message.authority_class.clone(),
@@ -196,6 +196,7 @@ impl RuntimeHandle {
                 outcome.final_text_source_assistant_round_id.as_deref(),
             );
             self.persist_brief(&brief).await?;
+            outcome.terminal.no_brief_reason = None;
         } else if !outcome.final_text.trim().is_empty() {
             // Always generate the normal result brief (no longer suppressed for
             // promoted completion reports). The same turn supports multiple briefs,
@@ -214,6 +215,7 @@ impl RuntimeHandle {
                 outcome.final_text_source_assistant_round_id.as_deref(),
             );
             self.persist_brief(&brief).await?;
+            outcome.terminal.no_brief_reason = None;
         }
         let mut turn_record = self.build_turn_record(&outcome.terminal).await?;
         if let Some(prepared) = outcome.prepared_work_item_completion.as_ref() {

@@ -145,6 +145,7 @@ async fn persist_turn_record_uses_turn_id_not_numeric_sequence_collisions() {
             kind: TurnTerminalKind::Completed,
             reason: None,
             last_assistant_message: None,
+            no_brief_reason: None,
             checkpoint: None,
             completed_at: Utc::now(),
             duration_ms: 1,
@@ -197,6 +198,7 @@ fn turn_record_identity_is_immutable_after_first_persist() {
     let terminal = crate::types::TurnTerminalSummary {
         kind: TurnTerminalKind::Completed,
         reason: None,
+        no_brief_reason: None,
         completed_at: Utc::now(),
         duration_ms: 5,
     };
@@ -263,6 +265,7 @@ async fn replay_persists_a_new_turn_with_source_provenance() {
     source_turn.terminal = Some(crate::types::TurnTerminalSummary {
         kind: TurnTerminalKind::Aborted,
         reason: Some("runtime_restart".into()),
+        no_brief_reason: None,
         completed_at: Utc::now(),
         duration_ms: 10,
     });
@@ -289,6 +292,7 @@ async fn replay_persists_a_new_turn_with_source_provenance() {
             kind: TurnTerminalKind::Completed,
             reason: None,
             last_assistant_message: None,
+            no_brief_reason: None,
             checkpoint: None,
             completed_at: Utc::now(),
             duration_ms: 20,
@@ -2267,6 +2271,7 @@ fn checkpoint_state_can_resume_from_structured_terminal_checkpoint() {
         kind: TurnTerminalKind::Completed,
         reason: None,
         last_assistant_message: Some("ordinary final text without checkpoint keywords".into()),
+        no_brief_reason: None,
         checkpoint: Some(TurnTerminalCheckpointRecord {
             request_id: "checkpoint-7".into(),
             requested_at_round: 3,
@@ -2315,6 +2320,7 @@ fn checkpoint_state_ignores_terminal_text_without_structured_checkpoint() {
                 "Progress checkpoint:\n\n- current user goal: fix issue\n- next goal-aligned action: apply patch"
                     .into(),
             ),
+            no_brief_reason: None,
             checkpoint: None,
             completed_at: chrono::Utc::now(),
             duration_ms: 10,

@@ -9,8 +9,8 @@ use crate::{
     types::{
         AdmissionContext, AgentStatus, AuthorityClass, ExecutionAdmissionProvenance, MessageBody,
         MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, Priority,
-        QueueEntryStatus, TurnRecord, TurnTerminalKind, TurnTerminalRecord, TurnTerminalSummary,
-        TurnTriggerSummary, WorkItemPlanStatus, WorkItemRecord, WorkItemState,
+        QueueEntryStatus, TurnNoBriefReason, TurnRecord, TurnTerminalKind, TurnTerminalRecord,
+        TurnTerminalSummary, TurnTriggerSummary, WorkItemPlanStatus, WorkItemRecord, WorkItemState,
     },
 };
 
@@ -582,6 +582,9 @@ async fn seed_scheduler_waiting_work(
         kind: TurnTerminalKind::Completed,
         reason: None,
         last_assistant_message: Some("scheduler waiting restart fixture terminal".into()),
+        no_brief_reason: Some(TurnNoBriefReason::ReducerOnly {
+            reason: "scheduler_acceptance_fixture".into(),
+        }),
         checkpoint: None,
         completed_at: Utc::now(),
         duration_ms: 1,
@@ -776,6 +779,9 @@ async fn scheduler_acceptance_terminal_transition(
         kind: TurnTerminalKind::Completed,
         reason: None,
         last_assistant_message: Some(last_assistant_message.into()),
+        no_brief_reason: Some(TurnNoBriefReason::ReducerOnly {
+            reason: "scheduler_acceptance_fixture".into(),
+        }),
         checkpoint: None,
         completed_at: Utc::now(),
         duration_ms: 1,
@@ -2079,6 +2085,7 @@ pub async fn seed_scheduler_terminal_recovery_fixture(
         kind: TurnTerminalKind::Completed,
         reason: None,
         last_assistant_message: Some("scheduler recovery fixture terminal".into()),
+        no_brief_reason: None,
         checkpoint: None,
         completed_at: Utc::now(),
         duration_ms: 1,
