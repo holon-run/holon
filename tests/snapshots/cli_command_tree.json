@@ -796,6 +796,48 @@
     "aliases": []
   },
   {
+    "path": "debug.runtime-db.audit",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "baseline-through",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "check",
+        "short": null,
+        "default_value": "all",
+        "possible_values": [
+          "projection-effects",
+          "brief-integrity",
+          "all"
+        ],
+        "required": false
+      },
+      {
+        "long": "json",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
+        "long": "sample-limit",
+        "short": null,
+        "default_value": "5",
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
     "path": "debug.runtime-db.compact",
     "positionals": [],
     "flags": [

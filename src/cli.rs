@@ -632,6 +632,16 @@ pub enum DebugCommands {
 
 #[derive(Debug, Subcommand)]
 pub enum RuntimeDbDebugCommands {
+    Audit {
+        #[arg(long, value_enum, default_value_t = RuntimeDbAuditCheckArg::All)]
+        check: RuntimeDbAuditCheckArg,
+        #[arg(long, value_name = "RFC3339")]
+        baseline_through: Option<String>,
+        #[arg(long, default_value_t = 5, value_parser = parse_positive_usize)]
+        sample_limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
     Retention {
         #[arg(long)]
         dry_run: bool,
@@ -642,6 +652,13 @@ pub enum RuntimeDbDebugCommands {
         #[arg(long)]
         json: bool,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum RuntimeDbAuditCheckArg {
+    ProjectionEffects,
+    BriefIntegrity,
+    All,
 }
 
 #[derive(Debug, Subcommand)]

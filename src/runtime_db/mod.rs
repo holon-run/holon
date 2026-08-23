@@ -10,6 +10,7 @@
 //! - [`repositories`]: domain repository implementations.
 //! - [`index_outbox`]: runtime index outbox repository.
 
+pub mod audit;
 pub mod connection;
 pub mod evidence;
 mod legacy_scheduler_wire;
@@ -27,6 +28,12 @@ pub mod observer_sync;
 mod index_outbox;
 
 // Re-export public types that are referenced as `crate::runtime_db::Type`.
+pub use crate::runtime_db::audit::{
+    AgentBriefIntegrityAudit, BriefIntegrityAudit, BriefIntegrityCategory, BriefIntegrityCounts,
+    ProjectionEffectInventoryGroup, ProjectionEffectsAudit, RuntimeDbAuditBaseline,
+    RuntimeDbAuditCheck, RuntimeDbAuditDatabase, RuntimeDbAuditOptions, RuntimeDbAuditReport,
+    ViolationSplit,
+};
 pub use crate::runtime_db::evidence::{
     EvidenceKind, EvidencePayloadRow, EvidenceQuery, EvidenceRow,
 };

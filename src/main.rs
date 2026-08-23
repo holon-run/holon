@@ -41,7 +41,9 @@ use holon::{
     provider::{provider_doctor, resolved_model_availability},
     run_once::{run_once, RunOnceRequest},
     runtime::{maybe_enqueue_first_run_intro, seed_scheduler_terminal_recovery_fixture},
-    runtime_db::{RuntimeDb, RuntimeDbLock},
+    runtime_db::{
+        RuntimeDb, RuntimeDbAuditCheck, RuntimeDbAuditOptions, RuntimeDbAuditReport, RuntimeDbLock,
+    },
     solve::{run_solve, SolveRequest},
     storage::AppStorage,
     tui::run_tui,
@@ -2939,6 +2941,49 @@ fn handle_runtime_db_debug_command(
     command: holon::cli::RuntimeDbDebugCommands,
 ) -> Result<()> {
     match command {
+        holon::cli::RuntimeDbDebugCommands::Audit {
+            check,
+            baseline_through,
+            sample_limit,
+            json,
+        } => {
+            let check = match check {
+                holon::cli::RuntimeDbAuditCheckArg::ProjectionEffects => {
+                    RuntimeDbAuditCheck::ProjectionEffects
+                }
+                holon::cli::RuntimeDbAuditCheckArg::BriefIntegrity => {
+                    RuntimeDbAuditCheck::BriefIntegrity
+                }
+                holon::cli::RuntimeDbAuditCheckArg::All => RuntimeDbAuditCheck::All,
+            };
+            let baseline_through = baseline_through
+                .map(|value| {
+                    chrono::DateTime::parse_from_rfc3339(&value)
+                        .with_context(|| {
+                            format!("invalid --baseline-through RFC3339 timestamp `{value}`")
+                        })
+                        .map(|value| value.with_timezone(&chrono::Utc))
+                })
+                .transpose()?;
+            let db = RuntimeDb::open_and_migrate(
+                config.runtime_db_path(),
+                config.runtime_db_lock_path(),
+            )?;
+            let report = db.audit(RuntimeDbAuditOptions {
+                check,
+                baseline_through,
+                sample_limit,
+            })?;
+            if json {
+                print_json(&serde_json::to_value(&report)?)?;
+            } else {
+                print_runtime_db_audit_human(&report);
+            }
+            if report.has_new_violations() {
+                return Err(anyhow!("runtime database audit found new violations"));
+            }
+            Ok(())
+        }
         holon::cli::RuntimeDbDebugCommands::Retention { dry_run, json } => {
             let policy = config.runtime_db_retention_policy()?;
             let db = RuntimeDb::open_and_migrate(
@@ -2971,6 +3016,84 @@ fn handle_runtime_db_debug_command(
             } else {
                 println!("{}", serde_json::to_string_pretty(&report)?);
                 Ok(())
+            }
+        }
+    }
+}
+
+fn print_runtime_db_audit_human(report: &RuntimeDbAuditReport) {
+    println!("runtime database audit");
+    println!("  path: {}", report.database.path);
+    println!("  schema version: {}", report.database.schema_version);
+    println!("  runtime id: {}", report.database.runtime_id);
+    println!("  event-log epoch: {}", report.database.event_log_epoch);
+    println!(
+        "  baseline through: {}",
+        report
+            .baseline
+            .baseline_through
+            .map(|value| value.to_rfc3339())
+            .unwrap_or_else(|| "<none; findings count as new violations>".to_string())
+    );
+    if let Some(audit) = &report.projection_effects {
+        println!("projection effects");
+        println!(
+            "  unsupported: historical_baseline={} new_violation={}",
+            audit.totals.historical_baseline, audit.totals.new_violation
+        );
+        for group in &audit.groups {
+            println!(
+                "  agent={} kind={} contract={} schema={}@{} classification={} effect={} reason={} count={} historical_baseline={} new_violation={} samples={}",
+                group.agent_id,
+                group.kind,
+                group.contract_version,
+                if group.payload_schema.is_empty() {
+                    "<legacy>"
+                } else {
+                    &group.payload_schema
+                },
+                group.payload_schema_version,
+                group.classification,
+                group.projection_effect.unwrap_or("-"),
+                group.unsupported_reason.unwrap_or("-"),
+                group.count,
+                group.historical_baseline,
+                group.new_violation,
+                group.sample_event_ids.join(","),
+            );
+        }
+    }
+    if let Some(audit) = &report.brief_integrity {
+        println!("brief integrity");
+        for agent in &audit.agents {
+            println!(
+                "  agent={} retained_event_floor={} event_head={} operator_messages={} terminal_turns={} deliveries={} briefs={} brief_created_events={} valid_linked_briefs={}",
+                agent.agent_id,
+                agent
+                    .retained_event_floor
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                agent
+                    .event_head
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                agent.counts.operator_messages,
+                agent.counts.terminal_turns,
+                agent.counts.operator_visible_assistant_deliveries,
+                agent.counts.canonical_briefs,
+                agent.counts.brief_created_events,
+                agent.counts.valid_linked_briefs,
+            );
+            for category in &agent.categories {
+                println!(
+                    "    category={} observable_offline={} historical_baseline={} new_violation={} samples={} description={}",
+                    category.category,
+                    category.observable_offline,
+                    category.historical_baseline,
+                    category.new_violation,
+                    category.sample_ids.join(","),
+                    category.description,
+                );
             }
         }
     }
