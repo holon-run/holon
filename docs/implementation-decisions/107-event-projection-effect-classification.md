@@ -30,6 +30,14 @@ typed-shaped events this binary cannot inventory. Completeness means every
 stored event has a sound classification; it does not require legacy events to
 receive the narrowest possible effect.
 
+The proof records a classifier version, event-log epoch, audit mutation
+generation, and verified generation. Trusted appends classify and advance it
+atomically. Audit inserts or classification-relevant updates outside that path
+advance only the mutation generation, making capability reads fail closed and
+forcing the next database open to run a full inventory. An unchanged current
+proof is reused on open. This keeps steady-state restart cost independent of
+retained event count without trusting untracked database mutation.
+
 ## Preserved boundary
 
 The fallback classification is total but conservative; adding a new event

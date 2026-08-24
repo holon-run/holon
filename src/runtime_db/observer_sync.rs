@@ -3,9 +3,9 @@
 //! S1 of the observer-sync plan introduces the verification source the S0
 //! capability evaluator requires: a capability may be advertised only while
 //! its storage and consistency invariants hold for the current database.
-//! Verification re-runs on every migration/open, and a failed check records
-//! `verified = 0` durably instead of failing the open, so a degraded database
-//! degrades advertisement rather than startup.
+//! Verification runs after migrations. Projection-effect inventory results
+//! carry a durable verifier/epoch/mutation proof so an unchanged database can
+//! reuse them instead of scanning the complete event log on every open.
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use crate::runtime_db::evidence::upsert_agent_identity_tx;
 use crate::types::{
     AgentIdentityRecord, AgentKind, AgentOwnership, AgentProfilePreset, AgentRegistryStatus,
-    AgentVisibility,
+    AgentVisibility, AuditEvent,
 };
 
 pub(crate) const RUNTIME_IDENTITY_STABLE: &str = "runtime_identity_stable";
@@ -23,6 +23,7 @@ pub(crate) const EVENT_PROJECTION_EFFECT_COMPLETE: &str = "event_projection_effe
 pub(crate) const BRIEF_ATOMIC_LINKAGE_VERIFIED: &str = "brief_atomic_linkage_verified";
 pub(crate) const ROSTER_SNAPSHOT_VERIFIED: &str = "roster_snapshot_verified";
 pub(crate) const PROJECTION_SNAPSHOT_VERIFIED: &str = "projection_snapshot_verified";
+pub(crate) const EVENT_PROJECTION_EFFECT_VERIFIER_VERSION: i64 = 1;
 
 /// Principal and entitlement used to derive the runtime-local public scope
 /// for unauthenticated local mode.
@@ -145,6 +146,15 @@ pub struct ObserverSyncFoundationVerification {
     /// linkage resolves to exactly one matching event. Retention-pruned
     /// history with no linkage stays acceptable.
     pub brief_atomic_linkage_verified: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EventProjectionEffectProof {
+    verified: bool,
+    verification_version: i64,
+    event_log_epoch: Option<String>,
+    event_generation: i64,
+    verified_event_generation: i64,
 }
 
 /// Per-Agent committed event recovery window used by the rich
@@ -285,22 +295,29 @@ pub(crate) fn verify_observer_sync_foundations(connection: &mut Connection) -> R
         &now,
         &reserved_detail,
     )?;
-    let inventory = verify_event_projection_effect_inventory(connection);
-    let inventory_detail = match &inventory {
-        Ok(complete) => serde_json::json!({
-            "registry_kinds": crate::runtime_event::ALL_RUNTIME_EVENT_KINDS.len(),
-            "complete": complete,
-        })
-        .to_string(),
-        Err(error) => serde_json::json!({ "error": format!("{error:#}") }).to_string(),
-    };
-    persist_verification(
-        connection,
-        EVENT_PROJECTION_EFFECT_COMPLETE,
-        inventory.unwrap_or(false),
-        &now,
-        &inventory_detail,
-    )?;
+    if reusable_event_projection_effect_verification(connection, &event_log_epoch)?.is_none() {
+        let inventory = verify_event_projection_effect_inventory(connection);
+        let inventory_detail = match &inventory {
+            Ok(complete) => serde_json::json!({
+                "source": "full_inventory",
+                "registry_kinds": crate::runtime_event::ALL_RUNTIME_EVENT_KINDS.len(),
+                "complete": complete,
+            })
+            .to_string(),
+            Err(error) => serde_json::json!({
+                "source": "full_inventory",
+                "error": format!("{error:#}"),
+            })
+            .to_string(),
+        };
+        persist_event_projection_effect_verification(
+            connection,
+            inventory.unwrap_or(false),
+            &event_log_epoch,
+            &now,
+            &inventory_detail,
+        )?;
+    }
     let linkage = verify_brief_atomic_linkage(connection);
     let linkage_detail = match &linkage {
         Ok(verified) => serde_json::json!({
@@ -926,6 +943,160 @@ fn verify_event_projection_effect_inventory(connection: &Connection) -> Result<b
     Ok(false)
 }
 
+fn event_projection_effect_proof(
+    connection: &Connection,
+) -> Result<Option<EventProjectionEffectProof>> {
+    connection
+        .query_row(
+            "SELECT verified, verification_version, event_log_epoch,
+                    event_generation, verified_event_generation
+             FROM observer_sync_capability_verifications
+             WHERE capability = ?1",
+            [EVENT_PROJECTION_EFFECT_COMPLETE],
+            |row| {
+                Ok(EventProjectionEffectProof {
+                    verified: row.get::<_, i64>(0)? != 0,
+                    verification_version: row.get(1)?,
+                    event_log_epoch: row.get(2)?,
+                    event_generation: row.get(3)?,
+                    verified_event_generation: row.get(4)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn reusable_event_projection_effect_verification(
+    connection: &Connection,
+    event_log_epoch: &str,
+) -> Result<Option<bool>> {
+    Ok(
+        event_projection_effect_proof(connection)?.and_then(|proof| {
+            (proof.verification_version == EVENT_PROJECTION_EFFECT_VERIFIER_VERSION
+                && proof.event_log_epoch.as_deref() == Some(event_log_epoch)
+                && proof.event_generation >= 0
+                && proof.event_generation == proof.verified_event_generation)
+                .then_some(proof.verified)
+        }),
+    )
+}
+
+fn persist_event_projection_effect_verification(
+    connection: &Connection,
+    verified: bool,
+    event_log_epoch: &str,
+    verified_at: &str,
+    detail: &str,
+) -> Result<()> {
+    connection.execute(
+        "INSERT INTO observer_sync_capability_verifications (
+             capability, verified, verified_at, detail, verification_version,
+             event_log_epoch, event_generation, verified_event_generation
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 0)
+         ON CONFLICT(capability) DO UPDATE SET
+           verified = excluded.verified,
+           verified_at = excluded.verified_at,
+           detail = excluded.detail,
+           verification_version = excluded.verification_version,
+           event_log_epoch = excluded.event_log_epoch,
+           verified_event_generation =
+             observer_sync_capability_verifications.event_generation",
+        rusqlite::params![
+            EVENT_PROJECTION_EFFECT_COMPLETE,
+            verified,
+            verified_at,
+            detail,
+            EVENT_PROJECTION_EFFECT_VERIFIER_VERSION,
+            event_log_epoch,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Advances the durable projection-effect proof for one event inserted by the
+/// trusted append path. The insert trigger has already advanced
+/// `event_generation`; only a proof that covered the immediately preceding
+/// generation may advance. Writes outside the trusted helper therefore leave
+/// a stale proof and force fail-closed full re-verification on next open.
+pub(crate) fn record_appended_event_projection_effect(
+    connection: &Connection,
+    event: &AuditEvent,
+) -> Result<()> {
+    let Some(proof) = event_projection_effect_proof(connection)? else {
+        return Ok(());
+    };
+    if proof.verification_version != EVENT_PROJECTION_EFFECT_VERIFIER_VERSION
+        || proof.event_log_epoch.as_deref() != Some(event.event_log_epoch.as_str())
+        || proof.event_generation <= 0
+        || proof.verified_event_generation != proof.event_generation - 1
+    {
+        return Ok(());
+    }
+
+    let classification = crate::runtime_event::classify_projection_effect(
+        &event.kind,
+        event.contract_version,
+        &event.payload_schema,
+        event.payload_schema_version,
+    );
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    match classification {
+        crate::runtime_event::ProjectionEffectClassification::Exact(_)
+        | crate::runtime_event::ProjectionEffectClassification::ConservativeLegacy(_) => {
+            connection.execute(
+                "UPDATE observer_sync_capability_verifications
+                 SET verified_event_generation = event_generation,
+                     verified_at = ?1
+                 WHERE capability = ?2
+                   AND verification_version = ?3
+                   AND event_log_epoch = ?4
+                   AND event_generation = ?5
+                   AND verified_event_generation = ?6",
+                rusqlite::params![
+                    now,
+                    EVENT_PROJECTION_EFFECT_COMPLETE,
+                    EVENT_PROJECTION_EFFECT_VERIFIER_VERSION,
+                    event.event_log_epoch,
+                    proof.event_generation,
+                    proof.verified_event_generation,
+                ],
+            )?;
+        }
+        crate::runtime_event::ProjectionEffectClassification::Unsupported(reason) => {
+            let detail = serde_json::json!({
+                "source": "trusted_append",
+                "complete": false,
+                "kind": event.kind,
+                "reason": format!("{reason:?}"),
+            })
+            .to_string();
+            connection.execute(
+                "UPDATE observer_sync_capability_verifications
+                 SET verified = 0,
+                     verified_at = ?1,
+                     detail = ?2,
+                     verified_event_generation = event_generation
+                 WHERE capability = ?3
+                   AND verification_version = ?4
+                   AND event_log_epoch = ?5
+                   AND event_generation = ?6
+                   AND verified_event_generation = ?7",
+                rusqlite::params![
+                    now,
+                    detail,
+                    EVENT_PROJECTION_EFFECT_COMPLETE,
+                    EVENT_PROJECTION_EFFECT_VERIFIER_VERSION,
+                    event.event_log_epoch,
+                    proof.event_generation,
+                    proof.verified_event_generation,
+                ],
+            )?;
+        }
+    }
+    Ok(())
+}
+
 /// Proves the creation guard is wired into the registry write path: an
 /// Active identity write for a retired reservation must be rejected, while
 /// re-asserting the tombstone stays legal. Runs inside a transaction that is
@@ -1037,6 +1208,7 @@ impl crate::runtime_db::RuntimeDb {
     /// read as false; load errors should degrade, not fail, the caller.
     pub fn observer_sync_foundations(&self) -> Result<ObserverSyncFoundationVerification> {
         let connection = self.connection()?;
+        let event_log_epoch = read_metadata(&connection, "event_log_epoch")?;
         let verified = |capability: &str| -> Result<bool> {
             Ok(connection
                 .query_row(
@@ -1053,7 +1225,11 @@ impl crate::runtime_db::RuntimeDb {
             agent_identity_reserved: verified(AGENT_IDENTITY_RESERVED)?,
             roster_snapshot_verified: verified(ROSTER_SNAPSHOT_VERIFIED)?,
             projection_snapshot_verified: verified(PROJECTION_SNAPSHOT_VERIFIED)?,
-            event_projection_effect_complete: verified(EVENT_PROJECTION_EFFECT_COMPLETE)?,
+            event_projection_effect_complete: reusable_event_projection_effect_verification(
+                &connection,
+                &event_log_epoch,
+            )?
+            .unwrap_or(false),
             brief_atomic_linkage_verified: verified(BRIEF_ATOMIC_LINKAGE_VERIFIED)?,
         })
     }

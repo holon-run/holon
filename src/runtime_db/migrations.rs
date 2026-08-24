@@ -3131,6 +3131,45 @@ CREATE TABLE IF NOT EXISTS brief_created_linkage_uncertain (
 );
 "#,
     },
+    Migration {
+        version: 50,
+        name: "observer_sync_event_verification_proof",
+        sql: r#"
+ALTER TABLE observer_sync_capability_verifications
+  ADD COLUMN verification_version INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE observer_sync_capability_verifications
+  ADD COLUMN event_log_epoch TEXT;
+ALTER TABLE observer_sync_capability_verifications
+  ADD COLUMN event_generation INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE observer_sync_capability_verifications
+  ADD COLUMN verified_event_generation INTEGER NOT NULL DEFAULT -1;
+
+INSERT OR IGNORE INTO observer_sync_capability_verifications (
+  capability, verified, verified_at, detail
+) VALUES (
+  'event_projection_effect_complete',
+  0,
+  strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+  '{"stage":"verification-proof-migration"}'
+);
+
+CREATE TRIGGER audit_events_projection_verification_insert
+AFTER INSERT ON audit_events
+BEGIN
+  UPDATE observer_sync_capability_verifications
+  SET event_generation = event_generation + 1
+  WHERE capability = 'event_projection_effect_complete';
+END;
+
+CREATE TRIGGER audit_events_projection_verification_update
+AFTER UPDATE OF kind, data_json ON audit_events
+BEGIN
+  UPDATE observer_sync_capability_verifications
+  SET event_generation = event_generation + 1
+  WHERE capability = 'event_projection_effect_complete';
+END;
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

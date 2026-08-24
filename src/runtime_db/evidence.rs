@@ -1037,6 +1037,7 @@ fn insert_audit_event_with_sequence_tx(
         event.id,
         event.event_seq
     );
+    crate::runtime_db::observer_sync::record_appended_event_projection_effect(tx, event)?;
     Ok(())
 }
 

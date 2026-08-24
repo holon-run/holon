@@ -492,6 +492,17 @@ known registry kind; completeness does not imply the most precise effect.
 Unknown typed kinds, mismatched typed schemas, and future schema versions keep
 the capability disabled.
 
+The durable verification proof is keyed by an explicit classifier version,
+`event_log_epoch`, and an audit-event mutation generation. The audit table
+advances that generation for inserts and classification-relevant updates.
+Trusted runtime appends classify the new envelope and advance the verified
+generation in the same transaction; direct SQL, import, or recovery writes
+that bypass the trusted append helper leave the proof stale. Database open
+reuses a current proof and performs the full historical inventory only after a
+classifier/epoch change or a stale mutation generation. `event_seq` is
+Agent-scoped, so the mutation generation is the global verification boundary
+rather than a fabricated global event sequence.
+
 A known self-contained event may be applied directly. A reference event creates
 or updates durable hydration work. A delete event must include enough tombstone
 identity to complete projection without fetching a record that no longer
@@ -878,6 +889,9 @@ a consistency boundary when one record or watermark failed to load.
 - add immutable Brief-to-created-event linkage;
 - make canonical record and event visibility atomic through a transaction or
   durable outbox; and
+- persist the projection-effect classifier version, event-log epoch, audit
+  mutation generation, and verified generation so unchanged history is not
+  re-inventoried on every database open; and
 - keep capabilities disabled until migration verification succeeds.
 
 ### Phase 2: Recovery Endpoints
@@ -967,6 +981,8 @@ They should not be implemented as aliases for the new contract.
 14. Retention loss is represented as truncation, not fabricated exact history.
 15. Epoch and visibility changes partition or clear local state before reuse.
 16. Global SSE is a hint and never the sole correctness source.
+17. A projection-effect capability is advertised only while its classifier,
+    epoch, and verified audit-mutation generation match the current database.
 
 ## Acceptance Matrix
 

@@ -89,6 +89,7 @@ mod tests {
             WorkStatus,
         },
         runtime_db::migrations::{RETAINED_SCHEDULER_AUDIT_TABLES, RETIRED_SCHEDULER_TABLES},
+        runtime_db::observer_sync::EVENT_PROJECTION_EFFECT_VERIFIER_VERSION,
         runtime_db::repositories::{enum_string, slim_task_record_for_payload},
         runtime_db::transitions::{
             AgentStateMutation, QueueHeadNoProgressCommand, QueueHeadNoProgressOutcome,
@@ -1723,7 +1724,7 @@ INSERT INTO storage_domains (
         assert!(
             error
                 .to_string()
-                .contains("supports runtime db schemas 46 through 49, found 45"),
+                .contains("supports runtime db schemas 46 through 50, found 45"),
             "{error:#}"
         );
         Ok(())
@@ -1846,7 +1847,7 @@ INSERT INTO scheduler_rollout_command_results (
         RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
 
         let connection = open_connection(&db_path)?;
-        assert_eq!(current_schema_version(&connection)?, 49);
+        assert_eq!(current_schema_version(&connection)?, 50);
         for table in RETIRED_SCHEDULER_TABLES {
             assert!(
                 !table_exists(&connection, table)?,
@@ -2000,7 +2001,7 @@ INSERT INTO scheduler_rollout_command_results (
 
             RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
             let connection = open_connection(&db_path)?;
-            assert_eq!(current_schema_version(&connection)?, 49);
+            assert_eq!(current_schema_version(&connection)?, 50);
             for table in RETIRED_SCHEDULER_TABLES {
                 assert!(
                     !table_exists(&connection, table)?,
@@ -2114,7 +2115,7 @@ INSERT INTO scheduler_rollout_command_results (
         drop(db);
 
         RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        assert_eq!(current_schema_version(&open_connection(&db_path)?)?, 49);
+        assert_eq!(current_schema_version(&open_connection(&db_path)?)?, 50);
         Ok(())
     }
 
@@ -2280,7 +2281,7 @@ INSERT INTO scheduler_rollout_command_results (
         drop(db);
 
         RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        assert_eq!(current_schema_version(&open_connection(&db_path)?)?, 49);
+        assert_eq!(current_schema_version(&open_connection(&db_path)?)?, 50);
         Ok(())
     }
 
@@ -2340,7 +2341,7 @@ INSERT INTO scheduler_rollout_command_results (
         drop(db);
 
         RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        assert_eq!(current_schema_version(&open_connection(&db_path)?)?, 49);
+        assert_eq!(current_schema_version(&open_connection(&db_path)?)?, 50);
         Ok(())
     }
 
@@ -6058,6 +6059,20 @@ CREATE TABLE working_memory_deltas (
                 data: serde_json::from_str(descriptor.fixture_json)?,
             };
             db.audit_events().append(Some("default"), &typed)?;
+            let proof: (i64, i64, i64) = db.connection()?.query_row(
+                "SELECT verified, event_generation, verified_event_generation
+                 FROM observer_sync_capability_verifications
+                 WHERE capability = 'event_projection_effect_complete'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(proof.0, 1);
+            assert_eq!(proof.1, 5);
+            assert_eq!(proof.2, proof.1);
+            assert!(
+                db.observer_sync_foundations()?
+                    .event_projection_effect_complete
+            );
         }
         let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
         let foundations = reopened.observer_sync_foundations()?;
@@ -6090,8 +6105,11 @@ CREATE TABLE working_memory_deltas (
                 event.payload_schema = payload_schema.into();
                 event.payload_schema_version = payload_schema_version;
                 db.audit_events().append(Some("default"), &event)?;
-                // The verification row predates this append; the reopen below
-                // re-verifies against committed contents.
+                assert!(
+                    !db.observer_sync_foundations()?
+                        .event_projection_effect_complete,
+                    "unsupported trusted append must disable the capability immediately"
+                );
             }
             let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
             let foundations = reopened.observer_sync_foundations()?;
@@ -6100,6 +6118,128 @@ CREATE TABLE working_memory_deltas (
                 "{kind}@{payload_schema}v{payload_schema_version} must stay unsupported"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn observer_sync_event_projection_effect_reuses_current_proof_on_reopen() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        {
+            let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+            db.connection()?.execute(
+                "UPDATE observer_sync_capability_verifications
+                 SET detail = 'proof-reuse-sentinel'
+                 WHERE capability = 'event_projection_effect_complete'",
+                [],
+            )?;
+        }
+
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let proof: (i64, String, i64, i64, i64) = reopened.connection()?.query_row(
+            "SELECT verified, detail, verification_version,
+                    event_generation, verified_event_generation
+             FROM observer_sync_capability_verifications
+             WHERE capability = 'event_projection_effect_complete'",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )?;
+        assert_eq!(proof.0, 1);
+        assert_eq!(proof.1, "proof-reuse-sentinel");
+        assert_eq!(proof.2, EVENT_PROJECTION_EFFECT_VERIFIER_VERSION);
+        assert_eq!(proof.3, proof.4);
+        Ok(())
+    }
+
+    #[test]
+    fn observer_sync_event_projection_effect_reverifies_stale_version_or_epoch() -> Result<()> {
+        for stale_column in ["verification_version", "event_log_epoch"] {
+            let (_temp_dir, db_path, lock_path) = temp_paths()?;
+            {
+                let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+                let sql = format!(
+                    "UPDATE observer_sync_capability_verifications
+                     SET {stale_column} = ?1, detail = 'stale-proof-sentinel'
+                     WHERE capability = 'event_projection_effect_complete'"
+                );
+                let stale_value = if stale_column == "verification_version" {
+                    "0"
+                } else {
+                    "epoch_stale"
+                };
+                db.connection()?.execute(&sql, [stale_value])?;
+            }
+
+            let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+            let (version, epoch, detail): (i64, String, String) =
+                reopened.connection()?.query_row(
+                    "SELECT verification_version, event_log_epoch, detail
+                     FROM observer_sync_capability_verifications
+                     WHERE capability = 'event_projection_effect_complete'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?;
+            assert_eq!(version, EVENT_PROJECTION_EFFECT_VERIFIER_VERSION);
+            assert_eq!(epoch, reopened.event_log_epoch()?);
+            assert!(detail.contains("full_inventory"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn observer_sync_event_projection_effect_direct_write_invalidates_proof() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        {
+            let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+            let epoch = db.event_log_epoch()?;
+            let event = crate::types::AuditEvent {
+                id: "evt_direct_unsupported".into(),
+                event_seq: 1,
+                event_log_epoch: epoch,
+                created_at: chrono::Utc::now(),
+                kind: "future_typed_kind".into(),
+                contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
+                payload_schema: "holon.runtime_event.future".into(),
+                payload_schema_version: 1,
+                data: serde_json::json!({ "opaque": true }),
+            };
+            db.connection()?.execute(
+                "INSERT INTO audit_events (
+                   audit_event_id, event_seq, agent_id, kind, created_at, data_json
+                 ) VALUES (?1, ?2, 'default', ?3, ?4, ?5)",
+                rusqlite::params![
+                    event.id,
+                    event.event_seq,
+                    event.kind,
+                    timestamp(event.created_at),
+                    serde_json::to_string(&event)?,
+                ],
+            )?;
+            assert!(
+                !db.observer_sync_foundations()?
+                    .event_projection_effect_complete,
+                "the insert trigger must make an untrusted write fail closed"
+            );
+        }
+
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let proof: (i64, i64, i64, String) = reopened.connection()?.query_row(
+            "SELECT verified, event_generation, verified_event_generation, detail
+             FROM observer_sync_capability_verifications
+             WHERE capability = 'event_projection_effect_complete'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        assert_eq!(proof.0, 0);
+        assert_eq!(proof.1, proof.2);
+        assert!(proof.3.contains("full_inventory"));
         Ok(())
     }
 
