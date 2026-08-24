@@ -492,7 +492,7 @@ describe("AgentSessionRepository ledger ingestion", () => {
       event_log_epoch: "epoch-1",
       snapshot_through_seq: 2,
       event_head_seq: 2,
-      oldest_retained_seq: null,
+      oldest_retained_seq: 0,
       projection: {
         agent: {},
         conversation: { latest_message_id: null, latest_transcript_entry_id: null },

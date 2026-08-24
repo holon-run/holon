@@ -303,7 +303,7 @@ describe("authoritative discovery cutover", () => {
       visibility_scope_id: "vis-1",
       agents: agentIds.map((agentId) => ({
         agent: listEntry(agentId),
-        event_window: { event_head_seq: 5, oldest_retained_seq: null },
+        event_window: { event_head_seq: 5, oldest_retained_seq: 0 },
         latest_brief: null,
       })),
       ...overrides,
@@ -811,4 +811,3 @@ function errorJsonResponse(status: number, body: unknown): Response {
     headers: { "content-type": "application/json" },
   });
 }
-
