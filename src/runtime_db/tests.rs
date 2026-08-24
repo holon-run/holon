@@ -6159,6 +6159,22 @@ CREATE TABLE working_memory_deltas (
     }
 
     #[test]
+    fn observer_sync_foundations_degrade_when_event_proof_metadata_is_unreadable() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        db.connection()?.execute(
+            "DELETE FROM runtime_metadata WHERE key = 'event_log_epoch'",
+            [],
+        )?;
+
+        let foundations = db.observer_sync_foundations()?;
+        assert!(foundations.runtime_identity_stable);
+        assert!(foundations.agent_identity_reserved);
+        assert!(!foundations.event_projection_effect_complete);
+        Ok(())
+    }
+
+    #[test]
     fn observer_sync_event_projection_effect_reverifies_stale_version_or_epoch() -> Result<()> {
         for stale_column in ["verification_version", "event_log_epoch"] {
             let (_temp_dir, db_path, lock_path) = temp_paths()?;

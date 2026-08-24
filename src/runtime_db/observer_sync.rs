@@ -1220,29 +1220,46 @@ impl crate::runtime_db::RuntimeDb {
     /// read as false; load errors should degrade, not fail, the caller.
     pub fn observer_sync_foundations(&self) -> Result<ObserverSyncFoundationVerification> {
         let connection = self.connection()?;
-        let event_log_epoch = read_metadata(&connection, "event_log_epoch")?;
-        let verified = |capability: &str| -> Result<bool> {
-            Ok(connection
+        let verified = |capability: &str| -> bool {
+            match connection
                 .query_row(
                     "SELECT verified FROM observer_sync_capability_verifications
                      WHERE capability = ?1",
                     [capability],
                     |row| row.get::<_, i64>(0),
                 )
-                .optional()?
-                .is_some_and(|value| value != 0))
+                .optional()
+            {
+                Ok(value) => value.is_some_and(|value| value != 0),
+                Err(error) => {
+                    tracing::debug!(
+                        capability,
+                        %error,
+                        "failed to load observer sync capability verification"
+                    );
+                    false
+                }
+            }
         };
+        let event_projection_effect_complete = read_metadata(&connection, "event_log_epoch")
+            .and_then(|event_log_epoch| {
+                reusable_event_projection_effect_verification(&connection, &event_log_epoch)
+            })
+            .unwrap_or_else(|error| {
+                tracing::debug!(
+                    %error,
+                    "failed to load observer sync event projection verification proof"
+                );
+                None
+            })
+            .unwrap_or(false);
         Ok(ObserverSyncFoundationVerification {
-            runtime_identity_stable: verified(RUNTIME_IDENTITY_STABLE)?,
-            agent_identity_reserved: verified(AGENT_IDENTITY_RESERVED)?,
-            roster_snapshot_verified: verified(ROSTER_SNAPSHOT_VERIFIED)?,
-            projection_snapshot_verified: verified(PROJECTION_SNAPSHOT_VERIFIED)?,
-            event_projection_effect_complete: reusable_event_projection_effect_verification(
-                &connection,
-                &event_log_epoch,
-            )?
-            .unwrap_or(false),
-            brief_atomic_linkage_verified: verified(BRIEF_ATOMIC_LINKAGE_VERIFIED)?,
+            runtime_identity_stable: verified(RUNTIME_IDENTITY_STABLE),
+            agent_identity_reserved: verified(AGENT_IDENTITY_RESERVED),
+            roster_snapshot_verified: verified(ROSTER_SNAPSHOT_VERIFIED),
+            projection_snapshot_verified: verified(PROJECTION_SNAPSHOT_VERIFIED),
+            event_projection_effect_complete,
+            brief_atomic_linkage_verified: verified(BRIEF_ATOMIC_LINKAGE_VERIFIED),
         })
     }
 
