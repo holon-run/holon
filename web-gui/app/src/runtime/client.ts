@@ -2063,8 +2063,8 @@ export interface RosterAgentEntry {
   entry: AgentListEntryDto;
   latestBriefPreview?: string;
   eventWindow: {
-    eventHeadSeq?: number;
-    oldestRetainedSeq?: number | null;
+    eventHeadSeq: number;
+    oldestRetainedSeq: number;
   };
 }
 
@@ -2079,8 +2079,8 @@ export function rosterAgentEntries(snapshot: AgentRosterSnapshotDto): RosterAgen
       entry,
       latestBriefPreview: generated.latest_brief?.preview || undefined,
       eventWindow: {
-        eventHeadSeq: generated.event_window?.event_head_seq,
-        oldestRetainedSeq: generated.event_window?.oldest_retained_seq ?? null,
+        eventHeadSeq: generated.event_window.event_head_seq,
+        oldestRetainedSeq: generated.event_window.oldest_retained_seq,
       },
     }];
   });
@@ -2501,7 +2501,7 @@ export function cursorNotFoundPayload(
   | {
       afterSeq: number;
       eventLogEpoch: string;
-      oldestRetainedSeq: number | null;
+      oldestRetainedSeq: number;
       eventHeadSeq: number;
     }
   | undefined {
@@ -2518,7 +2518,7 @@ export function cursorNotFoundPayload(
   return {
     afterSeq: extensions.afterSeq,
     eventLogEpoch: extensions.eventLogEpoch,
-    oldestRetainedSeq: extensions.oldestRetainedSeq ?? null,
+    oldestRetainedSeq: extensions.oldestRetainedSeq ?? 0,
     eventHeadSeq: extensions.eventHeadSeq,
   };
 }

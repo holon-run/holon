@@ -8,9 +8,9 @@
  * - an Agent with a contiguous cache catches up by replaying pages after
  *   its contiguous cursor until the observed head;
  * - reset reasons are independent and explicit: retained-prefix gap,
- *   cursor error, immutable content conflict, hydration divergence, epoch
- *   change, and visibility scope change;
- * - retention-family resets rebuild the same scope and keep the read-state
+ *   replay-budget exhaustion, cursor error, immutable content conflict,
+ *   hydration divergence, epoch change, and visibility scope change;
+ * - same-scope resets rebuild the Agent cache and keep the read-state
  *   record, marking truncation; epoch and visibility resets clear the old
  *   runtime scope entirely and never migrate read markers;
  * - live stream envelopes that arrive while recovery is in flight are
@@ -38,6 +38,7 @@ export type AgentRecoveryPhase =
 
 export type LedgerResetReason =
   | "retained_prefix_gap"
+  | "replay_budget_exceeded"
   | "cursor_error"
   | "immutable_conflict"
   | "hydration_divergence"
@@ -45,8 +46,9 @@ export type LedgerResetReason =
   | "visibility_scope_change";
 
 /** Reset reasons that rebuild the same scope key and keep the marker. */
-const RETENTION_FAMILY: ReadonlySet<LedgerResetReason> = new Set([
+const SAME_SCOPE_RESETS: ReadonlySet<LedgerResetReason> = new Set([
   "retained_prefix_gap",
+  "replay_budget_exceeded",
   "cursor_error",
   "immutable_conflict",
   "hydration_divergence",
@@ -58,7 +60,7 @@ export interface RecoveryProjectionSnapshot {
   eventLogEpoch: string;
   snapshotThroughSeq: number;
   eventHeadSeq: number;
-  oldestRetainedSeq: number | null;
+  oldestRetainedSeq: number;
   canonicalRecords: Array<{
     recordKind: LedgerRecordKind;
     recordId: string;
@@ -80,7 +82,7 @@ export interface RecoveryProjectionSnapshot {
 export interface RecoveryCursorError {
   afterSeq: number;
   eventLogEpoch: string;
-  oldestRetainedSeq: number | null;
+  oldestRetainedSeq: number;
   eventHeadSeq: number;
 }
 
@@ -91,6 +93,8 @@ export interface RecoveryEventPage {
   oldestRetainedSeq?: number | null;
   hasNewer?: boolean;
   cursorNotFound?: RecoveryCursorError;
+  /** Serialized response size when the transport can measure it exactly. */
+  responseBytes?: number;
 }
 
 export interface AgentRecoveryUpdate {
@@ -111,6 +115,16 @@ export interface AgentRecoveryHint {
   oldestRetainedSeq?: number | null;
 }
 
+/** Client-owned limits for one incremental replay attempt. */
+export interface AgentReplayBudget {
+  /** Maximum sequence distance accepted before the first page request. */
+  maxEstimatedGap: number;
+  maxPages: number;
+  maxEvents: number;
+  maxBytes: number;
+  maxElapsedMs: number;
+}
+
 export interface AgentRecoveryDependencies {
   remoteKey: string;
   pipeline: LedgerIngestionPipeline;
@@ -123,7 +137,9 @@ export interface AgentRecoveryDependencies {
   ): Promise<RecoveryEventPage>;
   onPhase?: (update: AgentRecoveryUpdate) => void;
   replayPageSize?: number;
-  maxReplayPages?: number;
+  replayBudget?: Partial<AgentReplayBudget>;
+  /** Injectable monotonic clock for deterministic budget tests. */
+  now?: () => number;
 }
 
 interface AgentRecoveryState {
@@ -139,8 +155,23 @@ interface AgentRecoveryState {
 }
 
 const DEFAULT_REPLAY_PAGE_SIZE = 200;
-const DEFAULT_MAX_REPLAY_PAGES = 1_000;
+const DEFAULT_REPLAY_BUDGET: Readonly<AgentReplayBudget> = {
+  maxEstimatedGap: 10_000,
+  maxPages: 50,
+  maxEvents: 10_000,
+  maxBytes: 16 * 1024 * 1024,
+  maxElapsedMs: 30_000,
+};
 const MAX_STALE_REPLAY_ROUNDS = 3;
+
+function serializedPageBytes(page: RecoveryEventPage): number {
+  if (page.responseBytes != null) return Math.max(0, page.responseBytes);
+  try {
+    return new TextEncoder().encode(JSON.stringify(page)).byteLength;
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
+}
 
 /** Effective local read boundary above which unread is counted. */
 function effectiveReadBoundary(record: LedgerReadStateRecord | undefined): number {
@@ -168,11 +199,13 @@ function sameRemoteScope(
 export class AgentRecoveryCoordinator {
   private readonly states = new Map<string, AgentRecoveryState>();
   private readonly pageSize: number;
-  private readonly maxPages: number;
+  private readonly replayBudget: Readonly<AgentReplayBudget>;
+  private readonly now: () => number;
 
   constructor(private readonly dependencies: AgentRecoveryDependencies) {
     this.pageSize = dependencies.replayPageSize ?? DEFAULT_REPLAY_PAGE_SIZE;
-    this.maxPages = dependencies.maxReplayPages ?? DEFAULT_MAX_REPLAY_PAGES;
+    this.replayBudget = { ...DEFAULT_REPLAY_BUDGET, ...dependencies.replayBudget };
+    this.now = dependencies.now ?? (() => performance.now());
   }
 
   /**
@@ -278,8 +311,17 @@ export class AgentRecoveryCoordinator {
       const status = this.dependencies.pipeline.status(state.scope);
       if (status && status.ingestedThroughSeq != null) {
         const contiguous = status.ingestedThroughSeq;
+        const floor = hint.oldestRetainedSeq;
+        if (floor != null && floor > 1 && contiguous < floor - 1) {
+          return this.bootstrap(agentId, hint, "retained_prefix_gap");
+        }
+        const targetHeadSeq = Math.max(hint.eventHeadSeq ?? 0, contiguous);
+        if (targetHeadSeq - contiguous > this.replayBudget.maxEstimatedGap) {
+          return this.bootstrap(agentId, hint, "replay_budget_exceeded");
+        }
         return this.replay(agentId, state.scope, contiguous, {
-          targetHeadSeq: Math.max(hint.eventHeadSeq ?? 0, contiguous),
+          targetHeadSeq,
+          oldestRetainedSeq: hint.oldestRetainedSeq,
         });
       }
     }
@@ -303,8 +345,13 @@ export class AgentRecoveryCoordinator {
     if (floor != null && floor > 1 && contiguous < floor - 1) {
       return this.bootstrap(agentId, hint, "retained_prefix_gap");
     }
+    const targetHeadSeq = hint.eventHeadSeq ?? contiguous;
+    if (targetHeadSeq - contiguous > this.replayBudget.maxEstimatedGap) {
+      return this.bootstrap(agentId, hint, "replay_budget_exceeded");
+    }
     return this.replay(agentId, scope, contiguous, {
-      targetHeadSeq: hint.eventHeadSeq ?? contiguous,
+      targetHeadSeq,
+      oldestRetainedSeq: hint.oldestRetainedSeq,
     });
   }
 
@@ -379,12 +426,15 @@ export class AgentRecoveryCoordinator {
       });
     }
 
-    const retentionReset = reset != null && RETENTION_FAMILY.has(reset);
-    const floor =
+    const sameScopeReset = reset != null && SAME_SCOPE_RESETS.has(reset);
+    const reportedFloor =
       snapshot.oldestRetainedSeq ??
-      (retentionReset ? hint.oldestRetainedSeq ?? null : null);
+      (sameScopeReset ? hint.oldestRetainedSeq ?? null : null);
+    const floor = reportedFloor != null && reportedFloor > 0 ? reportedFloor : undefined;
+    const budgetReset = reset === "replay_budget_exceeded";
+    const truncationBoundary = budgetReset ? snapshot.snapshotThroughSeq + 1 : floor;
     let readState: Partial<LedgerReadStateRecord> | undefined;
-    if (retentionReset) {
+    if (sameScopeReset) {
       const preserved = await this.dependencies.pipeline.readStateOf(scope);
       if (!preserved) {
         // A forced reset that landed on a scope with no preserved marker
@@ -392,15 +442,19 @@ export class AgentRecoveryCoordinator {
         // establishes a fresh baseline instead of a half-empty record.
         readState = {
           unreadBaselineSeq: snapshot.snapshotThroughSeq,
-          certainty: "exact",
-          historyTruncatedBeforeSeq: floor ?? undefined,
+          certainty: budgetReset ? "truncated" : "exact",
+          historyTruncatedBeforeSeq: truncationBoundary,
         };
       } else {
         const boundary = effectiveReadBoundary(preserved);
+        const recordedTruncation = Math.max(
+          preserved.historyTruncatedBeforeSeq ?? 0,
+          truncationBoundary ?? 0,
+        );
         readState = {
-          historyTruncatedBeforeSeq: floor ?? undefined,
+          historyTruncatedBeforeSeq: recordedTruncation || undefined,
           certainty:
-            floor != null && boundary < floor - 1
+            budgetReset || (floor != null && boundary < floor - 1)
               ? "truncated"
               : preserved.certainty ?? "exact",
         };
@@ -427,7 +481,7 @@ export class AgentRecoveryCoordinator {
         {
           clearFirst:
             reset != null || identityReset != null
-              ? { preserveReadState: retentionReset }
+              ? { preserveReadState: sameScopeReset }
               : undefined,
           readState,
         },
@@ -444,14 +498,16 @@ export class AgentRecoveryCoordinator {
       });
     }
     // An identity change is the structural cause and outranks whatever
-    // retention-family reason triggered the bootstrap.
+    // same-scope reason triggered the bootstrap.
     const resetReason = identityReset ?? reset;
     if (resetReason != null) state.lastResetReason = resetReason;
 
     return this.replay(agentId, scope, snapshot.snapshotThroughSeq, {
       targetHeadSeq: Math.max(snapshot.eventHeadSeq, hint.eventHeadSeq ?? 0),
+      oldestRetainedSeq: snapshot.oldestRetainedSeq,
       reset: resetReason,
       installed,
+      bootstrapAttempted: true,
     });
   }
 
@@ -462,8 +518,10 @@ export class AgentRecoveryCoordinator {
     afterSeq: number,
     context: {
       targetHeadSeq: number;
+      oldestRetainedSeq?: number | null;
       reset?: LedgerResetReason;
       installed?: LedgerIngestionStatus;
+      bootstrapAttempted?: boolean;
     },
   ): Promise<AgentRecoveryUpdate> {
     const state = this.stateFor(agentId);
@@ -472,11 +530,22 @@ export class AgentRecoveryCoordinator {
 
     let after = afterSeq;
     let pages = 0;
+    let appliedEvents = 0;
+    let responseBytes = 0;
     let staleRounds = 0;
     let status: LedgerIngestionStatus | null = context.installed ?? null;
-    while (pages < this.maxPages && after < context.targetHeadSeq) {
+    const startedAt = this.now();
+    while (after < context.targetHeadSeq) {
+      if (
+        pages >= this.replayBudget.maxPages ||
+        this.now() - startedAt >= this.replayBudget.maxElapsedMs
+      ) {
+        return this.handleReplayBudgetExhaustion(state, agentId, scope, context);
+      }
       const page = await this.dependencies.fetchEventPage(agentId, after, this.pageSize);
       pages += 1;
+      appliedEvents += page.events.length;
+      responseBytes += serializedPageBytes(page);
       if (page.cursorNotFound) {
         if (context.reset == null) {
           return this.bootstrap(
@@ -501,6 +570,17 @@ export class AgentRecoveryCoordinator {
           "epoch_change",
         );
       }
+      if (
+        appliedEvents > this.replayBudget.maxEvents ||
+        responseBytes > this.replayBudget.maxBytes ||
+        this.now() - startedAt > this.replayBudget.maxElapsedMs
+      ) {
+        return this.handleReplayBudgetExhaustion(state, agentId, scope, {
+          ...context,
+          targetHeadSeq: Math.max(context.targetHeadSeq, page.eventHeadSeq ?? 0),
+          oldestRetainedSeq: page.oldestRetainedSeq ?? context.oldestRetainedSeq,
+        });
+      }
       const events = page.events;
       try {
         status =
@@ -522,10 +602,20 @@ export class AgentRecoveryCoordinator {
       }
       const contiguous = status?.ingestedThroughSeq ?? after;
       if (events.length === 0) {
-        // An empty page without newer events ends the replay. An empty
-        // page that still claims newer events is spin: fail after bounded
-        // rounds instead of paging toward maxPages.
-        if (page.hasNewer !== true) break;
+        // The committed target head cannot disappear. A page that claims
+        // no newer events before that boundary is a protocol contradiction,
+        // never permission to enter live with an incomplete cursor.
+        if (page.hasNewer !== true) {
+          return this.failReplay(
+            state,
+            agentId,
+            scope,
+            "replay_ended_before_target",
+            context.reset,
+          );
+        }
+        // Repeated empty pages that still claim newer events are spin: fail
+        // early instead of consuming the full page budget.
         staleRounds += 1;
         if (staleRounds >= MAX_STALE_REPLAY_ROUNDS) {
           return this.failReplay(state, agentId, scope, "empty_replay_page_no_progress", context.reset);
@@ -541,6 +631,12 @@ export class AgentRecoveryCoordinator {
         staleRounds = 0;
       }
       after = Math.max(after, contiguous);
+      if (
+        after < context.targetHeadSeq &&
+        this.now() - startedAt > this.replayBudget.maxElapsedMs
+      ) {
+        return this.handleReplayBudgetExhaustion(state, agentId, scope, context);
+      }
     }
 
     // Buffered live hints replay through the same ingest path before the
@@ -567,6 +663,37 @@ export class AgentRecoveryCoordinator {
       update.projectionReadyThroughSeq = lateStatus.projectionReadyThroughSeq;
     }
     return update;
+  }
+
+  /** Bootstrap at most once after one replay attempt exhausts its budget. */
+  private handleReplayBudgetExhaustion(
+    state: AgentRecoveryState,
+    agentId: string,
+    scope: LedgerScopeKey,
+    context: {
+      targetHeadSeq: number;
+      oldestRetainedSeq?: number | null;
+      reset?: LedgerResetReason;
+      bootstrapAttempted?: boolean;
+    },
+  ): Promise<AgentRecoveryUpdate> | AgentRecoveryUpdate {
+    if (context.bootstrapAttempted) {
+      return this.failReplay(
+        state,
+        agentId,
+        scope,
+        "replay_budget_exceeded_after_snapshot",
+        context.reset ?? "replay_budget_exceeded",
+      );
+    }
+    return this.bootstrap(
+      agentId,
+      {
+        eventHeadSeq: context.targetHeadSeq,
+        oldestRetainedSeq: context.oldestRetainedSeq,
+      },
+      "replay_budget_exceeded",
+    );
   }
 
   /** Ingest buffered live hints until the buffer stays empty. */

@@ -739,8 +739,18 @@ and privacy-mode behavior. It is outside Phase 3.
 
 If the epoch matches and either `oldest_retained_seq = 0` or the local cursor
 is at or after `oldest_retained_seq - 1`, incremental recovery remains
-possible and the client replays `after_seq` normally. Offline Brief events
-remain available for exact unread calculation.
+possible. This is a hard recoverability statement, not an instruction to
+replay an arbitrarily large suffix.
+
+Before replay, the client compares the estimated gap
+`event_head_seq - ingested_through_seq` with its own replay budget. The default
+budget allows a gap of 10,000 sequence positions and independently limits one
+attempt to 50 pages, 10,000 applied page events, 16 MiB of serialized response
+data, and 30 seconds. A retained suffix that is over the estimated-gap budget
+uses projection bootstrap before the first event-page request. Page, event,
+byte, or time exhaustion during replay also bootstraps once. A replay that
+remains over budget after that snapshot fails explicitly and never enters
+live state with an incomplete contiguous cursor.
 
 ### Rich Cursor Error
 
@@ -761,6 +771,8 @@ An Agent-local reset begins when:
 
 - `oldest_retained_seq > 0` and the local cursor is less than
   `oldest_retained_seq - 1`;
+- the retained suffix exceeds the client replay budget, before or during
+  replay;
 - the event page or SSE endpoint returns `cursor_not_found`;
 - one immutable event identity has conflicting content; or
 - projection divergence cannot be repaired by bounded hydration retry.
@@ -773,7 +785,8 @@ Recovery is:
 4. set `ingested_through_seq = snapshot_through_seq` and
    `projection_ready_through_seq = snapshot_through_seq`;
 5. replay all events after that boundary;
-6. record `history_truncated_before_seq`; and
+6. record `history_truncated_before_seq` for retention loss, or
+   `snapshot_through_seq + 1` for a voluntarily skipped retained interval; and
 7. resume live synchronization after contiguous catch-up.
 
 If the effective local read boundary
@@ -794,6 +807,11 @@ certainty = Exact
 `Exact` then applies only to the new local generation after that boundary. The
 client retains truncation metadata and does not claim to have reconstructed the
 lost interval.
+
+Budget-driven bootstrap does not fabricate acknowledgement. It preserves the
+prior marker where meaningful, marks unread certainty as `Truncated`, and
+records the first sequence after the snapshot boundary until explicit
+acknowledgement establishes a new exact generation.
 
 ### Runtime Epoch Reset
 
@@ -1044,6 +1062,9 @@ They should not be implemented as aliases for the new contract.
 ### Retention And Reset
 
 - a retained cursor catches up exactly;
+- a large retained suffix bootstraps under the client-owned replay budget;
+- page, event, byte, or elapsed-time exhaustion never enters live state with
+  an incomplete cursor;
 - `cursor_not_found` supplies `event_log_epoch`, `oldest_retained_seq`, and
   `event_head_seq`;
 - a retention gap installs a canonical projection snapshot;

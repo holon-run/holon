@@ -165,7 +165,7 @@ export interface LedgerReadStateRecord {
   readThroughEventSeq?: number;
   /** Whether unread counts above the boundary are exact or a lower bound. */
   certainty?: "exact" | "truncated";
-  /** Retention floor of the last retention-gap reset; history below is lost. */
+  /** Boundary of history skipped by the last retention or replay-budget reset. */
   historyTruncatedBeforeSeq?: number;
   /** User acknowledgement of unknown history after a truncation (W5 action). */
   acknowledgedTruncationBeforeSeq?: number;

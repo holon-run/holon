@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   LEDGER_DB_NAME,
+  type AgentReplayBudget,
   type LedgerHydrationFetchers,
   type LedgerScopeKey,
   type RecoveryEventPage,
@@ -55,7 +56,7 @@ function snapshot(
     eventLogEpoch: "epoch-1",
     snapshotThroughSeq: 5,
     eventHeadSeq: 8,
-    oldestRetainedSeq: null,
+    oldestRetainedSeq: 0,
     canonicalRecords: [
       {
         recordKind: "brief",
@@ -114,12 +115,14 @@ function makeCoordinator(
   pipeline: LedgerIngestionPipeline,
   fetchProjectionSnapshot: (agentId: string) => Promise<RecoveryProjectionSnapshot | null>,
   fetchEventPage: (agentId: string, afterSeq: number, limit: number) => Promise<RecoveryEventPage>,
+  options: { replayBudget?: Partial<AgentReplayBudget>; now?: () => number } = {},
 ) {
   return new AgentRecoveryCoordinator({
     remoteKey: REMOTE_KEY,
     pipeline,
     fetchProjectionSnapshot,
     fetchEventPage,
+    ...options,
   });
 }
 
@@ -240,6 +243,200 @@ describe("agent recovery coordinator", () => {
     const ledger = await openLedgerHandle();
     expect(await ledger.getReadState(scope)).toBeUndefined();
     ledger.close();
+  });
+
+  it("prioritizes a retention gap over replay cost on the live fast path", async () => {
+    const pipeline = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
+    await pipeline.open();
+    let snapshotFetches = 0;
+    const coordinator = makeCoordinator(
+      pipeline,
+      async () => {
+        snapshotFetches += 1;
+        return snapshot(
+          snapshotFetches === 1
+            ? { snapshotThroughSeq: 5, eventHeadSeq: 5 }
+            : { snapshotThroughSeq: 100, eventHeadSeq: 100, oldestRetainedSeq: 7 },
+        );
+      },
+      async () => page([]),
+      { replayBudget: { maxEstimatedGap: 1 } },
+    );
+    expect((await coordinator.sync("agent-1")).phase).toBe("live");
+
+    const update = await coordinator.sync("agent-1", {
+      eventHeadSeq: 100,
+      oldestRetainedSeq: 7,
+    });
+    expect(update.phase).toBe("live");
+    expect(update.resetReason).toBe("retained_prefix_gap");
+    expect(snapshotFetches).toBe(2);
+  });
+
+  it("bootstraps before fetching an over-budget retained suffix", async () => {
+    const pipeline = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
+    await pipeline.open();
+    const scope = makeScope();
+    await pipeline.ingest(scope, [envelope(1), envelope(2), envelope(3), envelope(4), envelope(5)]);
+    const ledger = await openLedgerHandle();
+    await ledger
+      .beginWrite()
+      .putReadState(scope, { unreadBaselineSeq: 3, readThroughEventSeq: 4 })
+      .commit();
+    ledger.close();
+
+    let snapshotFetches = 0;
+    const source = pageSource({
+      95: page([envelope(96), envelope(97), envelope(98), envelope(99), envelope(100)]),
+    });
+    const coordinator = makeCoordinator(
+      pipeline,
+      async () => {
+        snapshotFetches += 1;
+        return snapshot({ snapshotThroughSeq: 95, eventHeadSeq: 100 });
+      },
+      source.fetch,
+      { replayBudget: { maxEstimatedGap: 10 } },
+    );
+
+    const update = await coordinator.sync("agent-1", {
+      eventHeadSeq: 100,
+      oldestRetainedSeq: 0,
+    });
+    expect(update.phase).toBe("live");
+    expect(update.resetReason).toBe("replay_budget_exceeded");
+    expect(snapshotFetches).toBe(1);
+    expect(source.requests).toEqual([95]);
+
+    const verify = await openLedgerHandle();
+    expect((await verify.getRawEvents(scope)).map((event) => event.eventSeq)).toEqual([
+      96, 97, 98, 99, 100,
+    ]);
+    const readState = await verify.getReadState(scope);
+    expect(readState?.readThroughEventSeq).toBe(4);
+    expect(readState?.unreadBaselineSeq).toBe(3);
+    expect(readState?.historyTruncatedBeforeSeq).toBe(96);
+    expect(readState?.certainty).toBe("truncated");
+    verify.close();
+  });
+
+  it("bootstraps once when the page budget is exhausted mid-replay", async () => {
+    const pipeline = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
+    await pipeline.open();
+    const scope = makeScope();
+    await pipeline.ingest(scope, [envelope(1), envelope(2)]);
+    const ledger = await openLedgerHandle();
+    await ledger.beginWrite().putReadState(scope, { readThroughEventSeq: 2 }).commit();
+    ledger.close();
+
+    let snapshotFetches = 0;
+    const source = pageSource({
+      2: page([envelope(3), envelope(4)], { hasNewer: true }),
+      5: page([envelope(6)]),
+    });
+    const coordinator = makeCoordinator(
+      pipeline,
+      async () => {
+        snapshotFetches += 1;
+        return snapshot({ snapshotThroughSeq: 5, eventHeadSeq: 6 });
+      },
+      source.fetch,
+      { replayBudget: { maxPages: 1 } },
+    );
+
+    const update = await coordinator.sync("agent-1", { eventHeadSeq: 6 });
+    expect(update.phase).toBe("live");
+    expect(update.resetReason).toBe("replay_budget_exceeded");
+    expect(snapshotFetches).toBe(1);
+    expect(source.requests).toEqual([2, 5]);
+    const verify = await openLedgerHandle();
+    expect((await verify.getAgentSession(scope))?.ingestedThroughSeq).toBe(6);
+    expect((await verify.getReadState(scope))?.certainty).toBe("truncated");
+    verify.close();
+  });
+
+  it.each([
+    {
+      budgetName: "event",
+      replayBudget: { maxEvents: 1 },
+      firstPage: page([envelope(3), envelope(4)]),
+    },
+    {
+      budgetName: "byte",
+      replayBudget: { maxBytes: 10 },
+      firstPage: page([envelope(3)], { responseBytes: 11 }),
+    },
+  ])("bootstraps once when the $budgetName budget is exhausted", async ({
+    replayBudget,
+    firstPage,
+  }) => {
+    const pipeline = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
+    await pipeline.open();
+    await pipeline.ingest(makeScope(), [envelope(1), envelope(2)]);
+    const source = pageSource({
+      2: firstPage,
+      5: page([envelope(6)], { responseBytes: 1 }),
+    });
+    const coordinator = makeCoordinator(
+      pipeline,
+      async () => snapshot({ snapshotThroughSeq: 5, eventHeadSeq: 6 }),
+      source.fetch,
+      { replayBudget },
+    );
+
+    const update = await coordinator.sync("agent-1", { eventHeadSeq: 6 });
+    expect(update.phase).toBe("live");
+    expect(update.resetReason).toBe("replay_budget_exceeded");
+    expect(source.requests).toEqual([2, 5]);
+  });
+
+  it("includes fetch and apply time in the replay budget", async () => {
+    const pipeline = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
+    await pipeline.open();
+    await pipeline.ingest(makeScope(), [envelope(1), envelope(2)]);
+    const source = pageSource({ 2: page([envelope(3)]), 5: page([envelope(6)]) });
+    let clockReads = 0;
+    const coordinator = makeCoordinator(
+      pipeline,
+      async () => snapshot({ snapshotThroughSeq: 5, eventHeadSeq: 6 }),
+      source.fetch,
+      {
+        replayBudget: { maxElapsedMs: 5 },
+        now: () => (clockReads++ < 2 ? 0 : 10),
+      },
+    );
+
+    const update = await coordinator.sync("agent-1", { eventHeadSeq: 6 });
+    expect(update.phase).toBe("live");
+    expect(update.resetReason).toBe("replay_budget_exceeded");
+    expect(source.requests).toEqual([2, 5]);
+  });
+
+  it("fails instead of entering live when replay stays over budget after bootstrap", async () => {
+    const pipeline = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
+    await pipeline.open();
+    await pipeline.ingest(makeScope(), [envelope(1), envelope(2)]);
+    let snapshotFetches = 0;
+    const source = pageSource({
+      2: page([envelope(3), envelope(4)]),
+      4: page([envelope(5), envelope(6)]),
+    });
+    const coordinator = makeCoordinator(
+      pipeline,
+      async () => {
+        snapshotFetches += 1;
+        return snapshot({ snapshotThroughSeq: 4, eventHeadSeq: 6 });
+      },
+      source.fetch,
+      { replayBudget: { maxEvents: 1 } },
+    );
+
+    const update = await coordinator.sync("agent-1", { eventHeadSeq: 6 });
+    expect(update.phase).toBe("error");
+    expect(update.error).toBe("replay_budget_exceeded_after_snapshot");
+    expect(update.resetReason).toBe("replay_budget_exceeded");
+    expect(snapshotFetches).toBe(1);
+    expect(source.requests).toEqual([2, 4]);
   });
 
   it("resets on a retained-prefix gap: keep the marker, record truncation, rebuild", async () => {
@@ -368,6 +565,7 @@ describe("agent recovery coordinator", () => {
     const source = pageSource({
       3: {
         events: [],
+        responseBytes: 100,
         cursorNotFound: {
           afterSeq: 3,
           eventLogEpoch: "epoch-1",
@@ -381,6 +579,7 @@ describe("agent recovery coordinator", () => {
       pipeline,
       async () => snapshot({ snapshotThroughSeq: 9, eventHeadSeq: 9, oldestRetainedSeq: 6 }),
       source.fetch,
+      { replayBudget: { maxBytes: 1 } },
     );
 
     const update = await coordinator.sync("agent-1", { eventHeadSeq: 9 });
@@ -507,6 +706,19 @@ describe("agent recovery coordinator", () => {
     expect(source.requests).toHaveLength(3);
   });
 
+  it("never enters live when a page ends before the committed target head", async () => {
+    const pipeline = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
+    await pipeline.open();
+    await pipeline.ingest(makeScope(), [envelope(1), envelope(2)]);
+    const source = pageSource({ 2: page([]) });
+    const coordinator = makeCoordinator(pipeline, async () => snapshot(), source.fetch);
+
+    const update = await coordinator.sync("agent-1", { eventHeadSeq: 3 });
+    expect(update.phase).toBe("error");
+    expect(update.error).toBe("replay_ended_before_target");
+    expect(source.requests).toEqual([2]);
+  });
+
   it("clears each distinct stale runtime scope exactly once during an identity reset", async () => {
     const pipeline = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
     await pipeline.open();
@@ -522,7 +734,7 @@ describe("agent recovery coordinator", () => {
     // escalates into an identity reset bootstrap.
     const source = pageSource({
       1: page([], { eventLogEpoch: "epoch-1", eventHeadSeq: 8 }),
-      5: page([envelope(6)]),
+      5: page([envelope(6), envelope(7), envelope(8)]),
     });
     const coordinator = makeCoordinator(pipeline, async () => snapshot(), source.fetch);
 

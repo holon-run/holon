@@ -8,6 +8,7 @@ export {
   type AgentRecoveryDependencies,
   type AgentRecoveryHint,
   type AgentRecoveryPhase,
+  type AgentReplayBudget,
   type AgentRecoveryUpdate,
   type LedgerResetReason,
   type RecoveryCursorError,
