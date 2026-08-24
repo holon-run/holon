@@ -687,24 +687,26 @@ describe("createRuntimeClient", () => {
 
   it("fetches an agent event window and decodes legacy envelopes with pagination parameters", async () => {
     const seen: string[] = [];
+    const responseBody = {
+      events: [
+        {
+          id: "event-740",
+          agent_id: "agent/one",
+          event_seq: 740,
+          ts: "2026-06-22T00:00:00Z",
+          type: "message_enqueued",
+          payload: { message_id: "message-740" },
+        },
+      ],
+      has_older: true,
+      cursor_seq: 819,
+      transport_padding: "界".repeat(64),
+    };
     const fetchImpl = async (input: RequestInfo | URL) => {
       const url = String(input);
       seen.push(url);
       if (url.endsWith("/agents/agent%2Fone/events?after_seq=739&limit=80&order=asc&max_level=info")) {
-        return Response.json({
-          events: [
-            {
-              id: "event-740",
-              agent_id: "agent/one",
-              event_seq: 740,
-              ts: "2026-06-22T00:00:00Z",
-              type: "message_enqueued",
-              payload: { message_id: "message-740" },
-            },
-          ],
-          has_older: true,
-          cursor_seq: 819,
-        });
+        return Response.json(responseBody);
       }
       return new Response("not found", { status: 404 });
     };
@@ -734,6 +736,7 @@ describe("createRuntimeClient", () => {
           }),
         ],
         cursor_seq: 819,
+        responseBytes: new TextEncoder().encode(JSON.stringify(responseBody)).byteLength,
       }),
     );
     expect(seen).toEqual(["http://example.test:7878/api/agents/agent%2Fone/events?after_seq=739&limit=80&order=asc&max_level=info"]);

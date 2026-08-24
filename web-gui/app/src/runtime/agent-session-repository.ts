@@ -114,6 +114,7 @@ interface RuntimeClientLike {
     oldest_seq?: number | null;
     has_older?: boolean;
     has_newer?: boolean;
+    responseBytes?: number;
   }>;
   getAgentProjectionSnapshot: (
     agentId: string,
@@ -415,7 +416,7 @@ export class AgentSessionRepository<State extends AgentSessionRepositoryState> {
             eventHeadSeq: page.newest_seq ?? page.cursor_seq ?? undefined,
             oldestRetainedSeq: page.oldest_seq ?? null,
             hasNewer: page.has_newer,
-            responseBytes: new TextEncoder().encode(JSON.stringify(page)).byteLength,
+            responseBytes: page.responseBytes,
           };
         } catch (error) {
           const cursorNotFound = cursorNotFoundPayload(error);

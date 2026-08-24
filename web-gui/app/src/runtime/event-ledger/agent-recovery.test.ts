@@ -557,6 +557,45 @@ describe("agent recovery coordinator", () => {
     verify.close();
   });
 
+  it("does not preserve read state when a budget reset discovers a new scope", async () => {
+    const pipeline = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
+    await pipeline.open();
+    const oldScope = makeScope();
+    await pipeline.ingest(oldScope, [envelope(1), envelope(2)]);
+    const ledger = await openLedgerHandle();
+    await ledger
+      .beginWrite()
+      .putReadState(oldScope, { unreadBaselineSeq: 1, readThroughEventSeq: 2 })
+      .commit();
+    ledger.close();
+
+    const coordinator = makeCoordinator(
+      pipeline,
+      async () =>
+        snapshot({
+          visibilityScopeId: "vis_other",
+          snapshotThroughSeq: 100,
+          eventHeadSeq: 100,
+        }),
+      async () => page([]),
+      { replayBudget: { maxEstimatedGap: 1 } },
+    );
+
+    const update = await coordinator.sync("agent-1", { eventHeadSeq: 100 });
+    expect(update.phase).toBe("live");
+    expect(update.resetReason).toBe("visibility_scope_change");
+
+    const verify = await openLedgerHandle();
+    expect(await verify.getReadState(oldScope)).toBeUndefined();
+    const newScope = makeScope({ visibilityScopeId: "vis_other" });
+    const readState = await verify.getReadState(newScope);
+    expect(readState?.unreadBaselineSeq).toBe(100);
+    expect(readState?.readThroughEventSeq).toBeUndefined();
+    expect(readState?.historyTruncatedBeforeSeq).toBeUndefined();
+    expect(readState?.certainty).toBe("exact");
+    verify.close();
+  });
+
   it("recovers from cursor_not_found with one bounded retention reset", async () => {
     const pipeline = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
     await pipeline.open();

@@ -237,6 +237,7 @@ type BriefRecordDto = RuntimeBriefRecord;
 type AgentRosterSnapshotGeneratedDto = components["schemas"]["AgentRosterSnapshot"];
 
 export type EventPageResponseDto = components["schemas"]["EventsPageResponse"];
+type MeasuredEventPageResponseDto = EventPageResponseDto & { responseBytes?: number };
 export type AgentProjectionSnapshotDto = components["schemas"]["AgentProjectionSnapshot"];
 export type AgentRosterSnapshotDto = AgentRosterSnapshotGeneratedDto;
 type GeneratedStreamEventEnvelopeDto = components["schemas"]["StreamEventEnvelope"];
@@ -726,7 +727,10 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       const workItem = await fetchAgentWorkItem(baseUrl, fetchImpl, requestHeaders, agentId, workItemId);
       return projectWorkItem(workItem);
     },
-    async getAgentEvents(agentId: string, options: AgentEventPageOptions = {}): Promise<EventPageResponseDto> {
+    async getAgentEvents(
+      agentId: string,
+      options: AgentEventPageOptions = {},
+    ): Promise<MeasuredEventPageResponseDto> {
       if (!baseUrl) {
         return emptyEventPage();
       }
@@ -1306,7 +1310,7 @@ async function fetchAgentEvents(
   headers: Record<string, string>,
   agentId: string,
   options: AgentEventPageOptions,
-): Promise<EventPageResponseDto> {
+): Promise<MeasuredEventPageResponseDto> {
   const query = new URLSearchParams();
   if (options.beforeSeq != null) query.set("before_seq", String(options.beforeSeq));
   if (options.afterSeq != null) query.set("after_seq", String(options.afterSeq));
@@ -1315,12 +1319,43 @@ async function fetchAgentEvents(
   if (options.displayLevel) query.set("max_level", options.displayLevel);
   const queryString = query.toString();
   const path = `/agents/${encodeURIComponent(agentId)}/events${queryString ? `?${queryString}` : ""}`;
-  const response = await getJson<EventPageResponseDto>(fetchImpl, baseUrl, path, { headers });
+  const { value: response, responseBytes } = await getJsonWithResponseBytes<EventPageResponseDto>(
+    fetchImpl,
+    baseUrl,
+    path,
+    { headers },
+  );
   return {
     ...response,
+    responseBytes,
     events: response.events
       .map((event) => decodeStreamEventEnvelope(event))
       .filter((event): event is EventPageResponseDto["events"][number] => event != null),
+  };
+}
+
+async function getJsonWithResponseBytes<T>(
+  fetchImpl: typeof fetch,
+  baseUrl: string,
+  path: string,
+  options: { timeoutMs?: number; headers?: Record<string, string> } = {},
+): Promise<{ value: T; responseBytes: number }> {
+  const controller = new AbortController();
+  const timeout = globalThis.setTimeout(
+    () => controller.abort(),
+    options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
+  );
+  const response = await fetchImpl(`${baseUrl}${path}`, {
+    headers: { Accept: "application/json", ...options.headers },
+    signal: controller.signal,
+  }).finally(() => globalThis.clearTimeout(timeout));
+  if (!response.ok) {
+    throw await httpRequestError("GET", path, response);
+  }
+  const body = await response.arrayBuffer();
+  return {
+    value: JSON.parse(new TextDecoder().decode(body)) as T,
+    responseBytes: body.byteLength,
   };
 }
 

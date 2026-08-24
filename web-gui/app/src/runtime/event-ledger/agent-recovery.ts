@@ -428,7 +428,8 @@ export class AgentRecoveryCoordinator {
       });
     }
 
-    const sameScopeReset = reset != null && SAME_SCOPE_RESETS.has(reset);
+    const sameScopeReset =
+      identityReset == null && reset != null && SAME_SCOPE_RESETS.has(reset);
     const reportedFloor =
       snapshot.oldestRetainedSeq ??
       (sameScopeReset ? hint.oldestRetainedSeq ?? null : null);
