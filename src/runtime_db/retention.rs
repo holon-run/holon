@@ -1126,7 +1126,8 @@ mod tests {
     }
 
     #[test]
-    fn audit_retention_watermark_is_monotonic_after_full_prefix_deletion() -> Result<()> {
+    fn audit_retention_watermark_stays_monotonic_after_full_prefix_and_stale_row_deletion(
+    ) -> Result<()> {
         let (_directory, db) = runtime_db()?;
         db.transaction(|tx| {
             for sequence in 1..=6_i64 {
