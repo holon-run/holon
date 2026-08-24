@@ -24,6 +24,16 @@ pub(crate) const BRIEF_ATOMIC_LINKAGE_VERIFIED: &str = "brief_atomic_linkage_ver
 pub(crate) const ROSTER_SNAPSHOT_VERIFIED: &str = "roster_snapshot_verified";
 pub(crate) const PROJECTION_SNAPSHOT_VERIFIED: &str = "projection_snapshot_verified";
 pub(crate) const EVENT_PROJECTION_EFFECT_VERIFIER_VERSION: i64 = 1;
+pub(crate) const AGENT_ROSTER_LATEST_BRIEFS_SQL: &str =
+    "SELECT b.agent_id, b.evidence_id, b.created_event_seq, b.created_at, b.preview
+     FROM agent_identities i
+     JOIN briefs b ON b.evidence_id = (
+         SELECT b2.evidence_id FROM briefs b2
+         WHERE b2.agent_id = i.agent_id
+         ORDER BY b2.created_at DESC, b2.evidence_id DESC
+         LIMIT 1
+     )
+     WHERE i.status = 'active' AND i.visibility = 'public'";
 
 /// Principal and entitlement used to derive the runtime-local public scope
 /// for unauthenticated local mode.
@@ -688,18 +698,10 @@ fn collect_agent_roster_rows(connection: &Connection) -> Result<AgentRosterSnaps
 
     let mut latest_briefs: HashMap<String, AgentRosterLatestBriefRow> = HashMap::new();
     {
-        let mut statement = connection.prepare(
-            "SELECT b.agent_id, b.evidence_id, b.created_event_seq, b.created_at, b.preview
-             FROM briefs b
-             JOIN agent_identities i ON i.agent_id = b.agent_id
-             WHERE i.status = 'active' AND i.visibility = 'public'
-               AND b.evidence_id = (
-                   SELECT b2.evidence_id FROM briefs b2
-                   WHERE b2.agent_id = b.agent_id
-                   ORDER BY b2.created_at DESC, b2.evidence_id DESC
-                   LIMIT 1
-               )",
-        )?;
+        // Drive the lookup from the bounded public roster so SQLite selects
+        // one latest Brief per member instead of repeating the selector for
+        // every historical Brief belonging to that member.
+        let mut statement = connection.prepare(AGENT_ROSTER_LATEST_BRIEFS_SQL)?;
         let rows = statement.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,

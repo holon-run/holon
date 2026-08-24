@@ -89,7 +89,9 @@ mod tests {
             WorkStatus,
         },
         runtime_db::migrations::{RETAINED_SCHEDULER_AUDIT_TABLES, RETIRED_SCHEDULER_TABLES},
-        runtime_db::observer_sync::EVENT_PROJECTION_EFFECT_VERIFIER_VERSION,
+        runtime_db::observer_sync::{
+            AGENT_ROSTER_LATEST_BRIEFS_SQL, EVENT_PROJECTION_EFFECT_VERIFIER_VERSION,
+        },
         runtime_db::repositories::{enum_string, slim_task_record_for_payload},
         runtime_db::transitions::{
             AgentStateMutation, QueueHeadNoProgressCommand, QueueHeadNoProgressOutcome,
@@ -6489,6 +6491,38 @@ CREATE TABLE working_memory_deltas (
         assert_eq!(
             snapshot.rows[0].latest_brief.as_ref().unwrap().brief_id,
             "brief-z"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn agent_roster_latest_brief_query_is_driven_by_public_membership() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        db.agent_identities().upsert(&agent_identity("member", 0))?;
+
+        let connection = db.connection()?;
+        let query_plan = {
+            let mut statement = connection.prepare(&format!(
+                "EXPLAIN QUERY PLAN {AGENT_ROSTER_LATEST_BRIEFS_SQL}"
+            ))?;
+            let details = statement
+                .query_map([], |row| row.get::<_, String>(3))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            details
+        };
+
+        assert!(
+            query_plan.iter().any(|detail| {
+                detail.contains("SEARCH b USING INDEX sqlite_autoindex_briefs_1 (evidence_id=?)")
+            }),
+            "roster latest-Brief lookup must probe one Brief by primary key per public member: {query_plan:?}"
+        );
+        assert!(
+            query_plan
+                .iter()
+                .all(|detail| !detail.contains("SEARCH b USING INDEX idx_briefs_agent_turn")),
+            "roster latest-Brief lookup must not visit every historical Brief: {query_plan:?}"
         );
         Ok(())
     }
