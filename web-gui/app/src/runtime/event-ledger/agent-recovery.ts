@@ -166,6 +166,8 @@ const MAX_STALE_REPLAY_ROUNDS = 3;
 
 function serializedPageBytes(page: RecoveryEventPage): number {
   if (page.responseBytes != null) return Math.max(0, page.responseBytes);
+  // Non-HTTP adapters may not know the raw body size; bound their mapped
+  // payload with a best-effort UTF-8 estimate instead of skipping the limit.
   try {
     return new TextEncoder().encode(JSON.stringify(page)).byteLength;
   } catch {
@@ -530,7 +532,7 @@ export class AgentRecoveryCoordinator {
 
     let after = afterSeq;
     let pages = 0;
-    let appliedEvents = 0;
+    let fetchedEvents = 0;
     let responseBytes = 0;
     let staleRounds = 0;
     let status: LedgerIngestionStatus | null = context.installed ?? null;
@@ -544,7 +546,7 @@ export class AgentRecoveryCoordinator {
       }
       const page = await this.dependencies.fetchEventPage(agentId, after, this.pageSize);
       pages += 1;
-      appliedEvents += page.events.length;
+      fetchedEvents += page.events.length;
       responseBytes += serializedPageBytes(page);
       if (page.cursorNotFound) {
         if (context.reset == null) {
@@ -571,9 +573,9 @@ export class AgentRecoveryCoordinator {
         );
       }
       if (
-        appliedEvents > this.replayBudget.maxEvents ||
+        fetchedEvents > this.replayBudget.maxEvents ||
         responseBytes > this.replayBudget.maxBytes ||
-        this.now() - startedAt > this.replayBudget.maxElapsedMs
+        this.now() - startedAt >= this.replayBudget.maxElapsedMs
       ) {
         return this.handleReplayBudgetExhaustion(state, agentId, scope, {
           ...context,
@@ -633,7 +635,7 @@ export class AgentRecoveryCoordinator {
       after = Math.max(after, contiguous);
       if (
         after < context.targetHeadSeq &&
-        this.now() - startedAt > this.replayBudget.maxElapsedMs
+        this.now() - startedAt >= this.replayBudget.maxElapsedMs
       ) {
         return this.handleReplayBudgetExhaustion(state, agentId, scope, context);
       }
