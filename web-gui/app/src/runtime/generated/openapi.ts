@@ -2173,8 +2173,8 @@ export interface components {
         AgentEventWindow: {
             /** @description Greatest committed event_seq visible in the response read view. */
             event_head_seq: number;
-            /** @description First raw event still replayable in that view; null when the Agent has no events (event_head_seq = 0). */
-            oldest_retained_seq: number | null;
+            /** @description Durable retention floor. Zero means no retained prefix has ever been deleted; a positive value is the earliest sequence that may still be replayable. */
+            oldest_retained_seq: number;
         };
         /** @description Identifies one canonical record for hydration termination (tombstone) or batch resolution (reference). */
         AgentHydrationKey: {
@@ -2204,7 +2204,8 @@ export interface components {
             /** @description May exceed snapshot_through_seq; names a committed event available through the event page. Clients replay (snapshot_through_seq, event_head_seq] and later events. */
             event_head_seq: number;
             event_log_epoch: string;
-            oldest_retained_seq: number | null;
+            /** @description Durable retention floor; zero means no retained prefix has ever been deleted. */
+            oldest_retained_seq: number;
             projection: components["schemas"]["AgentCanonicalProjection"];
             runtime_id: string;
             /** @description Every event with event_seq <= snapshot_through_seq that affects current canonical state is already reflected in the projection or its revision anchors. */
@@ -2360,6 +2361,17 @@ export interface components {
                         /** @enum {string} */
                         kind: "completed" | "aborted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
                         last_assistant_message?: string | null;
+                        no_brief_reason?: ({
+                            /** @constant */
+                            kind: "reducer_only";
+                            reason: string;
+                        } | {
+                            /** @constant */
+                            kind: "aborted";
+                        } | {
+                            /** @constant */
+                            kind: "tool_only_wait";
+                        }) | null;
                         reason?: string | null;
                         turn_id?: string;
                         /** Format: uint64 */
@@ -2483,6 +2495,17 @@ export interface components {
                     /** @enum {string} */
                     kind: "completed" | "aborted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
                     last_assistant_message?: string | null;
+                    no_brief_reason?: ({
+                        /** @constant */
+                        kind: "reducer_only";
+                        reason: string;
+                    } | {
+                        /** @constant */
+                        kind: "aborted";
+                    } | {
+                        /** @constant */
+                        kind: "tool_only_wait";
+                    }) | null;
                     reason?: string | null;
                     turn_id?: string;
                     /** Format: uint64 */
@@ -2782,7 +2805,8 @@ export interface components {
             event_log_epoch: string;
             /** @constant */
             ok: false;
-            oldest_retained_seq: number | null;
+            /** @description Durable retention floor; zero means no retained prefix has ever been deleted. */
+            oldest_retained_seq: number;
         } & {
             [key: string]: unknown;
         };

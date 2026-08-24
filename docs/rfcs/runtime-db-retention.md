@@ -26,6 +26,10 @@ turn tail are protected by typed business logic.
 Online maintenance uses bounded transactions and optional incremental vacuum.
 Full `VACUUM` is an explicit offline operation.
 
+Every deleted audit-event prefix also advances a durable scope watermark in
+`audit_event_retention_watermarks`. The watermark makes recovery-window reads
+independent of the size of retained history.
+
 ## Goals
 
 - stop unbounded growth after an operator enables a retention policy;
@@ -107,8 +111,22 @@ sequence is the earlier of:
 
 Only rows before that sequence may be deleted. Timestamp disorder therefore
 widens retention rather than creating a sequence hole. `runtime_sequences`
-and `event_log_epoch` are not modified. A cursor older than the retained
-prefix continues to use the existing `cursor_not_found` recovery contract.
+and `event_log_epoch` are not modified.
+
+When one bounded transaction deletes through sequence `D`, that same
+transaction advances the scope's `oldest_retained_seq` to at least `D + 1`.
+The value never moves backwards and remains present when the retained suffix
+is empty. A missing watermark row reads as `0`, meaning no retained prefix is
+known to have been deleted; it does not mean the scope has events. Agent
+scopes use `agent:<agent_id>` and the host scope uses `host`, matching
+`runtime_sequences`.
+
+The schema migration creates no rows and does not infer deletion from gaps in
+existing history. After migration, roster, projection, and cursor-error
+recovery windows read the current head from
+`runtime_sequences.last_value` and the hard recovery floor from the watermark;
+they do not aggregate retained `audit_events`. A cursor below a positive floor
+continues to use the authoritative `cursor_not_found` recovery contract.
 
 ### Transcript and tool evidence
 
@@ -154,6 +172,7 @@ The dry-run and execution paths share a typed report containing:
 - effective policy and cutoffs;
 - observed, candidate, protected, and deleted rows by table;
 - audit-scope skip counts;
+- durable event heads and retention floors on observer recovery surfaces;
 - page size, page count, freelist pages, and estimated reclaimable bytes;
 - incremental-vacuum result;
 - elapsed time.

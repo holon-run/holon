@@ -868,11 +868,9 @@ fn component_schemas() -> Value {
             "properties": {
                 "event_head_seq": { "type": "integer", "minimum": 0, "description": "Greatest committed event_seq visible in the response read view." },
                 "oldest_retained_seq": {
-                    "oneOf": [
-                        { "type": "integer", "minimum": 0 },
-                        { "type": "null" }
-                    ],
-                    "description": "First raw event still replayable in that view; null when the Agent has no events (event_head_seq = 0)."
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Durable retention floor. Zero means no retained prefix has ever been deleted; a positive value is the earliest sequence that may still be replayable."
                 }
             },
             "required": ["event_head_seq", "oldest_retained_seq"],
@@ -914,10 +912,9 @@ fn component_schemas() -> Value {
                 "snapshot_through_seq": { "type": "integer", "minimum": 0, "description": "Every event with event_seq <= snapshot_through_seq that affects current canonical state is already reflected in the projection or its revision anchors." },
                 "event_head_seq": { "type": "integer", "minimum": 0, "description": "May exceed snapshot_through_seq; names a committed event available through the event page. Clients replay (snapshot_through_seq, event_head_seq] and later events." },
                 "oldest_retained_seq": {
-                    "oneOf": [
-                        { "type": "integer", "minimum": 0 },
-                        { "type": "null" }
-                    ]
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Durable retention floor; zero means no retained prefix has ever been deleted."
                 },
                 "projection": { "$ref": "#/components/schemas/AgentCanonicalProjection" }
             },
@@ -1026,10 +1023,9 @@ fn component_schemas() -> Value {
                 "after_seq": { "type": "integer", "minimum": 0 },
                 "event_log_epoch": { "type": "string" },
                 "oldest_retained_seq": {
-                    "oneOf": [
-                        { "type": "integer", "minimum": 0 },
-                        { "type": "null" }
-                    ]
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Durable retention floor; zero means no retained prefix has ever been deleted."
                 },
                 "event_head_seq": { "type": "integer", "minimum": 0 }
             },

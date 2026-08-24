@@ -16,8 +16,9 @@ use serde_json::Value;
 
 use crate::{
     runtime_db::{
-        evidence::insert_runtime_index_changes_tx, write_queue::RuntimeDbWriteContext, RuntimeDb,
-        RuntimeDbLock, RuntimeIndexChange, RuntimeIndexOperation,
+        evidence::{audit_event_sequence_scope, insert_runtime_index_changes_tx},
+        write_queue::RuntimeDbWriteContext,
+        RuntimeDb, RuntimeDbLock, RuntimeIndexChange, RuntimeIndexOperation,
     },
     tool::helpers::{command_output_source_ref, command_receipt_source_ref},
     types::{
@@ -483,27 +484,60 @@ fn delete_audit_prefix(
     limit: u64,
 ) -> Result<usize> {
     let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-    if let Some(agent_id) = agent_id {
-        tx.execute(
-            "DELETE FROM audit_events WHERE audit_event_id IN (
-               SELECT audit_event_id FROM audit_events
+    let deleted_through: Option<i64> = if let Some(agent_id) = agent_id {
+        tx.query_row(
+            "SELECT MAX(event_seq) FROM (
+               SELECT event_seq FROM audit_events
                WHERE agent_id = ?1 AND event_seq < ?2
                ORDER BY event_seq ASC LIMIT ?3
              )",
             params![agent_id, first_retained_seq, limit],
-        )
-        .map_err(Into::into)
+            |row| row.get(0),
+        )?
     } else {
-        tx.execute(
-            "DELETE FROM audit_events WHERE audit_event_id IN (
-               SELECT audit_event_id FROM audit_events
+        tx.query_row(
+            "SELECT MAX(event_seq) FROM (
+               SELECT event_seq FROM audit_events
                WHERE agent_id IS NULL AND event_seq < ?1
                ORDER BY event_seq ASC LIMIT ?2
              )",
             params![first_retained_seq, limit],
-        )
-        .map_err(Into::into)
+            |row| row.get(0),
+        )?
+    };
+    let Some(deleted_through) = deleted_through else {
+        return Ok(0);
+    };
+    let oldest_retained_seq = deleted_through
+        .checked_add(1)
+        .context("audit retention watermark exceeds SQLite integer range")?;
+    let deleted = if let Some(agent_id) = agent_id {
+        tx.execute(
+            "DELETE FROM audit_events
+             WHERE agent_id = ?1 AND event_seq <= ?2",
+            params![agent_id, deleted_through],
+        )?
+    } else {
+        tx.execute(
+            "DELETE FROM audit_events
+             WHERE agent_id IS NULL AND event_seq <= ?1",
+            [deleted_through],
+        )?
+    };
+    if deleted > 0 {
+        let scope_key = audit_event_sequence_scope(agent_id);
+        tx.execute(
+            "INSERT INTO audit_event_retention_watermarks (scope_key, oldest_retained_seq)
+             VALUES (?1, ?2)
+             ON CONFLICT(scope_key) DO UPDATE SET
+               oldest_retained_seq = MAX(
+                 audit_event_retention_watermarks.oldest_retained_seq,
+                 excluded.oldest_retained_seq
+               )",
+            params![scope_key, oldest_retained_seq],
+        )?;
     }
+    Ok(deleted)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1063,6 +1097,11 @@ mod tests {
                     params![format!("audit-{sequence}"), sequence, old],
                 )?;
             }
+            tx.execute(
+                "INSERT INTO runtime_sequences (domain, scope_key, last_value)
+                 VALUES ('audit_event', 'agent:agent-a', 515)",
+                [],
+            )?;
             Ok(())
         })?;
 
@@ -1080,6 +1119,60 @@ mod tests {
         assert_eq!(sequences.len(), crate::http::MAX_EVENT_STREAM_WINDOW);
         assert_eq!(sequences.first().copied(), Some(4));
         assert_eq!(sequences.last().copied(), Some(515));
+        let window = db.agent_event_recovery_window(Some("agent-a"))?;
+        assert_eq!(window.event_head_seq, 515);
+        assert_eq!(window.oldest_retained_seq, 4);
+        Ok(())
+    }
+
+    #[test]
+    fn audit_retention_watermark_is_monotonic_after_full_prefix_deletion() -> Result<()> {
+        let (_directory, db) = runtime_db()?;
+        db.transaction(|tx| {
+            for sequence in 1..=6_i64 {
+                tx.execute(
+                    "INSERT INTO audit_events (
+                       audit_event_id, event_seq, agent_id, kind, created_at, data_json
+                     ) VALUES (?1, ?2, 'agent-a', 'test', ?3, '{}')",
+                    params![format!("audit-{sequence}"), sequence, timestamp(Utc::now())],
+                )?;
+            }
+            tx.execute(
+                "INSERT INTO runtime_sequences (domain, scope_key, last_value)
+                 VALUES ('audit_event', 'agent:agent-a', 6)",
+                [],
+            )?;
+
+            assert_eq!(delete_audit_prefix(tx, Some("agent-a"), 7, 2)?, 2);
+            let first_floor: i64 = tx.query_row(
+                "SELECT oldest_retained_seq FROM audit_event_retention_watermarks
+                 WHERE scope_key = 'agent:agent-a'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(first_floor, 3);
+
+            assert_eq!(delete_audit_prefix(tx, Some("agent-a"), 7, 100)?, 4);
+            tx.execute(
+                "INSERT INTO audit_events (
+                   audit_event_id, event_seq, agent_id, kind, created_at, data_json
+                 ) VALUES ('audit-old-out-of-band', 2, 'agent-a', 'test', ?1, '{}')",
+                [timestamp(Utc::now())],
+            )?;
+            assert_eq!(delete_audit_prefix(tx, Some("agent-a"), 7, 100)?, 1);
+            Ok(())
+        })?;
+
+        let connection = db.connection()?;
+        let remaining: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM audit_events WHERE agent_id = 'agent-a'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(remaining, 0);
+        let window = db.agent_event_recovery_window(Some("agent-a"))?;
+        assert_eq!(window.event_head_seq, 6);
+        assert_eq!(window.oldest_retained_seq, 7);
         Ok(())
     }
 

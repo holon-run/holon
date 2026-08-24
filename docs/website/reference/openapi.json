@@ -507,16 +507,9 @@
             "type": "integer"
           },
           "oldest_retained_seq": {
-            "description": "First raw event still replayable in that view; null when the Agent has no events (event_head_seq = 0).",
-            "oneOf": [
-              {
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "description": "Durable retention floor. Zero means no retained prefix has ever been deleted; a positive value is the earliest sequence that may still be replayable.",
+            "minimum": 0,
+            "type": "integer"
           }
         },
         "required": [
@@ -609,15 +602,9 @@
             "type": "string"
           },
           "oldest_retained_seq": {
-            "oneOf": [
-              {
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "description": "Durable retention floor; zero means no retained prefix has ever been deleted.",
+            "minimum": 0,
+            "type": "integer"
           },
           "projection": {
             "$ref": "#/components/schemas/AgentCanonicalProjection"
@@ -2899,15 +2886,9 @@
             "type": "boolean"
           },
           "oldest_retained_seq": {
-            "oneOf": [
-              {
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "description": "Durable retention floor; zero means no retained prefix has ever been deleted.",
+            "minimum": 0,
+            "type": "integer"
           }
         },
         "required": [

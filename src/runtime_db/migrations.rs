@@ -3139,6 +3139,16 @@ CREATE TABLE IF NOT EXISTS brief_created_linkage_uncertain (
         // name-accepted and downgrade/re-upgrade paths remain idempotent.
         sql: "",
     },
+    Migration {
+        version: 51,
+        name: "audit_event_retention_watermarks",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS audit_event_retention_watermarks (
+  scope_key TEXT PRIMARY KEY,
+  oldest_retained_seq INTEGER NOT NULL CHECK (oldest_retained_seq > 0)
+);
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

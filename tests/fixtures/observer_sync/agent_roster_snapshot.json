@@ -71,7 +71,7 @@
       },
       "event_window": {
         "event_head_seq": 0,
-        "oldest_retained_seq": null
+        "oldest_retained_seq": 0
       },
       "latest_brief": null
     }

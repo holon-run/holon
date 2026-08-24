@@ -127,9 +127,8 @@ pub(crate) struct AgentRosterEntry {
 pub(crate) struct AgentEventWindow {
     /// Greatest committed `event_seq` visible in the response read view.
     pub(crate) event_head_seq: u64,
-    /// First raw event still replayable in that view; `null` when the Agent
-    /// has no events (`event_head_seq = 0`).
-    pub(crate) oldest_retained_seq: Option<u64>,
+    /// Retention floor; `0` means no retained prefix has ever been deleted.
+    pub(crate) oldest_retained_seq: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -159,7 +158,7 @@ pub(crate) struct AgentProjectionSnapshot {
     /// May be greater than `snapshot_through_seq`; names a committed event
     /// available through the event page.
     pub(crate) event_head_seq: u64,
-    pub(crate) oldest_retained_seq: Option<u64>,
+    pub(crate) oldest_retained_seq: u64,
     pub(crate) projection: AgentCanonicalProjection,
 }
 
@@ -230,7 +229,7 @@ pub(crate) struct RichCursorNotFoundError {
     pub(crate) code: String,
     pub(crate) after_seq: u64,
     pub(crate) event_log_epoch: String,
-    pub(crate) oldest_retained_seq: Option<u64>,
+    pub(crate) oldest_retained_seq: u64,
     pub(crate) event_head_seq: u64,
 }
 
@@ -1118,7 +1117,7 @@ mod tests {
             assert!(head >= 2);
             // One committed view: the boundary equals the head it read.
             assert_eq!(body["snapshot_through_seq"].as_u64().unwrap(), head);
-            assert_eq!(body["oldest_retained_seq"].as_u64().unwrap_or(1), 1);
+            assert_eq!(body["oldest_retained_seq"].as_u64(), Some(0));
             assert!(body["visibility_scope_id"]
                 .as_str()
                 .is_some_and(|scope| scope.starts_with("vscope1_")));

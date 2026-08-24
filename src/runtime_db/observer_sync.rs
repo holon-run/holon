@@ -52,7 +52,7 @@ pub struct AgentRosterRow {
     pub identity_json: String,
     pub agent_state_json: Option<String>,
     pub event_head_seq: u64,
-    pub oldest_retained_seq: Option<u64>,
+    pub oldest_retained_seq: u64,
     pub latest_brief: Option<AgentRosterLatestBriefRow>,
 }
 
@@ -97,7 +97,7 @@ pub struct AgentProjectionSnapshotRow {
     pub agent_state_json: Option<String>,
     /// Greatest committed `event_seq` for the Agent in this view.
     pub event_head_seq: u64,
-    pub oldest_retained_seq: Option<u64>,
+    pub oldest_retained_seq: u64,
     /// Current focused WorkItem, or the most recently updated open one.
     pub current_work_item: Option<AgentProjectionWorkItemRow>,
     /// Latest message record id resolvable through the batch API.
@@ -163,8 +163,8 @@ struct EventProjectionEffectProof {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentEventRecoveryWindow {
     pub event_log_epoch: String,
-    /// First raw event still replayable; `None` when the Agent has no events.
-    pub oldest_retained_seq: Option<u64>,
+    /// Retention floor; `0` means no retained prefix has ever been deleted.
+    pub oldest_retained_seq: u64,
     /// Greatest committed `event_seq` in the same read view.
     pub event_head_seq: u64,
 }
@@ -377,7 +377,14 @@ pub(crate) fn verify_observer_sync_foundations(connection: &mut Connection) -> R
 /// A row that cannot assemble would fail a whole snapshot response, so the
 /// capability degrades instead.
 fn verify_roster_snapshot_view(connection: &Connection) -> Result<bool> {
-    for table in ["agent_identities", "agent_states", "audit_events", "briefs"] {
+    for table in [
+        "agent_identities",
+        "agent_states",
+        "audit_events",
+        "audit_event_retention_watermarks",
+        "runtime_sequences",
+        "briefs",
+    ] {
         if !table_exists(connection, table)? {
             return Ok(false);
         }
@@ -397,7 +404,7 @@ fn verify_roster_snapshot_view(connection: &Connection) -> Result<bool> {
             })?;
         }
         anyhow::ensure!(
-            row.event_head_seq >= row.oldest_retained_seq.unwrap_or(0),
+            row.event_head_seq.saturating_add(1) >= row.oldest_retained_seq,
             "roster event window for {} is inverted",
             row.agent_id
         );
@@ -415,6 +422,8 @@ fn verify_projection_snapshot_view(connection: &Connection) -> Result<bool> {
         "agent_identities",
         "agent_states",
         "audit_events",
+        "audit_event_retention_watermarks",
+        "runtime_sequences",
         "briefs",
         "work_items",
         "messages",
@@ -471,7 +480,7 @@ fn verify_projection_snapshot_view(connection: &Connection) -> Result<bool> {
             })?;
         }
         anyhow::ensure!(
-            row.event_head_seq >= row.oldest_retained_seq.unwrap_or(0),
+            row.event_head_seq.saturating_add(1) >= row.oldest_retained_seq,
             "projection event window for {} is inverted",
             row.agent_id
         );
@@ -527,16 +536,21 @@ fn collect_agent_projection_anchors(
         });
     };
 
-    let (oldest, head): (Option<i64>, Option<i64>) = connection.query_row(
-        "SELECT (SELECT MIN(event_seq) FROM audit_events WHERE agent_id = ?1),
-                (SELECT MAX(event_seq) FROM audit_events WHERE agent_id = ?1)",
+    let (oldest, head): (i64, i64) = connection.query_row(
+        "SELECT
+           COALESCE((
+             SELECT oldest_retained_seq FROM audit_event_retention_watermarks
+             WHERE scope_key = 'agent:' || ?1
+           ), 0),
+           COALESCE((
+             SELECT last_value FROM runtime_sequences
+             WHERE domain = 'audit_event' AND scope_key = 'agent:' || ?1
+           ), 0)",
         [agent_id],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
-    let to_seq = |value: Option<i64>| -> Result<Option<u64>> {
-        value
-            .map(|seq| u64::try_from(seq).context("stored audit event sequence is negative"))
-            .transpose()
+    let to_seq = |value: i64| -> Result<u64> {
+        u64::try_from(value).context("stored audit event sequence is negative")
     };
 
     // Current WorkItem anchor: the focused row wins; without focus the
@@ -605,7 +619,7 @@ fn collect_agent_projection_anchors(
             agent_id: agent_id.to_string(),
             identity_json,
             agent_state_json,
-            event_head_seq: to_seq(head)?.unwrap_or(0),
+            event_head_seq: to_seq(head)?,
             oldest_retained_seq: to_seq(oldest)?,
             current_work_item,
             latest_message_id,
@@ -646,37 +660,29 @@ fn collect_agent_roster_rows(connection: &Connection) -> Result<AgentRosterSnaps
     let mut identities = Vec::new();
     {
         let mut statement = connection.prepare(
-            "SELECT i.agent_id, i.payload_json FROM agent_identities i
+            "SELECT i.agent_id,
+                    i.payload_json,
+                    COALESCE(sequences.last_value, 0),
+                    COALESCE(watermarks.oldest_retained_seq, 0)
+             FROM agent_identities i
+             LEFT JOIN runtime_sequences sequences
+               ON sequences.domain = 'audit_event'
+              AND sequences.scope_key = 'agent:' || i.agent_id
+             LEFT JOIN audit_event_retention_watermarks watermarks
+               ON watermarks.scope_key = 'agent:' || i.agent_id
              WHERE i.status = 'active' AND i.visibility = 'public'
              ORDER BY i.agent_id",
         )?;
         let rows = statement.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?;
-        for row in rows {
-            identities.push(row?);
-        }
-    }
-
-    let mut event_windows: HashMap<String, (Option<i64>, Option<i64>)> = HashMap::new();
-    {
-        let mut statement = connection.prepare(
-            "SELECT e.agent_id, MIN(e.event_seq), MAX(e.event_seq)
-             FROM audit_events e
-             JOIN agent_identities i ON i.agent_id = e.agent_id
-             WHERE i.status = 'active' AND i.visibility = 'public'
-             GROUP BY e.agent_id",
-        )?;
-        let rows = statement.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
-                row.get::<_, Option<i64>>(1)?,
-                row.get::<_, Option<i64>>(2)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
             ))
         })?;
         for row in rows {
-            let (agent_id, oldest, head) = row?;
-            event_windows.insert(agent_id, (oldest, head));
+            identities.push(row?);
         }
     }
 
@@ -734,17 +740,14 @@ fn collect_agent_roster_rows(connection: &Connection) -> Result<AgentRosterSnaps
         }
     }
 
-    let to_seq = |value: Option<i64>| -> Result<Option<u64>> {
-        value
-            .map(|seq| u64::try_from(seq).context("stored audit event sequence is negative"))
-            .transpose()
+    let to_seq = |value: i64| -> Result<u64> {
+        u64::try_from(value).context("stored audit event sequence is negative")
     };
     let rows = identities
         .into_iter()
-        .map(|(agent_id, identity_json)| {
-            let (oldest, head) = event_windows.remove(&agent_id).unwrap_or((None, None));
+        .map(|(agent_id, identity_json, head, oldest)| {
             Ok(AgentRosterRow {
-                event_head_seq: to_seq(head)?.unwrap_or(0),
+                event_head_seq: to_seq(head)?,
                 oldest_retained_seq: to_seq(oldest)?,
                 latest_brief: latest_briefs.remove(&agent_id),
                 agent_state_json: agent_states.remove(&agent_id),
@@ -1302,40 +1305,27 @@ impl crate::runtime_db::RuntimeDb {
         agent_id: Option<&str>,
     ) -> Result<AgentEventRecoveryWindow> {
         let connection = self.connection()?;
-        // Scoped storages read their own agent rows while unscoped storages
-        // read the runtime-level rows (`agent_id IS NULL`), matching the
-        // retention queries. A plain `agent_id = ?1` would silently match no
-        // rows for a NULL scope; folding both cases into one
-        // `OR (?1 IS NULL ...)` predicate would defeat the index seek that
-        // backs the MIN/MAX subselects.
-        let window_sql = |predicate: &str| {
-            format!(
-                "SELECT
-                    (SELECT value FROM runtime_metadata WHERE key = 'event_log_epoch'),
-                    (SELECT MIN(event_seq) FROM audit_events WHERE {predicate}),
-                    (SELECT MAX(event_seq) FROM audit_events WHERE {predicate})"
-            )
-        };
-        let window_row = |row: &rusqlite::Row<'_>| Ok((row.get(0)?, row.get(1)?, row.get(2)?));
-        let (epoch, oldest, head): (String, Option<i64>, Option<i64>) = match agent_id {
-            Some(agent_id) => connection.query_row(
-                window_sql("agent_id = ?1").as_str(),
-                [agent_id],
-                window_row,
-            )?,
-            None => {
-                connection.query_row(window_sql("agent_id IS NULL").as_str(), [], window_row)?
-            }
-        };
-        let to_seq = |value: Option<i64>| -> Result<Option<u64>> {
-            value
-                .map(|seq| u64::try_from(seq).context("stored audit event sequence is negative"))
-                .transpose()
-        };
+        let scope_key = crate::runtime_db::evidence::audit_event_sequence_scope(agent_id);
+        let (epoch, oldest, head): (String, i64, i64) = connection.query_row(
+            "SELECT
+               (SELECT value FROM runtime_metadata WHERE key = 'event_log_epoch'),
+               COALESCE((
+                 SELECT oldest_retained_seq FROM audit_event_retention_watermarks
+                 WHERE scope_key = ?1
+               ), 0),
+               COALESCE((
+                 SELECT last_value FROM runtime_sequences
+                 WHERE domain = 'audit_event' AND scope_key = ?1
+               ), 0)",
+            [scope_key],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
         Ok(AgentEventRecoveryWindow {
             event_log_epoch: epoch,
-            oldest_retained_seq: to_seq(oldest)?,
-            event_head_seq: to_seq(head)?.unwrap_or(0),
+            oldest_retained_seq: u64::try_from(oldest)
+                .context("stored audit retention watermark is negative")?,
+            event_head_seq: u64::try_from(head)
+                .context("stored audit event sequence is negative")?,
         })
     }
 }

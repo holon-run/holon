@@ -319,7 +319,7 @@ struct AgentRosterEntry {
 
 struct AgentEventWindow {
     event_head_seq: u64,
-    oldest_retained_seq: Option<u64>,
+    oldest_retained_seq: u64,
 }
 
 struct AgentLatestBrief {
@@ -346,13 +346,17 @@ entitlement should keep it stable. A principal, entitlement, or policy change
 must rotate it. Local unauthenticated mode uses a runtime-local public scope.
 
 `event_head_seq` is the greatest committed `event_seq` visible in the response
-read view. It must not come from an in-memory watcher or the next value in a
-sequence allocator.
+read view. It comes from the Agent's committed `runtime_sequences` row, not an
+in-memory watcher, the allocator's next value, or an aggregate over retained
+events.
 
-`oldest_retained_seq` is the first raw event still replayable in that same read
-view. An Agent with no events has `event_head_seq = 0` and
-`oldest_retained_seq = None`. Retention may advance after the response, so the
-event page's `cursor_not_found` response remains authoritative.
+`oldest_retained_seq` is the durable hard recovery floor. `0` means no retained
+prefix is known to have been deleted, including for an Agent with no events.
+A positive value is the earliest sequence that may still be replayable after
+retention; it may equal `event_head_seq + 1` when no raw event survives. The
+value comes from the per-Agent retention watermark, not `MIN(event_seq)`.
+Retention may advance after the response, so the event page's
+`cursor_not_found` response remains authoritative.
 
 `latest_brief` is derived from canonical Brief storage, not a second UI-summary
 table. `preview` has a documented length limit. Full Brief content remains
@@ -412,7 +416,7 @@ struct AgentProjectionSnapshot {
     agent_id: String,
     snapshot_through_seq: u64,
     event_head_seq: u64,
-    oldest_retained_seq: Option<u64>,
+    oldest_retained_seq: u64,
     projection: AgentCanonicalProjection,
 }
 ```
@@ -733,9 +737,10 @@ and privacy-mode behavior. It is outside Phase 3.
 
 ### Normal Catch-Up
 
-If the epoch matches and the local cursor is at or after
-`oldest_retained_seq - 1`, the client replays `after_seq` normally. Offline
-Brief events remain available for exact unread calculation.
+If the epoch matches and either `oldest_retained_seq = 0` or the local cursor
+is at or after `oldest_retained_seq - 1`, incremental recovery remains
+possible and the client replays `after_seq` normally. Offline Brief events
+remain available for exact unread calculation.
 
 ### Rich Cursor Error
 
@@ -754,7 +759,8 @@ select the correct reset path.
 
 An Agent-local reset begins when:
 
-- the local cursor is less than `oldest_retained_seq - 1`;
+- `oldest_retained_seq > 0` and the local cursor is less than
+  `oldest_retained_seq - 1`;
 - the event page or SSE endpoint returns `cursor_not_found`;
 - one immutable event identity has conflicting content; or
 - projection divergence cannot be repaired by bounded hydration retry.
@@ -968,7 +974,9 @@ They should not be implemented as aliases for the new contract.
 3. `agent_id` is not reused for a different Agent within one epoch.
 4. A roster snapshot is complete for the active-public visibility scope or
    fails entirely.
-5. Roster event head and retained floor name committed events in one read view.
+5. Roster event head and durable retained floor come from one committed read
+   view; floor `0` means no known deletion and a positive floor may be one past
+   the head after full-prefix deletion.
 6. A projection snapshot and `snapshot_through_seq` share one consistency
    boundary.
 7. A client applies only events greater than an installed snapshot boundary.

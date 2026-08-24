@@ -86,7 +86,7 @@ pub(crate) struct AgentRosterSnapshotData {
 pub(crate) struct AgentRosterEntryData {
     pub agent: AgentListEntry,
     pub event_head_seq: u64,
-    pub oldest_retained_seq: Option<u64>,
+    pub oldest_retained_seq: u64,
     pub latest_brief: Option<AgentRosterLatestBriefData>,
 }
 
@@ -112,7 +112,7 @@ pub(crate) struct AgentProjectionSnapshotData {
     /// commits its canonical record no later than its event.
     pub snapshot_through_seq: u64,
     pub event_head_seq: u64,
-    pub oldest_retained_seq: Option<u64>,
+    pub oldest_retained_seq: u64,
     pub agent: AgentListEntry,
     pub current_work_item: Option<AgentWorkItemAnchorData>,
     pub conversation: ConversationRevisionAnchorsData,

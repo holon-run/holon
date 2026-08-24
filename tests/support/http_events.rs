@@ -1225,9 +1225,7 @@ pub async fn events_stream_with_missing_cursor_returns_not_found() -> Result<()>
         .as_str()
         .is_some_and(|epoch| !epoch.is_empty()));
     assert!(body["event_head_seq"].as_u64().is_some());
-    assert!(
-        body["oldest_retained_seq"].is_null() || body["oldest_retained_seq"].as_u64().is_some()
-    );
+    assert_eq!(body["oldest_retained_seq"].as_u64(), Some(0));
     if let Some(head) = body["event_head_seq"].as_u64() {
         assert!(head < 999, "after_seq 999 is beyond the head {head}");
     }
@@ -1352,7 +1350,6 @@ pub async fn events_page_and_stream_emit_matching_projection_effects() -> Result
     assert_eq!(matched.data["projection_effect"], "none");
 
     // The rich cursor error reports the same committed window the page sees.
-    let oldest = page["oldest_seq"].as_u64().expect("oldest_seq");
     let head = page["cursor_seq"].as_u64().expect("cursor_seq");
     let missing = client
         .get(format!(
@@ -1365,7 +1362,7 @@ pub async fn events_page_and_stream_emit_matching_projection_effects() -> Result
     let body: serde_json::Value = missing.json().await?;
     assert_eq!(body["code"], "cursor_not_found");
     assert_eq!(body["event_head_seq"].as_u64(), Some(head));
-    assert_eq!(body["oldest_retained_seq"].as_u64(), Some(oldest));
+    assert_eq!(body["oldest_retained_seq"].as_u64(), Some(0));
     assert_eq!(
         body["event_log_epoch"].as_str(),
         page["event_log_epoch"].as_str()

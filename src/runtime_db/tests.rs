@@ -513,6 +513,7 @@ mod tests {
             "runtime_metadata",
             "agents",
             "audit_events",
+            "audit_event_retention_watermarks",
             "runtime_sequences",
             "work_items",
             "tasks",
@@ -1724,7 +1725,7 @@ INSERT INTO storage_domains (
         assert!(
             error
                 .to_string()
-                .contains("supports runtime db schemas 46 through 50, found 45"),
+                .contains("supports runtime db schemas 46 through 51, found 45"),
             "{error:#}"
         );
         Ok(())
@@ -1847,7 +1848,7 @@ INSERT INTO scheduler_rollout_command_results (
         RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
 
         let connection = open_connection(&db_path)?;
-        assert_eq!(current_schema_version(&connection)?, 50);
+        assert_eq!(current_schema_version(&connection)?, 51);
         for table in RETIRED_SCHEDULER_TABLES {
             assert!(
                 !table_exists(&connection, table)?,
@@ -2001,7 +2002,7 @@ INSERT INTO scheduler_rollout_command_results (
 
             RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
             let connection = open_connection(&db_path)?;
-            assert_eq!(current_schema_version(&connection)?, 50);
+            assert_eq!(current_schema_version(&connection)?, 51);
             for table in RETIRED_SCHEDULER_TABLES {
                 assert!(
                     !table_exists(&connection, table)?,
@@ -2115,7 +2116,7 @@ INSERT INTO scheduler_rollout_command_results (
         drop(db);
 
         RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        assert_eq!(current_schema_version(&open_connection(&db_path)?)?, 50);
+        assert_eq!(current_schema_version(&open_connection(&db_path)?)?, 51);
         Ok(())
     }
 
@@ -2222,7 +2223,7 @@ INSERT INTO scheduler_rollout_command_results (
             RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
             assert_eq!(
                 current_schema_version(&open_connection(&db_path)?)?,
-                50,
+                51,
                 "{case}"
             );
         }
@@ -2281,7 +2282,7 @@ INSERT INTO scheduler_rollout_command_results (
         drop(db);
 
         RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        assert_eq!(current_schema_version(&open_connection(&db_path)?)?, 50);
+        assert_eq!(current_schema_version(&open_connection(&db_path)?)?, 51);
         Ok(())
     }
 
@@ -2341,7 +2342,7 @@ INSERT INTO scheduler_rollout_command_results (
         drop(db);
 
         RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        assert_eq!(current_schema_version(&open_connection(&db_path)?)?, 50);
+        assert_eq!(current_schema_version(&open_connection(&db_path)?)?, 51);
         Ok(())
     }
 
@@ -6265,7 +6266,7 @@ CREATE TABLE working_memory_deltas (
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
         let empty = db.agent_event_recovery_window(Some("default"))?;
         assert_eq!(empty.event_head_seq, 0);
-        assert_eq!(empty.oldest_retained_seq, None);
+        assert_eq!(empty.oldest_retained_seq, 0);
         assert!(empty.event_log_epoch.starts_with("epoch_"));
         for index in 1..=3 {
             let event = crate::types::AuditEvent::legacy(
@@ -6276,7 +6277,7 @@ CREATE TABLE working_memory_deltas (
         }
         let window = db.agent_event_recovery_window(Some("default"))?;
         assert_eq!(window.event_head_seq, 3);
-        assert_eq!(window.oldest_retained_seq, Some(1));
+        assert_eq!(window.oldest_retained_seq, 0);
         assert_eq!(window.event_log_epoch, db.event_log_epoch()?);
         for index in 1..=2 {
             let event = crate::types::AuditEvent::legacy(
@@ -6290,11 +6291,56 @@ CREATE TABLE working_memory_deltas (
         // nothing behind a `agent_id = NULL` comparison.
         let scoped = db.agent_event_recovery_window(Some("default"))?;
         assert_eq!(scoped.event_head_seq, 3);
-        assert_eq!(scoped.oldest_retained_seq, Some(1));
+        assert_eq!(scoped.oldest_retained_seq, 0);
         let unscoped = db.agent_event_recovery_window(None)?;
         assert_eq!(unscoped.event_head_seq, 2);
-        assert_eq!(unscoped.oldest_retained_seq, Some(1));
+        assert_eq!(unscoped.oldest_retained_seq, 0);
         assert_eq!(unscoped.event_log_epoch, db.event_log_epoch()?);
+        Ok(())
+    }
+
+    #[test]
+    fn observer_sync_windows_use_durable_head_and_floor_after_full_prefix_deletion() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        db.agent_identities().upsert(&agent_identity("member", 0))?;
+        for index in 1..=3 {
+            db.audit_events().append(
+                Some("member"),
+                &crate::types::AuditEvent::legacy(
+                    format!("legacy_{index}"),
+                    serde_json::json!({ "index": index }),
+                ),
+            )?;
+        }
+        db.transaction(|tx| {
+            tx.execute("DELETE FROM audit_events WHERE agent_id = 'member'", [])?;
+            tx.execute(
+                "INSERT INTO audit_event_retention_watermarks (
+                   scope_key, oldest_retained_seq
+                 ) VALUES ('agent:member', 4)",
+                [],
+            )?;
+            Ok(())
+        })?;
+
+        let recovery = db.agent_event_recovery_window(Some("member"))?;
+        assert_eq!(recovery.event_head_seq, 3);
+        assert_eq!(recovery.oldest_retained_seq, 4);
+        let roster = db.agent_roster_snapshot_rows()?;
+        let roster_row = roster
+            .rows
+            .iter()
+            .find(|row| row.agent_id == "member")
+            .expect("member roster row");
+        assert_eq!(roster_row.event_head_seq, 3);
+        assert_eq!(roster_row.oldest_retained_seq, 4);
+        let projection = db
+            .agent_projection_snapshot_rows("member")?
+            .row
+            .expect("member projection row");
+        assert_eq!(projection.event_head_seq, 3);
+        assert_eq!(projection.oldest_retained_seq, 4);
         Ok(())
     }
 
@@ -6398,7 +6444,7 @@ CREATE TABLE working_memory_deltas (
 
         let row = &snapshot.rows[0];
         assert_eq!(row.event_head_seq, 3);
-        assert_eq!(row.oldest_retained_seq, Some(1));
+        assert_eq!(row.oldest_retained_seq, 0);
         let brief = row.latest_brief.as_ref().expect("latest brief anchor");
         assert_eq!(brief.brief_id, "brief-newer");
         assert_eq!(brief.created_event_seq, Some(2));
@@ -6417,7 +6463,7 @@ CREATE TABLE working_memory_deltas (
             .find(|row| row.agent_id == "member-empty")
             .expect("empty member row");
         assert_eq!(empty.event_head_seq, 0);
-        assert_eq!(empty.oldest_retained_seq, None);
+        assert_eq!(empty.oldest_retained_seq, 0);
         assert_eq!(empty.latest_brief, None);
         assert_eq!(empty.agent_state_json, None);
         Ok(())
@@ -6621,7 +6667,7 @@ CREATE TABLE working_memory_deltas (
         let row = snapshot.row.expect("member anchors");
         assert_eq!(row.agent_id, "member");
         assert_eq!(row.event_head_seq, 3);
-        assert_eq!(row.oldest_retained_seq, Some(1));
+        assert_eq!(row.oldest_retained_seq, 0);
         let work_item = row.current_work_item.expect("current work item anchor");
         assert_eq!(work_item.work_item_id, "work-focused");
         assert_eq!(work_item.state, "open");
