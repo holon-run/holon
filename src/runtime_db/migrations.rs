@@ -3134,42 +3134,10 @@ CREATE TABLE IF NOT EXISTS brief_created_linkage_uncertain (
     Migration {
         version: 50,
         name: "observer_sync_event_verification_proof",
-        sql: r#"
-ALTER TABLE observer_sync_capability_verifications
-  ADD COLUMN verification_version INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE observer_sync_capability_verifications
-  ADD COLUMN event_log_epoch TEXT;
-ALTER TABLE observer_sync_capability_verifications
-  ADD COLUMN event_generation INTEGER NOT NULL DEFAULT 0;
--- -1 means no inventory proof covers the current audit mutation generation.
-ALTER TABLE observer_sync_capability_verifications
-  ADD COLUMN verified_event_generation INTEGER NOT NULL DEFAULT -1;
-
-INSERT OR IGNORE INTO observer_sync_capability_verifications (
-  capability, verified, verified_at, detail
-) VALUES (
-  'event_projection_effect_complete',
-  0,
-  strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-  '{"stage":"verification-proof-migration"}'
-);
-
-CREATE TRIGGER audit_events_projection_verification_insert
-AFTER INSERT ON audit_events
-BEGIN
-  UPDATE observer_sync_capability_verifications
-  SET event_generation = event_generation + 1
-  WHERE capability = 'event_projection_effect_complete';
-END;
-
-CREATE TRIGGER audit_events_projection_verification_update
-AFTER UPDATE OF kind, data_json ON audit_events
-BEGIN
-  UPDATE observer_sync_capability_verifications
-  SET event_generation = event_generation + 1
-  WHERE capability = 'event_projection_effect_complete';
-END;
-"#,
+        // Columns and triggers live in
+        // `ensure_observer_sync_event_verification_proof_schema` so
+        // name-accepted and downgrade/re-upgrade paths remain idempotent.
+        sql: "",
     },
 ];
 
@@ -3416,6 +3384,9 @@ fn apply_migration_transaction(transaction: &Transaction<'_>, migration: &Migrat
     if migration.name == "brief_created_event_linkage" {
         ensure_brief_created_event_linkage_schema(transaction)?;
     }
+    if migration.name == "observer_sync_event_verification_proof" {
+        ensure_observer_sync_event_verification_proof_schema(transaction)?;
+    }
     transaction.execute_batch(migration.sql)?;
     if migration.name == "execution_protocol_authority" {
         backfill_execution_protocol_authority(transaction)?;
@@ -3489,6 +3460,78 @@ fn ensure_brief_created_event_linkage_schema(transaction: &Transaction<'_>) -> R
            ON briefs(agent_id, created_event_seq)
            WHERE created_event_seq IS NOT NULL;",
     )?;
+    Ok(())
+}
+
+/// Adds the event-verification proof columns and mutation triggers. Test and
+/// recovery paths can deliberately remove migration records without reverting
+/// additive schema, while released-name compatibility paths may omit the
+/// historical tables entirely, so every object is discovered before use.
+fn ensure_observer_sync_event_verification_proof_schema(
+    transaction: &Transaction<'_>,
+) -> Result<()> {
+    if !table_exists_tx(transaction, "observer_sync_capability_verifications")? {
+        return Ok(());
+    }
+    let columns = transaction
+        .prepare("PRAGMA table_info(observer_sync_capability_verifications)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    for (column, definition) in [
+        (
+            "verification_version",
+            "verification_version INTEGER NOT NULL DEFAULT 0",
+        ),
+        ("event_log_epoch", "event_log_epoch TEXT"),
+        (
+            "event_generation",
+            "event_generation INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "verified_event_generation",
+            // -1 means no inventory proof covers the current mutation generation.
+            "verified_event_generation INTEGER NOT NULL DEFAULT -1",
+        ),
+    ] {
+        if !columns.iter().any(|existing| existing == column) {
+            transaction.execute_batch(&format!(
+                "ALTER TABLE observer_sync_capability_verifications ADD COLUMN {definition};"
+            ))?;
+        }
+    }
+    transaction.execute_batch(
+        r#"
+INSERT OR IGNORE INTO observer_sync_capability_verifications (
+  capability, verified, verified_at, detail
+) VALUES (
+  'event_projection_effect_complete',
+  0,
+  strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+  '{"stage":"verification-proof-migration"}'
+);
+"#,
+    )?;
+    if table_exists_tx(transaction, "audit_events")? {
+        transaction.execute_batch(
+            r#"
+CREATE TRIGGER IF NOT EXISTS audit_events_projection_verification_insert
+AFTER INSERT ON audit_events
+BEGIN
+  UPDATE observer_sync_capability_verifications
+  SET event_generation = event_generation + 1
+  WHERE capability = 'event_projection_effect_complete';
+END;
+
+CREATE TRIGGER IF NOT EXISTS audit_events_projection_verification_update
+AFTER UPDATE OF kind, data_json ON audit_events
+BEGIN
+  UPDATE observer_sync_capability_verifications
+  SET event_generation = event_generation + 1
+  WHERE capability = 'event_projection_effect_complete';
+END;
+"#,
+        )?;
+    }
     Ok(())
 }
 

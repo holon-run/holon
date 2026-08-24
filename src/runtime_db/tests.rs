@@ -2222,7 +2222,7 @@ INSERT INTO scheduler_rollout_command_results (
             RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
             assert_eq!(
                 current_schema_version(&open_connection(&db_path)?)?,
-                49,
+                50,
                 "{case}"
             );
         }
