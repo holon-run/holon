@@ -295,28 +295,33 @@ pub(crate) fn verify_observer_sync_foundations(connection: &mut Connection) -> R
         &now,
         &reserved_detail,
     )?;
-    if reusable_event_projection_effect_verification(connection, &event_log_epoch)?.is_none() {
-        let inventory = verify_event_projection_effect_inventory(connection);
-        let inventory_detail = match &inventory {
-            Ok(complete) => serde_json::json!({
-                "source": "full_inventory",
-                "registry_kinds": crate::runtime_event::ALL_RUNTIME_EVENT_KINDS.len(),
-                "complete": complete,
-            })
-            .to_string(),
-            Err(error) => serde_json::json!({
-                "source": "full_inventory",
-                "error": format!("{error:#}"),
-            })
-            .to_string(),
-        };
-        persist_event_projection_effect_verification(
-            connection,
-            inventory.unwrap_or(false),
-            &event_log_epoch,
-            &now,
-            &inventory_detail,
-        )?;
+    {
+        let transaction = connection.transaction()?;
+        if reusable_event_projection_effect_verification(&transaction, &event_log_epoch)?.is_none()
+        {
+            let inventory = verify_event_projection_effect_inventory(&transaction);
+            let inventory_detail = match &inventory {
+                Ok(complete) => serde_json::json!({
+                    "source": "full_inventory",
+                    "registry_kinds": crate::runtime_event::ALL_RUNTIME_EVENT_KINDS.len(),
+                    "complete": complete,
+                })
+                .to_string(),
+                Err(error) => serde_json::json!({
+                    "source": "full_inventory",
+                    "error": format!("{error:#}"),
+                })
+                .to_string(),
+            };
+            persist_event_projection_effect_verification(
+                &transaction,
+                inventory.unwrap_or(false),
+                &event_log_epoch,
+                &now,
+                &inventory_detail,
+            )?;
+        }
+        transaction.commit()?;
     }
     let linkage = verify_brief_atomic_linkage(connection);
     let linkage_detail = match &linkage {
@@ -1041,10 +1046,10 @@ pub(crate) fn record_appended_event_projection_effect(
         event.payload_schema_version,
     );
     let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    match classification {
+    let updated = match classification {
         crate::runtime_event::ProjectionEffectClassification::Exact(_)
-        | crate::runtime_event::ProjectionEffectClassification::ConservativeLegacy(_) => {
-            connection.execute(
+        | crate::runtime_event::ProjectionEffectClassification::ConservativeLegacy(_) => connection
+            .execute(
                 "UPDATE observer_sync_capability_verifications
                  SET verified_event_generation = event_generation,
                      verified_at = ?1
@@ -1061,8 +1066,7 @@ pub(crate) fn record_appended_event_projection_effect(
                     proof.event_generation,
                     proof.verified_event_generation,
                 ],
-            )?;
-        }
+            )?,
         crate::runtime_event::ProjectionEffectClassification::Unsupported(reason) => {
             let detail = serde_json::json!({
                 "source": "trusted_append",
@@ -1091,8 +1095,16 @@ pub(crate) fn record_appended_event_projection_effect(
                     proof.event_generation,
                     proof.verified_event_generation,
                 ],
-            )?;
+            )?
         }
+    };
+    if updated == 0 {
+        tracing::debug!(
+            event_id = %event.id,
+            event_generation = proof.event_generation,
+            verified_event_generation = proof.verified_event_generation,
+            "projection-effect proof did not advance after trusted append"
+        );
     }
     Ok(())
 }

@@ -3141,6 +3141,7 @@ ALTER TABLE observer_sync_capability_verifications
   ADD COLUMN event_log_epoch TEXT;
 ALTER TABLE observer_sync_capability_verifications
   ADD COLUMN event_generation INTEGER NOT NULL DEFAULT 0;
+-- -1 means no inventory proof covers the current audit mutation generation.
 ALTER TABLE observer_sync_capability_verifications
   ADD COLUMN verified_event_generation INTEGER NOT NULL DEFAULT -1;
 
