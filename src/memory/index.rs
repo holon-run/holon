@@ -2635,6 +2635,13 @@ fn command_tool_execution_document(
         ("ExecCommand", None, ToolExecutionRefSelector::Output(stream)) => Ok(
             command_output_document(&record, None, stream.as_ref_selector()),
         ),
+        (
+            "ExecCommandBatch",
+            None,
+            ToolExecutionRefSelector::Output(ToolOutputSelector::Output),
+        ) => Ok(Some(generic_tool_execution_output_document_from_record(
+            &record,
+        ))),
         ("ExecCommandBatch", Some(index), ToolExecutionRefSelector::Output(stream)) => Ok(
             command_output_document(&record, Some(index), stream.as_ref_selector()),
         ),
@@ -4972,6 +4979,72 @@ mod tests {
 
         assert!(memory.content.contains("second_batch_output_1246"));
         assert!(!memory.content.contains("first_batch_output_1246"));
+    }
+
+    #[test]
+    fn command_output_resolves_exec_command_batch_top_level_output() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .append_tool_execution(&ToolExecutionRecord {
+                id: "tool-batch-top-output-1246".into(),
+                agent_id: "default".into(),
+                work_item_id: None,
+                turn_index: 0,
+                turn_id: None,
+                tool_name: "ExecCommandBatch".into(),
+                created_at: Utc::now(),
+                completed_at: Some(Utc::now()),
+                duration_ms: 20,
+                authority_class: crate::types::AuthorityClass::OperatorInstruction,
+                status: crate::types::ToolExecutionStatus::Success,
+                input: json!({
+                    "items": [
+                        {"cmd": "echo first"},
+                        {"cmd": "echo second"}
+                    ]
+                }),
+                output: json!({
+                    "envelope": {
+                        "result": {
+                            "completed_count": 2,
+                            "item_count": 2,
+                            "items": [
+                                {"index": 1, "result": {"stdout_preview": "first_batch_top_output_1246\n"}},
+                                {"index": 2, "result": {"stdout_preview": "second_batch_top_output_1246\n"}}
+                            ]
+                        }
+                    },
+                    "is_error": false
+                }),
+                summary: "ExecCommandBatch completed 2/2 items".into(),
+                invocation_surface: None,
+            })
+            .unwrap();
+
+        let memory = get_memory(
+            &storage,
+            "tool_execution:tool-batch-top-output-1246:output",
+            None,
+            Some("ws-holon"),
+        )
+        .unwrap()
+        .expect("top-level batch output should be retrievable");
+
+        assert!(memory.content.contains("first_batch_top_output_1246"));
+        assert!(memory.content.contains("second_batch_top_output_1246"));
+        assert!(memory
+            .content
+            .contains("\"source_type\": \"tool_execution_output\""));
+        assert!(get_memory(
+            &storage,
+            "tool_execution:tool-batch-top-output-1246:stdout",
+            None,
+            Some("ws-holon"),
+        )
+        .unwrap()
+        .is_none());
     }
 
     #[test]

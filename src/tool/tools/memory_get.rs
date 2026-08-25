@@ -420,6 +420,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn memory_get_tool_accepts_exec_command_batch_top_level_output_ref() {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(StubProvider::new("done")),
+            "default".into(),
+            ContextConfig::default(),
+        )
+        .unwrap();
+        runtime
+            .storage()
+            .append_tool_execution(&ToolExecutionRecord {
+                id: "tool-batch-get-1246".into(),
+                agent_id: "default".into(),
+                work_item_id: None,
+                turn_index: 0,
+                turn_id: None,
+                tool_name: "ExecCommandBatch".into(),
+                created_at: Utc::now(),
+                completed_at: Some(Utc::now()),
+                duration_ms: 10,
+                authority_class: AuthorityClass::OperatorInstruction,
+                status: ToolExecutionStatus::Success,
+                input: json!({
+                    "items": [
+                        {"cmd": "echo first"},
+                        {"cmd": "echo second"}
+                    ]
+                }),
+                output: json!({
+                    "envelope": {
+                        "result": {
+                            "completed_count": 2,
+                            "item_count": 2,
+                            "items": [
+                                {"index": 1, "result": {"stdout_preview": "memory_get_batch_first_1246\n"}},
+                                {"index": 2, "result": {"stdout_preview": "memory_get_batch_second_1246\n"}}
+                            ]
+                        }
+                    },
+                    "is_error": false
+                }),
+                summary: "ExecCommandBatch completed 2/2 items".into(),
+                invocation_surface: None,
+            })
+            .unwrap();
+
+        let result = execute(
+            &runtime,
+            "default",
+            &AuthorityClass::OperatorInstruction,
+            &json!({
+                "source_ref": "tool_execution:tool-batch-get-1246:output"
+            }),
+        )
+        .await
+        .unwrap();
+        let content = result.envelope.result.unwrap()["memory"]["content"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        assert!(content.contains("\"tool_name\": \"ExecCommandBatch\""));
+        assert!(content.contains("memory_get_batch_first_1246"));
+        assert!(content.contains("memory_get_batch_second_1246"));
+    }
+
+    #[tokio::test]
     async fn memory_get_tool_accepts_task_source_refs() {
         let dir = tempdir().unwrap();
         let workspace = tempdir().unwrap();
