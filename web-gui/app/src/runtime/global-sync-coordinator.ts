@@ -68,12 +68,8 @@ interface GlobalSyncCoordinatorDependencies<State extends GlobalSyncStoreState> 
     liveStatus: AgentLiveStatus,
     updates?: Partial<AgentSessionState>,
   ) => void;
-  /**
-   * Fetch the authoritative roster snapshot. Resolves null when the remote
-   * does not serve the roster contract (capability unverified or an older
-   * server), so the caller keeps the /agents/list legacy path.
-   */
-  fetchRosterSnapshot: (request: ClientRequest) => Promise<AgentRosterSnapshotDto | null>;
+  /** Fetch the authoritative roster snapshot from the embedded daemon. */
+  fetchRosterSnapshot: (request: ClientRequest) => Promise<AgentRosterSnapshotDto>;
   /**
    * Atomically apply one complete roster snapshot: validate identity,
    * replace the roster, reset stale-scope sessions, and purge omitted
@@ -238,11 +234,10 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
 
   /**
    * Request one authoritative roster refresh outside the stream lifecycle,
-   * for example after a local create/delete. Legacy mode keeps its own
-   * /agents/list path, so this is a no-op there.
+   * for example after a local create/delete.
    */
   refreshRoster(get: () => State, set: GlobalSyncStoreSet<State>): void {
-    if (!this.globalEventStream || get().discovery.mode === "legacy") return;
+    if (!this.globalEventStream) return;
     void this.refreshRosterInner(
       get,
       set,
@@ -254,18 +249,14 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
   /**
    * Discovery state machine (W4): request the authoritative roster after
    * the stream opens, apply it atomically, register per-Agent recovery,
-   * then run the legacy in-memory catch-up for the UI projection. A remote
-   * without the roster capability keeps the legacy /agents/list path and
-   * never purges from an authoritative claim.
+   * then run the in-memory catch-up for the UI projection.
    */
   private async beginDiscovery(
     get: () => State,
     set: GlobalSyncStoreSet<State>,
     request: ClientRequest,
   ): Promise<void> {
-    if (get().discovery.mode !== "legacy") {
-      await this.refreshRosterInner(get, set, request, "stream_open");
-    }
+    await this.refreshRosterInner(get, set, request, "stream_open");
     if (
       !this.dependencies.isCurrentClientRequest(request)
       || !this.globalEventStream
@@ -279,7 +270,6 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
     request: ClientRequest,
     trigger: string,
   ): Promise<void> {
-    if (get().discovery.mode === "legacy") return;
     if (this.rosterRefreshPromise) {
       // A hint while the snapshot is in flight coalesces into exactly one
       // additional refresh inside the running cycle.
@@ -300,7 +290,7 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
       ) {
         refreshAgain = false;
         this.rosterDirty = false;
-        let snapshot: AgentRosterSnapshotDto | null;
+        let snapshot: AgentRosterSnapshotDto;
         try {
           snapshot = await this.dependencies.fetchRosterSnapshot(request);
         } catch (error) {
@@ -310,24 +300,6 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
           return;
         }
         if (!this.dependencies.isCurrentClientRequest(request)) return;
-        if (snapshot == null) {
-          // The remote does not serve the authoritative roster contract:
-          // keep the /agents/list legacy path and never purge from it.
-          this.clearRosterRetrySchedule();
-          set((state) => ({
-            discovery: {
-              ...state.discovery,
-              mode: "legacy",
-              freshness: "fresh",
-              staleReason: undefined,
-              unauthorizedReason: undefined,
-              retryAttempt: 0,
-              retryAt: undefined,
-            },
-          } as Partial<State>));
-          span.end("skipped", { reason: "capability_absent" });
-          return;
-        }
         settledFromSnapshot = true;
         this.clearRosterRetrySchedule();
         this.rosterRetryAttempt = 0;
@@ -452,7 +424,7 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
    * deletion may emit no stream event at all.
    */
   private noteRosterHint(get: () => State, set: GlobalSyncStoreSet<State>, agentId: string | undefined): void {
-    if (get().discovery.mode === "legacy" || !this.globalEventStream) return;
+    if (!this.globalEventStream) return;
     if (this.rosterRefreshPromise) {
       this.rosterDirty = true;
       return;

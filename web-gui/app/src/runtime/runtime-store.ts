@@ -4,7 +4,6 @@ import {
   createRuntimeClient,
   isProjectionBusyError,
   projectRosterAgents,
-  ROSTER_SNAPSHOT_CAPABILITY,
   type AgentEventStreamSubscription,
   type OperatorPromptAttachment,
   type AgentRosterSnapshotDto,
@@ -38,10 +37,7 @@ import {
 } from "./global-sync-coordinator";
 import {
   cachedReadState,
-  canMarkConversationRead,
   evaluateLedgerReadMarkerGate,
-  latestBriefDeliverySeq,
-  markAgentDeliveriesRead,
   mergeCachedReadState,
   mergeCachedReadStates,
   readStoredRosterActivity,
@@ -1114,12 +1110,6 @@ const globalSyncCoordinator = new GlobalSyncCoordinator<RuntimeStoreState>({
   setAgentLiveStatus,
   setStreamState,
   fetchRosterSnapshot: async (request) => {
-    const capabilities = useRuntimeStore.getState().bootstrap.capabilities;
-    if (capabilities && !capabilities.includes(ROSTER_SNAPSHOT_CAPABILITY)) {
-      // A known capability set without the roster contract: an older or
-      // unverified server keeps the legacy path without a doomed request.
-      return null;
-    }
     return request.client.getAgentRosterSnapshot();
   },
   applyRosterSnapshot: (set, snapshot, context) =>
@@ -1138,6 +1128,63 @@ let agentSessionRepository!: AgentSessionRepository<RuntimeStoreState>;
 /** Read-only observer-sync status used by the e2e diagnostics bridge. */
 export function ledgerStatusForDiagnostics(agentId: string) {
   return agentSessionRepository.sessionLedgerStatus(agentId);
+}
+
+export interface ObserverSyncAgentDiagnostics {
+  agentId: string;
+  durability: string;
+  state: string;
+  ingestedThroughSeq?: number;
+  projectionReadyThroughSeq?: number;
+  observedEventHeadSeq?: number;
+  pendingHydrationJobs: number;
+  failedHydrationJobs: number;
+  resetReason?: string;
+  readCertainty: "exact" | "truncated" | "stale_sync_error" | "unavailable";
+}
+
+export interface ObserverSyncDiagnostics {
+  discovery: {
+    mode: RosterDiscoveryState["mode"];
+    freshness: RosterDiscoveryState["freshness"];
+    runtimeId?: string;
+    visibilityScopeId?: string;
+    eventLogEpoch?: string;
+  };
+  agents: ObserverSyncAgentDiagnostics[];
+}
+
+/**
+ * Safe observer-sync diagnostics for the current authorized roster only.
+ * Deliberately excludes connection credentials, event payloads, Brief text,
+ * and any Agent not present in the applied roster.
+ */
+export function observerSyncDiagnostics(): ObserverSyncDiagnostics {
+  const state = useRuntimeStore.getState();
+  return {
+    discovery: {
+      mode: state.discovery.mode,
+      freshness: state.discovery.freshness,
+      runtimeId: state.discovery.identity?.runtimeId,
+      visibilityScopeId: state.discovery.identity?.visibilityScopeId,
+      eventLogEpoch: state.discovery.identity?.eventLogEpoch,
+    },
+    agents: state.bootstrap.agents.map((agent) => {
+      const status = agentSessionRepository.sessionLedgerStatus(agent.id);
+      return {
+        agentId: agent.id,
+        durability: status?.durability ?? "unavailable",
+        state: status?.state ?? "unavailable",
+        ingestedThroughSeq: status?.ingestedThroughSeq,
+        projectionReadyThroughSeq: status?.projectionReadyThroughSeq,
+        observedEventHeadSeq: status?.observedEventHeadSeq,
+        pendingHydrationJobs: status?.pendingHydrationJobs ?? 0,
+        failedHydrationJobs: status?.failedHydrationJobs ?? 0,
+        resetReason: agentSessionRepository.sessionLedgerResetReason(agent.id),
+        readCertainty: state.ledgerUnreadByAgentId[agent.id]?.mode ?? "unavailable",
+      };
+    }),
+  };
 }
 
 /**
@@ -1502,50 +1549,19 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
       };
     }),
   markAgentConversationRead: (agentId) => {
-    const state = get();
-    if (agentSessionRepository.knownLedgerScope(agentId)) {
-      // Ledger-backed path (W5): the durable marker is the only read state;
-      // the legacy roster activity no longer tracks this agent.
-      const decision = ledgerReadMarkerDecision(agentId);
-      if (decision.mayAdvance && decision.candidateSeq != null) {
-        const candidateSeq = decision.candidateSeq;
-        void agentSessionRepository
-          .advanceReadMarker(agentId, candidateSeq)
-          .then((result) => {
-            if (!result?.advanced) return;
-            publishReadStateInvalidation(agentId);
-            void refreshLedgerUnreadInView(agentId);
-          })
-          .catch((error) =>
-            console.warn(`Failed to advance read marker for ${agentId}.`, error),
-          );
-      }
-      return;
-    }
-    // Legacy in-memory path: remotes without the ledger capability.
-    const session = state.sessionsByAgentId[agentId];
-    if (!session || !canMarkConversationRead({
-      route: state.route,
-      selectedAgentId: state.selectedAgentId,
-      documentVisible:
-        typeof document !== "undefined" && document.visibilityState === "visible",
-      session,
-    }, agentId)) {
-      return;
-    }
-    const deliverySeq = latestBriefDeliverySeq(session);
-    if (deliverySeq == null) return;
-    set((current) => {
-      const rosterActivityByAgentId = markAgentDeliveriesRead(
-        current.rosterActivityByAgentId,
-        agentId,
-        deliverySeq,
+    const decision = ledgerReadMarkerDecision(agentId);
+    if (!decision.mayAdvance || decision.candidateSeq == null) return;
+    const candidateSeq = decision.candidateSeq;
+    void agentSessionRepository
+      .advanceReadMarker(agentId, candidateSeq)
+      .then((result) => {
+        if (!result?.advanced) return;
+        publishReadStateInvalidation(agentId);
+        void refreshLedgerUnreadInView(agentId);
+      })
+      .catch((error) =>
+        console.warn(`Failed to advance read marker for ${agentId}.`, error),
       );
-      if (rosterActivityByAgentId === current.rosterActivityByAgentId) return current;
-      writeStoredRosterActivity(currentRemoteKey(runtimeConnectionConfig), rosterActivityByAgentId);
-      return { rosterActivityByAgentId };
-    });
-    agentSessionRepository.scheduleCacheWrite(agentId);
   },
   refreshLedgerUnread: async (agentId) => {
     await refreshLedgerUnreadInView(agentId);

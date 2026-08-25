@@ -109,11 +109,10 @@ export function cachedReadState(
 
 /**
  * Unread display modes (W5). `exact` and `truncated` are ledger-backed;
- * `legacy_uncertain` is the in-memory path that cannot claim restart-stable
- * exactness; `stale_sync_error` means the sync layer is failing and any
- * count would be misleading.
+ * `stale_sync_error` means the sync layer is failing and any count would be
+ * misleading.
  */
-export type LedgerUnreadMode = "exact" | "truncated" | "legacy_uncertain" | "stale_sync_error";
+export type LedgerUnreadMode = "exact" | "truncated" | "stale_sync_error";
 
 export interface LedgerUnreadView {
   mode: LedgerUnreadMode;
@@ -189,18 +188,14 @@ export function evaluateLedgerReadMarkerGate(
 }
 
 /**
- * Merge the ledger unread view with the legacy roster activity for badge
- * rendering. The ledger view wins whenever it exists; without it the badge
- * degrades to `legacy_uncertain` and never claims exactness.
+ * Render unread only from the durable ledger view. Roster activity remains
+ * useful for ordering but is not a correctness fallback for unread.
  */
 export function unreadBadgeView(
-  legacyCount: number | undefined,
+  _legacyCount: number | undefined,
   ledger: LedgerUnreadView | undefined,
 ): LedgerUnreadView | null {
-  if (ledger) return ledger;
-  const count = legacyCount ?? 0;
-  if (count <= 0) return null;
-  return { mode: "legacy_uncertain", count };
+  return ledger ?? null;
 }
 
 export function touchRosterActivity(

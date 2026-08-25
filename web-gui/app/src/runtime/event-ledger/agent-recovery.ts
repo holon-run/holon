@@ -105,8 +105,8 @@ export interface AgentRecoveryUpdate {
   projectionReadyThroughSeq?: number;
   /** Set when this sync performed (or reacted to) a reset. */
   resetReason?: LedgerResetReason;
-  /** Snapshot capability absent or agent unknown: nothing was installed. */
-  skipped?: "capability_absent";
+  /** The roster changed before this Agent snapshot was fetched. */
+  skipped?: "agent_missing";
   error?: string;
 }
 
@@ -150,7 +150,6 @@ interface AgentRecoveryState {
   /** Live envelopes received while recovery was in flight. */
   pendingHints: Array<Record<string, unknown>>;
   lastResetReason?: LedgerResetReason;
-  capabilitySkipped: boolean;
   error?: string;
 }
 
@@ -275,9 +274,8 @@ export class AgentRecoveryCoordinator {
     return this.states.get(agentId)?.scope ?? null;
   }
 
-  /** True when the remote answered without the snapshot capability. */
-  capabilitySkipped(agentId: string): boolean {
-    return this.states.get(agentId)?.capabilitySkipped ?? false;
+  lastResetReasonOf(agentId: string): LedgerResetReason | undefined {
+    return this.states.get(agentId)?.lastResetReason;
   }
 
   /**
@@ -369,8 +367,7 @@ export class AgentRecoveryCoordinator {
 
     const snapshot = await this.dependencies.fetchProjectionSnapshot(agentId);
     if (!snapshot) {
-      state.capabilitySkipped = true;
-      // Nothing was installed, so hints buffered during the declined fetch
+      // Nothing was installed, so hints buffered during the missing-Agent fetch
       // belong to no durable scope and are dropped, not half-applied.
       state.pendingHints.length = 0;
       state.phase = "idle";
@@ -378,7 +375,7 @@ export class AgentRecoveryCoordinator {
         agentId,
         scope: state.scope,
         phase: "idle",
-        skipped: "capability_absent",
+        skipped: "agent_missing",
       });
     }
 
@@ -740,7 +737,6 @@ export class AgentRecoveryCoordinator {
       phase: "idle",
       syncPromise: null,
       pendingHints: [],
-      capabilitySkipped: false,
     };
     this.states.set(agentId, state);
     return state;

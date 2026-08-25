@@ -14,6 +14,7 @@ import {
   mergeTimelineEventPage,
   modelCatalogCacheKey,
   missingBriefIdsForHydration,
+  observerSyncDiagnostics,
   readStoredRemoteConnectionProfiles,
   resetSessionsForResume,
   resetTransientRuntimeStateForResume,
@@ -29,6 +30,13 @@ import { AgentSessionRepository } from "./agent-session-repository";
 import type { AgentSessionState } from "./runtime-store";
 import { createSessionProjectionState, reduceSessionProjection } from "./session-projection";
 import type { AgentSummary } from "./types";
+
+const OBSERVER_SYNC_CAPABILITIES = [
+  "agents.roster-snapshot.v1",
+  "agents.projection-snapshot.v1",
+  "events.projection-effect.v1",
+  "briefs.atomic-created-event.v1",
+];
 
 class MemoryStorage implements Storage {
   private readonly items = new Map<string, string>();
@@ -141,6 +149,46 @@ function agentSummary(overrides: Partial<AgentSummary> = {}): AgentSummary {
     ...overrides,
   };
 }
+
+describe("observerSyncDiagnostics", () => {
+  it("reports only synchronization metadata for Agents in the authorized roster", () => {
+    const previous = useRuntimeStore.getState();
+    useRuntimeStore.setState({
+      bootstrap: {
+        ...previous.bootstrap,
+        agents: [agentSummary({ id: "visible-agent", lastBrief: "private brief text" })],
+      },
+      discovery: {
+        mode: "authoritative",
+        freshness: "fresh",
+        identity: {
+          runtimeId: "runtime-1",
+          visibilityScopeId: "scope-1",
+          eventLogEpoch: "epoch-1",
+        },
+        retryAttempt: 0,
+      },
+      sessionsByAgentId: {
+        "hidden-agent": sessionState(),
+      },
+      ledgerUnreadByAgentId: {},
+    });
+
+    const diagnostics = observerSyncDiagnostics();
+    expect(diagnostics.agents.map((agent) => agent.agentId)).toEqual(["visible-agent"]);
+    expect(diagnostics.discovery).toEqual({
+      mode: "authoritative",
+      freshness: "fresh",
+      runtimeId: "runtime-1",
+      visibilityScopeId: "scope-1",
+      eventLogEpoch: "epoch-1",
+    });
+    expect(JSON.stringify(diagnostics)).not.toContain("private brief text");
+    expect(JSON.stringify(diagnostics)).not.toContain("hidden-agent");
+
+    useRuntimeStore.setState(previous, true);
+  });
+});
 
 describe("agent snapshot merging", () => {
   it("lets a fresh bootstrap snapshot clear cached running state and counts", () => {
@@ -572,7 +620,7 @@ describe("agent deletion cache cleanup", () => {
     });
     const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
-      if (url.endsWith("/handshake")) return Promise.resolve(jsonResponse({}));
+      if (url.endsWith("/handshake")) return Promise.resolve(jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES }));
       if (url.endsWith("/agents/list")) return Promise.resolve(jsonResponse([]));
       if (
         url.endsWith("/control/agents/agent-a") &&
@@ -635,7 +683,7 @@ describe("roster activity unread state", () => {
     vi.unstubAllGlobals();
   });
 
-  it("advances the delivery read marker only after the synchronized conversation is visible", async () => {
+  it("does not mutate legacy roster activity when marking a conversation read", async () => {
     const { touchRosterActivityFromEvent } = await import("./runtime-store");
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let activity: Record<string, any> = {
@@ -684,8 +732,8 @@ describe("roster activity unread state", () => {
     }));
     useRuntimeStore.getState().markAgentConversationRead("agent-a");
     activity = useRuntimeStore.getState().rosterActivityByAgentId;
-    expect(activity["agent-a"]?.unreadCount).toBe(0);
-    expect(activity["agent-a"]?.lastReadDeliverySeq).toBe(10);
+    expect(activity["agent-a"]?.unreadCount).toBe(3);
+    expect(activity["agent-a"]?.lastReadDeliverySeq).toBe(7);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let replayed: Record<string, any> = activity;
@@ -697,7 +745,7 @@ describe("roster activity unread state", () => {
         "agent-b",
       );
     }
-    expect(replayed["agent-a"]?.unreadCount ?? 0).toBe(0);
+    expect(replayed["agent-a"]?.unreadCount).toBe(3);
 
     // A genuinely new event (seq 11) should still be counted.
     replayed = touchRosterActivityFromEvent(
@@ -706,7 +754,7 @@ describe("roster activity unread state", () => {
       { agent_id: "agent-a", event_seq: 11, ts: "2026-01-01T00:00:11.000Z", type: "brief_created", payload: {} },
       "agent-b",
     );
-    expect(replayed["agent-a"]?.unreadCount).toBe(1);
+    expect(replayed["agent-a"]?.unreadCount).toBe(4);
     expect(replayed["agent-a"]?.lastUnreadDeliverySeq).toBe(11);
   });
 });
@@ -739,7 +787,7 @@ describe("brief projection and hydration", () => {
           missing_brief_ids: [],
         }));
       }
-      if (url.endsWith("/handshake")) return Promise.resolve(jsonResponse({}));
+      if (url.endsWith("/handshake")) return Promise.resolve(jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES }));
       if (url.endsWith("/agents/list")) return Promise.resolve(jsonResponse([]));
       throw new Error(`Unexpected request: ${url}`);
     });
@@ -989,7 +1037,7 @@ describe("runtime client generation", () => {
     const fetchMock = vi.fn((input: string | URL | Request) => {
       const url = String(input);
       if (url.includes("/agents/agent-a/work-items")) return oldWorkItems;
-      if (url.endsWith("/handshake")) return Promise.resolve(jsonResponse({}));
+      if (url.endsWith("/handshake")) return Promise.resolve(jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES }));
       if (url.endsWith("/agents/list")) {
         return Promise.resolve(jsonResponse([{ id: "agent-a", lifecycle: "asleep" }]));
       }
@@ -1053,7 +1101,7 @@ describe("agent event catch-up", () => {
     });
     const fetchMock = vi.fn((input: string | URL | Request) => {
       const url = new URL(String(input), "http://localhost");
-      if (url.pathname.endsWith("/handshake")) return Promise.resolve(jsonResponse({}));
+      if (url.pathname.endsWith("/handshake")) return Promise.resolve(jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES }));
       if (url.pathname.endsWith("/agents/list")) return Promise.resolve(jsonResponse([]));
       if (url.pathname.endsWith("/agents/agent-a/events")) {
         const afterSeq = Number(url.searchParams.get("after_seq"));
@@ -1172,7 +1220,7 @@ describe("agent event catch-up", () => {
     };
     const fetchMock = vi.fn((input: string | URL | Request) => {
       const url = new URL(String(input), "http://localhost");
-      if (url.pathname.endsWith("/handshake")) return Promise.resolve(jsonResponse({}));
+      if (url.pathname.endsWith("/handshake")) return Promise.resolve(jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES }));
       if (url.pathname.endsWith("/agents/list")) return Promise.resolve(jsonResponse([]));
       if (url.pathname.endsWith("/agents/agent-a/events")) {
         const order = url.searchParams.get("order");
@@ -1273,7 +1321,7 @@ describe("agent event catch-up", () => {
     });
     const fetchMock = vi.fn((input: string | URL | Request) => {
       const url = new URL(String(input), "http://localhost");
-      if (url.pathname.endsWith("/handshake")) return Promise.resolve(jsonResponse({}));
+      if (url.pathname.endsWith("/handshake")) return Promise.resolve(jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES }));
       if (url.pathname.endsWith("/agents/list")) return Promise.resolve(jsonResponse([]));
       if (url.pathname.endsWith("/agents/agent-a/events")) {
         const order = url.searchParams.get("order");
@@ -1378,7 +1426,7 @@ describe("brief hydration retry limits", () => {
           missing_brief_ids: [],
         }));
       }
-      if (url.endsWith("/handshake")) return Promise.resolve(jsonResponse({}));
+      if (url.endsWith("/handshake")) return Promise.resolve(jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES }));
       if (url.endsWith("/agents/list")) return Promise.resolve(jsonResponse([]));
       throw new Error(`Unexpected request: ${url}`);
     });
@@ -1457,7 +1505,7 @@ describe("brief hydration retry limits", () => {
           missing_message_ids: [],
         }));
       }
-      if (url.endsWith("/handshake")) return Promise.resolve(jsonResponse({}));
+      if (url.endsWith("/handshake")) return Promise.resolve(jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES }));
       if (url.endsWith("/agents/list")) return Promise.resolve(jsonResponse([]));
       throw new Error(`Unexpected request: ${url}`);
     });
@@ -1543,7 +1591,7 @@ describe("semantic history pagination", () => {
     });
     const fetchMock = vi.fn((input: string | URL | Request) => {
       const url = new URL(String(input), "http://localhost");
-      if (url.pathname.endsWith("/handshake")) return Promise.resolve(jsonResponse({}));
+      if (url.pathname.endsWith("/handshake")) return Promise.resolve(jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES }));
       if (url.pathname.endsWith("/agents/list")) return Promise.resolve(jsonResponse([]));
       if (url.pathname.endsWith("/agents/agent-a/messages:batchGet")) {
         return Promise.resolve(jsonResponse({ messages: [], missing_message_ids: ["message-80"] }));
@@ -1630,7 +1678,7 @@ describe("semantic history pagination", () => {
     });
     const fetchMock = vi.fn((input: string | URL | Request) => {
       const url = new URL(String(input), "http://localhost");
-      if (url.pathname.endsWith("/handshake")) return Promise.resolve(jsonResponse({}));
+      if (url.pathname.endsWith("/handshake")) return Promise.resolve(jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES }));
       if (url.pathname.endsWith("/agents/list")) return Promise.resolve(jsonResponse([]));
       if (url.pathname.endsWith("/agents/agent-a/events")) {
         const beforeSeq = Number(url.searchParams.get("before_seq"));
@@ -1704,7 +1752,7 @@ describe("projection saturation refresh handling", () => {
     let saturated = false;
     vi.stubGlobal("fetch", vi.fn((input: string | URL | Request) => {
       const url = String(input);
-      if (url.endsWith("/handshake")) return Promise.resolve(jsonResponse({}));
+      if (url.endsWith("/handshake")) return Promise.resolve(jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES }));
       if (url.endsWith("/agents/list")) {
         return Promise.resolve(
           saturated

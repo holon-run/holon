@@ -1,7 +1,6 @@
 import {
   cursorNotFoundPayload,
   isSnapshotAgentMissingError,
-  isSnapshotCapabilityUnavailableError,
   type AgentProjectionSnapshotDto,
   type StreamEventEnvelopeDto,
 } from "./client";
@@ -398,10 +397,7 @@ export class AgentSessionRepository<State extends AgentSessionRepositoryState> {
           const dto = await client.getAgentProjectionSnapshot(agentId);
           return dto ? recoverySnapshotFromDto(dto) : null;
         } catch (error) {
-          if (
-            isSnapshotCapabilityUnavailableError(error) ||
-            isSnapshotAgentMissingError(error)
-          ) {
+          if (isSnapshotAgentMissingError(error)) {
             return null;
           }
           throw error;
@@ -454,7 +450,6 @@ export class AgentSessionRepository<State extends AgentSessionRepositoryState> {
     await this.initializeLedgerIngestion();
     const coordinator = this.recoveryCoordinator;
     if (!coordinator) return null;
-    if (coordinator.capabilitySkipped(agentId)) return null;
     this.recoveryTriggered.add(agentId);
     return coordinator.sync(agentId, hint);
   }
@@ -562,6 +557,10 @@ export class AgentSessionRepository<State extends AgentSessionRepositoryState> {
     if (!integration || !this.ledgerPipeline) return null;
     const scope = integration.resolveScope(agentId);
     return scope ? this.ledgerPipeline.status(scope) : null;
+  }
+
+  sessionLedgerResetReason(agentId: string): string | undefined {
+    return this.recoveryCoordinator?.lastResetReasonOf(agentId);
   }
 
   /**
@@ -902,7 +901,7 @@ export class AgentSessionRepository<State extends AgentSessionRepositoryState> {
 
   /**
    * Trigger durable ledger recovery for one agent at most once per
-   * generation, and only while the remote serves the snapshot contract.
+   * generation.
    */
   private scheduleLedgerRecovery(
     agentId: string,
@@ -911,7 +910,6 @@ export class AgentSessionRepository<State extends AgentSessionRepositoryState> {
     const coordinator = this.recoveryCoordinator;
     if (!coordinator) return;
     if (this.recoveryTriggered.has(agentId)) return;
-    if (coordinator.capabilitySkipped(agentId)) return;
     this.recoveryTriggered.add(agentId);
     void coordinator.sync(agentId, hint).catch(() => undefined);
   }
@@ -1232,10 +1230,7 @@ export function snapshotRepairFromClient(
           canonicalRecords: snapshot.canonicalRecords,
         };
       } catch (error) {
-        if (
-          isSnapshotCapabilityUnavailableError(error) ||
-          isSnapshotAgentMissingError(error)
-        ) {
+        if (isSnapshotAgentMissingError(error)) {
           return null;
         }
         throw error;

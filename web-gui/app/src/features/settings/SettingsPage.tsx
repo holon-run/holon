@@ -16,6 +16,7 @@ import {
   setRuntimeTraceEnabled,
   subscribeRuntimeTrace,
 } from "../../runtime/runtime-trace";
+import type { ObserverSyncDiagnostics } from "../../runtime/runtime-store";
 import type {
   CodexDeviceLoginState,
   CredentialStoreState,
@@ -30,6 +31,7 @@ import type {
 
 interface SettingsPageProps {
   connection: RuntimeConnection;
+  observerSyncDiagnostics: ObserverSyncDiagnostics;
   modelCatalog: RuntimeModelCatalog;
   modelCatalogLoading: boolean;
   modelCatalogError?: string;
@@ -144,6 +146,7 @@ export function buildSearchProviderConfigUpdates(
 
 export function SettingsPage({
   connection,
+  observerSyncDiagnostics,
   modelCatalog,
   modelCatalogLoading,
   modelCatalogError,
@@ -1597,6 +1600,66 @@ export function SettingsPage({
             >
               {t("runtimeTrace.clear")}
             </Button>
+          </div>
+        </Card>
+
+        <Card className="settings-card" hidden={activeTab !== "advanced"}>
+          <div className="settings-card-head">
+            <div>
+              <span className="eyebrow">{t("settings.observerSync")}</span>
+              <h2>{t("settings.observerSyncDiagnostics")}</h2>
+            </div>
+            <StatusChip
+              tone={observerSyncDiagnostics.discovery.freshness === "fresh" ? "success" : "warning"}
+              title={observerSyncDiagnostics.discovery.freshness}
+            />
+          </div>
+          <p className="settings-muted">{t("settings.observerSyncDiagnosticsDesc")}</p>
+          <dl className="settings-list compact">
+            <div>
+              <dt>{t("settings.discovery")}</dt>
+              <dd>
+                {observerSyncDiagnostics.discovery.mode} · {observerSyncDiagnostics.discovery.freshness}
+              </dd>
+            </div>
+            <div>
+              <dt>{t("settings.runtimeScopeEpoch")}</dt>
+              <dd>
+                {[
+                  observerSyncDiagnostics.discovery.runtimeId,
+                  observerSyncDiagnostics.discovery.visibilityScopeId,
+                  observerSyncDiagnostics.discovery.eventLogEpoch,
+                ].filter(Boolean).join(" · ") || t("settings.notReported")}
+              </dd>
+            </div>
+          </dl>
+          <div className="provider-list">
+            {observerSyncDiagnostics.agents.map((agent) => (
+              <Card className="provider-card" key={agent.agentId}>
+                <header>
+                  <div>
+                    <h3>{agent.agentId}</h3>
+                    <span>{agent.durability} · {agent.state} · {agent.readCertainty}</span>
+                  </div>
+                </header>
+                <dl className="settings-list compact">
+                  <div>
+                    <dt>{t("settings.syncCursors")}</dt>
+                    <dd>
+                      {agent.ingestedThroughSeq ?? "—"} / {agent.projectionReadyThroughSeq ?? "—"} / {agent.observedEventHeadSeq ?? "—"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>{t("settings.hydrationJobs")}</dt>
+                    <dd>{agent.pendingHydrationJobs} pending · {agent.failedHydrationJobs} failed</dd>
+                  </div>
+                  <div>
+                    <dt>{t("settings.resetReason")}</dt>
+                    <dd>{agent.resetReason ?? "—"}</dd>
+                  </div>
+                </dl>
+              </Card>
+            ))}
           </div>
         </Card>
 

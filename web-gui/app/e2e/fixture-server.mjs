@@ -345,7 +345,15 @@ async function handleApi(req, res, url) {
   record(req, url);
   const session = sessionFor(req, url);
   if (url.pathname === "/api/handshake") {
-    json(res, { auth: { mode: "none" }, capabilities: ["agents.list", "agents.roster-snapshot.v1"] });
+    json(res, {
+      auth: { mode: "none" },
+      capabilities: [
+        "agents.roster-snapshot.v1",
+        "agents.projection-snapshot.v1",
+        "events.projection-effect.v1",
+        "briefs.atomic-created-event.v1",
+      ],
+    });
     return true;
   }
   if (url.pathname === "/api/agents/list") {

@@ -4,6 +4,13 @@ import { ROSTER_STALE_EXTENDED_RETRY_ATTEMPTS } from "./global-sync-coordinator"
 import { useRuntimeStore, type AgentSessionState } from "./runtime-store";
 import { createSessionProjectionState } from "./session-projection";
 
+const OBSERVER_SYNC_CAPABILITIES = [
+  "agents.roster-snapshot.v1",
+  "agents.projection-snapshot.v1",
+  "events.projection-effect.v1",
+  "briefs.atomic-created-event.v1",
+];
+
 class MemoryStorage implements Storage {
   private readonly items = new Map<string, string>();
 
@@ -234,9 +241,9 @@ describe("global event stream recovery", () => {
       });
     });
     expect(useRuntimeStore.getState().globalStreamStatus).toBe("catching_up");
-    expect(retryCallbacks).toHaveLength(1);
+    expect(retryCallbacks.length).toBeGreaterThanOrEqual(1);
 
-    retryCallbacks.shift()?.();
+    for (const retry of retryCallbacks.splice(0)) retry();
 
     await vi.waitFor(() => {
       expect(useRuntimeStore.getState().globalStreamStatus).toBe("streaming");
@@ -373,7 +380,7 @@ describe("authoritative discovery cutover", () => {
     const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input), "http://localhost");
       if (url.pathname.endsWith("/handshake")) {
-        return Promise.resolve(jsonResponse({ capabilities: ["agents.list", "agents.roster-snapshot.v1"] }));
+        return Promise.resolve(jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES }));
       }
       if (url.pathname.endsWith("/agents/list")) {
         return Promise.resolve(jsonResponse([listEntry("agent-a"), listEntry("agent-b")]));
@@ -440,7 +447,7 @@ describe("authoritative discovery cutover", () => {
     const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input), "http://localhost");
       if (url.pathname.endsWith("/handshake")) {
-        return Promise.resolve(jsonResponse({ capabilities: ["agents.list", "agents.roster-snapshot.v1"] }));
+        return Promise.resolve(jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES }));
       }
       if (url.pathname.endsWith("/agents/list")) return Promise.resolve(jsonResponse([listEntry("agent-a")]));
       if (url.pathname.endsWith("/agents/snapshot")) {
@@ -514,7 +521,7 @@ describe("authoritative discovery cutover", () => {
     const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input), "http://localhost");
       if (url.pathname.endsWith("/handshake")) {
-        return Promise.resolve(jsonResponse({ capabilities: ["agents.list", "agents.roster-snapshot.v1"] }));
+        return Promise.resolve(jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES }));
       }
       if (url.pathname.endsWith("/agents/list")) {
         return Promise.resolve(jsonResponse([listEntry("agent-a"), listEntry("agent-b")]));
@@ -579,7 +586,7 @@ describe("authoritative discovery cutover", () => {
     const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input), "http://localhost");
       if (url.pathname.endsWith("/handshake")) {
-        return Promise.resolve(jsonResponse({ capabilities: ["agents.list", "agents.roster-snapshot.v1"] }));
+        return Promise.resolve(jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES }));
       }
       if (url.pathname.endsWith("/agents/list")) {
         return Promise.resolve(jsonResponse([listEntry("agent-a"), listEntry("agent-b")]));
@@ -651,7 +658,7 @@ describe("authoritative discovery cutover", () => {
     const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input), "http://localhost");
       if (url.pathname.endsWith("/handshake")) {
-        return Promise.resolve(jsonResponse({ capabilities: ["agents.list", "agents.roster-snapshot.v1"] }));
+        return Promise.resolve(jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES }));
       }
       if (url.pathname.endsWith("/agents/list")) {
         return Promise.resolve(jsonResponse([listEntry("agent-a"), listEntry("agent-b")]));
@@ -695,7 +702,7 @@ throw new Error(`Unexpected request: ${url}`);
     expect(useRuntimeStore.getState().discovery.freshness).toBe("unauthorized");
   });
 
-  it("keeps the legacy /agents/list path without a purge when the roster capability is absent", async () => {
+  it("rejects a daemon that does not advertise the complete observer-sync contract", async () => {
     vi.stubGlobal("window", {
       localStorage: new MemoryStorage(),
       sessionStorage: new MemoryStorage(),
@@ -706,8 +713,6 @@ throw new Error(`Unexpected request: ${url}`);
     const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input), "http://localhost");
       if (url.pathname.endsWith("/handshake")) {
-        // An older server: capabilities are advertised without the roster
-        // snapshot contract.
         return Promise.resolve(jsonResponse({ capabilities: ["agents.list", "agents.state"] }));
       }
       if (url.pathname.endsWith("/agents/list")) {
@@ -728,16 +733,10 @@ throw new Error(`Unexpected request: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
     await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
-    fetchMock.mockClear();
-
-    useRuntimeStore.getState().registerAgentForEvents("agent-a");
-
-    await vi.waitFor(() => {
-      expect(useRuntimeStore.getState().globalStreamStatus).toBe("streaming");
-    });
-    expect(useRuntimeStore.getState().discovery.mode).toBe("legacy");
-    // The legacy path never performs an authoritative purge.
-    expect(useRuntimeStore.getState().bootstrap.agents.map((agent) => agent.id)).toEqual(["agent-a", "agent-b"]);
+    expect(useRuntimeStore.getState().bootstrapError).toContain(
+      "missing capabilities: agents.roster-snapshot.v1",
+    );
+    expect(useRuntimeStore.getState().bootstrap.agents).toEqual([]);
     expect(fetchMock.mock.calls.filter((call) => String(call[0]).endsWith("/agents/snapshot"))).toHaveLength(0);
   });
 
@@ -758,7 +757,7 @@ throw new Error(`Unexpected request: ${url}`);
     const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input), "http://localhost");
       if (url.pathname.endsWith("/handshake")) {
-        return Promise.resolve(jsonResponse({ capabilities: ["agents.list", "agents.roster-snapshot.v1"] }));
+        return Promise.resolve(jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES }));
       }
       if (url.pathname.endsWith("/agents/list")) return Promise.resolve(jsonResponse([listEntry("agent-a")]));
       if (url.pathname.endsWith("/agents/snapshot")) {

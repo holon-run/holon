@@ -758,28 +758,17 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         { headers: requestHeaders },
       );
     },
-    /**
-     * Authoritative roster snapshot (W4 discovery). Returns null when the
-     * remote does not serve the roster contract: capability unverified
-     * (503 capability_unavailable) or an older server without the route.
-     */
-    async getAgentRosterSnapshot(): Promise<AgentRosterSnapshotDto | null> {
+    /** Authoritative roster snapshot owned by the embedded daemon contract. */
+    async getAgentRosterSnapshot(): Promise<AgentRosterSnapshotDto> {
       if (!baseUrl) {
-        return null;
+        throw new Error("The authoritative roster snapshot requires a runtime connection.");
       }
-      try {
-        return await getJson<AgentRosterSnapshotDto>(
-          fetchImpl,
-          baseUrl,
-          "/agents/snapshot",
-          { headers: requestHeaders },
-        );
-      } catch (error) {
-        if (isSnapshotCapabilityUnavailableError(error) || isSnapshotRouteMissingError(error)) {
-          return null;
-        }
-        throw error;
-      }
+      return getJson<AgentRosterSnapshotDto>(
+        fetchImpl,
+        baseUrl,
+        "/agents/snapshot",
+        { headers: requestHeaders },
+      );
     },
     async getAgentMessagesBatch(agentId: string, messageIds: string[]): Promise<AgentMessagesBatchGetResponseDto> {
       if (!baseUrl || !messageIds.length) {
@@ -1624,6 +1613,7 @@ async function fetchRuntimeBootstrap(
     auth?: { mode?: string };
     capabilities?: string[];
   }>(fetchImpl, baseUrl, "/handshake", { headers });
+  assertObserverSyncCapabilities(handshake.capabilities ?? []);
   const agentEntries = await getJson<AgentListEntryDto[]>(fetchImpl, baseUrl, "/agents/list", { headers });
 
   const agents = agentEntries.map((entry) => projectAgent(entry));
@@ -2114,6 +2104,28 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
 
 /** Handshake capability name for the authoritative roster snapshot. */
 export const ROSTER_SNAPSHOT_CAPABILITY = "agents.roster-snapshot.v1";
+export const PROJECTION_SNAPSHOT_CAPABILITY = "agents.projection-snapshot.v1";
+export const PROJECTION_EFFECT_CAPABILITY = "events.projection-effect.v1";
+export const ATOMIC_BRIEF_CREATED_EVENT_CAPABILITY = "briefs.atomic-created-event.v1";
+
+export const REQUIRED_OBSERVER_SYNC_CAPABILITIES = [
+  ROSTER_SNAPSHOT_CAPABILITY,
+  PROJECTION_SNAPSHOT_CAPABILITY,
+  PROJECTION_EFFECT_CAPABILITY,
+  ATOMIC_BRIEF_CREATED_EVENT_CAPABILITY,
+] as const;
+
+export function assertObserverSyncCapabilities(capabilities: readonly string[]): void {
+  const advertised = new Set(capabilities);
+  const missing = REQUIRED_OBSERVER_SYNC_CAPABILITIES.filter(
+    (capability) => !advertised.has(capability),
+  );
+  if (missing.length) {
+    throw new Error(
+      `This Web GUI requires the embedded daemon observer-sync contract; missing capabilities: ${missing.join(", ")}`,
+    );
+  }
+}
 
 /** One authoritative roster entry narrowed to the local list-entry shape. */
 export interface RosterAgentEntry {
@@ -2540,11 +2552,6 @@ export function isSnapshotCapabilityUnavailableError(error: unknown): boolean {
     error.status === 503 &&
     error.code === "capability_unavailable"
   );
-}
-
-/** True for an older server whose router has no roster snapshot route. */
-export function isSnapshotRouteMissingError(error: unknown): boolean {
-  return error instanceof RuntimeHttpError && error.status === 404 && !error.code;
 }
 
 /** True when the snapshot target agent is unknown or not a member. */

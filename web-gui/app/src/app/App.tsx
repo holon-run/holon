@@ -43,7 +43,13 @@ import {
 } from "../runtime/runtime-trace";
 import { selectSelectedAgent } from "../runtime/runtime-selectors";
 import { unreadBadgeView, type LedgerUnreadView } from "../runtime/read-state";
-import { canUseRemoteRuntimeConnections, readStoredRemoteConnectionProfiles, skillDetailCacheKey, useRuntimeStore } from "../runtime/runtime-store";
+import {
+  canUseRemoteRuntimeConnections,
+  observerSyncDiagnostics,
+  readStoredRemoteConnectionProfiles,
+  skillDetailCacheKey,
+  useRuntimeStore,
+} from "../runtime/runtime-store";
 import { useAgentDetail } from "../runtime/useAgentDetail";
 import { useRuntimeDashboard } from "../runtime/useRuntimeDashboard";
 import type { AgentSummary, DisplayLevel, RouteKey, RuntimeConnection, RuntimeConnectionConfig, RuntimeConnectionProfile } from "../runtime/types";
@@ -62,6 +68,8 @@ const APP_WINDOW_TITLE = "Holon";
 export function App() {
   const { bootstrap, loading, refresh } = useRuntimeDashboard();
   const discovery = useRuntimeStore((state) => state.discovery);
+  useRuntimeStore((state) => state.ledgerReadinessRevisionByAgentId);
+  useRuntimeStore((state) => state.ledgerUnreadByAgentId);
   const { t } = useTranslation();
   useSyncExternalStore(subscribeRuntimeTrace, getRuntimeTraceRevision, getRuntimeTraceRevision);
   const developerDiagnosticsEnabled = isRuntimeTraceEnabled();
@@ -810,6 +818,7 @@ export function App() {
         {route === "settings" ? (
           <SettingsPage
             connection={bootstrap.connection}
+            observerSyncDiagnostics={observerSyncDiagnostics()}
             modelCatalog={modelCatalog}
             modelCatalogLoading={modelCatalogLoading}
             modelCatalogError={modelCatalogError}
@@ -1227,7 +1236,7 @@ function unreadTitle(
   t: (key: string, options?: { count?: number }) => string,
 ): string {
   if (view.mode === "truncated") return t("app.unreadTruncated", { count: view.count });
-  if (view.mode === "legacy_uncertain") return t("app.unreadLegacy", { count: view.count });
+  if (view.mode === "stale_sync_error") return t("app.unreadStale");
   return t("app.unreadUpdates", { count: view.count });
 }
 function formatUnreadCount(count: number): string {

@@ -870,7 +870,6 @@ export interface RuntimeBootstrap {
 /** How the Web GUI currently discovers the Agent roster. */
 export type RosterDiscoveryMode =
   | "pending"
-  | "legacy"
   | "authoritative";
 
 /**

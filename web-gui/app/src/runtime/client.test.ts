@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createRuntimeClient, projectModelOptions } from "./client";
+import {
+  createRuntimeClient,
+  projectModelOptions,
+  REQUIRED_OBSERVER_SYNC_CAPABILITIES,
+} from "./client";
 import type { components } from "./generated/openapi";
 import {
   createSessionProjectionState,
@@ -380,7 +384,10 @@ describe("createRuntimeClient", () => {
     const fetchImpl = async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith("/handshake")) {
-        return Response.json({ auth: { mode: "local" } });
+        return Response.json({
+          auth: { mode: "local" },
+          capabilities: REQUIRED_OBSERVER_SYNC_CAPABILITIES,
+        });
       }
       if (url.endsWith("/agents/list")) {
         return Response.json([]);
@@ -413,7 +420,10 @@ describe("createRuntimeClient", () => {
       const url = String(input);
       seen.push(url);
       if (url.endsWith("/handshake")) {
-        return Response.json({ auth: { mode: "local" } });
+        return Response.json({
+          auth: { mode: "local" },
+          capabilities: REQUIRED_OBSERVER_SYNC_CAPABILITIES,
+        });
       }
       if (url.endsWith("/agents/list")) {
         return Response.json([]);

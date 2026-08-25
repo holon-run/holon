@@ -177,15 +177,14 @@ describe("agent recovery coordinator", () => {
     ledger.close();
   });
 
-  it("skips bootstrap when the snapshot capability is absent", async () => {
+  it("skips bootstrap when the roster Agent disappears before snapshot fetch", async () => {
     const pipeline = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
     await pipeline.open();
     const coordinator = makeCoordinator(pipeline, async () => null, async () => page([]));
 
     const update = await coordinator.sync("agent-1");
     expect(update.phase).toBe("idle");
-    expect(update.skipped).toBe("capability_absent");
-    expect(coordinator.capabilitySkipped("agent-1")).toBe(true);
+    expect(update.skipped).toBe("agent_missing");
 
     const ledger = await openLedgerHandle();
     expect(await ledger.getAgentSession(makeScope())).toBeUndefined();

@@ -308,8 +308,8 @@ describe("unread badge view", () => {
     expect(unreadBadgeView(7, { mode: "exact", count: 3 })).toEqual({ mode: "exact", count: 3 });
   });
 
-  it("degrades to legacy_uncertain without a ledger view", () => {
-    expect(unreadBadgeView(4, undefined)).toEqual({ mode: "legacy_uncertain", count: 4 });
+  it("does not use roster activity as an unread correctness fallback", () => {
+    expect(unreadBadgeView(4, undefined)).toBeNull();
     expect(unreadBadgeView(0, undefined)).toBeNull();
     expect(unreadBadgeView(undefined, undefined)).toBeNull();
   });
