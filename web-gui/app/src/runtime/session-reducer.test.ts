@@ -11,14 +11,14 @@ import {
 } from "./session-reducer";
 
 describe("reduceAgentSessionTimeline", () => {
-  it("preserves unknown v2 schemas outside the domain projection", () => {
+  it("preserves unknown current schemas outside the domain projection", () => {
     const timeline = reduceAgentSessionTimeline({
       events: {
         events: [
           {
             id: "event-unknown-schema",
             event_seq: 1,
-            contract_version: 2,
+            contract_version: 3,
             payload_schema: "holon.runtime_event.future_message",
             payload_schema_version: 1,
             ts: "2026-07-16T10:00:00Z",

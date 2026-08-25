@@ -85,7 +85,7 @@ describe("timeline event diagnostics", () => {
     expect(diagnoseTimelineEvent(accepted, projection, []).disposition).toBe("hidden");
     expect(diagnoseTimelineEvent(event({ event_seq: 2, id: "event-2" }), projection, []).disposition).toBe("unhandled");
     expect(diagnoseTimelineEvent(event({
-      contract_version: 2,
+      contract_version: 3,
       payload_schema: "unsupported",
     }), projection, []).disposition).toBe("rejected");
   });
