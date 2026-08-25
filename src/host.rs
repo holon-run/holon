@@ -1086,6 +1086,8 @@ impl RuntimeHost {
                     Ok(Ok(status)) => {
                         did_work |= status.lag > 0
                             || status.consumption_was_limited
+                            // A successful rebuild consumes every pending source
+                            // for the agent, so another immediate round is useful.
                             || (pending_source_agent_ids.contains(agent_id)
                                 && status.skipped_error_count == 0);
                         tracing::debug!(

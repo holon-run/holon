@@ -1224,6 +1224,8 @@ impl MemoryIndex {
         };
         let source_kind_clause = source_kind_filter
             .as_ref()
+            // Bare placeholders continue after MATCH ?1 and the agent filter,
+            // matching the order used to build sql_params below.
             .map(|filter| format!("AND d.source_kind IN ({filter})"))
             .unwrap_or_default();
         let workspace_filter = if include_all_workspaces {
