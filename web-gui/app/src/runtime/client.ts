@@ -2545,15 +2545,6 @@ export function isProjectionBusyError(error: unknown): boolean {
   return error instanceof RuntimeHttpError && error.status === 429 && error.code === "projection_busy";
 }
 
-/** True when the remote does not serve the projection snapshot contract. */
-export function isSnapshotCapabilityUnavailableError(error: unknown): boolean {
-  return (
-    error instanceof RuntimeHttpError &&
-    error.status === 503 &&
-    error.code === "capability_unavailable"
-  );
-}
-
 /** True when the snapshot target agent is unknown or not a member. */
 export function isSnapshotAgentMissingError(error: unknown): boolean {
   return error instanceof RuntimeHttpError && error.status === 404;

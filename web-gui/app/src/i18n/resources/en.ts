@@ -89,7 +89,6 @@ const en = {
     agentNotFound: "Agent not found",
     unreadUpdates: "{{count}} unread update(s)",
     unreadTruncated: "At least {{count}} unread update(s); older history is no longer retained",
-    unreadLegacy: "Approximately {{count}} unread update(s)",
     unreadSyncError: "Unread count unavailable while synchronization is failing",
     truncationNotice: "Some earlier history is no longer retained by the server, so the unread count is a lower bound.",
     truncationAcknowledge: "Acknowledge earlier history",

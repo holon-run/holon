@@ -91,7 +91,6 @@ const zh: Record<string, any> = {
     agentNotFound: "未找到智能体",
     unreadUpdates: "{{count}} 条未读更新",
     unreadTruncated: "至少 {{count}} 条未读更新（更早历史已不可恢复）",
-    unreadLegacy: "约 {{count}} 条未读更新",
     unreadSyncError: "同步异常，未读数暂不可用",
     truncationNotice: "部分更早历史已不再保留，未读数仅为下限。",
     truncationAcknowledge: "确认更早历史",
