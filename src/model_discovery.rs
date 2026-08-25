@@ -10,7 +10,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    config::{ModelRef, ProviderEndpointId, ProviderId, ProviderRuntimeConfig},
+    config::{
+        ModelRef, ProviderEndpointId, ProviderId, ProviderRuntimeConfig, ProviderTransportKind,
+    },
     model_catalog::{
         is_tencent_tokenhub_model_id, BuiltInModelMetadata, ModelCapabilityFlags,
         ModelMetadataSource,
@@ -23,6 +25,18 @@ use crate::{
 
 const OPENAI_COMPATIBLE_MODELS_PATH: &str = "/models";
 pub const DEFAULT_DISCOVERY_CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Transport-level default discovery used for `openai_chat_completions`
+/// providers that have no built-in discovery definition. Custom OpenAI-compatible
+/// providers (for example a local Ollama endpoint) then participate in model
+/// discovery through the standard `GET {base_url}/models` endpoint without a
+/// provider-specific definition; built-in providers keep winning because their
+/// explicit definitions are resolved first.
+const OPENAI_COMPATIBLE_DEFAULT_DISCOVERY: ModelDiscoveryDefinition = ModelDiscoveryDefinition {
+    auth: ModelDiscoveryAuth::Optional,
+    route: ModelDiscoveryRoute::OpenAiCompatible,
+    decoder: ModelDiscoveryDecoder::OpenAiCompatible,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ModelDiscoveryCacheFile {
@@ -101,14 +115,26 @@ fn provider_model_discovery_requires_credential(provider: &ProviderRuntimeConfig
 fn provider_discovery_definition(
     provider: &ProviderRuntimeConfig,
 ) -> Option<&'static ModelDiscoveryDefinition> {
-    let definition = provider_definition(provider.id.as_str())?;
-    let discovery = definition.discovery.as_ref()?;
-    debug_assert_ne!(
-        definition.catalog_policy,
-        ProviderCatalogPolicy::StaticOnly,
-        "providers with discovery must declare a discovery catalog policy"
-    );
-    Some(discovery)
+    // Built-in providers win: their explicit discovery definitions (when any)
+    // govern response parsing and endpoint construction, so existing behavior
+    // is unchanged.
+    if let Some(definition) = provider_definition(provider.id.as_str()) {
+        let discovery = definition.discovery.as_ref()?;
+        debug_assert_ne!(
+            definition.catalog_policy,
+            ProviderCatalogPolicy::StaticOnly,
+            "providers with discovery must declare a discovery catalog policy"
+        );
+        return Some(discovery);
+    }
+
+    // Custom OpenAI-compatible providers fall back to a transport-level default
+    // so they participate in model discovery without a built-in definition.
+    if provider.transport == ProviderTransportKind::OpenAiChatCompletions {
+        return Some(&OPENAI_COMPATIBLE_DEFAULT_DISCOVERY);
+    }
+
+    None
 }
 
 pub fn discovery_cache_status_for_provider(
@@ -1351,6 +1377,11 @@ fn sha256_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        thread,
+    };
 
     fn arcee_provider() -> ProviderRuntimeConfig {
         ProviderRuntimeConfig {
@@ -1577,6 +1608,30 @@ mod tests {
             base_url: "https://tokenhub.tencentmaas.com/v1".into(),
             auth: crate::config::ProviderAuthConfig {
                 source: crate::config::CredentialSource::Env,
+                kind: crate::config::CredentialKind::ApiKey,
+                env: None,
+                profile: None,
+                external: None,
+            },
+            credential: None,
+            credential_store_path: None,
+            codex_home: None,
+            originator: None,
+            reasoning_effort: None,
+            context_management: Default::default(),
+            builtin_web_search: None,
+        }
+    }
+
+    fn custom_openai_provider(base_url: String) -> ProviderRuntimeConfig {
+        ProviderRuntimeConfig {
+            id: ProviderId::parse("local-custom").unwrap(),
+            route_provider: ProviderId::parse("local-custom").unwrap(),
+            route_endpoint: ProviderEndpointId::default_endpoint(),
+            transport: ProviderTransportKind::OpenAiChatCompletions,
+            base_url,
+            auth: crate::config::ProviderAuthConfig {
+                source: crate::config::CredentialSource::None,
                 kind: crate::config::CredentialKind::ApiKey,
                 env: None,
                 profile: None,
@@ -2307,6 +2362,58 @@ mod tests {
         assert_eq!(
             provider_models_url(vllm).unwrap(),
             "http://127.0.0.1:8000/v1/models"
+        );
+    }
+
+    #[tokio::test]
+    async fn custom_openai_compatible_provider_discovers_models_without_authentication() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 2048];
+            let read = stream.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..read]);
+            assert!(request.starts_with("GET /models HTTP/1.1"));
+            assert!(!request.to_ascii_lowercase().contains("authorization:"));
+
+            let body = r#"{"object":"list","data":[
+                {"id":"custom-chat","object":"model"},
+                {"id":"org/custom-reasoning","object":"model"},
+                {"id":" ","object":"model"}
+            ]}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        });
+
+        let provider = custom_openai_provider(base_url.clone());
+        let cache_dir = tempfile::tempdir().unwrap();
+        let cache_path = cache_dir.path().join("model-discovery-cache.json");
+        let report = refresh_provider_models(&provider, &cache_path)
+            .await
+            .unwrap();
+        server.join().unwrap();
+
+        assert_eq!(report.provider, ProviderId::parse("local-custom").unwrap());
+        assert_eq!(report.model_count, 2);
+        assert_eq!(
+            provider_models_url(&provider).unwrap(),
+            format!("{base_url}/models")
+        );
+
+        let cache = load_discovery_cache_at(&cache_path).unwrap();
+        let models = cache.models();
+        assert!(models.contains_key(&ModelRef::parse("local-custom/custom-chat").unwrap()));
+        assert!(models.contains_key(&ModelRef::parse("local-custom/org/custom-reasoning").unwrap()));
+        assert_eq!(
+            discovery_cache_status_for_provider(&provider, &cache, Duration::from_secs(60), false)
+                .state,
+            ModelDiscoveryCacheState::Fresh
         );
     }
 
