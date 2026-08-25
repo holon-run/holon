@@ -1019,11 +1019,11 @@ function filterDismissedDiagnostics(
  * cache of agents the authoritative roster omitted. Returns the omitted
  * agent ids so the coordinator can unregister them.
  */
-function applyRosterSnapshotToStore(
+async function applyRosterSnapshotToStore(
   set: StoreSet,
   snapshot: AgentRosterSnapshotDto,
   context: { previousIdentity?: RosterDiscoveryIdentity },
-): string[] {
+): Promise<string[]> {
   const identity: RosterDiscoveryIdentity = {
     runtimeId: snapshot.runtime_id,
     visibilityScopeId: snapshot.visibility_scope_id,
@@ -1043,9 +1043,7 @@ function applyRosterSnapshotToStore(
     });
     const rosterIds = new Set(rosterAgents.map((agent) => agent.id));
     const previousIds = state.bootstrap.agents.map((agent) => agent.id);
-    omittedAgentIds = identityReset
-      ? previousIds
-      : previousIds.filter((id) => !rosterIds.has(id));
+    omittedAgentIds = previousIds.filter((id) => !rosterIds.has(id));
     const dropIds = new Set(identityReset ? previousIds : omittedAgentIds);
     const sessionsByAgentId = dropIds.size
       ? Object.fromEntries(
@@ -1094,9 +1092,11 @@ function applyRosterSnapshotToStore(
   });
   if (identityReset) {
     // Old-identity ledger scopes must never join the new scope's data.
-    void agentSessionRepository
-      .clearLedgerScopesNotMatching(identity)
-      .catch((error) => console.warn("Failed to clear old ledger scopes.", error));
+    try {
+      await agentSessionRepository.clearLedgerScopesNotMatching(identity);
+    } catch (error) {
+      console.warn("Failed to clear old ledger scopes.", error);
+    }
   }
   for (const agentId of omittedAgentIds) {
     stopAgentEventStream(agentId, set);
@@ -1134,6 +1134,11 @@ const globalSyncCoordinator = new GlobalSyncCoordinator<RuntimeStoreState>({
 });
 
 let agentSessionRepository!: AgentSessionRepository<RuntimeStoreState>;
+
+/** Read-only observer-sync status used by the e2e diagnostics bridge. */
+export function ledgerStatusForDiagnostics(agentId: string) {
+  return agentSessionRepository.sessionLedgerStatus(agentId);
+}
 
 /**
  * Cross-tab read-state invalidation (W5). The IndexedDB record is the
@@ -4484,6 +4489,9 @@ export function applyStreamEvents(set: StoreSet, agentId: string, events: Stream
       },
     };
   });
+  void agentSessionRepository
+    .ingestSessionEvents(agentId, incomingEvents)
+    .catch((error) => console.warn(`Agent ledger ingestion failed for ${agentId}.`, error));
   const displayLevel = useRuntimeStore.getState().displayLevel;
   agentSessionRepository.hydrateSelectedContent(agentId, displayLevel);
   agentSessionRepository.hydrateBriefs(agentId, displayLevel);

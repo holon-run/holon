@@ -44,6 +44,12 @@ function sessionFor(req, url) {
       briefsById: new Map(),
       blockedBriefIds: new Set(),
       streamGeneration: 0,
+      runtimeId: "e2e-runtime",
+      eventLogEpoch: "e2e-epoch",
+      visibilityScopeId: "e2e-scope",
+      oldestRetainedSeqByAgentId: new Map(),
+      snapshotThroughSeqByAgentId: new Map(),
+      projectionLatestBriefByAgentId: new Map(),
     };
     sessions.set(id, session);
   }
@@ -136,12 +142,15 @@ function agentState(agentId) {
 function rosterSnapshot(session) {
   return {
     contract_version: 1,
-    runtime_id: "e2e-runtime",
-    event_log_epoch: "e2e-epoch",
-    visibility_scope_id: "e2e-scope",
+    runtime_id: session.runtimeId,
+    event_log_epoch: session.eventLogEpoch,
+    visibility_scope_id: session.visibilityScopeId,
     agents: session.visibleAgentIds.map((agentId) => ({
           agent: listEntry(agentId),
-          event_window: { event_head_seq: eventHead(session, agentId), oldest_retained_seq: 0 },
+          event_window: {
+            event_head_seq: eventHead(session, agentId),
+            oldest_retained_seq: session.oldestRetainedSeqByAgentId.get(agentId) ?? 0,
+          },
           latest_brief: null,
         })),
   };
@@ -161,7 +170,7 @@ function eventPage(session, agentId, url) {
   const events = all.slice(0, limit);
   return {
     events,
-    event_log_epoch: "e2e-epoch",
+    event_log_epoch: session.eventLogEpoch,
     has_older: false,
     has_newer: false,
     order,
@@ -169,27 +178,30 @@ function eventPage(session, agentId, url) {
     agent_id: agentId,
     cursor_seq: eventHead(session, agentId),
     newest_seq: eventHead(session, agentId),
-    oldest_seq: all.length ? Math.min(...all.map((event) => event.event_seq)) : null,
+    oldest_seq: session.oldestRetainedSeqByAgentId.get(agentId)
+      ?? (all.length ? Math.min(...all.map((event) => event.event_seq)) : null),
   };
 }
 
 function projectionSnapshot(session, agentId) {
+  const snapshotThroughSeq =
+    session.snapshotThroughSeqByAgentId.get(agentId) ?? 0;
   return {
     contract_version: 1,
-    runtime_id: "e2e-runtime",
-    visibility_scope_id: "e2e-scope",
-    event_log_epoch: "e2e-epoch",
+    runtime_id: session.runtimeId,
+    visibility_scope_id: session.visibilityScopeId,
+    event_log_epoch: session.eventLogEpoch,
     agent_id: agentId,
-    snapshot_through_seq: 0,
+    snapshot_through_seq: snapshotThroughSeq,
     event_head_seq: eventHead(session, agentId),
-    oldest_retained_seq: 0,
+    oldest_retained_seq: session.oldestRetainedSeqByAgentId.get(agentId) ?? 0,
     projection: {
       agent: listEntry(agentId),
       conversation: { latest_message_id: null, latest_transcript_entry_id: null },
       current_work_item: null,
       hydration_references: [],
       hydration_tombstones: [],
-      latest_brief: null,
+      latest_brief: session.projectionLatestBriefByAgentId.get(agentId) ?? null,
     },
   };
 }
@@ -217,6 +229,9 @@ async function handleControl(req, res, url) {
       agentStreamCount: session.agentStreams.size,
       streamGeneration: session.streamGeneration,
       blockedBriefIds: [...session.blockedBriefIds],
+      runtimeId: session.runtimeId,
+      eventLogEpoch: session.eventLogEpoch,
+      visibilityScopeId: session.visibilityScopeId,
     });
     return true;
   }
@@ -252,6 +267,26 @@ async function handleControl(req, res, url) {
     }
     if (Array.isArray(body.blockedBriefIds)) {
       session.blockedBriefIds = new Set(body.blockedBriefIds);
+    }
+    if (typeof body.runtimeId === "string") session.runtimeId = body.runtimeId;
+    if (typeof body.eventLogEpoch === "string") session.eventLogEpoch = body.eventLogEpoch;
+    if (typeof body.visibilityScopeId === "string") {
+      session.visibilityScopeId = body.visibilityScopeId;
+    }
+    if (body.oldestRetainedSeqByAgentId && typeof body.oldestRetainedSeqByAgentId === "object") {
+      session.oldestRetainedSeqByAgentId = new Map(
+        Object.entries(body.oldestRetainedSeqByAgentId),
+      );
+    }
+    if (body.snapshotThroughSeqByAgentId && typeof body.snapshotThroughSeqByAgentId === "object") {
+      session.snapshotThroughSeqByAgentId = new Map(
+        Object.entries(body.snapshotThroughSeqByAgentId),
+      );
+    }
+    if (body.projectionLatestBriefByAgentId && typeof body.projectionLatestBriefByAgentId === "object") {
+      session.projectionLatestBriefByAgentId = new Map(
+        Object.entries(body.projectionLatestBriefByAgentId),
+      );
     }
     json(res, { configured: true });
     return true;

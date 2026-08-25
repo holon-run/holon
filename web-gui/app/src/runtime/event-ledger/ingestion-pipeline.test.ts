@@ -111,6 +111,42 @@ describe("ledger ingestion pipeline", () => {
     ledger.close();
   });
 
+  it("publishes degraded durability after a failed ingestion transaction", async () => {
+    const statuses: Array<{ durability: string; ingestedThroughSeq?: number }> = [];
+    const pipeline = new LedgerIngestionPipeline({
+      fetchers: emptyFetchers(),
+      onStatus: (status) => statuses.push(status),
+    });
+    expect(await pipeline.open()).toBe(true);
+    const scope = makeScope();
+
+    await pipeline.ingest(scope, [envelope(1)]);
+    const originalPut = IDBObjectStore.prototype.put;
+    const putSpy = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (
+      this: IDBObjectStore,
+      value: unknown,
+      key?: IDBValidKey,
+    ) {
+      const request = originalPut.call(this, value, key);
+      if (this.name === "raw_events") this.transaction.abort();
+      return request;
+    });
+
+    const failed = await pipeline.ingest(scope, [envelope(2)]);
+    putSpy.mockRestore();
+
+    expect(failed).toMatchObject({
+      durability: "memory_only",
+      ingestedThroughSeq: undefined,
+    });
+    expect(statuses.at(-1)).toMatchObject(failed);
+
+    const ledger = await openLedgerHandle();
+    expect((await ledger.getRawEvents(scope)).map((event) => event.eventSeq)).toEqual([1]);
+    expect((await ledger.getAgentSession(scope))?.ingestedThroughSeq).toBe(1);
+    ledger.close();
+  });
+
   it("never reloads an observed head behind the persisted contiguous cursor", async () => {
     const scope = makeScope();
     const ledger = await openLedgerHandle();

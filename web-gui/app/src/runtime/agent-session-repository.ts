@@ -488,8 +488,16 @@ export class AgentSessionRepository<State extends AgentSessionRepositoryState> {
         visibilityScopeId: scope.visibilityScopeId,
         eventLogEpoch: scope.eventLogEpoch,
       });
-      this.recoveryScopeRegistry.delete(scope.agentId);
-      this.recoveryTriggered.delete(scope.agentId);
+      const registeredScope = this.recoveryScopeRegistry.get(scope.agentId);
+      if (
+        registeredScope?.remoteKey === scope.remoteKey &&
+        registeredScope.runtimeId === scope.runtimeId &&
+        registeredScope.visibilityScopeId === scope.visibilityScopeId &&
+        registeredScope.eventLogEpoch === scope.eventLogEpoch
+      ) {
+        this.recoveryScopeRegistry.delete(scope.agentId);
+        this.recoveryTriggered.delete(scope.agentId);
+      }
     }
   }
 

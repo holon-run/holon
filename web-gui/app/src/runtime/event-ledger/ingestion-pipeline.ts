@@ -419,7 +419,14 @@ export class LedgerIngestionPipeline {
       // in-memory cursors never run ahead of committed state.
       this.trackers.delete(this.trackerKey(scope));
       if (this.isDurabilityFailure(error)) {
-        return this.statusFor(scope, this.freshTracker());
+        // A storage failure makes the current handle unfit for further
+        // exactness claims. Discard it before publishing status so recovery
+        // must reopen and verify a fresh handle.
+        this.ledger?.close();
+        this.ledger = null;
+        const status = this.statusFor(scope, this.freshTracker());
+        this.dependencies.onStatus?.(status);
+        return status;
       }
       throw error;
     }

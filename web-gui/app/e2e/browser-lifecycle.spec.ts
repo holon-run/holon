@@ -36,7 +36,8 @@ interface LedgerSnapshot {
 }
 
 function sessionFor(testInfo: TestInfo): string {
-  return `${testInfo.workerIndex}-${testInfo.repeatEachIndex}-${testInfo.retry}`;
+  const testCase = testInfo.testId.replace(/[^a-zA-Z0-9_-]/g, "-");
+  return `${testInfo.workerIndex}-${testInfo.repeatEachIndex}-${testInfo.retry}-${testCase}`;
 }
 
 function controlPath(session: string, path: string): string {

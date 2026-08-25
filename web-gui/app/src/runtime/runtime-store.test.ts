@@ -25,6 +25,7 @@ import {
   writeStoredRuntimeConnectionConfig,
 } from "./runtime-store";
 import type { StreamEventEnvelopeDto } from "./client";
+import { AgentSessionRepository } from "./agent-session-repository";
 import type { AgentSessionState } from "./runtime-store";
 import { createSessionProjectionState, reduceSessionProjection } from "./session-projection";
 import type { AgentSummary } from "./types";
@@ -766,9 +767,13 @@ describe("brief projection and hydration", () => {
       provenance: {},
       payload: { brief_id: "brief-b" },
     };
+    const ingestSessionEvents = vi
+      .spyOn(AgentSessionRepository.prototype, "ingestSessionEvents")
+      .mockResolvedValue(null);
 
     applyStreamEvents(useRuntimeStore.setState, "agent-b", [briefEvent]);
 
+    expect(ingestSessionEvents).toHaveBeenCalledWith("agent-b", [briefEvent]);
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain("/agents/agent-b/briefs:batchGet");
     await vi.waitFor(() => {

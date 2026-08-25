@@ -84,7 +84,7 @@ interface GlobalSyncCoordinatorDependencies<State extends GlobalSyncStoreState> 
     set: GlobalSyncStoreSet<State>,
     snapshot: AgentRosterSnapshotDto,
     context: { previousIdentity?: RosterDiscoveryIdentity; request: ClientRequest },
-  ) => string[];
+  ) => string[] | Promise<string[]>;
   /** Register per-Agent recovery (W3) anchored on the roster event window. */
   registerAgentRecovery: (
     agentId: string,
@@ -336,7 +336,7 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
           visibilityScopeId: snapshot.visibility_scope_id,
           eventLogEpoch: snapshot.event_log_epoch,
         };
-        const omittedAgentIds = this.dependencies.applyRosterSnapshot(
+        const omittedAgentIds = await this.dependencies.applyRosterSnapshot(
           set,
           snapshot,
           { previousIdentity: this.rosterIdentity, request },
