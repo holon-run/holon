@@ -24,6 +24,20 @@ function event(
   };
 }
 
+function currentEvent(
+  eventSeq: number,
+  type: string,
+  payloadSchema: string,
+  payload: Record<string, unknown>,
+): ProjectionEvent {
+  return {
+    ...event(eventSeq, type, payload),
+    contract_version: 3,
+    payload_schema: payloadSchema,
+    payload_schema_version: 1,
+  };
+}
+
 function receive(
   projection: SessionProjectionState,
   events: ProjectionEvent[],
@@ -119,12 +133,17 @@ describe("SessionProjectionState", () => {
       }),
     ]);
     const promoted = receive(recorded, [
-      event(7, "brief_created", {
-        brief_id: "brief-1",
-        finalizes_assistant_round_id: "round-1",
-        kind: "result",
-        text: "Complete result.",
-      }),
+      currentEvent(
+        7,
+        "brief_created",
+        "holon.runtime_event.brief_created",
+        {
+          brief_id: "brief-1",
+          finalizes_assistant_round_id: "round-1",
+          kind: "result",
+          text: "Complete result.",
+        },
+      ),
     ]);
 
     expect(promoted.domain.rounds).toHaveLength(1);

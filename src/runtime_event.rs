@@ -363,6 +363,18 @@ mod tests {
     }
 
     #[test]
+    fn web_gui_supports_current_runtime_event_contract() {
+        let session_events = include_str!("../web-gui/app/src/runtime/session-events.ts");
+        let expected =
+            format!("const RUNTIME_EVENT_CONTRACT_VERSION = {RUNTIME_EVENT_CONTRACT_VERSION};");
+
+        assert!(
+            session_events.contains(&expected),
+            "Web GUI runtime event contract must match backend version {RUNTIME_EVENT_CONTRACT_VERSION}"
+        );
+    }
+
+    #[test]
     fn typed_constructor_rejects_mismatched_payload_schema() {
         #[derive(Serialize)]
         struct WrongPayload;

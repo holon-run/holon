@@ -2,7 +2,7 @@ import type { components } from "./generated/openapi";
 
 export type SessionEventEnvelope = Partial<components["schemas"]["StreamEventEnvelope"]>;
 
-const RUNTIME_EVENT_CONTRACT_VERSION = 2;
+const RUNTIME_EVENT_CONTRACT_VERSION = 3;
 const runtimeEventSchemas: Record<string, string> = {
   message_enqueued: "holon.runtime_event.message_lifecycle",
   message_processing_started: "holon.runtime_event.message_lifecycle",
