@@ -1,5 +1,6 @@
 # Generated
 dist/
+web-gui/app/dist-e2e/
 build/
 coverage/
 .DS_Store

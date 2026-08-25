@@ -1,0 +1,121 @@
+name: Web E2E
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/web-e2e.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "build.rs"
+      - "src/**"
+      - "web-gui/**"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/web-e2e.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "build.rs"
+      - "src/**"
+      - "web-gui/**"
+  schedule:
+    - cron: "37 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  chromium-p0:
+    name: Chromium P0
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: web-gui/app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web-gui/app/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Build diagnostics assets
+        run: npm run build:e2e
+
+      - name: Run Chromium P0
+        run: npm run test:e2e -- --project=chromium
+
+      - name: Verify production bundle
+        run: npm run test:e2e:production-bundle
+
+      - name: Upload Chromium P0 artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-e2e-chromium-p0
+          if-no-files-found: ignore
+          path: |
+            web-gui/app/playwright-report
+            web-gui/app/test-results
+          retention-days: 7
+
+  real-daemon:
+    name: Real daemon (${{ github.event_name == 'schedule' && 'nightly repeat' || 'main repeat' }})
+    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: web-gui/app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web-gui/app/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Build daemon
+        working-directory: .
+        run: cargo build --bin holon
+
+      - name: Build production and diagnostics assets
+        run: |
+          npm run build
+          npm run build:e2e:real-daemon
+
+      - name: Run real daemon repeat suite
+        env:
+          HOLON_E2E_REPEAT: ${{ github.event_name == 'schedule' && '20' || '3' }}
+        run: npm run test:e2e:real-daemon -- --workers=1 --repeat-each="${HOLON_E2E_REPEAT}"
+
+      - name: Upload real daemon artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-e2e-real-daemon-${{ github.run_attempt }}
+          if-no-files-found: ignore
+          path: |
+            web-gui/app/playwright-report
+            web-gui/app/test-results
+          retention-days: 14

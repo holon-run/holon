@@ -11,7 +11,7 @@ const sessions = new Map();
 const vite = await createViteServer({
   appType: "spa",
   mode: "e2e",
-  server: { middlewareMode: true },
+  server: { hmr: false, middlewareMode: true },
 });
 
 function record(req, url) {

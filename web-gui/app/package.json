@@ -7,9 +7,11 @@
     "dev": "vite --host 127.0.0.1",
     "build": "npm run typecheck && vite build",
     "build:e2e": "npm run typecheck && vite build --mode e2e",
+    "build:e2e:real-daemon": "npm run typecheck && vite build --mode e2e --outDir dist-e2e",
     "preview": "vite preview --host 127.0.0.1",
     "test": "vitest run",
     "test:e2e": "playwright test",
+    "test:e2e:real-daemon": "playwright test --config playwright.real-daemon.config.ts",
     "test:e2e:production-bundle": "npm run build && node e2e/assert-production-bundle.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json --pretty false && tsc --noEmit -p tsconfig.node.json --pretty false"
   },

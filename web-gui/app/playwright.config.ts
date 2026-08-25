@@ -28,6 +28,7 @@ const baseURL = `http://127.0.0.1:${port}`;
 
 export default defineConfig({
   testDir: "./e2e",
+  testIgnore: ["real-daemon/**"],
   outputDir: "test-results",
   fullyParallel: false,
   forbidOnly: Boolean(process.env.CI),
@@ -41,6 +42,7 @@ export default defineConfig({
   },
   webServer: {
     command: `node e2e/fixture-server.mjs --port ${port}`,
+    gracefulShutdown: { signal: "SIGTERM", timeout: 5_000 },
     url: `${baseURL}/__e2e__/health`,
     reuseExistingServer: false,
     stdout: "pipe",
