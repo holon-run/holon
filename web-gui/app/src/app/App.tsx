@@ -107,14 +107,32 @@ export function App() {
   const selectedAgent = useRuntimeStore(selectSelectedAgent);
   const rosterActivityByAgentId = useRuntimeStore((state) => state.rosterActivityByAgentId);
   const ledgerUnreadByAgentId = useRuntimeStore((state) => state.ledgerUnreadByAgentId);
+  const ledgerReadinessRevisionByAgentId = useRuntimeStore(
+    (state) => state.ledgerReadinessRevisionByAgentId,
+  );
+  const discoveryFreshness = useRuntimeStore((state) => state.discovery.freshness);
   const activeAgentId = route === "agent" ? selectedAgent?.id ?? selectedAgentId : undefined;
+  const activeAgentLedgerUnread = activeAgentId
+    ? ledgerUnreadByAgentId[activeAgentId]
+    : undefined;
   const sidePanelAgentId = selectedAgent?.id ?? selectedAgentId;
-  const markSelectedAgentConversationRead = useCallback(() => {
-    if (activeAgentId) markAgentConversationRead(activeAgentId);
-  }, [activeAgentId, markAgentConversationRead]);
   const selectedAgentSession = useRuntimeStore((state) =>
     sidePanelAgentId ? state.sessionsByAgentId[sidePanelAgentId] : undefined,
   );
+  const markSelectedAgentConversationRead = useCallback(() => {
+    if (activeAgentId) markAgentConversationRead(activeAgentId);
+  }, [
+    activeAgentId,
+    activeAgentLedgerUnread,
+    discoveryFreshness,
+    activeAgentId ? ledgerReadinessRevisionByAgentId[activeAgentId] : undefined,
+    markAgentConversationRead,
+    selectedAgentSession?.briefHydrationById,
+    selectedAgentSession?.gaps.length,
+    selectedAgentSession?.liveStatus,
+    selectedAgentSession?.loading,
+    selectedAgentSession?.syncStatus,
+  ]);
   const selectedAgentTimelineEvents = useRuntimeStore((state) =>
     sidePanelAgentId ? state.timelineEventsByAgentId[sidePanelAgentId] : undefined,
   );

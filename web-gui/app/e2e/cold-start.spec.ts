@@ -48,6 +48,17 @@ test("cold start bootstraps and applies a live roster event", async ({ page, req
   await expect.poll(async () => page.evaluate(() => window.__HOLON_E2E__?.snapshot().agentIds))
     .toEqual(["bootstrap-agent", "e2e-agent"]);
 
+  await expect.poll(async () => {
+    const finalRequests = await request.get(controlPath("/__e2e__/requests"))
+      .then((response) => response.json());
+    return finalRequests.requests;
+  }).toEqual(expect.arrayContaining([
+    "GET /api/agents/snapshot",
+    "GET /api/agents/e2e-agent/projection-snapshot",
+    "GET /api/agents/e2e-agent/events?after_seq=1&limit=100&order=asc",
+    "GET /api/agents/e2e-agent/events?limit=100&order=desc",
+  ]));
+
   const finalRequests = await request.get(controlPath("/__e2e__/requests"))
     .then((response) => response.json());
   expect(finalRequests.requests.filter((entry: string) => entry === "GET /api/agents/snapshot")).toHaveLength(2);
@@ -56,7 +67,7 @@ test("cold start bootstraps and applies a live roster event", async ({ page, req
     (entry: string) => entry === "GET /api/agents/e2e-agent/projection-snapshot",
   )).toHaveLength(1);
   expect(finalRequests.requests.filter(
-    (entry: string) => entry === "GET /api/agents/e2e-agent/events?after_seq=0&limit=100&order=asc",
+    (entry: string) => entry === "GET /api/agents/e2e-agent/events?after_seq=1&limit=100&order=asc",
   )).toHaveLength(1);
   expect(finalRequests.requests.filter(
     (entry: string) => entry === "GET /api/agents/e2e-agent/events?limit=100&order=desc",

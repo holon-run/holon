@@ -943,6 +943,7 @@ export class LedgerIngestionPipeline {
   ): {
     readyThroughSeq: number;
     ingestedThroughSeq: number;
+    observedHeadSeq?: number;
     blockedByEventSeq?: number;
     blockedReason?: "pending_hydration" | "unknown_envelope_version";
   } {
@@ -954,6 +955,7 @@ export class LedgerIngestionPipeline {
     return {
       readyThroughSeq: tracker.readyThrough,
       ingestedThroughSeq: tracker.contiguousThrough,
+      observedHeadSeq: Math.max(tracker.observedHead, tracker.contiguousThrough) || undefined,
       blockedByEventSeq: Number.isFinite(blockedSeq) ? blockedSeq : undefined,
       blockedReason: blocker?.kind,
     };
@@ -985,7 +987,13 @@ export class LedgerIngestionPipeline {
       session?.projectionReadyThroughSeq ?? 0,
       tracker.contiguousThrough,
     );
-    tracker.observedHead = runtimeScope?.eventHeadSeq ?? tracker.contiguousThrough;
+    // These records are read independently, so another tab may commit between
+    // the two reads. A persisted contiguous cursor is itself proof that the
+    // observed head reached at least that sequence.
+    tracker.observedHead = Math.max(
+      runtimeScope?.eventHeadSeq ?? 0,
+      tracker.contiguousThrough,
+    );
     for (const job of jobs) {
       const view = this.jobViewFromRecord(job);
       tracker.jobs.set(view.jobId, view);
@@ -1162,13 +1170,17 @@ export class LedgerIngestionPipeline {
     const durability: LedgerDurability = this.ledger?.durability ?? "memory_only";
     const state: LedgerIngestionState =
       durability !== "exact" ? "memory_only" : tracker.state;
+    const observedHead = Math.max(
+      tracker.observedHead,
+      tracker.contiguousThrough,
+    );
     return {
       scope,
       durability,
       state,
       ingestedThroughSeq: tracker.contiguousThrough || undefined,
       projectionReadyThroughSeq: tracker.readyThrough || undefined,
-      observedEventHeadSeq: tracker.observedHead || undefined,
+      observedEventHeadSeq: observedHead || undefined,
       pendingHydrationJobs: pendingJobs,
       failedHydrationJobs: failedJobs,
       blockedByEventSeq: Number.isFinite(blockedSeq) ? blockedSeq : undefined,

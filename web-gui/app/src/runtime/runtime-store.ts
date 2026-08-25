@@ -369,6 +369,8 @@ export interface RuntimeStoreState {
   rosterActivityByAgentId: Record<string, AgentRosterActivity>;
   /** Ledger-backed unread views (W5); absent entries use the legacy path. */
   ledgerUnreadByAgentId: Record<string, LedgerUnreadView>;
+  /** Monotonic signal for durable ledger readiness transitions. */
+  ledgerReadinessRevisionByAgentId: Record<string, number>;
   sessionsByAgentId: Record<string, AgentSessionState>;
   skillInstallJobs: SkillInstallJob[];
   resumeRevision: number;
@@ -1210,6 +1212,23 @@ async function refreshLedgerUnreadInView(agentId: string): Promise<void> {
   }
 }
 
+export function ledgerReadMarkerDecision(agentId: string) {
+  const state = useRuntimeStore.getState();
+  const readiness = agentSessionRepository.sessionLedgerReadiness(agentId);
+  return evaluateLedgerReadMarkerGate(
+    {
+      route: state.route,
+      selectedAgentId: state.selectedAgentId,
+      documentVisible:
+        typeof document !== "undefined" && document.visibilityState === "visible",
+      session: state.sessionsByAgentId[agentId],
+      discoveryFresh: state.discovery.freshness === "fresh",
+      readiness,
+    },
+    agentId,
+  );
+}
+
 export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
   agentSessionRepository = new AgentSessionRepository<RuntimeStoreState>({
     get,
@@ -1376,6 +1395,13 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
       },
       onStatus: (status) => {
         // W5: unread counts refresh from durable readiness transitions.
+        set((state) => ({
+          ledgerReadinessRevisionByAgentId: {
+            ...state.ledgerReadinessRevisionByAgentId,
+            [status.scope.agentId]:
+              (state.ledgerReadinessRevisionByAgentId[status.scope.agentId] ?? 0) + 1,
+          },
+        }));
         void refreshLedgerUnreadInView(status.scope.agentId);
       },
     },
@@ -1436,6 +1462,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
   codexDeviceLogin: { status: "idle" as const },
   rosterActivityByAgentId: readStoredRosterActivity(currentRemoteKey(runtimeConnectionConfig)),
   ledgerUnreadByAgentId: {},
+  ledgerReadinessRevisionByAgentId: {},
   sessionsByAgentId: {},
   skillInstallJobs: loadSkillInstallJobs(),
   resumeRevision: 0,
@@ -1471,28 +1498,10 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     }),
   markAgentConversationRead: (agentId) => {
     const state = get();
-    const context = {
-      route: state.route,
-      selectedAgentId: state.selectedAgentId,
-      documentVisible:
-        typeof document !== "undefined" && document.visibilityState === "visible",
-    };
     if (agentSessionRepository.knownLedgerScope(agentId)) {
       // Ledger-backed path (W5): the durable marker is the only read state;
       // the legacy roster activity no longer tracks this agent.
-      const status = agentSessionRepository.sessionLedgerStatus(agentId);
-      const readiness = agentSessionRepository.sessionLedgerReadiness(agentId);
-      const decision = evaluateLedgerReadMarkerGate(
-        {
-          ...context,
-          session: state.sessionsByAgentId[agentId],
-          discoveryFresh: state.discovery.freshness === "fresh",
-          readiness: readiness
-            ? { ...readiness, observedHeadSeq: status?.observedEventHeadSeq }
-            : null,
-        },
-        agentId,
-      );
+      const decision = ledgerReadMarkerDecision(agentId);
       if (decision.mayAdvance && decision.candidateSeq != null) {
         const candidateSeq = decision.candidateSeq;
         void agentSessionRepository
@@ -1511,7 +1520,10 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     // Legacy in-memory path: remotes without the ledger capability.
     const session = state.sessionsByAgentId[agentId];
     if (!session || !canMarkConversationRead({
-      ...context,
+      route: state.route,
+      selectedAgentId: state.selectedAgentId,
+      documentVisible:
+        typeof document !== "undefined" && document.visibilityState === "visible",
       session,
     }, agentId)) {
       return;

@@ -111,6 +111,35 @@ describe("ledger ingestion pipeline", () => {
     ledger.close();
   });
 
+  it("never reloads an observed head behind the persisted contiguous cursor", async () => {
+    const scope = makeScope();
+    const ledger = await openLedgerHandle();
+    await ledger
+      .beginWrite()
+      .advanceIngestionCursor(scope, 2)
+      .applyProjectionChange(scope, { projectionReadyThroughSeq: 2 })
+      .putRuntimeScope(
+        {
+          remoteKey: scope.remoteKey,
+          runtimeId: scope.runtimeId,
+          visibilityScopeId: scope.visibilityScopeId,
+          eventLogEpoch: scope.eventLogEpoch,
+        },
+        { eventHeadSeq: 0 },
+      )
+      .commit();
+    ledger.close();
+
+    const pipeline = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
+    await pipeline.open();
+
+    expect(await pipeline.resume(scope)).toMatchObject({
+      ingestedThroughSeq: 2,
+      projectionReadyThroughSeq: 2,
+      observedEventHeadSeq: 2,
+    });
+  });
+
   it("keeps the contiguous cursor behind out-of-order gaps", async () => {
     const pipeline = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
     await pipeline.open();

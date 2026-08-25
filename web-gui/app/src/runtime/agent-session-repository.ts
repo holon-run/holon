@@ -563,6 +563,7 @@ export class AgentSessionRepository<State extends AgentSessionRepositoryState> {
   sessionLedgerReadiness(agentId: string): {
     readyThroughSeq: number;
     ingestedThroughSeq: number;
+    observedHeadSeq?: number;
     blockedByEventSeq?: number;
     blockedReason?: "pending_hydration" | "unknown_envelope_version";
   } | null {
