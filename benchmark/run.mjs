@@ -110,6 +110,7 @@ async function main() {
 }
 
 async function runFixtureCommand(args, runnerEnv) {
+  const holonProvider = resolveHolonFixtureProvider(args);
   const runners = args.runners.length > 0 ? args.runners : ["holon", "claude_sdk"];
   if (runners.some((runner) => runner === "holon")) {
     await ensureDriverHolonBuilt();
@@ -130,7 +131,8 @@ async function runFixtureCommand(args, runnerEnv) {
           runner,
           repetition,
           label,
-          runnerEnv
+          runnerEnv,
+          holonProvider
         });
         summary.push(result.summary);
       }
@@ -149,7 +151,11 @@ function parseArgs(argv) {
     label: undefined,
     repetitions: 1,
     tasks: [],
-    runners: []
+    runners: [],
+    holonModel: undefined,
+    holonProviderTransport: undefined,
+    holonProviderBaseUrl: undefined,
+    holonProviderApiKeyEnv: undefined
   };
 
   if (
@@ -171,6 +177,14 @@ function parseArgs(argv) {
       args.tasks.push(argv[++index]);
     } else if (value === "--runner") {
       args.runners.push(argv[++index]);
+    } else if (value === "--holon-model") {
+      args.holonModel = argv[++index];
+    } else if (value === "--holon-provider-transport") {
+      args.holonProviderTransport = argv[++index];
+    } else if (value === "--holon-provider-base-url") {
+      args.holonProviderBaseUrl = argv[++index];
+    } else if (value === "--holon-provider-api-key-env") {
+      args.holonProviderApiKeyEnv = argv[++index];
     } else if (value === "--baseline") {
       args.baseline = argv[++index];
     } else if (value === "--candidate") {
@@ -422,7 +436,15 @@ function boolWord(value) {
   return value ? "yes" : "no";
 }
 
-async function runBenchmarkTask({ task, taskFile, runner, repetition, label, runnerEnv }) {
+async function runBenchmarkTask({
+  task,
+  taskFile,
+  runner,
+  repetition,
+  label,
+  runnerEnv,
+  holonProvider
+}) {
   const runId = `run-${String(repetition).padStart(2, "0")}`;
   const suiteDir = path.join(resultsRoot, label);
   const taskDir = path.join(suiteDir, task.name, runner, runId);
@@ -443,7 +465,8 @@ async function runBenchmarkTask({ task, taskFile, runner, repetition, label, run
         task,
         taskDir,
         workspaceDir,
-        runnerEnv
+        runnerEnv,
+        holonProvider
       });
     } else if (runner === "claude_sdk") {
       result = await runClaudeSdkTask({
@@ -2498,14 +2521,14 @@ async function loadClaudeAgentSdk() {
   return claudeAgentSdkPromise;
 }
 
-async function runHolonTask({ task, taskDir, workspaceDir, runnerEnv }) {
+async function runHolonTask({ task, taskDir, workspaceDir, runnerEnv, holonProvider }) {
   const homeDir = path.join(taskDir, "holon-home");
   const agentId = task.name;
-  const env = {
-    ...runnerEnv,
-    HOLON_HOME: homeDir,
-    HOLON_WORKSPACE_DIR: workspaceDir
-  };
+  const env = buildHolonFixtureEnv(runnerEnv, homeDir, workspaceDir, holonProvider);
+  if (holonProvider) {
+    await mkdir(homeDir, { recursive: true });
+    await writeJson(path.join(homeDir, "config.json"), buildHolonFixtureConfig(holonProvider));
+  }
   const holonBinary = resolveDriverHolonBinary();
   const agentDir = path.join(homeDir, "agents", agentId);
 
@@ -2523,8 +2546,7 @@ async function runHolonTask({ task, taskDir, workspaceDir, runnerEnv }) {
   let lastRun = null;
   let timedOut = false;
   for (const [index, turn] of turns.entries()) {
-    const args = ["run", turn.prompt, "--agent", agentId, "--json", "--trust"];
-    args.push(task.mode === "controlled" ? "trusted-integration" : "trusted-operator");
+    const args = buildFixtureHolonRunArgs(task, turn.prompt, agentId, index === 0);
     const run = await runCommand(
       holonBinary,
       args,
@@ -2600,7 +2622,10 @@ async function runHolonTask({ task, taskDir, workspaceDir, runnerEnv }) {
   const finalMessage = selectHolonFinalMessage(lastRun, briefs);
   await writeFile(path.join(taskDir, "final_message.md"), `${finalMessage}\n`, "utf8");
 
-  const toolExecutions = await readAgentJsonlArtifact(agentDir, "tools.jsonl", taskDir);
+  const toolExecutions = selectHolonToolExecutions(
+    await readAgentJsonlArtifact(agentDir, "tools.jsonl", taskDir),
+    events
+  );
   const toolMetrics = summarizeHolonToolExecutions(toolExecutions);
   const transcript = await readAgentJsonlArtifact(agentDir, "transcript.jsonl", taskDir);
   const tokenOptimization = summarizeHolonTokenOptimization(tokenOptimizationEvents(events, transcript), toolExecutions, {
@@ -2610,6 +2635,9 @@ async function runHolonTask({ task, taskDir, workspaceDir, runnerEnv }) {
     modelRounds: lastRun?.model_rounds,
     tokenOptimization
   });
+  if (holonProvider) {
+    assertHolonFixtureModel(events, holonProvider.modelRef);
+  }
   await writeJson(path.join(taskDir, "token-optimization.json"), tokenOptimization);
   const failureKind = computeFailureKind(lastRun);
 
@@ -2626,9 +2654,10 @@ async function runHolonTask({ task, taskDir, workspaceDir, runnerEnv }) {
         : failureKind.runner_error_kind ??
           lastRun?.runner_error_kind ??
           (lastRun && lastRun.final_status !== "completed" ? lastRun.final_status : null),
-    inputTokens: lastRun?.input_tokens ?? 0,
-    outputTokens: lastRun?.output_tokens ?? 0,
-    modelRounds: lastRun?.model_rounds ?? 0,
+    inputTokens:
+      Number(lastRun?.input_tokens) || tokenOptimization.summary.logical_input_tokens,
+    outputTokens: Number(lastRun?.output_tokens) || tokenOptimization.summary.output_tokens,
+    modelRounds: Number(lastRun?.model_rounds) || tokenOptimization.summary.rounds,
     tokenOptimization,
     ...toolMetrics
   };
@@ -2666,6 +2695,46 @@ function holonRunFailure(agentId, kind, run, extra = {}) {
     stdout: run.stdout ?? "",
     ...extra
   };
+}
+
+export function buildHolonFixtureConfig(holonProvider) {
+  const auth = holonProvider.apiKeyEnv
+    ? {
+        source: "env",
+        kind: "api_key",
+        env: holonProvider.apiKeyEnv
+      }
+    : {
+        source: "none",
+        kind: "none"
+      };
+  return {
+    model: {
+      default: holonProvider.modelRef,
+      fallbacks: []
+    },
+    providers: {
+      [holonProvider.provider]: {
+        transport: holonProvider.transport,
+        base_url: holonProvider.baseUrl,
+        auth
+      }
+    }
+  };
+}
+
+export function buildHolonFixtureEnv(runnerEnv, homeDir, workspaceDir, holonProvider) {
+  const env = {
+    ...runnerEnv,
+    HOLON_HOME: homeDir,
+    HOLON_WORKSPACE_DIR: workspaceDir
+  };
+  if (holonProvider) {
+    env.HOLON_MODEL = holonProvider.modelRef;
+    env.HOLON_DISABLE_PROVIDER_FALLBACK = "1";
+    delete env.HOLON_MODEL_FALLBACKS;
+  }
+  return env;
 }
 
 async function runClaudeSdkTask({ task, taskDir, workspaceDir, runnerEnv }) {
@@ -2960,8 +3029,48 @@ export function resolveDriverHolonBinary() {
   return path.isAbsolute(override) ? override : path.resolve(repoRoot, override);
 }
 
+export function buildFixtureHolonRunArgs(task, prompt, agentId, firstTurn) {
+  const args = ["run", prompt, "--agent", agentId];
+  if (firstTurn && task.mode === "runtime") {
+    args.push("--create-agent");
+  }
+  args.push(
+    "--json",
+    "--trust",
+    task.mode === "controlled" ? "trusted-integration" : "trusted-operator"
+  );
+  return args;
+}
+
 async function loadTask(taskFile) {
   return readJson(path.join(tasksRoot, taskFile));
+}
+
+export function resolveHolonFixtureProvider(args) {
+  const values = [
+    args.holonModel,
+    args.holonProviderTransport,
+    args.holonProviderBaseUrl
+  ];
+  if (values.every((value) => value === undefined)) {
+    return null;
+  }
+  if (values.some((value) => value === undefined)) {
+    throw new Error(
+      "fixture provider override requires --holon-model, --holon-provider-transport, and --holon-provider-base-url"
+    );
+  }
+  const separator = args.holonModel.indexOf("/");
+  if (separator <= 0 || separator === args.holonModel.length - 1) {
+    throw new Error("--holon-model must use provider/model format");
+  }
+  return {
+    modelRef: args.holonModel,
+    provider: args.holonModel.slice(0, separator),
+    transport: args.holonProviderTransport,
+    baseUrl: args.holonProviderBaseUrl,
+    apiKeyEnv: args.holonProviderApiKeyEnv
+  };
 }
 
 async function loadClaudeSettingsEnv() {
@@ -3237,6 +3346,17 @@ function summarizeHolonToolExecutions(entries) {
     totalToolLatencyMs,
     perToolLatencyMs
   };
+}
+
+export function selectHolonToolExecutions(toolExecutions, events) {
+  if (toolExecutions.length > 0) {
+    return toolExecutions;
+  }
+  return events
+    .filter(
+      (event) => (event?.kind ?? event?.event ?? event?.type) === "tool_executed"
+    )
+    .map((event) => event?.data ?? event);
 }
 
 function usageNumber(value, field, issues, { required = false } = {}) {
@@ -4979,6 +5099,38 @@ export function assertHolonProviderRoundTelemetry({ modelRounds, tokenOptimizati
     throw new Error(
       `Holon reported ${modelRounds} model rounds but the runtime DB export contained no provider_round_completed telemetry`
     );
+  }
+}
+
+export function canonicalHolonModelRef(modelRef) {
+  const separator = String(modelRef).indexOf("/");
+  if (separator <= 0) {
+    return String(modelRef);
+  }
+  const provider = modelRef.slice(0, separator);
+  return provider.includes("@")
+    ? String(modelRef)
+    : `${provider}@default/${modelRef.slice(separator + 1)}`;
+}
+
+export function assertHolonFixtureModel(events, expectedModelRef) {
+  const expected = canonicalHolonModelRef(expectedModelRef);
+  const providerRounds = events.filter((entry) => entry.kind === "provider_round_completed");
+  if (providerRounds.length === 0) {
+    throw new Error(
+      `Holon fixture requested ${expectedModelRef} but emitted no provider round telemetry`
+    );
+  }
+  for (const event of providerRounds) {
+    const actual =
+      event.data?.provider_attempt_timeline?.winning_model_ref ??
+      event.data?.active_model ??
+      event.data?.requested_model;
+    if (actual && canonicalHolonModelRef(actual) !== expected) {
+      throw new Error(
+        `Holon fixture requested ${expectedModelRef} but provider round ${event.data?.round ?? "unknown"} used ${actual}`
+      );
+    }
   }
 }
 

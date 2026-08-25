@@ -1,6 +1,6 @@
 {
   "name": "analysis-runtime-architecture",
-  "mode": "controlled",
+  "mode": "runtime",
   "workspace": {
     "type": "fixture",
     "path": "analysis-runtime"

@@ -3,6 +3,23 @@
 This document defines SVS-305: the minimal benchmark guardrail set that must
 stay green while structural refactors land.
 
+Fixture runs can target an isolated OpenAI- or Anthropic-compatible provider:
+
+```bash
+node benchmark/run.mjs fixture \
+  --runner holon \
+  --task analysis-runtime-architecture.json \
+  --holon-model ollama-responses/qwen3.8:27b-mlx \
+  --holon-provider-transport openai_responses \
+  --holon-provider-base-url http://127.0.0.1:11434/v1
+```
+
+All three provider options are required together. If the endpoint requires an
+API key, also pass `--holon-provider-api-key-env OLLAMA_API_KEY` and set that
+environment variable. The runner writes the provider and model into the run's
+isolated `HOLON_HOME`, disables model fallback, and verifies provider-round
+telemetry used the requested model.
+
 ## Purpose
 
 Structural refactors (SVS-301 through SVS-304) will change internal module

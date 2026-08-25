@@ -15,7 +15,11 @@ import {
   validateRealTaskManifest
 } from "../lib/manifest.mjs";
 import {
+  assertHolonFixtureModel,
   assertHolonProviderRoundTelemetry,
+  buildHolonFixtureConfig,
+  buildHolonFixtureEnv,
+  buildFixtureHolonRunArgs,
   buildPairedSummary,
   buildHolonBenchmarkEnv,
   buildOperatorPrompt,
@@ -25,6 +29,7 @@ import {
   classifyHolonBenchmarkCompletion,
   collectChangedFilesFromGitOutputs,
   copyHolonProviderHttpTraceArtifacts,
+  canonicalHolonModelRef,
   captureHolonProviderRequests,
   codexBenchmarkConfigToml,
   detectScopeViolation,
@@ -35,8 +40,10 @@ import {
   parseClaudeCliJsonl,
   parseCodexJsonl,
   resolveDriverHolonBinary,
+  resolveHolonFixtureProvider,
   readHolonAuditEvents,
   selectHolonFinalMessage,
+  selectHolonToolExecutions,
   shouldRunManifestVerifier,
   summarizeHolonTokenOptimization,
   tokenOptimizationEvents
@@ -72,6 +79,221 @@ test("resolveDriverHolonBinary always selects the benchmark driver repository", 
       process.env.HOLON_BENCHMARK_BINARY = originalOverride;
     }
   }
+});
+
+test("resolveHolonFixtureProvider builds a local provider override", () => {
+  assert.deepEqual(
+    resolveHolonFixtureProvider({
+      holonModel: "ollama-responses/qwen3.8:27b-mlx",
+      holonProviderTransport: "openai_responses",
+      holonProviderBaseUrl: "http://127.0.0.1:11434/v1",
+      holonProviderApiKeyEnv: undefined,
+    }),
+    {
+      modelRef: "ollama-responses/qwen3.8:27b-mlx",
+      provider: "ollama-responses",
+      transport: "openai_responses",
+      baseUrl: "http://127.0.0.1:11434/v1",
+      apiKeyEnv: undefined,
+    },
+  );
+});
+
+test("selectHolonToolExecutions falls back to durable runtime events", () => {
+  assert.deepEqual(
+    selectHolonToolExecutions(
+      [],
+      [
+        {
+          kind: "tool_executed",
+          data: {
+            tool_name: "ExecCommand",
+            duration_ms: 34,
+            input: { cmd: "pwd" },
+          },
+        },
+        {
+          kind: "provider_round_completed",
+          data: { round: 1 },
+        },
+      ],
+    ),
+    [
+      {
+        tool_name: "ExecCommand",
+        duration_ms: 34,
+        input: { cmd: "pwd" },
+      },
+    ],
+  );
+});
+
+test("selectHolonToolExecutions prefers the full artifact", () => {
+  const artifact = [{ tool_name: "Read", output: { content: "runtime.js" } }];
+  assert.equal(
+    selectHolonToolExecutions(artifact, [
+      { kind: "tool_executed", data: { tool_name: "ExecCommand" } },
+    ]),
+    artifact,
+  );
+});
+
+test("resolveHolonFixtureProvider rejects partial provider overrides", () => {
+  assert.throws(
+    () =>
+      resolveHolonFixtureProvider({
+        holonModel: "ollama-responses/qwen3.8:27b-mlx",
+        holonProviderTransport: "openai_responses",
+      }),
+    /requires --holon-model/,
+  );
+});
+
+test("canonicalHolonModelRef adds the default provider profile", () => {
+  assert.equal(
+    canonicalHolonModelRef("ollama-responses/qwen3.8:27b-mlx"),
+    "ollama-responses@default/qwen3.8:27b-mlx",
+  );
+  assert.equal(
+    canonicalHolonModelRef("ollama-responses@local/qwen3.8:27b-mlx"),
+    "ollama-responses@local/qwen3.8:27b-mlx",
+  );
+});
+
+test("assertHolonFixtureModel rejects a provider override that used the default model", () => {
+  assert.throws(
+    () =>
+      assertHolonFixtureModel(
+        [{ kind: "agent_created", data: { agent_id: "analysis-runtime" } }],
+        "ollama-anthropic/qwen3.8:27b-mlx",
+      ),
+    /emitted no provider round telemetry/,
+  );
+  assert.throws(
+    () =>
+      assertHolonFixtureModel(
+        [
+          {
+            kind: "provider_round_completed",
+            data: {
+              round: 1,
+              provider_attempt_timeline: {
+                winning_model_ref: "anthropic@default/claude-fable-5",
+              },
+            },
+          },
+        ],
+        "ollama-anthropic/qwen3.8:27b-mlx",
+      ),
+    /used anthropic@default\/claude-fable-5/,
+  );
+  assert.doesNotThrow(() =>
+    assertHolonFixtureModel(
+      [
+        {
+          kind: "provider_round_completed",
+          data: {
+            round: 1,
+            active_model: "ollama-anthropic@default/qwen3.8:27b-mlx",
+          },
+        },
+      ],
+      "ollama-anthropic/qwen3.8:27b-mlx",
+    ),
+  );
+});
+
+test("runtime fixture creates its public agent only on the first turn", () => {
+  const task = { mode: "runtime" };
+  assert.deepEqual(
+    buildFixtureHolonRunArgs(task, "inspect", "analysis-runtime", true),
+    [
+      "run",
+      "inspect",
+      "--agent",
+      "analysis-runtime",
+      "--create-agent",
+      "--json",
+      "--trust",
+      "trusted-operator",
+    ],
+  );
+  assert.equal(
+    buildFixtureHolonRunArgs(
+      task,
+      "continue",
+      "analysis-runtime",
+      false,
+    ).includes("--create-agent"),
+    false,
+  );
+});
+
+test("provider fixture config uses the requested model as the isolated runtime default", () => {
+  assert.deepEqual(
+    buildHolonFixtureConfig({
+      provider: "ollama-anthropic",
+      transport: "anthropic_messages",
+      baseUrl: "http://127.0.0.1:11434",
+      modelRef: "ollama-anthropic@default/qwen3.8:27b-mlx",
+    }),
+    {
+      model: {
+        default: "ollama-anthropic@default/qwen3.8:27b-mlx",
+        fallbacks: [],
+      },
+      providers: {
+        "ollama-anthropic": {
+          transport: "anthropic_messages",
+          base_url: "http://127.0.0.1:11434",
+          auth: {
+            source: "none",
+            kind: "none",
+          },
+        },
+      },
+    },
+  );
+});
+
+test("provider fixture config supports credentials supplied by environment", () => {
+  assert.deepEqual(
+    buildHolonFixtureConfig({
+      provider: "ollama-anthropic",
+      transport: "anthropic_messages",
+      baseUrl: "http://127.0.0.1:11434",
+      modelRef: "ollama-anthropic@default/qwen3.8:27b-mlx",
+      apiKeyEnv: "OLLAMA_API_KEY",
+    }).providers["ollama-anthropic"].auth,
+    {
+      source: "env",
+      kind: "api_key",
+      env: "OLLAMA_API_KEY",
+    },
+  );
+});
+
+test("provider fixture env overrides inherited model selection", () => {
+  assert.deepEqual(
+    buildHolonFixtureEnv(
+      {
+        HOLON_MODEL: "anthropic@default/claude-fable-5",
+        HOLON_DISABLE_PROVIDER_FALLBACK: "0",
+        HOLON_MODEL_FALLBACKS: "openai@default/gpt-5",
+      },
+      "/tmp/holon-home",
+      "/tmp/workspace",
+      {
+        modelRef: "ollama-anthropic/qwen3.8:27b-mlx",
+      },
+    ),
+    {
+      HOLON_MODEL: "ollama-anthropic/qwen3.8:27b-mlx",
+      HOLON_DISABLE_PROVIDER_FALLBACK: "1",
+      HOLON_HOME: "/tmp/holon-home",
+      HOLON_WORKSPACE_DIR: "/tmp/workspace",
+    },
+  );
 });
 
 test("validateRealTaskManifest accepts a phase-1 manifest", () => {
