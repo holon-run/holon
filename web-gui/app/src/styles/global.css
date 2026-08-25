@@ -5629,7 +5629,8 @@ code {
 .search-form,
 .search-result-card,
 .search-results-head,
-.search-error {
+.search-error,
+.search-warning {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--surface);
@@ -5687,6 +5688,23 @@ code {
   padding: 12px 14px;
   color: var(--danger);
   font-size: 13px;
+}
+
+.search-warning {
+  border-color: color-mix(in srgb, var(--warning) 55%, var(--line));
+  padding: 12px 14px;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.search-warning strong,
+.search-warning span {
+  display: block;
+}
+
+.search-warning span {
+  margin-top: 3px;
+  color: var(--muted);
 }
 
 .search-results {

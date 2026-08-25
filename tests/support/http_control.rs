@@ -270,7 +270,8 @@ pub async fn runtime_search_route_returns_memory_search_results() -> Result<()> 
         .post(format!("{base}/api/search"))
         .json(&serde_json::json!({
             "query": "issue1879",
-            "limit": 5
+            "limit": 5,
+            "types": [" message ", "message"]
         }))
         .send()
         .await?;

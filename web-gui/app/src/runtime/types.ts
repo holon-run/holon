@@ -534,7 +534,20 @@ export interface SearchResultItem {
 export interface SearchResponse {
   query: string;
   limit: number;
+  indexStatus: SearchIndexStatus;
   results: SearchResultItem[];
+}
+
+export interface SearchIndexStatus {
+  freshness: string;
+  cursor: number;
+  highWatermark: number;
+  lag: number;
+  lastIndexedAt?: string;
+  indexingNeeded: boolean;
+  resultsMayBeIncomplete: boolean;
+  consumptionWasLimited: boolean;
+  skippedErrorCount: number;
 }
 
 export interface MemorySourceContent {

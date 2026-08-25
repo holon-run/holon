@@ -1024,12 +1024,12 @@ impl RuntimeHost {
     const DAEMON_INDEXER_FALLBACK_POLL: Duration = Duration::from_secs(60);
 
     async fn run_daemon_memory_indexer(self) {
-        use crate::memory::refresh_memory_index_bounded;
+        use crate::memory::{memory_index_agent_ids_with_pending, refresh_memory_index_bounded};
         loop {
             if self.inner.daemon_indexer_token.is_cancelled() {
                 break;
             }
-            let agent_ids = match self
+            let runtime_agent_ids = match self
                 .inner
                 .runtime_db
                 .runtime_index_outbox()
@@ -1042,6 +1042,28 @@ impl RuntimeHost {
                     continue;
                 }
             };
+            let default_storage = match self.agent_storage(&self.config().default_agent_id) {
+                Ok(storage) => storage,
+                Err(error) => {
+                    tracing::warn!(error = %error, "daemon memory indexer: failed to open shared index");
+                    self.wait_daemon_indexer_round().await;
+                    continue;
+                }
+            };
+            let pending_source_agent_ids = match memory_index_agent_ids_with_pending(
+                &default_storage,
+            ) {
+                Ok(ids) => ids.into_iter().collect::<std::collections::BTreeSet<_>>(),
+                Err(error) => {
+                    tracing::warn!(error = %error, "daemon memory indexer: failed to query pending source agents");
+                    self.wait_daemon_indexer_round().await;
+                    continue;
+                }
+            };
+            let agent_ids = runtime_agent_ids
+                .into_iter()
+                .chain(pending_source_agent_ids.iter().cloned())
+                .collect::<std::collections::BTreeSet<_>>();
 
             let mut did_work = false;
             for agent_id in &agent_ids {
@@ -1062,9 +1084,10 @@ impl RuntimeHost {
                 .await;
                 match result {
                     Ok(Ok(status)) => {
-                        if status.lag > 0 || status.consumption_was_limited {
-                            did_work = true;
-                        }
+                        did_work |= status.lag > 0
+                            || status.consumption_was_limited
+                            || (pending_source_agent_ids.contains(agent_id)
+                                && status.skipped_error_count == 0);
                         tracing::debug!(
                             agent_id = %agent_id,
                             freshness = %status.freshness,
@@ -1339,6 +1362,7 @@ impl RuntimeHost {
         limit: usize,
         include_all_workspaces: bool,
         agent_ids: &[String],
+        source_kinds: &[String],
     ) -> Result<crate::memory::MemorySearchQueryResult> {
         let default_agent_id = self.config().default_agent_id.clone();
         let storage = self.agent_storage_read_only(&default_agent_id)?;
@@ -1354,6 +1378,7 @@ impl RuntimeHost {
         }
         let query = query.to_string();
         let agent_ids = agent_ids.to_vec();
+        let source_kinds = source_kinds.to_vec();
         tokio::task::spawn_blocking(move || {
             let _ = crate::memory::ensure_memory_indexes_fresh(
                 &storage,
@@ -1367,6 +1392,7 @@ impl RuntimeHost {
                 active_workspace_id.as_deref(),
                 include_all_workspaces,
                 &agent_ids,
+                &source_kinds,
                 &agent_storages,
             )
         })

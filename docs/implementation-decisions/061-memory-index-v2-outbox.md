@@ -17,16 +17,20 @@ explicit maintenance action, not a model tool side effect.
 Online rebuild requests use the same maintenance path as incremental refresh:
 they enqueue a rebuild intent in `memory_index_pending_sources`, mark the index
 stale, and let the background indexer consume the intent before bounded outbox
-refresh. The CLI's default `memory-index rebuild` behavior submits that intent;
-`--offline` remains the explicit foreground repair path for stopped-service or
-operator-controlled maintenance.
+refresh. The background indexer discovers agents from both the runtime outbox
+and the shared pending-source queue, so a rebuild intent does not require a new
+runtime write to become runnable. The CLI's default `memory-index rebuild`
+behavior submits that intent; `--offline` remains the explicit foreground repair
+path for stopped-service or operator-controlled maintenance.
 
 The v1 `memory.sqlite3` file is intentionally ignored by v2. When v2 has not
 been created yet and a v1 file is present, the runtime logs that historical v1
 projection data requires an explicit rebuild/backfill instead of silently
 migrating content into the new ref-discovery schema.
 
-`index_status` reports when bounded outbox consumption hit its limit and when
-individual outbox rows were skipped because their source could not be projected.
-A failed row advances the outbox cursor after logging so one bad source cannot
-permanently stall discovery for later refs.
+`index_status` reports stale/incomplete results when the current projection lacks
+any required full-backfill checkpoint, even if its runtime outbox cursor is
+caught up. It also reports when bounded outbox consumption hit its limit and
+when individual outbox rows were skipped because their source could not be
+projected. A failed row advances the outbox cursor after logging so one bad
+source cannot permanently stall discovery for later refs.

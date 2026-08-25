@@ -824,6 +824,7 @@ impl RuntimeHandle {
                 active_workspace_id.as_deref(),
                 include_all_workspaces,
                 &agent_ids,
+                &[],
                 &agent_storages,
             )
         })

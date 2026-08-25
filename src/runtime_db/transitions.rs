@@ -1277,20 +1277,25 @@ impl RuntimeTransitionRepository<'_> {
                         turn_record,
                     )? > 0;
             }
-            let applied = mutation_applied
+            let mut applied = mutation_applied
                 || agent_state_applied
                 || execution_protocol_applied
                 || wait_transition_applied
                 || wait_work_item_applied
                 || completion_applied
                 || terminal_tool_execution_applied;
+            let mut message_index_changes = Vec::new();
+            for message in &command.message_evidence {
+                let (message, inserted) = append_message_tx(tx, message)?;
+                if inserted {
+                    applied = true;
+                    message_index_changes.push(RuntimeIndexChange::for_message(&message));
+                }
+            }
             if !applied {
                 return Ok(TransitionCommit::default());
             }
             execution_protocol_repository::persist_execution_commands_tx(tx, execution_protocol)?;
-            for message in &command.message_evidence {
-                append_message_tx(tx, message)?;
-            }
             for entry in &command.transcript_entries {
                 append_transcript_entry_tx(tx, entry)?;
             }
@@ -1301,15 +1306,17 @@ impl RuntimeTransitionRepository<'_> {
                 insert_brief_evidence_tx(tx, brief)?;
             }
             inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
+            let mut index_changes = wait_transition
+                .map(|transition| transition.index_changes.clone())
+                .or_else(|| completion.map(|completion| completion.index_changes.clone()))
+                .unwrap_or_default();
+            index_changes.extend(message_index_changes);
             let commit = finish_transition_tx(
                 tx,
                 applied,
                 &command.agent_id,
                 &command.audit_events,
-                wait_transition
-                    .map(|transition| transition.index_changes.as_slice())
-                    .or_else(|| completion.map(|completion| completion.index_changes.as_slice()))
-                    .unwrap_or_default(),
+                &index_changes,
                 command.fault,
                 PostCommitEffects {
                     agent_state: agent_state_applied
@@ -1406,8 +1413,13 @@ impl RuntimeTransitionRepository<'_> {
             let agent_state_applied =
                 apply_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
             applied |= agent_state_applied;
+            let mut message_index_changes = Vec::new();
             for message in &command.message_evidence {
-                append_message_tx(tx, message)?;
+                let (message, inserted) = append_message_tx(tx, message)?;
+                if inserted {
+                    applied = true;
+                    message_index_changes.push(RuntimeIndexChange::for_message(&message));
+                }
             }
             applied |= command.commit_on_idempotent;
             applied |= execution_protocol
@@ -1419,12 +1431,14 @@ impl RuntimeTransitionRepository<'_> {
             execution_protocol_repository::persist_execution_commands_tx(tx, execution_protocol)?;
             inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
 
+            let mut index_changes = command.index_changes.clone();
+            index_changes.extend(message_index_changes);
             finish_transition_tx(
                 tx,
                 applied,
                 &command.agent_id,
                 &command.audit_events,
-                &command.index_changes,
+                &index_changes,
                 command.fault,
                 PostCommitEffects {
                     agent_state: agent_state_applied
@@ -2338,6 +2352,110 @@ mod tests {
             detail: None,
             recovery: None,
         }
+    }
+
+    fn message(id: &str) -> MessageEnvelope {
+        let mut message = MessageEnvelope::new(
+            "agent-a",
+            crate::types::MessageKind::OperatorPrompt,
+            crate::types::MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            crate::types::MessageBody::Text {
+                text: "transition message index sentinel".into(),
+            },
+        );
+        message.id = id.into();
+        message
+    }
+
+    #[test]
+    fn queue_transition_indexes_new_message_evidence_once() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        let now = Utc::now();
+        let command = QueueTransitionCommand {
+            agent_id: "agent-a".into(),
+            operation: QueueOperation::Admit,
+            mutation: QueueMutation::Upsert(QueueEntryRecord {
+                message_id: "message-index-queue".into(),
+                agent_id: "agent-a".into(),
+                priority: Priority::Normal,
+                status: QueueEntryStatus::Queued,
+                created_at: now,
+                updated_at: now,
+            }),
+            scheduler_claim_work_item: None,
+            agent_state: None,
+            message_evidence: vec![message("message-index-queue")],
+            transcript_entries: Vec::new(),
+            turn_record: None,
+            audit_events: Vec::new(),
+            notify_scheduler: false,
+            fault: None,
+            brief_evidence: Vec::new(),
+        };
+
+        let first = db.transitions().commit_queue(&command)?;
+        assert!(first.applied);
+        assert!(first.effects.notify_memory_index);
+        let rows = db.runtime_index_outbox().read_after("agent-a", 0, 10)?;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].source_ref, "message:message-index-queue");
+        assert_eq!(rows[0].reason.as_deref(), Some("message_written"));
+
+        assert!(!db.transitions().commit_queue(&command)?.applied);
+        assert_eq!(
+            db.runtime_index_outbox()
+                .read_after("agent-a", 0, 10)?
+                .len(),
+            1
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn task_transition_indexes_message_evidence_and_rolls_back_atomically() -> Result<()> {
+        for fault in [Some(TransitionFaultPoint::AfterCanonicalWrites), None] {
+            let (_dir, db) = runtime_db()?;
+            let message = message("message-index-task");
+            let command = TaskTransitionCommand {
+                agent_id: "agent-a".into(),
+                task: task("task-message-index", TaskStatus::Completed),
+                queue_entry: None,
+                work_items: Vec::new(),
+                expected_wait_conditions: Vec::new(),
+                wait_conditions: Vec::new(),
+                agent_state: None,
+                message_evidence: vec![message.clone()],
+                audit_events: Vec::new(),
+                index_changes: Vec::new(),
+                notify_scheduler: false,
+                commit_on_idempotent: false,
+                fault,
+            };
+
+            if fault.is_some() {
+                db.transitions().commit_task(&command).unwrap_err();
+                assert!(db.messages().by_id(Some("agent-a"), &message.id)?.is_none());
+                assert_eq!(
+                    db.runtime_index_outbox()
+                        .high_watermark_for_agent("agent-a")?,
+                    0
+                );
+            } else {
+                let commit = db.transitions().commit_task(&command)?;
+                assert!(commit.applied);
+                assert!(commit.effects.notify_memory_index);
+                assert_eq!(
+                    db.runtime_index_outbox()
+                        .read_after("agent-a", 0, 10)?
+                        .len(),
+                    1
+                );
+                assert!(!db.transitions().commit_task(&command)?.applied);
+            }
+        }
+        Ok(())
     }
 
     fn execution_admission(

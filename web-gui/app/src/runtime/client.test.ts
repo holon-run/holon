@@ -780,7 +780,21 @@ describe("createRuntimeClient", () => {
       const url = String(input);
       seen.push({ url, body: init?.body ? JSON.parse(String(init.body)) : undefined });
       if (url.endsWith("/search")) {
-        return Response.json({ query: "needle", limit: 10, results: [] });
+        return Response.json({
+          query: "needle",
+          limit: 10,
+          index_status: {
+            freshness: "stale",
+            cursor: 8,
+            high_watermark: 10,
+            lag: 2,
+            indexing_needed: true,
+            results_may_be_incomplete: true,
+            consumption_was_limited: false,
+            skipped_error_count: 1,
+          },
+          results: [],
+        });
       }
       return new Response("not found", { status: 404 });
     };
@@ -797,7 +811,22 @@ describe("createRuntimeClient", () => {
         includeAllWorkspaces: true,
         limit: 10,
       }),
-    ).resolves.toEqual({ query: "needle", limit: 10, results: [] });
+    ).resolves.toEqual({
+      query: "needle",
+      limit: 10,
+      indexStatus: {
+        freshness: "stale",
+        cursor: 8,
+        highWatermark: 10,
+        lag: 2,
+        lastIndexedAt: undefined,
+        indexingNeeded: true,
+        resultsMayBeIncomplete: true,
+        consumptionWasLimited: false,
+        skippedErrorCount: 1,
+      },
+      results: [],
+    });
     expect(seen).toEqual([
       {
         url: "http://example.test:7878/api/search",
@@ -848,6 +877,17 @@ describe("createRuntimeClient", () => {
     await expect(client.search("needle", { limit: 1 })).resolves.toEqual({
       query: "needle",
       limit: 1,
+      indexStatus: {
+        freshness: "fresh",
+        cursor: 0,
+        highWatermark: 0,
+        lag: 0,
+        lastIndexedAt: undefined,
+        indexingNeeded: false,
+        resultsMayBeIncomplete: false,
+        consumptionWasLimited: false,
+        skippedErrorCount: 0,
+      },
       results: [
         expect.objectContaining({
           kind: "message",

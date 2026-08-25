@@ -6,6 +6,7 @@ use rusqlite::params;
 
 use crate::runtime_db::evidence::insert_runtime_index_changes_tx;
 use crate::runtime_db::RuntimeDb;
+use crate::types::MessageEnvelope;
 
 /// Runtime index outbox repository.
 pub struct RuntimeIndexOutboxRepository<'a> {
@@ -45,6 +46,20 @@ pub struct RuntimeIndexChange {
     pub operation: RuntimeIndexOperation,
     pub source_updated_at: Option<DateTime<Utc>>,
     pub reason: String,
+}
+
+impl RuntimeIndexChange {
+    pub(crate) fn for_message(message: &MessageEnvelope) -> Self {
+        Self {
+            agent_id: message.agent_id.clone(),
+            source_kind: "message".into(),
+            source_id: message.id.clone(),
+            source_ref: format!("message:{}", message.id),
+            operation: RuntimeIndexOperation::Upsert,
+            source_updated_at: Some(message.created_at),
+            reason: "message_written".into(),
+        }
+    }
 }
 
 /// Runtime index outbox row.

@@ -65,19 +65,25 @@ pub async fn search(
         .unwrap_or(SEARCH_DEFAULT_LIMIT)
         .clamp(1, SEARCH_MAX_LIMIT);
     let agent_ids = normalize_search_agent_ids(request.agent_ids)?;
+    let source_kinds = normalize_search_types(&request.types);
     let search_result = state
         .host
-        .search_memory_read_only(&query, limit, request.include_all_workspaces, &agent_ids)
+        .search_memory_read_only(
+            &query,
+            limit,
+            request.include_all_workspaces,
+            &agent_ids,
+            &source_kinds,
+        )
         .await
         .map_err(error_response)?;
-    let results = filter_search_results(search_result.results, &request.types);
     traced_json(
         "/search",
         started_at,
         SearchResponse {
             query,
             limit,
-            results,
+            results: search_result.results,
             index_status: search_result.index_status,
         },
     )
@@ -103,17 +109,15 @@ pub async fn memory_get(
     traced_json("/memory/get", started_at, memory)
 }
 
-fn filter_search_results(
-    results: Vec<crate::memory::MemorySearchResult>,
-    types: &[String],
-) -> Vec<crate::memory::MemorySearchResult> {
-    if types.is_empty() {
-        return results;
+fn normalize_search_types(types: &[String]) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for kind in types {
+        let kind = kind.trim();
+        if !kind.is_empty() && !normalized.iter().any(|existing| existing == kind) {
+            normalized.push(kind.to_string());
+        }
     }
-    results
-        .into_iter()
-        .filter(|result| types.iter().any(|kind| kind == &result.kind))
-        .collect()
+    normalized
 }
 
 fn normalize_search_agent_ids(

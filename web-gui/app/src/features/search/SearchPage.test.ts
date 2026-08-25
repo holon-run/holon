@@ -2,13 +2,52 @@ import { beforeAll, describe, expect, it } from "vitest";
 import i18next from "i18next";
 import en from "../../i18n/resources/en";
 
-import { canSearchSelection, formatSearchPreview, searchOptionsForSelection } from "./SearchPage";
-import type { AgentSummary } from "../../runtime/types";
+import { canSearchSelection, formatSearchPreview, searchIndexWarningKey, searchOptionsForSelection } from "./SearchPage";
+import type { AgentSummary, SearchResponse } from "../../runtime/types";
 
 beforeAll(() => {
   if (!i18next.isInitialized) {
     i18next.init({ lng: "en", resources: { en: { translation: en } } });
   }
+});
+
+describe("searchIndexWarningKey", () => {
+  function response(freshness: string, results: SearchResponse["results"] = []): SearchResponse {
+    return {
+      query: "needle",
+      limit: 20,
+      results,
+      indexStatus: {
+        freshness,
+        cursor: 1,
+        highWatermark: 2,
+        lag: freshness === "fresh" ? 0 : 1,
+        indexingNeeded: freshness !== "fresh",
+        resultsMayBeIncomplete: freshness !== "fresh",
+        consumptionWasLimited: false,
+        skippedErrorCount: 0,
+      },
+    };
+  }
+
+  it("shows no warning for a fresh zero-result search", () => {
+    expect(searchIndexWarningKey(response("fresh"))).toBeUndefined();
+  });
+
+  it("warns instead of treating stale zero results as definitive", () => {
+    expect(searchIndexWarningKey(response("stale"))).toBe("searchPage.indexIncompleteNoResults");
+  });
+
+  it("warns when non-zero results may be incomplete", () => {
+    const result = {
+      resultType: "message" as const,
+      agentId: "worker",
+      locator: {},
+      kind: "message",
+      preview: "needle",
+    };
+    expect(searchIndexWarningKey(response("stale", [result]))).toBe("searchPage.indexIncompleteWithResults");
+  });
 });
 
 function agent(id: string): AgentSummary {

@@ -482,6 +482,17 @@ interface RuntimeWebSearchProviderCapabilitiesDto {
 interface SearchResponseDto {
   query?: string;
   limit?: number;
+  index_status?: {
+    freshness?: string;
+    cursor?: number;
+    high_watermark?: number;
+    lag?: number;
+    last_indexed_at?: string | null;
+    indexing_needed?: boolean;
+    results_may_be_incomplete?: boolean;
+    consumption_was_limited?: boolean;
+    skipped_error_count?: number;
+  };
   results?: SearchResultItemDto[];
 }
 
@@ -1988,9 +1999,21 @@ function projectRuntimeConfigSurface(surface: RuntimeConfigSurfaceDto): RuntimeC
 }
 
 function projectSearchResponse(response: SearchResponseDto): SearchResponse {
+  const indexStatus = response.index_status;
   return {
     query: response.query ?? "",
     limit: response.limit ?? 0,
+    indexStatus: {
+      freshness: indexStatus?.freshness ?? "fresh",
+      cursor: indexStatus?.cursor ?? 0,
+      highWatermark: indexStatus?.high_watermark ?? 0,
+      lag: indexStatus?.lag ?? 0,
+      lastIndexedAt: indexStatus?.last_indexed_at ?? undefined,
+      indexingNeeded: indexStatus?.indexing_needed ?? false,
+      resultsMayBeIncomplete: indexStatus?.results_may_be_incomplete ?? false,
+      consumptionWasLimited: indexStatus?.consumption_was_limited ?? false,
+      skippedErrorCount: indexStatus?.skipped_error_count ?? 0,
+    },
     results: (response.results ?? []).map((result) => ({
       resultType: result.result_type ?? result.type ?? "message",
       agentId: result.agent_id ?? "unknown-agent",

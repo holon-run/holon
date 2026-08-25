@@ -226,6 +226,7 @@ pub fn search_memory_query_for_agents(
         include_all_workspaces,
         agent_ids,
         &[],
+        &[],
     )
 }
 
@@ -236,6 +237,7 @@ pub fn search_memory_query_for_agent_storages(
     active_workspace_id: Option<&str>,
     include_all_workspaces: bool,
     agent_ids: &[String],
+    source_kinds: &[String],
     _agent_storages: &[AppStorage],
 ) -> Result<MemorySearchQueryResult> {
     let agent_id = storage_agent_id(storage);
@@ -246,6 +248,7 @@ pub fn search_memory_query_for_agent_storages(
         query,
         limit,
         &agent_filter,
+        source_kinds,
         active_workspace_id,
         include_all_workspaces,
     )?;
@@ -267,6 +270,11 @@ pub fn refresh_memory_index_bounded(
     refresh_memory_index_for_storage(&mut index, storage, active_workspace_id, batch_limit)?;
     let agent_id = storage_agent_id(storage);
     index.index_status(storage, &agent_id)
+}
+
+pub fn memory_index_agent_ids_with_pending(storage: &AppStorage) -> Result<Vec<String>> {
+    let index = MemoryIndex::open(storage)?;
+    index.agent_ids_with_pending_sources()
 }
 
 fn normalize_memory_search_agent_filter(
@@ -788,10 +796,6 @@ impl MemoryIndex {
         let agent_id = storage_agent_id(storage);
         let intents = self.rebuild_intents_for_agent(&agent_id)?;
         for intent in intents {
-            self.connection.execute(
-                "DELETE FROM memory_index_pending_sources WHERE document_key = ?1",
-                [&intent.document_key],
-            )?;
             let active_workspace_id = if intent.source_id == MEMORY_INDEX_REBUILD_SOURCE_ID {
                 None
             } else {
@@ -955,9 +959,12 @@ impl MemoryIndex {
     ) -> Result<MemorySearchIndexStatus> {
         let has_stale_projection = self.has_stale_source_states_for_agent(agent_id)?;
         let has_pending_sources = self.has_pending_sources_for_agent(agent_id)?;
+        let lacks_full_backfill = !self.has_backfill_checkpoints_for_agent(agent_id)?;
         let Some(runtime_db) = storage.runtime_db()? else {
-            let indexing_needed =
-                memory_index_is_dirty(storage) || has_stale_projection || has_pending_sources;
+            let indexing_needed = memory_index_is_dirty(storage)
+                || has_stale_projection
+                || has_pending_sources
+                || lacks_full_backfill;
             return Ok(MemorySearchIndexStatus {
                 freshness: if indexing_needed { "stale" } else { "fresh" }.into(),
                 cursor: 0,
@@ -982,6 +989,7 @@ impl MemoryIndex {
             || lag > 0
             || has_stale_projection
             || has_pending_sources
+            || lacks_full_backfill
         {
             "stale"
         } else {
@@ -1122,7 +1130,6 @@ impl MemoryIndex {
             .map_err(Into::into)
     }
 
-    #[cfg(test)]
     fn has_backfill_checkpoints_for_agent(&self, agent_id: &str) -> Result<bool> {
         for source_kind in all_backfill_source_kinds() {
             let exists = self
@@ -1141,6 +1148,16 @@ impl MemoryIndex {
             }
         }
         Ok(true)
+    }
+
+    fn agent_ids_with_pending_sources(&self) -> Result<Vec<String>> {
+        let mut statement = self.connection.prepare(
+            "SELECT DISTINCT agent_id
+             FROM memory_index_pending_sources
+             ORDER BY agent_id ASC",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|row| row.map_err(Into::into)).collect()
     }
 
     #[cfg(test)]
@@ -1183,6 +1200,7 @@ impl MemoryIndex {
         query: &str,
         limit: usize,
         agent_ids: &[String],
+        source_kinds: &[String],
         active_workspace_id: Option<&str>,
         include_all_workspaces: bool,
     ) -> Result<Vec<MemorySearchResult>> {
@@ -1195,6 +1213,19 @@ impl MemoryIndex {
                 .collect::<Vec<_>>()
                 .join(", ")
         };
+        let source_kind_filter = if source_kinds.is_empty() {
+            None
+        } else {
+            Some(
+                std::iter::repeat_n("?", source_kinds.len())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            )
+        };
+        let source_kind_clause = source_kind_filter
+            .as_ref()
+            .map(|filter| format!("AND d.source_kind IN ({filter})"))
+            .unwrap_or_default();
         let workspace_filter = if include_all_workspaces {
             None
         } else {
@@ -1210,6 +1241,7 @@ impl MemoryIndex {
             JOIN memory_documents d ON d.document_key = memory_documents_fts.document_key
             WHERE memory_documents_fts MATCH ?1
               AND d.agent_id IN ({agent_filter})
+              {source_kind_clause}
               AND (? OR d.scope_kind = 'agent' OR (? IS NOT NULL AND d.workspace_id = ?))
             ORDER BY score ASC, d.updated_at DESC
             LIMIT ?
@@ -1219,9 +1251,10 @@ impl MemoryIndex {
             .as_ref()
             .map(|value| SqlValue::Text(value.clone()))
             .unwrap_or(SqlValue::Null);
-        let mut sql_params = Vec::with_capacity(agent_ids.len() + 5);
+        let mut sql_params = Vec::with_capacity(agent_ids.len() + source_kinds.len() + 5);
         sql_params.push(SqlValue::Text(query));
         sql_params.extend(agent_ids.iter().cloned().map(SqlValue::Text));
+        sql_params.extend(source_kinds.iter().cloned().map(SqlValue::Text));
         sql_params.push(SqlValue::Integer(include_all_workspaces));
         sql_params.push(workspace_value.clone());
         sql_params.push(workspace_value);
@@ -3573,8 +3606,10 @@ mod tests {
         assert!(stale_response.index_status.results_may_be_incomplete);
 
         let status = refresh_memory_index_bounded(&storage, Some("ws-holon"), 10).unwrap();
-        assert_eq!(status.freshness, "fresh");
+        assert_eq!(status.freshness, "stale");
         assert_eq!(status.lag, 0);
+        assert!(status.indexing_needed);
+        assert!(status.results_may_be_incomplete);
         assert!(!status.consumption_was_limited);
         assert_eq!(status.skipped_error_count, 0);
 
@@ -3584,10 +3619,72 @@ mod tests {
             .results
             .iter()
             .any(|result| result.source_ref == brief_ref));
-        assert_eq!(response.index_status.freshness, "fresh");
+        assert_eq!(response.index_status.freshness, "stale");
         assert_eq!(response.index_status.lag, 0);
+        assert!(response.index_status.results_may_be_incomplete);
         assert!(!response.index_status.consumption_was_limited);
         assert_eq!(response.index_status.skipped_error_count, 0);
+    }
+
+    #[test]
+    fn source_kind_filter_is_applied_before_search_limit() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        let index = MemoryIndex::open(&storage).unwrap();
+        let query = "kind filter limit sentinel";
+        let message = MemoryDocument {
+            source_ref: "message:target".into(),
+            source_kind: "message".into(),
+            scope_kind: "agent".into(),
+            workspace_id: None,
+            agent_id: "default".into(),
+            source_path: None,
+            title: "target message".into(),
+            body: format!("{query} {}", "low relevance filler ".repeat(200)),
+            sanitized_excerpt: "low relevance message excerpt".into(),
+            metadata: Value::Null,
+            updated_at: Utc::now() - chrono::Duration::seconds(1),
+        };
+        index.upsert_document(&message).unwrap();
+        let limit = 20;
+        for offset in 0..limit {
+            index
+                .upsert_document(&MemoryDocument {
+                    source_ref: format!("tool_execution:tool-{offset}:output"),
+                    source_kind: "tool_execution_output".into(),
+                    scope_kind: "agent".into(),
+                    workspace_id: None,
+                    agent_id: "default".into(),
+                    source_path: None,
+                    title: format!("{query} tool output {offset}"),
+                    body: query.into(),
+                    sanitized_excerpt: query.into(),
+                    metadata: Value::Null,
+                    updated_at: Utc::now(),
+                })
+                .unwrap();
+        }
+
+        let unfiltered = index
+            .search(query, limit, &["default".into()], &[], None, false)
+            .unwrap();
+        assert!(!unfiltered
+            .iter()
+            .any(|result| result.source_ref == message.source_ref));
+
+        let filtered = index
+            .search(
+                query,
+                limit,
+                &["default".into()],
+                &["message".into()],
+                None,
+                false,
+            )
+            .unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].source_ref, message.source_ref);
     }
 
     #[test]
@@ -4375,12 +4472,16 @@ mod tests {
             .unwrap();
         drop(index);
 
-        let results =
-            search_memory(&storage, "checkpoint recovery", 10, Some("ws-holon"), false).unwrap();
+        let response =
+            search_memory_query(&storage, "checkpoint recovery", 10, Some("ws-holon"), false)
+                .unwrap();
         assert!(
-            results.is_empty(),
+            response.results.is_empty(),
             "MemorySearch must not use missing checkpoints to trigger full rebuild"
         );
+        assert_eq!(response.index_status.freshness, "stale");
+        assert!(response.index_status.indexing_needed);
+        assert!(response.index_status.results_may_be_incomplete);
         assert!(!MemoryIndex::open(&storage)
             .unwrap()
             .has_backfill_checkpoints_for_agent("default")
@@ -4485,6 +4586,10 @@ mod tests {
         )
         .unwrap();
         request_memory_index_rebuild(&storage, None, "test_rebuild").unwrap();
+        assert_eq!(
+            memory_index_agent_ids_with_pending(&storage).unwrap(),
+            vec!["default"]
+        );
 
         let stale = search_memory_query(&storage, "obsolete-only-token", 10, None, false).unwrap();
         assert_eq!(stale.index_status.freshness, "stale");
@@ -4510,6 +4615,37 @@ mod tests {
             .unwrap()
             .has_pending_sources_for_agent("default")
             .unwrap());
+        assert!(memory_index_agent_ids_with_pending(&storage)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn failed_rebuild_preserves_intent_for_retry() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        ensure_agent_home_layout(dir.path()).unwrap();
+        rebuild_memory_index(&storage, None).unwrap();
+
+        let self_path = agent_memory_self_path(dir.path());
+        fs::remove_file(&self_path).unwrap();
+        fs::create_dir(&self_path).unwrap();
+        request_memory_index_rebuild(&storage, None, "test_rebuild_failure").unwrap();
+
+        refresh_memory_index_bounded(&storage, None, 10).unwrap_err();
+        assert_eq!(
+            memory_index_agent_ids_with_pending(&storage).unwrap(),
+            vec!["default"]
+        );
+        assert_eq!(
+            MemoryIndex::open(&storage)
+                .unwrap()
+                .rebuild_intents_for_agent("default")
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]

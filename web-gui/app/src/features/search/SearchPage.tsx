@@ -65,6 +65,7 @@ export function SearchPage({
   const trimmedQuery = query.trim();
   const hasResults = Boolean(search?.results.length);
   const resultCount = search?.results.length ?? 0;
+  const indexWarningKey = search ? searchIndexWarningKey(search) : undefined;
   const agentOptions = useMemo(() => [...agents].sort((left, right) => left.id.localeCompare(right.id)), [agents]);
 
   useEffect(() => {
@@ -128,11 +129,17 @@ export function SearchPage({
               description={t("searchPage.searchDescription")}
             />
           ) : null}
-          {search && !loading && !hasResults ? (
+          {search && !loading && indexWarningKey ? (
+            <div className="search-warning" role="status">
+              <strong>{t("searchPage.indexWarningTitle")}</strong>
+              <span>{t(indexWarningKey)}</span>
+            </div>
+          ) : null}
+          {search && !loading && !hasResults && !indexWarningKey ? (
             <EmptyState
               icon="∅"
               title={t("searchPage.noMatches")}
-              description={`No indexed messages matched “${search.query}”. Try a different keyword or search all agents.`}
+              description={t("searchPage.noMatchesDesc", { query: search.query })}
             />
           ) : null}
           {hasResults ? (
@@ -162,6 +169,18 @@ export function SearchPage({
       </div>
     </section>
   );
+}
+
+export function searchIndexWarningKey(
+  search: SearchResponse,
+): "searchPage.indexIncompleteWithResults" | "searchPage.indexIncompleteNoResults" | undefined {
+  const incomplete = search.indexStatus.freshness !== "fresh"
+    || search.indexStatus.resultsMayBeIncomplete
+    || search.indexStatus.indexingNeeded;
+  if (!incomplete) return undefined;
+  return search.results.length > 0
+    ? "searchPage.indexIncompleteWithResults"
+    : "searchPage.indexIncompleteNoResults";
 }
 
 function SearchResultCard({
