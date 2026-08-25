@@ -1482,6 +1482,36 @@ async fn timer_tools_manage_only_the_current_agent_lifecycle() {
         "timer_not_found"
     );
 
+    let cross_agent_cancel = crate::tool::tools::execute_builtin_tool(
+        &runtime,
+        "default",
+        &AuthorityClass::OperatorInstruction,
+        &crate::tool::ToolCall {
+            id: "cancel-other-timer".into(),
+            name: "CancelTimer".into(),
+            input: serde_json::json!({ "timer_id": other_timer.id }),
+        },
+    )
+    .await;
+    assert_eq!(
+        cross_agent_cancel
+            .unwrap_err()
+            .downcast_ref::<RuntimeError>()
+            .unwrap()
+            .descriptor()
+            .code,
+        "timer_not_found"
+    );
+    assert_eq!(
+        other_runtime
+            .latest_timer(&other_timer.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        TimerStatus::Active
+    );
+
     let cancel = crate::tool::tools::execute_builtin_tool(
         &runtime,
         "default",
