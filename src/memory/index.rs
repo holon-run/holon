@@ -2639,6 +2639,7 @@ fn command_tool_execution_document(
             "ExecCommandBatch",
             None,
             ToolExecutionRefSelector::Output(ToolOutputSelector::Output),
+            // Batch-level refs expose only the aggregate output; stream refs remain per-item.
         ) => Ok(Some(generic_tool_execution_output_document_from_record(
             &record,
         ))),
