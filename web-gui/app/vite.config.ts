@@ -1,3 +1,5 @@
+/// <reference types="vitest/config" />
+
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig, loadEnv } from "vite";
@@ -12,8 +14,12 @@ export default defineConfig(({ mode }) => {
   return {
     define: {
       __HOLON_GUI_VERSION__: JSON.stringify(packageJson.version),
+      __HOLON_E2E_DIAGNOSTICS__: JSON.stringify(mode === "e2e"),
     },
     plugins: [tailwindcss(), react()],
+    test: {
+      exclude: ["e2e/**", "node_modules/**"],
+    },
     server: {
       host: "127.0.0.1",
       port: 5173,

@@ -4,6 +4,8 @@ build/
 coverage/
 .DS_Store
 target/
+web-gui/app/playwright-report/
+web-gui/app/test-results/
 /bin/
 _testwork/
 __pycache__/
