@@ -1395,6 +1395,129 @@ async fn agent_get_default_returns_current_agent_summary() {
 }
 
 #[tokio::test]
+async fn timer_tools_manage_only_the_current_agent_lifecycle() {
+    let (_home, host, runtime) = host_backed_test_runtime().await;
+    let current_agent_id = runtime.agent_state().await.unwrap().id;
+    host.create_named_agent("other-agent", None).await.unwrap();
+    let other_runtime = host.get_public_agent("other-agent").await.unwrap();
+    let other_timer = other_runtime
+        .schedule_timer(300_000, None, Some("other agent timer".into()))
+        .await
+        .unwrap();
+
+    let create = crate::tool::tools::execute_builtin_tool(
+        &runtime,
+        "default",
+        &AuthorityClass::OperatorInstruction,
+        &crate::tool::ToolCall {
+            id: "create-timer".into(),
+            name: "CreateTimer".into(),
+            input: serde_json::json!({
+                "duration_ms": 300_000,
+                "interval_ms": 60_000,
+                "summary": "repeat status check"
+            }),
+        },
+    )
+    .await
+    .unwrap();
+    let timer = create.envelope.result.unwrap();
+    let timer_id = timer["id"].as_str().unwrap().to_string();
+    assert_eq!(timer["agent_id"], current_agent_id);
+    assert_eq!(timer["repeat"], true);
+
+    let list = crate::tool::tools::execute_builtin_tool(
+        &runtime,
+        "default",
+        &AuthorityClass::OperatorInstruction,
+        &crate::tool::ToolCall {
+            id: "list-timers".into(),
+            name: "ListTimers".into(),
+            input: serde_json::json!({}),
+        },
+    )
+    .await
+    .unwrap()
+    .envelope
+    .result
+    .unwrap();
+    assert_eq!(list["returned"], 1);
+    assert_eq!(list["timers"][0]["id"], timer_id);
+
+    let get = crate::tool::tools::execute_builtin_tool(
+        &runtime,
+        "default",
+        &AuthorityClass::OperatorInstruction,
+        &crate::tool::ToolCall {
+            id: "get-timer".into(),
+            name: "GetTimer".into(),
+            input: serde_json::json!({ "timer_id": timer_id }),
+        },
+    )
+    .await
+    .unwrap()
+    .envelope
+    .result
+    .unwrap();
+    assert_eq!(get["summary"], "repeat status check");
+
+    let cross_agent = crate::tool::tools::execute_builtin_tool(
+        &runtime,
+        "default",
+        &AuthorityClass::OperatorInstruction,
+        &crate::tool::ToolCall {
+            id: "get-other-timer".into(),
+            name: "GetTimer".into(),
+            input: serde_json::json!({ "timer_id": other_timer.id }),
+        },
+    )
+    .await;
+    assert_eq!(
+        cross_agent
+            .unwrap_err()
+            .downcast_ref::<RuntimeError>()
+            .unwrap()
+            .descriptor()
+            .code,
+        "timer_not_found"
+    );
+
+    let cancel = crate::tool::tools::execute_builtin_tool(
+        &runtime,
+        "default",
+        &AuthorityClass::OperatorInstruction,
+        &crate::tool::ToolCall {
+            id: "cancel-timer".into(),
+            name: "CancelTimer".into(),
+            input: serde_json::json!({ "timer_id": timer_id }),
+        },
+    )
+    .await
+    .unwrap()
+    .envelope
+    .result
+    .unwrap();
+    assert_eq!(cancel["status"], "cancelled");
+
+    let cancel_again = crate::tool::tools::execute_builtin_tool(
+        &runtime,
+        "default",
+        &AuthorityClass::OperatorInstruction,
+        &crate::tool::ToolCall {
+            id: "cancel-timer-again".into(),
+            name: "CancelTimer".into(),
+            input: serde_json::json!({ "timer_id": timer_id }),
+        },
+    )
+    .await
+    .unwrap()
+    .envelope
+    .result
+    .unwrap();
+    assert_eq!(cancel_again["status"], "cancelled");
+}
+
+#[tokio::test]
 async fn agent_get_with_agent_id_returns_requested_agent() {
     let (_home, host, runtime) = host_backed_test_runtime().await;
 

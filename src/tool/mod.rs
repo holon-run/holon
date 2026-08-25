@@ -103,6 +103,7 @@ fn tool_success_result_contract(name: &str) -> &'static str {
         tn::COMPLETE_WORK_ITEM | tn::CREATE_WORK_ITEM | tn::UPDATE_WORK_ITEM => {
             "WorkItemMutationResult"
         }
+        tn::CREATE_TIMER | tn::GET_TIMER | tn::CANCEL_TIMER => "TimerRecord",
         tn::CREATE_WORKTREE => "CreateWorktreeResult",
         tn::DETACH_WORKSPACE => "DetachWorkspaceResult",
         tn::ENQUEUE => "EnqueueResult",
@@ -114,6 +115,7 @@ fn tool_success_result_contract(name: &str) -> &'static str {
         tn::LIST_MODEL_PROVIDERS => "ListModelProvidersResult",
         tn::LIST_PROVIDER_MODELS => "ListProviderModelsResult",
         tn::LIST_WORK_ITEMS => "ListWorkItemsResult",
+        tn::LIST_TIMERS => "ListTimersResult",
         tn::MEMORY_GET => "MemoryGetResponse",
         tn::MEMORY_SEARCH => "MemorySearchResponse",
         tn::PICK_WORK_ITEM => "PickWorkItemResult",
@@ -139,6 +141,10 @@ fn tool_success_result_schema(name: &str) -> Result<Option<Value>> {
     let schema = match name {
         tn::ENQUEUE => schema::tool_result_schema::<EnqueueResult>()?,
         tn::GENERATE_IMAGE => schema::tool_result_schema::<GenerateImageResult>()?,
+        tn::CREATE_TIMER | tn::GET_TIMER | tn::CANCEL_TIMER => {
+            schema::tool_result_schema::<crate::types::TimerRecord>()?
+        }
+        tn::LIST_TIMERS => schema::tool_result_schema::<tools::timer::ListTimersResult>()?,
         tn::LIST_TASKS => schema::tool_result_schema::<tools::task_list::ListTasksResult>()?,
         tn::TASK_INPUT => schema::tool_result_schema::<TaskInputResult>()?,
         tn::TASK_OUTPUT => schema::tool_result_schema::<TaskOutputResult>()?,
@@ -176,7 +182,15 @@ fn related_surfaces_for_tool(name: &str) -> Vec<&'static str> {
         | tn::COMPLETE_WORK_ITEM => {
             vec!["CLI work-item wrappers", "HTTP control-plane WorkItem APIs"]
         }
-        tn::SLEEP | tn::WAIT_FOR | tn::ENQUEUE | tn::AGENT_GET | tn::SPAWN_AGENT => {
+        tn::SLEEP
+        | tn::WAIT_FOR
+        | tn::CREATE_TIMER
+        | tn::LIST_TIMERS
+        | tn::GET_TIMER
+        | tn::CANCEL_TIMER
+        | tn::ENQUEUE
+        | tn::AGENT_GET
+        | tn::SPAWN_AGENT => {
             vec!["runtime agent lifecycle APIs"]
         }
         tn::APPLY_PATCH

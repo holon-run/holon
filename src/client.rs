@@ -14,11 +14,11 @@ use crate::{
         AgentDeletionResponse, AgentDeletionStatusResponse, AttachWorkspaceRequest,
         BatchGetBriefsRequest, BatchGetBriefsResponse, BatchGetMessagesRequest,
         BatchGetMessagesResponse, BatchGetTranscriptEntriesRequest,
-        BatchGetTranscriptEntriesResponse, ClearAgentModelRequest, ControlPromptRequest,
-        CreateAgentRequest, DebugPromptRequest, DeleteAgentRequest, DetachWorkspaceRequest,
-        ExitWorkspaceRequest, ModelConfigMigrationRequest, RuntimeConfigReadResponse,
-        RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse, SetAgentModelRequest,
-        TaskInputRequest, TaskStopRequest,
+        BatchGetTranscriptEntriesResponse, CancelTimerRequest, ClearAgentModelRequest,
+        ControlPromptRequest, CreateAgentRequest, CreateTimerRequest, DebugPromptRequest,
+        DeleteAgentRequest, DetachWorkspaceRequest, ExitWorkspaceRequest,
+        ModelConfigMigrationRequest, RuntimeConfigReadResponse, RuntimeConfigUpdateRequest,
+        RuntimeConfigUpdateResponse, SetAgentModelRequest, TaskInputRequest, TaskStopRequest,
     },
     http_dto::AgentStateSnapshotDto,
     model_catalog::BuiltInModelMetadata,
@@ -500,6 +500,45 @@ impl LocalClient {
     ) -> Result<Vec<TranscriptEntry>> {
         self.get_json(&format!("/agents/{agent_id}/transcript?limit={limit}"))
             .await
+    }
+
+    pub async fn timers(&self, agent_id: &str, limit: usize) -> Result<Vec<TimerRecord>> {
+        self.get_json(&format!("/agents/{agent_id}/timers?limit={limit}"))
+            .await
+    }
+
+    pub async fn timer(&self, agent_id: &str, timer_id: &str) -> Result<TimerRecord> {
+        self.get_json(&format!("/agents/{agent_id}/timers/{timer_id}"))
+            .await
+    }
+
+    pub async fn create_timer(
+        &self,
+        agent_id: &str,
+        duration_ms: u64,
+        interval_ms: Option<u64>,
+        summary: Option<String>,
+    ) -> Result<TimerRecord> {
+        self.post_control_json(
+            &format!("/control/agents/{agent_id}/timers"),
+            &CreateTimerRequest {
+                duration_ms,
+                interval_ms,
+                summary,
+                authority_class: Some(AuthorityClass::OperatorInstruction),
+            },
+        )
+        .await
+    }
+
+    pub async fn cancel_timer(&self, agent_id: &str, timer_id: &str) -> Result<TimerRecord> {
+        self.post_control_json(
+            &format!("/control/agents/{agent_id}/timers/{timer_id}/cancel"),
+            &CancelTimerRequest {
+                authority_class: Some(AuthorityClass::OperatorInstruction),
+            },
+        )
+        .await
     }
 
     pub async fn agent_transcript_entry(

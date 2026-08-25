@@ -12,8 +12,10 @@ pub mod tool_names {
     pub const APPLY_PATCH: &str = "ApplyPatch";
     pub const ATTACH_WORKSPACE: &str = "AttachWorkspace";
     pub const CANCEL_EXTERNAL_TRIGGER: &str = "CancelExternalTrigger";
+    pub const CANCEL_TIMER: &str = "CancelTimer";
     pub const COMPLETE_WORK_ITEM: &str = "CompleteWorkItem";
     pub const CREATE_EXTERNAL_TRIGGER: &str = "CreateExternalTrigger";
+    pub const CREATE_TIMER: &str = "CreateTimer";
     pub const CREATE_WORK_ITEM: &str = "CreateWorkItem";
     pub const CREATE_WORKTREE: &str = "CreateWorktree";
     pub const DETACH_WORKSPACE: &str = "DetachWorkspace";
@@ -22,10 +24,12 @@ pub mod tool_names {
     pub const EXEC_COMMAND_BATCH: &str = "ExecCommandBatch";
     pub const GET_WORK_ITEM: &str = "GetWorkItem";
     pub const GET_WORKSPACE_STATE: &str = "GetWorkspaceState";
+    pub const GET_TIMER: &str = "GetTimer";
     pub const GENERATE_IMAGE: &str = "GenerateImage";
     pub const LIST_MODEL_PROVIDERS: &str = "ListModelProviders";
     pub const LIST_PROVIDER_MODELS: &str = "ListProviderModels";
     pub const LIST_TASKS: &str = "ListTasks";
+    pub const LIST_TIMERS: &str = "ListTimers";
     pub const LIST_WORK_ITEMS: &str = "ListWorkItems";
     pub const MEMORY_GET: &str = "MemoryGet";
     pub const MEMORY_SEARCH: &str = "MemorySearch";
@@ -58,19 +62,23 @@ pub const STABLE_TOOL_NAMES: &[&str] = &[
     AGENT_GET,
     APPLY_PATCH,
     ATTACH_WORKSPACE,
+    CANCEL_TIMER,
     COMPLETE_WORK_ITEM,
+    CREATE_TIMER,
     CREATE_WORK_ITEM,
     CREATE_WORKTREE,
     DETACH_WORKSPACE,
     ENQUEUE,
     EXEC_COMMAND,
     EXEC_COMMAND_BATCH,
+    GET_TIMER,
     GET_WORK_ITEM,
     GET_WORKSPACE_STATE,
     GENERATE_IMAGE,
     LIST_MODEL_PROVIDERS,
     LIST_PROVIDER_MODELS,
     LIST_TASKS,
+    LIST_TIMERS,
     LIST_WORK_ITEMS,
     MEMORY_GET,
     MEMORY_SEARCH,
@@ -120,20 +128,24 @@ pub const ALL_TOOL_NAMES: &[&str] = &[
     APPLY_PATCH,
     ATTACH_WORKSPACE,
     CANCEL_EXTERNAL_TRIGGER,
+    CANCEL_TIMER,
     COMPLETE_WORK_ITEM,
     CREATE_EXTERNAL_TRIGGER,
+    CREATE_TIMER,
     CREATE_WORK_ITEM,
     CREATE_WORKTREE,
     DETACH_WORKSPACE,
     ENQUEUE,
     EXEC_COMMAND,
     EXEC_COMMAND_BATCH,
+    GET_TIMER,
     GET_WORK_ITEM,
     GET_WORKSPACE_STATE,
     GENERATE_IMAGE,
     LIST_MODEL_PROVIDERS,
     LIST_PROVIDER_MODELS,
     LIST_TASKS,
+    LIST_TIMERS,
     LIST_WORK_ITEMS,
     MEMORY_GET,
     MEMORY_SEARCH,

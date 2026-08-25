@@ -41,6 +41,7 @@ pub(crate) mod task_list;
 pub(crate) mod task_output;
 pub(crate) mod task_status;
 pub(crate) mod task_stop;
+pub(crate) mod timer;
 pub(crate) mod update_work_item;
 pub(crate) mod use_workspace;
 pub(crate) mod view_image;
@@ -65,6 +66,10 @@ pub(crate) fn builtin_tool_definitions() -> Result<Vec<BuiltinToolDefinition>> {
     Ok(vec![
         sleep::definition()?,
         wait_for::definition()?,
+        timer::create_definition()?,
+        timer::list_definition()?,
+        timer::get_definition()?,
+        timer::cancel_definition()?,
         agent_get::definition()?,
         enqueue::definition()?,
         spawn_agent::definition()?,
@@ -156,6 +161,10 @@ async fn execute_builtin_tool_inner(
     match call.name.as_str() {
         sleep::NAME => sleep::execute(runtime, agent_id, authority_class, &call.input).await,
         wait_for::NAME => wait_for::execute(runtime, agent_id, authority_class, &call.input).await,
+        timer::CREATE_NAME => timer::create(runtime, &call.input).await,
+        timer::LIST_NAME => timer::list(runtime, &call.input).await,
+        timer::GET_NAME => timer::get(runtime, &call.input).await,
+        timer::CANCEL_NAME => timer::cancel(runtime, &call.input).await,
         agent_get::NAME => {
             agent_get::execute(runtime, agent_id, authority_class, &call.input).await
         }
@@ -368,8 +377,10 @@ mod tests {
             "ApplyPatch" => "src/tool/tool_descriptions/apply_patch_unified_diff_json.md",
             "AttachWorkspace" => "src/tool/tool_descriptions/attach_workspace.md",
             "CancelExternalTrigger" => "src/tool/tool_descriptions/cancel_external_trigger.md",
+            "CancelTimer" => "src/tool/tool_descriptions/cancel_timer.md",
             "CompleteWorkItem" => "src/tool/tool_descriptions/complete_work_item.md",
             "CreateExternalTrigger" => "src/tool/tool_descriptions/create_external_trigger.md",
+            "CreateTimer" => "src/tool/tool_descriptions/create_timer.md",
             "CreateWorkItem" => "src/tool/tool_descriptions/create_work_item.md",
             "CreateWorktree" => "src/tool/tool_descriptions/create_worktree.md",
             "DetachWorkspace" => "src/tool/tool_descriptions/detach_workspace.md",
@@ -377,11 +388,13 @@ mod tests {
             "ExecCommand" => "src/tool/tool_descriptions/exec_command.md",
             "ExecCommandBatch" => "src/tool/tool_descriptions/exec_command_batch.md",
             "GenerateImage" => "src/tool/tool_descriptions/generate_image.md",
+            "GetTimer" => "src/tool/tool_descriptions/get_timer.md",
             "GetWorkItem" => "src/tool/tool_descriptions/get_work_item.md",
             "GetWorkspaceState" => "src/tool/tool_descriptions/get_workspace_state.md",
             "ListModelProviders" => "src/tool/tool_descriptions/list_model_providers.md",
             "ListProviderModels" => "src/tool/tool_descriptions/list_provider_models.md",
             "ListTasks" => "src/tool/tool_descriptions/list_tasks.md",
+            "ListTimers" => "src/tool/tool_descriptions/list_timers.md",
             "ListWorkItems" => "src/tool/tool_descriptions/list_work_items.md",
             "MemoryGet" => "src/tool/tool_descriptions/memory_get.md",
             "MemorySearch" => "src/tool/tool_descriptions/memory_search.md",

@@ -1987,6 +1987,62 @@
         "short": null,
         "default_value": null,
         "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "every-ms",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "summary",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "timer.cancel",
+    "positionals": [
+      {
+        "name": "timer_id",
+        "value_name": "TIMER_ID",
+        "index": null,
+        "required": true
+      }
+    ],
+    "flags": [
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "timer.create",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "after-ms",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
         "required": true
       },
       {
@@ -2007,6 +2063,27 @@
         "long": "summary",
         "short": null,
         "default_value": null,
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "timer.list",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "limit",
+        "short": null,
+        "default_value": "50",
         "possible_values": null,
         "required": false
       }

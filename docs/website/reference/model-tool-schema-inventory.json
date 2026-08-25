@@ -76,6 +76,461 @@
       "stability": "stable"
     },
     {
+      "description": "Create a persistent timer for the current agent. Use this for independent or repeating scheduling, not ordinary turn delays or fallback rechecks. The timer does not pause the current turn; call WaitFor with wake=timer and resource=<timer_id> when the current work must wait for it.\n",
+      "family": "core_agent",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "duration_ms": {
+            "format": "uint64",
+            "minimum": 1.0,
+            "type": "integer"
+          },
+          "interval_ms": {
+            "format": "uint64",
+            "minimum": 1.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "summary": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "duration_ms"
+        ],
+        "type": "object"
+      },
+      "name": "CreateTimer",
+      "related_surfaces": [
+        "runtime agent lifecycle APIs"
+      ],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "canonical_json_envelope",
+        "success_result": "TimerRecord",
+        "success_result_schema": {
+          "properties": {
+            "agent_id": {
+              "type": "string"
+            },
+            "created_at": {
+              "format": "date-time",
+              "type": "string"
+            },
+            "duration_ms": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "fire_count": {
+              "default": 0,
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "id": {
+              "type": "string"
+            },
+            "interval_ms": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "last_fired_at": {
+              "default": null,
+              "format": "date-time",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "next_fire_at": {
+              "default": null,
+              "format": "date-time",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "repeat": {
+              "type": "boolean"
+            },
+            "status": {
+              "default": "active",
+              "enum": [
+                "active",
+                "completed",
+                "cancelled"
+              ],
+              "type": "string"
+            },
+            "summary": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "agent_id",
+            "created_at",
+            "duration_ms",
+            "repeat"
+          ],
+          "type": "object"
+        }
+      },
+      "stability": "stable"
+    },
+    {
+      "description": "List recent timers owned by the current agent. The optional limit defaults to 50 and is bounded to 1-100.\n",
+      "family": "core_agent",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "default": null,
+            "format": "uint",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ListTimers",
+      "related_surfaces": [
+        "runtime agent lifecycle APIs"
+      ],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "canonical_json_envelope",
+        "success_result": "ListTimersResult",
+        "success_result_schema": {
+          "properties": {
+            "limit": {
+              "format": "uint",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "returned": {
+              "format": "uint",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "timers": {
+              "items": {
+                "properties": {
+                  "agent_id": {
+                    "type": "string"
+                  },
+                  "created_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "duration_ms": {
+                    "format": "uint64",
+                    "minimum": 0.0,
+                    "type": "integer"
+                  },
+                  "fire_count": {
+                    "default": 0,
+                    "format": "uint64",
+                    "minimum": 0.0,
+                    "type": "integer"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "interval_ms": {
+                    "format": "uint64",
+                    "minimum": 0.0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "last_fired_at": {
+                    "default": null,
+                    "format": "date-time",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "next_fire_at": {
+                    "default": null,
+                    "format": "date-time",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "repeat": {
+                    "type": "boolean"
+                  },
+                  "status": {
+                    "default": "active",
+                    "enum": [
+                      "active",
+                      "completed",
+                      "cancelled"
+                    ],
+                    "type": "string"
+                  },
+                  "summary": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "id",
+                  "agent_id",
+                  "created_at",
+                  "duration_ms",
+                  "repeat"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "returned",
+            "limit",
+            "timers"
+          ],
+          "type": "object"
+        }
+      },
+      "stability": "stable"
+    },
+    {
+      "description": "Read one timer owned by the current agent by timer_id.\n",
+      "family": "core_agent",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "timer_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "timer_id"
+        ],
+        "type": "object"
+      },
+      "name": "GetTimer",
+      "related_surfaces": [
+        "runtime agent lifecycle APIs"
+      ],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "canonical_json_envelope",
+        "success_result": "TimerRecord",
+        "success_result_schema": {
+          "properties": {
+            "agent_id": {
+              "type": "string"
+            },
+            "created_at": {
+              "format": "date-time",
+              "type": "string"
+            },
+            "duration_ms": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "fire_count": {
+              "default": 0,
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "id": {
+              "type": "string"
+            },
+            "interval_ms": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "last_fired_at": {
+              "default": null,
+              "format": "date-time",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "next_fire_at": {
+              "default": null,
+              "format": "date-time",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "repeat": {
+              "type": "boolean"
+            },
+            "status": {
+              "default": "active",
+              "enum": [
+                "active",
+                "completed",
+                "cancelled"
+              ],
+              "type": "string"
+            },
+            "summary": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "agent_id",
+            "created_at",
+            "duration_ms",
+            "repeat"
+          ],
+          "type": "object"
+        }
+      },
+      "stability": "stable"
+    },
+    {
+      "description": "Cancel an active timer owned by the current agent. Cancellation is idempotent for an already-cancelled timer; completed timers cannot be cancelled.\n",
+      "family": "core_agent",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "timer_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "timer_id"
+        ],
+        "type": "object"
+      },
+      "name": "CancelTimer",
+      "related_surfaces": [
+        "runtime agent lifecycle APIs"
+      ],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "canonical_json_envelope",
+        "success_result": "TimerRecord",
+        "success_result_schema": {
+          "properties": {
+            "agent_id": {
+              "type": "string"
+            },
+            "created_at": {
+              "format": "date-time",
+              "type": "string"
+            },
+            "duration_ms": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "fire_count": {
+              "default": 0,
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "id": {
+              "type": "string"
+            },
+            "interval_ms": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "last_fired_at": {
+              "default": null,
+              "format": "date-time",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "next_fire_at": {
+              "default": null,
+              "format": "date-time",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "repeat": {
+              "type": "boolean"
+            },
+            "status": {
+              "default": "active",
+              "enum": [
+                "active",
+                "completed",
+                "cancelled"
+              ],
+              "type": "string"
+            },
+            "summary": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "agent_id",
+            "created_at",
+            "duration_ms",
+            "repeat"
+          ],
+          "type": "object"
+        }
+      },
+      "stability": "stable"
+    },
+    {
       "description": "Read the current agent-plane summary, including identity visibility, ownership, profile preset, lifecycle, active work focus, waiting state, and visible child-agent lineage.\n\nWhen called without arguments, returns the current agent's summary (unchanged behavior).\nWhen called with `agent_id`, returns the summary of the requested agent through the local trusted control boundary. This allows inspecting private child agents without exposing them to remote/multi-user access.\n\nRemote/multi-user authorization is deferred to future work; the current behavior relies on the local trusted control API boundary.\n",
       "family": "core_agent",
       "freeform_grammar": null,

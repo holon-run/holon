@@ -155,9 +155,12 @@ next turn.
 
 ### Scheduled timers
 
-Holon's built-in `Timer` CLI command (`holon timer --after-ms 60000`) can
-deliver events through the callback system, allowing agents to sleep and wake
-on a schedule.
+Holon's timer lifecycle can be managed with `holon timer create`, `list`, and
+`cancel`; the legacy create form `holon timer --after-ms 60000` remains
+supported. Agents can use the current-agent-only `CreateTimer`, `ListTimers`,
+`GetTimer`, and `CancelTimer` tools. Creating a timer does not pause the current
+turn; pair it with `WaitFor(wake=timer, resource=<timer-id>)` when current work
+must wait for that timer.
 
 ## See also
 

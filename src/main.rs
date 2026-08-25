@@ -30,7 +30,7 @@ use holon::{
     },
     fd_limit::{apply_nofile_limit_policy, DEFAULT_NOFILE_TARGET},
     host::RuntimeHost,
-    http::{self, AppState, ControlRequest, CreateCommandTaskRequest, CreateTimerRequest},
+    http::{self, AppState, ControlRequest, CreateCommandTaskRequest},
     memory::{rebuild_memory_index, request_memory_index_rebuild},
     model_discovery::{discovery_cache_path, refresh_provider_models},
     onboarding::{
@@ -60,7 +60,7 @@ use holon::cli::{
     AgentCommands, AgentModelCommands, Cli, Commands, ConfigCommands, ConfigCredentialCommands,
     ConfigModelCommands, ConfigProviderCommands, ControlCommandAction, DaemonCommands,
     DebugCommands, EventsCommands, MemoryIndexCommands, ServeAccess, ServeOptions, SkillsCommands,
-    TaskCommands, WorkItemCommands, WorkspaceCommands,
+    TaskCommands, TimerCommands, TimerCreateArgs, WorkItemCommands, WorkspaceCommands,
 };
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -213,24 +213,23 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
         Commands::Task { command } => handle_task_command(&config, command).await,
         Commands::WorkItem { command } => handle_work_item_command(&config, command).await,
         Commands::MemoryIndex { command } => handle_memory_index_command(&config, command).await,
-        Commands::Timer {
-            after_ms,
-            every_ms,
-            summary,
-            agent,
-        } => {
-            let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
-            post_control_json(
-                &config,
-                &format!("/control/agents/{agent}/timers"),
-                &CreateTimerRequest {
-                    duration_ms: after_ms,
-                    interval_ms: every_ms,
-                    summary,
-                    authority_class: Some(AuthorityClass::OperatorInstruction),
+        Commands::Timer { command, legacy } => {
+            let command = match command {
+                Some(command) => command,
+                None => TimerCommands::Create {
+                    options: TimerCreateArgs {
+                        after_ms: legacy.after_ms.ok_or_else(|| {
+                            anyhow!(
+                                "`holon timer` requires `--after-ms <ms>` or a timer subcommand"
+                            )
+                        })?,
+                        every_ms: legacy.every_ms,
+                        summary: legacy.summary,
+                        agent: legacy.agent,
+                    },
                 },
-            )
-            .await
+            };
+            handle_timer_command(&config, command).await
         }
         Commands::Control { action, agent } => {
             let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
@@ -1356,6 +1355,67 @@ mod tests {
     fn task_creation_shape_is_clap_enforced() {
         assert!(Cli::try_parse_from(["holon", "task", "run", "summary"]).is_err());
         assert!(Cli::try_parse_from(["holon", "task", "summary", "--cmd", "echo hi"]).is_err());
+    }
+
+    #[test]
+    fn timer_commands_parse_new_and_legacy_creation_shapes() {
+        let cli = Cli::parse_from(["holon", "timer", "--after-ms", "100", "--every-ms", "50"]);
+        let Commands::Timer { command, legacy } = cli.command else {
+            panic!("expected timer command");
+        };
+        assert!(command.is_none());
+        assert_eq!(legacy.after_ms, Some(100));
+        assert_eq!(legacy.every_ms, Some(50));
+
+        let cli = Cli::parse_from([
+            "holon",
+            "timer",
+            "create",
+            "--after-ms",
+            "100",
+            "--agent",
+            "runner",
+        ]);
+        let Commands::Timer {
+            command:
+                Some(TimerCommands::Create {
+                    options:
+                        TimerCreateArgs {
+                            after_ms, agent, ..
+                        },
+                }),
+            ..
+        } = cli.command
+        else {
+            panic!("expected timer create command");
+        };
+        assert_eq!(after_ms, 100);
+        assert_eq!(agent.as_deref(), Some("runner"));
+
+        let cli = Cli::parse_from(["holon", "timer", "list", "--limit", "10"]);
+        assert!(matches!(
+            cli.command,
+            Commands::Timer {
+                command: Some(TimerCommands::List { limit: 10, .. }),
+                ..
+            }
+        ));
+
+        let cli = Cli::parse_from(["holon", "timer", "cancel", "timer-1"]);
+        assert!(matches!(
+            cli.command,
+            Commands::Timer {
+                command: Some(TimerCommands::Cancel { timer_id, .. }),
+                ..
+            } if timer_id == "timer-1"
+        ));
+    }
+
+    #[test]
+    fn timer_command_rejects_conflicting_or_incomplete_shapes() {
+        assert!(Cli::try_parse_from(["holon", "timer", "--after-ms", "100", "list"]).is_err());
+        assert!(Cli::try_parse_from(["holon", "timer", "create"]).is_err());
+        assert!(Cli::try_parse_from(["holon", "timer", "list", "--limit", "0"]).is_err());
     }
 
     #[test]
@@ -3775,6 +3835,32 @@ async fn handle_task_command(config: &AppConfig, command: TaskCommands) -> Resul
             let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
             print_json(&serde_json::to_value(
                 client.task_stop(&agent, &task_id).await?,
+            )?)
+        }
+    }
+}
+
+async fn handle_timer_command(config: &AppConfig, command: TimerCommands) -> Result<()> {
+    let client = LocalClient::new(config.clone())?;
+    match command {
+        TimerCommands::Create { options } => {
+            let agent = options
+                .agent
+                .unwrap_or_else(|| config.default_agent_id.clone());
+            print_json(&serde_json::to_value(
+                client
+                    .create_timer(&agent, options.after_ms, options.every_ms, options.summary)
+                    .await?,
+            )?)
+        }
+        TimerCommands::List { limit, agent } => {
+            let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
+            print_json(&serde_json::to_value(client.timers(&agent, limit).await?)?)
+        }
+        TimerCommands::Cancel { timer_id, agent } => {
+            let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
+            print_json(&serde_json::to_value(
+                client.cancel_timer(&agent, &timer_id).await?,
             )?)
         }
     }

@@ -1,0 +1,1 @@
+Create a persistent timer for the current agent. Use this for independent or repeating scheduling, not ordinary turn delays or fallback rechecks. The timer does not pause the current turn; call WaitFor with wake=timer and resource=<timer_id> when the current work must wait for it.

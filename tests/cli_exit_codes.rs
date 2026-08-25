@@ -76,10 +76,6 @@ fn control_plane_post_commands_pretty_print_json_stdout() {
             "/api/control/agents/main/tasks",
         ),
         (
-            &["timer", "--after-ms", "1"],
-            "/api/control/agents/main/timers",
-        ),
-        (
             &["agent", "create", "worker"],
             "/api/control/agents/worker/create",
         ),
@@ -125,6 +121,83 @@ fn control_plane_post_commands_pretty_print_json_stdout() {
         let (output, actual_path) = run_with_mock_control_plane(args);
         assert_eq!(actual_path, *expected_path, "args: {args:?}");
         assert_pretty_json_stdout(output, expected_path);
+    }
+}
+
+#[test]
+fn timer_commands_use_lifecycle_routes_and_pretty_print_records() {
+    let cases: &[(&[&str], &str, &str)] = &[
+        (
+            &["timer", "--after-ms", "1"],
+            "/api/control/agents/main/timers",
+            "POST",
+        ),
+        (
+            &["timer", "create", "--after-ms", "1"],
+            "/api/control/agents/main/timers",
+            "POST",
+        ),
+        (
+            &["timer", "cancel", "timer-1"],
+            "/api/control/agents/main/timers/timer-1/cancel",
+            "POST",
+        ),
+        (
+            &["timer", "list"],
+            "/api/agents/main/timers?limit=50",
+            "GET",
+        ),
+    ];
+
+    for (args, expected_path, expected_method) in cases {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock control plane");
+        let addr = listener.local_addr().expect("mock control plane address");
+        let expected_path = expected_path.to_string();
+        let expected_method = expected_method.to_string();
+        let list = expected_method == "GET";
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept timer request");
+            let request = read_http_request(&mut stream);
+            assert!(
+                request.starts_with(&format!("{expected_method} {expected_path} ")),
+                "unexpected request: {request}"
+            );
+            let timer = serde_json::json!({
+                "id": "timer-1",
+                "agent_id": "main",
+                "created_at": "2026-08-25T00:00:00Z",
+                "duration_ms": 1,
+                "interval_ms": null,
+                "repeat": false,
+                "status": "active",
+                "summary": null,
+                "next_fire_at": "2026-08-25T00:00:00.001Z",
+                "last_fired_at": null,
+                "fire_count": 0
+            });
+            let body = if list {
+                serde_json::to_string(&vec![timer]).unwrap()
+            } else {
+                serde_json::to_string(&timer).unwrap()
+            };
+            write_json_response(&mut stream, &body);
+        });
+
+        let (mut command, _home) = isolated_holon_command();
+        let output = command
+            .env("HOLON_HTTP_ADDR", addr.to_string())
+            .args(*args)
+            .output()
+            .expect("run holon");
+        handle.join().expect("mock timer control plane thread");
+
+        let (stdout, stderr) = output_text(&output);
+        assert_eq!(output.status.code(), Some(0), "stderr:\n{stderr}");
+        assert!(stderr.is_empty(), "stderr should stay empty: {stderr}");
+        assert!(
+            stdout.contains("\"id\": \"timer-1\""),
+            "stdout should contain timer record: {stdout}"
+        );
     }
 }
 

@@ -56,6 +56,17 @@ pub fn tool_sections_with_context(
             guidance(include_str!("tool_guidance/tool_wait_for.md")),
         ));
     }
+    if names.contains(&tn::CREATE_TIMER)
+        || names.contains(&tn::LIST_TIMERS)
+        || names.contains(&tn::GET_TIMER)
+        || names.contains(&tn::CANCEL_TIMER)
+    {
+        sections.push(section(
+            "tool_timer",
+            PromptStability::Stable,
+            guidance(include_str!("tool_guidance/tool_timer.md")),
+        ));
+    }
     if names.contains(&tn::SPAWN_AGENT) {
         sections.push(section(
             "tool_spawn_agent",
@@ -568,6 +579,28 @@ mod tests {
         assert!(section
             .content
             .contains("Do not use UpdateWorkItem blocked fields"));
+    }
+
+    #[test]
+    fn test_timer_section_describes_persistent_lifecycle_boundary() {
+        let tools = vec![ToolSpec {
+            name: "CreateTimer".into(),
+            description: String::new(),
+            input_schema: json!({}),
+            freeform_grammar: None,
+        }];
+        let sections = tool_sections(&tools);
+        let section = sections
+            .iter()
+            .find(|section| section.name == "tool_timer")
+            .expect("timer section");
+        assert!(section
+            .content
+            .contains("persistent independent or repeating"));
+        assert!(section.content.contains("does not pause the current turn"));
+        assert!(section.content.contains("WaitFor"));
+        assert!(section.content.contains("recheck_after_ms"));
+        assert!(section.content.contains("CancelTimer"));
     }
 
     #[test]

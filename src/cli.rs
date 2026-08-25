@@ -17,6 +17,49 @@ fn parse_positive_usize(value: &str) -> Result<usize, String> {
     }
 }
 
+#[derive(Debug, Subcommand)]
+pub enum TimerCommands {
+    Create {
+        #[command(flatten)]
+        options: TimerCreateArgs,
+    },
+    List {
+        #[arg(long, default_value_t = 50, value_parser = parse_positive_usize)]
+        limit: usize,
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    Cancel {
+        timer_id: String,
+        #[arg(long)]
+        agent: Option<String>,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct TimerCreateArgs {
+    #[arg(long)]
+    pub after_ms: u64,
+    #[arg(long)]
+    pub every_ms: Option<u64>,
+    #[arg(long)]
+    pub summary: Option<String>,
+    #[arg(long)]
+    pub agent: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct LegacyTimerCreateArgs {
+    #[arg(long)]
+    pub after_ms: Option<u64>,
+    #[arg(long)]
+    pub every_ms: Option<u64>,
+    #[arg(long)]
+    pub summary: Option<String>,
+    #[arg(long)]
+    pub agent: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Top-level CLI
 // ---------------------------------------------------------------------------
@@ -89,15 +132,12 @@ pub enum Commands {
         #[command(subcommand)]
         command: MemoryIndexCommands,
     },
+    #[command(args_conflicts_with_subcommands = true)]
     Timer {
-        #[arg(long)]
-        after_ms: u64,
-        #[arg(long)]
-        every_ms: Option<u64>,
-        #[arg(long)]
-        summary: Option<String>,
-        #[arg(long)]
-        agent: Option<String>,
+        #[command(subcommand)]
+        command: Option<TimerCommands>,
+        #[command(flatten)]
+        legacy: LegacyTimerCreateArgs,
     },
     #[command(about = "Deprecated: use `holon agent start|stop|abort [agent-id]`")]
     Control {
