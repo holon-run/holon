@@ -696,6 +696,47 @@ describe("roster activity unread state", () => {
     });
   });
 
+  it("keeps ledger unread exact when only cached session detail is stale", async () => {
+    vi.spyOn(AgentSessionRepository.prototype, "unreadSnapshot").mockResolvedValue({
+      scopeAgentId: "agent-stale-cache",
+      boundarySeq: 12,
+      countedThroughSeq: 12,
+      certainty: "exact",
+      count: 3,
+      historyTruncatedBeforeSeq: null,
+      acknowledgedTruncationBeforeSeq: null,
+    });
+    vi.spyOn(AgentSessionRepository.prototype, "sessionLedgerStatus").mockReturnValue({
+      scope: {
+        remoteKey: "local",
+        runtimeId: "runtime-1",
+        visibilityScopeId: "scope-1",
+        eventLogEpoch: "epoch-1",
+        agentId: "agent-stale-cache",
+      },
+      durability: "exact",
+      state: "idle",
+      ingestedThroughSeq: 12,
+      projectionReadyThroughSeq: 12,
+      observedEventHeadSeq: 12,
+      pendingHydrationJobs: 0,
+      failedHydrationJobs: 0,
+    });
+    useRuntimeStore.setState({
+      sessionsByAgentId: {
+        "agent-stale-cache": sessionState({ syncStatus: "stale" }),
+      },
+      ledgerUnreadByAgentId: {},
+    });
+
+    await useRuntimeStore.getState().refreshLedgerUnread("agent-stale-cache");
+
+    expect(useRuntimeStore.getState().ledgerUnreadByAgentId["agent-stale-cache"]).toEqual({
+      mode: "exact",
+      count: 3,
+    });
+  });
+
   it("retries a pending read marker after ledger readiness becomes available", async () => {
     vi.stubGlobal("document", { visibilityState: "visible" });
     let ready = false;

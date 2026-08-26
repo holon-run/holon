@@ -1130,6 +1130,10 @@ export function ledgerStatusForDiagnostics(agentId: string) {
   return agentSessionRepository.sessionLedgerStatus(agentId);
 }
 
+export function ledgerReadinessForDiagnostics(agentId: string) {
+  return agentSessionRepository.sessionLedgerReadiness(agentId);
+}
+
 export interface ObserverSyncAgentDiagnostics {
   agentId: string;
   durability: string;
@@ -1242,13 +1246,8 @@ async function refreshLedgerUnreadInView(agentId: string): Promise<void> {
       return;
     }
     const status = agentSessionRepository.sessionLedgerStatus(agentId);
-    const session = state.sessionsByAgentId[agentId];
-    const stale =
-      status?.state === "sync_error" ||
-      session?.syncStatus === "stale" ||
-      session?.syncStatus === "error";
     const view: LedgerUnreadView = {
-      mode: stale
+      mode: status?.state === "sync_error"
         ? "stale_sync_error"
         : snapshot.certainty === "truncated"
           ? "truncated"

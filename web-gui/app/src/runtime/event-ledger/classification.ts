@@ -23,13 +23,10 @@
 
 import type { LedgerRecordKind } from "./keys";
 import type { RawEventClassification } from "./ledger";
+import { RUNTIME_EVENT_CONTRACT_VERSION } from "../session-events";
 
-/**
- * Highest StreamEventEnvelope.contract_version this client understands.
- * Mirrors RUNTIME_EVENT_CONTRACT_VERSION in `runtime/session-events.ts`;
- * duplicated here so the ledger layer stays app-layer-independent.
- */
-export const SUPPORTED_ENVELOPE_CONTRACT_VERSION = 2;
+/** Highest StreamEventEnvelope.contract_version this client understands. */
+export const SUPPORTED_ENVELOPE_CONTRACT_VERSION = RUNTIME_EVENT_CONTRACT_VERSION;
 
 export type EnvelopeProjectionEffect = "none" | "display_invalidation";
 

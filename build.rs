@@ -1,21 +1,16 @@
-use std::path::Path;
 use std::process::Command;
+
+#[path = "build_support/web_dist.rs"]
+mod web_dist;
 
 fn main() {
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rerun-if-changed=.git/refs/");
+    web_dist::emit_rerun_directives();
 
     let pkg_version = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "unknown".into());
-
-    // Ensure the embedded web assets directory exists at compile time.
-    // rust-embed requires the folder to be present even when empty; a fresh
-    // clone or `cargo clean` without `npm run build` would otherwise fail.
-    // The directory is git-ignored (it holds build output), so we create it
-    // here as a self-healing step. An empty directory simply embeds zero files.
-    let dist_dir = Path::new("web-gui/app/dist");
-    if !dist_dir.exists() {
-        std::fs::create_dir_all(dist_dir).expect("failed to create web-gui/app/dist");
-    }
+    let web_identity = web_dist::validate_embedded_web_dist()
+        .unwrap_or_else(|error| panic!("{error}\nRun `make web` and retry the Rust build."));
 
     let sha = Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])
@@ -43,4 +38,8 @@ fn main() {
     };
 
     println!("cargo:rustc-env=HOLON_VERSION={}", version);
+    println!(
+        "cargo:rustc-env=HOLON_WEB_SOURCE_HASH={}",
+        web_identity.source_hash
+    );
 }

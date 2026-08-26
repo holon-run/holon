@@ -51,11 +51,14 @@ pub(crate) async fn web_asset_response(
     } else {
         Body::from(bytes)
     };
-    Response::builder()
+    let mut response = Response::builder()
         .status(StatusCode::OK)
         .header(CONTENT_TYPE, content_type.as_ref())
-        .body(body)
-        .ok()
+        .header("x-holon-daemon-version", env!("HOLON_VERSION"));
+    if state.web_dist.is_none() {
+        response = response.header("x-holon-web-source-hash", env!("HOLON_WEB_SOURCE_HASH"));
+    }
+    response.body(body).ok()
 }
 
 pub(crate) fn normalize_web_asset_path(request_path: &str) -> Option<String> {

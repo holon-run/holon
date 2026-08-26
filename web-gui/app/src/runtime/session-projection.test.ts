@@ -234,13 +234,11 @@ describe("SessionProjectionState", () => {
     ]);
   });
 
-  it("records and closes gaps when backfill arrives", () => {
-    const withGap = receive(createSessionProjectionState(), [events[0], events[2]]);
-    expect(withGap.gaps).toEqual([{ afterSeq: 1, beforeSeq: 3 }]);
+  it("does not infer agent gaps from sparse runtime-global event sequences", () => {
+    const projection = receive(createSessionProjectionState(), [events[0], events[2]]);
 
-    const recovered = receive(withGap, [events[1]]);
-    expect(recovered.gaps).toEqual([]);
-    expect(recovered.eventSeqs).toEqual([1, 2, 3]);
+    expect(projection.gaps).toEqual([]);
+    expect(projection.eventSeqs).toEqual([1, 3]);
   });
 
   it("hydrates references without rebuilding normalized domain state", () => {

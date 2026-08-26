@@ -95,14 +95,14 @@ jobs:
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
 
-      - name: Build daemon
-        working-directory: .
-        run: cargo build --bin holon
-
       - name: Build production and diagnostics assets
         run: |
           npm run build
           npm run build:e2e:real-daemon
+
+      - name: Build daemon
+        working-directory: .
+        run: cargo build --bin holon
 
       - name: Run real daemon repeat suite
         env:

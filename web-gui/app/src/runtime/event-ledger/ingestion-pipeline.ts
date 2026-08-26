@@ -40,7 +40,6 @@ import { remoteScopeKeyParts, type LedgerRemoteScopeKey } from "./keys";
 import type { LedgerRecordKind, LedgerScopeKey } from "./keys";
 
 /** How far above the contiguous cursor resume() scans for stored stragglers. */
-const RESUME_LOOKAHEAD_SEQ = 1_000;
 const DEFAULT_MAX_HYDRATION_ATTEMPTS = 5;
 const DEFAULT_HYDRATION_BATCH_SIZE = 64;
 
@@ -174,7 +173,6 @@ interface ScopeTracker {
   contiguousThrough: number;
   readyThrough: number;
   observedHead: number;
-  outOfOrder: Set<number>;
   blockers: Map<number, Blocker>;
   jobs: Map<string, HydrationJobView>;
   state: LedgerIngestionState;
@@ -395,7 +393,10 @@ export class LedgerIngestionPipeline {
       batch.putHydrationJob(scope, this.jobRecordFromView(scope, job));
     }
 
-    const contiguous = this.advanceContiguity(tracker, newSeqs);
+    // event_seq is runtime-global while this scope is agent-filtered. The
+    // agent cursor therefore advances to the greatest observed sequence;
+    // gaps represent other agents' events, not missing events in this scope.
+    const contiguous = Math.max(tracker.contiguousThrough, ...newSeqs);
     if (contiguous > tracker.contiguousThrough) {
       batch.advanceIngestionCursor(scope, contiguous);
       tracker.contiguousThrough = contiguous;
@@ -984,9 +985,8 @@ export class LedgerIngestionPipeline {
       return tracker;
     }
     const ledger = this.ledger!;
-    const [session, runtimeScope, jobs] = await Promise.all([
+    const [session, jobs] = await Promise.all([
       ledger.getAgentSession(scope),
-      ledger.getRuntimeScope(remoteScopeOf(scope)),
       ledger.getPendingHydrationJobs(scope),
     ]);
     tracker.contiguousThrough = session?.ingestedThroughSeq ?? 0;
@@ -994,13 +994,10 @@ export class LedgerIngestionPipeline {
       session?.projectionReadyThroughSeq ?? 0,
       tracker.contiguousThrough,
     );
-    // These records are read independently, so another tab may commit between
-    // the two reads. A persisted contiguous cursor is itself proof that the
-    // observed head reached at least that sequence.
-    tracker.observedHead = Math.max(
-      runtimeScope?.eventHeadSeq ?? 0,
-      tracker.contiguousThrough,
-    );
+    // Runtime scope metadata is shared by every agent. It cannot be used as
+    // this agent's observed head because another agent may have a much larger
+    // runtime-global event_seq.
+    tracker.observedHead = tracker.contiguousThrough;
     for (const job of jobs) {
       const view = this.jobViewFromRecord(job);
       tracker.jobs.set(view.jobId, view);
@@ -1015,18 +1012,6 @@ export class LedgerIngestionPipeline {
       );
       for (const event of window) {
         this.registerBlocker(tracker, this.classifyStored(event));
-      }
-    }
-    // Discover stored stragglers above the contiguous cursor so later
-    // gap-filling ingests can count them without re-delivery.
-    const stragglers = await ledger.getRawEventsBetween(
-      scope,
-      tracker.contiguousThrough + 1,
-      tracker.contiguousThrough + RESUME_LOOKAHEAD_SEQ,
-    );
-    for (const event of stragglers) {
-      if (event.eventSeq > tracker.contiguousThrough) {
-        tracker.outOfOrder.add(event.eventSeq);
       }
     }
     tracker.loaded = true;
@@ -1064,24 +1049,13 @@ export class LedgerIngestionPipeline {
     });
   }
 
-  private advanceContiguity(tracker: ScopeTracker, newSeqs: number[]): number {
-    for (const seq of newSeqs) {
-      if (seq > tracker.contiguousThrough) tracker.outOfOrder.add(seq);
-    }
-    let next = tracker.contiguousThrough + 1;
-    while (tracker.outOfOrder.has(next)) {
-      tracker.outOfOrder.delete(next);
-      next += 1;
-    }
-    return next - 1;
-  }
-
   private computeReady(tracker: ScopeTracker): number {
-    let next = tracker.readyThrough + 1;
-    while (next <= tracker.contiguousThrough && !tracker.blockers.has(next)) {
-      next += 1;
-    }
-    return next - 1;
+    const firstBlockedSeq = Math.min(
+      ...(tracker.blockers.size > 0 ? Array.from(tracker.blockers.keys()) : [Infinity]),
+    );
+    return Number.isFinite(firstBlockedSeq)
+      ? Math.min(tracker.contiguousThrough, firstBlockedSeq - 1)
+      : tracker.contiguousThrough;
   }
 
   private removeJobAndBlockers(
@@ -1201,7 +1175,6 @@ export class LedgerIngestionPipeline {
       contiguousThrough: 0,
       readyThrough: 0,
       observedHead: 0,
-      outOfOrder: new Set(),
       blockers: new Map(),
       jobs: new Map(),
       state: "idle",

@@ -147,7 +147,7 @@ describe("ledger ingestion pipeline", () => {
     ledger.close();
   });
 
-  it("never reloads an observed head behind the persisted contiguous cursor", async () => {
+  it("does not load another agent's runtime head into the session read gate", async () => {
     const scope = makeScope();
     const ledger = await openLedgerHandle();
     await ledger
@@ -161,7 +161,7 @@ describe("ledger ingestion pipeline", () => {
           visibilityScopeId: scope.visibilityScopeId,
           eventLogEpoch: scope.eventLogEpoch,
         },
-        { eventHeadSeq: 0 },
+        { eventHeadSeq: 1_000 },
       )
       .commit();
     ledger.close();
@@ -176,17 +176,18 @@ describe("ledger ingestion pipeline", () => {
     });
   });
 
-  it("keeps the contiguous cursor behind out-of-order gaps", async () => {
+  it("advances across sparse runtime-global sequences in an agent-filtered stream", async () => {
     const pipeline = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
     await pipeline.open();
     const scope = makeScope();
 
     const afterTail = await pipeline.ingest(scope, [envelope(5), envelope(6), envelope(7)]);
-    expect(afterTail.ingestedThroughSeq).toBeUndefined();
+    expect(afterTail.ingestedThroughSeq).toBe(7);
+    expect(afterTail.projectionReadyThroughSeq).toBe(7);
     expect(afterTail.observedEventHeadSeq).toBe(7);
 
     const afterMid = await pipeline.ingest(scope, [envelope(3), envelope(4)]);
-    expect(afterMid.ingestedThroughSeq).toBeUndefined();
+    expect(afterMid.ingestedThroughSeq).toBe(7);
 
     const afterFill = await pipeline.ingest(scope, [envelope(1), envelope(2)]);
     expect(afterFill.ingestedThroughSeq).toBe(7);
@@ -209,7 +210,7 @@ describe("ledger ingestion pipeline", () => {
     ledger.close();
   });
 
-  it("never advances the raw cursor from filtered subsets or semantic fetches", async () => {
+  it("advances the agent cursor across sparse sequences but not from semantic fetches", async () => {
     const fetches: Array<{ kind: string; ids: string[] }> = [];
     const fetchers: LedgerHydrationFetchers = {
       fetchCanonicalRecords: async (_agentId, kind, ids) => {
@@ -224,9 +225,9 @@ describe("ledger ingestion pipeline", () => {
     await pipeline.open();
     const scope = makeScope();
 
-    // A display-filtered page returns only part of the raw range.
+    // Runtime-global sequence gaps are expected in an agent-filtered page.
     const filtered = await pipeline.ingest(scope, [envelope(4), envelope(6), envelope(8)]);
-    expect(filtered.ingestedThroughSeq).toBeUndefined();
+    expect(filtered.ingestedThroughSeq).toBe(8);
 
     // Hydrating referenced records (semantic timeline demand) fetches
     // canonical bodies but must not move any raw cursor.
@@ -240,10 +241,7 @@ describe("ledger ingestion pipeline", () => {
 
     const ledger = await openLedgerHandle();
     const session = await ledger.getAgentSession(scope);
-    // Events 4 and 6/8 are stored but 5 and 7 never arrived: the contiguous
-    // cursor stops at 4, after the gap-filling 1..3 ingest plus the earlier
-    // filtered straggler 4 — never at 8.
-    expect(session?.ingestedThroughSeq).toBe(4);
+    expect(session?.ingestedThroughSeq).toBe(8);
     const runtimeScope = await ledger.getRuntimeScope({
       remoteKey: scope.remoteKey,
       runtimeId: scope.runtimeId,
@@ -388,7 +386,7 @@ describe("ledger ingestion pipeline", () => {
     const scope = makeScope();
 
     const status = await pipeline.ingest(scope, [
-      envelope(1),
+      envelope(1, { contract_version: 3 }),
       envelope(2, { contract_version: 99 }),
       envelope(3),
     ]);
@@ -462,7 +460,7 @@ describe("ledger ingestion pipeline", () => {
     expect(status.ingestedThroughSeq).toBe(2);
   });
 
-  it("heals stored out-of-order stragglers across a restart", async () => {
+  it("does not regress a sparse agent cursor across a restart", async () => {
     const scope = makeScope();
     const first = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
     await first.open();
@@ -474,7 +472,6 @@ describe("ledger ingestion pipeline", () => {
     await second.resume(scope);
     const status = await second.ingest(scope, [envelope(3)]);
 
-    // The restart scan rediscovered seq 4, so filling seq 3 heals the gap.
     expect(status.ingestedThroughSeq).toBe(4);
     expect(status.projectionReadyThroughSeq).toBe(4);
   });

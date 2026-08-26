@@ -246,19 +246,12 @@ describe("ledger read-marker gate", () => {
     expect(decision.reason).toBe("document_hidden");
   });
 
-  it("blocks while the session is loading, gapped, or recovering", () => {
+  it("blocks while the session is loading or recovering", () => {
     const loading = evaluateLedgerReadMarkerGate(
       gateInput({ session: { ...emptyAgentSession(), loading: true } }),
       "agent-a",
     );
     expect(loading.reason).toBe("session_not_ready");
-    const gapped = evaluateLedgerReadMarkerGate(
-      gateInput({
-        session: { ...emptyAgentSession(), gaps: [{ afterSeq: 1, beforeSeq: 9 }] },
-      }),
-      "agent-a",
-    );
-    expect(gapped.reason).toBe("session_not_ready");
     const recovering = evaluateLedgerReadMarkerGate(
       gateInput({ session: { ...emptyAgentSession(), syncStatus: "recovering" } }),
       "agent-a",

@@ -1,4 +1,5 @@
 import {
+  ledgerReadinessForDiagnostics,
   ledgerStatusForDiagnostics,
   ledgerReadMarkerDecision,
   useRuntimeStore,
@@ -68,6 +69,9 @@ export interface HolonE2eLedgerSnapshot {
   ingestionError?: string;
   ingestedThroughSeq: number;
   projectionReadyThroughSeq: number;
+  observedHeadSeq?: number;
+  gateIngestedThroughSeq?: number;
+  gateReadyThroughSeq?: number;
   pendingHydrationJobs: number;
   failedHydrationJobs: number;
   blockedByEventSeq?: number;
@@ -169,6 +173,7 @@ async function ledgerSnapshot(agentId: string): Promise<HolonE2eLedgerSnapshot |
     const storeState = useRuntimeStore.getState();
     const runtimeSession = storeState.sessionsByAgentId[agentId];
     const status = ledgerStatusForDiagnostics(agentId);
+    const readiness = ledgerReadinessForDiagnostics(agentId);
     return {
       agentId,
       runtimeId: session.runtimeId,
@@ -179,6 +184,9 @@ async function ledgerSnapshot(agentId: string): Promise<HolonE2eLedgerSnapshot |
       ingestionError: status?.lastError,
       ingestedThroughSeq: session.ingestedThroughSeq ?? 0,
       projectionReadyThroughSeq: session.projectionReadyThroughSeq ?? 0,
+      observedHeadSeq: readiness?.observedHeadSeq,
+      gateIngestedThroughSeq: readiness?.ingestedThroughSeq,
+      gateReadyThroughSeq: readiness?.readyThroughSeq,
       pendingHydrationJobs: pending.length,
       failedHydrationJobs: jobs.length - pending.length,
       blockedByEventSeq: pending.length

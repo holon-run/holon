@@ -369,7 +369,10 @@ function reduceEvents(
     unknownEventIds: events
       .filter((event) => !canApplySessionEvent(event))
       .map((event) => event.id ?? `event-${event.event_seq}`),
-    gaps: eventGaps(events),
+    // event_seq is runtime-global while this projection is agent-filtered.
+    // Sparse sequence numbers therefore represent other agents' events, not
+    // missing events for this session.
+    gaps: [],
     newestSeq: eventSeqs[eventSeqs.length - 1],
     oldestSeq: eventSeqs[0],
     invalidatedReason: undefined,
@@ -405,21 +408,12 @@ function rebuildProjection(projection: SessionProjectionState): SessionProjectio
     referencedMessageIds: references.messageIds,
     referencedTranscriptEntryIds: references.transcriptEntryIds,
     referencedBriefIds: references.briefIds,
-    gaps: eventGaps(events),
+    // Authoritative agent pages clear legacy inferred gaps. A filtered stream
+    // cannot infer missing events from gaps in the runtime-global sequence.
+    gaps: [],
     newestSeq: projection.newestSeq ?? events.at(-1)?.event_seq,
     oldestSeq: projection.oldestSeq ?? events[0]?.event_seq,
   };
-}
-
-function eventGaps(events: ProjectionEvent[]): EventGap[] {
-  const gaps: EventGap[] = [];
-  for (let index = 1; index < events.length; index += 1) {
-    const previous = events[index - 1].event_seq;
-    const current = events[index].event_seq;
-    if (previous == null || current == null) continue;
-    if (current > previous + 1) gaps.push({ afterSeq: previous, beforeSeq: current });
-  }
-  return gaps;
 }
 
 function mergeMissingIds(
