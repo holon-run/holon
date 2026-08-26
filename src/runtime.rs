@@ -932,6 +932,15 @@ fn execution_attempt_for_message<'a>(
         })
 }
 
+fn execution_attempt_has_task_result_source(
+    attempt: &crate::domain::execution_protocol::ExecutionAttempt,
+) -> bool {
+    matches!(
+        &attempt.source.identity,
+        crate::domain::execution_protocol::ExecutionSourceIdentity::TaskResult { .. }
+    )
+}
+
 fn exact_task_result_wait_with_status(
     storage: &AppStorage,
     message: &MessageEnvelope,
@@ -1172,6 +1181,7 @@ fn scheduler_task_result_claim_recovery_candidates(
         .filter(|attempt| {
             attempt.state == crate::domain::execution_protocol::ExecutionAttemptState::Open
         })
+        .filter(|attempt| execution_attempt_has_task_result_source(attempt))
         .filter_map(|attempt| {
             let crate::domain::execution_protocol::ExecutionBinding::WorkItem { work_item_id } =
                 &attempt.binding
@@ -4857,7 +4867,9 @@ impl RuntimeHandle {
                 ) && message.work_item_id.as_deref() == Some(work_item_id)
             });
             let (task_result_recovery, task_result_replay_fence) = if let Some(work_item_id) =
-                work_item_id.as_deref()
+                work_item_id
+                    .as_deref()
+                    .filter(|_| execution_attempt_has_task_result_source(&attempt))
             {
                 let task_result_recovery = exact_task_result_claim_recovery(
                     &self.inner.storage,
@@ -4885,10 +4897,7 @@ impl RuntimeHandle {
                         );
                         continue;
                     }
-                    TaskResultClaimRecovery::Ineligible { .. } if !work_queue_claim => continue,
-                    TaskResultClaimRecovery::Ineligible { .. } => {
-                        (None, unsettled_claim::ReplayFence::Ambiguous)
-                    }
+                    TaskResultClaimRecovery::Ineligible { .. } => continue,
                 }
             } else {
                 (None, unsettled_claim::ReplayFence::Ambiguous)

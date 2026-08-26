@@ -11,6 +11,389 @@ struct BlockingProvider {
     started: Arc<tokio::sync::Notify>,
 }
 
+struct OpenExternalWakeClaimFixture {
+    harness: LifecycleHarness,
+    work_item_id: String,
+    wait_id: String,
+    message_id: String,
+    attempt_id: String,
+}
+
+async fn open_external_wake_claim_fixture() -> OpenExternalWakeClaimFixture {
+    let harness = LifecycleHarness::new();
+    let (work_item_id, wait_id, message_id, attempt_id) = {
+        let runtime = harness.runtime();
+        let work_item = runtime
+            .create_work_item(
+                "recover an interrupted external wake".into(),
+                None,
+                None,
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        runtime.pick_work_item(work_item.id.clone()).await.unwrap();
+        let trigger_id = runtime
+            .create_external_trigger(
+                "resume external wait".into(),
+                "github".into(),
+                ExternalTriggerScope::Agent,
+                CallbackDeliveryMode::WakeHint,
+                Some("external state changed".into()),
+                Some("holon-run/holon#2686".into()),
+            )
+            .await
+            .unwrap()
+            .external_trigger_id;
+
+        let mut wait_message = MessageEnvelope::new(
+            "default",
+            MessageKind::SystemTick,
+            MessageOrigin::System {
+                subsystem: "work_queue".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "wait for external state".into(),
+            },
+        )
+        .with_admission(
+            MessageDeliverySurface::RuntimeSystem,
+            AdmissionContext::RuntimeOwned,
+        );
+        bind_autonomous_work_queue_tick(&mut wait_message, &work_item, "continue_active");
+        wait_message.turn_id = Some("turn-external-wait-recovery".into());
+        let wait_message = runtime.enqueue(wait_message).await.unwrap();
+        assert!(matches!(
+            scheduler_executor::SchedulerDecisionExecutor::new(runtime)
+                .poll()
+                .await
+                .unwrap(),
+            scheduler_executor::RunLoopPoll::Message(_)
+        ));
+        let wait = runtime
+            .register_wait_for(
+                "default",
+                Some(work_item.id.clone()),
+                WaitForWakeKind::External,
+                Some("holon-run/holon#2686".into()),
+                "external state must change".into(),
+                None,
+            )
+            .await
+            .unwrap();
+        let wait_id = wait.condition.id;
+        finish_claimed_test_run(runtime).await;
+        let terminal = terminal_transition(&wait_message, Some(&work_item.id));
+        runtime
+            .commit_queue_terminal_settlement(
+                QueueEntryRecord {
+                    message_id: wait_message.id.clone(),
+                    agent_id: wait_message.agent_id.clone(),
+                    priority: wait_message.priority,
+                    status: QueueEntryStatus::Processed,
+                    created_at: wait_message.created_at,
+                    updated_at: Utc::now(),
+                },
+                Vec::new(),
+                true,
+                Some(&terminal),
+            )
+            .await
+            .unwrap();
+
+        let delivery = runtime
+            .deliver_callback(
+                &trigger_id,
+                CallbackDeliveryPayload {
+                    body: Some(MessageBody::Json {
+                        value: serde_json::json!({"status": "ready"}),
+                    }),
+                    content_type: Some("application/json".into()),
+                    correlation_id: Some("corr-external-wake-recovery".into()),
+                    causation_id: Some("external-change-2686".into()),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(delivery.disposition, CallbackIngressDisposition::Triggered);
+        let wake_message = runtime
+            .storage()
+            .read_recent_messages(16)
+            .unwrap()
+            .into_iter()
+            .find(|message| message.source_refs.get("wait_id") == Some(&wait_id))
+            .expect("external wake should persist its exact wait correlation");
+        let scheduled = scheduler_executor::SchedulerDecisionExecutor::new(runtime)
+            .poll()
+            .await
+            .unwrap();
+        let scheduler_executor::RunLoopPoll::Message(scheduled) = scheduled else {
+            panic!("external wake should claim the exact wait");
+        };
+        assert_eq!(scheduled.message.id, wake_message.id);
+        finish_claimed_test_run(runtime).await;
+
+        let attempt_id = scheduler_executor::canonical_activation_id(&wake_message.id);
+        let execution = runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("default")
+            .unwrap()
+            .expect("external wake claim should initialize execution authority");
+        assert_eq!(
+            execution.attempts[&attempt_id].state,
+            crate::domain::execution_protocol::ExecutionAttemptState::Open
+        );
+        assert!(matches!(
+            &execution.attempts[&attempt_id].source.identity,
+            crate::domain::execution_protocol::ExecutionSourceIdentity::TriggeredWait {
+                wait_id: admitted_wait_id,
+                trigger_message_id,
+            } if admitted_wait_id == &wait_id && trigger_message_id == &wake_message.id
+        ));
+
+        (work_item.id, wait_id, wake_message.id, attempt_id)
+    };
+
+    OpenExternalWakeClaimFixture {
+        harness,
+        work_item_id,
+        wait_id,
+        message_id,
+        attempt_id,
+    }
+}
+
+#[tokio::test]
+async fn bootstrap_recovers_open_external_wake_claim_and_releases_execution_lane() {
+    let mut fixture = open_external_wake_claim_fixture().await;
+    fixture.harness.restart();
+    let runtime = fixture.harness.runtime();
+
+    assert_eq!(
+        runtime.recover_scheduler_bootstrap_claims().await.unwrap(),
+        1
+    );
+    assert_eq!(
+        runtime.recover_scheduler_bootstrap_claims().await.unwrap(),
+        0
+    );
+
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .expect("bootstrap recovery should preserve execution authority");
+    let attempt = &execution.attempts[&fixture.attempt_id];
+    assert_eq!(
+        attempt.state,
+        crate::domain::execution_protocol::ExecutionAttemptState::Interrupted
+    );
+    assert!(execution.open_attempt().is_none());
+    assert!(matches!(
+        &attempt.source.identity,
+        crate::domain::execution_protocol::ExecutionSourceIdentity::TriggeredWait {
+            wait_id,
+            trigger_message_id,
+        } if wait_id == &fixture.wait_id && trigger_message_id == &fixture.message_id
+    ));
+    assert!(matches!(
+        &execution.work_items[&fixture.work_item_id].state,
+        crate::domain::execution_protocol::WorkItemExecutionState::Runnable {
+            recovery_ref: Some(recovery_ref),
+            ..
+        } if recovery_ref == "interrupted"
+    ));
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&fixture.message_id)
+            .unwrap()
+            .expect("external wake queue entry should remain auditable")
+            .status,
+        QueueEntryStatus::Interrupted
+    );
+    let wait = runtime
+        .storage()
+        .latest_wait_conditions()
+        .unwrap()
+        .into_iter()
+        .find(|wait| wait.id == fixture.wait_id)
+        .expect("external wait provenance should remain durable");
+    assert_eq!(wait.status, WaitConditionStatus::Resolved);
+    assert_eq!(
+        wait.work_item_id.as_deref(),
+        Some(fixture.work_item_id.as_str())
+    );
+    assert_eq!(wait.trigger_message_id(), Some(fixture.message_id.as_str()));
+    assert_eq!(
+        runtime
+            .storage()
+            .read_recent_events(64)
+            .unwrap()
+            .iter()
+            .filter(|event| {
+                event.kind == "scheduler_bootstrap_claim_recovered"
+                    && event.data["message_id"] == fixture.message_id
+            })
+            .count(),
+        1
+    );
+
+    let operator = runtime
+        .enqueue(trusted_operator_prompt(
+            None,
+            "continue after interrupted external wake",
+        ))
+        .await
+        .unwrap();
+    let mut operator_claimed = false;
+    for _ in 0..4 {
+        match scheduler_executor::SchedulerDecisionExecutor::new(runtime)
+            .poll()
+            .await
+            .unwrap()
+        {
+            scheduler_executor::RunLoopPoll::Message(scheduled)
+                if scheduled.message.id == operator.id =>
+            {
+                operator_claimed = true;
+                break;
+            }
+            scheduler_executor::RunLoopPoll::Idle => {}
+            _ => panic!("unexpected scheduler result while draining recovery"),
+        }
+    }
+    assert!(
+        operator_claimed,
+        "recovered lane should admit operator input"
+    );
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        execution
+            .attempts
+            .values()
+            .filter(|attempt| {
+                attempt.source_message_id.as_deref() == Some(fixture.message_id.as_str())
+            })
+            .count(),
+        1,
+        "bootstrap recovery must not duplicate the external wake execution"
+    );
+    assert_eq!(
+        execution
+            .open_attempt()
+            .and_then(|attempt| attempt.source_message_id.as_deref()),
+        Some(operator.id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn scheduler_recovery_routes_external_wake_claim_through_generic_interruption() {
+    use crate::domain::execution_protocol::{ExecutionAttemptState, ExecutionProtocolCommand};
+
+    let fixture = open_external_wake_claim_fixture().await;
+    let runtime = fixture.harness.runtime();
+    let report =
+        scheduler_recovery_report(&runtime.inner.storage, &runtime.inner.runtime_db, "default")
+            .unwrap();
+
+    assert!(report.task_result_claim_recoveries.is_empty());
+    let candidate = report
+        .candidates
+        .iter()
+        .find(|candidate| candidate.activation_id == fixture.attempt_id)
+        .expect("ordinary external wake should remain a generic recovery candidate");
+    assert!(candidate.eligible);
+    assert_eq!(candidate.reason, "execution_interruption");
+    assert_eq!(
+        candidate.target_queue_status,
+        Some(QueueEntryStatus::Aborted)
+    );
+    assert!(matches!(
+        candidate.proposed_commands.as_slice(),
+        [ExecutionProtocolCommand::Interrupt(command)]
+            if command.attempt_id == fixture.attempt_id
+    ));
+
+    assert_eq!(
+        apply_scheduler_recovery_plan_with_backup_policy(
+            &runtime.inner.storage,
+            &runtime.inner.runtime_db,
+            "default",
+            &report,
+            SchedulerRecoveryBackupPolicy::SkipApproved,
+        )
+        .unwrap(),
+        (1, None)
+    );
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        execution.attempts[&fixture.attempt_id].state,
+        ExecutionAttemptState::Interrupted
+    );
+    assert!(execution.open_attempt().is_none());
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&fixture.message_id)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Aborted
+    );
+    let events = runtime.storage().read_recent_events(64).unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "scheduler_execution_recovered"
+            && event.data["activation_id"] == fixture.attempt_id
+    }));
+    assert!(!events.iter().any(|event| {
+        event.kind == "scheduler_task_result_claim_recovered"
+            && event.data["activation_id"] == fixture.attempt_id
+    }));
+
+    let recovered =
+        scheduler_recovery_report(&runtime.inner.storage, &runtime.inner.runtime_db, "default")
+            .unwrap();
+    assert!(recovered.task_result_claim_recoveries.is_empty());
+    assert!(recovered
+        .candidates
+        .iter()
+        .all(|candidate| candidate.activation_id != fixture.attempt_id));
+    assert_eq!(
+        apply_scheduler_recovery_plan_with_backup_policy(
+            &runtime.inner.storage,
+            &runtime.inner.runtime_db,
+            "default",
+            &recovered,
+            SchedulerRecoveryBackupPolicy::SkipApproved,
+        )
+        .unwrap(),
+        (0, None)
+    );
+}
+
 #[tokio::test]
 async fn cancelled_task_result_wait_quarantines_open_claim_and_releases_lane() {
     use crate::domain::execution_protocol::ExecutionAttemptState;
