@@ -2062,6 +2062,88 @@ async fn view_image_selection_uses_current_turn_fallback_model() {
 }
 
 #[tokio::test]
+async fn concurrent_view_image_selection_discovers_ollama_vision_once_from_cold_cache() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let stopped = Arc::new(AtomicBool::new(false));
+    let tags_requests = Arc::new(AtomicUsize::new(0));
+    let show_requests = Arc::new(AtomicUsize::new(0));
+    let server = {
+        let stopped = Arc::clone(&stopped);
+        let tags_requests = Arc::clone(&tags_requests);
+        let show_requests = Arc::clone(&show_requests);
+        std::thread::spawn(move || {
+            while !stopped.load(Ordering::SeqCst) {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(connection) => connection,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(error) => panic!("Ollama test server accept failed: {error}"),
+                };
+                let mut request = [0_u8; 4096];
+                let read = stream.read(&mut request).unwrap();
+                let request = String::from_utf8_lossy(&request[..read]);
+                let body = if request.starts_with("GET /api/tags HTTP/1.1") {
+                    tags_requests.fetch_add(1, Ordering::SeqCst);
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    r#"{"models":[{"name":"qwen3-vl:latest"}]}"#
+                } else if request.starts_with("POST /api/show HTTP/1.1") {
+                    show_requests.fetch_add(1, Ordering::SeqCst);
+                    assert!(request.contains(r#""model":"qwen3-vl:latest""#));
+                    r#"{"capabilities":["vision"],"model_info":{"qwen3.context_length":131072}}"#
+                } else {
+                    panic!("unexpected Ollama test request: {request}");
+                };
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .unwrap();
+            }
+        })
+    };
+
+    let home = tempdir().unwrap();
+    let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+    config.default_model =
+        crate::config::ModelRouteRef::parse_compatible("ollama/qwen3-vl:latest").unwrap();
+    config
+        .providers
+        .get_mut(&crate::config::ProviderId::parse("ollama").unwrap())
+        .unwrap()
+        .base_url = base_url;
+    let host = RuntimeHost::new(config).unwrap();
+    let runtime = host.default_runtime().await.unwrap();
+
+    let (first, second) = tokio::join!(
+        runtime.current_view_image_vision_selection(),
+        runtime.current_view_image_vision_selection()
+    );
+    stopped.store(true, Ordering::SeqCst);
+    server.join().unwrap();
+
+    for selection in [first.unwrap(), second.unwrap()] {
+        assert_eq!(
+            selection.selected_mode,
+            crate::types::ViewImageSelectedMode::NativeImageWithObservation
+        );
+        assert_eq!(selection.primary_provider.as_deref(), Some("ollama"));
+        assert_eq!(selection.primary_model.as_deref(), Some("qwen3-vl:latest"));
+    }
+    assert_eq!(tags_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(show_requests.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn fallback_turn_model_state_uses_fallback_model_policy() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();

@@ -738,6 +738,17 @@ impl RuntimeModelCatalog {
                 candidates.push(model_ref);
             }
         }
+        let mut discovered = self
+            .discovered_models
+            .keys()
+            .map(ModelRouteRef::from_legacy_model_ref)
+            .collect::<Vec<_>>();
+        discovered.sort_by_key(ModelRouteRef::as_string);
+        for model_ref in discovered {
+            if !candidates.iter().any(|existing| existing == &model_ref) {
+                candidates.push(model_ref);
+            }
+        }
 
         self.select_view_image_vision_model_from_candidates(
             base_context_config,

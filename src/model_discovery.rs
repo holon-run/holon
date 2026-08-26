@@ -109,6 +109,11 @@ pub fn provider_supports_model_discovery(provider: &ProviderRuntimeConfig) -> bo
     provider_discovery_definition(provider).is_some()
 }
 
+pub fn provider_discovers_model_capabilities(provider: &ProviderRuntimeConfig) -> bool {
+    provider_discovery_definition(provider)
+        .is_some_and(|definition| definition.decoder == ModelDiscoveryDecoder::Ollama)
+}
+
 fn provider_model_discovery_requires_credential(provider: &ProviderRuntimeConfig) -> bool {
     provider_discovery_definition(provider)
         .is_some_and(|definition| definition.auth == ModelDiscoveryAuth::Required)
@@ -2636,6 +2641,16 @@ mod tests {
         assert!(models
             .iter()
             .all(|model| model.capabilities == ModelCapabilityFlags::default()));
+    }
+
+    #[test]
+    fn only_ollama_discovery_currently_supplies_model_capabilities() {
+        assert!(provider_discovers_model_capabilities(&ollama_provider(
+            "http://127.0.0.1:11434".into()
+        )));
+        assert!(!provider_discovers_model_capabilities(
+            &custom_openai_provider("http://127.0.0.1:8000".into())
+        ));
     }
 
     #[test]

@@ -338,6 +338,7 @@ struct RuntimeInner {
     view_image_observation_cache:
         Mutex<HashMap<ViewImageObservationCacheKey, ViewImageObservation>>,
     model_discovery_refreshes: Mutex<HashSet<crate::config::ProviderId>>,
+    model_discovery_refresh_notify: Notify,
     callback_base_url: String,
     tools: ToolRegistry,
     system: Arc<LocalSystem>,
