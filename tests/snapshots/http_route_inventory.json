@@ -1909,6 +1909,22 @@
   },
   {
     "method": "post",
+    "path": "/api/models/refresh",
+    "handler": "refresh_models_handler",
+    "operation_id": "refreshModels",
+    "tag": "discovery",
+    "parameters": [],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
     "path": "/api/search",
     "handler": "search",
     "operation_id": "runtimeSearch",

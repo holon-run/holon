@@ -14357,6 +14357,54 @@
         ]
       }
     },
+    "/api/models/refresh": {
+      "post": {
+        "description": "Discover models for providers with missing or expired caches, then return the model catalog and runtime availability.",
+        "operationId": "refreshModels",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Refresh available models",
+        "tags": [
+          "discovery"
+        ]
+      }
+    },
     "/api/search": {
       "post": {
         "description": "Search the same memory v2 index used by the agent MemorySearch tool.",
