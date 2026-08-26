@@ -998,6 +998,89 @@ function WaitForRenderer({ record }: { record: RuntimeToolExecutionRecord }) {
   );
 }
 
+// Timer renderers
+
+function formatTimerDuration(milliseconds: number): string {
+  if (milliseconds < 1000) return `${milliseconds}ms`;
+  const seconds = milliseconds / 1000;
+  if (seconds < 60) return `${formatTimerDurationValue(seconds)}s`;
+  const minutes = seconds / 60;
+  if (minutes < 60) return `${formatTimerDurationValue(minutes)}m`;
+  const hours = minutes / 60;
+  if (hours < 24) return `${formatTimerDurationValue(hours)}h`;
+  return `${formatTimerDurationValue(hours / 24)}d`;
+}
+
+function formatTimerDurationValue(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+function TimerFields({ timer }: { timer: Record<string, unknown> }) {
+  const durationMs = nestedValue(timer, ["duration_ms"]);
+  const intervalMs = nestedValue(timer, ["interval_ms"]);
+  const repeat = nestedValue(timer, ["repeat"]) === true;
+  const schedule = typeof intervalMs === "number"
+    ? `Every ${formatTimerDuration(intervalMs)}`
+    : typeof durationMs === "number"
+      ? `After ${formatTimerDuration(durationMs)}`
+      : "";
+
+  return (
+    <>
+      <SimpleField label="Timer ID" value={nestedText(timer, ["id", "timer_id"])} />
+      <SimpleField label="Status" value={nestedText(timer, ["status"])} />
+      <SimpleField label="Summary" value={nestedText(timer, ["summary"])} />
+      <SimpleField label="Schedule" value={schedule} />
+      {repeat ? <SimpleField label="Repeating" value="Yes" /> : null}
+      <SimpleField label="Next fire" value={nestedText(timer, ["next_fire_at"])} />
+      <SimpleField label="Last fired" value={nestedText(timer, ["last_fired_at"])} />
+      <SimpleField label="Fire count" value={nestedValue(timer, ["fire_count"])} />
+      <SimpleField label="Created" value={nestedText(timer, ["created_at"])} />
+    </>
+  );
+}
+
+function TimerRenderer({ record }: { record: RuntimeToolExecutionRecord }) {
+  const input = isRecord(record.input) ? record.input : {};
+  const output = unwrapToolOutput(record.output ?? record.result);
+  const result = isRecord(output) ? output : {};
+  const timers = arrayRecords(result.timers);
+  const timerId = nestedText(input, ["timer_id"]);
+  const durationMs = nestedValue(input, ["duration_ms"]);
+  const intervalMs = nestedValue(input, ["interval_ms"]);
+  const summary = nestedText(input, ["summary"]);
+
+  if (record.tool_name === "ListTimers") {
+    return (
+      <>
+        <SimpleField label="Returned" value={nestedValue(result, ["returned"])} />
+        <SimpleField label="Limit" value={nestedValue(result, ["limit"])} />
+        {timers.map((timer, index) => (
+          <section className="tool-detail-field" key={nestedText(timer, ["id"]) || index}>
+            <h3 className="tool-detail-field-label">Timer {index + 1}</h3>
+            <TimerFields timer={timer} />
+          </section>
+        ))}
+      </>
+    );
+  }
+
+  const hasTimer = Boolean(nestedText(result, ["id", "timer_id"]));
+  return (
+    <>
+      {hasTimer ? <TimerFields timer={result} /> : null}
+      {!hasTimer && timerId ? <SimpleField label="Timer ID" value={timerId} /> : null}
+      {!hasTimer && summary ? <SimpleField label="Summary" value={summary} /> : null}
+      {!hasTimer && typeof durationMs === "number"
+        ? <SimpleField label="Duration" value={formatTimerDuration(durationMs)} />
+        : null}
+      {!hasTimer && typeof intervalMs === "number"
+        ? <SimpleField label="Interval" value={formatTimerDuration(intervalMs)} />
+        : null}
+    </>
+  );
+}
+
 // Enqueue renderer
 
 function EnqueueRenderer({ record }: { record: RuntimeToolExecutionRecord }) {
@@ -1112,6 +1195,11 @@ export function ToolExecutionContent({
       return wrapFailed(<SpawnAgentRenderer record={record} />, record, error, failed, t);
     case "WaitFor":
       return wrapFailed(<WaitForRenderer record={record} />, record, error, failed, t);
+    case "CreateTimer":
+    case "ListTimers":
+    case "GetTimer":
+    case "CancelTimer":
+      return wrapFailed(<TimerRenderer record={record} />, record, error, failed, t);
     case "Enqueue":
       return wrapFailed(<EnqueueRenderer record={record} />, record, error, failed, t);
     case "TaskOutput":

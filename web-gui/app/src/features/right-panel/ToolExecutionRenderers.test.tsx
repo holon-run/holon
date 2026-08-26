@@ -98,6 +98,68 @@ describe("ToolExecutionContent", () => {
     expect(html).toContain("A Holon agent dashboard");
   });
 
+  it("renders Timer details as structured scheduling fields", () => {
+    const html = renderTool({
+      tool_name: "CreateTimer",
+      input: { duration_ms: 60_000, interval_ms: 300_000, summary: "Poll CI" },
+      output: {
+        envelope: {
+          result: {
+            id: "timer_123",
+            status: "active",
+            summary: "Poll CI",
+            duration_ms: 60_000,
+            interval_ms: 300_000,
+            repeat: true,
+            next_fire_at: "2026-08-26T11:15:00Z",
+            last_fired_at: "2026-08-26T11:10:00Z",
+            fire_count: 2,
+            created_at: "2026-08-26T11:00:00Z",
+          },
+        },
+      },
+    });
+
+    expect(html).toContain("Timer ID");
+    expect(html).toContain("timer_123");
+    expect(html).toContain("Poll CI");
+    expect(html).toContain("Every 5m");
+    expect(html).toContain("Repeating");
+    expect(html).toContain("2026-08-26T11:15:00Z");
+    expect(html).toContain("2026-08-26T11:10:00Z");
+    expect(html).toContain("2");
+  });
+
+  it("renders ListTimers as separate structured timer sections", () => {
+    const html = renderTool({
+      tool_name: "ListTimers",
+      input: { limit: 10 },
+      output: {
+        envelope: {
+          result: {
+            returned: 1,
+            limit: 10,
+            timers: [{
+              id: "timer_listed",
+              status: "completed",
+              summary: "One-shot reminder",
+              duration_ms: 30_000,
+              interval_ms: null,
+              repeat: false,
+              fire_count: 1,
+            }],
+          },
+        },
+      },
+    });
+
+    expect(html).toContain("Returned");
+    expect(html).toContain("Timer 1");
+    expect(html).toContain("timer_listed");
+    expect(html).toContain("One-shot reminder");
+    expect(html).toContain("After 30s");
+  });
+
   it("renders WebSearch details as a structured result list", () => {
     const html = renderTool({
       tool_name: "WebSearch",
