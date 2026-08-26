@@ -1346,14 +1346,14 @@ pub(crate) fn materialize_provider_config(
 
 pub(crate) fn validate_openai_reasoning_effort(value: &str) -> Result<()> {
     match value {
-        "low" | "medium" | "high" | "xhigh" | "max" => Ok(()),
+        "none" | "low" | "medium" | "high" | "xhigh" | "max" => Ok(()),
         "ultra" => Err(anyhow!(
             "OpenAI Codex reasoning_effort 'ultra' is unavailable; \
              Holon does not yet implement the required orchestration semantics"
         )),
         _ => Err(anyhow!(
             "invalid OpenAI Codex reasoning_effort '{value}'; \
-             must be one of low, medium, high, xhigh, max"
+             must be one of none, low, medium, high, xhigh, max"
         )),
     }
 }
@@ -1365,6 +1365,7 @@ mod reasoning_effort_tests {
     #[test]
     fn codex_reasoning_effort_vocabulary_allows_max_but_not_ultra() {
         validate_openai_reasoning_effort("max").unwrap();
+        validate_openai_reasoning_effort("none").unwrap();
         let error = validate_openai_reasoning_effort("ultra").unwrap_err();
         assert!(error.to_string().contains("orchestration semantics"));
     }

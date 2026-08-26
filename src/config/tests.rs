@@ -2157,6 +2157,7 @@ fn resolves_compatible_reasoning_effort_for_non_codex_route() {
         .unwrap();
 
     assert!(route.validate_reasoning_effort("xhigh").is_ok());
+    assert!(route.validate_reasoning_effort("none").is_ok());
     assert!(route.validate_reasoning_effort("arbitrary").is_err());
 }
 

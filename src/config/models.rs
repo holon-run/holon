@@ -363,9 +363,9 @@ impl ResolvedModelRoute {
         }
 
         match value {
-            "low" | "medium" | "high" | "xhigh" | "max" => Ok(()),
+            "none" | "low" | "medium" | "high" | "xhigh" | "max" => Ok(()),
             _ => Err(ReasoningEffortValidationError::new(format!(
-                "invalid reasoning_effort '{value}'; must be one of low, medium, high, xhigh, max"
+                "invalid reasoning_effort '{value}'; must be one of none, low, medium, high, xhigh, max"
             ))),
         }
     }

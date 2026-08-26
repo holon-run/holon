@@ -10,6 +10,7 @@ pub(crate) fn build_chat_completion_request(
     request: &ProviderTurnRequest,
     tool_schema_contract: ToolSchemaContract,
     stream: bool,
+    reasoning_effort: Option<&str>,
 ) -> Result<Value> {
     // Build messages array for Chat Completions API
     let messages =
@@ -57,6 +58,12 @@ pub(crate) fn build_chat_completion_request(
         body["prompt_cache_key"] = Value::String(cache.prompt_cache_key.clone());
     }
 
+    // Forward configured reasoning_effort; e.g. "none" disables thinking on
+    // local OpenAI-compatible servers such as Ollama.
+    if let Some(reasoning_effort) = reasoning_effort {
+        body["reasoning_effort"] = Value::String(reasoning_effort.to_string());
+    }
+
     Ok(body)
 }
 
@@ -66,6 +73,7 @@ pub(crate) fn plan_chat_completion_request(
     request: &ProviderTurnRequest,
     tool_schema_contract: ToolSchemaContract,
     stream: bool,
+    reasoning_effort: Option<&str>,
     continuation: &Arc<Mutex<OpenAiContinuationState>>,
 ) -> Result<(Value, OpenAiRequestPlan)> {
     let full_body = build_chat_completion_request(
@@ -74,6 +82,7 @@ pub(crate) fn plan_chat_completion_request(
         request,
         tool_schema_contract,
         stream,
+        reasoning_effort,
     )?;
 
     let body_messages = full_body

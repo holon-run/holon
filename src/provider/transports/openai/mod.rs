@@ -168,6 +168,7 @@ pub struct OpenAiChatCompletionsProvider {
     api_key: Option<String>,
     model: String,
     max_output_tokens: u32,
+    reasoning_effort: Option<String>,
     trace_home_dir: PathBuf,
     continuation: Arc<Mutex<OpenAiContinuationState>>,
 }
@@ -456,6 +457,7 @@ impl OpenAiChatCompletionsProvider {
             api_key,
             model: model.to_string(),
             max_output_tokens: resolved_max_output_tokens,
+            reasoning_effort: provider_config.reasoning_effort.clone(),
             trace_home_dir: trace_home_dir.to_path_buf(),
             continuation: Arc::new(Mutex::new(OpenAiContinuationState::default())),
         })
@@ -1103,9 +1105,11 @@ impl AgentProvider for OpenAiChatCompletionsProvider {
             &request,
             ToolSchemaContract::Relaxed,
             false, // Streaming infrastructure exists but is not currently enabled; requests are non-streaming
+            self.reasoning_effort.as_deref(),
             &self.continuation,
         )?;
-        let sent_diagnostics = plan.diagnostics.clone();
+        let mut sent_diagnostics = plan.diagnostics.clone();
+        sent_diagnostics.reasoning_effort = self.reasoning_effort.clone();
         let headers = self
             .api_key
             .as_ref()

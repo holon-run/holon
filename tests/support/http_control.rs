@@ -1607,7 +1607,7 @@ pub async fn control_agent_model_override_validates_codex_reasoning_effort() -> 
     assert!(invalid_non_codex
         .text()
         .await?
-        .contains("must be one of low, medium, high, xhigh, max"));
+        .contains("must be one of none, low, medium, high, xhigh, max"));
 
     server.abort();
     Ok(())
