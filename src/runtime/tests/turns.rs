@@ -2113,12 +2113,15 @@ async fn concurrent_view_image_selection_discovers_ollama_vision_once_from_cold_
     };
 
     let home = tempdir().unwrap();
+    std::fs::write(
+        home.path().join("config.json"),
+        r#"{"model":{"default":"ollama/qwen3-vl:latest"}}"#,
+    )
+    .unwrap();
     let mut config = {
         let _env_lock = crate::test_env::lock_env();
         AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap()
     };
-    config.default_model =
-        crate::config::ModelRouteRef::parse_compatible("ollama/qwen3-vl:latest").unwrap();
     config
         .providers
         .get_mut(&crate::config::ProviderId::parse("ollama").unwrap())
