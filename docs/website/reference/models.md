@@ -6,8 +6,8 @@ generated: auto-generated from holon source — do not edit directly
 
 # Supported Models
 
-Holon includes built-in configuration for **33 provider accounts**
-across **42 endpoints** and **256 models**.
+Holon includes built-in configuration for **34 provider accounts**
+across **43 endpoints** and **264 models**.
 
 This page is auto-generated from the Holon source code
 ([`src/model_catalog.rs`](../../../src/model_catalog.rs) and
@@ -46,6 +46,7 @@ used in existing `provider/model` refs and config shortcuts.
 | `moonshot` | `default` | `moonshot` | OpenAI Chat Completions | `https://api.moonshot.ai/v1` | `MOONSHOT_API_KEY` |
 | `nearai` | `default` | `nearai` | OpenAI Chat Completions | `https://cloud-api.near.ai/v1` | `NEARAI_API_KEY` |
 | `nvidia` | `default` | `nvidia` | OpenAI Chat Completions | `https://integrate.api.nvidia.com/v1` | `NVIDIA_API_KEY` |
+| `ollama` | `default` | `ollama` | Anthropic Messages | `http://127.0.0.1:11434` | `—` |
 | `openai` | `default` | `openai` | OpenAI Responses | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
 | `openai-codex` | `default` | `openai-codex` | OpenAI Codex | `https://chatgpt.com/backend-api/codex` | `—` |
 | `opencode-go` | `default` | `opencode-go` | OpenAI Chat Completions | `https://opencode.ai/zen/go/v1` | `OPENCODE_GO_API_KEY` |
@@ -101,6 +102,7 @@ and capabilities.
 | `bigmodel` | `glm-5-turbo` | `bigmodel/glm-5-turbo` | 204800 | 131072 | ✅ | — |
 | `bigmodel` | `glm-5.1` | `bigmodel/glm-5.1` | 204800 | 131072 | ✅ | — |
 | `bigmodel` | `glm-5.2` | `bigmodel/glm-5.2` | 1000000 | 131072 | ✅ | — |
+| `bigmodel` | `glm-5.3` | `bigmodel/glm-5.3` | 1000000 | 131072 | ✅ | — |
 | `bigmodel` | `glm-5v-turbo` | `bigmodel/glm-5v-turbo` | 204800 | 131072 | ✅ | ✅ |
 | `chutes` | `MiniMaxAI/MiniMax-M2.5-TEE` | `chutes/MiniMaxAI/MiniMax-M2.5-TEE` | 196608 | 65536 | ✅ | — |
 | `chutes` | `Qwen/Qwen3-235B-A22B-Thinking-2507-TEE` | `chutes/Qwen/Qwen3-235B-A22B-Thinking-2507-TEE` | 262144 | 262144 | ✅ | — |
@@ -118,16 +120,18 @@ and capabilities.
 | `dashscope` | `MiniMax-M2.5` | `dashscope/MiniMax-M2.5` | 196608 | 32768 | ✅ | — |
 | `dashscope` | `MiniMax/MiniMax-M3` | `dashscope/MiniMax/MiniMax-M3` | 196608 | 32768 | ✅ | — |
 | `dashscope` | `ZHIPU/GLM-5.2` | `dashscope/ZHIPU/GLM-5.2` | 1000000 | 131072 | ✅ | — |
+| `dashscope` | `ZHIPU/GLM-5.3` | `dashscope/ZHIPU/GLM-5.3` | 1000000 | 131072 | ✅ | — |
 | `dashscope` | `deepseek-v3.2` | `dashscope/deepseek-v3.2` | 128000 | 32768 | ✅ | — |
-| `dashscope` | `deepseek-v4-flash` | `dashscope/deepseek-v4-flash` | 1000000 | 65536 | ✅ | — |
-| `dashscope` | `deepseek-v4-pro` | `dashscope/deepseek-v4-pro` | 1000000 | 65536 | ✅ | — |
+| `dashscope` | `deepseek-v4-flash` | `dashscope/deepseek-v4-flash` | 1000000 | 384000 | ✅ | — |
+| `dashscope` | `deepseek-v4-flash-0731` | `dashscope/deepseek-v4-flash-0731` | 1000000 | 384000 | ✅ | — |
+| `dashscope` | `deepseek-v4-pro` | `dashscope/deepseek-v4-pro` | 1000000 | 384000 | ✅ | — |
 | `dashscope` | `glm-4.7` | `dashscope/glm-4.7` | 202752 | 16384 | ✅ | — |
 | `dashscope` | `glm-5` | `dashscope/glm-5` | 202752 | 16384 | ✅ | — |
-| `dashscope` | `glm-5.1` | `dashscope/glm-5.1` | 202752 | 65536 | ✅ | — |
-| `dashscope` | `glm-5.2` | `dashscope/glm-5.2` | 1000000 | 65536 | ✅ | — |
+| `dashscope` | `glm-5.1` | `dashscope/glm-5.1` | 202752 | 131072 | ✅ | — |
+| `dashscope` | `glm-5.2` | `dashscope/glm-5.2` | 204800 | 128000 | ✅ | — |
 | `dashscope` | `kimi-k2.5` | `dashscope/kimi-k2.5` | 262144 | 32768 | ✅ | ✅ |
-| `dashscope` | `kimi-k2.6` | `dashscope/kimi-k2.6` | 262144 | 65536 | ✅ | ✅ |
-| `dashscope` | `kimi-k2.7-code` | `dashscope/kimi-k2.7-code` | 262144 | 65536 | ✅ | ✅ |
+| `dashscope` | `kimi-k2.6` | `dashscope/kimi-k2.6` | 262144 | 98304 | ✅ | ✅ |
+| `dashscope` | `kimi-k2.7-code` | `dashscope/kimi-k2.7-code` | 262144 | 98304 | ✅ | ✅ |
 | `dashscope` | `mimo-v2.5-pro` | `dashscope/mimo-v2.5-pro` | 1000000 | 131072 | ✅ | — |
 | `dashscope` | `qwen3-coder-flash` | `dashscope/qwen3-coder-flash` | 1000000 | 65536 | ✅ | — |
 | `dashscope` | `qwen3-coder-next` | `dashscope/qwen3-coder-next` | 262144 | 65536 | ✅ | — |
@@ -142,6 +146,8 @@ and capabilities.
 | `dashscope` | `qwen3.7-max-2026-06-08` | `dashscope/qwen3.7-max-2026-06-08` | 1000000 | 65536 | ✅ | — |
 | `dashscope` | `qwen3.7-plus` | `dashscope/qwen3.7-plus` | 1000000 | 65536 | ✅ | ✅ |
 | `dashscope` | `qwen3.7-plus-2026-05-26` | `dashscope/qwen3.7-plus-2026-05-26` | 1000000 | 65536 | ✅ | ✅ |
+| `dashscope` | `qwen3.8-max` | `dashscope/qwen3.8-max` | 1000000 | 131072 | ✅ | ✅ |
+| `dashscope` | `qwen3.8-max-preview` | `dashscope/qwen3.8-max-preview` | 1000000 | 65536 | ✅ | ✅ |
 | `deepseek` | `deepseek-v4-flash` | `deepseek/deepseek-v4-flash` | 1000000 | 384000 | ✅ | — |
 | `deepseek` | `deepseek-v4-pro` | `deepseek/deepseek-v4-pro` | 1000000 | 384000 | ✅ | — |
 | `fireworks` | `accounts/fireworks/models/deepseek-v4-flash` | `fireworks/accounts/fireworks/models/deepseek-v4-flash` | 1048576 | — | ✅ | — |
@@ -183,6 +189,7 @@ and capabilities.
 | `moonshot` | `kimi-k2.6` | `moonshot/kimi-k2.6` | 262144 | 262144 | ✅ | ✅ |
 | `moonshot` | `kimi-k2.7-code` | `moonshot/kimi-k2.7-code` | 262144 | 262144 | ✅ | ✅ |
 | `moonshot` | `kimi-k2.7-code-highspeed` | `moonshot/kimi-k2.7-code-highspeed` | 262144 | 262144 | ✅ | ✅ |
+| `moonshot` | `kimi-k3` | `moonshot/kimi-k3` | 1000000 | 262144 | ✅ | ✅ |
 | `moonshot` | `moonshot-v1-128k` | `moonshot/moonshot-v1-128k` | 131072 | 131072 | — | — |
 | `moonshot` | `moonshot-v1-128k-vision-preview` | `moonshot/moonshot-v1-128k-vision-preview` | 131072 | 131072 | — | ✅ |
 | `moonshot` | `moonshot-v1-32k` | `moonshot/moonshot-v1-32k` | 32768 | 32768 | — | — |
@@ -307,6 +314,7 @@ and capabilities.
 | `volcengine` | `doubao-seed-2-0-pro-260215` | `volcengine/doubao-seed-2-0-pro-260215` | 256000 | 4096 | ✅ | ✅ |
 | `volcengine` | `doubao-seedream-5.0-lite` | `volcengine/doubao-seedream-5.0-lite` | — | — | — | — |
 | `volcengine` | `glm-5.2` | `volcengine/glm-5.2` | 204800 | 128000 | ✅ | — |
+| `volcengine` | `glm-5.3` | `volcengine/glm-5.3` | 204800 | 128000 | ✅ | — |
 | `volcengine` | `kimi-k2.6` | `volcengine/kimi-k2.6` | 262144 | 32768 | ✅ | — |
 | `volcengine` | `kimi-k2.7-code` | `volcengine/kimi-k2.7-code` | 262144 | 32768 | ✅ | — |
 | `xai` | `grok-4.3` | `xai/grok-4.3` | 1000000 | — | ✅ | ✅ |
@@ -331,4 +339,5 @@ and capabilities.
 | `zai` | `glm-5-turbo` | `zai/glm-5-turbo` | 202800 | 131072 | ✅ | — |
 | `zai` | `glm-5.1` | `zai/glm-5.1` | 202800 | 131072 | ✅ | — |
 | `zai` | `glm-5.2` | `zai/glm-5.2` | 1000000 | 131072 | ✅ | — |
+| `zai` | `glm-5.3` | `zai/glm-5.3` | 1000000 | 131072 | ✅ | — |
 | `zai` | `glm-5v-turbo` | `zai/glm-5v-turbo` | 202800 | 131072 | ✅ | ✅ |

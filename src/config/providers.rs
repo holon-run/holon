@@ -1,4 +1,5 @@
 use super::*;
+use url::{Host, Url};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlAuthMode {
@@ -95,6 +96,24 @@ impl ProviderRuntimeConfig {
             .as_ref()
             .map(|credential| !credential.trim().is_empty())
             .unwrap_or(false)
+    }
+
+    pub fn unauthenticated_cleartext_remote_warning(&self) -> Option<&'static str> {
+        if self.auth.kind != CredentialKind::None {
+            return None;
+        }
+        let url = Url::parse(&self.base_url).ok()?;
+        if url.scheme() != "http" {
+            return None;
+        }
+        let loopback = match url.host()? {
+            Host::Domain(host) => host.eq_ignore_ascii_case("localhost"),
+            Host::Ipv4(address) => address.is_loopback(),
+            Host::Ipv6(address) => address.is_loopback(),
+        };
+        (!loopback).then_some(
+            "Provider endpoint is remote, cleartext HTTP, and unauthenticated; network peers may observe or modify model traffic.",
+        )
     }
 }
 

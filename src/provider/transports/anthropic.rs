@@ -12,7 +12,7 @@ use twox_hash::XxHash64;
 
 use crate::{
     config::{
-        AnthropicCacheStrategy, AnthropicContextManagementConfig, AppConfig,
+        AnthropicCacheStrategy, AnthropicContextManagementConfig, AppConfig, CredentialKind,
         ProviderBuiltinWebSearchConfig, ProviderId, ProviderRuntimeConfig,
     },
     prompt::PromptStability,
@@ -42,7 +42,7 @@ pub struct AnthropicProvider {
     route_provider: String,
     route_endpoint: String,
     base_url: String,
-    auth_token: String,
+    auth_token: Option<String>,
     model: String,
     max_output_tokens: u32,
     reasoning_effort: Option<String>,
@@ -181,17 +181,17 @@ impl AnthropicProvider {
         let auth_token = provider_config
             .credential
             .clone()
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| {
-                let credential_name = provider_config
-                    .auth
-                    .env
-                    .as_deref()
-                    .or(provider_config.auth.profile.as_deref())
-                    .or(provider_config.auth.external.as_deref())
-                    .unwrap_or("configured credential");
-                anyhow!("missing {credential_name}")
-            })?;
+            .filter(|value| !value.trim().is_empty());
+        if auth_token.is_none() && provider_config.auth.kind != CredentialKind::None {
+            let credential_name = provider_config
+                .auth
+                .env
+                .as_deref()
+                .or(provider_config.auth.profile.as_deref())
+                .or(provider_config.auth.external.as_deref())
+                .unwrap_or("configured credential");
+            return Err(anyhow!("missing {credential_name}"));
+        }
         Ok(Self {
             client,
             route_provider: provider_config.route_provider.as_str().to_string(),
@@ -309,9 +309,11 @@ impl AgentProvider for AnthropicProvider {
         );
         let mut headers = vec![
             ("content-type", "application/json".to_string()),
-            ("authorization", format!("Bearer {}", self.auth_token)),
             ("anthropic-version", "2023-06-01".to_string()),
         ];
+        if let Some(auth_token) = self.auth_token.as_deref() {
+            headers.push(("authorization", format!("Bearer {auth_token}")));
+        }
         if self.context_management.enabled {
             headers.push((
                 "anthropic-beta",

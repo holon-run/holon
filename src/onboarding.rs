@@ -718,7 +718,10 @@ fn model_provider_section(config: &AppConfig) -> OnboardingSection {
 
     let credential_configured =
         provider.has_configured_credential() || provider.auth.source == CredentialSource::None;
-    let status = if credential_configured {
+    let security_warning = provider.unauthenticated_cleartext_remote_warning();
+    let status = if security_warning.is_some() {
+        OnboardingStatus::Restricted
+    } else if credential_configured {
         OnboardingStatus::Configured
     } else {
         OnboardingStatus::Missing
@@ -743,7 +746,9 @@ fn model_provider_section(config: &AppConfig) -> OnboardingSection {
         "model_provider",
         "Model provider",
         status,
-        if credential_configured {
+        if security_warning.is_some() {
+            "The default model provider uses remote, cleartext, unauthenticated transport."
+        } else if credential_configured {
             "The default model provider has a configured credential path."
         } else {
             "The default model provider is missing a configured credential path."
@@ -755,6 +760,7 @@ fn model_provider_section(config: &AppConfig) -> OnboardingSection {
             ("credential_source", json!(provider.auth.source.as_str())),
             ("credential_kind", json!(provider.auth.kind.as_str())),
             ("credential_configured", json!(credential_configured)),
+            ("security_warning", json!(security_warning)),
         ],
         actions,
     )
@@ -1072,6 +1078,50 @@ mod tests {
         assert_eq!(report.status, OnboardingStatus::Missing);
         assert_eq!(model.status, OnboardingStatus::Missing);
         assert_eq!(report.next_actions.len(), 1);
+    }
+
+    #[test]
+    fn onboarding_report_warns_for_remote_cleartext_unauthenticated_provider() {
+        let mut config = test_config(Some("openai-key"));
+        let ollama = ProviderId::parse("ollama").unwrap();
+        config.providers.insert(
+            ollama.clone(),
+            ProviderRuntimeConfig {
+                id: ollama.clone(),
+                route_provider: ollama,
+                route_endpoint: ProviderEndpointId::default_endpoint(),
+                transport: ProviderTransportKind::AnthropicMessages,
+                base_url: "http://192.0.2.10:11434".into(),
+                auth: ProviderAuthConfig {
+                    source: CredentialSource::None,
+                    kind: CredentialKind::None,
+                    env: None,
+                    profile: None,
+                    external: None,
+                },
+                credential: None,
+                credential_store_path: None,
+                codex_home: None,
+                originator: None,
+                reasoning_effort: None,
+                context_management: Default::default(),
+                builtin_web_search: None,
+            },
+        );
+        config.default_model = ModelRouteRef::parse_compatible("ollama/qwen3.8:latest").unwrap();
+
+        let report = onboarding_report(&config);
+        let provider = report
+            .sections
+            .iter()
+            .find(|section| section.id == "model_provider")
+            .expect("model provider section");
+        assert_eq!(provider.status, OnboardingStatus::Restricted);
+        assert!(
+            provider.details["security_warning"].as_str().is_some_and(
+                |warning| warning.contains("remote, cleartext HTTP, and unauthenticated")
+            )
+        );
     }
 
     #[test]

@@ -38,6 +38,7 @@ pub(crate) enum ModelDiscoveryAuth {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ModelDiscoveryRoute {
     Fixed(&'static str),
+    Ollama,
     OpenAiCompatible,
     OpenAiV1,
     Venice,
@@ -49,6 +50,7 @@ pub(crate) enum ModelDiscoveryDecoder {
     Arcee,
     HuggingFace,
     Kilo,
+    Ollama,
     OpenAiCompatible,
     NearAi,
     OpenCodeGo,
@@ -172,6 +174,13 @@ const PROVIDER_DEFINITIONS: &[ProviderDefinition] = &[
         "openai" => "openai" @ "default",
         OpenAiResponses, "https://api.openai.com/v1", ["OPENAI_API_KEY"],
         OpenAi, Default, OpenAi, None, None, StaticOnly, HostedEarly
+    ),
+    provider!(
+        "ollama" => "ollama" @ "default",
+        AnthropicMessages, "http://127.0.0.1:11434", [],
+        Generic, AnthropicCompatible, None, None,
+        discovery!(Optional, ModelDiscoveryRoute::Ollama, Ollama),
+        DiscoveryOnly
     ),
     provider!(
         "anthropic" => "anthropic" @ "default",

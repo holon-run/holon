@@ -4,11 +4,68 @@ use std::sync::{Arc, Mutex};
 
 use super::support::*;
 use super::*;
-use crate::config::{AnthropicCacheStrategy, ProviderId};
+use crate::config::{
+    AnthropicCacheStrategy, ProviderEndpointId, ProviderId, ProviderRuntimeConfig,
+    ProviderTransportKind,
+};
 use crate::provider::{http_trace::ProviderHttpTrace, provider_transport_diagnostics};
 use axum::{http::HeaderMap, routing::post, Json, Router};
 use serde_json::{json, Value};
 use std::path::Path;
+
+#[tokio::test]
+async fn anthropic_compatible_endpoint_can_send_without_authentication() {
+    let captured_headers = Arc::new(Mutex::new(None::<HeaderMap>));
+    let captured_headers_for_server = captured_headers.clone();
+    let base_url = spawn_test_server(Router::new().route(
+        "/v1/messages",
+        post(move |headers: HeaderMap| {
+            let captured_headers = captured_headers_for_server.clone();
+            async move {
+                *captured_headers.lock().unwrap() = Some(headers);
+                Json(json!({
+                    "content": [{ "type": "text", "text": "ok" }],
+                    "stop_reason": "end_turn",
+                    "usage": { "input_tokens": 4, "output_tokens": 2 }
+                }))
+            }
+        }),
+    ))
+    .await;
+    let provider_config = ProviderRuntimeConfig {
+        id: ProviderId::parse("ollama").unwrap(),
+        route_provider: ProviderId::parse("ollama").unwrap(),
+        route_endpoint: ProviderEndpointId::default_endpoint(),
+        transport: ProviderTransportKind::AnthropicMessages,
+        base_url,
+        auth: Default::default(),
+        credential: None,
+        credential_store_path: None,
+        codex_home: None,
+        originator: None,
+        reasoning_effort: None,
+        context_management: Default::default(),
+        builtin_web_search: None,
+    };
+    let provider = AnthropicProvider::from_runtime_config(
+        &provider_config,
+        "qwen3.8:latest",
+        1024,
+        Path::new("."),
+        true,
+    )
+    .unwrap();
+
+    provider
+        .complete_turn(ProviderTurnRequest::plain("hello", Vec::new(), Vec::new()))
+        .await
+        .unwrap();
+
+    let headers = captured_headers.lock().unwrap();
+    let headers = headers.as_ref().expect("server should capture headers");
+    assert!(headers.get("authorization").is_none());
+    assert_eq!(headers["anthropic-version"], "2023-06-01");
+}
 
 #[tokio::test]
 async fn anthropic_request_lowers_prompt_frame_blocks_to_cache_control() {

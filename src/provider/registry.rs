@@ -258,5 +258,13 @@ mod tests {
             );
             assert_eq!(runtime.transport, definition.transport);
         }
+
+        let ollama = registry
+            .get(&ProviderId::parse("ollama").unwrap())
+            .expect("ollama provider");
+        assert_eq!(ollama.base_url, "http://127.0.0.1:11434");
+        assert_eq!(ollama.transport, ProviderTransportKind::AnthropicMessages);
+        assert_eq!(ollama.auth.kind, crate::config::CredentialKind::None);
+        assert!(ollama.credential.is_none());
     }
 }

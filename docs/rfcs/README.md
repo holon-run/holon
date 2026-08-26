@@ -62,6 +62,7 @@ implementation and tests.
 - [Execution Policy and Virtual Execution Boundary](./execution-policy-and-virtual-execution-boundary.md)
 - [Runtime Configuration Surface](./runtime-configuration-surface.md)
 - [Extensible Model And Provider Configuration](./extensible-model-provider-configuration.md)
+- [First-Class Ollama Provider](./first-class-ollama-provider.md)
 - [Model Capability Resolution](./model-capability-resolution.md)
 - [Model Metadata Precedence](./model-metadata-precedence.md)
 
