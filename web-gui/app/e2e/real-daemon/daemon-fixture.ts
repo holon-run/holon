@@ -133,6 +133,7 @@ async function createDaemon(
       env: {
         ...process.env,
         HOLON_HOME: home,
+        HOLON_MODEL: "openai/gpt-5.4",
         HOLON_CONTROL_AUTH_MODE: "required",
         HOLON_CALLBACK_BASE_URL: baseUrl,
       },
