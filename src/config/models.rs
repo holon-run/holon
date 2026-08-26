@@ -408,6 +408,17 @@ pub struct RuntimeModelCatalog {
 }
 
 impl RuntimeModelCatalog {
+    pub(crate) fn canonicalize_model_route_ref(&self, route_ref: &ModelRouteRef) -> ModelRouteRef {
+        let canonical_model_ref = self
+            .built_in_catalog
+            .canonicalize_model_ref(&route_ref.model_ref());
+        ModelRouteRef::new(
+            route_ref.provider.clone(),
+            route_ref.endpoint.clone(),
+            canonical_model_ref.model,
+        )
+    }
+
     pub fn from_config(config: &AppConfig) -> Self {
         let mut provider_endpoints = config
             .providers

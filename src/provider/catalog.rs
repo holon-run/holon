@@ -87,13 +87,28 @@ fn build_candidate_with_override(
 ) -> Result<ProviderCandidate> {
     let mut route =
         resolve_explicit_model_route_for_candidate(config, route_ref, ModelRouteCapability::Turn)?;
-    if let Some(reasoning_effort_override) = reasoning_effort_override
-        .filter(|reasoning_effort| route.route_ref == *reasoning_effort.route_ref)
+    apply_reasoning_effort_override(config, &mut route, reasoning_effort_override);
+    build_candidate_from_model_route(&config.home_dir, &route)
+}
+
+fn apply_reasoning_effort_override(
+    config: &AppConfig,
+    route: &mut ResolvedModelRoute,
+    reasoning_effort_override: Option<ModelRouteReasoningEffortOverride<'_>>,
+) {
+    let reasoning_effort_override = reasoning_effort_override.map(|reasoning_effort| {
+        (
+            RuntimeModelCatalog::from_config(config)
+                .canonicalize_model_route_ref(reasoning_effort.route_ref),
+            reasoning_effort.reasoning_effort,
+        )
+    });
+    if let Some(reasoning_effort_override) =
+        reasoning_effort_override.filter(|(route_ref, _)| route.route_ref == *route_ref)
     {
         route.endpoint.runtime_config.reasoning_effort =
-            Some(reasoning_effort_override.reasoning_effort.to_string());
+            Some(reasoning_effort_override.1.to_string());
     }
-    build_candidate_from_model_route(&config.home_dir, &route)
 }
 
 pub(crate) fn build_candidate_from_model_route(
@@ -265,5 +280,42 @@ mod tests {
         assert!(error
             .to_string()
             .contains("no available providers for configured model chain"));
+    }
+
+    #[test]
+    fn model_route_effort_override_matches_legacy_model_alias() {
+        let mut config = codex_config("gpt-5.6-luna", "medium");
+        let mistral = crate::config::ProviderId::parse("mistral").unwrap();
+        let mut provider = config
+            .providers
+            .get(&crate::config::ProviderId::openai())
+            .unwrap()
+            .clone();
+        provider.id = mistral.clone();
+        provider.route_provider = mistral.clone();
+        config.providers.insert(mistral.clone(), provider);
+        let alias = ModelRouteRef::new(
+            mistral,
+            crate::config::ProviderEndpointId::default_endpoint(),
+            "devstral-medium-latest",
+        );
+        config.default_model = alias.clone();
+
+        let mut route =
+            resolve_explicit_model_route_for_candidate(&config, &alias, ModelRouteCapability::Turn)
+                .expect("the legacy alias should resolve");
+        apply_reasoning_effort_override(
+            &config,
+            &mut route,
+            Some(ModelRouteReasoningEffortOverride {
+                route_ref: &alias,
+                reasoning_effort: "high",
+            }),
+        );
+
+        assert_eq!(
+            route.endpoint.runtime_config.reasoning_effort.as_deref(),
+            Some("high")
+        );
     }
 }
