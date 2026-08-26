@@ -179,13 +179,16 @@ impl RuntimeConfigSurface {
                     base_url: provider.base_url.clone(),
                     oauth_supported: crate::auth::oauth_provider_config(provider.id.as_str())
                         .is_some(),
-                    api_key_supported: provider.transport.as_str() != "openai_codex_responses",
+                    api_key_supported: provider.auth.kind != crate::config::CredentialKind::None
+                        && provider.transport.as_str() != "openai_codex_responses",
                     credential_source: provider.auth.source.as_str().to_string(),
                     credential_kind: provider.auth.kind.as_str().to_string(),
                     credential_env: provider.auth.env.clone(),
                     credential_profile: provider.auth.profile.clone(),
                     credential_external: provider.auth.external.clone(),
-                    credential_configured: provider.has_configured_credential(),
+                    credential_configured: provider.auth.kind
+                        == crate::config::CredentialKind::None
+                        || provider.has_configured_credential(),
                     configured_in_config: config.stored_config.providers.contains_key(&provider.id),
                 })
                 .collect(),

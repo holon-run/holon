@@ -9,6 +9,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::{Arc, Mutex},
+    thread,
 };
 
 use anyhow::Result;
@@ -17,7 +18,10 @@ use holon::{
     client::{
         AgentStreamEvent, EventPageRequest, EventStreamRequest, LocalClient, LocalEventStream,
     },
-    config::{AppConfig, ControlAuthMode},
+    config::{
+        AppConfig, ControlAuthMode, CredentialKind, CredentialSource, ProviderAuthConfig,
+        ProviderEndpointId, ProviderId, ProviderRuntimeConfig, ProviderTransportKind,
+    },
     daemon::RuntimeServiceHandle,
     host::RuntimeHost,
     http::{self, AppState},
@@ -178,6 +182,89 @@ pub async fn http_success_response_shapes_follow_route_class_policy() -> Result<
             .and_then(|value| value.to_str().ok())
             .is_some_and(|value| value.starts_with("text/event-stream")),
         "stream route success should be SSE, not a JSON envelope"
+    );
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn explicit_model_refresh_discovers_credential_free_ollama_models() -> Result<()> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let base_url = format!("http://{}", listener.local_addr()?);
+    let discovery_server = thread::spawn(move || {
+        let (mut tags_stream, _) = listener.accept().unwrap();
+        let mut request = [0_u8; 2048];
+        let read = tags_stream.read(&mut request).unwrap();
+        assert!(String::from_utf8_lossy(&request[..read]).starts_with("GET /api/tags HTTP/1.1"));
+        let body = r#"{"models":[{"name":"qwen3:latest"}]}"#;
+        write!(
+            tags_stream,
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+
+        let (mut show_stream, _) = listener.accept().unwrap();
+        let mut request = [0_u8; 4096];
+        let read = show_stream.read(&mut request).unwrap();
+        assert!(String::from_utf8_lossy(&request[..read]).starts_with("POST /api/show HTTP/1.1"));
+        let body = r#"{"capabilities":["tools"],"model_info":{"qwen3.context_length":32768}}"#;
+        write!(
+            show_stream,
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+    });
+
+    let mut config = test_config();
+    let ollama_id = ProviderId::parse("ollama")?;
+    config.providers.clear();
+    config.providers.insert(
+        ollama_id.clone(),
+        ProviderRuntimeConfig {
+            id: ollama_id.clone(),
+            route_provider: ollama_id,
+            route_endpoint: ProviderEndpointId::default_endpoint(),
+            transport: ProviderTransportKind::AnthropicMessages,
+            base_url,
+            auth: ProviderAuthConfig {
+                source: CredentialSource::None,
+                kind: CredentialKind::None,
+                env: None,
+                profile: None,
+                external: None,
+            },
+            credential: None,
+            credential_store_path: None,
+            codex_home: None,
+            originator: None,
+            reasoning_effort: None,
+            context_management: Default::default(),
+            builtin_web_search: None,
+        },
+    );
+    let (_host, base, server) = spawn_server_with_config(config).await?;
+
+    let response: serde_json::Value = reqwest::Client::new()
+        .post(format!("{base}/api/models/refresh"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    discovery_server.join().unwrap();
+
+    assert!(
+        response["model_availability"]
+            .as_array()
+            .is_some_and(|models| models.iter().any(|model| {
+                model["model"] == "ollama/qwen3:latest" && model["route_provider"] == "ollama"
+            })),
+        "unexpected refreshed model catalog: {response}"
     );
 
     server.abort();

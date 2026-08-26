@@ -488,6 +488,8 @@ const en = {
     keySet: "key set",
     credReady: "credential ready",
     credMissing: "credential missing",
+    credNotRequired: "credentials not required",
+    noCredentialsRequired: "This provider does not require credentials.",
     providerReady: "Provider ready",
     providerCredentialMissing: "Provider credential missing",
     authMode: "Auth mode",

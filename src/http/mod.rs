@@ -360,6 +360,7 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(agents::root))
         .route("/handshake", get(agents::handshake))
         .route("/models", get(agents::models_handler))
+        .route("/models/refresh", post(agents::refresh_models_handler))
         .route("/agents/list", get(agents::list_agent_entries))
         .route(
             "/agents/snapshot",

@@ -1,7 +1,10 @@
 use super::*;
 use crate::{
     config::RuntimeModelCatalog,
-    model_discovery::{discovery_cache_path, load_discovery_cache_at},
+    model_discovery::{
+        discovery_cache_needs_refresh, discovery_cache_path, load_discovery_cache_at,
+        provider_supports_model_discovery, refresh_provider_models, DEFAULT_DISCOVERY_CACHE_TTL,
+    },
     provider::resolved_model_availability,
 };
 
@@ -29,17 +32,55 @@ pub async fn models_handler(
     let started_at = std::time::Instant::now();
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let mut config = (*state.host.config()).clone();
+    load_model_discovery_cache(&mut config).await?;
+    models_response("/models", started_at, &config)
+}
+
+pub async fn refresh_models_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    let started_at = std::time::Instant::now();
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let mut config = (*state.host.config()).clone();
+    load_model_discovery_cache(&mut config).await?;
+    let cache_path = discovery_cache_path(&config.home_dir);
+    for provider in model_discovery_refresh_candidates(&config) {
+        if let Err(error) = refresh_provider_models(&provider, &cache_path).await {
+            warn!(
+                provider = %provider.id.as_str(),
+                error = %error,
+                "explicit model discovery refresh failed"
+            );
+        }
+    }
+
+    load_model_discovery_cache(&mut config).await?;
+    models_response("/models/refresh", started_at, &config)
+}
+
+async fn load_model_discovery_cache(
+    config: &mut crate::config::AppConfig,
+) -> Result<(), (StatusCode, Json<Value>)> {
     let cache_path = discovery_cache_path(&config.home_dir);
     config.model_discovery_cache =
         tokio::task::spawn_blocking(move || load_discovery_cache_at(&cache_path))
             .await
             .map_err(|error| error_response(error.into()))?
             .map_err(error_response)?;
+    Ok(())
+}
+
+fn models_response(
+    route: &'static str,
+    started_at: std::time::Instant,
+    config: &crate::config::AppConfig,
+) -> Result<AxumResponse, (StatusCode, Json<Value>)> {
     let available_models = RuntimeModelCatalog::from_config(&config).available_models();
     let model_availability = resolved_model_availability(&config);
     let model_discovery_cache = Vec::<crate::model_discovery::ModelDiscoveryCacheStatus>::new();
     traced_json(
-        "/models",
+        route,
         started_at,
         json!({
             "available_models": available_models,
@@ -47,6 +88,26 @@ pub async fn models_handler(
             "model_discovery_cache": model_discovery_cache,
         }),
     )
+}
+
+fn model_discovery_refresh_candidates(
+    config: &crate::config::AppConfig,
+) -> Vec<crate::config::ProviderRuntimeConfig> {
+    config
+        .providers
+        .values()
+        .filter(|provider| {
+            provider_supports_model_discovery(provider)
+                && (provider.auth.kind == CredentialKind::None
+                    || provider.has_configured_credential())
+                && discovery_cache_needs_refresh(
+                    provider,
+                    &config.model_discovery_cache,
+                    DEFAULT_DISCOVERY_CACHE_TTL,
+                )
+        })
+        .cloned()
+        .collect()
 }
 
 pub async fn search(

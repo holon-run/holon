@@ -489,6 +489,8 @@ const zh: Record<string, any> = {
     keySet: "密钥已设置",
     credReady: "凭证就绪",
     credMissing: "凭证缺失",
+    credNotRequired: "无需凭证",
+    noCredentialsRequired: "此提供商无需凭证。",
     providerReady: "提供商就绪",
     providerCredentialMissing: "提供商凭证缺失",
     authMode: "认证模式",

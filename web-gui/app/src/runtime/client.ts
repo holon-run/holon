@@ -843,6 +843,22 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         options: projectModelOptions(response),
       };
     },
+    async refreshModels(): Promise<RuntimeModelCatalog> {
+      if (!baseUrl) {
+        return { source: "fixture", options: [] };
+      }
+      const response = await postJson<RuntimeModelsDto>(
+        fetchImpl,
+        baseUrl,
+        "/models/refresh",
+        {},
+        requestHeaders,
+      );
+      return {
+        source: "http",
+        options: projectModelOptions(response),
+      };
+    },
     async getRuntimeConfig(): Promise<RuntimeConfigState> {
       if (!baseUrl) {
         return { source: "fixture" };

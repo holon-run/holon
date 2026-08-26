@@ -274,6 +274,42 @@ describe("projectModelOptions", () => {
 });
 
 describe("createRuntimeClient", () => {
+  it("uses the explicit refresh endpoint when refreshing the model catalog", async () => {
+    const seen: Array<{ url: string; method: string; body: unknown }> = [];
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: (async (input: RequestInfo | URL, init?: RequestInit) => {
+        seen.push({
+          url: String(input),
+          method: init?.method ?? "GET",
+          body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        });
+        return Response.json({
+          available_models: [{
+            model: "ollama/qwen3:latest",
+            provider: "ollama",
+            route_provider: "ollama",
+          }],
+          model_availability: [],
+        });
+      }) as typeof fetch,
+    });
+
+    await expect(client.refreshModels()).resolves.toEqual(expect.objectContaining({
+      source: "http",
+      options: [expect.objectContaining({
+        model: "ollama/qwen3:latest",
+        routeProvider: "ollama",
+      })],
+    }));
+    expect(seen).toEqual([{
+      url: "http://example.test:7878/api/models/refresh",
+      method: "POST",
+      body: {},
+    }]);
+  });
+
   it("uses the agent-scoped endpoint when loading an agent skill detail", async () => {
     const seen: string[] = [];
     const client = createRuntimeClient({

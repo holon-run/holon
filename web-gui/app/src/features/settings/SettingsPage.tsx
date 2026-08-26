@@ -1367,6 +1367,7 @@ export function SettingsPage({
                 if (!draft) return null;
                 const effectiveProfile = draft.credentialProfile?.trim() || `${provider.id}:default`;
                 const authMode = draft.credentialKind === "oauth" ? "oauth" : "api_key";
+                const credentialReady = providerCredentialReady(provider);
                 return (
                   <form
                     className="settings-provider-editor"
@@ -1383,15 +1384,17 @@ export function SettingsPage({
                           {provider.transport}
                         </small>
                       </div>
-                      <StatusChip className={`settings-status ${provider.credentialConfigured ? "available" : "unavailable"}`} tone={provider.credentialConfigured ? "success" : "error"} iconOnly title={provider.credentialConfigured ? t("settings.credReady") : t("settings.credMissing")} />
+                      <StatusChip className={`settings-status ${credentialReady ? "available" : "unavailable"}`} tone={credentialReady ? "success" : "error"} iconOnly title={draft.credentialKind === "none" ? t("settings.credNotRequired") : credentialReady ? t("settings.credReady") : t("settings.credMissing")} />
                     </header>
-                    {provider.credentialConfigured && !providersWithModels.has(provider.id) ? (
+                    {credentialReady && !providersWithModels.has(provider.id) ? (
                       <p className="settings-provider-hint">
                         {t("settings.noModelsForProvider")}
                       </p>
                     ) : null}
                     {/* Auth mode: dropdown only when both modes available */}
-                    {draft.apiKeySupported && draft.oauthSupported ? (
+                    {draft.credentialKind === "none" ? (
+                      <p className="settings-hint">{t("settings.noCredentialsRequired")}</p>
+                    ) : draft.apiKeySupported && draft.oauthSupported ? (
                       <div className="settings-form-row">
                         <label>
                           <span>{t("settings.authMode")}</span>
@@ -1519,7 +1522,7 @@ export function SettingsPage({
                         ) : null}
                       </div>
                     ) : null}
-                    {draft.credentialKind !== "api_key" && draft.credentialKind !== "oauth" ? (
+                    {draft.credentialKind !== "none" && draft.credentialKind !== "api_key" && draft.credentialKind !== "oauth" ? (
                       <p className="settings-hint">
                         This provider uses <code>{draft.credentialKind}</code>{t("settings.authVia")}<code>{draft.credentialSource}</code>{t("settings.configureIn")}<code>{runtimeConfig.configFilePath ?? "config.json"}</code>.
                       </p>
@@ -1791,6 +1794,10 @@ export function sortProvidersForSettings(providers: RuntimeProviderSummary[]): R
       return credentialRank || a.index - b.index;
     })
     .map(({ provider }) => provider);
+}
+
+export function providerCredentialReady(provider: RuntimeProviderSummary): boolean {
+  return provider.credentialKind === "none" || provider.credentialConfigured;
 }
 
 export function sortSearchProvidersForSettings(providers: RuntimeWebSearchProviderSummary[]): RuntimeWebSearchProviderSummary[] {

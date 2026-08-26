@@ -5,6 +5,7 @@ import {
   buildSearchProviderConfigUpdates,
   buildStandardSearchProviderDefinitions,
   buildVisionConfigUpdates,
+  providerCredentialReady,
   sortProvidersForSettings,
   sortSearchProvidersForSettings,
 } from "./SettingsPage";
@@ -55,6 +56,22 @@ function searchCapabilities(
     status: auth === "native_provider" ? "native_only" : "supported",
   };
 }
+
+describe("providerCredentialReady", () => {
+  it("treats credential-free providers as ready without stored credentials", () => {
+    expect(providerCredentialReady({
+      ...provider("ollama", false),
+      apiKeySupported: false,
+      credentialSource: "none",
+      credentialKind: "none",
+      credentialProfile: undefined,
+    })).toBe(true);
+  });
+
+  it("still requires configured credentials for API-key providers", () => {
+    expect(providerCredentialReady(provider("openai", false))).toBe(false);
+  });
+});
 
 describe("buildStandardSearchProviderDefinitions", () => {
   it("derives groups and configuration requirements from runtime capabilities", () => {

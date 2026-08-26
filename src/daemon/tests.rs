@@ -423,6 +423,46 @@ fn runtime_config_surface_reports_available_search_provider_capabilities() {
     );
 }
 
+#[test]
+fn runtime_config_surface_reports_credential_free_providers_as_ready() {
+    let mut config = test_config();
+    let ollama_id = crate::config::ProviderId::parse("ollama").unwrap();
+    config.providers.insert(
+        ollama_id.clone(),
+        crate::config::ProviderRuntimeConfig {
+            id: ollama_id.clone(),
+            route_provider: ollama_id,
+            route_endpoint: crate::config::ProviderEndpointId::default_endpoint(),
+            transport: crate::config::ProviderTransportKind::AnthropicMessages,
+            base_url: "http://127.0.0.1:11434".into(),
+            auth: crate::config::ProviderAuthConfig {
+                source: crate::config::CredentialSource::None,
+                kind: crate::config::CredentialKind::None,
+                env: None,
+                profile: None,
+                external: None,
+            },
+            credential: None,
+            credential_store_path: None,
+            codex_home: None,
+            originator: None,
+            reasoning_effort: None,
+            context_management: Default::default(),
+            builtin_web_search: None,
+        },
+    );
+
+    let surface = RuntimeConfigSurface::new(&config);
+    let ollama = surface
+        .providers
+        .iter()
+        .find(|provider| provider.id == "ollama")
+        .expect("ollama provider should be reported");
+    assert_eq!(ollama.credential_kind, "none");
+    assert!(!ollama.api_key_supported);
+    assert!(ollama.credential_configured);
+}
+
 #[tokio::test]
 async fn runtime_activity_summary_reports_idle_runtime() {
     let config = test_config();
