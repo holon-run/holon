@@ -816,6 +816,54 @@ impl AgentProvider for OperatorInterjectionProbeProvider {
 }
 
 #[tokio::test]
+async fn model_override_reasoning_effort_does_not_leak_into_deferred_fallback() {
+    let home = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    std::fs::write(
+        home.path().join("config.json"),
+        r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+    )
+    .unwrap();
+    let mut config =
+        crate::config::AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+    config.workspace_dir = workspace.path().to_path_buf();
+    let primary =
+        crate::config::ModelRouteRef::parse_compatible("openai-codex/gpt-5.6-luna").unwrap();
+    let fallback = crate::config::ModelRouteRef::parse_compatible("openai-codex/gpt-5.5").unwrap();
+    config.default_model = primary.clone();
+    config.fallback_models = vec![fallback.clone()];
+    config
+        .providers
+        .get_mut(&crate::config::ProviderId::openai_codex())
+        .unwrap()
+        .credential = Some(
+        r#"{"tokens":{"access_token":"test-token","refresh_token":"test-refresh","account_id":"test-account"}}"#
+            .into(),
+    );
+
+    let host = RuntimeHost::new(config).unwrap();
+    let runtime = host.default_runtime().await.unwrap();
+    runtime
+        .set_model_override(primary.clone(), Some("max".into()))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        runtime.inner.provider.read().await.configured_model_refs(),
+        vec![primary.as_string(), fallback.as_string()]
+    );
+
+    runtime
+        .reconfigure_provider_for_turn(Some(&fallback))
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime.inner.provider.read().await.configured_model_refs(),
+        vec![fallback.as_string()]
+    );
+}
+
+#[tokio::test]
 async fn update_agent_state_rolls_back_memory_when_persist_fails() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();

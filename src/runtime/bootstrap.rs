@@ -22,7 +22,8 @@ use crate::{
     },
     provider::{
         build_candidate_from_model_route, build_provider_from_model_chain,
-        resolved_model_availability, AgentProvider, ConversationMessage, ModelBlock,
+        build_provider_from_model_chain_with_override, resolved_model_availability, AgentProvider,
+        ConversationMessage, ModelBlock, ModelRouteReasoningEffortOverride,
         ProviderGenerateImageRequest, ProviderGenerateImageResponse,
         ProviderJsonSchemaResponseFormat, ProviderResponseFormatRequest, ProviderTurnRequest,
     },
@@ -342,7 +343,20 @@ impl RuntimeHandle {
                     state.model_override.as_ref(),
                 )
                 .runtime_max_output_tokens;
-            provider = build_provider_from_model_chain(&provider_config, &chain)?;
+            provider = build_provider_from_model_chain_with_override(
+                &provider_config,
+                &chain,
+                state
+                    .model_override
+                    .as_ref()
+                    .zip(state.model_override_reasoning_effort.as_deref())
+                    .map(
+                        |(route_ref, reasoning_effort)| ModelRouteReasoningEffortOverride {
+                            route_ref,
+                            reasoning_effort,
+                        },
+                    ),
+            )?;
         }
         let resolved_context_config = if config_snapshot.provider_reconfig.is_some() {
             config_snapshot.model_catalog.resolved_context_config(
@@ -509,19 +523,24 @@ impl RuntimeHandle {
             fallback_model.or(state.model_override.as_ref()),
         );
         let mut provider_config = reconfig.config.clone();
-        if let (Some(primary), Some(reasoning_effort)) = (
-            chain.first(),
-            state.model_override_reasoning_effort.as_ref(),
-        ) {
-            if let Some(provider) = provider_config.providers.get_mut(&primary.provider) {
-                provider.reasoning_effort = Some(reasoning_effort.clone());
-            }
-        }
         provider_config.runtime_max_output_tokens = snap
             .model_catalog
             .resolved_model_policy(&snap.base_context_config, state.model_override.as_ref())
             .runtime_max_output_tokens;
-        let provider = build_provider_from_model_chain(&provider_config, &chain)?;
+        let provider = build_provider_from_model_chain_with_override(
+            &provider_config,
+            &chain,
+            state
+                .model_override
+                .as_ref()
+                .zip(state.model_override_reasoning_effort.as_deref())
+                .map(
+                    |(route_ref, reasoning_effort)| ModelRouteReasoningEffortOverride {
+                        route_ref,
+                        reasoning_effort,
+                    },
+                ),
+        )?;
         *self.inner.provider.write().await = provider;
         *self.inner.context_config.write().await = resolved_context_config;
         Ok(())

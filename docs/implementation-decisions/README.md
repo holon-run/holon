@@ -111,3 +111,4 @@ Current decision notes:
 - [098 Scheduler Protocol Transition Wraps Legacy Boundaries Atomically](./098-scheduler-protocol-transition-wraps-legacy-boundaries-atomically.md)
 - [101 Scheduler Authority Convergence](./101-scheduler-authority-convergence.md)
 - [103 DeepSeek Responses Endpoint Dialect](./103-deepseek-responses-endpoint-dialect.md)
+- [114 Reasoning Effort Scope In Model Chains](./114-reasoning-effort-scope-in-model-chains.md)

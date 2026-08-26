@@ -23,7 +23,10 @@ mod tool_schema;
 mod transports;
 mod wire_fingerprint;
 
-pub(crate) use catalog::build_candidate_from_model_route;
+pub(crate) use catalog::{
+    build_candidate_from_model_route, build_provider_from_model_chain_with_override,
+    ModelRouteReasoningEffortOverride,
+};
 pub use catalog::{build_provider_from_config, build_provider_from_model_chain};
 pub use diagnostics::{
     provider_doctor, resolved_model_availability, resolved_model_providers,
