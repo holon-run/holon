@@ -106,6 +106,58 @@ impl ConfigSnapshot {
     }
 }
 
+pub(super) struct ModelDiscoveryRefreshGuard {
+    runtime: RuntimeHandle,
+    provider_id: crate::config::ProviderId,
+    released: bool,
+}
+
+impl ModelDiscoveryRefreshGuard {
+    pub(super) fn new(runtime: RuntimeHandle, provider_id: crate::config::ProviderId) -> Self {
+        Self {
+            runtime,
+            provider_id,
+            released: false,
+        }
+    }
+
+    async fn release(mut self) {
+        self.runtime
+            .inner
+            .model_discovery_refreshes
+            .lock()
+            .await
+            .remove(&self.provider_id);
+        self.runtime
+            .inner
+            .model_discovery_refresh_notify
+            .notify_waiters();
+        self.released = true;
+    }
+}
+
+impl Drop for ModelDiscoveryRefreshGuard {
+    fn drop(&mut self) {
+        if self.released {
+            return;
+        }
+        let runtime = self.runtime.clone();
+        let provider_id = self.provider_id.clone();
+        tokio::spawn(async move {
+            runtime
+                .inner
+                .model_discovery_refreshes
+                .lock()
+                .await
+                .remove(&provider_id);
+            runtime
+                .inner
+                .model_discovery_refresh_notify
+                .notify_waiters();
+        });
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct ProviderReconfigurator {
     pub(super) config: AppConfig,
@@ -721,13 +773,10 @@ impl RuntimeHandle {
                 }
             };
             if should_refresh {
+                let refresh_guard =
+                    ModelDiscoveryRefreshGuard::new(self.clone(), provider.id.clone());
                 let result = refresh_provider_models(&provider, cache_path).await;
-                self.inner
-                    .model_discovery_refreshes
-                    .lock()
-                    .await
-                    .remove(&provider.id);
-                self.inner.model_discovery_refresh_notify.notify_waiters();
+                refresh_guard.release().await;
                 result?;
                 return Ok(());
             }
@@ -920,6 +969,8 @@ impl RuntimeHandle {
 
             let runtime = self.clone();
             let cache_path = discovery_cache_path(&config.home_dir);
+            let refresh_guard =
+                ModelDiscoveryRefreshGuard::new(runtime.clone(), provider_id.clone());
             tokio::spawn(async move {
                 let result = refresh_provider_models(&provider, &cache_path).await;
                 match result {
@@ -944,16 +995,7 @@ impl RuntimeHandle {
                         );
                     }
                 }
-                runtime
-                    .inner
-                    .model_discovery_refreshes
-                    .lock()
-                    .await
-                    .remove(&provider_id);
-                runtime
-                    .inner
-                    .model_discovery_refresh_notify
-                    .notify_waiters();
+                refresh_guard.release().await;
             });
         }
     }

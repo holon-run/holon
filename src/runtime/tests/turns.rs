@@ -2113,7 +2113,10 @@ async fn concurrent_view_image_selection_discovers_ollama_vision_once_from_cold_
     };
 
     let home = tempdir().unwrap();
-    let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+    let mut config = {
+        let _env_lock = crate::test_env::lock_env();
+        AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap()
+    };
     config.default_model =
         crate::config::ModelRouteRef::parse_compatible("ollama/qwen3-vl:latest").unwrap();
     config
@@ -2141,6 +2144,52 @@ async fn concurrent_view_image_selection_discovers_ollama_vision_once_from_cold_
     }
     assert_eq!(tags_requests.load(Ordering::SeqCst), 1);
     assert_eq!(show_requests.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn panicking_model_discovery_refresh_releases_waiters_and_in_flight_state() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let provider_id = crate::config::ProviderId::parse("ollama").unwrap();
+    runtime
+        .inner
+        .model_discovery_refreshes
+        .lock()
+        .await
+        .insert(provider_id.clone());
+
+    let notified = runtime.inner.model_discovery_refresh_notify.notified();
+    tokio::pin!(notified);
+    notified.as_mut().enable();
+    let refresh_guard = crate::runtime::bootstrap::ModelDiscoveryRefreshGuard::new(
+        runtime.clone(),
+        provider_id.clone(),
+    );
+    let refresh = tokio::spawn(async move {
+        let _refresh_guard = refresh_guard;
+        panic!("simulated provider discovery panic");
+    });
+
+    assert!(refresh.await.unwrap_err().is_panic());
+    tokio::time::timeout(std::time::Duration::from_secs(1), notified)
+        .await
+        .expect("panic cleanup should notify discovery waiters");
+    assert!(!runtime
+        .inner
+        .model_discovery_refreshes
+        .lock()
+        .await
+        .contains(&provider_id));
 }
 
 #[tokio::test]
