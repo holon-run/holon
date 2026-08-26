@@ -403,7 +403,7 @@ export function AgentOverviewPanel({
         {skillCatalogError ? <p className="inspector-error">{skillCatalogError}</p> : null}
         {skillCatalog?.catalog.length ? (
           <ul className="inspector-list agent-skill-list">
-            {skillCatalog.catalog.slice(0, 8).map((skill) => (
+            {skillCatalog.catalog.map((skill) => (
               <AgentSkillItem
                 key={`${skill.scope}:${skill.skillId}:${skill.path}`}
                 skill={skill}
