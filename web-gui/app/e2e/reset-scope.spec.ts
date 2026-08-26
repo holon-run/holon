@@ -532,6 +532,7 @@ test("divergence repair, sync error, and degraded handle recovery preserve exact
     visibilityScopeId: "e2e-scope",
     eventLogEpoch: "e2e-epoch",
     eventSeqs: [1, 2],
+    readThroughEventSeq: 2,
     certainty: "exact",
   }]);
   const recoveredWrite = await request.post(controlPath(session, "/__e2e__/append-event"), {
