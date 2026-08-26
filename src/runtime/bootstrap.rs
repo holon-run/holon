@@ -44,6 +44,21 @@ use super::{
     RuntimeAgent, RuntimeHandle, RuntimeInner,
 };
 
+fn model_route_reasoning_effort_override(
+    state: &AgentState,
+) -> Option<ModelRouteReasoningEffortOverride<'_>> {
+    state
+        .model_override
+        .as_ref()
+        .zip(state.model_override_reasoning_effort.as_deref())
+        .map(
+            |(route_ref, reasoning_effort)| ModelRouteReasoningEffortOverride {
+                route_ref,
+                reasoning_effort,
+            },
+        )
+}
+
 /// Snapshot of config-derived runtime fields that can be hot-swapped at runtime.
 /// Stored behind an `ArcSwap` so that config reloads take effect on the next turn
 /// without disturbing an in-progress turn.
@@ -346,16 +361,7 @@ impl RuntimeHandle {
             provider = build_provider_from_model_chain_with_override(
                 &provider_config,
                 &chain,
-                state
-                    .model_override
-                    .as_ref()
-                    .zip(state.model_override_reasoning_effort.as_deref())
-                    .map(
-                        |(route_ref, reasoning_effort)| ModelRouteReasoningEffortOverride {
-                            route_ref,
-                            reasoning_effort,
-                        },
-                    ),
+                model_route_reasoning_effort_override(&state),
             )?;
         }
         let resolved_context_config = if config_snapshot.provider_reconfig.is_some() {
@@ -530,16 +536,7 @@ impl RuntimeHandle {
         let provider = build_provider_from_model_chain_with_override(
             &provider_config,
             &chain,
-            state
-                .model_override
-                .as_ref()
-                .zip(state.model_override_reasoning_effort.as_deref())
-                .map(
-                    |(route_ref, reasoning_effort)| ModelRouteReasoningEffortOverride {
-                        route_ref,
-                        reasoning_effort,
-                    },
-                ),
+            model_route_reasoning_effort_override(state),
         )?;
         *self.inner.provider.write().await = provider;
         *self.inner.context_config.write().await = resolved_context_config;
