@@ -16,6 +16,7 @@ import {
   missingBriefIdsForHydration,
   observerSyncDiagnostics,
   readStoredRemoteConnectionProfiles,
+  retryPendingReadMarker,
   resetSessionsForResume,
   resetTransientRuntimeStateForResume,
   readStoredRuntimeConnectionConfig,
@@ -27,6 +28,10 @@ import {
 } from "./runtime-store";
 import type { StreamEventEnvelopeDto } from "./client";
 import { AgentSessionRepository } from "./agent-session-repository";
+import {
+  getRuntimeTraceRecords,
+  setRuntimeTraceEnabled,
+} from "./runtime-trace";
 import type { AgentSessionState } from "./runtime-store";
 import { createSessionProjectionState, reduceSessionProjection } from "./session-projection";
 import type { AgentSummary } from "./types";
@@ -680,7 +685,131 @@ describe("agent deletion cache cleanup", () => {
 
 describe("roster activity unread state", () => {
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    setRuntimeTraceEnabled(false, { clear: true });
+    useRuntimeStore.setState({
+      route: "dashboard",
+      selectedAgentId: "",
+      sessionsByAgentId: {},
+      ledgerUnreadByAgentId: {},
+    });
+  });
+
+  it("retries a pending read marker after ledger readiness becomes available", async () => {
+    vi.stubGlobal("document", { visibilityState: "visible" });
+    let ready = false;
+    vi.spyOn(AgentSessionRepository.prototype, "sessionLedgerReadiness")
+      .mockImplementation(() => ready
+        ? { readyThroughSeq: 12, ingestedThroughSeq: 12, observedHeadSeq: 12 }
+        : null);
+    const advanceReadMarker = vi
+      .spyOn(AgentSessionRepository.prototype, "advanceReadMarker")
+      .mockResolvedValue({
+        advanced: true,
+        record: {
+          remoteKey: "local",
+          runtimeId: "runtime-1",
+          visibilityScopeId: "scope-1",
+          eventLogEpoch: "epoch-1",
+          agentId: "agent-retry",
+          readThroughEventSeq: 12,
+          updatedAt: 1,
+        },
+      });
+    vi.spyOn(AgentSessionRepository.prototype, "unreadSnapshot").mockResolvedValue({
+      scopeAgentId: "agent-retry",
+      boundarySeq: 12,
+      countedThroughSeq: 12,
+      certainty: "exact",
+      count: 0,
+      historyTruncatedBeforeSeq: null,
+      acknowledgedTruncationBeforeSeq: null,
+    });
+    useRuntimeStore.setState({
+      route: "agent",
+      selectedAgentId: "agent-retry",
+      discovery: {
+        mode: "authoritative",
+        freshness: "fresh",
+        retryAttempt: 0,
+      },
+      sessionsByAgentId: {
+        "agent-retry": sessionState(),
+      },
+      ledgerUnreadByAgentId: {
+        "agent-retry": { mode: "exact", count: 2 },
+      },
+    });
+
+    useRuntimeStore.getState().markAgentConversationRead("agent-retry");
+    await Promise.resolve();
+    expect(advanceReadMarker).not.toHaveBeenCalled();
+
+    ready = true;
+    await retryPendingReadMarker("agent-retry");
+
+    expect(advanceReadMarker).toHaveBeenCalledWith("agent-retry", 12);
+    expect(useRuntimeStore.getState().ledgerUnreadByAgentId["agent-retry"]).toEqual({
+      mode: "exact",
+      count: 0,
+    });
+  });
+
+  it("refreshes a stale unread view after a monotonic read-marker no-op", async () => {
+    vi.stubGlobal("document", { visibilityState: "visible" });
+    setRuntimeTraceEnabled(true, { clear: true });
+    vi.spyOn(AgentSessionRepository.prototype, "sessionLedgerReadiness").mockReturnValue({
+      readyThroughSeq: 12,
+      ingestedThroughSeq: 12,
+      observedHeadSeq: 12,
+    });
+    vi.spyOn(AgentSessionRepository.prototype, "advanceReadMarker").mockResolvedValue({
+      advanced: false,
+      record: {
+        remoteKey: "local",
+        runtimeId: "runtime-1",
+        visibilityScopeId: "scope-1",
+        eventLogEpoch: "epoch-1",
+        agentId: "agent-noop",
+        readThroughEventSeq: 12,
+        updatedAt: 1,
+      },
+    });
+    vi.spyOn(AgentSessionRepository.prototype, "unreadSnapshot").mockResolvedValue({
+      scopeAgentId: "agent-noop",
+      boundarySeq: 12,
+      countedThroughSeq: 12,
+      certainty: "exact",
+      count: 0,
+      historyTruncatedBeforeSeq: null,
+      acknowledgedTruncationBeforeSeq: null,
+    });
+    useRuntimeStore.setState({
+      route: "agent",
+      selectedAgentId: "agent-noop",
+      discovery: {
+        mode: "authoritative",
+        freshness: "fresh",
+        retryAttempt: 0,
+      },
+      sessionsByAgentId: {
+        "agent-noop": sessionState(),
+      },
+      ledgerUnreadByAgentId: {
+        "agent-noop": { mode: "exact", count: 2 },
+      },
+    });
+
+    useRuntimeStore.getState().markAgentConversationRead("agent-noop");
+    await vi.waitFor(() => {
+      expect(useRuntimeStore.getState().ledgerUnreadByAgentId["agent-noop"]?.count).toBe(0);
+    });
+    expect(getRuntimeTraceRecords({ agentId: "agent-noop" }).at(-1)).toMatchObject({
+      name: "read_marker.advance",
+      outcome: "ok",
+      attributes: { advanced: false, candidateSeq: 12 },
+    });
   });
 
   it("does not mutate legacy roster activity when marking a conversation read", async () => {

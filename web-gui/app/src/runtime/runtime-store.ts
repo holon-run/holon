@@ -1210,6 +1210,9 @@ function publishReadStateInvalidation(agentId: string): void {
 
 const unreadRefreshInFlight = new Set<string>();
 const unreadRefreshQueued = new Set<string>();
+const pendingReadMarkerAgentIds = new Set<string>();
+const readMarkerAdvanceInFlight = new Set<string>();
+const readMarkerAdvanceQueued = new Set<string>();
 
 /**
  * Recompute one agent's ledger-backed unread view from durable state.
@@ -1279,6 +1282,61 @@ export function ledgerReadMarkerDecision(agentId: string) {
     },
     agentId,
   );
+}
+
+export async function retryPendingReadMarker(agentId: string): Promise<void> {
+  if (!pendingReadMarkerAgentIds.has(agentId)) return;
+  if (readMarkerAdvanceInFlight.has(agentId)) {
+    readMarkerAdvanceQueued.add(agentId);
+    return;
+  }
+  const trace = createRuntimeTrace("read_marker.advance", {
+    agentId,
+    trigger: "conversation.read",
+  });
+  const span = startRuntimeSpan(trace, "read_marker.advance");
+  const decision = ledgerReadMarkerDecision(agentId);
+  if (!decision.mayAdvance || decision.candidateSeq == null) {
+    if (decision.reason === "not_selected") {
+      pendingReadMarkerAgentIds.delete(agentId);
+    }
+    span.end("skipped", { reason: decision.reason ?? "candidate_unavailable" });
+    return;
+  }
+
+  readMarkerAdvanceInFlight.add(agentId);
+  try {
+    const result = await agentSessionRepository.advanceReadMarker(
+      agentId,
+      decision.candidateSeq,
+    );
+    if (!result) {
+      span.end("skipped", {
+        candidateSeq: decision.candidateSeq,
+        reason: "ledger_unavailable",
+      });
+      return;
+    }
+    pendingReadMarkerAgentIds.delete(agentId);
+    if (result.advanced) publishReadStateInvalidation(agentId);
+    await refreshLedgerUnreadInView(agentId);
+    span.end("ok", {
+      advanced: result.advanced,
+      candidateSeq: decision.candidateSeq,
+    });
+  } catch (error) {
+    span.end("error", {
+      candidateSeq: decision.candidateSeq,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    console.warn(`Failed to advance read marker for ${agentId}.`, error);
+  } finally {
+    readMarkerAdvanceInFlight.delete(agentId);
+    if (readMarkerAdvanceQueued.delete(agentId)) {
+      pendingReadMarkerAgentIds.add(agentId);
+      void retryPendingReadMarker(agentId);
+    }
+  }
 }
 
 export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
@@ -1455,6 +1513,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
           },
         }));
         void refreshLedgerUnreadInView(status.scope.agentId);
+        void retryPendingReadMarker(status.scope.agentId);
       },
     },
   });
@@ -1549,19 +1608,8 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
       };
     }),
   markAgentConversationRead: (agentId) => {
-    const decision = ledgerReadMarkerDecision(agentId);
-    if (!decision.mayAdvance || decision.candidateSeq == null) return;
-    const candidateSeq = decision.candidateSeq;
-    void agentSessionRepository
-      .advanceReadMarker(agentId, candidateSeq)
-      .then((result) => {
-        if (!result?.advanced) return;
-        publishReadStateInvalidation(agentId);
-        void refreshLedgerUnreadInView(agentId);
-      })
-      .catch((error) =>
-        console.warn(`Failed to advance read marker for ${agentId}.`, error),
-      );
+    pendingReadMarkerAgentIds.add(agentId);
+    void retryPendingReadMarker(agentId);
   },
   refreshLedgerUnread: async (agentId) => {
     await refreshLedgerUnreadInView(agentId);
