@@ -77,7 +77,14 @@ Returns auth mode, capabilities, and runtime info.
 
 **`GET /models`** — Available models
 
-Returns model catalog and runtime availability.
+Returns the cached model catalog and runtime availability without contacting
+providers.
+
+**`POST /models/refresh`** — Refresh available models
+
+Discovers models for providers whose discovery cache is missing or expired,
+then returns the same catalog shape as `GET /models`. A discovery failure for
+one provider does not prevent other available models from being returned.
 
 ```json
 {

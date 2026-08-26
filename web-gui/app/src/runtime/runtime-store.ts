@@ -2659,7 +2659,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
       const [credentialStore, runtimeConfig, fetchedModelCatalog] = await Promise.all([
         request.client.listCredentials(),
         request.client.getRuntimeConfig(),
-        request.client.getModels(),
+        request.client.refreshModels(),
       ]);
       if (!isCurrentClientRequest(request)) return undefined;
       const modelCatalog = freshModelCatalog(fetchedModelCatalog);
@@ -2688,7 +2688,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
       const [credentialStore, runtimeConfig, fetchedModelCatalog] = await Promise.all([
         request.client.listCredentials(),
         request.client.getRuntimeConfig(),
-        request.client.getModels(),
+        request.client.refreshModels(),
       ]);
       if (!isCurrentClientRequest(request)) return;
       const modelCatalog = freshModelCatalog(fetchedModelCatalog);
@@ -2742,7 +2742,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
             const [credentialStore, runtimeConfig, fetchedModelCatalog] = await Promise.all([
               request.client.listCredentials(),
               request.client.getRuntimeConfig(),
-              request.client.getModels(),
+              request.client.refreshModels(),
             ]);
             if (!isCurrentClientRequest(request)) return;
             const modelCatalog = freshModelCatalog(fetchedModelCatalog);
