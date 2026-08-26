@@ -158,6 +158,8 @@ pub(crate) struct PreparedWorkItemCompletion {
     pub(crate) brief: crate::types::BriefRecord,
     pub(crate) expected_execution_protocol_state:
         Option<crate::domain::execution_protocol::ExecutionProtocolState>,
+    pub(crate) legacy_work_item_execution:
+        Option<crate::domain::execution_protocol::WorkItemExecutionRecord>,
     pub(crate) expected_agent_state: crate::types::AgentState,
     pub(crate) committed_agent_state: crate::types::AgentState,
     pub(crate) wait_conditions: Vec<crate::types::WaitConditionRecord>,
@@ -487,8 +489,8 @@ fn execution_protocol_completion_transition_from_prepared(
 ) -> Result<crate::runtime_db::transitions::ExecutionProtocolTransition> {
     use crate::domain::execution_protocol::{
         CompleteWorkItemExecution, ConversationOutcome, ExecutionAttemptState, ExecutionBinding,
-        ExecutionOutcome, ExecutionOutcomeRecord, ExecutionProtocolCommand, SettleExecution,
-        WorkItemExecutionState, WorkItemOutcome,
+        ExecutionOutcome, ExecutionOutcomeRecord, ExecutionProtocolCommand,
+        RegisterWorkItemExecution, SettleExecution, WorkItemExecutionState, WorkItemOutcome,
     };
 
     anyhow::ensure!(
@@ -519,6 +521,7 @@ fn execution_protocol_completion_transition_from_prepared(
     let authoritative = state
         .work_items
         .get(&prepared.record.id)
+        .or(prepared.legacy_work_item_execution.as_ref())
         .ok_or_else(|| anyhow!("completion commit WorkItem execution state is missing"))?;
     anyhow::ensure!(
         intent.work_item_id == prepared.record.id
@@ -578,7 +581,16 @@ fn execution_protocol_completion_transition_from_prepared(
                     ),
                 "completion commit lifecycle WorkItem fence is stale"
             );
-            vec![
+            let mut commands = Vec::with_capacity(3);
+            if !state.work_items.contains_key(&prepared.record.id) {
+                commands.push(ExecutionProtocolCommand::RegisterWorkItem(Box::new(
+                    RegisterWorkItemExecution {
+                        work_item_id: prepared.record.id.clone(),
+                        record: authoritative.clone(),
+                    },
+                )));
+            }
+            commands.extend([
                 ExecutionProtocolCommand::Settle(SettleExecution {
                     outcome: ExecutionOutcomeRecord {
                         outcome_id: format!("outcome:complete:{}", attempt.attempt_id),
@@ -593,7 +605,8 @@ fn execution_protocol_completion_transition_from_prepared(
                     expected: authoritative.clone(),
                     completion: prepared.brief.id.clone(),
                 })),
-            ]
+            ]);
+            commands
         }
         ExecutionBinding::Conversation { .. } | ExecutionBinding::Command => {
             bail!("completion commit requires a WorkItem or agent-lifecycle execution")

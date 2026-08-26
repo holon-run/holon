@@ -2414,6 +2414,135 @@ async fn complete_work_item_promotes_same_round_report_and_binds_evidence() {
 }
 
 #[tokio::test]
+async fn lifecycle_completion_registers_missing_legacy_work_item_execution() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let seed_runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = seed_runtime
+        .create_work_item(
+            "complete pre-execution-protocol work".into(),
+            Some(WorkItemPlanStatus::NeedsInput),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    seed_runtime
+        .pick_work_item(work_item.id.clone())
+        .await
+        .unwrap();
+    seed_runtime
+        .inner
+        .runtime_db
+        .transaction(|tx| {
+            tx.execute(
+                "DELETE FROM execution_protocol_work_items
+                 WHERE agent_id = ?1 AND work_item_id = ?2",
+                ["default", work_item.id.as_str()],
+            )?;
+            tx.execute(
+                "DELETE FROM execution_protocol_command_results
+                 WHERE agent_id = ?1
+                   AND command_kind = 'register_work_item_execution'
+                   AND command_identity = ?2",
+                ["default", work_item.id.as_str()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+    let provider = Arc::new(CompleteWorkItemReportProvider {
+        work_item_id: work_item.id.clone(),
+        report_text: Some("Closed the legacy tracked work.".into()),
+        calls: Mutex::new(0),
+    });
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider,
+        "default".into(),
+        continuation_context_config(),
+    )
+    .unwrap();
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("control".into()),
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "close the legacy work item".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::HttpControlPrompt,
+        AdmissionContext::ControlAuthenticated,
+    );
+
+    let mut runtime_task = tokio::spawn(runtime.clone().run());
+    runtime.enqueue(message).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if runtime
+                .latest_work_item(&work_item.id)
+                .await
+                .unwrap()
+                .is_some_and(|record| record.state == WorkItemState::Completed)
+            {
+                break;
+            }
+            if runtime_task.is_finished() {
+                panic!(
+                    "runtime exited before legacy completion commit: {:#}",
+                    (&mut runtime_task)
+                        .await
+                        .expect("runtime task join")
+                        .expect_err("runtime unexpectedly completed")
+                );
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("timed out waiting for legacy completion commit");
+    runtime_task.abort();
+
+    let completed = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(completed.state, WorkItemState::Completed);
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        execution.work_items.get(&work_item.id).map(|record| &record.state),
+        Some(crate::domain::execution_protocol::WorkItemExecutionState::Terminal {
+            completion,
+            ..
+        }) if Some(completion.as_str()) == completed.result_brief_id.as_deref()
+    ));
+}
+
+#[tokio::test]
 async fn standalone_turn_writer_rejects_prepared_completion() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
@@ -7239,6 +7368,7 @@ fn rebase_completion_accepts_diverged_baseline_after_concurrent_persist() {
         record,
         brief,
         expected_execution_protocol_state: None,
+        legacy_work_item_execution: None,
         expected_agent_state: expected,
         committed_agent_state: committed.clone(),
         wait_conditions: Vec::new(),
@@ -7282,6 +7412,7 @@ fn rebase_completion_rejects_mismatched_agent_id() {
         record,
         brief,
         expected_execution_protocol_state: None,
+        legacy_work_item_execution: None,
         expected_agent_state: expected,
         committed_agent_state: committed,
         wait_conditions: Vec::new(),

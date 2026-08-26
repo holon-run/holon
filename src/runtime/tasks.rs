@@ -4028,6 +4028,54 @@ impl RuntimeHandle {
         } else {
             None
         };
+        let legacy_work_item_execution = expected_execution_protocol_state
+            .as_ref()
+            .filter(|state| !state.work_items.contains_key(&existing.id))
+            .map(|_| {
+                use crate::domain::execution_protocol::{
+                    WaitReference, WorkItemExecutionRecord, WorkItemExecutionState,
+                };
+
+                let active_wait_ids = self
+                    .inner
+                    .storage
+                    .raw_active_wait_conditions_for_agent(&agent_id)?
+                    .into_iter()
+                    .filter(|condition| {
+                        condition.work_item_id.as_deref() == Some(existing.id.as_str())
+                    })
+                    .map(|condition| condition.id)
+                    .collect::<Vec<_>>();
+                let generation = existing.revision.max(1);
+                let state = match active_wait_ids.as_slice() {
+                    [wait_id] => WorkItemExecutionState::Waiting {
+                        generation,
+                        wait: WaitReference {
+                            wait_id: wait_id.clone(),
+                        },
+                    },
+                    [] if existing.blocked_by.is_some() => WorkItemExecutionState::Paused {
+                        generation,
+                        reason: existing
+                            .blocked_by
+                            .clone()
+                            .expect("manual blocker checked above"),
+                    },
+                    [] => WorkItemExecutionState::Runnable {
+                        generation,
+                        recovery_ref: None,
+                    },
+                    _ => WorkItemExecutionState::NeedsRepair {
+                        generation,
+                        repair_id: format!("work_item_waits_ambiguous:{}", existing.id),
+                    },
+                };
+                Ok::<_, anyhow::Error>(WorkItemExecutionRecord {
+                    source_revision: existing.revision,
+                    state,
+                })
+            })
+            .transpose()?;
         let expected_agent_state = state.clone();
         let agent_execution_authority = matches!(
             authority,
@@ -4127,17 +4175,17 @@ impl RuntimeHandle {
                                 agent_id: binding_agent_id,
                             } => {
                                 binding_agent_id == &agent_id
-                                    && protocol_state
-                                        .work_items
-                                        .get(&existing.id)
-                                        .is_some_and(|work_item| {
+                                    && protocol_state.work_items.get(&existing.id).map_or_else(
+                                        || legacy_work_item_execution.is_some(),
+                                        |work_item| {
                                             work_item.source_revision == existing.revision
                                                 && !matches!(
                                                     work_item.state,
                                                     crate::domain::execution_protocol::WorkItemExecutionState::InFlight { .. }
                                                         | crate::domain::execution_protocol::WorkItemExecutionState::Terminal { .. }
                                                 )
-                                        })
+                                        },
+                                    )
                             }
                             crate::domain::execution_protocol::ExecutionBinding::Conversation {
                                 ..
@@ -4349,6 +4397,7 @@ impl RuntimeHandle {
             record,
             brief: brief.clone(),
             expected_execution_protocol_state,
+            legacy_work_item_execution,
             expected_agent_state,
             committed_agent_state: state,
             wait_conditions,
