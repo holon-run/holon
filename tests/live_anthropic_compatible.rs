@@ -160,7 +160,9 @@ async fn provider_accepts_context_management(provider_id: &str, model: &str) -> 
             ModelBlock::Thinking { .. }
             | ModelBlock::ReasoningText { .. }
             | ModelBlock::RedactedThinking { .. }
-            | ModelBlock::Citations { .. } => None,
+            | ModelBlock::Citations { .. }
+            | ModelBlock::ProviderToolUse { .. }
+            | ModelBlock::ProviderToolResult { .. } => None,
         })
         .collect::<Vec<_>>()
         .join("\n");

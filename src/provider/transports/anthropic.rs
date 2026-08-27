@@ -20,9 +20,10 @@ use crate::{
         builtin_web_search_probe_turn_request,
         http_trace::{ProviderHttpTrace, ProviderHttpTraceRequest},
         AgentProvider, AnthropicPromptCacheDiagnostics, CacheBreakpointInfo, ConversationMessage,
-        ModelBlock, ModelToolCallKind, PromptContentBlock, ProviderBuiltinWebSearchCapability,
-        ProviderCacheUsage, ProviderContextManagementPolicy, ProviderNativeWebSearchDiagnostics,
-        ProviderNativeWebSearchKind, ProviderNativeWebSearchRequest, ProviderPromptCapability,
+        ModelBlock, ModelToolCallKind, PromptContentBlock, ProviderBlockData,
+        ProviderBuiltinWebSearchCapability, ProviderCacheUsage, ProviderContextManagementPolicy,
+        ProviderNativeWebSearchDiagnostics, ProviderNativeWebSearchKind,
+        ProviderNativeWebSearchRequest, ProviderPromptCapability,
         ProviderResponseFormatDiagnostics, ProviderResponseFormatRequest, ProviderTurnRequest,
         ProviderTurnResponse,
     },
@@ -35,6 +36,8 @@ use crate::provider::retry::{
     timeout_transport_error_with_trace, ProviderFailureClassification, ProviderFailureKind,
     RetryDisposition,
 };
+
+const ANTHROPIC_PROVIDER_BLOCK_FORMAT: &str = "anthropic_messages/v1";
 
 #[derive(Clone)]
 pub struct AnthropicProvider {
@@ -132,15 +135,30 @@ struct MessagesResponse {
 struct ApiResponseBlock {
     #[serde(rename = "type")]
     kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     signature: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     data: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     input: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     tool_use_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     content: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    is_error: Option<bool>,
+    #[serde(flatten)]
+    extra: std::collections::BTreeMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -631,7 +649,7 @@ async fn read_anthropic_streaming_response(
 }
 
 fn anthropic_messages_response_to_turn_response(
-    parsed: MessagesResponse,
+    mut parsed: MessagesResponse,
     provider_request_id: Option<String>,
     request: &ProviderTurnRequest,
     wire_conversation: &[ConversationMessage],
@@ -704,6 +722,7 @@ fn anthropic_messages_response_to_turn_response(
             trace,
         ));
     }
+    strip_zai_redundant_provider_tool_text(&mut parsed.content);
     let response_format_tool_name = anthropic_response_format_tool_name(request);
     let blocks = parsed
         .content
@@ -1582,6 +1601,48 @@ fn conversation_message_to_api(
                                     "name": name,
                                     "input": input,
                                 }),
+                                ModelBlock::ProviderToolUse {
+                                    id,
+                                    name,
+                                    input,
+                                    status,
+                                    provider_data,
+                                } => anthropic_provider_block_payload(provider_data)
+                                    .unwrap_or_else(|| {
+                                        let mut value = json!({
+                                            "type": "server_tool_use",
+                                            "id": id,
+                                            "name": name,
+                                            "input": input,
+                                        });
+                                        if let Some(status) = status {
+                                            value["status"] = json!(status);
+                                        }
+                                        value
+                                    }),
+                                ModelBlock::ProviderToolResult {
+                                    tool_use_id,
+                                    content,
+                                    is_error,
+                                    status,
+                                    provider_data,
+                                } => anthropic_provider_block_payload(provider_data)
+                                    .unwrap_or_else(|| {
+                                        let mut value = json!({
+                                            "type": "tool_result",
+                                            "content": content,
+                                        });
+                                        if let Some(tool_use_id) = tool_use_id {
+                                            value["tool_use_id"] = json!(tool_use_id);
+                                        }
+                                        if *is_error {
+                                            value["is_error"] = json!(true);
+                                        }
+                                        if let Some(status) = status {
+                                            value["status"] = json!(status);
+                                        }
+                                        value
+                                    }),
                                 ModelBlock::Thinking { text, signature } => {
                                     let mut v = json!({
                                         "type": "thinking",
@@ -1632,6 +1693,13 @@ fn conversation_message_to_api(
             ),
         },
     }
+}
+
+fn anthropic_provider_block_payload(provider_data: &Option<ProviderBlockData>) -> Option<Value> {
+    provider_data
+        .as_ref()
+        .filter(|data| data.format == ANTHROPIC_PROVIDER_BLOCK_FORMAT)
+        .map(|data| data.payload.clone())
 }
 
 fn maybe_mark_cache_control(mut content: Value, should_mark: bool) -> Value {
@@ -1703,8 +1771,9 @@ fn warn_unsupported_anthropic_response_block(
 ) {
     if matches!(
         block.kind.as_str(),
-        "text" | "tool_use" | "thinking" | "redacted_thinking" | "server_tool_use" | "tool_result"
-    ) {
+        "text" | "tool_use" | "thinking" | "redacted_thinking" | "server_tool_use"
+    ) || is_provider_tool_result_kind(&block.kind)
+    {
         return;
     }
 
@@ -1760,6 +1829,12 @@ fn api_response_block_to_model(
     block: ApiResponseBlock,
     response_format_tool_name: Option<&str>,
 ) -> Option<ModelBlock> {
+    let provider_data = serde_json::to_value(&block)
+        .ok()
+        .map(|payload| ProviderBlockData {
+            format: ANTHROPIC_PROVIDER_BLOCK_FORMAT.to_string(),
+            payload,
+        });
     match block.kind.as_str() {
         "text" => Some(ModelBlock::Text {
             text: block.text.unwrap_or_default(),
@@ -1786,39 +1861,94 @@ fn api_response_block_to_model(
         "redacted_thinking" => Some(ModelBlock::RedactedThinking {
             data: block.data.unwrap_or_default(),
         }),
-        // Anthropic server-side tool use (e.g. web search). This is a server-
-        // internal block that doesn't need to be stored or replayed.
-        "server_tool_use" => None,
-        // Anthropic server-side tool result (e.g. web search results) returned
-        // in the assistant response `content` array. This is distinct from
-        // client-side tool_result blocks in user messages, handled separately.
-        // Convert to Text so the content is preserved in subsequent turns.
-        "tool_result" => {
-            let text = match block.content {
-                Some(Value::String(s)) => s,
-                Some(Value::Array(arr)) => {
-                    // Anthropic tool_result content is an array of content blocks.
-                    // Extract text blocks and concatenate.
-                    arr.iter()
-                        .filter_map(|v| {
-                            v.get("text")
-                                .and_then(|t| t.as_str())
-                                .map(|s| s.to_string())
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                }
-                Some(other) => other.to_string(),
-                None => String::new(),
-            };
-            if text.is_empty() {
-                None
-            } else {
-                Some(ModelBlock::Text { text })
-            }
-        }
+        "server_tool_use" => Some(ModelBlock::ProviderToolUse {
+            id: block.id?,
+            name: block.name?,
+            input: block.input.unwrap_or_else(|| json!({})),
+            status: block.status,
+            provider_data,
+        }),
+        kind if is_provider_tool_result_kind(kind) => Some(ModelBlock::ProviderToolResult {
+            tool_use_id: block.tool_use_id,
+            content: block.content.unwrap_or(Value::Null),
+            is_error: block.is_error.unwrap_or(false),
+            status: block.status,
+            provider_data,
+        }),
         _ => None,
     }
+}
+
+fn is_provider_tool_result_kind(kind: &str) -> bool {
+    kind == "tool_result" || kind.ends_with("_tool_result")
+}
+
+fn strip_zai_redundant_provider_tool_text(blocks: &mut Vec<ApiResponseBlock>) {
+    let mut remove = vec![false; blocks.len()];
+    for (index, window) in blocks.windows(4).enumerate() {
+        let [input_text, tool_use, output_text, tool_result] = window else {
+            continue;
+        };
+        if is_zai_provider_tool_display_sequence(input_text, tool_use, output_text, tool_result) {
+            remove[index] = true;
+            remove[index + 2] = true;
+        }
+    }
+
+    let mut index = 0;
+    blocks.retain(|_| {
+        let keep = !remove[index];
+        index += 1;
+        keep
+    });
+}
+
+fn is_zai_provider_tool_display_sequence(
+    input_text: &ApiResponseBlock,
+    tool_use: &ApiResponseBlock,
+    output_text: &ApiResponseBlock,
+    tool_result: &ApiResponseBlock,
+) -> bool {
+    if input_text.kind != "text"
+        || tool_use.kind != "server_tool_use"
+        || output_text.kind != "text"
+        || !is_provider_tool_result_kind(&tool_result.kind)
+        || tool_use.id.as_deref() != tool_result.tool_use_id.as_deref()
+    {
+        return false;
+    }
+
+    let Some(name) = tool_use.name.as_deref() else {
+        return false;
+    };
+    let Some(input) = tool_use.input.as_ref() else {
+        return false;
+    };
+    let Some(displayed_input) =
+        parse_zai_provider_tool_input_display(input_text.text.as_deref().unwrap_or_default(), name)
+    else {
+        return false;
+    };
+    if &displayed_input != input {
+        return false;
+    }
+
+    let output_prefix = format!("**Output:**\n**{name}_result_summary:** ");
+    output_text
+        .text
+        .as_deref()
+        .is_some_and(|text| text.starts_with(&output_prefix))
+}
+
+fn parse_zai_provider_tool_input_display(text: &str, expected_name: &str) -> Option<Value> {
+    let name = text
+        .strip_prefix("**🌐 Z.ai Built-in Tool: ")?
+        .split_once("**\n\n**Input:**\n```json\n")?;
+    if name.0 != expected_name {
+        return None;
+    }
+    let json = name.1.strip_suffix("\n```\n*Executing on server...*\n")?;
+    serde_json::from_str(json).ok()
 }
 
 fn collect_anthropic_cache_diagnostics(
@@ -2269,6 +2399,8 @@ fn model_block_kind(block: &ModelBlock) -> &'static str {
     match block {
         ModelBlock::Text { .. } => "assistant_text",
         ModelBlock::ToolUse { .. } => "tool_use",
+        ModelBlock::ProviderToolUse { .. } => "provider_tool_use",
+        ModelBlock::ProviderToolResult { .. } => "provider_tool_result",
         ModelBlock::Thinking { .. } => "thinking",
         ModelBlock::ReasoningText { .. } => "reasoning_text",
         ModelBlock::RedactedThinking { .. } => "redacted_thinking",
@@ -2306,6 +2438,40 @@ fn hash_model_block(block: &ModelBlock) -> String {
             });
             sha256_hex(canonical_json(&value).as_bytes())
         }
+        ModelBlock::ProviderToolUse {
+            id,
+            name,
+            input,
+            status,
+            provider_data,
+        } => {
+            let value = json!({
+                "type": "provider_tool_use",
+                "id": id,
+                "name": name,
+                "input": input,
+                "status": status,
+                "provider_data": provider_data,
+            });
+            sha256_hex(canonical_json(&value).as_bytes())
+        }
+        ModelBlock::ProviderToolResult {
+            tool_use_id,
+            content,
+            is_error,
+            status,
+            provider_data,
+        } => {
+            let value = json!({
+                "type": "provider_tool_result",
+                "tool_use_id": tool_use_id,
+                "content": content,
+                "is_error": is_error,
+                "status": status,
+                "provider_data": provider_data,
+            });
+            sha256_hex(canonical_json(&value).as_bytes())
+        }
         ModelBlock::Citations { citations } => {
             let value = json!({ "type": "citations", "citations": citations });
             sha256_hex(canonical_json(&value).as_bytes())
@@ -2327,6 +2493,28 @@ fn estimate_model_block_tokens(block: &ModelBlock) -> u64 {
     match block {
         ModelBlock::Text { text } => estimate_tokens_from_chars(text.len()),
         ModelBlock::ToolUse { .. } => 50,
+        ModelBlock::ProviderToolUse {
+            input,
+            provider_data,
+            ..
+        } => provider_data
+            .as_ref()
+            .and_then(|data| serde_json::to_string(&data.payload).ok())
+            .map_or_else(
+                || estimate_tokens_from_chars(input.to_string().len()),
+                |payload| estimate_tokens_from_chars(payload.len()),
+            ),
+        ModelBlock::ProviderToolResult {
+            content,
+            provider_data,
+            ..
+        } => provider_data
+            .as_ref()
+            .and_then(|data| serde_json::to_string(&data.payload).ok())
+            .map_or_else(
+                || estimate_tokens_from_chars(content.to_string().len()),
+                |payload| estimate_tokens_from_chars(payload.len()),
+            ),
         ModelBlock::Thinking { text, .. } => estimate_tokens_from_chars(text.len()),
         ModelBlock::ReasoningText { text } => estimate_tokens_from_chars(text.len()),
         ModelBlock::RedactedThinking { data } => estimate_tokens_from_chars(data.len()),
@@ -3581,37 +3769,211 @@ mod tests {
     }
 
     #[test]
-    fn api_response_block_tool_result_converts_to_text() {
+    fn api_response_block_provider_tool_result_preserves_structured_content() {
         let block = ApiResponseBlock {
-            kind: "tool_result".to_string(),
+            kind: "web_search_tool_result".to_string(),
             tool_use_id: Some("srv_001".to_string()),
             content: Some(json!([{
-                "type": "text",
-                "text": "Search results: Rust is awesome."
+                "type": "web_search_result",
+                "url": "https://example.com/rust",
+                "title": "Rust"
             }])),
+            extra: [("provider_extension".to_string(), json!("kept"))]
+                .into_iter()
+                .collect(),
             ..Default::default()
         };
         let model = api_response_block_to_model(block, None);
-        assert!(
-            matches!(&model, Some(ModelBlock::Text { text }) if text.contains("Search results: Rust is awesome.")),
-            "tool_result should convert to Text preserving content, got: {model:?}"
-        );
+        match model {
+            Some(ModelBlock::ProviderToolResult {
+                tool_use_id,
+                content,
+                provider_data,
+                ..
+            }) => {
+                assert_eq!(tool_use_id.as_deref(), Some("srv_001"));
+                assert_eq!(content[0]["type"], json!("web_search_result"));
+                let provider_data = provider_data.expect("raw provider block should be preserved");
+                assert_eq!(provider_data.format, ANTHROPIC_PROVIDER_BLOCK_FORMAT);
+                assert_eq!(
+                    provider_data.payload["type"],
+                    json!("web_search_tool_result")
+                );
+                assert_eq!(provider_data.payload["provider_extension"], json!("kept"));
+            }
+            other => panic!("unexpected block: {other:?}"),
+        }
     }
 
     #[test]
-    fn api_response_block_server_tool_use_returns_none() {
+    fn api_response_block_server_tool_use_preserves_structured_input() {
         let block = ApiResponseBlock {
             kind: "server_tool_use".to_string(),
             id: Some("srv_search_1".to_string()),
             name: Some("web_search".to_string()),
             input: Some(json!({"query": "rust async"})),
+            extra: [("provider_extension".to_string(), json!({"version": 2}))]
+                .into_iter()
+                .collect(),
             ..Default::default()
         };
         let model = api_response_block_to_model(block, None);
-        assert!(
-            model.is_none(),
-            "server_tool_use should return None (server-side only), got: {model:?}"
-        );
+        match model {
+            Some(ModelBlock::ProviderToolUse {
+                id,
+                name,
+                input,
+                provider_data,
+                ..
+            }) => {
+                assert_eq!(id, "srv_search_1");
+                assert_eq!(name, "web_search");
+                assert_eq!(input, json!({"query": "rust async"}));
+                assert_eq!(
+                    provider_data
+                        .expect("raw provider block should be preserved")
+                        .payload["provider_extension"]["version"],
+                    json!(2)
+                );
+            }
+            other => panic!("unexpected block: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn provider_tool_blocks_round_trip_through_anthropic_assistant_history() {
+        let raw_use = json!({
+            "type": "server_tool_use",
+            "id": "srv_search_1",
+            "name": "web_search",
+            "input": {"query": "rust async"},
+            "provider_extension": {"version": 2}
+        });
+        let raw_result = json!({
+            "type": "web_search_tool_result",
+            "tool_use_id": "srv_search_1",
+            "content": [{
+                "type": "web_search_result",
+                "url": "https://example.com/rust",
+                "title": "Rust"
+            }]
+        });
+        let message = ConversationMessage::AssistantBlocks(vec![
+            ModelBlock::ProviderToolUse {
+                id: "srv_search_1".to_string(),
+                name: "web_search".to_string(),
+                input: json!({"query": "rust async"}),
+                status: None,
+                provider_data: Some(ProviderBlockData {
+                    format: ANTHROPIC_PROVIDER_BLOCK_FORMAT.to_string(),
+                    payload: raw_use.clone(),
+                }),
+            },
+            ModelBlock::ProviderToolResult {
+                tool_use_id: Some("srv_search_1".to_string()),
+                content: raw_result["content"].clone(),
+                is_error: false,
+                status: None,
+                provider_data: Some(ProviderBlockData {
+                    format: ANTHROPIC_PROVIDER_BLOCK_FORMAT.to_string(),
+                    payload: raw_result.clone(),
+                }),
+            },
+        ]);
+
+        let encoded = conversation_message_to_api(&message, None);
+        assert_eq!(encoded.content, json!([raw_use, raw_result]));
+    }
+
+    #[test]
+    fn strips_zai_redundant_provider_tool_display_text() {
+        let mut blocks = vec![
+            ApiResponseBlock {
+                kind: "text".to_string(),
+                text: Some(
+                    "**🌐 Z.ai Built-in Tool: web_search_prime**\n\n\
+                     **Input:**\n```json\n\
+                     {\"content_size\":\"medium\",\"search_query\":\"rust async\"}\n\
+                     ```\n*Executing on server...*\n"
+                        .to_string(),
+                ),
+                ..Default::default()
+            },
+            ApiResponseBlock {
+                kind: "server_tool_use".to_string(),
+                id: Some("call_1".to_string()),
+                name: Some("web_search_prime".to_string()),
+                input: Some(json!({
+                    "content_size": "medium",
+                    "search_query": "rust async"
+                })),
+                ..Default::default()
+            },
+            ApiResponseBlock {
+                kind: "text".to_string(),
+                text: Some(
+                    "**Output:**\n**web_search_prime_result_summary:** [{\"title\":\"Rust\"}]"
+                        .to_string(),
+                ),
+                ..Default::default()
+            },
+            ApiResponseBlock {
+                kind: "tool_result".to_string(),
+                tool_use_id: Some("call_1".to_string()),
+                content: Some(json!([[{"title": "Rust"}]])),
+                ..Default::default()
+            },
+            ApiResponseBlock {
+                kind: "text".to_string(),
+                text: Some("Rust uses async/await.".to_string()),
+                ..Default::default()
+            },
+        ];
+
+        strip_zai_redundant_provider_tool_text(&mut blocks);
+
+        assert_eq!(blocks.len(), 3);
+        assert_eq!(blocks[0].kind, "server_tool_use");
+        assert_eq!(blocks[1].kind, "tool_result");
+        assert_eq!(blocks[2].text.as_deref(), Some("Rust uses async/await."));
+    }
+
+    #[test]
+    fn preserves_zai_like_text_without_matching_structured_sequence() {
+        let mut blocks = vec![
+            ApiResponseBlock {
+                kind: "text".to_string(),
+                text: Some(
+                    "**🌐 Z.ai Built-in Tool: web_search_prime**\n\n\
+                     **Input:**\n```json\n{\"search_query\":\"displayed\"}\n```\n\
+                     *Executing on server...*\n"
+                        .to_string(),
+                ),
+                ..Default::default()
+            },
+            ApiResponseBlock {
+                kind: "server_tool_use".to_string(),
+                id: Some("call_1".to_string()),
+                name: Some("web_search_prime".to_string()),
+                input: Some(json!({"search_query": "actual"})),
+                ..Default::default()
+            },
+            ApiResponseBlock {
+                kind: "text".to_string(),
+                text: Some("**Output:**\n**web_search_prime_result_summary:** []".to_string()),
+                ..Default::default()
+            },
+            ApiResponseBlock {
+                kind: "tool_result".to_string(),
+                tool_use_id: Some("call_1".to_string()),
+                content: Some(json!([])),
+                ..Default::default()
+            },
+        ];
+
+        strip_zai_redundant_provider_tool_text(&mut blocks);
+
+        assert_eq!(blocks.len(), 4);
     }
 
     #[test]

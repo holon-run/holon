@@ -88,6 +88,41 @@ pub(super) fn estimate_model_block_tokens(block: &ModelBlock) -> usize {
         ModelBlock::ToolUse {
             id, name, input, ..
         } => estimate_text_tokens(id) + estimate_text_tokens(name) + estimate_json_tokens(input),
+        ModelBlock::ProviderToolUse {
+            id,
+            name,
+            input,
+            provider_data,
+            ..
+        } => {
+            estimate_text_tokens(id)
+                + estimate_text_tokens(name)
+                + estimate_json_tokens(input)
+                + provider_data
+                    .as_ref()
+                    .map(|data| {
+                        estimate_text_tokens(&data.format) + estimate_json_tokens(&data.payload)
+                    })
+                    .unwrap_or(0)
+        }
+        ModelBlock::ProviderToolResult {
+            tool_use_id,
+            content,
+            provider_data,
+            ..
+        } => {
+            tool_use_id
+                .as_deref()
+                .map(estimate_text_tokens)
+                .unwrap_or(0)
+                + estimate_json_tokens(content)
+                + provider_data
+                    .as_ref()
+                    .map(|data| {
+                        estimate_text_tokens(&data.format) + estimate_json_tokens(&data.payload)
+                    })
+                    .unwrap_or(0)
+        }
         ModelBlock::Thinking { text, .. } => estimate_text_tokens(text),
         ModelBlock::ReasoningText { text } => estimate_text_tokens(text),
         ModelBlock::RedactedThinking { data } => estimate_text_tokens(data),

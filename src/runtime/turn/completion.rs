@@ -174,7 +174,9 @@ pub(super) fn completion_report_texts_by_tool_id(
             }
             ModelBlock::Thinking { .. }
             | ModelBlock::ReasoningText { .. }
-            | ModelBlock::RedactedThinking { .. } => {}
+            | ModelBlock::RedactedThinking { .. }
+            | ModelBlock::ProviderToolUse { .. }
+            | ModelBlock::ProviderToolResult { .. } => {}
         }
     }
     reports

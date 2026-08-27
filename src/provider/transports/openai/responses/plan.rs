@@ -480,7 +480,9 @@ fn build_openai_input_for_contract(
                         }
                         ModelBlock::Thinking { .. }
                         | ModelBlock::RedactedThinking { .. }
-                        | ModelBlock::Citations { .. } => {}
+                        | ModelBlock::Citations { .. }
+                        | ModelBlock::ProviderToolUse { .. }
+                        | ModelBlock::ProviderToolResult { .. } => {}
                     }
                 }
                 flush_assistant_text(&mut items, &mut pending_text);

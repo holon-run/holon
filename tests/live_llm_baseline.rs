@@ -42,7 +42,9 @@ fn response_text(blocks: &[ModelBlock]) -> String {
             | ModelBlock::Thinking { .. }
             | ModelBlock::ReasoningText { .. }
             | ModelBlock::RedactedThinking { .. }
-            | ModelBlock::Citations { .. } => None,
+            | ModelBlock::Citations { .. }
+            | ModelBlock::ProviderToolUse { .. }
+            | ModelBlock::ProviderToolResult { .. } => None,
         })
         .collect::<Vec<_>>()
         .join("\n")

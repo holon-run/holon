@@ -254,7 +254,9 @@ pub fn compact_request_snapshot(
                         ModelBlock::Thinking { .. }
                         | ModelBlock::ReasoningText { .. }
                         | ModelBlock::RedactedThinking { .. }
-                        | ModelBlock::Citations { .. } => None,
+                        | ModelBlock::Citations { .. }
+                        | ModelBlock::ProviderToolUse { .. }
+                        | ModelBlock::ProviderToolResult { .. } => None,
                     })
                     .collect::<Vec<_>>()
                     .join("\n"),

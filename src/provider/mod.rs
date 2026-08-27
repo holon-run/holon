@@ -473,6 +473,32 @@ pub enum ModelBlock {
         #[serde(default)]
         kind: ModelToolCallKind,
     },
+    /// A tool call executed by the model provider rather than by Holon.
+    ///
+    /// Provider-owned tool blocks are retained for audit and compatible
+    /// conversation replay, but must never be dispatched as managed tools or
+    /// rendered as assistant prose.
+    ProviderToolUse {
+        id: String,
+        name: String,
+        input: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_data: Option<ProviderBlockData>,
+    },
+    /// A result produced by a provider-owned tool.
+    ProviderToolResult {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_use_id: Option<String>,
+        content: Value,
+        #[serde(default)]
+        is_error: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_data: Option<ProviderBlockData>,
+    },
     Thinking {
         text: String,
         /// Opaque signature returned by the provider (e.g. DeepSeek V4 Pro).
@@ -489,6 +515,12 @@ pub enum ModelBlock {
         /// Must be passed back verbatim in subsequent requests.
         data: String,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProviderBlockData {
+    pub format: String,
+    pub payload: Value,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

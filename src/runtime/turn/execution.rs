@@ -1763,6 +1763,7 @@ impl TurnExecution<'_> {
                     | ModelBlock::RedactedThinking { .. } => {
                         thinking_block_count += 1;
                     }
+                    ModelBlock::ProviderToolUse { .. } | ModelBlock::ProviderToolResult { .. } => {}
                 }
             }
 
