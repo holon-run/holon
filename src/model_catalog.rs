@@ -1649,7 +1649,8 @@ fn reasoning_effort_options(
             &["low", "medium", "high"][..]
         }
         ("zai" | "bigmodel", "glm-5.2") => &["high", "max"][..],
-        ("zai" | "bigmodel", "glm-5.3") => &["low", "high", "max"][..],
+        ("dashscope", "qwen3.8-flash") => &["low", "medium", "xhigh"][..],
+        ("zai" | "bigmodel", "glm-5.3" | "glm-5.3-flash") => &["low", "high", "max"][..],
         ("moonshot", "kimi-k3") => &["low", "high", "max"][..],
         ("xiaomi", "mimo-v2.5-pro" | "mimo-v2.5")
             if endpoint
@@ -2257,6 +2258,23 @@ mod tests {
         assert_eq!(zai_53.reasoning_effort_options, ["low", "high", "max"]);
         assert_eq!(zai_53.source, ModelMetadataSource::BuiltInCatalog);
 
+        for provider in ["zai", "bigmodel"] {
+            let flash = catalog.resolve_policy(
+                &ModelRef::parse(&format!("{provider}/glm-5.3-flash")).unwrap(),
+                &HashMap::new(),
+                &HashMap::new(),
+                None,
+                &base_context(),
+                8192,
+            );
+            assert_eq!(flash.display_name, "GLM-5.3 Flash");
+            assert_eq!(flash.context_window_tokens, Some(1_000_000));
+            assert_eq!(flash.runtime_max_output_tokens, 131_072);
+            assert!(flash.capabilities.image_input);
+            assert_eq!(flash.reasoning_effort_options, ["low", "high", "max"]);
+            assert_eq!(flash.source, ModelMetadataSource::BuiltInCatalog);
+        }
+
         assert_eq!(
             catalog
                 .preferred_model_for_provider(&ProviderId::parse("zai").unwrap())
@@ -2273,7 +2291,13 @@ mod tests {
         );
 
         for model in [
-            "glm-5.3", "glm-5.2", "glm-5.1", "glm-5", "glm-4.7", "glm-4.6",
+            "glm-5.3",
+            "glm-5.3-flash",
+            "glm-5.2",
+            "glm-5.1",
+            "glm-5",
+            "glm-4.7",
+            "glm-4.6",
         ] {
             assert!(catalog
                 .get(&ModelRef::new(ProviderId::parse("zai").unwrap(), model))
@@ -2345,6 +2369,9 @@ mod tests {
             .get(&ModelRef::parse("dashscope/qwen3.8-max").unwrap())
             .is_some());
         assert!(catalog
+            .get(&ModelRef::parse("dashscope/qwen3.8-flash").unwrap())
+            .is_some());
+        assert!(catalog
             .get(&ModelRef::parse("dashscope/deepseek-v4-flash-0731").unwrap())
             .is_some());
         assert!(catalog
@@ -2383,6 +2410,7 @@ mod tests {
             ("qwen3.5-plus", 1_000_000, true, true),
             ("qwen3.8-max-preview", 1_000_000, true, true),
             ("qwen3.8-max", 1_000_000, true, true),
+            ("qwen3.8-flash", 1_000_000, true, true),
             ("deepseek-v4-flash-0731", 1_000_000, true, false),
             ("qwen3-coder-next", 262_144, true, false),
             ("qwen3-coder-plus", 1_000_000, true, false),
@@ -2394,9 +2422,8 @@ mod tests {
         ];
 
         for (model, context_window, reasoning, image_input) in expected {
-            let metadata = catalog
-                .get(&ModelRef::parse(&format!("dashscope/{model}")).unwrap())
-                .unwrap();
+            let model_ref = ModelRef::parse(&format!("dashscope/{model}")).unwrap();
+            let metadata = catalog.get(&model_ref).unwrap();
             assert_eq!(
                 metadata.context_window_tokens,
                 Some(context_window),
@@ -2410,6 +2437,18 @@ mod tests {
                 metadata.capabilities.image_input, image_input,
                 "{model} image input"
             );
+            if model == "qwen3.8-flash" {
+                let policy = catalog.resolve_policy(
+                    &model_ref,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    None,
+                    &base_context(),
+                    8192,
+                );
+                assert_eq!(policy.runtime_max_output_tokens, 131_072);
+                assert_eq!(policy.reasoning_effort_options, ["low", "medium", "xhigh"]);
+            }
         }
     }
 
@@ -3059,6 +3098,7 @@ mod tests {
             "dashscope@token-plan/qwen3.7-max",
             "dashscope@token-plan/qwen3.8-max-preview",
             "dashscope@token-plan/qwen3.8-max",
+            "dashscope@token-plan/qwen3.8-flash",
             "dashscope@token-plan/deepseek-v4-flash-0731",
             "dashscope@token-plan/kimi-k2.7-code",
             "dashscope@token-plan/glm-5.2",

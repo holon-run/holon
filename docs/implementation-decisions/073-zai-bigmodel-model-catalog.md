@@ -20,6 +20,10 @@ BigModel documents the corresponding limits as `204,800` or `131,072`.
 Holon preserves that provider-specific distinction instead of normalizing the
 values merely because the model names match.
 
+`glm-5.3-flash` is present in both catalogs with a 1M context window, a 128K
+output ceiling, reasoning, and image input. Its named reasoning levels follow
+the GLM-5.3 parameter contract: `low`, `high`, and `max`.
+
 This calibration removes the no-longer-listed `bigmodel/glm-4.5` and
 `bigmodel/glm-4.5v` model refs. Configurations using those refs must select a
 model that remains in BigModel's current official overview.
@@ -28,5 +32,8 @@ Sources:
 
 - Z.AI model overview: `https://docs.z.ai/guides/overview/overview`
 - Z.AI GLM-5.2 guide: `https://docs.z.ai/guides/llm/glm-5.2`
+- Z.AI GLM-5.3-Flash guide: `https://docs.z.ai/guides/vlm/glm-5.3-flash`
 - BigModel model overview:
   `https://docs.bigmodel.cn/cn/guide/start/model-overview`
+- BigModel GLM-5.3-Flash guide:
+  `https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5.3-flash`

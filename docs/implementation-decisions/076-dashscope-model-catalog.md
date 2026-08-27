@@ -19,25 +19,30 @@ Qwen3.8-Max (GA, 2026-08) is recorded with reasoning and image input per
 Alibaba Cloud's model listing and Qwen platform documentation, with a 131k
 max-output ceiling. `qwen3.8-max-preview` is retained alongside the GA entry
 because it remains in the Token Plan team allowlist without an announced
-retirement date. Alibaba Cloud documents `deepseek-v4-flash-0731` as a
-distinct model code on the Token Plan team allowlist rather than an alias of
-`deepseek-v4-flash`, so it is registered as its own route with the same
-1M/384K shape; the undated `deepseek-v4-flash` entry stays because both codes
-are allowlisted.
+retirement date. Qwen3.8-Flash is recorded as a lower-cost 1M-context,
+131k-output multimodal reasoning model and is exposed through the Token Plan
+route documented for the current Anthropic-compatible client surface.
+Alibaba Cloud documents `deepseek-v4-flash-0731` as a distinct model code on
+the Token Plan team allowlist rather than an alias of `deepseek-v4-flash`, so
+it is registered as its own route with the same 1M/384K shape; the undated
+`deepseek-v4-flash` entry stays because both codes are allowlisted.
 
 Alibaba Cloud's Anthropic-compatible API accepts explicit
-`thinking.budget_tokens`, but the documentation does not define stable named
-reasoning levels for this transport. Holon therefore records reasoning support
-without presenting an invented `low` / `medium` / `high` selector.
+`thinking.budget_tokens`. Holon records named reasoning levels only where the
+model documentation defines them: Qwen3.8-Flash exposes `low`, `medium`, and
+`xhigh`. Other DashScope models continue to record reasoning support without
+invented named selectors.
 
 The legacy Beijing endpoint remains the built-in default because Alibaba Cloud
 states that it continues to work. Workspace-specific regional domains can be
 configured by users and are not suitable as a static built-in URL.
 
-Sources (checked 2026-08-04):
+Sources (checked 2026-08-27):
 
 - Text generation model catalog:
   `https://help.aliyun.com/zh/model-studio/text-generation-model/`
+- Qwen3.8-Flash model guide:
+  `https://platform.qianwenai.com/docs/developer-guides/getting-started/latest-model`
 - OpenCode configuration for pay-as-you-go, Token Plan, and Coding Plan:
   `https://help.aliyun.com/zh/model-studio/opencode`
 - Anthropic-compatible Messages API:
