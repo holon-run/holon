@@ -100,6 +100,7 @@ describe("ledger ingestion pipeline", () => {
     const ledger = await openLedgerHandle();
     const session = await ledger.getAgentSession(scope);
     expect(session?.ingestedThroughSeq).toBe(3);
+    expect(session?.observedHeadSeq).toBe(3);
     expect(session?.projectionReadyThroughSeq).toBe(3);
     const runtimeScope = await ledger.getRuntimeScope({
       remoteKey: scope.remoteKey,
@@ -176,6 +177,27 @@ describe("ledger ingestion pipeline", () => {
     });
   });
 
+  it("reloads the agent-scoped head instead of a sibling agent's runtime head", async () => {
+    const first = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
+    await first.open();
+    const scope = makeScope({ agentId: "agent-low" });
+    const sibling = makeScope({ agentId: "agent-high" });
+
+    await first.ingest(scope, Array.from({ length: 12 }, (_, index) => envelope(index + 1)));
+    await first.ingest(sibling, [envelope(1_000, { agent_id: sibling.agentId })]);
+    first.dispose();
+
+    const reloaded = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
+    await reloaded.open();
+
+    expect(await reloaded.resume(scope)).toMatchObject({
+      ingestedThroughSeq: 12,
+      projectionReadyThroughSeq: 12,
+      observedEventHeadSeq: 12,
+    });
+    reloaded.dispose();
+  });
+
   it("keeps the contiguous cursor behind out-of-order gaps", async () => {
     const pipeline = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
     await pipeline.open();
@@ -244,6 +266,7 @@ describe("ledger ingestion pipeline", () => {
     // cursor stops at 4, after the gap-filling 1..3 ingest plus the earlier
     // filtered straggler 4 — never at 8.
     expect(session?.ingestedThroughSeq).toBe(4);
+    expect(session?.observedHeadSeq).toBe(8);
     const runtimeScope = await ledger.getRuntimeScope({
       remoteKey: scope.remoteKey,
       runtimeId: scope.runtimeId,
@@ -382,6 +405,20 @@ describe("ledger ingestion pipeline", () => {
     expect(status.blockedReason).toBe("pending_hydration");
   });
 
+  it("accepts the current envelope contract version", async () => {
+    const pipeline = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
+    await pipeline.open();
+    const scope = makeScope();
+
+    const status = await pipeline.ingest(scope, [
+      envelope(1, { contract_version: 3 }),
+    ]);
+
+    expect(status.ingestedThroughSeq).toBe(1);
+    expect(status.projectionReadyThroughSeq).toBe(1);
+    expect(status.blockedByEventSeq).toBeUndefined();
+  });
+
   it("blocks readiness on unknown envelope contract versions", async () => {
     const pipeline = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
     await pipeline.open();
@@ -460,6 +497,47 @@ describe("ledger ingestion pipeline", () => {
     expect(status.pendingHydrationJobs).toBe(0);
     expect(status.projectionReadyThroughSeq).toBe(2);
     expect(status.ingestedThroughSeq).toBe(2);
+  });
+
+  it("repairs a stale readiness cursor after another tab satisfied hydration", async () => {
+    const scope = makeScope();
+    const first = new LedgerIngestionPipeline({
+      fetchers: {
+        fetchCanonicalRecords: async () => ({
+          recordsById: {},
+          missingIds: ["brief-1"],
+        }),
+      },
+    });
+    await first.open();
+    await first.ingest(scope, [envelope(1), briefEvent(2, "brief-1"), envelope(3)]);
+    await first.drainHydration(scope);
+    expect(first.status(scope)?.projectionReadyThroughSeq).toBe(1);
+    first.dispose();
+
+    // Simulate a sibling tab atomically satisfying the pending job while the
+    // persisted readiness cursor still reflects the old blocker.
+    const ledger = await openLedgerHandle();
+    await ledger
+      .beginWrite()
+      .putCanonicalRecord(scope, "brief", "brief-1", { id: "brief-1" })
+      .deleteHydrationJob(scope, "brief:brief-1")
+      .commit();
+    ledger.close();
+
+    const reloaded = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
+    await reloaded.open();
+    expect(await reloaded.resume(scope)).toMatchObject({
+      ingestedThroughSeq: 3,
+      projectionReadyThroughSeq: 3,
+      observedEventHeadSeq: 3,
+      pendingHydrationJobs: 0,
+    });
+
+    const verified = await openLedgerHandle();
+    expect((await verified.getAgentSession(scope))?.projectionReadyThroughSeq).toBe(3);
+    verified.close();
+    reloaded.dispose();
   });
 
   it("heals stored out-of-order stragglers across a restart", async () => {

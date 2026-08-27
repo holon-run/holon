@@ -402,6 +402,7 @@ export class LedgerIngestionPipeline {
     }
     const observedHead = Math.max(tracker.observedHead, ...newSeqs);
     if (observedHead > tracker.observedHead) {
+      batch.applyProjectionChange(scope, { observedHeadSeq: observedHead });
       batch.putRuntimeScope(remoteScopeOf(scope), { eventHeadSeq: observedHead });
       tracker.observedHead = observedHead;
     }
@@ -529,7 +530,10 @@ export class LedgerIngestionPipeline {
     // The snapshot is authoritative through its boundary: both cursors sit
     // at the boundary regardless of any prior cache for this scope key.
     batch.advanceIngestionCursor(scope, install.snapshotThroughSeq);
-    batch.applyProjectionChange(scope, { projectionReadyThroughSeq: install.snapshotThroughSeq });
+    batch.applyProjectionChange(scope, {
+      observedHeadSeq: install.eventHeadSeq,
+      projectionReadyThroughSeq: install.snapshotThroughSeq,
+    });
     batch.putRuntimeScope(remoteScopeOf(scope), { eventHeadSeq: install.eventHeadSeq });
     if (options.readState) {
       batch.putReadState(scope, options.readState);
@@ -984,9 +988,8 @@ export class LedgerIngestionPipeline {
       return tracker;
     }
     const ledger = this.ledger!;
-    const [session, runtimeScope, jobs] = await Promise.all([
+    const [session, jobs] = await Promise.all([
       ledger.getAgentSession(scope),
-      ledger.getRuntimeScope(remoteScopeOf(scope)),
       ledger.getPendingHydrationJobs(scope),
     ]);
     tracker.contiguousThrough = session?.ingestedThroughSeq ?? 0;
@@ -994,11 +997,10 @@ export class LedgerIngestionPipeline {
       session?.projectionReadyThroughSeq ?? 0,
       tracker.contiguousThrough,
     );
-    // These records are read independently, so another tab may commit between
-    // the two reads. A persisted contiguous cursor is itself proof that the
-    // observed head reached at least that sequence.
+    // Older databases predate the agent-scoped head. A persisted contiguous
+    // cursor is itself proof that this agent's observed head reached it.
     tracker.observedHead = Math.max(
-      runtimeScope?.eventHeadSeq ?? 0,
+      session?.observedHeadSeq ?? 0,
       tracker.contiguousThrough,
     );
     for (const job of jobs) {
@@ -1028,6 +1030,16 @@ export class LedgerIngestionPipeline {
       if (event.eventSeq > tracker.contiguousThrough) {
         tracker.outOfOrder.add(event.eventSeq);
       }
+    }
+    // A prior tab may have satisfied hydration demand before this tracker
+    // loaded. Reconcile readiness from the remaining durable blockers.
+    const ready = this.computeReady(tracker);
+    if (ready > tracker.readyThrough) {
+      await ledger
+        .beginWrite()
+        .applyProjectionChange(scope, { projectionReadyThroughSeq: ready })
+        .commit();
+      tracker.readyThrough = ready;
     }
     tracker.loaded = true;
     return tracker;

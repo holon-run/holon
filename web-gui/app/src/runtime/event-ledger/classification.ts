@@ -29,7 +29,7 @@ import type { RawEventClassification } from "./ledger";
  * Mirrors RUNTIME_EVENT_CONTRACT_VERSION in `runtime/session-events.ts`;
  * duplicated here so the ledger layer stays app-layer-independent.
  */
-export const SUPPORTED_ENVELOPE_CONTRACT_VERSION = 2;
+export const SUPPORTED_ENVELOPE_CONTRACT_VERSION = 3;
 
 export type EnvelopeProjectionEffect = "none" | "display_invalidation";
 

@@ -54,6 +54,7 @@ export interface HolonE2eLedgerPartition {
   visibilityScopeId: string;
   eventLogEpoch: string;
   eventSeqs: number[];
+  observedHeadSeq?: number;
   readThroughEventSeq?: number;
   certainty?: "exact" | "truncated";
 }
@@ -67,6 +68,7 @@ export interface HolonE2eLedgerSnapshot {
   ingestionState: string;
   ingestionError?: string;
   ingestedThroughSeq: number;
+  observedHeadSeq: number;
   projectionReadyThroughSeq: number;
   pendingHydrationJobs: number;
   failedHydrationJobs: number;
@@ -178,6 +180,7 @@ async function ledgerSnapshot(agentId: string): Promise<HolonE2eLedgerSnapshot |
       ingestionState: status?.state ?? "unknown",
       ingestionError: status?.lastError,
       ingestedThroughSeq: session.ingestedThroughSeq ?? 0,
+      observedHeadSeq: session.observedHeadSeq ?? session.ingestedThroughSeq ?? 0,
       projectionReadyThroughSeq: session.projectionReadyThroughSeq ?? 0,
       pendingHydrationJobs: pending.length,
       failedHydrationJobs: jobs.length - pending.length,
@@ -247,6 +250,7 @@ async function ledgerPartitions(agentId: string): Promise<HolonE2eLedgerPartitio
         visibilityScopeId: session.visibilityScopeId,
         eventLogEpoch: session.eventLogEpoch,
         eventSeqs: rawEvents.filter(sameScope).map((event) => event.eventSeq).sort((a, b) => a - b),
+        observedHeadSeq: session.observedHeadSeq ?? session.ingestedThroughSeq,
         readThroughEventSeq: readState?.readThroughEventSeq,
         certainty: readState?.certainty,
       };

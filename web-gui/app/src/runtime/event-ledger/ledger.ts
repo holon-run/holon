@@ -126,6 +126,8 @@ export interface LedgerAgentSessionRecord {
   agentId: string;
   /** Contiguous raw ingestion cursor: every event <= this seq is durably stored. */
   ingestedThroughSeq?: number;
+  /** Highest event seq observed for this agent, which may be ahead of ingestion. */
+  observedHeadSeq?: number;
   /**
    * Projection readiness cursor: every display-affecting event <= this seq
    * is durably stored AND satisfied (applied directly, hydrated, or
@@ -222,10 +224,14 @@ type WriteOperation =
  * cursors are validated monotonically against the value observed inside the
  * same transaction, so a coalesced patch can never regress either cursor.
  */
-type AgentSessionCursorField = "ingestedThroughSeq" | "projectionReadyThroughSeq";
+type AgentSessionCursorField =
+  | "ingestedThroughSeq"
+  | "observedHeadSeq"
+  | "projectionReadyThroughSeq";
 
 const CURSOR_FIELDS: readonly AgentSessionCursorField[] = [
   "ingestedThroughSeq",
+  "observedHeadSeq",
   "projectionReadyThroughSeq",
 ];
 
