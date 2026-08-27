@@ -300,6 +300,7 @@ test("event log epoch replacement clears the old projection and read partition",
     visibilityScopeId: "e2e-scope",
     eventLogEpoch: "epoch-after",
     eventSeqs: [1, 2, 3],
+    observedHeadSeq: 3,
     readThroughEventSeq: 3,
     certainty: "exact",
   }]);
@@ -351,6 +352,7 @@ test("visibility scope rotation clears the old auth-scoped partition", async ({
     visibilityScopeId: "scope-after",
     eventLogEpoch: "e2e-epoch",
     eventSeqs: [1, 2, 3],
+    observedHeadSeq: 3,
     readThroughEventSeq: 3,
     certainty: "exact",
   }]);
@@ -532,6 +534,8 @@ test("divergence repair, sync error, and degraded handle recovery preserve exact
     visibilityScopeId: "e2e-scope",
     eventLogEpoch: "e2e-epoch",
     eventSeqs: [1, 2],
+    observedHeadSeq: 2,
+    readThroughEventSeq: 2,
     certainty: "exact",
   }]);
   const recoveredWrite = await request.post(controlPath(session, "/__e2e__/append-event"), {
@@ -551,6 +555,7 @@ test("divergence repair, sync error, and degraded handle recovery preserve exact
     visibilityScopeId: "e2e-scope",
     eventLogEpoch: "e2e-epoch",
     eventSeqs: [1, 2, 3],
+    observedHeadSeq: 3,
     readThroughEventSeq: 3,
     certainty: "exact",
   }]);
