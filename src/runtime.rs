@@ -1106,6 +1106,14 @@ fn exact_task_result_claim_recovery(
             });
         }
     };
+    if let Some(wait) = wait.as_ref() {
+        if wait.status == WaitConditionStatus::Cancelled {
+            return Ok(TaskResultClaimRecovery::Revoked {
+                wait: wait.clone(),
+                reason: "task_result_wait_cancelled",
+            });
+        }
+    }
     let Some(work_item) = runtime_db.work_items().latest(work_item_id)? else {
         return Ok(TaskResultClaimRecovery::Ineligible {
             reason: "task_result_work_item_missing",
@@ -1124,12 +1132,6 @@ fn exact_task_result_claim_recovery(
     let Some(wait) = wait else {
         return Ok(TaskResultClaimRecovery::MissingWait);
     };
-    if wait.status == WaitConditionStatus::Cancelled {
-        return Ok(TaskResultClaimRecovery::Revoked {
-            wait,
-            reason: "task_result_wait_cancelled",
-        });
-    }
     let (command, reason) = match work_item.revision.cmp(&expected_source_revision) {
         std::cmp::Ordering::Greater => (
             crate::domain::execution_protocol::ExecutionProtocolCommand::
