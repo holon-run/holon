@@ -195,6 +195,9 @@ describe("ledger ingestion pipeline", () => {
       projectionReadyThroughSeq: 12,
       observedEventHeadSeq: 12,
     });
+    expect(await reloaded.resume(sibling)).toMatchObject({
+      observedEventHeadSeq: 1_000,
+    });
     reloaded.dispose();
   });
 

@@ -1035,6 +1035,7 @@ export class LedgerIngestionPipeline {
     // loaded. Reconcile readiness from the remaining durable blockers.
     const ready = this.computeReady(tracker);
     if (ready > tracker.readyThrough) {
+      // Initialization has no later ingestion batch that could coalesce this repair.
       await ledger
         .beginWrite()
         .applyProjectionChange(scope, { projectionReadyThroughSeq: ready })
