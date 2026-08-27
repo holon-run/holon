@@ -514,6 +514,59 @@ async fn scheduler_recovery_apply_quarantines_cancelled_task_result_claim_atomic
     );
 }
 
+#[tokio::test]
+async fn scheduler_recovery_quarantines_task_result_claim_with_missing_wait() {
+    use crate::domain::execution_protocol::ExecutionAttemptState;
+
+    let fixture = missing_wait_task_result_claim_fixture("task-missing-wait-debug-apply").await;
+    let report = isolated_task_result_claim_report(&fixture.runtime);
+    let [candidate] = report.task_result_claim_recoveries.as_slice() else {
+        panic!("expected one missing-wait TaskResult claim candidate: {report:#?}");
+    };
+    assert!(candidate.eligible);
+    assert_eq!(candidate.reason, "task_result_wait_missing");
+    assert_eq!(candidate.recovery_decision, "interrupt_and_quarantine");
+
+    assert_eq!(
+        apply_scheduler_recovery_plan_with_backup_policy(
+            &fixture.runtime.inner.storage,
+            &fixture.runtime.inner.runtime_db,
+            "default",
+            &report,
+            SchedulerRecoveryBackupPolicy::SkipApproved,
+        )
+        .unwrap(),
+        (1, None)
+    );
+    let execution = fixture
+        .runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        execution.attempts[&fixture.attempt_id].state,
+        ExecutionAttemptState::Interrupted
+    );
+    assert_eq!(
+        fixture
+            .runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&fixture.result.id)
+            .unwrap()
+            .expect("quarantined TaskResult")
+            .status,
+        QueueEntryStatus::Quarantined
+    );
+    assert!(isolated_task_result_claim_report(&fixture.runtime)
+        .task_result_claim_recoveries
+        .is_empty());
+}
+
 struct GatedFailingProvider {
     started: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
@@ -2361,6 +2414,34 @@ async fn stale_task_result_claim_fixture(task_id: &str) -> StaleTaskResultClaimF
 
 async fn cancelled_wait_task_result_claim_fixture(task_id: &str) -> StaleTaskResultClaimFixture {
     task_result_claim_fixture(task_id, true).await
+}
+
+async fn missing_wait_task_result_claim_fixture(task_id: &str) -> StaleTaskResultClaimFixture {
+    let fixture = stale_task_result_claim_fixture(task_id).await;
+    let wait = fixture
+        .runtime
+        .storage()
+        .latest_wait_conditions()
+        .unwrap()
+        .into_iter()
+        .find(|condition| {
+            condition.trigger_message_id() == Some(fixture.result.id.as_str())
+                && condition.work_item_id.as_deref() == Some(fixture.work_item_id.as_str())
+        })
+        .expect("resolved TaskResult wait");
+    fixture
+        .runtime
+        .inner
+        .runtime_db
+        .transaction(|tx| {
+            tx.execute(
+                "DELETE FROM wait_conditions WHERE wait_condition_id = ?1",
+                [&wait.id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    fixture
 }
 
 async fn task_result_claim_fixture(

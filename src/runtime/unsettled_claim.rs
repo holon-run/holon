@@ -13,6 +13,7 @@ pub(crate) struct UnsettledClaimFacts {
 pub(crate) enum ReplayFence {
     ExactReplayable,
     Revoked,
+    Missing,
     Ambiguous,
 }
 
@@ -56,6 +57,11 @@ pub(crate) fn plan_unsettled_claim(facts: &UnsettledClaimFacts) -> UnsettledClai
     if facts.replay_fence == ReplayFence::Revoked {
         return UnsettledClaimDecision::InterruptAndQuarantine {
             reason: "task_result_wait_cancelled",
+        };
+    }
+    if facts.replay_fence == ReplayFence::Missing {
+        return UnsettledClaimDecision::InterruptAndQuarantine {
+            reason: "task_result_wait_missing",
         };
     }
     // Recovery lineage takes precedence over a replayable fence so one replay cannot recurse.
