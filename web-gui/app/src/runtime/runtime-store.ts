@@ -65,6 +65,7 @@ import type { AgentSessionState as AgentSessionStateBase } from "./runtime-store
 import {
   briefIdForPayload,
 } from "./session-reducer";
+import { generateUuid } from "./uuid";
 import {
   briefIdsForProjectionHydration,
   deriveSessionTimeline,
@@ -3381,34 +3382,34 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     }
 
     const request = captureClientRequest();
-    const clientId = crypto.randomUUID();
-    set((state) => {
-      const rosterActivityByAgentId = touchRosterActivity(state.rosterActivityByAgentId, agentId, "operator", new Date().toISOString());
-      if (rosterActivityByAgentId !== state.rosterActivityByAgentId) {
-        writeStoredRosterActivity(currentRemoteKey(runtimeConnectionConfig), rosterActivityByAgentId);
-      }
-      return {
-        bootstrap: sortBootstrapAgents(state.bootstrap, rosterActivityByAgentId),
-        rosterActivityByAgentId,
-        sessionsByAgentId: {
-          ...state.sessionsByAgentId,
-          [agentId]: {
-            ...emptyAgentSession(),
-            ...state.sessionsByAgentId[agentId],
-            sendingPrompt: true,
-            promptError: undefined,
-            detail: appendOptimisticOperatorPrompt(
-              state.sessionsByAgentId[agentId]?.detail ?? null,
-              state.bootstrap.agents.find((agent) => agent.id === agentId),
-              prompt,
-              clientId,
-            ),
-          },
-        },
-      };
-    });
-
     try {
+      const clientId = generateUuid();
+      set((state) => {
+        const rosterActivityByAgentId = touchRosterActivity(state.rosterActivityByAgentId, agentId, "operator", new Date().toISOString());
+        if (rosterActivityByAgentId !== state.rosterActivityByAgentId) {
+          writeStoredRosterActivity(currentRemoteKey(runtimeConnectionConfig), rosterActivityByAgentId);
+        }
+        return {
+          bootstrap: sortBootstrapAgents(state.bootstrap, rosterActivityByAgentId),
+          rosterActivityByAgentId,
+          sessionsByAgentId: {
+            ...state.sessionsByAgentId,
+            [agentId]: {
+              ...emptyAgentSession(),
+              ...state.sessionsByAgentId[agentId],
+              sendingPrompt: true,
+              promptError: undefined,
+              detail: appendOptimisticOperatorPrompt(
+                state.sessionsByAgentId[agentId]?.detail ?? null,
+                state.bootstrap.agents.find((agent) => agent.id === agentId),
+                prompt,
+                clientId,
+              ),
+            },
+          },
+        };
+      });
+
       const { messageId } = await request.client.sendOperatorPrompt(agentId, prompt, attachments);
       if (!isCurrentClientRequest(request)) return;
       scheduleBootstrapRefresh(get, 250);

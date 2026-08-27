@@ -90,6 +90,36 @@ function sessionState(overrides: Partial<AgentSessionState> = {}): AgentSessionS
   };
 }
 
+describe("sendOperatorPrompt", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("reports UUID generation failures instead of silently ignoring the send", async () => {
+    const previous = useRuntimeStore.getState();
+    useRuntimeStore.setState({
+      ...previous,
+      sessionsByAgentId: {
+        "agent-a": sessionState(),
+      },
+    }, true);
+    vi.stubGlobal("crypto", {});
+
+    try {
+      await expect(
+        useRuntimeStore.getState().sendOperatorPrompt("agent-a", "hello", "info"),
+      ).rejects.toThrow("Secure random number generation is unavailable");
+
+      expect(useRuntimeStore.getState().sessionsByAgentId["agent-a"]).toMatchObject({
+        sendingPrompt: false,
+        promptError: "Secure random number generation is unavailable",
+      });
+    } finally {
+      useRuntimeStore.setState(previous, true);
+    }
+  });
+});
+
 describe("skillDetailCacheKey", () => {
   it("keeps global and agent-scoped versions separate", () => {
     expect(skillDetailCacheKey("workspace:root:demo")).toBe("workspace:root:demo");
