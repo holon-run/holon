@@ -157,11 +157,128 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  macos-app:
+    name: Build macOS menu app
+    runs-on: macos-latest
+    needs: e2e-gate
+    env:
+      MACOS_DEVELOPER_ID_APPLICATION: ${{ secrets.MACOS_DEVELOPER_ID_APPLICATION }}
+      MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      MACOS_NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+      MACOS_NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+      MACOS_NOTARY_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
+      HOLON_SPARKLE_FEED_URL: ${{ vars.HOLON_SPARKLE_FEED_URL }}
+      HOLON_SPARKLE_PUBLIC_KEY: ${{ secrets.HOLON_SPARKLE_PUBLIC_KEY }}
+      HOLON_SPARKLE_PRIVATE_KEY: ${{ secrets.HOLON_SPARKLE_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Build web GUI
+        run: make web
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Select matching macOS target
+        id: macos-target
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            arm64) target="aarch64-apple-darwin" ;;
+            x86_64) target="x86_64-apple-darwin" ;;
+            *) echo "Unsupported macOS runner architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
+          rustup target add "$target"
+          echo "target=$target" >> "$GITHUB_OUTPUT"
+
+      - name: Validate macOS release credentials
+        run: |
+          set -euo pipefail
+          required=(
+            MACOS_DEVELOPER_ID_APPLICATION
+            MACOS_CERTIFICATE_P12
+            MACOS_CERTIFICATE_PASSWORD
+            MACOS_NOTARY_APPLE_ID
+            MACOS_NOTARY_PASSWORD
+            MACOS_NOTARY_TEAM_ID
+            HOLON_SPARKLE_FEED_URL
+            HOLON_SPARKLE_PUBLIC_KEY
+            HOLON_SPARKLE_PRIVATE_KEY
+          )
+          for name in "${required[@]}"; do
+            if [ -z "${!name:-}" ]; then
+              echo "Required macOS release credential is not configured: ${name}" >&2
+              exit 1
+            fi
+          done
+
+      - name: Import Developer ID certificate
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/holon-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 24)"
+          certificate="$RUNNER_TEMP/holon-developer-id.p12"
+          printf '%s' "$MACOS_CERTIFICATE_P12" | base64 --decode > "$certificate"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$certificate" \
+            -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12 \
+            -k "$keychain"
+          security list-keychain -d user -s "$keychain" login.keychain-db
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -s \
+            -k "$keychain_password" \
+            "$keychain"
+
+      - name: Build bundled Holon runtime
+        run: cargo build --release --locked --target "${{ steps.macos-target.outputs.target }}"
+
+      - name: Test macOS menu app
+        run: swift test --package-path apps/macos/HolonMenu
+
+      - name: Package macOS app and DMG
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          scripts/package-macos-menu-app.sh \
+            "target/${{ steps.macos-target.outputs.target }}/release/holon" \
+            dist \
+            "$version"
+
+      - name: Generate signed Sparkle appcast
+        run: |
+          set -euo pipefail
+          scripts/generate-macos-appcast.sh \
+            dist \
+            "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/"
+
+      - name: Upload macOS app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-holon-macos-app
+          path: |
+            dist/Holon-*.dmg
+            dist/Holon-*.dmg.sha256
+            dist/appcast.xml
+          if-no-files-found: error
+
   release:
     name: Publish GitHub release
     runs-on: ubuntu-latest
     needs:
       - build
+      - macos-app
       - e2e-gate
     permissions:
       contents: write
@@ -190,8 +307,8 @@ jobs:
           set -euo pipefail
           (
             cd dist-artifacts
-            rm -f ./*.sha256
-            shasum -a 256 ./*.tar.gz | sort -k2 > checksums.txt
+            rm -f ./*.tar.gz.sha256
+            shasum -a 256 ./*.tar.gz ./*.dmg | sort -k2 > checksums.txt
           )
           bash scripts/generate-homebrew-formula.sh \
             "$GITHUB_REF_NAME" \
@@ -259,6 +376,9 @@ jobs:
           body_path: release-notes.md
           files: |
             dist-artifacts/*.tar.gz
+            dist-artifacts/*.dmg
+            dist-artifacts/*.dmg.sha256
+            dist-artifacts/appcast.xml
             dist-artifacts/checksums.txt
 
       - name: Push Homebrew formula

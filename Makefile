@@ -1,4 +1,4 @@
-.PHONY: help web web-ci transport-types transport-types-check snapshots-check snapshots-refresh build all test test-resource-lint test-concurrent test-concurrent-repeat test-live test-live-openai test-live-anthropic test-live-codex test-live-xai test-live-images test-live-runtime docker-build docker-smoke docker-e2e docker-e2e-scheduler-required docker-e2e-scheduler-live-canary docker-e2e-validate docker-live-acceptance fmt fmt-check lint check ci run clean
+.PHONY: help web web-ci macos-menu-test macos-menu-package transport-types transport-types-check snapshots-check snapshots-refresh build all test test-resource-lint test-concurrent test-concurrent-repeat test-live test-live-openai test-live-anthropic test-live-codex test-live-xai test-live-images test-live-runtime docker-build docker-smoke docker-e2e docker-e2e-scheduler-required docker-e2e-scheduler-live-canary docker-e2e-validate docker-live-acceptance fmt fmt-check lint check ci run clean
 
 WEB_DIR := web-gui/app
 OPENAPI_TOOLS_DIR := web-gui/openapi-tools
@@ -34,6 +34,12 @@ web-ci: ## Test and build the web GUI with one clean dependency install
 	@if [ -s "$$HOME/.nvm/nvm.sh" ]; then . "$$HOME/.nvm/nvm.sh" && nvm use; fi; \
 	cd $(OPENAPI_TOOLS_DIR) && npm ci && npm run check && \
 	cd ../../$(WEB_DIR) && npm ci && npm test && npm run build
+
+macos-menu-test: ## Build and test the native macOS menu app
+	swift test --package-path apps/macos/HolonMenu
+
+macos-menu-package: ## Package Holon.app and a DMG from target/release/holon
+	scripts/package-macos-menu-app.sh target/release/holon dist
 
 transport-types: ## Refresh OpenAPI and generated TypeScript transport types
 	cargo test --test openapi_snapshot refresh_openapi_snapshot -- --ignored

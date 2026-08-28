@@ -13,7 +13,9 @@ use crate::{
     web::{WebProviderCapabilityMetadata, WebProviderKind},
 };
 
-use super::daemon_paths;
+use super::{daemon_paths, DaemonLifecycleOwner};
+
+pub const DAEMON_CONTROL_PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuntimeServiceMetadata {
@@ -23,6 +25,14 @@ pub struct RuntimeServiceMetadata {
     pub http_addr: String,
     pub started_at: DateTime<Utc>,
     pub config_fingerprint: String,
+    #[serde(default)]
+    pub product_version: String,
+    #[serde(default)]
+    pub control_protocol_version: u32,
+    #[serde(default)]
+    pub lifecycle_owner: DaemonLifecycleOwner,
+    #[serde(default)]
+    pub executable_path: PathBuf,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub serve_args: Vec<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -39,6 +49,14 @@ pub struct RuntimeStatusResponse {
     pub http_addr: String,
     pub started_at: DateTime<Utc>,
     pub config_fingerprint: String,
+    #[serde(default)]
+    pub product_version: String,
+    #[serde(default)]
+    pub control_protocol_version: u32,
+    #[serde(default)]
+    pub lifecycle_owner: DaemonLifecycleOwner,
+    #[serde(default)]
+    pub executable_path: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activity: Option<RuntimeActivitySummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -278,6 +296,11 @@ impl RuntimeServiceHandle {
                     http_addr: config.http_addr.clone(),
                     started_at: Utc::now(),
                     config_fingerprint: super::config_fingerprint(config)?,
+                    product_version: env!("HOLON_VERSION").into(),
+                    control_protocol_version: DAEMON_CONTROL_PROTOCOL_VERSION,
+                    lifecycle_owner: DaemonLifecycleOwner::Standalone,
+                    executable_path: env::current_exe()
+                        .map_err(|err| anyhow!("failed to resolve current executable: {err}"))?,
                     serve_args: env::var(super::DAEMON_SERVE_ARGS_ENV)
                         .ok()
                         .and_then(|value| serde_json::from_str(&value).ok())
@@ -305,6 +328,10 @@ impl RuntimeServiceHandle {
             http_addr: self.inner.metadata.http_addr.clone(),
             started_at: self.inner.metadata.started_at,
             config_fingerprint: self.inner.metadata.config_fingerprint.clone(),
+            product_version: self.inner.metadata.product_version.clone(),
+            control_protocol_version: self.inner.metadata.control_protocol_version,
+            lifecycle_owner: self.inner.metadata.lifecycle_owner,
+            executable_path: self.inner.metadata.executable_path.clone(),
             startup_surface: Some(startup_surface),
             runtime_surface: Some(runtime_surface),
             activity: Some(activity),
@@ -326,6 +353,10 @@ impl RuntimeServiceHandle {
             http_addr: self.inner.metadata.http_addr.clone(),
             started_at: self.inner.metadata.started_at,
             config_fingerprint: self.inner.metadata.config_fingerprint.clone(),
+            product_version: self.inner.metadata.product_version.clone(),
+            control_protocol_version: self.inner.metadata.control_protocol_version,
+            lifecycle_owner: self.inner.metadata.lifecycle_owner,
+            executable_path: self.inner.metadata.executable_path.clone(),
             startup_surface: Some(startup_surface),
             runtime_surface: Some(runtime_surface),
             activity: None,

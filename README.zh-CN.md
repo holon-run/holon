@@ -76,6 +76,10 @@ holon --help
 下载 Linux amd64、macOS amd64 和 macOS arm64 预编译二进制。
 Linux amd64 二进制支持 Ubuntu 22.04 或更新版本（glibc 2.35 或更新版本）。
 
+macOS 13 或更新版本的用户也可以从同一发布页面安装
+`Holon-<version>.dmg`。原生菜单栏应用与 CLI 控制同一个 daemon，支持登录时
+启动，并可将内置 CLI 安装到 `~/.local/bin`，不会覆盖其他安装来源。
+
 下文示例假设 `holon` 已在 `PATH` 中。
 
 ### Docker

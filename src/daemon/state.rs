@@ -27,6 +27,7 @@ pub enum DaemonLifecycleAction {
     Start,
     Stop,
     Restart,
+    PrepareUpdate,
     Status,
 }
 
@@ -34,8 +35,17 @@ pub enum DaemonLifecycleAction {
 #[serde(rename_all = "snake_case")]
 pub enum DaemonLifecycleState {
     Running,
+    Degraded,
     Stopped,
     Stale,
+    VersionMismatch,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DaemonLifecycleOwner {
+    #[default]
+    Standalone,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -46,6 +56,16 @@ pub struct DaemonStatusView {
     pub home_dir: PathBuf,
     pub socket_path: PathBuf,
     pub http_addr: String,
+    pub web_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub product_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control_protocol_version: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle_owner: Option<DaemonLifecycleOwner>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executable_path: Option<PathBuf>,
+    pub desired_running: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
     pub control_connectivity: bool,
@@ -80,6 +100,8 @@ pub struct DaemonPaths {
     pub last_failure_path: PathBuf,
     pub startup_failure_path: PathBuf,
     pub shutdown_failure_path: PathBuf,
+    pub lifecycle_lock_path: PathBuf,
+    pub desired_state_path: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -114,7 +136,45 @@ pub fn daemon_paths(config: &AppConfig) -> DaemonPaths {
         last_failure_path: run_dir.join("last_failure.json"),
         startup_failure_path: run_dir.join("startup_failure.json"),
         shutdown_failure_path: run_dir.join("shutdown_failure.json"),
+        lifecycle_lock_path: run_dir.join("lifecycle.lock"),
+        desired_state_path: run_dir.join("desired_state.json"),
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct DaemonDesiredState {
+    desired_running: bool,
+}
+
+pub fn load_daemon_desired_running(config: &AppConfig) -> Result<Option<bool>> {
+    let path = daemon_paths(config).desired_state_path;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes = fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?;
+    let state: DaemonDesiredState = serde_json::from_slice(&bytes)
+        .with_context(|| format!("failed to decode {}", path.display()))?;
+    Ok(Some(state.desired_running))
+}
+
+pub fn persist_daemon_desired_running(config: &AppConfig, desired_running: bool) -> Result<()> {
+    let paths = daemon_paths(config);
+    fs::create_dir_all(&paths.run_dir)
+        .with_context(|| format!("failed to create {}", paths.run_dir.display()))?;
+    let temporary_path = paths
+        .run_dir
+        .join(format!("desired_state.{}.tmp", std::process::id()));
+    let encoded = serde_json::to_vec_pretty(&DaemonDesiredState { desired_running })?;
+    fs::write(&temporary_path, encoded)
+        .with_context(|| format!("failed to write {}", temporary_path.display()))?;
+    fs::rename(&temporary_path, &paths.desired_state_path).with_context(|| {
+        format!(
+            "failed to replace {} with {}",
+            paths.desired_state_path.display(),
+            temporary_path.display()
+        )
+    })?;
+    Ok(())
 }
 
 pub(crate) fn daemon_log_hint() -> String {

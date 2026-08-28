@@ -24,8 +24,8 @@ use holon::{
     },
     config::{AgentTemplateRemoteSourceConfigFile, AgentTemplatesConfigFile},
     daemon::{
-        daemon_logs, daemon_restart, daemon_start, daemon_status, daemon_stop,
-        ensure_serve_preflight, prepare_runtime_before_server, RuntimeServiceHandle,
+        daemon_logs, daemon_prepare_update, daemon_restart, daemon_start, daemon_status,
+        daemon_stop, ensure_serve_preflight, prepare_runtime_before_server, RuntimeServiceHandle,
         DAEMON_SERVE_ARGS_ENV, PRE_SERVER_PREPARED_ENV,
     },
     fd_limit::{apply_nofile_limit_policy, DEFAULT_NOFILE_TARGET},
@@ -1929,6 +1929,10 @@ mod tests {
             http_addr: config.http_addr.clone(),
             started_at: chrono::Utc::now(),
             config_fingerprint: "test-fingerprint".into(),
+            product_version: env!("HOLON_VERSION").into(),
+            control_protocol_version: holon::daemon::DAEMON_CONTROL_PROTOCOL_VERSION,
+            lifecycle_owner: holon::daemon::DaemonLifecycleOwner::Standalone,
+            executable_path: std::env::current_exe().unwrap(),
             serve_args: args.into_iter().map(String::from).collect(),
             control_token_env_configured,
         }
@@ -3722,6 +3726,9 @@ async fn handle_daemon_command(config: AppConfig, command: DaemonCommands) -> Re
             )?
         }
         DaemonCommands::Stop => serde_json::to_value(daemon_stop(&config).await?)?,
+        DaemonCommands::PrepareUpdate => {
+            serde_json::to_value(daemon_prepare_update(&config).await?)?
+        }
         DaemonCommands::Status => serde_json::to_value(daemon_status(&config).await?)?,
         DaemonCommands::Restart { options } => {
             let mut config = config;

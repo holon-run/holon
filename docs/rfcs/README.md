@@ -80,6 +80,7 @@ implementation and tests.
 ## Eventing And Client Surface
 
 - [Event Stream Interface Design](./event-stream-interface.md)
+- [macOS Menu App And Daemon Lifecycle](./macos-menu-app-and-daemon-lifecycle.md)
 - [Event-Ledger Web Synchronization and Browser-Local Read State](./observer-sync-agent-summary-and-read-markers.md)
 - [Debug Prompt JSON Envelope](./debug-prompt-json-envelope.md)
 - [Operator Display Levels and Event Presentation](./operator-display-levels-and-event-presentation.md)

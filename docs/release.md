@@ -2,6 +2,35 @@
 
 Holon releases are published from version tags.
 
+## macOS menu app
+
+The macOS release also builds `Holon.app` for macOS 13 or later. The app is a
+native SwiftUI menu bar control plane and bundles the matching Rust runtime at
+`Contents/Resources/bin/holon`.
+
+Local packaging:
+
+```bash
+cargo build --release
+scripts/package-macos-menu-app.sh target/release/holon dist
+```
+
+The script always verifies the bundle and emits `Holon-<version>.dmg` plus a
+SHA-256 file. Local notarization may use `MACOS_NOTARY_PROFILE`. GitHub Actions
+imports the Developer ID certificate and uses Apple ID notarization with:
+
+- `MACOS_DEVELOPER_ID_APPLICATION`
+- `MACOS_CERTIFICATE_P12` and `MACOS_CERTIFICATE_PASSWORD`
+- `MACOS_NOTARY_APPLE_ID`, `MACOS_NOTARY_PASSWORD`, and
+  `MACOS_NOTARY_TEAM_ID`
+- `HOLON_SPARKLE_PUBLIC_KEY`
+- `HOLON_SPARKLE_PRIVATE_KEY`, used only to sign update archives and appcast
+  entries
+- `HOLON_SPARKLE_FEED_URL`
+
+These values are required for production tag releases. An unsigned local bundle
+remains supported for development and smoke verification.
+
 Every release tag is blocked until the protected **Release E2E** workflow has
 passed for the exact tag commit and intended release tag. That workflow builds
 one candidate image after protected-environment approval, records its immutable

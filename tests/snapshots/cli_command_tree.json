@@ -541,6 +541,12 @@
     "aliases": []
   },
   {
+    "path": "daemon.prepare-update",
+    "positionals": [],
+    "flags": [],
+    "aliases": []
+  },
+  {
     "path": "daemon.restart",
     "positionals": [],
     "flags": [

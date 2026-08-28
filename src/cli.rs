@@ -307,6 +307,8 @@ pub enum DaemonCommands {
         options: ServeOptions,
     },
     Stop,
+    #[command(hide = true)]
+    PrepareUpdate,
     Status,
     Restart {
         #[command(flatten)]

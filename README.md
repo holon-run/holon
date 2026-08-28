@@ -76,6 +76,11 @@ You can also download prebuilt binaries for Linux amd64, macOS amd64, and macOS
 arm64 from [GitHub Releases](https://github.com/holon-run/holon/releases/latest).
 The Linux amd64 binary supports Ubuntu 22.04 or newer (glibc 2.35 or newer).
 
+macOS 13 or later users can install `Holon-<version>.dmg` from the same release
+page. The native menu bar app controls the same daemon as the CLI, supports
+launch at login, and can install its bundled CLI into `~/.local/bin` without
+overwriting another installation.
+
 The examples below assume `holon` is installed on `PATH`.
 
 ### Docker
