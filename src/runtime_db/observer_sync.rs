@@ -1033,6 +1033,9 @@ pub(crate) fn record_appended_event_projection_effect(
     connection: &Connection,
     event: &AuditEvent,
 ) -> Result<()> {
+    if !table_exists(connection, "observer_sync_capability_verifications")? {
+        return Ok(());
+    }
     let Some(proof) = event_projection_effect_proof(connection)? else {
         return Ok(());
     };

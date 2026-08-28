@@ -2016,7 +2016,8 @@ INSERT INTO scheduler_rollout_command_results (
     }
 
     #[test]
-    fn retired_scheduler_cleanup_fallback_preserves_input_and_reaches_fixed_point() -> Result<()> {
+    fn schema_47_scheduler_cleanup_fallback_preserves_input_and_reaches_fixed_point() -> Result<()>
+    {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
         prepare_pre_execution_protocol_claim(
@@ -2038,9 +2039,37 @@ INSERT INTO scheduler_rollout_command_results (
         {
             let mut connection = open_connection(&db_path)?;
             migrate_through(&mut connection, 46)?;
+            connection.execute_batch(
+                "UPDATE execution_protocol_attempts
+                 SET lifecycle_state = 'interrupted'
+                 WHERE agent_id = 'agent-a' AND attempt_id = 'activation-a';
+                 UPDATE execution_protocol_work_items
+                 SET lifecycle_state = 'runnable'
+                 WHERE agent_id = 'agent-a' AND work_item_id = 'work-a';
+                 UPDATE queue_entries
+                 SET status = 'quarantined'
+                 WHERE agent_id = 'agent-a' AND message_id = 'message-a';",
+            )?;
+            migrate_through(&mut connection, 47)?;
+            connection.execute_batch(
+                "UPDATE execution_protocol_attempts
+                 SET lifecycle_state = 'open'
+                 WHERE agent_id = 'agent-a' AND attempt_id = 'activation-a';
+                 UPDATE execution_protocol_work_items
+                 SET lifecycle_state = 'in_flight'
+                 WHERE agent_id = 'agent-a' AND work_item_id = 'work-a';
+                 UPDATE queue_entries
+                 SET status = 'dequeued'
+                 WHERE agent_id = 'agent-a' AND message_id = 'message-a';
+                 DROP TRIGGER audit_events_projection_verification_insert;
+                 DROP TRIGGER audit_events_projection_verification_update;
+                 DROP TABLE observer_sync_capability_verifications;
+                 DROP TABLE agent_identity_reservations;",
+            )?;
         }
 
         let db = RuntimeDb::open_for_scheduler_recovery(&db_path, &lock_path)?;
+        assert_eq!(db.current_schema_version()?, 47);
         assert_eq!(db.retired_scheduler_cleanup_inventory()?.blockers.len(), 3);
         let result = db.apply_retired_scheduler_cleanup_fallback("agent-a")?;
         assert_eq!(result.protected_message_ids, vec!["message-a".to_string()]);
