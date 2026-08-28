@@ -19,7 +19,7 @@ struct HolonDaemonStatus: Codable, Equatable, Sendable {
     var homeDir: String
     var socketPath: String
     var httpAddr: String
-    var webURLString: String?
+    var webUrl: String?
     var productVersion: String?
     var controlProtocolVersion: UInt32?
     var lifecycleOwner: String?
@@ -32,7 +32,7 @@ struct HolonDaemonStatus: Codable, Equatable, Sendable {
     var message: String
 
     var webURL: URL? {
-        HolonURLBuilder.webURL(from: webURLString ?? httpAddr)
+        HolonURLBuilder.webURL(from: webUrl ?? httpAddr)
     }
 
     var logURL: URL {

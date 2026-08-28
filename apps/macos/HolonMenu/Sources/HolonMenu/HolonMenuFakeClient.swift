@@ -25,7 +25,7 @@ actor FakeHolonClient: HolonDesiredStateClient {
             homeDir: "/Users/holon/.holon",
             socketPath: "/tmp/holon.sock",
             httpAddr: "127.0.0.1:7878",
-            webURLString: "http://127.0.0.1:7878",
+            webUrl: "http://127.0.0.1:7878",
             productVersion: "test",
             controlProtocolVersion: 1,
             lifecycleOwner: "standalone",

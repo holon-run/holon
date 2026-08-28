@@ -68,6 +68,8 @@ final class HolonMenuClientTests: XCTestCase {
         let status = try await client.status()
         XCTAssertEqual(status.state, .running)
         XCTAssertEqual(status.httpAddr, "127.0.0.1:7878")
+        XCTAssertEqual(status.webUrl, "http://127.0.0.1:7878")
+        XCTAssertEqual(status.webURL?.absoluteString, "http://127.0.0.1:7878")
         let statusInvocations = await launcher.invocations()
         XCTAssertEqual(statusInvocations.first?.arguments, ["daemon", "status"])
 

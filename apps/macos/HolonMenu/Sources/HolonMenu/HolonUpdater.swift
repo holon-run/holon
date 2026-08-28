@@ -14,15 +14,17 @@ final class HolonUpdater: NSObject, SPUUpdaterDelegate {
     }
 
     nonisolated func updater(_ updater: SPUUpdater, willInstallUpdate item: SUAppcastItem) {
-        guard let executable = try? HolonBinaryLocator.resolve() else {
-            return
+        DispatchQueue.global(qos: .userInitiated).async {
+            guard let executable = try? HolonBinaryLocator.resolve() else {
+                return
+            }
+            let process = Process()
+            process.executableURL = executable
+            process.arguments = ["daemon", "prepare-update"]
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            try? process.run()
+            process.waitUntilExit()
         }
-        let process = Process()
-        process.executableURL = executable
-        process.arguments = ["daemon", "prepare-update"]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        try? process.run()
-        process.waitUntilExit()
     }
 }
