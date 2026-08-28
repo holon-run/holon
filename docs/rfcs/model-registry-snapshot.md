@@ -83,9 +83,15 @@ metadata.
 ### 4. Treat registry data as untrusted input
 
 Every snapshot has an explicit schema version and immutable revision. Loading
-performs strict parsing and rejects unknown fields, unsupported schema
-versions, duplicate identities, dangling aliases, invalid preferred routes,
-invalid limits, and route policies that expand intrinsic capability.
+strictly parses the snapshot-owned envelope, route, alias, and preferred
+selection objects, rejecting unknown fields there. Model metadata and
+capability value objects are shared with discovery caches and runtime
+configuration, so they retain their existing forward-compatible
+deserialization behavior; the snapshot loader instead validates their
+schema-defined identities, limits, options, and route constraints after
+parsing. Loading also rejects unsupported schema versions, duplicate
+identities, dangling aliases, invalid preferred routes, invalid limits, and
+route policies that expand intrinsic boolean capability.
 
 The embedded snapshot is build-time data, so validation failure is a developer
 error and fails fast. A future remote snapshot must instead retain the previous
@@ -129,8 +135,11 @@ The checked-in JSON artifact contains:
 - compatibility `aliases`;
 - explicit preferred model and route selections.
 
-Arrays are used instead of JSON maps so duplicate keys cannot be silently
-overwritten during deserialization. All objects reject unknown fields.
+Arrays are used instead of JSON maps so duplicate identities cannot be silently
+overwritten during catalog construction. Snapshot-owned objects reject unknown
+fields. Shared model metadata and capability objects intentionally keep their
+existing forward-compatible deserialization contract; adding strictness there
+would also change discovery-cache and runtime-configuration behavior.
 
 The runtime parses and validates the artifact before constructing the existing
 `BuiltInModelCatalog` indexes. Public catalog and resolution APIs remain
@@ -144,7 +153,7 @@ Snapshot validation requires:
 - unique model, route, alias, and preferred-selection identities;
 - aliases target canonical models and do not form chains;
 - routes reference an existing canonical model;
-- route capability policy only narrows intrinsic model capability;
+- route boolean capability policy only narrows intrinsic model capability;
 - percentages are in range and token limits are positive;
 - default output limits do not exceed upper limits;
 - reasoning options are unique;
@@ -153,6 +162,12 @@ Snapshot validation requires:
 CI also compares the generated snapshot projection with the legacy Rust
 catalog during the migration. This equivalence test protects default selection,
 legacy aliases, and route behavior from accidental drift.
+
+Route numeric values are endpoint-specific facts rather than intrinsic
+capability assertions. They may therefore be higher or lower than canonical
+model values; precedence resolution still applies the route value only for that
+endpoint. The narrowing rule applies to boolean capabilities, where a route may
+disable support but cannot manufacture support absent from the canonical model.
 
 ## Follow-up
 
