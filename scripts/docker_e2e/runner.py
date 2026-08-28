@@ -1615,7 +1615,8 @@ class CaseHarness:
                 "turn_records": sqlite_rows(
                     connection,
                     "SELECT turn_id, turn_index, agent_id, run_id, "
-                    "current_work_item_id, trigger_message_id, terminal_kind, "
+                    "current_work_item_id, owner_kind, owner_id, "
+                    "trigger_message_id, terminal_kind, "
                     "created_at, completed_at, payload_json "
                     "FROM turn_records ORDER BY turn_index, created_at",
                 ),
@@ -1855,14 +1856,14 @@ def require_scheduler_engine_activation_chain(
     *,
     work_item_id: str,
     expected_source_kinds: tuple[str, ...],
-    lifecycle_message_ids: set[str] | None = None,
+    conversation_message_ids: set[str] | None = None,
 ) -> None:
     require_execution_attempt_chain(
         snapshot,
         agent_id=harness.agent_id,
         work_item_id=work_item_id,
         expected_source_kinds=expected_source_kinds,
-        lifecycle_message_ids=lifecycle_message_ids or set(),
+        conversation_message_ids=conversation_message_ids or set(),
     )
 
 
@@ -1976,7 +1977,7 @@ def require_execution_attempt_chain(
     agent_id: str,
     work_item_id: str,
     expected_source_kinds: tuple[str, ...],
-    lifecycle_message_ids: set[str],
+    conversation_message_ids: set[str],
 ) -> list[dict[str, Any]]:
     attempts = [
         (row, execution_attempt(row))
@@ -1988,21 +1989,23 @@ def require_execution_attempt_chain(
         for row, attempt in attempts
         if execution_binding_work_item(attempt) == work_item_id
     ]
-    lifecycle_attempts = [
+    conversation_attempts = [
         (row, attempt)
         for row, attempt in attempts
-        if attempt.get("source_message_id") in lifecycle_message_ids
-        and attempt.get("binding") == {"kind": "agent_lifecycle", "agent_id": agent_id}
+        if attempt.get("source_message_id") in conversation_message_ids
+        and attempt.get("binding", {}).get("kind") == "conversation"
+        and isinstance(attempt.get("binding", {}).get("interaction_id"), str)
+        and attempt["binding"]["interaction_id"]
     ]
     require(
-        len(lifecycle_attempts) == len(lifecycle_message_ids)
+        len(conversation_attempts) == len(conversation_message_ids)
         and all(
             row["lifecycle_state"] == "settled"
             and row["terminal_outcome_id"] is not None
-            for row, _ in lifecycle_attempts
+            for row, _ in conversation_attempts
         ),
-        "canonical lifecycle attempts did not settle without claiming a "
-        f"WorkItem: {[attempt for _, attempt in lifecycle_attempts]}",
+        "canonical Conversation attempts did not settle without claiming a "
+        f"WorkItem: {[attempt for _, attempt in conversation_attempts]}",
     )
     require(
         sorted(
@@ -2019,7 +2022,7 @@ def require_execution_attempt_chain(
         f"source kinds {expected_source_kinds}: "
         f"{[attempt for _, attempt in work_item_attempts]}",
     )
-    terminal_attempts = work_item_attempts + lifecycle_attempts
+    terminal_attempts = work_item_attempts + conversation_attempts
     outcome_by_id = {
         row["outcome_id"]: execution_outcome(row)
         for row in snapshot["execution_protocol_outcomes"]
@@ -2138,7 +2141,19 @@ def require_lifecycle_wait_adoption(
         len(source_turns) == 1,
         f"adopted wait source turn is missing or duplicated: {source_turns}",
     )
-    source_message_id = source_turns[0]["trigger_message_id"]
+    source_turn = source_turns[0]
+    source_message_id = source_turn["trigger_message_id"]
+    owner_kind = source_turn.get("owner_kind")
+    owner_id = source_turn.get("owner_id")
+    if owner_kind == "conversation":
+        expected_binding = {"kind": "conversation", "interaction_id": owner_id}
+    else:
+        require(
+            owner_kind in {None, "agent_lifecycle"}
+            and owner_id in {None, agent_id},
+            f"adopted wait source turn has an invalid owner: {source_turn}",
+        )
+        expected_binding = {"kind": "agent_lifecycle", "agent_id": agent_id}
     attempts = [
         (row, execution_attempt(row))
         for row in snapshot["execution_protocol_attempts"]
@@ -2148,8 +2163,7 @@ def require_lifecycle_wait_adoption(
     require(
         len(attempts) == 1
         and attempts[0][0]["lifecycle_state"] == "settled"
-        and attempts[0][1].get("binding")
-        == {"kind": "agent_lifecycle", "agent_id": agent_id},
+        and attempts[0][1].get("binding") == expected_binding,
         f"lifecycle handoff source attempt is invalid: {attempts}",
     )
     terminal_outcome_id = attempts[0][0]["terminal_outcome_id"]
@@ -3078,7 +3092,7 @@ def run_scheduler_task_wait_resume_case(
             "task_result",
             "triggered_wait",
         ),
-        lifecycle_message_ids={
+        conversation_message_ids={
             harness.prompt_scope("scheduler-task-wait-seed")["message_id"]
         },
     )
@@ -3445,7 +3459,7 @@ def run_scheduler_multi_workitem_case(
             snapshot,
             work_item_id=wid,
             expected_source_kinds=("work_item_continuation",),
-            lifecycle_message_ids={
+            conversation_message_ids={
                 harness.prompt_scope("scheduler-multi-create")["message_id"]
             },
         )
@@ -3562,7 +3576,7 @@ def run_scheduler_external_wait_resume_case(
         snapshot,
         work_item_id=work_item_id,
         expected_source_kinds=("triggered_wait",),
-        lifecycle_message_ids={
+        conversation_message_ids={
             harness.prompt_scope("scheduler-external-wait")["message_id"]
         },
     )
@@ -3676,7 +3690,7 @@ def run_scheduler_operator_wait_resume_case(
         snapshot,
         work_item_id=work_item_id,
         expected_source_kinds=("triggered_wait",),
-        lifecycle_message_ids={
+        conversation_message_ids={
             harness.prompt_scope("scheduler-operator-wait")["message_id"]
         },
     )
@@ -3835,7 +3849,7 @@ def run_scheduler_concurrent_claim_fencing_case(
         snapshot,
         work_item_id=work_item_a_id,
         expected_source_kinds=("work_item_continuation", "triggered_wait"),
-        lifecycle_message_ids={
+        conversation_message_ids={
             harness.prompt_scope("scheduler-concurrent-create")["message_id"]
         },
     )
@@ -3844,7 +3858,7 @@ def run_scheduler_concurrent_claim_fencing_case(
         snapshot,
         work_item_id=work_item_b_id,
         expected_source_kinds=("work_item_continuation",),
-        lifecycle_message_ids=set(),
+        conversation_message_ids=set(),
     )
     waits = require_scheduler_wait_terminal(
         harness,
@@ -4017,7 +4031,7 @@ def run_scheduler_operator_interject_during_wait_case(
         snapshot,
         work_item_id=work_item_a_id,
         expected_source_kinds=("work_item_continuation", "triggered_wait"),
-        lifecycle_message_ids={
+        conversation_message_ids={
             harness.prompt_scope("scheduler-interject-create")["message_id"]
         },
     )
@@ -4026,7 +4040,7 @@ def run_scheduler_operator_interject_during_wait_case(
         snapshot,
         work_item_id=work_item_b_id,
         expected_source_kinds=("work_item_continuation",),
-        lifecycle_message_ids={
+        conversation_message_ids={
             harness.prompt_scope("scheduler-interject-b-create")["message_id"]
         },
     )
@@ -4168,7 +4182,7 @@ def run_scheduler_compaction_continuity_case(
         snapshot,
         work_item_id=work_item_id,
         expected_source_kinds=("triggered_wait",),
-        lifecycle_message_ids={
+        conversation_message_ids={
             harness.prompt_scope("scheduler-compaction-create")["message_id"]
         },
     )
@@ -4281,7 +4295,7 @@ def run_scheduler_worktree_isolation_case(
         snapshot,
         work_item_id=work_item_id,
         expected_source_kinds=(),
-        lifecycle_message_ids={
+        conversation_message_ids={
             harness.prompt_scope("scheduler-worktree-lifecycle")["message_id"]
         },
     )
@@ -4368,7 +4382,7 @@ def run_scheduler_spawn_agent_supervision_case(
         snapshot,
         work_item_id=work_item_id,
         expected_source_kinds=(),
-        lifecycle_message_ids={
+        conversation_message_ids={
             harness.prompt_scope("scheduler-spawn-and-complete")["message_id"]
         },
     )
@@ -4499,7 +4513,7 @@ def run_scheduler_checkpoint_replay_case(
             "work_item_continuation",
             "triggered_wait",
         ),
-        lifecycle_message_ids={
+        conversation_message_ids={
             harness.prompt_scope("scheduler-replay-create")["message_id"]
         },
     )
@@ -4508,7 +4522,7 @@ def run_scheduler_checkpoint_replay_case(
         snapshot,
         work_item_id=work_item_b_id,
         expected_source_kinds=("work_item_continuation",),
-        lifecycle_message_ids={
+        conversation_message_ids={
             harness.prompt_scope("scheduler-replay-create")["message_id"]
         },
     )

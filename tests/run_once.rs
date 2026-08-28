@@ -1310,8 +1310,7 @@ async fn run_once_reports_completed_when_final_text_arrives_after_last_allowed_m
     Ok(())
 }
 
-#[tokio::test]
-async fn run_once_multi_round_single_turn_does_not_exceed_max_turns() -> Result<()> {
+async fn assert_run_once_multi_round_single_turn_does_not_exceed_max_turns() -> Result<()> {
     // TwoRoundProvider performs two model rounds within a single turn:
     // round 1 issues a tool call, round 2 returns terminal text.
     // With max_turns=1, this should complete because only one turn is
@@ -1337,6 +1336,14 @@ async fn run_once_multi_round_single_turn_does_not_exceed_max_turns() -> Result<
     assert_eq!(response.final_text, "two rounds complete");
     assert_eq!(response.model_rounds, 2);
     Ok(())
+}
+
+#[test]
+fn run_once_multi_round_single_turn_does_not_exceed_max_turns() -> Result<()> {
+    run_on_large_stack(
+        "run-once-multi-round-single-turn",
+        assert_run_once_multi_round_single_turn_does_not_exceed_max_turns,
+    )
 }
 
 #[tokio::test]

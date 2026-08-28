@@ -2226,7 +2226,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
         )
         self.assertEqual(waits[0]["status"], "resolved")
 
-    def test_canonical_activation_oracle_distinguishes_lifecycle_and_work_item(
+    def test_canonical_activation_oracle_distinguishes_conversation_and_work_item(
         self,
     ) -> None:
         harness = type(
@@ -2241,12 +2241,12 @@ class DockerE2ERunnerTests(unittest.TestCase):
             "execution_protocol_attempts": [
                 {
                     "agent_id": "default",
-                    "attempt_id": "attempt-lifecycle",
+                    "attempt_id": "attempt-conversation",
                     "lifecycle_state": "settled",
-                    "terminal_outcome_id": "outcome-lifecycle",
+                    "terminal_outcome_id": "outcome-conversation",
                     "payload_json": json.dumps(
                         {
-                            "attempt_id": "attempt-lifecycle",
+                            "attempt_id": "attempt-conversation",
                             "source_message_id": "message-create",
                             "source": {
                                 "identity": {
@@ -2255,8 +2255,8 @@ class DockerE2ERunnerTests(unittest.TestCase):
                                 }
                             },
                             "binding": {
-                                "kind": "agent_lifecycle",
-                                "agent_id": "default",
+                                "kind": "conversation",
+                                "interaction_id": "interaction-1",
                             },
                         }
                     ),
@@ -2288,8 +2288,8 @@ class DockerE2ERunnerTests(unittest.TestCase):
             "execution_protocol_outcomes": [
                 {
                     "agent_id": "default",
-                    "outcome_id": "outcome-lifecycle",
-                    "payload_json": json.dumps({"attempt_id": "attempt-lifecycle"}),
+                    "outcome_id": "outcome-conversation",
+                    "payload_json": json.dumps({"attempt_id": "attempt-conversation"}),
                 },
                 {
                     "agent_id": "default",
@@ -2304,27 +2304,87 @@ class DockerE2ERunnerTests(unittest.TestCase):
             snapshot,
             work_item_id="work-1",
             expected_source_kinds=("triggered_wait",),
-            lifecycle_message_ids={"message-create"},
+            conversation_message_ids={"message-create"},
         )
 
-        lifecycle = json.loads(
+        conversation = json.loads(
             snapshot["execution_protocol_attempts"][0]["payload_json"]
         )
-        lifecycle["binding"] = {"kind": "work_item", "work_item_id": "work-1"}
+        conversation["binding"] = {"kind": "work_item", "work_item_id": "work-1"}
         snapshot["execution_protocol_attempts"][0]["payload_json"] = json.dumps(
-            lifecycle
+            conversation
         )
         with self.assertRaisesRegex(
             AssertionError,
-            "lifecycle attempts did not settle without claiming a WorkItem",
+            "Conversation attempts did not settle without claiming a WorkItem",
         ):
             runner.require_scheduler_engine_activation_chain(
                 harness,
                 snapshot,
                 work_item_id="work-1",
                 expected_source_kinds=("triggered_wait",),
-                lifecycle_message_ids={"message-create"},
+                conversation_message_ids={"message-create"},
             )
+
+    def test_lifecycle_wait_adoption_accepts_exact_conversation_owner(self) -> None:
+        snapshot = {
+            "turn_records": [
+                {
+                    "agent_id": "default",
+                    "turn_id": "turn-conversation",
+                    "trigger_message_id": "message-conversation",
+                    "owner_kind": "conversation",
+                    "owner_id": "interaction-1",
+                }
+            ],
+            "execution_protocol_attempts": [
+                {
+                    "agent_id": "default",
+                    "attempt_id": "attempt-conversation",
+                    "lifecycle_state": "settled",
+                    "terminal_outcome_id": "outcome-conversation",
+                    "payload_json": json.dumps(
+                        {
+                            "attempt_id": "attempt-conversation",
+                            "source_message_id": "message-conversation",
+                            "binding": {
+                                "kind": "conversation",
+                                "interaction_id": "interaction-1",
+                            },
+                        }
+                    ),
+                }
+            ],
+            "execution_protocol_outcomes": [
+                {
+                    "agent_id": "default",
+                    "outcome_id": "outcome-conversation",
+                    "payload_json": json.dumps(
+                        {
+                            "attempt_id": "attempt-conversation",
+                            "outcome": {
+                                "owner": "conversation",
+                                "outcome": {
+                                    "kind": "handoff_to_work_item_wait",
+                                    "work_item_id": "work-1",
+                                    "wait": {"wait_id": "wait-1"},
+                                },
+                            },
+                        }
+                    ),
+                }
+            ],
+        }
+
+        runner.require_lifecycle_wait_adoption(
+            snapshot,
+            agent_id="default",
+            work_item_id="work-1",
+            wait={
+                "wait_condition_id": "wait-1",
+                "last_turn_id": "turn-conversation",
+            },
+        )
 
     def test_external_wait_resume_drains_queue_before_runtime_snapshot(self) -> None:
         source = inspect.getsource(runner.run_scheduler_external_wait_resume_case)

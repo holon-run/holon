@@ -44,8 +44,11 @@ interaction scope. Remote operator transport uses the validated transport
 binding plus its optional `conversation_ref`. Arbitrary message metadata cannot
 choose an interaction.
 
-Conversation expresses continuity only. It owns no WorkItem, task, wait,
-completion, or scheduling authority.
+Conversation expresses continuity only. Its interaction id owns no WorkItem,
+task, wait, completion, or scheduling authority. An agent execution with a
+Conversation owner may still use the existing agent-scoped WorkItem tools, but
+the target must pass the same agent, source-revision, state, and report-binding
+fences; matching an interaction id never satisfies or weakens those fences.
 
 ## Persistence And Compatibility
 

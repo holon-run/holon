@@ -610,7 +610,8 @@ fn execution_protocol_completion_transition_from_prepared(
         }
         ExecutionBinding::Conversation { .. } => {
             anyhow::ensure!(
-                authoritative.source_revision == intent.expected_work_revision
+                attempt.agent_id == record.agent_id
+                    && authoritative.source_revision == intent.expected_work_revision
                     && !matches!(
                         authoritative.state,
                         WorkItemExecutionState::InFlight { .. }
