@@ -1,0 +1,197 @@
+{
+  "schema_version": 1,
+  "projector": "legacy_context_sections_v1",
+  "activation_owner": {
+    "kind": "conversation",
+    "interaction_id": "interaction1_93f816e89241c53003bf347f8322e2bf"
+  },
+  "activation_binding": {
+    "source_message_id": "message:discussion-followup",
+    "turn_id": "turn-11",
+    "owner": {
+      "kind": "conversation",
+      "interaction_id": "interaction1_93f816e89241c53003bf347f8322e2bf"
+    },
+    "work_item_id": null,
+    "claimed_work_revision": null
+  },
+  "turn_id": "turn-11",
+  "prompt_budget_estimated_tokens": 16384,
+  "allocated_estimated_tokens": 31,
+  "system_sections": [
+    {
+      "order": 0,
+      "section_id": "identity",
+      "section_name": "identity",
+      "stability": "stable",
+      "representation": "full",
+      "reason": "system_section",
+      "requested_estimated_tokens": 11,
+      "allocated_estimated_tokens": 11,
+      "rendered_chars": 43,
+      "content_sha256": "cc23f147f831d7144b950676211369df343b3d347f4a8067767090b5c77ecbe2",
+      "selected_evidence_refs": [],
+      "omitted_evidence_refs": []
+    }
+  ],
+  "context_sections": [
+    {
+      "order": 0,
+      "section_id": "message:discussion-anchor",
+      "section_name": "message:discussion-anchor",
+      "stability": "agent_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 7,
+      "allocated_estimated_tokens": 7,
+      "rendered_chars": 26,
+      "content_sha256": "4eda39236344559a24459c00f8d3f4f66dc1eb6c70db5f8bc9caeb26912f103b",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:discussion-anchor",
+          "role": "input",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_93f816e89241c53003bf347f8322e2bf"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 1,
+      "section_id": "message:external-wake",
+      "section_name": "message:external-wake",
+      "stability": "agent_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 5,
+      "allocated_estimated_tokens": 5,
+      "rendered_chars": 20,
+      "content_sha256": "a1ae349aaecc5d85a80e7c6b6a6016b7af4ef0f1950b636806e1fab1bdb8c8fe",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:external-wake",
+          "role": "supporting",
+          "owner": {
+            "kind": "agent_lifecycle",
+            "agent_id": "agent-1"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 2,
+      "section_id": "message:timer-wake",
+      "section_name": "message:timer-wake",
+      "stability": "agent_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 5,
+      "allocated_estimated_tokens": 5,
+      "rendered_chars": 17,
+      "content_sha256": "755e06d0d7079f844a333a0365f1896aae2537b3f6bdadae20985bf3810e1ad5",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:timer-wake",
+          "role": "supporting",
+          "owner": {
+            "kind": "agent_lifecycle",
+            "agent_id": "agent-1"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 3,
+      "section_id": "message:lifecycle-wake",
+      "section_name": "message:lifecycle-wake",
+      "stability": "agent_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 6,
+      "allocated_estimated_tokens": 6,
+      "rendered_chars": 21,
+      "content_sha256": "59c2c5193ad1dfa8e66ab85e39e00fe594eba3ee2071876fc6bb50e973c9999f",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:lifecycle-wake",
+          "role": "supporting",
+          "owner": {
+            "kind": "agent_lifecycle",
+            "agent_id": "agent-1"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 4,
+      "section_id": "message:discussion-followup",
+      "section_name": "message:discussion-followup",
+      "stability": "turn_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 8,
+      "allocated_estimated_tokens": 8,
+      "rendered_chars": 29,
+      "content_sha256": "a807f8adbefa32addde6408785929e07de649c05f304dc0cf195d00b169c31a8",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:discussion-followup",
+          "role": "current_input",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_93f816e89241c53003bf347f8322e2bf"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    }
+  ],
+  "invariant_results": [
+    {
+      "code": "prompt_budget_respected",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "activation_binding_consistent",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "current_input_retained",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "direct_predecessor_retained",
+      "status": "not_applicable",
+      "details": [
+        "fixture does not identify a direct predecessor"
+      ]
+    },
+    {
+      "code": "canonical_evidence_unique",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "evidence_owner_consistent",
+      "status": "fail",
+      "details": [
+        "message:external-wake owner=agent_lifecycle:agent-1 expected=conversation:interaction1_93f816e89241c53003bf347f8322e2bf",
+        "message:timer-wake owner=agent_lifecycle:agent-1 expected=conversation:interaction1_93f816e89241c53003bf347f8322e2bf",
+        "message:lifecycle-wake owner=agent_lifecycle:agent-1 expected=conversation:interaction1_93f816e89241c53003bf347f8322e2bf"
+      ]
+    },
+    {
+      "code": "section_representation_exclusive",
+      "status": "pass",
+      "details": []
+    }
+  ]
+}

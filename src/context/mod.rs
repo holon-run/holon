@@ -645,12 +645,22 @@ fn build_projection_evidence(
     tools: &[ToolExecutionRecord],
 ) -> ProjectionEvidenceIndex {
     let mut evidence = ProjectionEvidenceIndex::new();
+    let current_owner = agent
+        .current_execution_binding
+        .as_ref()
+        .and_then(|binding| binding.owner.as_ref())
+        .map(ProjectionOwner::from)
+        .unwrap_or_else(|| projection_owner(current_message.work_item_id.as_deref(), &agent.id));
+    let turn_owners = turn_records
+        .iter()
+        .map(|turn| (turn.turn_id.as_str(), turn.effective_owner()))
+        .collect::<std::collections::BTreeMap<_, _>>();
     evidence.insert(
         "current_input".into(),
         vec![ProjectionEvidenceRef::new(
             format!("message:{}", current_message.id),
             ProjectionEvidenceRole::CurrentInput,
-            projection_owner(current_message.work_item_id.as_deref(), &agent.id),
+            current_owner,
         )],
     );
     if let Some(work_item) = current_work_item {
@@ -684,7 +694,7 @@ fn build_projection_evidence(
         recent_turn_refs.push(ProjectionEvidenceRef::new(
             format!("turn:{}", turn.turn_id),
             ProjectionEvidenceRole::Turn,
-            projection_owner(turn.current_work_item_id.as_deref(), &agent.id),
+            ProjectionOwner::from(&turn.effective_owner()),
         ));
     }
     let direct_predecessor_id = messages
@@ -692,6 +702,12 @@ fn build_projection_evidence(
         .max_by(|left, right| compare_message_recency(left, right))
         .map(|message| message.id.as_str());
     for message in messages {
+        let owner = message
+            .turn_id
+            .as_deref()
+            .and_then(|turn_id| turn_owners.get(turn_id))
+            .map(ProjectionOwner::from)
+            .unwrap_or_else(|| projection_owner(message.work_item_id.as_deref(), &agent.id));
         recent_turn_refs.push(ProjectionEvidenceRef::new(
             format!("message:{}", message.id),
             if direct_predecessor_id == Some(message.id.as_str()) {
@@ -699,21 +715,33 @@ fn build_projection_evidence(
             } else {
                 ProjectionEvidenceRole::Input
             },
-            projection_owner(message.work_item_id.as_deref(), &agent.id),
+            owner,
         ));
     }
     for brief in briefs {
+        let owner = brief
+            .turn_id
+            .as_deref()
+            .and_then(|turn_id| turn_owners.get(turn_id))
+            .map(ProjectionOwner::from)
+            .unwrap_or_else(|| projection_owner(brief.work_item_id.as_deref(), &agent.id));
         recent_turn_refs.push(ProjectionEvidenceRef::new(
             format!("brief:{}", brief.id),
             ProjectionEvidenceRole::Result,
-            projection_owner(brief.work_item_id.as_deref(), &agent.id),
+            owner,
         ));
     }
     for tool in tools {
+        let owner = tool
+            .turn_id
+            .as_deref()
+            .and_then(|turn_id| turn_owners.get(turn_id))
+            .map(ProjectionOwner::from)
+            .unwrap_or_else(|| projection_owner(tool.work_item_id.as_deref(), &agent.id));
         recent_turn_refs.push(ProjectionEvidenceRef::new(
             format!("tool_execution:{}", tool.id),
             ProjectionEvidenceRole::ToolResult,
-            projection_owner(tool.work_item_id.as_deref(), &agent.id),
+            owner,
         ));
     }
     recent_turn_refs.sort();
@@ -5762,6 +5790,7 @@ mod tests {
             }),
             source_message_id: "message-bound".into(),
             turn_id: "turn-bound".into(),
+            owner: None,
             work_item_id: Some(execution_owner.id.clone()),
             claimed_work_revision: Some(execution_owner.revision),
         });
@@ -5825,6 +5854,7 @@ mod tests {
             }),
             source_message_id: "message-lifecycle".into(),
             turn_id: "turn-lifecycle".into(),
+            owner: None,
             work_item_id: None,
             claimed_work_revision: None,
         });

@@ -1299,9 +1299,17 @@ pub async fn operator_ingress(
         .map_err(error_response)?;
 
     let reply_route_id = request.reply_route_id.and_then(non_empty_opt);
+    let conversation_ref = request.conversation_ref.and_then(non_empty_opt);
+    let interaction_id = crate::ids::interaction_id(&[
+        &agent_id,
+        "remote_operator_transport",
+        &binding.binding_id,
+        conversation_ref.as_deref().unwrap_or("default"),
+    ]);
     let metadata = json!({
         "operator_transport": {
             "binding_id": binding.binding_id,
+            "conversation_ref": conversation_ref,
             "transport": binding.transport,
             "reply_route_id": reply_route_id,
             "provider": request.provider.and_then(non_empty_opt).unwrap_or(expected_provider),
@@ -1328,6 +1336,10 @@ pub async fn operator_ingress(
         causation_id: request.causation_id,
     }
     .into_message();
+    let mut message = message;
+    message
+        .source_refs
+        .insert("interaction_id".into(), interaction_id);
     let queued = runtime.enqueue(message).await.map_err(error_response)?;
     Ok(Json(EnqueueResponse {
         ok: true,

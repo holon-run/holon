@@ -42,6 +42,7 @@ fn binding(
     ProjectionBindingSummary {
         source_message_id: message_id.into(),
         turn_id: turn_id.into(),
+        owner: None,
         work_item_id: work_item_id.map(|s| s.into()),
         claimed_work_revision: None,
     }

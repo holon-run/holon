@@ -1,0 +1,538 @@
+{
+  "schema_version": 1,
+  "projector": "legacy_context_sections_v1",
+  "activation_owner": {
+    "kind": "conversation",
+    "interaction_id": "interaction1_cb39ea8d5ed8eec256cf940d8be98d05"
+  },
+  "activation_binding": {
+    "source_message_id": "message:turn-20",
+    "turn_id": "turn-20",
+    "owner": {
+      "kind": "conversation",
+      "interaction_id": "interaction1_cb39ea8d5ed8eec256cf940d8be98d05"
+    },
+    "work_item_id": null,
+    "claimed_work_revision": null
+  },
+  "turn_id": "turn-20",
+  "prompt_budget_estimated_tokens": 2048,
+  "allocated_estimated_tokens": 241,
+  "system_sections": [
+    {
+      "order": 0,
+      "section_id": "identity",
+      "section_name": "identity",
+      "stability": "stable",
+      "representation": "full",
+      "reason": "system_section",
+      "requested_estimated_tokens": 11,
+      "allocated_estimated_tokens": 11,
+      "rendered_chars": 43,
+      "content_sha256": "cc23f147f831d7144b950676211369df343b3d347f4a8067767090b5c77ecbe2",
+      "selected_evidence_refs": [],
+      "omitted_evidence_refs": []
+    }
+  ],
+  "context_sections": [
+    {
+      "order": 0,
+      "section_id": "message:turn-1",
+      "section_name": "message:turn-1",
+      "stability": "agent_scoped",
+      "representation": "truncated",
+      "reason": "truncated_to_remaining_budget",
+      "requested_estimated_tokens": 8,
+      "allocated_estimated_tokens": 11,
+      "rendered_chars": 44,
+      "content_sha256": "f0dca3ec47bf3d8551fbaf481a4356743afc8c886adda5b65bae45ee66718a01",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:turn-1",
+          "role": "input",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_cb39ea8d5ed8eec256cf940d8be98d05"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 1,
+      "section_id": "brief:turn-2-response",
+      "section_name": "brief:turn-2-response",
+      "stability": "agent_scoped",
+      "representation": "truncated",
+      "reason": "truncated_to_remaining_budget",
+      "requested_estimated_tokens": 10,
+      "allocated_estimated_tokens": 13,
+      "rendered_chars": 52,
+      "content_sha256": "bcbd06561e41fb2fe5ac8abc8f98338d97f3b04721abd53890854b20f9ff63ff",
+      "selected_evidence_refs": [
+        {
+          "reference": "brief:turn-2-response",
+          "role": "result",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_cb39ea8d5ed8eec256cf940d8be98d05"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 2,
+      "section_id": "message:turn-3",
+      "section_name": "message:turn-3",
+      "stability": "agent_scoped",
+      "representation": "truncated",
+      "reason": "truncated_to_remaining_budget",
+      "requested_estimated_tokens": 8,
+      "allocated_estimated_tokens": 11,
+      "rendered_chars": 44,
+      "content_sha256": "703b87220b9b2e97a6996977c84d6431ad8c4017097a29d771070b1f97486995",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:turn-3",
+          "role": "input",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_cb39ea8d5ed8eec256cf940d8be98d05"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 3,
+      "section_id": "brief:turn-4-response",
+      "section_name": "brief:turn-4-response",
+      "stability": "agent_scoped",
+      "representation": "truncated",
+      "reason": "truncated_to_remaining_budget",
+      "requested_estimated_tokens": 10,
+      "allocated_estimated_tokens": 13,
+      "rendered_chars": 52,
+      "content_sha256": "ec84744a8efaab827d9311659022aad838655115aaefbf01c768b59290064f0c",
+      "selected_evidence_refs": [
+        {
+          "reference": "brief:turn-4-response",
+          "role": "result",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_cb39ea8d5ed8eec256cf940d8be98d05"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 4,
+      "section_id": "message:turn-5",
+      "section_name": "message:turn-5",
+      "stability": "agent_scoped",
+      "representation": "truncated",
+      "reason": "truncated_to_remaining_budget",
+      "requested_estimated_tokens": 8,
+      "allocated_estimated_tokens": 11,
+      "rendered_chars": 44,
+      "content_sha256": "af0aebce23f990296847eda3ae633db3b0f9af2d8ab42f5b4384b148d45ebdfd",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:turn-5",
+          "role": "input",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_cb39ea8d5ed8eec256cf940d8be98d05"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 5,
+      "section_id": "brief:turn-6-response",
+      "section_name": "brief:turn-6-response",
+      "stability": "agent_scoped",
+      "representation": "truncated",
+      "reason": "truncated_to_remaining_budget",
+      "requested_estimated_tokens": 10,
+      "allocated_estimated_tokens": 13,
+      "rendered_chars": 52,
+      "content_sha256": "9cfdda8d8942c73ea695d76c27bd3de892a45941b4dfa00dd68f898505f05680",
+      "selected_evidence_refs": [
+        {
+          "reference": "brief:turn-6-response",
+          "role": "result",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_cb39ea8d5ed8eec256cf940d8be98d05"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 6,
+      "section_id": "message:turn-7",
+      "section_name": "message:turn-7",
+      "stability": "agent_scoped",
+      "representation": "truncated",
+      "reason": "truncated_to_remaining_budget",
+      "requested_estimated_tokens": 8,
+      "allocated_estimated_tokens": 11,
+      "rendered_chars": 44,
+      "content_sha256": "a06b41d88cb4d61204300bcd1082e80202606f475ea59a2fb1ccdc57c34e3beb",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:turn-7",
+          "role": "input",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_cb39ea8d5ed8eec256cf940d8be98d05"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 7,
+      "section_id": "brief:turn-8-response",
+      "section_name": "brief:turn-8-response",
+      "stability": "agent_scoped",
+      "representation": "truncated",
+      "reason": "truncated_to_remaining_budget",
+      "requested_estimated_tokens": 10,
+      "allocated_estimated_tokens": 13,
+      "rendered_chars": 52,
+      "content_sha256": "6ed1541e17ee0f9c13b30c61ae36ed446d3d3660fe0410456649ab34df77784a",
+      "selected_evidence_refs": [
+        {
+          "reference": "brief:turn-8-response",
+          "role": "result",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_cb39ea8d5ed8eec256cf940d8be98d05"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 8,
+      "section_id": "message:turn-9",
+      "section_name": "message:turn-9",
+      "stability": "agent_scoped",
+      "representation": "truncated",
+      "reason": "truncated_to_remaining_budget",
+      "requested_estimated_tokens": 8,
+      "allocated_estimated_tokens": 11,
+      "rendered_chars": 44,
+      "content_sha256": "d2e79ea7a653066eabc0a97beb9e88e1227afb2b8b094aaace6404a0790a69da",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:turn-9",
+          "role": "input",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_cb39ea8d5ed8eec256cf940d8be98d05"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 9,
+      "section_id": "brief:turn-10-response",
+      "section_name": "brief:turn-10-response",
+      "stability": "agent_scoped",
+      "representation": "truncated",
+      "reason": "truncated_to_remaining_budget",
+      "requested_estimated_tokens": 11,
+      "allocated_estimated_tokens": 13,
+      "rendered_chars": 52,
+      "content_sha256": "251479ad0e3ef70fdec067b11efd594eb61a46361b6f3d612e76f025ba23cfbf",
+      "selected_evidence_refs": [
+        {
+          "reference": "brief:turn-10-response",
+          "role": "result",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_cb39ea8d5ed8eec256cf940d8be98d05"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 10,
+      "section_id": "message:turn-11",
+      "section_name": "message:turn-11",
+      "stability": "agent_scoped",
+      "representation": "truncated",
+      "reason": "truncated_to_remaining_budget",
+      "requested_estimated_tokens": 9,
+      "allocated_estimated_tokens": 12,
+      "rendered_chars": 45,
+      "content_sha256": "1cafd0d240676fb05a0d07477217251b10d661a5505cff31ed00c91b728428e5",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:turn-11",
+          "role": "input",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_cb39ea8d5ed8eec256cf940d8be98d05"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 11,
+      "section_id": "brief:turn-12-response",
+      "section_name": "brief:turn-12-response",
+      "stability": "agent_scoped",
+      "representation": "truncated",
+      "reason": "truncated_to_remaining_budget",
+      "requested_estimated_tokens": 11,
+      "allocated_estimated_tokens": 13,
+      "rendered_chars": 52,
+      "content_sha256": "2befcbda34adea6080c041427b129bbf84e7e8d72b2234dc1a6bc8b3effb2f36",
+      "selected_evidence_refs": [
+        {
+          "reference": "brief:turn-12-response",
+          "role": "result",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_cb39ea8d5ed8eec256cf940d8be98d05"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 12,
+      "section_id": "message:turn-13",
+      "section_name": "message:turn-13",
+      "stability": "agent_scoped",
+      "representation": "truncated",
+      "reason": "truncated_to_remaining_budget",
+      "requested_estimated_tokens": 9,
+      "allocated_estimated_tokens": 12,
+      "rendered_chars": 45,
+      "content_sha256": "c9f8fa3e2824409bbeaddcbd40914bae1dbe746de8196e82a25fa13e11dc3326",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:turn-13",
+          "role": "input",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_cb39ea8d5ed8eec256cf940d8be98d05"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 13,
+      "section_id": "brief:turn-14-response",
+      "section_name": "brief:turn-14-response",
+      "stability": "agent_scoped",
+      "representation": "truncated",
+      "reason": "truncated_to_remaining_budget",
+      "requested_estimated_tokens": 11,
+      "allocated_estimated_tokens": 13,
+      "rendered_chars": 52,
+      "content_sha256": "774cfc9fd4d82ba7fb119a48a77737c40b42d3ef18dd2ad09d0792edf911651b",
+      "selected_evidence_refs": [
+        {
+          "reference": "brief:turn-14-response",
+          "role": "result",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_cb39ea8d5ed8eec256cf940d8be98d05"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 14,
+      "section_id": "message:turn-15",
+      "section_name": "message:turn-15",
+      "stability": "agent_scoped",
+      "representation": "truncated",
+      "reason": "truncated_to_remaining_budget",
+      "requested_estimated_tokens": 9,
+      "allocated_estimated_tokens": 12,
+      "rendered_chars": 45,
+      "content_sha256": "9be82a62da24680e689cc46211b7bac68f045c9b67a7dc88447fe9187745ee0d",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:turn-15",
+          "role": "input",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_cb39ea8d5ed8eec256cf940d8be98d05"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 15,
+      "section_id": "brief:turn-16-response",
+      "section_name": "brief:turn-16-response",
+      "stability": "agent_scoped",
+      "representation": "truncated",
+      "reason": "truncated_to_remaining_budget",
+      "requested_estimated_tokens": 11,
+      "allocated_estimated_tokens": 13,
+      "rendered_chars": 52,
+      "content_sha256": "14e4d7ff51c5ec6d265887638bf2002298054798d6f5555d4d2f2b9f78ea2ed8",
+      "selected_evidence_refs": [
+        {
+          "reference": "brief:turn-16-response",
+          "role": "result",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_cb39ea8d5ed8eec256cf940d8be98d05"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 16,
+      "section_id": "message:turn-17",
+      "section_name": "message:turn-17",
+      "stability": "agent_scoped",
+      "representation": "truncated",
+      "reason": "truncated_to_remaining_budget",
+      "requested_estimated_tokens": 9,
+      "allocated_estimated_tokens": 12,
+      "rendered_chars": 45,
+      "content_sha256": "93e7d9afce919c4cfd98561de682e4126948cee065469a321a98a8241d977989",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:turn-17",
+          "role": "input",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_cb39ea8d5ed8eec256cf940d8be98d05"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 17,
+      "section_id": "brief:turn-18-response",
+      "section_name": "brief:turn-18-response",
+      "stability": "agent_scoped",
+      "representation": "truncated",
+      "reason": "truncated_to_remaining_budget",
+      "requested_estimated_tokens": 11,
+      "allocated_estimated_tokens": 13,
+      "rendered_chars": 52,
+      "content_sha256": "c2ee0160eecadf1a42c45d76483ae8c35299e997b194eda6f770fad0dab06079",
+      "selected_evidence_refs": [
+        {
+          "reference": "brief:turn-18-response",
+          "role": "result",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_cb39ea8d5ed8eec256cf940d8be98d05"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 18,
+      "section_id": "message:turn-19",
+      "section_name": "message:turn-19",
+      "stability": "agent_scoped",
+      "representation": "truncated",
+      "reason": "truncated_to_remaining_budget",
+      "requested_estimated_tokens": 9,
+      "allocated_estimated_tokens": 12,
+      "rendered_chars": 45,
+      "content_sha256": "25558371346cf66e6fb1a9c349896ad4d6ee77d8a7c7a11511a319fbb5da8a4f",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:turn-19",
+          "role": "input",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_cb39ea8d5ed8eec256cf940d8be98d05"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 19,
+      "section_id": "message:turn-20",
+      "section_name": "message:turn-20",
+      "stability": "turn_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 9,
+      "allocated_estimated_tokens": 9,
+      "rendered_chars": 33,
+      "content_sha256": "2a03977de97e635cd978c963e877f0818e84b67815d1b6fd14f609e02334101d",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:turn-20",
+          "role": "current_input",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_cb39ea8d5ed8eec256cf940d8be98d05"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    }
+  ],
+  "invariant_results": [
+    {
+      "code": "prompt_budget_respected",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "activation_binding_consistent",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "current_input_retained",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "direct_predecessor_retained",
+      "status": "not_applicable",
+      "details": [
+        "fixture does not identify a direct predecessor"
+      ]
+    },
+    {
+      "code": "canonical_evidence_unique",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "evidence_owner_consistent",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "section_representation_exclusive",
+      "status": "pass",
+      "details": []
+    }
+  ]
+}

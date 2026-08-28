@@ -1,0 +1,262 @@
+{
+  "schema_version": 1,
+  "projector": "legacy_context_sections_v1",
+  "activation_owner": {
+    "kind": "conversation",
+    "interaction_id": "interaction1_1ac0af3966c468f9b185737a6ae66bad"
+  },
+  "activation_binding": {
+    "source_message_id": "message:topic-b-current",
+    "turn_id": "turn-8",
+    "owner": {
+      "kind": "conversation",
+      "interaction_id": "interaction1_1ac0af3966c468f9b185737a6ae66bad"
+    },
+    "work_item_id": null,
+    "claimed_work_revision": null
+  },
+  "turn_id": "turn-8",
+  "prompt_budget_estimated_tokens": 16384,
+  "allocated_estimated_tokens": 46,
+  "system_sections": [
+    {
+      "order": 0,
+      "section_id": "identity",
+      "section_name": "identity",
+      "stability": "stable",
+      "representation": "full",
+      "reason": "system_section",
+      "requested_estimated_tokens": 11,
+      "allocated_estimated_tokens": 11,
+      "rendered_chars": 43,
+      "content_sha256": "cc23f147f831d7144b950676211369df343b3d347f4a8067767090b5c77ecbe2",
+      "selected_evidence_refs": [],
+      "omitted_evidence_refs": []
+    }
+  ],
+  "context_sections": [
+    {
+      "order": 0,
+      "section_id": "message:topic-a-start",
+      "section_name": "message:topic-a-start",
+      "stability": "agent_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 7,
+      "allocated_estimated_tokens": 7,
+      "rendered_chars": 25,
+      "content_sha256": "c27040d09ca4fcc7968c0319ff59356cf58300d87be9a705672f95c296ff5c39",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:topic-a-start",
+          "role": "input",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_1ac0af3966c468f9b185737a6ae66bad"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 1,
+      "section_id": "brief:topic-a-response",
+      "section_name": "brief:topic-a-response",
+      "stability": "agent_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 7,
+      "allocated_estimated_tokens": 7,
+      "rendered_chars": 27,
+      "content_sha256": "d4553bba35460a5ace666769f4368ecf9a82ac1b98679fb90897f064bffc237d",
+      "selected_evidence_refs": [
+        {
+          "reference": "brief:topic-a-response",
+          "role": "result",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_1ac0af3966c468f9b185737a6ae66bad"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 2,
+      "section_id": "message:topic-a-followup",
+      "section_name": "message:topic-a-followup",
+      "stability": "agent_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 7,
+      "allocated_estimated_tokens": 7,
+      "rendered_chars": 27,
+      "content_sha256": "72d52e84fd4fb20e87e12781df2e59134ec88c97d2ab9f4cdd65de34891f6b46",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:topic-a-followup",
+          "role": "input",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_1ac0af3966c468f9b185737a6ae66bad"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 3,
+      "section_id": "brief:topic-a-abandoned-action",
+      "section_name": "brief:topic-a-abandoned-action",
+      "stability": "turn_scoped",
+      "representation": "omitted",
+      "reason": "omitted_lower_priority",
+      "requested_estimated_tokens": 8,
+      "allocated_estimated_tokens": 0,
+      "rendered_chars": 0,
+      "content_sha256": null,
+      "selected_evidence_refs": [],
+      "omitted_evidence_refs": [
+        {
+          "reference": "brief:topic-a-abandoned-action",
+          "role": "result",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_1ac0af3966c468f9b185737a6ae66bad"
+          }
+        }
+      ]
+    },
+    {
+      "order": 4,
+      "section_id": "message:topic-b-start",
+      "section_name": "message:topic-b-start",
+      "stability": "agent_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 7,
+      "allocated_estimated_tokens": 7,
+      "rendered_chars": 25,
+      "content_sha256": "f33e4b71a717f1e1d47a6d8b7f2b3aa17e37f0c536d12351bd7b2499199d50d5",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:topic-b-start",
+          "role": "input",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_1ac0af3966c468f9b185737a6ae66bad"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 5,
+      "section_id": "brief:topic-b-response",
+      "section_name": "brief:topic-b-response",
+      "stability": "agent_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 7,
+      "allocated_estimated_tokens": 7,
+      "rendered_chars": 27,
+      "content_sha256": "23f2af3cc953c99dc6b127c160ead1619b8d007d648ddf03352dc29958289812",
+      "selected_evidence_refs": [
+        {
+          "reference": "brief:topic-b-response",
+          "role": "result",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_1ac0af3966c468f9b185737a6ae66bad"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 6,
+      "section_id": "message:topic-b-followup",
+      "section_name": "message:topic-b-followup",
+      "stability": "agent_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 5,
+      "allocated_estimated_tokens": 5,
+      "rendered_chars": 18,
+      "content_sha256": "5e870f75866f645be7b46c2ab9e15e697d7307512d0d78895f9042c15308e641",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:topic-b-followup",
+          "role": "input",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_1ac0af3966c468f9b185737a6ae66bad"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 7,
+      "section_id": "message:topic-b-current",
+      "section_name": "message:topic-b-current",
+      "stability": "turn_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 6,
+      "allocated_estimated_tokens": 6,
+      "rendered_chars": 24,
+      "content_sha256": "f5570221218a1937b1d5d613f5c35c99d013bbc2f9ae3354f01c26fb92fdd1c9",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:topic-b-current",
+          "role": "current_input",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_1ac0af3966c468f9b185737a6ae66bad"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    }
+  ],
+  "invariant_results": [
+    {
+      "code": "prompt_budget_respected",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "activation_binding_consistent",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "current_input_retained",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "direct_predecessor_retained",
+      "status": "not_applicable",
+      "details": [
+        "fixture does not identify a direct predecessor"
+      ]
+    },
+    {
+      "code": "canonical_evidence_unique",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "evidence_owner_consistent",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "section_representation_exclusive",
+      "status": "pass",
+      "details": []
+    }
+  ]
+}

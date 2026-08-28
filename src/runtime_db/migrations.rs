@@ -3149,6 +3149,13 @@ CREATE TABLE IF NOT EXISTS audit_event_retention_watermarks (
 );
 "#,
     },
+    Migration {
+        version: 52,
+        name: "turn_owner_identity",
+        // Columns and index live in `ensure_turn_owner_identity_schema` so
+        // baseline and downgrade/re-upgrade paths remain idempotent.
+        sql: "",
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -3397,6 +3404,9 @@ fn apply_migration_transaction(transaction: &Transaction<'_>, migration: &Migrat
     if migration.name == "observer_sync_event_verification_proof" {
         ensure_observer_sync_event_verification_proof_schema(transaction)?;
     }
+    if migration.name == "turn_owner_identity" {
+        ensure_turn_owner_identity_schema(transaction)?;
+    }
     transaction.execute_batch(migration.sql)?;
     if migration.name == "execution_protocol_authority" {
         backfill_execution_protocol_authority(transaction)?;
@@ -3469,6 +3479,31 @@ fn ensure_brief_created_event_linkage_schema(transaction: &Transaction<'_>) -> R
         "CREATE UNIQUE INDEX IF NOT EXISTS briefs_agent_created_event_seq
            ON briefs(agent_id, created_event_seq)
            WHERE created_event_seq IS NOT NULL;",
+    )?;
+    Ok(())
+}
+
+fn ensure_turn_owner_identity_schema(transaction: &Transaction<'_>) -> Result<()> {
+    if !table_exists_tx(transaction, "turn_records")? {
+        return Ok(());
+    }
+    let columns = transaction
+        .prepare("PRAGMA table_info(turn_records)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    for (column, definition) in [
+        ("owner_kind", "owner_kind TEXT"),
+        ("owner_id", "owner_id TEXT"),
+    ] {
+        if !columns.iter().any(|existing| existing == column) {
+            transaction.execute_batch(&format!(
+                "ALTER TABLE turn_records ADD COLUMN {definition};"
+            ))?;
+        }
+    }
+    transaction.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_turn_records_owner
+           ON turn_records(agent_id, owner_kind, owner_id, turn_index, created_at);",
     )?;
     Ok(())
 }

@@ -266,6 +266,64 @@ pub fn generate_all_manifests() -> Vec<(String, usize, ProjectionManifest)> {
     results
 }
 
+fn phase_1_owner(case_id: &str, owner: &ProjectionOwner) -> ProjectionOwner {
+    match owner {
+        ProjectionOwner::LegacyUnbound { agent_id } => ProjectionOwner::Conversation {
+            interaction_id: crate::ids::interaction_id(&[
+                agent_id,
+                "projection_eval_phase_1",
+                case_id,
+            ]),
+        },
+        owner => owner.clone(),
+    }
+}
+
+fn phase_1_evidence_owner(case_id: &str, evidence: &BaselineEvidenceSpec) -> ProjectionOwner {
+    if evidence.role == ProjectionEvidenceRole::Lifecycle
+        || matches!(
+            evidence.reference.as_str(),
+            "message:external-wake" | "message:timer-wake" | "message:lifecycle-wake"
+        )
+    {
+        return ProjectionOwner::AgentLifecycle {
+            agent_id: "agent-1".into(),
+        };
+    }
+    phase_1_owner(case_id, &evidence.owner)
+}
+
+pub fn phase_1_case_specs() -> Vec<BaselineCaseSpec> {
+    baseline_case_specs()
+        .into_iter()
+        .map(|mut spec| {
+            spec.owner = phase_1_owner(&spec.case_id, &spec.owner);
+            if let Some(binding) = spec.binding.as_mut() {
+                binding.owner = Some(spec.owner.clone());
+            }
+            for evidence in &mut spec.evidence {
+                evidence.owner = phase_1_evidence_owner(&spec.case_id, evidence);
+            }
+            spec
+        })
+        .collect()
+}
+
+pub fn generate_all_phase_1_manifests() -> Vec<(String, usize, ProjectionManifest)> {
+    let specs = phase_1_case_specs();
+    let mut results = Vec::with_capacity(specs.len() * BASELINE_BUDGETS.len());
+    for spec in &specs {
+        for &budget in BASELINE_BUDGETS {
+            results.push((
+                spec.case_id.clone(),
+                budget,
+                generate_manifest(spec, budget),
+            ));
+        }
+    }
+    results
+}
+
 /// Manifest filename for a case + budget.
 pub fn manifest_filename(case_id: &str, budget: usize) -> String {
     format!("{case_id}-{budget}.json")
@@ -294,6 +352,66 @@ pub struct BaselineScorecard {
     pub status: String,
     pub manifest_count: usize,
     pub entries: Vec<BaselineScorecardEntry>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Phase1ScorecardEntry {
+    pub case_id: String,
+    pub budget: usize,
+    pub manifest: String,
+    pub baseline_sha256: String,
+    pub candidate_sha256: String,
+    pub activation_owner_changed: bool,
+    pub provider_sections_byte_identical: bool,
+    pub invariants_pass: bool,
+    pub failed_invariants: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Phase1Scorecard {
+    pub schema_version: u32,
+    pub candidate_id: String,
+    pub baseline_id: String,
+    pub projector: String,
+    pub corpus: String,
+    pub rubric: String,
+    pub generated_at: String,
+    pub status: String,
+    pub manifest_count: usize,
+    pub provider_sections_byte_identical: bool,
+    pub entries: Vec<Phase1ScorecardEntry>,
+}
+
+fn provider_sections_byte_identical(
+    baseline: &ProjectionManifest,
+    candidate: &ProjectionManifest,
+) -> bool {
+    let equivalent =
+        |baseline: &crate::projection_eval::ProjectionSectionManifest,
+         candidate: &crate::projection_eval::ProjectionSectionManifest| {
+            baseline.order == candidate.order
+                && baseline.section_id == candidate.section_id
+                && baseline.section_name == candidate.section_name
+                && baseline.stability == candidate.stability
+                && baseline.representation == candidate.representation
+                && baseline.reason == candidate.reason
+                && baseline.requested_estimated_tokens == candidate.requested_estimated_tokens
+                && baseline.allocated_estimated_tokens == candidate.allocated_estimated_tokens
+                && baseline.rendered_chars == candidate.rendered_chars
+                && baseline.content_sha256 == candidate.content_sha256
+        };
+    baseline.system_sections.len() == candidate.system_sections.len()
+        && baseline.context_sections.len() == candidate.context_sections.len()
+        && baseline
+            .system_sections
+            .iter()
+            .zip(&candidate.system_sections)
+            .all(|(baseline, candidate)| equivalent(baseline, candidate))
+        && baseline
+            .context_sections
+            .iter()
+            .zip(&candidate.context_sections)
+            .all(|(baseline, candidate)| equivalent(baseline, candidate))
 }
 
 /// Generate the deterministic baseline scorecard.
@@ -332,6 +450,57 @@ pub fn generate_scorecard() -> BaselineScorecard {
     }
 }
 
+pub fn generate_phase_1_scorecard() -> Phase1Scorecard {
+    let baseline = generate_all_manifests();
+    let candidate = generate_all_phase_1_manifests();
+    let entries = baseline
+        .iter()
+        .zip(&candidate)
+        .map(
+            |((baseline_case, baseline_budget, baseline), (case_id, budget, candidate))| {
+                assert_eq!((baseline_case, baseline_budget), (case_id, budget));
+                let provider_sections_byte_identical =
+                    provider_sections_byte_identical(baseline, candidate);
+                let failed_invariants = candidate
+                    .invariant_results
+                    .iter()
+                    .filter(|result| {
+                        result.status == crate::projection_eval::ProjectionInvariantStatus::Fail
+                    })
+                    .map(|result| result.code.clone())
+                    .collect::<Vec<_>>();
+                Phase1ScorecardEntry {
+                    case_id: case_id.clone(),
+                    budget: *budget,
+                    manifest: manifest_filename(case_id, *budget),
+                    baseline_sha256: baseline.byte_sha256().unwrap_or_default(),
+                    candidate_sha256: candidate.byte_sha256().unwrap_or_default(),
+                    activation_owner_changed: baseline.activation_owner
+                        != candidate.activation_owner,
+                    provider_sections_byte_identical,
+                    invariants_pass: failed_invariants.is_empty(),
+                    failed_invariants,
+                }
+            },
+        )
+        .collect::<Vec<_>>();
+    Phase1Scorecard {
+        schema_version: 1,
+        candidate_id: "activation-turn-owner-identity-phase-1".into(),
+        baseline_id: "legacy-context-sections-v1-phase-0".into(),
+        projector: "legacy_context_sections_v1".into(),
+        corpus: "../corpus/cases.json".into(),
+        rubric: "../corpus/rubric.json".into(),
+        generated_at: "2026-08-28".into(),
+        status: "owner_identity_only_observation".into(),
+        manifest_count: entries.len(),
+        provider_sections_byte_identical: entries
+            .iter()
+            .all(|entry| entry.provider_sections_byte_identical),
+        entries,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,6 +511,11 @@ mod tests {
     fn manifest_dir() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("benchmarks/projection-eval/baseline/manifests")
+    }
+
+    fn phase_1_manifest_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("benchmarks/projection-eval/candidate-phase-1/manifests")
     }
 
     #[test]
@@ -507,6 +681,62 @@ mod tests {
         let json2 = serde_json::to_string_pretty(&sc2).unwrap();
         assert_eq!(json1, json2, "scorecard must be deterministic");
         assert_eq!(sc1.manifest_count, 36);
+    }
+
+    #[test]
+    fn phase_1_candidate_changes_only_owner_metadata() {
+        let scorecard = generate_phase_1_scorecard();
+        assert_eq!(scorecard.manifest_count, 36);
+        assert!(scorecard.provider_sections_byte_identical);
+        assert!(scorecard
+            .entries
+            .iter()
+            .all(|entry| entry.provider_sections_byte_identical));
+        assert!(scorecard
+            .entries
+            .iter()
+            .any(|entry| entry.activation_owner_changed));
+    }
+
+    #[test]
+    fn frozen_phase_1_manifests_match_generated() {
+        let dir = phase_1_manifest_dir();
+        if !dir.exists() {
+            eprintln!("Phase 1 candidate manifest directory not found, skipping drift check");
+            return;
+        }
+        for (case_id, budget, manifest) in generate_all_phase_1_manifests() {
+            let path = dir.join(manifest_filename(&case_id, budget));
+            let committed = fs::read_to_string(&path).unwrap_or_else(|err| {
+                panic!("Phase 1 manifest {case_id}-{budget} missing at {path:?}: {err}")
+            });
+            let committed_manifest: ProjectionManifest = serde_json::from_str(&committed).unwrap();
+            assert_eq!(
+                manifest.canonical_json().unwrap(),
+                committed_manifest.canonical_json().unwrap(),
+                "Phase 1 candidate drift detected for {case_id}-{budget}"
+            );
+        }
+    }
+
+    #[test]
+    fn regenerate_phase_1_candidate() {
+        if std::env::var("REGEN_PHASE1_CANDIDATE").ok().as_deref() != Some("1") {
+            return;
+        }
+        let dir = phase_1_manifest_dir();
+        fs::create_dir_all(&dir).unwrap();
+        for (case_id, budget, manifest) in generate_all_phase_1_manifests() {
+            let path = dir.join(manifest_filename(&case_id, budget));
+            fs::write(&path, manifest.canonical_json().unwrap()).unwrap();
+            println!("wrote {path:?}");
+        }
+        let scorecard = generate_phase_1_scorecard();
+        let json = format!("{}\n", serde_json::to_string_pretty(&scorecard).unwrap());
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("benchmarks/projection-eval/candidate-phase-1/scorecard.json");
+        fs::write(&path, json).unwrap();
+        println!("wrote {path:?}");
     }
 
     #[test]

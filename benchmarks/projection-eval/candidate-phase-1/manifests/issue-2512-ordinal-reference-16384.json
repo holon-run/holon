@@ -1,0 +1,191 @@
+{
+  "schema_version": 1,
+  "projector": "legacy_context_sections_v1",
+  "activation_owner": {
+    "kind": "conversation",
+    "interaction_id": "interaction1_ecbb9235c0a17c2788459020dbeefe95"
+  },
+  "activation_binding": {
+    "source_message_id": "message:previous-plan",
+    "turn_id": "turn-5",
+    "owner": {
+      "kind": "conversation",
+      "interaction_id": "interaction1_ecbb9235c0a17c2788459020dbeefe95"
+    },
+    "work_item_id": null,
+    "claimed_work_revision": null
+  },
+  "turn_id": "turn-5",
+  "prompt_budget_estimated_tokens": 16384,
+  "allocated_estimated_tokens": 27,
+  "system_sections": [
+    {
+      "order": 0,
+      "section_id": "identity",
+      "section_name": "identity",
+      "stability": "stable",
+      "representation": "full",
+      "reason": "system_section",
+      "requested_estimated_tokens": 11,
+      "allocated_estimated_tokens": 11,
+      "rendered_chars": 43,
+      "content_sha256": "cc23f147f831d7144b950676211369df343b3d347f4a8067767090b5c77ecbe2",
+      "selected_evidence_refs": [],
+      "omitted_evidence_refs": []
+    }
+  ],
+  "context_sections": [
+    {
+      "order": 0,
+      "section_id": "message:options",
+      "section_name": "message:options",
+      "stability": "agent_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 6,
+      "allocated_estimated_tokens": 6,
+      "rendered_chars": 7,
+      "content_sha256": "119cc90b815816a87823962c5cbf919c3d69789c1af92bebea962e0882f01fc5",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:options",
+          "role": "input",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_ecbb9235c0a17c2788459020dbeefe95"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 1,
+      "section_id": "brief:options",
+      "section_name": "brief:options",
+      "stability": "agent_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 8,
+      "allocated_estimated_tokens": 8,
+      "rendered_chars": 10,
+      "content_sha256": "509505593089304595d192962e364fbd137732bcd9d96d4107b338f1fa92a2da",
+      "selected_evidence_refs": [
+        {
+          "reference": "brief:options",
+          "role": "direct_predecessor",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_ecbb9235c0a17c2788459020dbeefe95"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 2,
+      "section_id": "message:second",
+      "section_name": "message:second",
+      "stability": "agent_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 3,
+      "allocated_estimated_tokens": 3,
+      "rendered_chars": 3,
+      "content_sha256": "8ef6b96cd7518a8f125336683d0e7cce576f804d1eae356652d2f8dfb82d89fc",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:second",
+          "role": "input",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_ecbb9235c0a17c2788459020dbeefe95"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 3,
+      "section_id": "brief:second",
+      "section_name": "brief:second",
+      "stability": "agent_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 5,
+      "allocated_estimated_tokens": 5,
+      "rendered_chars": 6,
+      "content_sha256": "ccc94125b52012a7cba70eef59b6c69e29e49b3d8749a61c41dc7afbd2bbfb2a",
+      "selected_evidence_refs": [
+        {
+          "reference": "brief:second",
+          "role": "result",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_ecbb9235c0a17c2788459020dbeefe95"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 4,
+      "section_id": "message:previous-plan",
+      "section_name": "message:previous-plan",
+      "stability": "turn_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 5,
+      "allocated_estimated_tokens": 5,
+      "rendered_chars": 6,
+      "content_sha256": "9284e94d18e383967a9323937492077e35bd0e438f9a79add19337e32c8133dc",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:previous-plan",
+          "role": "current_input",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_ecbb9235c0a17c2788459020dbeefe95"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    }
+  ],
+  "invariant_results": [
+    {
+      "code": "prompt_budget_respected",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "activation_binding_consistent",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "current_input_retained",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "direct_predecessor_retained",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "canonical_evidence_unique",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "evidence_owner_consistent",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "section_representation_exclusive",
+      "status": "pass",
+      "details": []
+    }
+  ]
+}

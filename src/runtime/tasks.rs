@@ -4189,8 +4189,18 @@ impl RuntimeHandle {
                             }
                             crate::domain::execution_protocol::ExecutionBinding::Conversation {
                                 ..
-                            }
-                            | crate::domain::execution_protocol::ExecutionBinding::Command => false,
+                            } => protocol_state.work_items.get(&existing.id).map_or_else(
+                                || legacy_work_item_execution.is_some(),
+                                |work_item| {
+                                    work_item.source_revision == existing.revision
+                                        && !matches!(
+                                            work_item.state,
+                                            crate::domain::execution_protocol::WorkItemExecutionState::InFlight { .. }
+                                                | crate::domain::execution_protocol::WorkItemExecutionState::Terminal { .. }
+                                        )
+                                },
+                            ),
+                            crate::domain::execution_protocol::ExecutionBinding::Command => false,
                         }
                 });
                 let matching_attempt = matching_attempts

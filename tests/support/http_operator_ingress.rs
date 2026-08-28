@@ -64,6 +64,7 @@ pub async fn operator_ingress_records_remote_operator_provenance() -> Result<()>
             "text": "remote operator continue",
             "actor_id": "operator:jolestar",
             "binding_id": "opbind-ingress",
+            "conversation_ref": "telegram:dm:operator",
             "reply_route_id": "route-reply-1",
             "provider": "agentinbox",
             "upstream_provider": "telegram",
@@ -122,6 +123,7 @@ pub async fn operator_ingress_records_remote_operator_provenance() -> Result<()>
         .as_ref()
         .expect("metadata should be present")["operator_transport"];
     assert_eq!(transport["binding_id"], "opbind-ingress");
+    assert_eq!(transport["conversation_ref"], "telegram:dm:operator");
     assert_eq!(transport["transport"], "agentinbox");
     assert_eq!(transport["reply_route_id"], "route-reply-1");
     assert_eq!(transport["provider"], "agentinbox");
@@ -135,6 +137,10 @@ pub async fn operator_ingress_records_remote_operator_provenance() -> Result<()>
         transport["metadata"]["conversation_ref"],
         "telegram:dm:operator"
     );
+    assert!(message
+        .source_refs
+        .get("interaction_id")
+        .is_some_and(|interaction_id| interaction_id.starts_with("interaction1_")));
     let bindings = runtime.latest_operator_transport_bindings().await?;
     let binding = bindings
         .iter()

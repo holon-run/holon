@@ -240,7 +240,7 @@ impl RuntimeHandle {
         &self,
         terminal: &TurnTerminalRecord,
     ) -> Result<TurnRecord> {
-        let (agent_id, run_id, current_work_item_id) = {
+        let (agent_id, run_id, current_work_item_id, owner) = {
             let guard = self.inner.agent.lock().await;
             let current_work_item_id = guard
                 .state
@@ -254,10 +254,26 @@ impl RuntimeHandle {
                         .clone()
                         .or_else(|| guard.state.current_work_item_id.clone())
                 });
+            let owner = guard
+                .state
+                .current_execution_binding
+                .as_ref()
+                .and_then(|binding| binding.owner.clone())
+                .or_else(|| {
+                    current_work_item_id.as_ref().map(|work_item_id| {
+                        crate::types::TurnOwner::WorkItem {
+                            work_item_id: work_item_id.clone(),
+                        }
+                    })
+                })
+                .unwrap_or_else(|| crate::types::TurnOwner::AgentLifecycle {
+                    agent_id: guard.state.id.clone(),
+                });
             (
                 guard.state.id.clone(),
                 guard.state.current_run_id.clone(),
                 current_work_item_id,
+                owner,
             )
         };
         let turn_id = terminal.turn_id.trim();
@@ -303,6 +319,7 @@ impl RuntimeHandle {
         }
         record.run_id = run_id;
         record.current_work_item_id = current_work_item_id;
+        record.owner = Some(owner);
         record.trigger = input_messages
             .first()
             .map(|message| TurnTriggerSummary::from_message(message));

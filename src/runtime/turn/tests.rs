@@ -280,6 +280,7 @@ async fn replay_persists_a_new_turn_with_source_provenance() {
             admission_provenance: None,
             source_message_id: source_message.id.clone(),
             turn_id: "turn-replay-attempt".into(),
+            owner: None,
             work_item_id: Some("work-source".into()),
             claimed_work_revision: Some(1),
         });

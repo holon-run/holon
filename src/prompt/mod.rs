@@ -567,6 +567,7 @@ fn build_effective_prompt_with_tool_prompt_context_and_default_external_ingress(
             ProjectionBindingSummary {
                 source_message_id: binding.source_message_id.clone(),
                 turn_id: binding.turn_id.clone(),
+                owner: binding.owner.as_ref().map(ProjectionOwner::from),
                 work_item_id: binding.work_item_id.clone(),
                 claimed_work_revision: binding.claimed_work_revision,
             }
@@ -582,9 +583,16 @@ fn built_context_owner(session: &AgentState) -> ProjectionOwner {
     session
         .current_execution_binding
         .as_ref()
-        .and_then(|binding| binding.work_item_id.as_ref())
-        .map(|work_item_id| ProjectionOwner::WorkItem {
-            work_item_id: work_item_id.clone(),
+        .and_then(|binding| binding.owner.as_ref())
+        .map(ProjectionOwner::from)
+        .or_else(|| {
+            session
+                .current_execution_binding
+                .as_ref()
+                .and_then(|binding| binding.work_item_id.as_ref())
+                .map(|work_item_id| ProjectionOwner::WorkItem {
+                    work_item_id: work_item_id.clone(),
+                })
         })
         .unwrap_or_else(|| ProjectionOwner::LegacyUnbound {
             agent_id: session.id.clone(),

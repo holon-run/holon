@@ -4874,8 +4874,8 @@ async fn lifecycle_wait_handoff_to_work_item_wait_is_atomic_idempotent_and_resta
     assert!(matches!(
         &admitted.attempts[&activation_id],
         crate::domain::execution_protocol::ExecutionAttempt {
-            binding: crate::domain::execution_protocol::ExecutionBinding::AgentLifecycle {
-                agent_id
+            binding: crate::domain::execution_protocol::ExecutionBinding::Conversation {
+                interaction_id
             },
             source:
                 crate::domain::execution_protocol::ExecutionSource {
@@ -4887,7 +4887,7 @@ async fn lifecycle_wait_handoff_to_work_item_wait_is_atomic_idempotent_and_resta
                 },
             state: crate::domain::execution_protocol::ExecutionAttemptState::Open,
             ..
-        } if agent_id == "default" && message_id == &message.id
+        } if interaction_id.starts_with("interaction1_") && message_id == &message.id
     ));
 
     runtime
@@ -6586,6 +6586,134 @@ async fn canonical_processed_settlement_without_terminal_turn_fails_closed() {
             .attempts[&activation_id]
             .state,
         crate::domain::execution_protocol::ExecutionAttemptState::Open
+    );
+}
+
+#[tokio::test]
+async fn trusted_operator_conversation_owner_flows_from_admission_to_terminal_turn() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let message = runtime
+        .enqueue(
+            MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator {
+                    actor_id: Some("control".into()),
+                },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "continue the discussion".into(),
+                },
+            )
+            .with_admission(
+                MessageDeliverySurface::HttpControlPrompt,
+                AdmissionContext::ControlAuthenticated,
+            ),
+        )
+        .await
+        .unwrap();
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("trusted operator prompt should enter a model turn");
+    };
+    let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    let interaction_id = match &execution.attempts[&activation_id].binding {
+        crate::domain::execution_protocol::ExecutionBinding::Conversation { interaction_id } => {
+            interaction_id.clone()
+        }
+        binding => panic!("expected Conversation owner, found {binding:?}"),
+    };
+
+    runtime
+        .begin_reducer_only_turn(
+            &scheduled.message,
+            scheduled
+                .dispatch_plan
+                .execution_admission_provenance
+                .clone(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime
+            .agent_state()
+            .await
+            .unwrap()
+            .current_execution_binding
+            .and_then(|binding| binding.owner),
+        Some(crate::types::TurnOwner::Conversation {
+            interaction_id: interaction_id.clone(),
+        })
+    );
+
+    let transition = runtime
+        .build_reducer_only_terminal_transition("conversation owner regression", false)
+        .await
+        .unwrap();
+    runtime
+        .persist_terminal_transition(&transition)
+        .await
+        .unwrap();
+    assert_eq!(
+        transition.turn_record.effective_owner(),
+        crate::types::TurnOwner::Conversation {
+            interaction_id: interaction_id.clone(),
+        }
+    );
+    assert!(runtime
+        .commit_queue_terminal_settlement(
+            QueueEntryRecord {
+                message_id: message.id.clone(),
+                agent_id: message.agent_id.clone(),
+                priority: message.priority,
+                status: QueueEntryStatus::Processed,
+                created_at: message.created_at,
+                updated_at: Utc::now(),
+            },
+            Vec::new(),
+            true,
+            Some(&transition),
+        )
+        .await
+        .unwrap());
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .turn_records()
+            .recent_for_owner(
+                "default",
+                &crate::types::TurnOwner::Conversation { interaction_id },
+                10,
+            )
+            .unwrap()
+            .len(),
+        1
     );
 }
 
@@ -12562,12 +12690,12 @@ async fn lifecycle_ingress_ignores_completed_work_item_lane_before_claim() {
     assert!(matches!(
         &execution.attempts[&activation_id],
         crate::domain::execution_protocol::ExecutionAttempt {
-            binding: crate::domain::execution_protocol::ExecutionBinding::AgentLifecycle {
-                agent_id
+            binding: crate::domain::execution_protocol::ExecutionBinding::Conversation {
+                interaction_id
             },
             state: crate::domain::execution_protocol::ExecutionAttemptState::Open,
             ..
-        } if agent_id == "default"
+        } if interaction_id.starts_with("interaction1_")
     ));
     assert_eq!(
         runtime

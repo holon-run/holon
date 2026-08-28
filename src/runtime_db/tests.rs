@@ -24,9 +24,9 @@ use crate::types::{
     AgentIdentityRecord, AgentState, AuditEvent, BriefRecord, CallbackDeliveryMode,
     ExecutionRootEntry, ExternalTriggerRecord, ExternalTriggerScope, ExternalTriggerStatus,
     MessageEnvelope, QueueEntryRecord, QueueEntryStatus, TaskRecord, TaskStatus,
-    ToolExecutionRecord, TranscriptEntry, TranscriptEntryKind, WaitConditionKind,
-    WaitConditionRecord, WaitConditionStatus, WorkItemRecord, WorkItemState, WorkspaceEntry,
-    WorkspaceOccupancyRecord,
+    ToolExecutionRecord, TranscriptEntry, TranscriptEntryKind, TurnOwner, TurnRecord,
+    WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WorkItemRecord, WorkItemState,
+    WorkspaceEntry, WorkspaceOccupancyRecord,
 };
 #[cfg(test)]
 use anyhow::{anyhow, bail, Context, Result};
@@ -1727,7 +1727,7 @@ INSERT INTO storage_domains (
         assert!(
             error
                 .to_string()
-                .contains("supports runtime db schemas 46 through 51, found 45"),
+                .contains("supports runtime db schemas 46 through 52, found 45"),
             "{error:#}"
         );
         Ok(())
@@ -1850,7 +1850,10 @@ INSERT INTO scheduler_rollout_command_results (
         RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
 
         let connection = open_connection(&db_path)?;
-        assert_eq!(current_schema_version(&connection)?, 51);
+        assert_eq!(
+            current_schema_version(&connection)?,
+            max_known_migration_version()
+        );
         for table in RETIRED_SCHEDULER_TABLES {
             assert!(
                 !table_exists(&connection, table)?,
@@ -2004,7 +2007,10 @@ INSERT INTO scheduler_rollout_command_results (
 
             RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
             let connection = open_connection(&db_path)?;
-            assert_eq!(current_schema_version(&connection)?, 51);
+            assert_eq!(
+                current_schema_version(&connection)?,
+                max_known_migration_version()
+            );
             for table in RETIRED_SCHEDULER_TABLES {
                 assert!(
                     !table_exists(&connection, table)?,
@@ -2147,7 +2153,10 @@ INSERT INTO scheduler_rollout_command_results (
         drop(db);
 
         RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        assert_eq!(current_schema_version(&open_connection(&db_path)?)?, 51);
+        assert_eq!(
+            current_schema_version(&open_connection(&db_path)?)?,
+            max_known_migration_version()
+        );
         Ok(())
     }
 
@@ -2254,7 +2263,7 @@ INSERT INTO scheduler_rollout_command_results (
             RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
             assert_eq!(
                 current_schema_version(&open_connection(&db_path)?)?,
-                51,
+                max_known_migration_version(),
                 "{case}"
             );
         }
@@ -2313,7 +2322,10 @@ INSERT INTO scheduler_rollout_command_results (
         drop(db);
 
         RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        assert_eq!(current_schema_version(&open_connection(&db_path)?)?, 51);
+        assert_eq!(
+            current_schema_version(&open_connection(&db_path)?)?,
+            max_known_migration_version()
+        );
         Ok(())
     }
 
@@ -2373,7 +2385,10 @@ INSERT INTO scheduler_rollout_command_results (
         drop(db);
 
         RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        assert_eq!(current_schema_version(&open_connection(&db_path)?)?, 51);
+        assert_eq!(
+            current_schema_version(&open_connection(&db_path)?)?,
+            max_known_migration_version()
+        );
         Ok(())
     }
 
@@ -7146,5 +7161,52 @@ CREATE TABLE working_memory_deltas (
         assert!(foundations.runtime_identity_stable);
         assert!(!foundations.agent_identity_reserved);
         Ok(())
+    }
+
+    #[test]
+    fn turn_owner_is_indexed_and_reconstructed_after_reopen() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let owner = TurnOwner::Conversation {
+            interaction_id: "interaction1_test".into(),
+        };
+        {
+            let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+            let mut turn = TurnRecord::new("agent-owner", "turn-owner", 7);
+            turn.owner = Some(owner.clone());
+            db.turn_records().upsert(&turn)?;
+            assert_eq!(
+                db.turn_records()
+                    .recent_for_owner("agent-owner", &owner, 10)?,
+                vec![turn]
+            );
+        }
+
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let turn = reopened
+            .turn_records()
+            .by_id(Some("agent-owner"), "turn-owner")?
+            .expect("turn should survive reopen");
+        assert_eq!(turn.effective_owner(), owner);
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_turn_owner_fallback_is_conservative() {
+        let mut work_item_turn = TurnRecord::new("agent-owner", "turn-work", 1);
+        work_item_turn.current_work_item_id = Some("work-1".into());
+        assert_eq!(
+            work_item_turn.effective_owner(),
+            TurnOwner::WorkItem {
+                work_item_id: "work-1".into(),
+            }
+        );
+
+        let lifecycle_turn = TurnRecord::new("agent-owner", "turn-lifecycle", 2);
+        assert_eq!(
+            lifecycle_turn.effective_owner(),
+            TurnOwner::AgentLifecycle {
+                agent_id: "agent-owner".into(),
+            }
+        );
     }
 }

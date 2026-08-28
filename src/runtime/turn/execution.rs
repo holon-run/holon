@@ -756,19 +756,40 @@ impl RuntimeHandle {
                 "operator interjection attempt disagrees with the current source message"
             ));
         }
-        match &attempt.binding {
-            crate::domain::execution_protocol::ExecutionBinding::WorkItem { work_item_id }
-                if execution_binding.work_item_id.as_deref() == Some(work_item_id.as_str()) => {}
+        let attempt_owner = match &attempt.binding {
+            crate::domain::execution_protocol::ExecutionBinding::WorkItem { work_item_id } => {
+                crate::types::TurnOwner::WorkItem {
+                    work_item_id: work_item_id.clone(),
+                }
+            }
+            crate::domain::execution_protocol::ExecutionBinding::Conversation {
+                interaction_id,
+            } => crate::types::TurnOwner::Conversation {
+                interaction_id: interaction_id.clone(),
+            },
             crate::domain::execution_protocol::ExecutionBinding::AgentLifecycle {
                 agent_id: owner_agent_id,
-            } if owner_agent_id == agent_id && execution_binding.work_item_id.is_none() => {}
-            crate::domain::execution_protocol::ExecutionBinding::Conversation { .. }
-                if execution_binding.work_item_id.is_none() => {}
-            _ => {
-                return Err(anyhow::anyhow!(
-                    "operator interjection execution binding disagrees with attempt owner"
-                ));
+            } => crate::types::TurnOwner::AgentLifecycle {
+                agent_id: owner_agent_id.clone(),
+            },
+            crate::domain::execution_protocol::ExecutionBinding::Command => {
+                crate::types::TurnOwner::Command
             }
+        };
+        let current_owner = execution_binding.owner.clone().unwrap_or_else(|| {
+            execution_binding.work_item_id.as_ref().map_or_else(
+                || crate::types::TurnOwner::AgentLifecycle {
+                    agent_id: agent_id.to_string(),
+                },
+                |work_item_id| crate::types::TurnOwner::WorkItem {
+                    work_item_id: work_item_id.clone(),
+                },
+            )
+        });
+        if current_owner != attempt_owner {
+            return Err(anyhow::anyhow!(
+                "operator interjection execution binding disagrees with attempt owner"
+            ));
         }
 
         let _ = (message, round, boundary);

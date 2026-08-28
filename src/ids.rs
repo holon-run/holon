@@ -36,6 +36,17 @@ pub fn turn_id() -> String {
     runtime_id("turn")
 }
 
+pub(crate) fn interaction_id(parts: &[&str]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"holon.interaction.v1\x00");
+    for part in parts {
+        hasher.update(part.as_bytes());
+        hasher.update(b"\x00");
+    }
+    let digest = hasher.finalize();
+    format!("interaction1_{}", hex(&digest[..16]))
+}
+
 pub fn tool_execution_id() -> String {
     runtime_id("tool")
 }
@@ -196,6 +207,14 @@ mod tests {
         ] {
             assert_runtime_id(&id, prefix);
         }
+    }
+
+    #[test]
+    fn interaction_ids_are_stable_and_scope_sensitive() {
+        let first = interaction_id(&["agent", "control"]);
+        assert_eq!(first, interaction_id(&["agent", "control"]));
+        assert_ne!(first, interaction_id(&["agent", "cli"]));
+        assert!(first.starts_with("interaction1_"));
     }
 
     #[test]

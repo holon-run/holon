@@ -30,6 +30,23 @@ pub enum ProjectionOwner {
     Command,
 }
 
+impl From<&crate::types::TurnOwner> for ProjectionOwner {
+    fn from(owner: &crate::types::TurnOwner) -> Self {
+        match owner {
+            crate::types::TurnOwner::WorkItem { work_item_id } => Self::WorkItem {
+                work_item_id: work_item_id.clone(),
+            },
+            crate::types::TurnOwner::Conversation { interaction_id } => Self::Conversation {
+                interaction_id: interaction_id.clone(),
+            },
+            crate::types::TurnOwner::AgentLifecycle { agent_id } => Self::AgentLifecycle {
+                agent_id: agent_id.clone(),
+            },
+            crate::types::TurnOwner::Command => Self::Command,
+        }
+    }
+}
+
 impl ProjectionOwner {
     fn key(&self) -> String {
         match self {
@@ -46,6 +63,8 @@ impl ProjectionOwner {
 pub struct ProjectionBindingSummary {
     pub source_message_id: String,
     pub turn_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<ProjectionOwner>,
     pub work_item_id: Option<String>,
     pub claimed_work_revision: Option<u64>,
 }
@@ -402,17 +421,20 @@ fn activation_binding_is_consistent(manifest: &ProjectionManifest) -> Projection
             ["manifest does not include a legacy activation binding"],
         );
     };
-    let matches = match binding.work_item_id.as_ref() {
-        Some(work_item_id) => {
-            manifest.activation_owner
-                == (ProjectionOwner::WorkItem {
-                    work_item_id: work_item_id.clone(),
-                })
-        }
-        None => matches!(
-            manifest.activation_owner,
-            ProjectionOwner::LegacyUnbound { .. }
-        ),
+    let matches = match binding.owner.as_ref() {
+        Some(owner) => owner == &manifest.activation_owner,
+        None => match binding.work_item_id.as_ref() {
+            Some(work_item_id) => {
+                manifest.activation_owner
+                    == (ProjectionOwner::WorkItem {
+                        work_item_id: work_item_id.clone(),
+                    })
+            }
+            None => matches!(
+                manifest.activation_owner,
+                ProjectionOwner::LegacyUnbound { .. }
+            ),
+        },
     };
     if matches {
         invariant(
@@ -425,7 +447,12 @@ fn activation_binding_is_consistent(manifest: &ProjectionManifest) -> Projection
             "activation_binding_consistent",
             ProjectionInvariantStatus::Fail,
             [format!(
-                "binding work_item_id={} conflicts with owner={}",
+                "binding owner={} work_item_id={} conflicts with activation owner={}",
+                binding
+                    .owner
+                    .as_ref()
+                    .map(ProjectionOwner::key)
+                    .unwrap_or_else(|| "legacy".to_string()),
                 binding.work_item_id.as_deref().unwrap_or("<none>"),
                 manifest.activation_owner.key()
             )],
@@ -809,6 +836,7 @@ mod tests {
         manifest.activation_binding = Some(ProjectionBindingSummary {
             source_message_id: "message:current".into(),
             turn_id: "turn-1".into(),
+            owner: None,
             work_item_id: Some("work-1".into()),
             claimed_work_revision: Some(1),
         });

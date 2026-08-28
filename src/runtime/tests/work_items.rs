@@ -2788,6 +2788,7 @@ async fn lifecycle_execution_can_complete_without_borrowing_work_item_authority(
         admission_provenance: None,
         source_message_id: "message-lifecycle".into(),
         turn_id: "turn-lifecycle".into(),
+        owner: None,
         work_item_id: None,
         claimed_work_revision: None,
     };
@@ -2854,6 +2855,7 @@ async fn control_completion_ignores_unrelated_execution_binding() {
             admission_provenance: None,
             source_message_id: "message-active".into(),
             turn_id: "turn-active".into(),
+            owner: None,
             work_item_id: Some(active.id.clone()),
             claimed_work_revision: Some(active.revision),
         });
@@ -2912,6 +2914,7 @@ async fn work_item_execution_cannot_complete_an_unrelated_work_item() {
         admission_provenance: None,
         source_message_id: "message-active".into(),
         turn_id: "turn-active".into(),
+        owner: None,
         work_item_id: Some(active.id.clone()),
         claimed_work_revision: Some(active.revision),
     };
@@ -2976,6 +2979,7 @@ async fn completion_retry_rejects_replaced_execution_binding() {
         admission_provenance: None,
         source_message_id: "message-original".into(),
         turn_id: "turn-original".into(),
+        owner: None,
         work_item_id: Some(target.id.clone()),
         claimed_work_revision: Some(target.revision),
     };
@@ -2989,6 +2993,7 @@ async fn completion_retry_rejects_replaced_execution_binding() {
         admission_provenance: None,
         source_message_id: "message-replacement".into(),
         turn_id: "turn-replacement".into(),
+        owner: None,
         work_item_id: Some(target.id.clone()),
         claimed_work_revision: Some(target.revision),
     });
@@ -4651,6 +4656,7 @@ async fn complete_work_item_with_unfinished_todos_returns_structured_warning() {
             admission_provenance: None,
             source_message_id: "message-complete-with-warning".into(),
             turn_id: "turn-complete-with-warning".into(),
+            owner: None,
             work_item_id: Some(work_item.id.clone()),
             claimed_work_revision: Some(work_item.revision),
         });
@@ -6511,6 +6517,7 @@ async fn wait_for_falls_back_to_current_focus_for_lifecycle_execution() {
             admission_provenance: None,
             source_message_id: "message-lifecycle".into(),
             turn_id: "turn-lifecycle".into(),
+            owner: None,
             work_item_id: None,
             claimed_work_revision: None,
         });
@@ -6577,6 +6584,7 @@ async fn wait_for_uses_lifecycle_owner_without_any_work_item_binding_or_focus() 
             admission_provenance: None,
             source_message_id: "message-lifecycle".into(),
             turn_id: "turn-lifecycle".into(),
+            owner: None,
             work_item_id: None,
             claimed_work_revision: None,
         });
@@ -7325,6 +7333,7 @@ fn rebase_completion_accepts_diverged_baseline_after_concurrent_persist() {
         admission_provenance: None,
         source_message_id: "msg-1".to_string(),
         turn_id: turn_id.to_string(),
+        owner: None,
         work_item_id: Some(work_item_id.to_string()),
         claimed_work_revision: Some(1),
     });

@@ -1,0 +1,170 @@
+{
+  "schema_version": 1,
+  "projector": "legacy_context_sections_v1",
+  "activation_owner": {
+    "kind": "conversation",
+    "interaction_id": "interaction1_8d2886df4fceb3215edcc4dbec41e825"
+  },
+  "activation_binding": {
+    "source_message_id": "message:2512-can",
+    "turn_id": "turn-4",
+    "owner": {
+      "kind": "conversation",
+      "interaction_id": "interaction1_8d2886df4fceb3215edcc4dbec41e825"
+    },
+    "work_item_id": null,
+    "claimed_work_revision": null
+  },
+  "turn_id": "turn-4",
+  "prompt_budget_estimated_tokens": 4096,
+  "allocated_estimated_tokens": 26,
+  "system_sections": [
+    {
+      "order": 0,
+      "section_id": "identity",
+      "section_name": "identity",
+      "stability": "stable",
+      "representation": "full",
+      "reason": "system_section",
+      "requested_estimated_tokens": 11,
+      "allocated_estimated_tokens": 11,
+      "rendered_chars": 43,
+      "content_sha256": "cc23f147f831d7144b950676211369df343b3d347f4a8067767090b5c77ecbe2",
+      "selected_evidence_refs": [],
+      "omitted_evidence_refs": []
+    }
+  ],
+  "context_sections": [
+    {
+      "order": 0,
+      "section_id": "message:2512-plan",
+      "section_name": "message:2512-plan",
+      "stability": "agent_scoped",
+      "representation": "compact",
+      "reason": "selected_compact_for_budget",
+      "requested_estimated_tokens": 9,
+      "allocated_estimated_tokens": 11,
+      "rendered_chars": 21,
+      "content_sha256": "0d6f38b6b855589c45183e2651b56ac7f186635d28f55203421270b72c445513",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:2512-plan",
+          "role": "input",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_8d2886df4fceb3215edcc4dbec41e825"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 1,
+      "section_id": "brief:2512-plan",
+      "section_name": "brief:2512-plan",
+      "stability": "agent_scoped",
+      "representation": "compact",
+      "reason": "selected_compact_for_budget",
+      "requested_estimated_tokens": 5,
+      "allocated_estimated_tokens": 7,
+      "rendered_chars": 16,
+      "content_sha256": "8fd1522f85869e59c10ab0d1e4df50ad8e6d8401b528f40ab0d0d30e77609c4e",
+      "selected_evidence_refs": [
+        {
+          "reference": "brief:2512-plan",
+          "role": "result",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_8d2886df4fceb3215edcc4dbec41e825"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 2,
+      "section_id": "message:2512-question",
+      "section_name": "message:2512-question",
+      "stability": "agent_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 6,
+      "allocated_estimated_tokens": 6,
+      "rendered_chars": 7,
+      "content_sha256": "91af2d3bb572aef7d0f102b0ec0df14256bb6b4521f985246435625b9c76dfe6",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:2512-question",
+          "role": "input",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_8d2886df4fceb3215edcc4dbec41e825"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 3,
+      "section_id": "message:2512-can",
+      "section_name": "message:2512-can",
+      "stability": "turn_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 2,
+      "allocated_estimated_tokens": 2,
+      "rendered_chars": 2,
+      "content_sha256": "0ef5c86fab94f13a7b7d54aa531ceb5d586cd9ebee98198ad975df3852da824a",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:2512-can",
+          "role": "current_input",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_8d2886df4fceb3215edcc4dbec41e825"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    }
+  ],
+  "invariant_results": [
+    {
+      "code": "prompt_budget_respected",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "activation_binding_consistent",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "current_input_retained",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "direct_predecessor_retained",
+      "status": "not_applicable",
+      "details": [
+        "fixture does not identify a direct predecessor"
+      ]
+    },
+    {
+      "code": "canonical_evidence_unique",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "evidence_owner_consistent",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "section_representation_exclusive",
+      "status": "pass",
+      "details": []
+    }
+  ]
+}

@@ -1497,6 +1497,60 @@ impl MessageEnvelope {
             }
             _ => {}
         }
+
+        if !self.source_refs.contains_key("interaction_id") {
+            if let Some(interaction_id) = self.trusted_interaction_id() {
+                self.source_refs
+                    .insert("interaction_id".into(), interaction_id);
+            }
+        }
+    }
+
+    pub fn trusted_interaction_id(&self) -> Option<String> {
+        if self.kind != MessageKind::OperatorPrompt
+            || self.authority_class != AuthorityClass::OperatorInstruction
+            || !matches!(self.origin, MessageOrigin::Operator { .. })
+        {
+            return None;
+        }
+
+        let scope = match (self.delivery_surface, self.admission_context) {
+            (Some(MessageDeliverySurface::CliPrompt), Some(AdmissionContext::LocalProcess)) => {
+                "cli_prompt"
+            }
+            (Some(MessageDeliverySurface::RunOnce), Some(AdmissionContext::LocalProcess)) => {
+                "run_once"
+            }
+            (
+                Some(MessageDeliverySurface::HttpControlPrompt),
+                Some(AdmissionContext::ControlAuthenticated),
+            ) => "http_control_prompt",
+            (
+                Some(MessageDeliverySurface::RemoteOperatorTransport),
+                Some(AdmissionContext::OperatorTransportAuthenticated),
+            ) => "remote_operator_transport",
+            _ => return None,
+        };
+
+        self.source_refs
+            .get("interaction_id")
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|interaction_id| !interaction_id.is_empty())
+            .map(ToString::to_string)
+            .or_else(|| {
+                let actor_id = match &self.origin {
+                    MessageOrigin::Operator { actor_id } => {
+                        actor_id.as_deref().unwrap_or("operator")
+                    }
+                    _ => unreachable!("operator origin checked above"),
+                };
+                Some(crate::ids::interaction_id(&[
+                    &self.agent_id,
+                    scope,
+                    actor_id,
+                ]))
+            })
     }
 
     fn metadata_binding_fields_are_trusted(&self) -> bool {
@@ -1740,6 +1794,33 @@ pub struct TurnReplayProvenance {
     pub prior_terminal: Option<TurnTerminalSummary>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TurnOwner {
+    WorkItem { work_item_id: String },
+    Conversation { interaction_id: String },
+    AgentLifecycle { agent_id: String },
+    Command,
+}
+
+impl TurnOwner {
+    pub fn work_item_id(&self) -> Option<&str> {
+        match self {
+            Self::WorkItem { work_item_id } => Some(work_item_id),
+            Self::Conversation { .. } | Self::AgentLifecycle { .. } | Self::Command => None,
+        }
+    }
+
+    pub fn index_parts(&self) -> (&'static str, Option<&str>) {
+        match self {
+            Self::WorkItem { work_item_id } => ("work_item", Some(work_item_id)),
+            Self::Conversation { interaction_id } => ("conversation", Some(interaction_id)),
+            Self::AgentLifecycle { agent_id } => ("agent_lifecycle", Some(agent_id)),
+            Self::Command => ("command", None),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TurnRecord {
     pub turn_id: String,
@@ -1749,6 +1830,8 @@ pub struct TurnRecord {
     pub run_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_work_item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<TurnOwner>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trigger: Option<TurnTriggerSummary>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1778,6 +1861,7 @@ impl TurnRecord {
             agent_id: agent_id.into(),
             run_id: None,
             current_work_item_id: None,
+            owner: None,
             trigger: None,
             input_message_ids: Vec::new(),
             tool_execution_ids: Vec::new(),
@@ -1789,6 +1873,19 @@ impl TurnRecord {
             replay: None,
             created_at: Utc::now(),
         }
+    }
+
+    pub fn effective_owner(&self) -> TurnOwner {
+        self.owner.clone().unwrap_or_else(|| {
+            self.current_work_item_id.as_ref().map_or_else(
+                || TurnOwner::AgentLifecycle {
+                    agent_id: self.agent_id.clone(),
+                },
+                |work_item_id| TurnOwner::WorkItem {
+                    work_item_id: work_item_id.clone(),
+                },
+            )
+        })
     }
 }
 
@@ -2006,6 +2103,8 @@ pub struct WorkItemExecutionBinding {
     pub admission_provenance: Option<ExecutionAdmissionProvenance>,
     pub source_message_id: String,
     pub turn_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<TurnOwner>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work_item_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

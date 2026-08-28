@@ -165,6 +165,7 @@ pub struct OperatorIngressRequest {
     pub text: String,
     pub actor_id: String,
     pub binding_id: String,
+    pub conversation_ref: Option<String>,
     pub reply_route_id: Option<String>,
     pub provider: Option<String>,
     pub upstream_provider: Option<String>,

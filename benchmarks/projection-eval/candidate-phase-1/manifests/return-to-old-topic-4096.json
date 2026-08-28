@@ -1,0 +1,216 @@
+{
+  "schema_version": 1,
+  "projector": "legacy_context_sections_v1",
+  "activation_owner": {
+    "kind": "conversation",
+    "interaction_id": "interaction1_dc17c8027cc7535ad5ee3c72bcc493a9"
+  },
+  "activation_binding": {
+    "source_message_id": "message:return-topic-a",
+    "turn_id": "turn-12",
+    "owner": {
+      "kind": "conversation",
+      "interaction_id": "interaction1_dc17c8027cc7535ad5ee3c72bcc493a9"
+    },
+    "work_item_id": null,
+    "claimed_work_revision": null
+  },
+  "turn_id": "turn-12",
+  "prompt_budget_estimated_tokens": 4096,
+  "allocated_estimated_tokens": 17,
+  "system_sections": [
+    {
+      "order": 0,
+      "section_id": "identity",
+      "section_name": "identity",
+      "stability": "stable",
+      "representation": "full",
+      "reason": "system_section",
+      "requested_estimated_tokens": 11,
+      "allocated_estimated_tokens": 11,
+      "rendered_chars": 43,
+      "content_sha256": "cc23f147f831d7144b950676211369df343b3d347f4a8067767090b5c77ecbe2",
+      "selected_evidence_refs": [],
+      "omitted_evidence_refs": []
+    }
+  ],
+  "context_sections": [
+    {
+      "order": 0,
+      "section_id": "message:topic-a-start",
+      "section_name": "message:topic-a-start",
+      "stability": "agent_scoped",
+      "representation": "compact",
+      "reason": "selected_compact_for_budget",
+      "requested_estimated_tokens": 4,
+      "allocated_estimated_tokens": 6,
+      "rendered_chars": 24,
+      "content_sha256": "451f13e09c18b63dbb36f8114332f019173b13f60f5a8f5cf16114097a1e104f",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:topic-a-start",
+          "role": "input",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_dc17c8027cc7535ad5ee3c72bcc493a9"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 1,
+      "section_id": "brief:topic-a-decision",
+      "section_name": "brief:topic-a-decision",
+      "stability": "agent_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 6,
+      "allocated_estimated_tokens": 6,
+      "rendered_chars": 23,
+      "content_sha256": "c633bae168cc45b3e885996214f59b52f621a00f723b2a96c7b110a4d5da821c",
+      "selected_evidence_refs": [
+        {
+          "reference": "brief:topic-a-decision",
+          "role": "result",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_dc17c8027cc7535ad5ee3c72bcc493a9"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    },
+    {
+      "order": 2,
+      "section_id": "message:topic-b-start",
+      "section_name": "message:topic-b-start",
+      "stability": "turn_scoped",
+      "representation": "omitted",
+      "reason": "omitted_lower_priority",
+      "requested_estimated_tokens": 4,
+      "allocated_estimated_tokens": 0,
+      "rendered_chars": 0,
+      "content_sha256": null,
+      "selected_evidence_refs": [],
+      "omitted_evidence_refs": [
+        {
+          "reference": "message:topic-b-start",
+          "role": "input",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_dc17c8027cc7535ad5ee3c72bcc493a9"
+          }
+        }
+      ]
+    },
+    {
+      "order": 3,
+      "section_id": "brief:topic-b-unrelated-detail",
+      "section_name": "brief:topic-b-unrelated-detail",
+      "stability": "turn_scoped",
+      "representation": "omitted",
+      "reason": "omitted_lower_priority",
+      "requested_estimated_tokens": 7,
+      "allocated_estimated_tokens": 0,
+      "rendered_chars": 0,
+      "content_sha256": null,
+      "selected_evidence_refs": [],
+      "omitted_evidence_refs": [
+        {
+          "reference": "brief:topic-b-unrelated-detail",
+          "role": "result",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_dc17c8027cc7535ad5ee3c72bcc493a9"
+          }
+        }
+      ]
+    },
+    {
+      "order": 4,
+      "section_id": "message:topic-b-more",
+      "section_name": "message:topic-b-more",
+      "stability": "turn_scoped",
+      "representation": "omitted",
+      "reason": "omitted_lower_priority",
+      "requested_estimated_tokens": 4,
+      "allocated_estimated_tokens": 0,
+      "rendered_chars": 0,
+      "content_sha256": null,
+      "selected_evidence_refs": [],
+      "omitted_evidence_refs": [
+        {
+          "reference": "message:topic-b-more",
+          "role": "input",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_dc17c8027cc7535ad5ee3c72bcc493a9"
+          }
+        }
+      ]
+    },
+    {
+      "order": 5,
+      "section_id": "message:return-topic-a",
+      "section_name": "message:return-topic-a",
+      "stability": "turn_scoped",
+      "representation": "full",
+      "reason": "selected_full",
+      "requested_estimated_tokens": 5,
+      "allocated_estimated_tokens": 5,
+      "rendered_chars": 18,
+      "content_sha256": "6fa16434c436336c1214c3cafe09727a55504515e3760d5de3ae8ea1dcf97819",
+      "selected_evidence_refs": [
+        {
+          "reference": "message:return-topic-a",
+          "role": "current_input",
+          "owner": {
+            "kind": "conversation",
+            "interaction_id": "interaction1_dc17c8027cc7535ad5ee3c72bcc493a9"
+          }
+        }
+      ],
+      "omitted_evidence_refs": []
+    }
+  ],
+  "invariant_results": [
+    {
+      "code": "prompt_budget_respected",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "activation_binding_consistent",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "current_input_retained",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "direct_predecessor_retained",
+      "status": "not_applicable",
+      "details": [
+        "fixture does not identify a direct predecessor"
+      ]
+    },
+    {
+      "code": "canonical_evidence_unique",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "evidence_owner_consistent",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "code": "section_representation_exclusive",
+      "status": "pass",
+      "details": []
+    }
+  ]
+}

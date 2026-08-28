@@ -1827,6 +1827,37 @@ impl TurnRecordRepository<'_> {
         Ok(records)
     }
 
+    pub fn recent_for_owner(
+        &self,
+        agent_id: &str,
+        owner: &crate::types::TurnOwner,
+        limit: usize,
+    ) -> Result<Vec<TurnRecord>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let (owner_kind, owner_id) = owner.index_parts();
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM turn_records
+             WHERE agent_id = ?1
+               AND owner_kind = ?2
+               AND owner_id IS ?3
+             ORDER BY turn_index DESC, created_at DESC, turn_id ASC
+             LIMIT ?4",
+        )?;
+        let rows = statement.query_map(params![agent_id, owner_kind, owner_id, limit], |row| {
+            row.get::<_, String>(0)
+        })?;
+        let mut records = rows
+            .map(|row| decode_turn_record_payload(&row?))
+            .collect::<Result<Vec<_>>>()?;
+        records.reverse();
+        Ok(records)
+    }
+
     pub fn recent(&self, limit: usize) -> Result<Vec<TurnRecord>> {
         if limit == 0 {
             return Ok(Vec::new());
@@ -3958,6 +3989,18 @@ fn merge_legacy_turn_evidence_tx(tx: &Transaction<'_>, derived: &TurnRecord) -> 
 }
 
 pub(crate) fn upsert_turn_record_tx(tx: &Transaction<'_>, record: &TurnRecord) -> Result<()> {
+    if let Some(owner) = record.owner.as_ref() {
+        let owner_work_item_id = owner.work_item_id();
+        if record.current_work_item_id.as_deref() != owner_work_item_id {
+            return Err(RuntimeStateTransitionConflict::new(
+                "turn owner",
+                &record.turn_id,
+                owner_work_item_id.unwrap_or("unbound"),
+                record.current_work_item_id.as_deref().unwrap_or("unbound"),
+            )
+            .into());
+        }
+    }
     let existing = tx
         .query_row(
             "SELECT payload_json FROM turn_records WHERE turn_id = ?1",
@@ -3981,6 +4024,7 @@ pub(crate) fn upsert_turn_record_tx(tx: &Transaction<'_>, record: &TurnRecord) -
             && existing.turn_index == record.turn_index
             && existing.run_id == record.run_id
             && existing.current_work_item_id == record.current_work_item_id
+            && (existing.owner == record.owner || existing.owner.is_none())
             && existing
                 .trigger
                 .as_ref()
@@ -4011,12 +4055,22 @@ pub(crate) fn upsert_turn_record_tx(tx: &Transaction<'_>, record: &TurnRecord) -
         .terminal
         .as_ref()
         .map(|terminal| timestamp(terminal.completed_at));
+    let (owner_kind, owner_id) = match record.owner.as_ref() {
+        Some(owner) => {
+            let (kind, id) = owner.index_parts();
+            (Some(kind), id)
+        }
+        None => (None, None),
+    };
     tx.execute(
         "INSERT INTO turn_records (
             turn_id, turn_index, agent_id, run_id, current_work_item_id,
-            trigger_message_id, terminal_kind, created_at, completed_at, payload_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            owner_kind, owner_id, trigger_message_id, terminal_kind, created_at,
+            completed_at, payload_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
          ON CONFLICT(turn_id) DO UPDATE SET
+            owner_kind = COALESCE(turn_records.owner_kind, excluded.owner_kind),
+            owner_id = COALESCE(turn_records.owner_id, excluded.owner_id),
             terminal_kind = excluded.terminal_kind,
             completed_at = excluded.completed_at,
             payload_json = excluded.payload_json
@@ -4027,6 +4081,8 @@ pub(crate) fn upsert_turn_record_tx(tx: &Transaction<'_>, record: &TurnRecord) -
             record.agent_id,
             record.run_id,
             record.current_work_item_id,
+            owner_kind,
+            owner_id,
             record
                 .trigger
                 .as_ref()

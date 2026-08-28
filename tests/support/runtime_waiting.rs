@@ -361,7 +361,7 @@ pub async fn queued_task_result_wait_settles_tool_only_turn_and_reduces_result()
         ))
         .await?;
 
-    wait_until(|| {
+    eventually_for(Duration::from_secs(10), || {
         let queue_entries = runtime.storage().read_recent_queue_entries(20)?;
         Ok(queue_entries.iter().any(|entry| {
             entry.message_id == message.id && entry.status == QueueEntryStatus::Processed
@@ -384,7 +384,7 @@ pub async fn queued_task_result_wait_settles_tool_only_turn_and_reduces_result()
         })
         .expect("background command should enqueue its task result");
 
-    wait_until(|| {
+    eventually_for(Duration::from_secs(10), || {
         let queue_entries = runtime.storage().read_recent_queue_entries(20)?;
         Ok(queue_entries.iter().any(|entry| {
             entry.message_id == task_result.id && entry.status == QueueEntryStatus::Processed

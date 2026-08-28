@@ -17,6 +17,10 @@ Fixture layout:
 - `corpus/rubric.json`: hard assertions, thresholds, and diagnostic-only metrics
 - `baseline/legacy-phase-0-scorecard.json`: frozen legacy projector observation matrix with per-manifest SHA-256 hashes and invariant results
 - `baseline/manifests/*.json`: 36 frozen legacy baseline manifests (12 cases x 3 budgets)
+- `candidate-phase-1/scorecard.json`: owner-identity-only candidate comparison
+  against the Phase 0 baseline
+- `candidate-phase-1/manifests/*.json`: 36 Phase 1 manifests with typed
+  WorkItem, Conversation, and AgentLifecycle owner metadata
 
 The Rust legacy projector exports the shared manifest through
 `EffectivePrompt::projection_manifest()`. The committed baseline freezes the
@@ -39,3 +43,21 @@ REGEN_BASELINE=1 cargo test --lib projection_eval::baseline::tests::regenerate_s
 
 Normal test runs verify byte-stability, restart equivalence, budget monotonicity,
 and schema/fixture drift against the committed manifests.
+
+## Phase 1 Candidate
+
+Phase 1 changes admission and durable owner metadata without changing rendered
+provider sections. The candidate scorecard compares section order,
+representation, token allocation, rendered character counts, and content hashes
+against the Phase 0 baseline.
+
+The committed scorecard intentionally retains owner-invariant failures where the
+legacy projector selects evidence from another owner at large budgets. Those
+failures are Phase 2 semantic-projection evidence, not a reason to hide or
+rewrite the Phase 1 observation.
+
+To regenerate the Phase 1 candidate manifests and scorecard:
+
+```sh
+REGEN_PHASE1_CANDIDATE=1 cargo test --lib projection_eval::baseline::tests::regenerate_phase_1_candidate -- --nocapture
+```

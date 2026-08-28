@@ -207,6 +207,7 @@ async fn terminal_pick_ends_turn_before_later_tools_or_provider_rounds() {
             admission_provenance: None,
             source_message_id: "message-terminal-pick".into(),
             turn_id: "turn-terminal-pick".into(),
+            owner: None,
             work_item_id: Some(caller.id.clone()),
             claimed_work_revision: Some(caller.revision),
         });

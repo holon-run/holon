@@ -475,6 +475,7 @@ async fn execution_bound_pick_yields_without_rebinding_current_turn() {
             admission_provenance: None,
             source_message_id: "message-yield".into(),
             turn_id: "turn-yield".into(),
+            owner: None,
             work_item_id: Some(first.id.clone()),
             claimed_work_revision: Some(first.revision),
         });

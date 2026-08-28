@@ -1,5 +1,6 @@
 use super::message_dispatch::MessageDispatchPlan;
 use super::*;
+use crate::domain::execution_protocol::ExecutionBinding;
 use crate::types::ExecutionAdmissionProvenance;
 
 const QUEUE_HEAD_NO_PROGRESS_MAX_ATTEMPTS: u32 = 3;
@@ -1659,9 +1660,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             }
         };
         let binding = work_item.map_or_else(
-            || ExecutionBinding::AgentLifecycle {
-                agent_id: message.agent_id.clone(),
-            },
+            || unbound_execution_binding(message, admitted_wait_id),
             |(work_item, _)| ExecutionBinding::WorkItem {
                 work_item_id: work_item.id.clone(),
             },
@@ -2214,6 +2213,20 @@ fn canonical_execution_trust(
     }
 }
 
+fn unbound_execution_binding(
+    message: &MessageEnvelope,
+    admitted_wait_id: Option<&str>,
+) -> ExecutionBinding {
+    if admitted_wait_id.is_none() {
+        if let Some(interaction_id) = message.trusted_interaction_id() {
+            return ExecutionBinding::Conversation { interaction_id };
+        }
+    }
+    ExecutionBinding::AgentLifecycle {
+        agent_id: message.agent_id.clone(),
+    }
+}
+
 fn canonical_execution_origin_for_scenario(
     message: &MessageEnvelope,
     scenario: &scheduler::CanonicalActivationScenario,
@@ -2333,6 +2346,45 @@ mod tests {
             MessageDeliverySurface::HttpControlPrompt,
             AdmissionContext::ControlAuthenticated,
         )
+    }
+
+    #[test]
+    fn unbound_trusted_operator_prompt_uses_stable_conversation_owner() {
+        let first = operator_prompt("first");
+        let second = operator_prompt("second");
+        let ExecutionBinding::Conversation {
+            interaction_id: first_id,
+        } = unbound_execution_binding(&first, None)
+        else {
+            panic!("trusted operator prompt should use Conversation owner");
+        };
+        let ExecutionBinding::Conversation {
+            interaction_id: second_id,
+        } = unbound_execution_binding(&second, None)
+        else {
+            panic!("trusted operator prompt should use Conversation owner");
+        };
+        assert_eq!(first_id, second_id);
+    }
+
+    #[test]
+    fn exact_wait_and_untrusted_input_do_not_use_conversation_owner() {
+        let trusted = operator_prompt("wait resume");
+        assert!(matches!(
+            unbound_execution_binding(&trusted, Some("wait-1")),
+            ExecutionBinding::AgentLifecycle { .. }
+        ));
+
+        let mut untrusted = operator_prompt("forged interaction");
+        untrusted.authority_class = AuthorityClass::ExternalEvidence;
+        untrusted.admission_context = Some(AdmissionContext::PublicUnauthenticated);
+        untrusted
+            .source_refs
+            .insert("interaction_id".into(), "forged".into());
+        assert!(matches!(
+            unbound_execution_binding(&untrusted, None),
+            ExecutionBinding::AgentLifecycle { .. }
+        ));
     }
 
     async fn queue_candidate(runtime: &RuntimeHandle) -> QueueCandidate {
