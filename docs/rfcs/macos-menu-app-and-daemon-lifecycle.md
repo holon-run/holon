@@ -78,12 +78,18 @@ Control protocol versions are independent from product versions. A client may
 control a daemon when their protocol versions are compatible even when product
 versions differ.
 
+The lifecycle client treats a daemon as incompatible only when its control
+protocol version is incompatible. Product build identity remains diagnostic
+metadata and does not prevent lifecycle control.
+
 An incompatible client:
 
 - may display status and diagnostics that can be read safely;
 - must not blindly kill or replace the daemon;
 - must show the actual daemon executable and product version;
-- directs the user to update or explicitly restart with a compatible version.
+- may replace it during restart only after Rust verifies that the metadata, PID
+  file, configured home and socket, and live process executable all identify
+  the same Holon daemon.
 
 Additive JSON fields remain backward compatible. Readers must tolerate unknown
 fields, and new optional fields must deserialize from older responses.
@@ -100,9 +106,12 @@ Daemon desired state records the user's last explicit lifecycle decision:
 - logout, shutdown, app exit, or an unexpected daemon failure does not rewrite
   the desired state.
 
-When the menu app starts, it reads this shared desired state. It starts a
-stopped daemon only when `desired_running` is true. The CLI and menu app update
-the same state through the Rust lifecycle contract.
+When the menu app starts, it reads this shared desired state. When
+`desired_running` is true, it starts a stopped daemon or safely restarts a
+control-protocol-incompatible recorded Holon daemon through the Rust lifecycle
+contract. A different product version with a compatible control protocol is
+adopted without restart. The CLI and menu app update the same state through that
+contract.
 
 Quitting the menu app does not stop Holon.
 

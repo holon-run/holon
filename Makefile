@@ -39,6 +39,7 @@ macos-menu-test: ## Build and test the native macOS menu app
 	swift test --package-path apps/macos/HolonMenu
 
 macos-menu-package: ## Package Holon.app and a DMG from target/release/holon
+	cargo build --release --locked
 	scripts/package-macos-menu-app.sh target/release/holon dist
 
 transport-types: ## Refresh OpenAPI and generated TypeScript transport types

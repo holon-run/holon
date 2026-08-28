@@ -36,8 +36,15 @@ final class HolonMenuViewModel: ObservableObject {
 
     func bootstrap() async {
         await refresh()
-        if status?.desiredRunning == true, status?.state == .stopped {
-            await start()
+        if status?.desiredRunning == true {
+            switch status?.state {
+            case .stopped:
+                await start()
+            case .versionMismatch:
+                await restart()
+            default:
+                break
+            }
         }
         startPolling()
     }

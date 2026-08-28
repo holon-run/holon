@@ -1,7 +1,8 @@
 use std::{
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     fs,
     future::Future,
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     time::Duration,
 };
@@ -618,7 +619,14 @@ pub async fn daemon_restart(
 ) -> Result<DaemonLifecycleResult> {
     let _lock = lifecycle_lock(config).await?;
     persist_daemon_desired_running(config, true)?;
-    let _ = daemon_stop_unlocked(config).await?;
+    match probe_runtime(config).await {
+        ProbeRuntime::Incompatible { details } => {
+            replace_incompatible_runtime_unlocked(config, &details).await?;
+        }
+        _ => {
+            let _ = daemon_stop_unlocked(config).await?;
+        }
+    }
     let mut started = daemon_start_unlocked(config, serve_args, control_token_env).await?;
     started.status.desired_running = true;
     Ok(DaemonLifecycleResult {
@@ -626,6 +634,158 @@ pub async fn daemon_restart(
         action: DaemonLifecycleAction::Restart,
         status: started.status,
     })
+}
+
+async fn replace_incompatible_runtime_unlocked(config: &AppConfig, details: &str) -> Result<()> {
+    let metadata = load_daemon_metadata(config)?.ok_or_else(|| {
+        anyhow!("cannot replace incompatible runtime because daemon metadata is missing: {details}")
+    })?;
+    validate_incompatible_runtime_identity(config, &metadata)?;
+
+    match send_signal(metadata.pid, 15, "-TERM")? {
+        SignalOutcome::Delivered => {}
+        SignalOutcome::MissingProcess => {
+            cleanup_daemon_state(config)?;
+            return Ok(());
+        }
+        SignalOutcome::PermissionDenied => {
+            return Err(anyhow!(
+                "cannot replace incompatible Holon runtime PID {}: permission denied",
+                metadata.pid
+            ));
+        }
+    }
+
+    if wait_for_pid_exit(metadata.pid, STOP_TIMEOUT).await.is_err() {
+        match send_signal(metadata.pid, 9, "-KILL")? {
+            SignalOutcome::Delivered | SignalOutcome::MissingProcess => {}
+            SignalOutcome::PermissionDenied => {
+                return Err(anyhow!(
+                    "cannot replace incompatible Holon runtime PID {}: permission denied",
+                    metadata.pid
+                ));
+            }
+        }
+        wait_for_pid_exit(metadata.pid, STOP_TIMEOUT).await?;
+    }
+
+    clear_persisted_daemon_lifecycle_failures(config)?;
+    cleanup_daemon_state(config)
+}
+
+fn validate_incompatible_runtime_identity(
+    config: &AppConfig,
+    metadata: &RuntimeServiceMetadata,
+) -> Result<()> {
+    if metadata.home_dir != config.home_dir || metadata.socket_path != config.socket_path {
+        return Err(anyhow!(
+            "refusing to replace incompatible runtime PID {} because its recorded home or control socket does not match the current configuration",
+            metadata.pid
+        ));
+    }
+
+    let pid_path = daemon_paths(config).pid_path;
+    let recorded_pid = fs::read_to_string(&pid_path)
+        .with_context(|| format!("failed to read {}", pid_path.display()))?
+        .trim()
+        .parse::<u32>()
+        .with_context(|| format!("failed to decode {}", pid_path.display()))?;
+    if recorded_pid != metadata.pid {
+        return Err(anyhow!(
+            "refusing to replace incompatible runtime because {} records PID {}, but daemon metadata records PID {}",
+            pid_path.display(),
+            recorded_pid,
+            metadata.pid
+        ));
+    }
+
+    let actual_executable = process_executable_path(metadata.pid).with_context(|| {
+        format!(
+            "failed to identify incompatible runtime PID {}",
+            metadata.pid
+        )
+    })?;
+    if actual_executable.file_name() != Some(OsStr::new("holon")) {
+        return Err(anyhow!(
+            "refusing to replace incompatible runtime PID {} because its executable is {}",
+            metadata.pid,
+            actual_executable.display()
+        ));
+    }
+    if !metadata.executable_path.as_os_str().is_empty()
+        && !paths_refer_to_same_file(&actual_executable, &metadata.executable_path)
+    {
+        return Err(anyhow!(
+            "refusing to replace incompatible runtime PID {} because its executable {} does not match recorded executable {}",
+            metadata.pid,
+            actual_executable.display(),
+            metadata.executable_path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn paths_refer_to_same_file(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (fs::canonicalize(left), fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
+async fn wait_for_pid_exit(pid: u32, timeout: Duration) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    while pid_is_alive(pid) {
+        if tokio::time::Instant::now() >= deadline {
+            return Err(anyhow!(
+                "timed out waiting for Holon runtime PID {pid} to exit"
+            ));
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn process_executable_path(pid: u32) -> Result<PathBuf> {
+    fs::read_link(format!("/proc/{pid}/exe"))
+        .with_context(|| format!("failed to read /proc/{pid}/exe"))
+}
+
+#[cfg(target_os = "macos")]
+fn process_executable_path(pid: u32) -> Result<PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
+
+    const PROC_PIDPATHINFO_MAXSIZE: usize = 4096;
+    #[link(name = "proc")]
+    unsafe extern "C" {
+        fn proc_pidpath(pid: i32, buffer: *mut libc::c_void, buffersize: u32) -> i32;
+    }
+
+    let mut buffer = vec![0_u8; PROC_PIDPATHINFO_MAXSIZE];
+    let length =
+        unsafe { proc_pidpath(pid as i32, buffer.as_mut_ptr().cast(), buffer.len() as u32) };
+    if length <= 0 {
+        return Err(std::io::Error::last_os_error()).context("proc_pidpath failed");
+    }
+    buffer.truncate(length as usize);
+    Ok(PathBuf::from(OsString::from_vec(buffer)))
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+fn process_executable_path(_pid: u32) -> Result<PathBuf> {
+    Err(anyhow!(
+        "safe incompatible-runtime replacement is not supported on this platform"
+    ))
+}
+
+#[cfg(not(unix))]
+fn process_executable_path(_pid: u32) -> Result<PathBuf> {
+    Err(anyhow!(
+        "safe incompatible-runtime replacement is not supported on this platform"
+    ))
 }
 
 pub async fn ensure_serve_preflight(config: &AppConfig) -> Result<()> {

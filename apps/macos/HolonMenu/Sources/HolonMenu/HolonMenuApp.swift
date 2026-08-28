@@ -7,11 +7,14 @@ struct HolonMenuApp: App {
     private let updater = HolonUpdater()
 
     var body: some Scene {
-        MenuBarExtra("Holon", systemImage: "bolt.horizontal.circle") {
+        MenuBarExtra {
             HolonMenuView(viewModel: viewModel, updater: updater)
                 .task {
                     await viewModel.bootstrap()
                 }
+        } label: {
+            Image(nsImage: HolonMenuIcon.image)
+                .accessibilityLabel("Holon")
         }
         .menuBarExtraStyle(.window)
     }

@@ -230,6 +230,46 @@ async fn daemon_status_reports_old_live_metadata_as_version_mismatch() {
     assert!(status.message.contains("control protocol version 0"));
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn daemon_status_accepts_different_product_build_with_compatible_protocol() {
+    let config = test_config();
+    let paths = daemon_paths(&config);
+    fs::create_dir_all(config.run_dir()).unwrap();
+    fs::write(&paths.pid_path, format!("{}\n", std::process::id())).unwrap();
+    fs::write(
+        &paths.metadata_path,
+        serde_json::to_vec(&RuntimeServiceMetadata {
+            pid: std::process::id(),
+            home_dir: config.home_dir.clone(),
+            socket_path: config.socket_path.clone(),
+            http_addr: config.http_addr.clone(),
+            started_at: Utc::now(),
+            config_fingerprint: config_fingerprint(&config).unwrap(),
+            product_version: "0.32.0 (old-build)".into(),
+            control_protocol_version: crate::daemon::DAEMON_CONTROL_PROTOCOL_VERSION,
+            lifecycle_owner: crate::daemon::DaemonLifecycleOwner::Standalone,
+            executable_path: std::env::current_exe().unwrap(),
+            serve_args: Vec::new(),
+            control_token_env_configured: false,
+        })
+        .unwrap(),
+    )
+    .unwrap();
+
+    let status = daemon_status(&config).await.unwrap();
+    assert_eq!(status.state, DaemonLifecycleState::Degraded);
+    assert_eq!(
+        status.product_version.as_deref(),
+        Some("0.32.0 (old-build)")
+    );
+    assert_eq!(
+        status.control_protocol_version,
+        Some(crate::daemon::DAEMON_CONTROL_PROTOCOL_VERSION)
+    );
+    assert!(!status.message.contains("product version"));
+}
+
 #[test]
 fn daemon_desired_state_round_trips_without_affecting_runtime_files() {
     let config = test_config();

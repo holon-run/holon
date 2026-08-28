@@ -22,7 +22,10 @@ let package = Package(
             dependencies: [
                 .product(name: "Sparkle", package: "Sparkle"),
             ],
-            path: "Sources/HolonMenu"
+            path: "Sources/HolonMenu",
+            resources: [
+                .process("Resources"),
+            ]
         ),
         .testTarget(
             name: "HolonMenuTests",

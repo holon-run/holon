@@ -36,6 +36,9 @@ swift_bin_path="$(swift build \
   --show-bin-path)"
 cp "$swift_bin_path/HolonMenu" "$contents_dir/MacOS/HolonMenu"
 cp "$holon_binary" "$contents_dir/Resources/bin/holon"
+while IFS= read -r resource_bundle; do
+  ditto "$resource_bundle" "$contents_dir/Resources/$(basename "$resource_bundle")"
+done < <(find "$swift_bin_path" -maxdepth 1 -type d -name '*HolonMenu*.bundle' -print)
 chmod 755 "$contents_dir/MacOS/HolonMenu" "$contents_dir/Resources/bin/holon"
 install_name_tool -add_rpath "@executable_path/../Frameworks" "$contents_dir/MacOS/HolonMenu"
 
