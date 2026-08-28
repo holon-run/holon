@@ -1,5 +1,7 @@
+#[cfg(test)]
 use super::super::*;
 
+#[cfg(test)]
 fn tencent_tokenhub_model(
     model: &str,
     display_name: &str,
@@ -218,6 +220,7 @@ pub(crate) fn is_tencent_tokenhub_model_id(id: &str) -> bool {
     TENCENT_TOKENHUB_MODELS.iter().any(|model| model.0 == id)
 }
 
+#[cfg(test)]
 pub(super) fn entries() -> Vec<BuiltInModelMetadata> {
     TENCENT_TOKENHUB_MODELS
         .iter()
@@ -225,6 +228,7 @@ pub(super) fn entries() -> Vec<BuiltInModelMetadata> {
         .collect()
 }
 
+#[cfg(test)]
 pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
     TENCENT_TOKENHUB_MODELS
         .iter()

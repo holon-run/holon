@@ -2,10 +2,11 @@ use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::{
-    built_in_provider_endpoint_identity, ModelRef, ModelRouteRef, ProviderEndpointId, ProviderId,
-};
+#[cfg(test)]
+use crate::config::built_in_provider_endpoint_identity;
+use crate::config::{ModelRef, ModelRouteRef, ProviderEndpointId, ProviderId};
 use crate::context::ContextConfig;
+#[cfg(test)]
 use crate::provider::provider_definitions;
 
 const DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT: u8 = 95;
@@ -203,7 +204,8 @@ impl ModelCapabilityOverride {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(deny_unknown_fields)]
 pub struct BuiltInModelRoutePolicy {
     display_name: Option<String>,
     description: Option<String>,
@@ -219,6 +221,7 @@ pub struct BuiltInModelRoutePolicy {
 }
 
 impl BuiltInModelRoutePolicy {
+    #[cfg(test)]
     fn from_legacy_route_entry(
         route_entry: &BuiltInModelMetadata,
         model_entry: &BuiltInModelMetadata,
@@ -329,6 +332,7 @@ impl BuiltInModelRoutePolicy {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(test)]
 struct BuiltInModelRouteDefinition {
     legacy_provider: ProviderId,
     model_ref: ModelRef,
@@ -563,6 +567,12 @@ pub struct BuiltInModelCatalog {
 
 impl BuiltInModelCatalog {
     pub fn new() -> Self {
+        snapshot::built_in_catalog()
+            .unwrap_or_else(|error| panic!("invalid built-in model registry snapshot: {error}"))
+    }
+
+    #[cfg(test)]
+    fn from_legacy_definitions() -> Self {
         let mut entries = HashMap::new();
         let mut preferred_models = HashMap::new();
         let mut route_entries = HashMap::new();
@@ -683,6 +693,7 @@ impl BuiltInModelCatalog {
     }
 
     /// Legacy model ref → canonical model ref aliases for backward compatibility.
+    #[cfg(test)]
     fn legacy_aliases() -> HashMap<ModelRef, ModelRef> {
         let mut aliases = HashMap::new();
         aliases.insert(
@@ -1549,6 +1560,7 @@ fn select_field<T, const N: usize>(
     None
 }
 
+#[cfg(test)]
 fn field_diff<T: PartialEq>(route: T, model: T) -> Option<T> {
     (route != model).then_some(route)
 }
@@ -1610,6 +1622,7 @@ fn percent_of(total: usize, percent: usize) -> usize {
     total.saturating_mul(percent) / 100
 }
 
+#[cfg(test)]
 fn provider_id(provider: &str) -> ProviderId {
     ProviderId::parse(provider).expect("valid built-in provider id")
 }
@@ -1671,11 +1684,13 @@ fn reasoning_effort_options(
 }
 
 mod providers;
+mod snapshot;
 #[cfg(test)]
 use providers::common::catalog_model;
 
 pub(crate) use providers::is_tencent_tokenhub_model_id;
 
+#[cfg(test)]
 fn built_in_entries() -> Vec<BuiltInModelMetadata> {
     let mut registrations = provider_definitions()
         .iter()
@@ -1688,10 +1703,12 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
         .collect()
 }
 
+#[cfg(test)]
 fn built_in_route_definitions() -> Vec<BuiltInModelRouteDefinition> {
     providers::route_definitions()
 }
 
+#[cfg(test)]
 fn is_turn_default_candidate(entry: &BuiltInModelMetadata) -> bool {
     entry.context_window_tokens.is_some()
         || entry.capabilities.parallel_tool_calls

@@ -69,6 +69,7 @@ pub(crate) enum ProviderCatalogPolicy {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg(test)]
 pub(crate) enum ProviderCatalogRegistration {
     Core,
     HostedEarly,
@@ -102,6 +103,7 @@ pub(crate) struct ProviderDefinition {
     pub(crate) default_reasoning_effort: Option<&'static str>,
     pub(crate) discovery: Option<ModelDiscoveryDefinition>,
     pub(crate) catalog_policy: ProviderCatalogPolicy,
+    #[cfg(test)]
     pub(crate) catalog_registration: Option<ProviderCatalogRegistration>,
 }
 
@@ -135,6 +137,7 @@ macro_rules! provider {
             default_reasoning_effort: $reasoning,
             discovery: $discovery,
             catalog_policy: ProviderCatalogPolicy::$catalog,
+            #[cfg(test)]
             catalog_registration: Some(
                 ProviderCatalogRegistration::$registration,
             ),
@@ -159,6 +162,7 @@ macro_rules! provider {
             default_reasoning_effort: $reasoning,
             discovery: $discovery,
             catalog_policy: ProviderCatalogPolicy::$catalog,
+            #[cfg(test)]
             catalog_registration: None,
         }
     };

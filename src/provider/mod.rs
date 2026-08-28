@@ -37,13 +37,14 @@ pub(crate) use diagnostics::{
     resolved_model_providers_from_availability_for_runtime,
 };
 pub use http_trace::ProviderHttpTraceDiagnostics;
+#[cfg(test)]
+pub(crate) use registry::ProviderCatalogRegistration;
 pub(crate) use registry::{
     build_provider_for_route, provider_definition, provider_definitions,
     provider_transport_definition, provider_transport_definition_by_wire_name,
     provider_transport_definitions, ModelDiscoveryAuth, ModelDiscoveryDecoder,
     ModelDiscoveryDefinition, ModelDiscoveryRoute, ProviderCatalogPolicy,
-    ProviderCatalogRegistration, ProviderContextManagement, ProviderDefinition,
-    ProviderMaterializer, ProviderWebSearch,
+    ProviderContextManagement, ProviderDefinition, ProviderMaterializer, ProviderWebSearch,
 };
 pub(crate) use retry::sanitize_transport_url;
 pub(crate) use transports::OpenAiBearerAuth;
