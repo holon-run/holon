@@ -677,6 +677,20 @@ fn validate_incompatible_runtime_identity(
     config: &AppConfig,
     metadata: &RuntimeServiceMetadata,
 ) -> Result<()> {
+    let actual_executable = process_executable_path(metadata.pid).with_context(|| {
+        format!(
+            "failed to identify incompatible runtime PID {}",
+            metadata.pid
+        )
+    })?;
+    validate_incompatible_runtime_identity_with_executable(config, metadata, &actual_executable)
+}
+
+pub(super) fn validate_incompatible_runtime_identity_with_executable(
+    config: &AppConfig,
+    metadata: &RuntimeServiceMetadata,
+    actual_executable: &Path,
+) -> Result<()> {
     if metadata.home_dir != config.home_dir || metadata.socket_path != config.socket_path {
         return Err(anyhow!(
             "refusing to replace incompatible runtime PID {} because its recorded home or control socket does not match the current configuration",
@@ -699,12 +713,6 @@ fn validate_incompatible_runtime_identity(
         ));
     }
 
-    let actual_executable = process_executable_path(metadata.pid).with_context(|| {
-        format!(
-            "failed to identify incompatible runtime PID {}",
-            metadata.pid
-        )
-    })?;
     if actual_executable.file_name() != Some(OsStr::new("holon")) {
         return Err(anyhow!(
             "refusing to replace incompatible runtime PID {} because its executable is {}",
@@ -713,7 +721,7 @@ fn validate_incompatible_runtime_identity(
         ));
     }
     if !metadata.executable_path.as_os_str().is_empty()
-        && !paths_refer_to_same_file(&actual_executable, &metadata.executable_path)
+        && !paths_refer_to_same_file(actual_executable, &metadata.executable_path)
     {
         return Err(anyhow!(
             "refusing to replace incompatible runtime PID {} because its executable {} does not match recorded executable {}",
