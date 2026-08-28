@@ -1286,8 +1286,7 @@ async fn run_once_reports_completed_when_final_result_lands_on_max_turn_boundary
     Ok(())
 }
 
-#[tokio::test]
-async fn run_once_reports_completed_when_final_text_arrives_after_last_allowed_model_round(
+async fn assert_run_once_reports_completed_when_final_text_arrives_after_last_allowed_model_round(
 ) -> Result<()> {
     let test_config = test_config();
     let host = RuntimeHost::new_with_provider(
@@ -1308,6 +1307,15 @@ async fn run_once_reports_completed_when_final_text_arrives_after_last_allowed_m
     assert_eq!(response.final_text, "two rounds complete");
     assert_eq!(response.model_rounds, 2);
     Ok(())
+}
+
+#[test]
+fn run_once_reports_completed_when_final_text_arrives_after_last_allowed_model_round() -> Result<()>
+{
+    run_on_large_stack(
+        "run-once-final-text-after-last-model-round",
+        assert_run_once_reports_completed_when_final_text_arrives_after_last_allowed_model_round,
+    )
 }
 
 async fn assert_run_once_multi_round_single_turn_does_not_exceed_max_turns() -> Result<()> {
