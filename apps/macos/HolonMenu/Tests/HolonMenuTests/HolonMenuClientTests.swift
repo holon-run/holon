@@ -36,7 +36,7 @@ final class HolonMenuClientTests: XCTestCase {
           "socket_path": "/tmp/holon.sock",
           "http_addr": "127.0.0.1:7878",
           "web_url": "http://127.0.0.1:7878",
-          "product_version": "0.33.0 (abcdef0)",
+          "product_version": "0.34.0 (abcdef0)",
           "control_protocol_version": 1,
           "lifecycle_owner": "standalone",
           "executable_path": "/Applications/Holon.app/Contents/Resources/bin/holon",
