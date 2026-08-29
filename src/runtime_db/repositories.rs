@@ -4062,37 +4062,75 @@ pub(crate) fn upsert_turn_record_tx(tx: &Transaction<'_>, record: &TurnRecord) -
         }
         None => (None, None),
     };
-    tx.execute(
-        "INSERT INTO turn_records (
-            turn_id, turn_index, agent_id, run_id, current_work_item_id,
-            owner_kind, owner_id, trigger_message_id, terminal_kind, created_at,
-            completed_at, payload_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
-         ON CONFLICT(turn_id) DO UPDATE SET
-            owner_kind = COALESCE(turn_records.owner_kind, excluded.owner_kind),
-            owner_id = COALESCE(turn_records.owner_id, excluded.owner_id),
-            terminal_kind = excluded.terminal_kind,
-            completed_at = excluded.completed_at,
-            payload_json = excluded.payload_json
-         WHERE COALESCE(excluded.completed_at, excluded.created_at) >= COALESCE(turn_records.completed_at, turn_records.created_at)",
-        params![
-            record.turn_id,
-            record.turn_index as i64,
-            record.agent_id,
-            record.run_id,
-            record.current_work_item_id,
-            owner_kind,
-            owner_id,
-            record
-                .trigger
-                .as_ref()
-                .and_then(|trigger| trigger.message_id.as_deref()),
-            terminal_kind,
-            timestamp(record.created_at),
-            completed_at,
-            payload_json,
-        ],
-    )?;
+    let has_owner_columns = tx.query_row(
+        "SELECT EXISTS(
+            SELECT 1
+              FROM pragma_table_info('turn_records')
+             WHERE name = 'owner_kind'
+        )",
+        [],
+        |row| row.get::<_, i64>(0),
+    )? != 0;
+    if has_owner_columns {
+        tx.execute(
+            "INSERT INTO turn_records (
+                turn_id, turn_index, agent_id, run_id, current_work_item_id,
+                owner_kind, owner_id, trigger_message_id, terminal_kind, created_at,
+                completed_at, payload_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             ON CONFLICT(turn_id) DO UPDATE SET
+                owner_kind = COALESCE(turn_records.owner_kind, excluded.owner_kind),
+                owner_id = COALESCE(turn_records.owner_id, excluded.owner_id),
+                terminal_kind = excluded.terminal_kind,
+                completed_at = excluded.completed_at,
+                payload_json = excluded.payload_json
+             WHERE COALESCE(excluded.completed_at, excluded.created_at) >= COALESCE(turn_records.completed_at, turn_records.created_at)",
+            params![
+                record.turn_id,
+                record.turn_index as i64,
+                record.agent_id,
+                record.run_id,
+                record.current_work_item_id,
+                owner_kind,
+                owner_id,
+                record
+                    .trigger
+                    .as_ref()
+                    .and_then(|trigger| trigger.message_id.as_deref()),
+                terminal_kind,
+                timestamp(record.created_at),
+                completed_at,
+                payload_json,
+            ],
+        )?;
+    } else {
+        tx.execute(
+            "INSERT INTO turn_records (
+                turn_id, turn_index, agent_id, run_id, current_work_item_id,
+                trigger_message_id, terminal_kind, created_at, completed_at, payload_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT(turn_id) DO UPDATE SET
+                terminal_kind = excluded.terminal_kind,
+                completed_at = excluded.completed_at,
+                payload_json = excluded.payload_json
+             WHERE COALESCE(excluded.completed_at, excluded.created_at) >= COALESCE(turn_records.completed_at, turn_records.created_at)",
+            params![
+                record.turn_id,
+                record.turn_index as i64,
+                record.agent_id,
+                record.run_id,
+                record.current_work_item_id,
+                record
+                    .trigger
+                    .as_ref()
+                    .and_then(|trigger| trigger.message_id.as_deref()),
+                terminal_kind,
+                timestamp(record.created_at),
+                completed_at,
+                payload_json,
+            ],
+        )?;
+    }
     Ok(())
 }
 
