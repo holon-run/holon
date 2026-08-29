@@ -1397,7 +1397,11 @@ pub(crate) fn resolve_canonical_activation_scenario(
                     MessageKind::OperatorPrompt | MessageKind::TaskResult
                 )
             {
-                waits.retain(|wait| wait.work_item_id.is_none());
+                waits.retain(|wait| {
+                    wait.work_item_id.is_none()
+                        || (message.kind == MessageKind::OperatorPrompt
+                            && wait.kind == WaitConditionKind::Operator)
+                });
             }
             waits
         }

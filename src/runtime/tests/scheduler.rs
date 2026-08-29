@@ -1787,6 +1787,44 @@ fn unbound_operator_input_exactly_resumes_agent_wait_or_becomes_nudge() {
 }
 
 #[test]
+fn unbound_operator_input_exactly_resumes_work_item_wait() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    append_open_work_item(&storage, "wi-operator", "default");
+    append_operator_wait_condition(&storage, "wait-operator", "default", Some("wi-operator"));
+
+    let mut projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    projection.enable_canonical_authority_for_test();
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("operator".into()),
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "continue".into(),
+        },
+    );
+    let candidate = scheduler::canonical_activation_candidate(&message, None, None)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        scheduler::resolve_canonical_activation_scenario(&projection, &message, candidate).unwrap(),
+        Some(scheduler::CanonicalActivationScenario::ExactWaitResume {
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "wi-operator".into(),
+            },
+            wait_id: "wait-operator".into(),
+        })
+    );
+}
+
+#[test]
 fn message_claim_authority_scope_is_derived_without_shadow_evidence() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
