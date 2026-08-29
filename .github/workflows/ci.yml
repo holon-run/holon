@@ -25,6 +25,9 @@ on:
       - ".github/workflows/e2e-scheduler-nightly.yml"
       - ".github/workflows/release-e2e.yml"
       - "tests/e2e/scheduler/**"
+      - "apps/macos/**"
+      - "scripts/package-macos-menu-app.sh"
+      - "scripts/verify-macos-menu-app.sh"
   pull_request:
     branches: [main]
     paths:
@@ -49,6 +52,9 @@ on:
       - ".github/workflows/e2e-scheduler-nightly.yml"
       - ".github/workflows/release-e2e.yml"
       - "tests/e2e/scheduler/**"
+      - "apps/macos/**"
+      - "scripts/package-macos-menu-app.sh"
+      - "scripts/verify-macos-menu-app.sh"
   workflow_dispatch:
 
 permissions:
@@ -65,6 +71,7 @@ jobs:
       docker: ${{ steps.filter.outputs.docker }}
       rust: ${{ steps.filter.outputs.rust }}
       web: ${{ steps.filter.outputs.web }}
+      macos_app: ${{ steps.filter.outputs.macos_app }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -98,6 +105,72 @@ jobs:
             web:
               - 'web-gui/**'
               - '.github/workflows/ci.yml'
+            macos_app:
+              - '.github/workflows/ci.yml'
+              - 'apps/macos/**'
+              - 'scripts/package-macos-menu-app.sh'
+              - 'scripts/verify-macos-menu-app.sh'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'build.rs'
+              - 'src/**'
+              - 'web-gui/**'
+
+  macos-app:
+    name: Build macOS menu app
+    runs-on: macos-latest
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.macos_app == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Build web GUI
+        run: make web
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Select matching macOS target
+        id: macos-target
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            arm64) target="aarch64-apple-darwin" ;;
+            x86_64) target="x86_64-apple-darwin" ;;
+            *) echo "Unsupported macOS runner architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
+          rustup target add "$target"
+          echo "target=$target" >> "$GITHUB_OUTPUT"
+
+      - name: Build bundled Holon runtime
+        run: cargo build --release --locked --target "${{ steps.macos-target.outputs.target }}"
+
+      - name: Test macOS menu app
+        run: swift test --package-path apps/macos/HolonMenu
+
+      - name: Package unsigned macOS app and DMG
+        run: |
+          set -euo pipefail
+          version="$(awk -F '"' '/^version = / { print $2; exit }' Cargo.toml)"
+          scripts/package-macos-menu-app.sh \
+            "target/${{ steps.macos-target.outputs.target }}/release/holon" \
+            dist \
+            "$version"
+
+      - name: Upload macOS app build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-holon-macos-app
+          path: |
+            dist/Holon.app
+            dist/Holon-*.dmg
+            dist/Holon-*.dmg.sha256
+          if-no-files-found: error
 
   docker:
     name: Docker

@@ -15,6 +15,11 @@ cargo build --release
 scripts/package-macos-menu-app.sh target/release/holon dist
 ```
 
+Pull requests that change the macOS menu app, its packaging scripts, the
+bundled Rust runtime, or the embedded web GUI run the `macos-app` CI job on
+`macos-latest`. That job builds and tests the app and produces an unsigned DMG;
+documentation-only or Linux-only changes do not schedule it.
+
 The script always verifies the bundle and emits `Holon-<version>.dmg` plus a
 SHA-256 file. Local notarization may use `MACOS_NOTARY_PROFILE`. GitHub Actions
 imports the Developer ID certificate and uses Apple ID notarization with:
@@ -30,6 +35,13 @@ imports the Developer ID certificate and uses Apple ID notarization with:
 
 These values are required for production tag releases. An unsigned local bundle
 remains supported for development and smoke verification.
+
+The tag-based `Release` workflow already includes the macOS app job. It imports
+the certificate into a temporary keychain, signs the app and bundled runtime,
+notarizes both the app archive and DMG, staples the notarization ticket, signs
+the Sparkle appcast, and publishes the DMG with the other release assets. The
+certificate secret must contain the base64-encoded `.p12` export; no signing
+secret is needed for pull requests.
 
 Every release tag is blocked until the protected **Release E2E** workflow has
 passed for the exact tag commit and intended release tag. That workflow builds
