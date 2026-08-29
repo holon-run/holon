@@ -6,6 +6,7 @@ import inspect
 import json
 import copy
 import os
+import sqlite3
 import subprocess
 import tempfile
 import threading
@@ -2385,6 +2386,34 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 "last_turn_id": "turn-conversation",
             },
         )
+
+    def test_turn_record_owner_columns_adapt_to_previous_release_schema(self) -> None:
+        source = inspect.getsource(runner.CaseHarness.runtime_db_snapshot)
+        self.assertIn("turn_record_owner_columns(connection)", source)
+        with tempfile.TemporaryDirectory() as directory:
+            database = str(Path(directory) / "runtime.sqlite")
+            connection = sqlite3.connect(database)
+            try:
+                connection.execute(
+                    "CREATE TABLE turn_records (turn_id TEXT PRIMARY KEY)"
+                )
+                connection.commit()
+                self.assertEqual(runner.turn_record_owner_columns(connection), "")
+                connection.execute(
+                    "ALTER TABLE turn_records ADD COLUMN owner_kind TEXT"
+                )
+                connection.commit()
+                self.assertEqual(runner.turn_record_owner_columns(connection), "")
+                connection.execute(
+                    "ALTER TABLE turn_records ADD COLUMN owner_id TEXT"
+                )
+                connection.commit()
+                self.assertEqual(
+                    runner.turn_record_owner_columns(connection),
+                    "owner_kind, owner_id, ",
+                )
+            finally:
+                connection.close()
 
     def test_external_wait_resume_drains_queue_before_runtime_snapshot(self) -> None:
         source = inspect.getsource(runner.run_scheduler_external_wait_resume_case)

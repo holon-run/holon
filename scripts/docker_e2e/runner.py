@@ -1615,7 +1615,7 @@ class CaseHarness:
                 "turn_records": sqlite_rows(
                     connection,
                     "SELECT turn_id, turn_index, agent_id, run_id, "
-                    "current_work_item_id, owner_kind, owner_id, "
+                    f"current_work_item_id, {turn_record_owner_columns(connection)}"
                     "trigger_message_id, terminal_kind, "
                     "created_at, completed_at, payload_json "
                     "FROM turn_records ORDER BY turn_index, created_at",
@@ -1815,6 +1815,24 @@ def sqlite_rows(
     parameters: tuple[Any, ...] = (),
 ) -> list[dict[str, Any]]:
     return [dict(row) for row in connection.execute(query, parameters).fetchall()]
+
+
+def turn_record_owner_columns(connection: sqlite3.Connection) -> str:
+    """Return the owner identity columns present in ``turn_records``.
+
+    Turn owner columns only exist from migration 52 onward, and the
+    interrupted-upgrade case snapshots the previous release's live database,
+    whose ``turn_records`` table predates those columns.
+    """
+    columns = {
+        row[0]
+        for row in connection.execute(
+            "SELECT name FROM pragma_table_info('turn_records')"
+        )
+    }
+    if {"owner_kind", "owner_id"}.issubset(columns):
+        return "owner_kind, owner_id, "
+    return ""
 
 
 def require_processed_queue_entries(
