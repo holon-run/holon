@@ -1400,6 +1400,7 @@ pub(crate) fn resolve_canonical_activation_scenario(
                 waits.retain(|wait| {
                     wait.work_item_id.is_none()
                         || (message.kind == MessageKind::OperatorPrompt
+                            && message.priority != Priority::Interject
                             && wait.kind == WaitConditionKind::Operator)
                 });
             }
