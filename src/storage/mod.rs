@@ -3841,6 +3841,8 @@ mod tests {
         let mut blocked = WorkItemRecord::new("default", "blocked", WorkItemState::Open);
         blocked.blocked_by = Some("unstructured blocker".into());
         storage.append_work_item(&blocked).unwrap();
+        agent.current_work_item_id = Some(blocked.id.clone());
+        storage.write_agent(&agent).unwrap();
         assert_eq!(
             storage.agent_posture_projection(&agent).unwrap().posture,
             AgentSchedulingPosture::Blocked
@@ -3875,6 +3877,8 @@ mod tests {
                 triggered_at: None,
             })
             .unwrap();
+        agent.current_work_item_id = Some(external.id.clone());
+        storage.write_agent(&agent).unwrap();
         assert_eq!(
             storage.agent_posture_projection(&agent).unwrap().posture,
             AgentSchedulingPosture::WaitingForExternal
@@ -3884,10 +3888,12 @@ mod tests {
         needs_input.plan_status = WorkItemPlanStatus::NeedsInput;
         needs_input.updated_at = now + chrono::Duration::seconds(2);
         storage.append_work_item(&needs_input).unwrap();
+        agent.current_work_item_id = Some(needs_input.id.clone());
+        storage.write_agent(&agent).unwrap();
         assert_eq!(
             storage.agent_posture_projection(&agent).unwrap().posture,
-            AgentSchedulingPosture::WaitingForExternal,
-            "external wait has precedence over operator wait"
+            AgentSchedulingPosture::WaitingForOperator,
+            "current work item with plan_status needs_input projects waiting_for_operator"
         );
 
         let mut task_wait = WorkItemRecord::new("default", "task", WorkItemState::Open);
@@ -3918,6 +3924,8 @@ mod tests {
                 triggered_at: None,
             })
             .unwrap();
+        agent.current_work_item_id = Some(task_wait.id.clone());
+        storage.write_agent(&agent).unwrap();
         let task_projection = storage.agent_posture_projection(&agent).unwrap();
         assert_eq!(
             task_projection.posture,
@@ -3927,6 +3935,8 @@ mod tests {
 
         let runnable = WorkItemRecord::new("default", "runnable", WorkItemState::Open);
         storage.append_work_item(&runnable).unwrap();
+        agent.current_work_item_id = Some(runnable.id.clone());
+        storage.write_agent(&agent).unwrap();
         assert_eq!(
             storage.agent_posture_projection(&agent).unwrap().posture,
             AgentSchedulingPosture::HasRunnableWork
@@ -4050,6 +4060,8 @@ mod tests {
             WorkItemRecord::new("default", "operator decision", WorkItemState::Open);
         needs_input.plan_status = WorkItemPlanStatus::NeedsInput;
         storage.append_work_item(&needs_input).unwrap();
+        agent.current_work_item_id = Some(needs_input.id.clone());
+        storage.write_agent(&agent).unwrap();
         assert_eq!(
             posture_for(&storage, &agent),
             AgentSchedulingPosture::WaitingForOperator
@@ -4063,6 +4075,8 @@ mod tests {
         external.blocked_by = Some("github".into());
         storage.append_work_item(&external).unwrap();
         append_wait_condition(&storage, &external.id, WaitConditionKind::External);
+        agent.current_work_item_id = Some(external.id.clone());
+        storage.write_agent(&agent).unwrap();
         assert_eq!(
             posture_for(&storage, &agent),
             AgentSchedulingPosture::WaitingForExternal
@@ -4075,6 +4089,8 @@ mod tests {
         let mut blocked = WorkItemRecord::new("default", "blocked", WorkItemState::Open);
         blocked.blocked_by = Some("unstructured blocker".into());
         storage.append_work_item(&blocked).unwrap();
+        agent.current_work_item_id = Some(blocked.id.clone());
+        storage.write_agent(&agent).unwrap();
         assert_eq!(
             posture_for(&storage, &agent),
             AgentSchedulingPosture::Blocked
@@ -4087,6 +4103,8 @@ mod tests {
         let timer_wait = WorkItemRecord::new("default", "timer wait", WorkItemState::Open);
         storage.append_work_item(&timer_wait).unwrap();
         append_wait_condition(&storage, &timer_wait.id, WaitConditionKind::Timer);
+        agent.current_work_item_id = Some(timer_wait.id.clone());
+        storage.write_agent(&agent).unwrap();
         assert_eq!(
             posture_for(&storage, &agent),
             AgentSchedulingPosture::Blocked
@@ -4099,6 +4117,8 @@ mod tests {
         let system_wait = WorkItemRecord::new("default", "system wait", WorkItemState::Open);
         storage.append_work_item(&system_wait).unwrap();
         append_wait_condition(&storage, &system_wait.id, WaitConditionKind::System);
+        agent.current_work_item_id = Some(system_wait.id.clone());
+        storage.write_agent(&agent).unwrap();
         assert_eq!(
             posture_for(&storage, &agent),
             AgentSchedulingPosture::Blocked
@@ -4850,5 +4870,233 @@ mod tests {
             err_msg.contains("cannot write agent state"),
             "error should mention agent id mismatch"
         );
+    }
+
+    fn make_wait_condition(
+        id: &str,
+        agent_id: &str,
+        work_item_id: &str,
+        kind: WaitConditionKind,
+        waiting_for: &str,
+        now: DateTime<Utc>,
+    ) -> WaitConditionRecord {
+        let wake_sources = match kind {
+            WaitConditionKind::Operator => vec![WakeSource::OperatorInput],
+            WaitConditionKind::Task => vec![WakeSource::TaskResult {
+                task_id: "task-1".into(),
+            }],
+            WaitConditionKind::External => vec![WakeSource::ExternalIngress {
+                external_trigger_id: Some("trigger-1".into()),
+            }],
+            WaitConditionKind::Timer => vec![WakeSource::Timer {
+                wake_at: now + chrono::Duration::minutes(5),
+            }],
+            WaitConditionKind::System => vec![WakeSource::SystemTick],
+        };
+        WaitConditionRecord {
+            id: id.into(),
+            agent_id: agent_id.into(),
+            work_item_id: Some(work_item_id.into()),
+            status: WaitConditionStatus::Active,
+            kind,
+            source: None,
+            subject_ref: None,
+            waiting_for: waiting_for.into(),
+            wake_sources,
+            continuation: None,
+            created_at: now,
+            updated_at: now,
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: None,
+            trigger_message_id: None,
+            triggered_at: None,
+        }
+    }
+
+    #[test]
+    fn agent_posture_current_work_item_operator_wait_shows_waiting_for_operator() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
+        let now = Utc::now();
+
+        let mut wi = WorkItemRecord::new("default", "current operator wait", WorkItemState::Open);
+        wi.blocked_by = Some("operator input".into());
+        wi.updated_at = now;
+        let mut agent = AgentState::new("default");
+        agent.current_work_item_id = Some(wi.id.clone());
+        storage.append_work_item(&wi).unwrap();
+        storage
+            .append_wait_condition(&make_wait_condition(
+                "wc1",
+                "default",
+                &wi.id,
+                WaitConditionKind::Operator,
+                "operator input",
+                now,
+            ))
+            .unwrap();
+        storage.write_agent(&agent).unwrap();
+
+        let posture = storage.agent_posture_projection(&agent).unwrap();
+        assert_eq!(posture.posture, AgentSchedulingPosture::WaitingForOperator);
+        assert_eq!(posture.work_item_id.as_deref(), Some(wi.id.as_str()));
+    }
+
+    #[test]
+    fn agent_posture_queued_only_operator_wait_is_idle() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
+        let now = Utc::now();
+
+        let mut wi = WorkItemRecord::new("default", "queued operator wait", WorkItemState::Open);
+        wi.blocked_by = Some("operator input".into());
+        wi.updated_at = now;
+        let agent = AgentState::new("default");
+        storage.append_work_item(&wi).unwrap();
+        storage
+            .append_wait_condition(&make_wait_condition(
+                "wc1",
+                "default",
+                &wi.id,
+                WaitConditionKind::Operator,
+                "operator input",
+                now,
+            ))
+            .unwrap();
+        storage.write_agent(&agent).unwrap();
+
+        let posture = storage.agent_posture_projection(&agent).unwrap();
+        assert_eq!(posture.posture, AgentSchedulingPosture::Idle);
+        assert!(posture.work_item_id.is_none());
+    }
+
+    #[test]
+    fn agent_posture_queued_only_task_wait_is_idle() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
+        let now = Utc::now();
+
+        let mut wi = WorkItemRecord::new("default", "queued task wait", WorkItemState::Open);
+        wi.blocked_by = Some("command task".into());
+        wi.updated_at = now;
+        let agent = AgentState::new("default");
+        storage.append_work_item(&wi).unwrap();
+        storage
+            .append_wait_condition(&make_wait_condition(
+                "wc1",
+                "default",
+                &wi.id,
+                WaitConditionKind::Task,
+                "task result",
+                now,
+            ))
+            .unwrap();
+        storage.write_agent(&agent).unwrap();
+
+        let posture = storage.agent_posture_projection(&agent).unwrap();
+        assert_eq!(posture.posture, AgentSchedulingPosture::Idle);
+        assert!(posture.work_item_id.is_none());
+    }
+
+    #[test]
+    fn agent_posture_queued_only_external_wait_is_idle() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
+        let now = Utc::now();
+
+        let mut wi = WorkItemRecord::new("default", "queued external wait", WorkItemState::Open);
+        wi.blocked_by = Some("ci".into());
+        wi.updated_at = now;
+        let agent = AgentState::new("default");
+        storage.append_work_item(&wi).unwrap();
+        storage
+            .append_wait_condition(&make_wait_condition(
+                "wc1",
+                "default",
+                &wi.id,
+                WaitConditionKind::External,
+                "ci",
+                now,
+            ))
+            .unwrap();
+        storage.write_agent(&agent).unwrap();
+
+        let posture = storage.agent_posture_projection(&agent).unwrap();
+        assert_eq!(posture.posture, AgentSchedulingPosture::Idle);
+        assert!(posture.work_item_id.is_none());
+    }
+
+    #[test]
+    fn agent_posture_current_task_wait_shows_waiting_for_task() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
+        let now = Utc::now();
+
+        let mut wi = WorkItemRecord::new("default", "current task wait", WorkItemState::Open);
+        wi.blocked_by = Some("command task".into());
+        wi.updated_at = now;
+        let mut agent = AgentState::new("default");
+        agent.current_work_item_id = Some(wi.id.clone());
+        storage.append_work_item(&wi).unwrap();
+        storage
+            .append_wait_condition(&make_wait_condition(
+                "wc1",
+                "default",
+                &wi.id,
+                WaitConditionKind::Task,
+                "task result",
+                now,
+            ))
+            .unwrap();
+        storage.write_agent(&agent).unwrap();
+
+        let posture = storage.agent_posture_projection(&agent).unwrap();
+        assert_eq!(posture.posture, AgentSchedulingPosture::WaitingForTask);
+        assert_eq!(posture.work_item_id.as_deref(), Some(wi.id.as_str()));
+    }
+
+    #[test]
+    fn agent_posture_empty_work_queue_is_idle() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
+        let agent = AgentState::new("default");
+        storage.write_agent(&agent).unwrap();
+
+        let posture = storage.agent_posture_projection(&agent).unwrap();
+        assert_eq!(posture.posture, AgentSchedulingPosture::Idle);
+        assert!(posture.work_item_id.is_none());
+    }
+
+    #[test]
+    fn agent_posture_current_operator_wait_with_queued_runnable_shows_has_runnable_work() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
+        let now = Utc::now();
+
+        let mut wi_current =
+            WorkItemRecord::new("default", "current operator wait", WorkItemState::Open);
+        wi_current.blocked_by = Some("operator input".into());
+        wi_current.updated_at = now;
+        let wi_queued = WorkItemRecord::new("default", "queued runnable", WorkItemState::Open);
+        let mut agent = AgentState::new("default");
+        agent.current_work_item_id = Some(wi_current.id.clone());
+        storage.append_work_item(&wi_current).unwrap();
+        storage.append_work_item(&wi_queued).unwrap();
+        storage
+            .append_wait_condition(&make_wait_condition(
+                "wc1",
+                "default",
+                &wi_current.id,
+                WaitConditionKind::Operator,
+                "operator input",
+                now,
+            ))
+            .unwrap();
+        storage.write_agent(&agent).unwrap();
+
+        let posture = storage.agent_posture_projection(&agent).unwrap();
+        assert_eq!(posture.posture, AgentSchedulingPosture::HasRunnableWork);
     }
 }
