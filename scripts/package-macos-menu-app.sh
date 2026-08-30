@@ -59,6 +59,18 @@ if [[ -n "$sparkle_framework" ]]; then
 fi
 
 if [[ -n "${MACOS_DEVELOPER_ID_APPLICATION:-}" ]]; then
+  # Sign standalone helper executables embedded in frameworks (e.g. Sparkle's
+  # Autoupdate). Framework-level signing does not replace their signature,
+  # and notarization rejects the leftover ad-hoc signature swift build leaves
+  # there, so they must be signed before the framework seals them in.
+  while IFS= read -r framework; do
+    framework_name="$(basename "$framework" .framework)"
+    while IFS= read -r helper; do
+      codesign --force --timestamp --options runtime \
+        --sign "$MACOS_DEVELOPER_ID_APPLICATION" "$helper"
+    done < <(find "$framework/Versions" -mindepth 2 -maxdepth 2 -type f \
+      -perm -111 ! -name "$framework_name" 2>/dev/null)
+  done < <(find "$contents_dir/Frameworks" -depth -name '*.framework' 2>/dev/null)
   while IFS= read -r nested; do
     codesign --force --timestamp --options runtime \
       --sign "$MACOS_DEVELOPER_ID_APPLICATION" "$nested"
@@ -77,44 +89,39 @@ submit_notarization() {
   local artifact="$1"
   local submission_output
   local submission_id
+  local submission_status
+  local -a notary_args
 
   if [[ -n "${MACOS_NOTARY_PROFILE:-}" ]]; then
-    if ! submission_output="$(xcrun notarytool submit "$artifact" \
-      --keychain-profile "$MACOS_NOTARY_PROFILE" \
-      --output-format json \
-      --wait 2>&1)"; then
-      printf '%s\n' "$submission_output" >&2
-      submission_id="$(printf '%s\n' "$submission_output" | sed -nE 's/.*"id"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | tail -1)"
-      if [[ -n "$submission_id" ]]; then
-        echo "notarytool submission log for $submission_id:" >&2
-        xcrun notarytool log "$submission_id" \
-          --keychain-profile "$MACOS_NOTARY_PROFILE" \
-          --output-format json >&2 || true
-      fi
-      return 1
-    fi
+    notary_args=(--keychain-profile "$MACOS_NOTARY_PROFILE")
   else
     : "${MACOS_NOTARY_APPLE_ID:?MACOS_NOTARY_APPLE_ID is required}"
     : "${MACOS_NOTARY_PASSWORD:?MACOS_NOTARY_PASSWORD is required}"
     : "${MACOS_NOTARY_TEAM_ID:?MACOS_NOTARY_TEAM_ID is required}"
-    if ! submission_output="$(xcrun notarytool submit "$artifact" \
-      --apple-id "$MACOS_NOTARY_APPLE_ID" \
+    notary_args=(--apple-id "$MACOS_NOTARY_APPLE_ID" \
       --password "$MACOS_NOTARY_PASSWORD" \
-      --team-id "$MACOS_NOTARY_TEAM_ID" \
-      --output-format json \
-      --wait 2>&1)"; then
-      printf '%s\n' "$submission_output" >&2
-      submission_id="$(printf '%s\n' "$submission_output" | sed -nE 's/.*"id"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | tail -1)"
-      if [[ -n "$submission_id" ]]; then
-        echo "notarytool submission log for $submission_id:" >&2
-        xcrun notarytool log "$submission_id" \
-          --apple-id "$MACOS_NOTARY_APPLE_ID" \
-          --password "$MACOS_NOTARY_PASSWORD" \
-          --team-id "$MACOS_NOTARY_TEAM_ID" \
-          --output-format json >&2 || true
-      fi
-      return 1
+      --team-id "$MACOS_NOTARY_TEAM_ID")
+  fi
+
+  if ! submission_output="$(xcrun notarytool submit "$artifact" \
+    "${notary_args[@]}" \
+    --output-format json \
+    --wait 2>&1)"; then
+    printf '%s\n' "$submission_output" >&2
+  fi
+  # notarytool exits 0 after --wait even when the submission ends Invalid,
+  # so gate on the reported status instead of the exit code alone.
+  submission_id="$(printf '%s\n' "$submission_output" | sed -nE 's/.*"id"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | tail -1)"
+  submission_status="$(printf '%s\n' "$submission_output" | sed -nE 's/.*"status"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | tail -1)"
+  if [[ "$submission_status" != "Accepted" ]]; then
+    printf '%s\n' "$submission_output" >&2
+    if [[ -n "$submission_id" ]]; then
+      echo "notarytool submission log for $submission_id:" >&2
+      xcrun notarytool log "$submission_id" \
+        "${notary_args[@]}" \
+        --output-format json >&2 || true
     fi
+    return 1
   fi
   printf '%s\n' "$submission_output"
 }
