@@ -1,0 +1,131 @@
+name: macOS notary debug
+
+on:
+  push:
+    branches:
+      - debug/macos-notary
+
+jobs:
+  debug:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      MACOS_DEVELOPER_ID_APPLICATION: ${{ secrets.MACOS_DEVELOPER_ID_APPLICATION }}
+      MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      MACOS_NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+      MACOS_NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+      MACOS_NOTARY_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
+      HOLON_SPARKLE_FEED_URL: ${{ vars.HOLON_SPARKLE_FEED_URL }}
+      HOLON_SPARKLE_PUBLIC_KEY: ${{ secrets.HOLON_SPARKLE_PUBLIC_KEY }}
+      HOLON_SPARKLE_PRIVATE_KEY: ${{ secrets.HOLON_SPARKLE_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Build web GUI
+        run: make web
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Select matching macOS target
+        run: rustup target add aarch64-apple-darwin
+
+      - name: Import Developer ID certificate
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/holon-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 24)"
+          certificate="$RUNNER_TEMP/holon-developer-id.p12"
+          printf '%s' "$MACOS_CERTIFICATE_P12" | base64 --decode > "$certificate"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$certificate" \
+            -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12 \
+            -k "$keychain"
+          security list-keychain -d user -s "$keychain" login.keychain-db
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -s \
+            -k "$keychain_password" \
+            "$keychain"
+
+      - name: Build bundled Holon runtime
+        run: cargo build --release --locked --target aarch64-apple-darwin
+
+      - name: Package macOS app (expected to fail at stapler)
+        run: |
+          set +e
+          scripts/package-macos-menu-app.sh \
+            target/aarch64-apple-darwin/release/holon \
+            dist \
+            "0.34.1"
+          package_status=$?
+          set -e
+          echo "package script exit status: $package_status"
+
+      - name: Dump notarytool history and full submission logs
+        if: always()
+        run: |
+          set -euo pipefail
+          notary_args=(
+            --apple-id "$MACOS_NOTARY_APPLE_ID"
+            --password "$MACOS_NOTARY_PASSWORD"
+            --team-id "$MACOS_NOTARY_TEAM_ID"
+          )
+          xcrun notarytool history "${notary_args[@]}" --output-format json > history.json || true
+          echo "===== notarytool history ====="
+          cat history.json
+          echo
+          ids="$(python3 - <<'PY'
+          import json
+          try:
+              data = json.load(open("history.json"))
+          except Exception as exc:
+              print(f"failed to parse history.json: {exc}", flush=True)
+              raise SystemExit(0)
+          if isinstance(data, dict):
+              submissions = data.get("submissions") or data.get("recentSubmissions") or []
+          else:
+              submissions = data
+          known = {"482a796a-6791-45ee-8e7c-e96e91d160fa"}
+          ids = []
+          for submission in submissions[:5]:
+              submission_id = submission.get("id")
+              if submission_id:
+                  ids.append(submission_id)
+          for submission_id in sorted(known - set(ids)):
+              ids.append(submission_id)
+          print("\n".join(ids))
+          PY
+          )"
+          for submission_id in $ids; do
+            echo "===== notarytool log $submission_id ====="
+            xcrun notarytool log "$submission_id" "${notary_args[@]}" || true
+            echo
+          done
+
+      - name: Dump signature diagnostics
+        if: always()
+        run: |
+          set +e
+          echo "===== codesign -dvvv Holon.app ====="
+          codesign -dvvv dist/Holon.app
+          echo "===== Holon.app entitlements ====="
+          codesign -d --entitlements :- dist/Holon.app
+          echo "===== codesign verify ====="
+          codesign --verify --deep --strict --verbose=4 dist/Holon.app
+          echo "===== spctl assess app ====="
+          spctl -a -vvv -t open --context context:primary-signature dist/Holon.app
+          echo "===== spctl assess holon binary ====="
+          spctl -a -vvv -t execute dist/Holon.app/Contents/Resources/bin/holon
+          exit 0
