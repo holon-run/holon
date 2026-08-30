@@ -27,7 +27,7 @@ printf '%s' "$HOLON_SPARKLE_PRIVATE_KEY" |
     --download-url-prefix "$download_url_prefix" \
     --maximum-versions 3 \
     --maximum-deltas 2 \
-    -o "$output_name" \
+    -o "$archives_dir/$output_name" \
     "$archives_dir"
 
 test -s "$archives_dir/$output_name"
