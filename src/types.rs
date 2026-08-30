@@ -1007,10 +1007,20 @@ pub enum ContinuationTriggerKind {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum TaskResultOutcome {
+    Succeeded,
+    Failed,
+    Cancelled,
+    Interrupted,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum ContinuationClass {
     ResumeExpectedWait,
     ResumeOverride,
     LocalContinuation,
+    TaskResultReentry,
     LivenessOnly,
 }
 

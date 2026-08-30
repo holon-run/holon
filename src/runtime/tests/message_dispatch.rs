@@ -175,7 +175,7 @@ async fn terminal_task_result_uses_explicit_message_binding_after_wait_resolutio
         .continuation_resolution
         .expect("terminal task result should resolve as a continuation");
 
-    assert_eq!(resolution.class, ContinuationClass::LocalContinuation);
+    assert_eq!(resolution.class, ContinuationClass::TaskResultReentry);
     assert!(resolution.model_reentry);
 }
 

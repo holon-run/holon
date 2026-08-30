@@ -77,7 +77,8 @@ impl RuntimeHandle {
                 "message_id": message.id,
                 "trigger_kind": trigger.kind,
                 "contentful": trigger.contentful,
-                "task_terminal": trigger.task_terminal,
+                "task_terminal": trigger.task_result_outcome.is_some(),
+                "task_result_outcome": trigger.task_result_outcome,
                 "wake_hint_source": trigger.wake_hint_source,
                 "prior_closure_outcome": prior_closure.outcome,
                 "prior_waiting_reason": prior_closure.waiting_reason

@@ -1,14 +1,14 @@
 use crate::types::{
     admission_trigger_kind_for_message_kind, ClosureDecision, ClosureOutcome, ContinuationClass,
     ContinuationResolution, ContinuationTriggerKind, MessageBody, MessageEnvelope, MessageKind,
-    TaskRecord, TaskStatus, WaitingReason,
+    TaskRecord, TaskResultOutcome, TaskStatus, WaitingReason,
 };
 
 #[derive(Debug, Clone)]
 pub(super) struct ContinuationTrigger {
     pub(super) kind: ContinuationTriggerKind,
     pub(super) contentful: bool,
-    pub(super) task_terminal: bool,
+    pub(super) task_result_outcome: Option<TaskResultOutcome>,
     pub(super) wake_hint_source: Option<String>,
     pub(super) task_work_item_id: Option<String>,
 }
@@ -22,7 +22,7 @@ impl ContinuationTrigger {
             MessageKind::OperatorPrompt => Some(Self {
                 kind: admission_trigger_kind_for_message_kind(&message.kind),
                 contentful: body_is_contentful(&message.body),
-                task_terminal: false,
+                task_result_outcome: None,
                 wake_hint_source: None,
                 task_work_item_id: None,
             }),
@@ -30,7 +30,7 @@ impl ContinuationTrigger {
                 Some(Self {
                     kind: admission_trigger_kind_for_message_kind(&message.kind),
                     contentful: body_is_contentful(&message.body),
-                    task_terminal: false,
+                    task_result_outcome: None,
                     wake_hint_source: None,
                     task_work_item_id: None,
                 })
@@ -38,21 +38,21 @@ impl ContinuationTrigger {
             MessageKind::TimerTick => Some(Self {
                 kind: admission_trigger_kind_for_message_kind(&message.kind),
                 contentful: body_is_contentful(&message.body),
-                task_terminal: false,
+                task_result_outcome: None,
                 wake_hint_source: None,
                 task_work_item_id: None,
             }),
             MessageKind::InternalFollowup => Some(Self {
                 kind: admission_trigger_kind_for_message_kind(&message.kind),
                 contentful: body_is_contentful(&message.body),
-                task_terminal: false,
+                task_result_outcome: None,
                 task_work_item_id: None,
                 wake_hint_source: None,
             }),
             MessageKind::SystemTick => Some(Self {
                 kind: admission_trigger_kind_for_message_kind(&message.kind),
                 contentful: system_tick_is_contentful(message),
-                task_terminal: false,
+                task_result_outcome: None,
                 wake_hint_source: message
                     .metadata
                     .as_ref()
@@ -65,17 +65,13 @@ impl ContinuationTrigger {
             MessageKind::TaskResult => Some(Self {
                 kind: admission_trigger_kind_for_message_kind(&message.kind),
                 contentful: body_is_contentful(&message.body),
-                task_terminal: task
-                    .map(|task| {
-                        matches!(
-                            task.status,
-                            TaskStatus::Completed
-                                | TaskStatus::Failed
-                                | TaskStatus::Cancelled
-                                | TaskStatus::Interrupted
-                        )
-                    })
-                    .unwrap_or(false),
+                task_result_outcome: task.and_then(|task| match task.status {
+                    TaskStatus::Completed => Some(TaskResultOutcome::Succeeded),
+                    TaskStatus::Failed => Some(TaskResultOutcome::Failed),
+                    TaskStatus::Cancelled => Some(TaskResultOutcome::Cancelled),
+                    TaskStatus::Interrupted => Some(TaskResultOutcome::Interrupted),
+                    TaskStatus::Queued | TaskStatus::Running | TaskStatus::Cancelling => None,
+                }),
                 wake_hint_source: None,
                 task_work_item_id: task
                     .and_then(|t| t.effective_work_item_id().map(ToString::to_string)),
@@ -105,8 +101,9 @@ pub(super) fn resolve_continuation(
     } else {
         evidence.push("not_contentful".to_string());
     }
-    if trigger.task_terminal {
+    if let Some(outcome) = trigger.task_result_outcome {
         evidence.push("task_terminal".to_string());
+        evidence.push(format!("task_result_outcome={}", enum_label(outcome)));
     }
     if let Some(source) = trigger.wake_hint_source.as_ref() {
         evidence.push(format!("wake_hint_source={source}"));
@@ -126,7 +123,7 @@ pub(super) fn resolve_continuation(
     }
 
     let terminal_task_result = trigger.kind == ContinuationTriggerKind::TaskResult
-        && trigger.task_terminal
+        && trigger.task_result_outcome.is_some()
         && same_work_item;
     let model_reentry = terminal_task_result
         || matches!(
@@ -138,7 +135,9 @@ pub(super) fn resolve_continuation(
         || ((trigger.kind == ContinuationTriggerKind::ExternalEvent
             || trigger.kind == ContinuationTriggerKind::SystemTick)
             && trigger.contentful);
-    let class = if model_reentry {
+    let class = if terminal_task_result {
+        ContinuationClass::TaskResultReentry
+    } else if model_reentry {
         ContinuationClass::LocalContinuation
     } else {
         ContinuationClass::LivenessOnly
@@ -191,7 +190,9 @@ fn resolve_waiting(
     let override_allowed = trigger.kind == ContinuationTriggerKind::OperatorInput;
     if expected {
         let model_reentry = match trigger.kind {
-            ContinuationTriggerKind::TaskResult => trigger.task_terminal && same_work_item,
+            ContinuationTriggerKind::TaskResult => {
+                trigger.task_result_outcome.is_some() && same_work_item
+            }
             ContinuationTriggerKind::ExternalEvent => trigger.contentful,
             ContinuationTriggerKind::SystemTick => trigger.contentful,
             _ => true,
@@ -244,7 +245,7 @@ fn resolve_waiting(
     }
 
     if trigger.kind == ContinuationTriggerKind::TaskResult
-        && trigger.task_terminal
+        && trigger.task_result_outcome.is_some()
         && same_work_item
     {
         // Terminal task state is persisted before TaskResult enqueue, so
@@ -339,7 +340,7 @@ mod tests {
             &ContinuationTrigger {
                 kind: ContinuationTriggerKind::TaskResult,
                 contentful: true,
-                task_terminal: true,
+                task_result_outcome: Some(TaskResultOutcome::Succeeded),
                 wake_hint_source: None,
                 task_work_item_id: None,
             },
@@ -356,7 +357,7 @@ mod tests {
             &ContinuationTrigger {
                 kind: ContinuationTriggerKind::TaskResult,
                 contentful: true,
-                task_terminal: false,
+                task_result_outcome: None,
                 wake_hint_source: None,
                 task_work_item_id: None,
             },
@@ -379,7 +380,7 @@ mod tests {
             &ContinuationTrigger {
                 kind: ContinuationTriggerKind::TaskResult,
                 contentful: true,
-                task_terminal: true,
+                task_result_outcome: Some(TaskResultOutcome::Succeeded),
                 wake_hint_source: None,
                 task_work_item_id: Some("other-work".into()),
             },
@@ -398,7 +399,7 @@ mod tests {
             &ContinuationTrigger {
                 kind: ContinuationTriggerKind::SystemTick,
                 contentful: false,
-                task_terminal: false,
+                task_result_outcome: None,
                 wake_hint_source: Some("callback".into()),
                 task_work_item_id: None,
             },
@@ -415,7 +416,7 @@ mod tests {
             &ContinuationTrigger {
                 kind: ContinuationTriggerKind::SystemTick,
                 contentful: true,
-                task_terminal: false,
+                task_result_outcome: None,
                 wake_hint_source: None,
                 task_work_item_id: None,
             },
@@ -434,7 +435,7 @@ mod tests {
             &ContinuationTrigger {
                 kind: ContinuationTriggerKind::OperatorInput,
                 contentful: true,
-                task_terminal: false,
+                task_result_outcome: None,
                 wake_hint_source: None,
                 task_work_item_id: None,
             },
@@ -457,7 +458,7 @@ mod tests {
             &ContinuationTrigger {
                 kind: ContinuationTriggerKind::ExternalEvent,
                 contentful: false,
-                task_terminal: false,
+                task_result_outcome: None,
                 wake_hint_source: None,
                 task_work_item_id: None,
             },
@@ -480,7 +481,7 @@ mod tests {
             &ContinuationTrigger {
                 kind: ContinuationTriggerKind::TaskResult,
                 contentful: true,
-                task_terminal: true,
+                task_result_outcome: Some(TaskResultOutcome::Succeeded),
                 wake_hint_source: None,
                 task_work_item_id: None,
             },
@@ -503,7 +504,7 @@ mod tests {
             &ContinuationTrigger {
                 kind: ContinuationTriggerKind::TaskResult,
                 contentful: true,
-                task_terminal: true,
+                task_result_outcome: Some(TaskResultOutcome::Succeeded),
                 wake_hint_source: None,
                 task_work_item_id: None,
             },
@@ -520,7 +521,7 @@ mod tests {
             &ContinuationTrigger {
                 kind: ContinuationTriggerKind::TaskResult,
                 contentful: true,
-                task_terminal: true,
+                task_result_outcome: Some(TaskResultOutcome::Succeeded),
                 wake_hint_source: None,
                 task_work_item_id: None,
             },
@@ -537,7 +538,7 @@ mod tests {
             &ContinuationTrigger {
                 kind: ContinuationTriggerKind::ExternalEvent,
                 contentful: false,
-                task_terminal: false,
+                task_result_outcome: None,
                 wake_hint_source: None,
                 task_work_item_id: None,
             },
@@ -555,7 +556,7 @@ mod tests {
             &ContinuationTrigger {
                 kind: ContinuationTriggerKind::TimerFire,
                 contentful: true,
-                task_terminal: false,
+                task_result_outcome: None,
                 wake_hint_source: None,
                 task_work_item_id: None,
             },

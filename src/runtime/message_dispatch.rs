@@ -60,7 +60,16 @@ impl RuntimeHandle {
                     } else {
                         false
                     };
-                    if task.terminal_reentry() || wait_authority {
+                    let terminal_with_explicit_work_item = matches!(
+                        task.status,
+                        TaskStatus::Completed
+                            | TaskStatus::Failed
+                            | TaskStatus::Cancelled
+                            | TaskStatus::Interrupted
+                    ) && task.effective_work_item_id()
+                        == Some(message.work_item_id.as_deref().unwrap_or_default());
+                    if terminal_with_explicit_work_item || task.terminal_reentry() || wait_authority
+                    {
                         Ok(task)
                     } else {
                         Err(error)
