@@ -338,6 +338,7 @@ jobs:
 
           - Add the native macOS menu bar application with daemon lifecycle compatibility, Sparkle update support, signed DMG packaging, and appcast generation ([#2701](https://github.com/holon-run/holon/pull/2701), [#2705](https://github.com/holon-run/holon/pull/2705), [#2707](https://github.com/holon-run/holon/pull/2707)).
           - Introduce explicit activation and Turn owner identity, add a versioned model registry snapshot, and make WorkItem-bound operator waits resume reliably ([#2703](https://github.com/holon-run/holon/pull/2703), [#2704](https://github.com/holon-run/holon/pull/2708), [#2709](https://github.com/holon-run/holon/pull/2709)).
+          - Harden release automation with strict tag/version verification, resilient Release E2E turn-record imports, and macOS notarization diagnostics ([#2711](https://github.com/holon-run/holon/pull/2711), [#2712](https://github.com/holon-run/holon/pull/2712)).
 
           ## Install
 
