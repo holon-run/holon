@@ -73,25 +73,59 @@ fi
 
 "$repo_root/scripts/verify-macos-menu-app.sh" "$app_dir" "$version"
 
+submit_notarization() {
+  local artifact="$1"
+  local submission_output
+  local submission_id
+
+  if [[ -n "${MACOS_NOTARY_PROFILE:-}" ]]; then
+    if ! submission_output="$(xcrun notarytool submit "$artifact" \
+      --keychain-profile "$MACOS_NOTARY_PROFILE" \
+      --output-format json \
+      --wait 2>&1)"; then
+      printf '%s\n' "$submission_output" >&2
+      submission_id="$(printf '%s\n' "$submission_output" | sed -nE 's/.*"id"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | tail -1)"
+      if [[ -n "$submission_id" ]]; then
+        echo "notarytool submission log for $submission_id:" >&2
+        xcrun notarytool log "$submission_id" \
+          --keychain-profile "$MACOS_NOTARY_PROFILE" \
+          --output-format json >&2 || true
+      fi
+      return 1
+    fi
+  else
+    : "${MACOS_NOTARY_APPLE_ID:?MACOS_NOTARY_APPLE_ID is required}"
+    : "${MACOS_NOTARY_PASSWORD:?MACOS_NOTARY_PASSWORD is required}"
+    : "${MACOS_NOTARY_TEAM_ID:?MACOS_NOTARY_TEAM_ID is required}"
+    if ! submission_output="$(xcrun notarytool submit "$artifact" \
+      --apple-id "$MACOS_NOTARY_APPLE_ID" \
+      --password "$MACOS_NOTARY_PASSWORD" \
+      --team-id "$MACOS_NOTARY_TEAM_ID" \
+      --output-format json \
+      --wait 2>&1)"; then
+      printf '%s\n' "$submission_output" >&2
+      submission_id="$(printf '%s\n' "$submission_output" | sed -nE 's/.*"id"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | tail -1)"
+      if [[ -n "$submission_id" ]]; then
+        echo "notarytool submission log for $submission_id:" >&2
+        xcrun notarytool log "$submission_id" \
+          --apple-id "$MACOS_NOTARY_APPLE_ID" \
+          --password "$MACOS_NOTARY_PASSWORD" \
+          --team-id "$MACOS_NOTARY_TEAM_ID" \
+          --output-format json >&2 || true
+      fi
+      return 1
+    fi
+  fi
+  printf '%s\n' "$submission_output"
+}
+
 notary_configured=false
 if [[ -n "${MACOS_NOTARY_PROFILE:-}${MACOS_NOTARY_APPLE_ID:-}" ]]; then
   notary_configured=true
   app_archive="$output_dir/Holon-${version}.zip"
   rm -f "$app_archive"
   ditto -c -k --keepParent "$app_dir" "$app_archive"
-  if [[ -n "${MACOS_NOTARY_PROFILE:-}" ]]; then
-    xcrun notarytool submit "$app_archive" \
-      --keychain-profile "$MACOS_NOTARY_PROFILE" \
-      --wait
-  else
-    : "${MACOS_NOTARY_PASSWORD:?MACOS_NOTARY_PASSWORD is required}"
-    : "${MACOS_NOTARY_TEAM_ID:?MACOS_NOTARY_TEAM_ID is required}"
-    xcrun notarytool submit "$app_archive" \
-      --apple-id "$MACOS_NOTARY_APPLE_ID" \
-      --password "$MACOS_NOTARY_PASSWORD" \
-      --team-id "$MACOS_NOTARY_TEAM_ID" \
-      --wait
-  fi
+  submit_notarization "$app_archive"
   xcrun stapler staple "$app_dir"
   rm -f "$app_archive"
 fi
@@ -101,17 +135,7 @@ rm -f "$dmg_path"
 hdiutil create -quiet -volname Holon -srcfolder "$app_dir" -ov -format UDZO "$dmg_path"
 
 if $notary_configured; then
-  if [[ -n "${MACOS_NOTARY_PROFILE:-}" ]]; then
-    xcrun notarytool submit "$dmg_path" \
-      --keychain-profile "$MACOS_NOTARY_PROFILE" \
-      --wait
-  else
-    xcrun notarytool submit "$dmg_path" \
-      --apple-id "$MACOS_NOTARY_APPLE_ID" \
-      --password "$MACOS_NOTARY_PASSWORD" \
-      --team-id "$MACOS_NOTARY_TEAM_ID" \
-      --wait
-  fi
+  submit_notarization "$dmg_path"
   xcrun stapler staple "$dmg_path"
 fi
 
