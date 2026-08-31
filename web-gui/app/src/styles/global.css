@@ -340,6 +340,11 @@ button {
   grid-template-columns: 72px minmax(0, 1fr) var(--panel-w, 420px);
 }
 
+/* Expanded panel renders as a fixed overlay, so the grid stops reserving its column. */
+.app-shell[data-panel="open"][data-panel-mode="expanded"] {
+  grid-template-columns: 72px minmax(0, 1fr);
+}
+
 .sidebar {
   position: relative;
   z-index: 10;
@@ -5153,6 +5158,20 @@ code {
 .panel-resizer:hover,
 .panel-resizer[data-dragging="true"] {
   background: var(--accent, #4a9eff);
+}
+
+.side-panel[data-mode="expanded"] {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 72px;
+  z-index: 50;
+  box-shadow: -12px 0 32px rgba(24, 34, 48, 0.18);
+}
+
+.side-panel[data-mode="expanded"] .panel-resizer {
+  display: none;
 }
 
 .side-panel[hidden] {

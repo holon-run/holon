@@ -86,6 +86,8 @@ export function App() {
   const resumeRevision = useRuntimeStore((state) => state.resumeRevision);
   const rightPanelOpen = useRuntimeStore((state) => state.rightPanelOpen);
   const rightPanelView = useRuntimeStore((state) => state.rightPanelView);
+  const rightPanelMode = useRuntimeStore((state) => state.rightPanelMode);
+  const toggleRightPanelExpanded = useRuntimeStore((state) => state.toggleRightPanelExpanded);
   const navCollapsed = useRuntimeStore((state) => state.navCollapsed);
   const setRoute = useRuntimeStore((state) => state.setRoute);
   const openAgent = useRuntimeStore((state) => state.openAgent);
@@ -490,6 +492,7 @@ export function App() {
     <div
       className="app-shell"
       data-panel={rightPanelOpen ? "open" : "closed"}
+      data-panel-mode={rightPanelMode}
       data-nav-collapsed={navCollapsed}
     >
       <aside className="sidebar" aria-label="Holon navigation">
@@ -858,6 +861,8 @@ export function App() {
           session={selectedAgentSession}
           view={rightPanelView?.agentId === selectedAgent.id ? rightPanelView : undefined}
           open={rightPanelOpen}
+          mode={rightPanelMode}
+          onToggleMode={toggleRightPanelExpanded}
           onLoadWorkItemDetail={(workItemId) => loadAgentWorkItemDetail(selectedAgent.id, workItemId)}
           onOpenWorkItemDetail={(workItem) => {
             showWorkItemDetail(selectedAgent.id, workItem);

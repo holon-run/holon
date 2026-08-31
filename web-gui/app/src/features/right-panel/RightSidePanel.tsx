@@ -4,6 +4,7 @@ import type { AgentSummary, RightPanelView, RuntimeConnection, SkillCatalogState
 import type { AgentControlAction, AgentDeletionStatus } from "../../runtime/types";
 import type { AgentSessionState, TimelineEventsState } from "../../runtime/runtime-store";
 import type { TaskSummary } from "../../runtime/types";
+import { Maximize2, Minimize2, X } from "lucide-react";
 import { ActivityInspectorPanel, activityInspectorTitle } from "../inspector/ActivityInspectorPanel";
 import { AgentOverviewPanel, AgentSkillManagerPanel, ToolExecutionDetailPanel, WorkItemDetailPanel } from "./AgentOverviewPanel";
 import { TaskDetailPanel } from "./TaskDetailPanel";
@@ -28,6 +29,8 @@ interface RightSidePanelProps {
   session?: AgentSessionState;
   view?: RightPanelView;
   open: boolean;
+  mode: "normal" | "expanded";
+  onToggleMode: () => void;
   onLoadWorkItemDetail: (workItemId: string) => void;
   onOpenWorkItemDetail: (workItem: WorkItemSummary) => void;
   onOpenTask: (task: TaskSummary) => void;
@@ -63,6 +66,8 @@ export function RightSidePanel({
   session,
   view,
   open,
+  mode,
+  onToggleMode,
   onLoadWorkItemDetail,
   onOpenWorkItemDetail,
   onOpenTask,
@@ -126,6 +131,31 @@ export function RightSidePanel({
     [applyPanelWidth],
   );
 
+  // Global shortcuts while the panel is open: Cmd/Ctrl+. toggles the expanded
+  // overlay; Escape steps down the ladder expanded -> normal -> closed.
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.isComposing) return;
+      if ((event.metaKey || event.ctrlKey) && event.key === ".") {
+        event.preventDefault();
+        onToggleMode();
+        return;
+      }
+      if (event.key !== "Escape") return;
+      // Let dialogs (e.g. modals) consume Escape first.
+      if (document.querySelector('[role="dialog"]')) return;
+      event.preventDefault();
+      if (mode === "expanded") {
+        onToggleMode();
+      } else {
+        onClose();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [open, mode, onToggleMode, onClose]);
+
   const [showSkillManager, setShowSkillManager] = useState(false);
   const [showRuntimeTrace, setShowRuntimeTrace] = useState(false);
   const activeView = view?.agentId === agent.id ? view : { kind: "agent_overview" as const, agentId: agent.id };
@@ -173,9 +203,9 @@ export function RightSidePanel({
   };
 
   return (
-    <aside className="side-panel" aria-label={t("rightPanel.contextPanel")} hidden={!open} ref={panelRef}>
-      {open ? (
-        <div className="panel-resizer" data-dragging={dragging} onMouseDown={startResize} />
+    <aside className="side-panel" data-mode={mode} aria-label={t("rightPanel.contextPanel")} hidden={!open} ref={panelRef}>
+      {open && mode === "normal" ? (
+        <div className="panel-resizer" data-dragging={dragging} onMouseDown={startResize} onDoubleClick={onToggleMode} />
       ) : null}
       <div className="panel-header">
         <div>
@@ -208,8 +238,16 @@ export function RightSidePanel({
               {runtimeTraceActive ? t("rightPanel.agentOverview") : t("runtimeTrace.shortTitle")}
             </button>
           ) : null}
+          <button
+            type="button"
+            aria-label={mode === "expanded" ? t("rightPanel.restorePanel") : t("rightPanel.expandPanel")}
+            title={mode === "expanded" ? t("rightPanel.restorePanel") : t("rightPanel.expandPanel")}
+            onClick={onToggleMode}
+          >
+            {mode === "expanded" ? <Minimize2 size={14} aria-hidden="true" /> : <Maximize2 size={14} aria-hidden="true" />}
+          </button>
           <button type="button" aria-label={t("panel.closePanel")} onClick={onClose}>
-            ×
+            <X size={16} aria-hidden="true" />
           </button>
         </div>
       </div>

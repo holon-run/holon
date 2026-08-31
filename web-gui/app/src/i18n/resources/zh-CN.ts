@@ -652,6 +652,8 @@ const zh: Record<string, any> = {
     contextPanel: "上下文侧面板",
     showOverview: "显示智能体概览",
     closePanel: "关闭侧面板",
+    expandPanel: "展开侧面板",
+    restorePanel: "还原侧面板",
     manageSkills: "管理智能体技能",
     workItemDetail: "工作项详情",
     taskDetail: "任务详情",

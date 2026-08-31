@@ -2036,6 +2036,53 @@ describe("agentDetailErrorKind", () => {
   });
 });
 
+describe("right panel expanded mode", () => {
+  afterEach(() => {
+    useRuntimeStore.setState({
+      rightPanelOpen: true,
+      rightPanelMode: "normal",
+      rightPanelExpandedNavWasCollapsed: undefined,
+      navCollapsed: false,
+    });
+  });
+
+  it("collapses the nav rail while expanded and restores the pre-expansion nav state", () => {
+    useRuntimeStore.setState({ navCollapsed: true, rightPanelMode: "normal" });
+
+    useRuntimeStore.getState().toggleRightPanelExpanded();
+    expect(useRuntimeStore.getState()).toMatchObject({
+      rightPanelMode: "expanded",
+      rightPanelOpen: true,
+      navCollapsed: true,
+      rightPanelExpandedNavWasCollapsed: true,
+    });
+
+    // Nav toggles issued while expanded must not leak into the restore value.
+    useRuntimeStore.getState().toggleNavCollapsed();
+    expect(useRuntimeStore.getState().navCollapsed).toBe(false);
+
+    useRuntimeStore.getState().toggleRightPanelExpanded();
+    expect(useRuntimeStore.getState()).toMatchObject({
+      rightPanelMode: "normal",
+      navCollapsed: true,
+      rightPanelExpandedNavWasCollapsed: undefined,
+    });
+  });
+
+  it("resets expansion when the panel is closed", () => {
+    useRuntimeStore.setState({ navCollapsed: false, rightPanelMode: "normal" });
+
+    useRuntimeStore.getState().toggleRightPanelExpanded();
+    useRuntimeStore.getState().setRightPanelOpen(false);
+    expect(useRuntimeStore.getState()).toMatchObject({
+      rightPanelOpen: false,
+      rightPanelMode: "normal",
+      navCollapsed: false,
+      rightPanelExpandedNavWasCollapsed: undefined,
+    });
+  });
+});
+
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status: 200,

@@ -651,6 +651,8 @@ const en = {
     contextPanel: "Context side panel",
     showOverview: "Show agent overview",
     closePanel: "Close side panel",
+    expandPanel: "Expand side panel",
+    restorePanel: "Restore side panel",
     manageSkills: "Manage agent skills",
     workItemDetail: "Work item detail",
     taskDetail: "Task detail",

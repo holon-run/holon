@@ -319,6 +319,9 @@ export interface RuntimeStoreState {
   displayLevelsByAgentId: Record<string, DisplayLevel>;
   rightPanelViewStack: RightPanelView[];
   rightPanelOpen: boolean;
+  rightPanelMode: "normal" | "expanded";
+  // navCollapsed snapshot restored when the expanded panel returns to normal.
+  rightPanelExpandedNavWasCollapsed?: boolean;
   rightPanelView?: RightPanelView;
   timelineEventsByAgentId: Record<string, TimelineEventsState>;
   navCollapsed: boolean;
@@ -382,6 +385,7 @@ export interface RuntimeStoreState {
   setDisplayLevel: (displayLevel: DisplayLevel, agentId?: string) => void;
   disableDeveloperDiagnosticsUi: (agentId?: string) => void;
   setRightPanelOpen: (open: boolean) => void;
+  toggleRightPanelExpanded: () => void;
   showAgentOverview: (agentId?: string) => void;
   showTimelineEvents: (agentId: string) => void;
   refreshTimelineEvents: (agentId: string) => Promise<void>;
@@ -1340,6 +1344,17 @@ export async function retryPendingReadMarker(agentId: string): Promise<void> {
   }
 }
 
+function collapseRightPanelExpansion(state: {
+  navCollapsed: boolean;
+  rightPanelExpandedNavWasCollapsed?: boolean;
+}) {
+  return {
+    rightPanelMode: "normal" as const,
+    navCollapsed: state.rightPanelExpandedNavWasCollapsed ?? false,
+    rightPanelExpandedNavWasCollapsed: undefined,
+  };
+}
+
 export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
   agentSessionRepository = new AgentSessionRepository<RuntimeStoreState>({
     get,
@@ -1528,6 +1543,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
   displayLevel: "info",
   displayLevelsByAgentId: readStoredDisplayLevels(),
   rightPanelOpen: true,
+    rightPanelMode: "normal",
   rightPanelView: undefined,
   rightPanelViewStack: [],
   timelineEventsByAgentId: {},
@@ -1679,7 +1695,25 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
         rightPanelViewStack: state.rightPanelViewStack.filter((view) => view.kind !== "timeline_events"),
       };
     }),
-  setRightPanelOpen: (open) => set({ rightPanelOpen: open }),
+  setRightPanelOpen: (open) =>
+    set((state) => {
+      if (!open && state.rightPanelMode === "expanded") {
+        return { ...collapseRightPanelExpansion(state), rightPanelOpen: false };
+      }
+      return { rightPanelOpen: open };
+    }),
+  toggleRightPanelExpanded: () =>
+    set((state) => {
+      if (state.rightPanelMode === "expanded") {
+        return collapseRightPanelExpansion(state);
+      }
+      return {
+        rightPanelMode: "expanded",
+        rightPanelOpen: true,
+        rightPanelExpandedNavWasCollapsed: state.navCollapsed,
+        navCollapsed: true,
+      };
+    }),
   showAgentOverview: (agentId) =>
     set((state) => {
       const stack = state.rightPanelView ? [...state.rightPanelViewStack, state.rightPanelView] : state.rightPanelViewStack;
