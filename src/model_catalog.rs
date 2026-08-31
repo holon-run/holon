@@ -1683,6 +1683,7 @@ fn reasoning_effort_options(
     options.iter().map(|option| (*option).to_string()).collect()
 }
 
+pub mod models_dev;
 mod providers;
 mod snapshot;
 #[cfg(test)]
