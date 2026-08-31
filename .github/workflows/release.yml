@@ -330,9 +330,9 @@ jobs:
 
           Holon ${GITHUB_REF_NAME} is part of the Rust runtime line. The Rust runtime is now the main \`holon\` binary.
 
-          This release adds the native macOS menu bar application, stronger daemon lifecycle compatibility, explicit activation and Turn ownership, a versioned model registry snapshot, and more reliable WorkItem-bound operator waits.
+          This release ships the macOS menu bar application as a universal DMG that runs natively on Apple Silicon and Intel Macs, with stronger daemon lifecycle compatibility, explicit activation and Turn ownership, a versioned model registry snapshot, and more reliable WorkItem-bound operator waits.
 
-          Supported binary assets for this release are Linux amd64, macOS amd64, and macOS arm64. The Linux amd64 binary supports Ubuntu 22.04 or newer (glibc 2.35 or newer).
+          Supported binary assets for this release are Linux amd64, macOS amd64, and macOS arm64. The macOS app DMG is a universal binary supporting both x86_64 and arm64. The Linux amd64 binary supports Ubuntu 22.04 or newer (glibc 2.35 or newer).
 
           ## Changes
 
@@ -340,6 +340,7 @@ jobs:
           - Introduce explicit activation and Turn owner identity, add a versioned model registry snapshot, and make WorkItem-bound operator waits resume reliably ([#2703](https://github.com/holon-run/holon/pull/2703), [#2704](https://github.com/holon-run/holon/pull/2704), [#2708](https://github.com/holon-run/holon/pull/2708), [#2709](https://github.com/holon-run/holon/pull/2709)).
           - Re-enter the model for terminal task results so terminal command-task and delegated-agent results reliably resume their owning conversation ([#2714](https://github.com/holon-run/holon/pull/2714)).
           - Harden release automation with strict tag/version verification, resilient Release E2E turn-record imports, and macOS notarization diagnostics ([#2711](https://github.com/holon-run/holon/pull/2711), [#2712](https://github.com/holon-run/holon/pull/2712)).
+          - Ship the macOS app DMG as a universal binary supporting both Apple Silicon and Intel Macs, publish the signed Sparkle appcast with the release archives, and re-sign Sparkle helper executables before notarization ([#2716](https://github.com/holon-run/holon/pull/2716), [#2717](https://github.com/holon-run/holon/pull/2717), [#2718](https://github.com/holon-run/holon/pull/2718)).
 
           ## Install
 
