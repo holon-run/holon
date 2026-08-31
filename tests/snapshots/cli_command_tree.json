@@ -1190,6 +1190,71 @@
     "aliases": []
   },
   {
+    "path": "models-dev",
+    "positionals": [],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "models-dev.audit",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "json",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
+        "long": "snapshot",
+        "short": null,
+        "default_value": "models.dev/snapshot.json",
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "models-dev.refresh",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "output-dir",
+        "short": null,
+        "default_value": "models.dev",
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "url",
+        "short": null,
+        "default_value": "https://models.dev/api.json",
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "models-dev.validate",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "input-dir",
+        "short": null,
+        "default_value": "models.dev",
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
     "path": "onboard",
     "positionals": [],
     "flags": [
