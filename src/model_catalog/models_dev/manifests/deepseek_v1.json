@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "providers": [
+    {
+      "models_dev_id": "deepseek",
+      "holon_provider_id": "deepseek",
+      "kind": "open_ai_compatible",
+      "transport": "openai_responses",
+      "route_registration": "deepseek@responses",
+      "model_id": {
+        "mode": "exact_or_pattern",
+        "allow": ["deepseek-v4-pro", "deepseek-v4-flash"]
+      },
+      "capability_ceiling": {
+        "tool_calling": true,
+        "image_input": false,
+        "image_generation": false,
+        "reasoning": true,
+        "structured_output": false
+      },
+      "limit_ceiling": {
+        "context_window_tokens": 1000000,
+        "max_output_tokens": 384000
+      },
+      "credential_ref": "deepseek",
+      "enabled": false,
+      "provenance": {
+        "owner": "holon",
+        "reviewed_at": "2026-08-31"
+      }
+    }
+  ]
+}

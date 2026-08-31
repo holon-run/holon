@@ -200,6 +200,24 @@ transport. The selection is evidence-based and does not follow provider
 popularity or offering count in `models.dev`. Gateways and token hubs are
 separate kinds and are not combined with this second pilot.
 
+#### DeepSeek (`deepseek@responses`) — selected 2026-08-31
+
+DeepSeek is the Phase 3B OpenAI-compatible baseline. The models.dev upstream
+provider ID is `deepseek`; the `npm` package is `@ai-sdk/openai-compatible`,
+confirming the wire protocol. Holon already has a `deepseek` provider
+definition (`deepseek@default` with `AnthropicMessages` transport) and
+synthesizes a derived `deepseek@responses` endpoint at runtime using
+`OpenAiResponses` transport and the same `DEEPSEEK_API_KEY` credential. The
+validation engine registers this derived route so that manifests referencing
+`deepseek@responses` resolve without requiring a standalone
+`ProviderDefinition` entry.
+
+The first model allowlist is `deepseek-v4-pro` and `deepseek-v4-flash`.
+The `deepseek-v4-flash-vision-exp` model (image input) is excluded from the
+initial allowlist. `structured_output` is conservatively set to `false` in
+the capability ceiling even though the upstream claims it; this produces a
+warning, not an error, and can be widened in a later phase.
+
 ## Rollback and non-goals
 
 Phase 3A produces a discovery/validation report or an explicitly disabled

@@ -275,6 +275,23 @@ mod tests {
     }
 
     #[test]
+    fn parses_deepseek_manifest() {
+        let raw = include_str!("manifests/deepseek_v1.json");
+        let manifest = ProviderMappingManifest::parse(raw).unwrap();
+        assert_eq!(manifest.schema_version, 1);
+        assert_eq!(manifest.providers.len(), 1);
+        let entry = &manifest.providers[0];
+        assert_eq!(entry.models_dev_id, "deepseek");
+        assert_eq!(entry.holon_provider_id, "deepseek");
+        assert_eq!(entry.kind, ProviderKind::OpenAiCompatible);
+        assert_eq!(entry.transport, "openai_responses");
+        assert_eq!(entry.route_registration, "deepseek@responses");
+        assert!(!entry.enabled);
+        assert_eq!(entry.provenance.owner, "holon");
+        assert_eq!(entry.provenance.reviewed_at.as_deref(), Some("2026-08-31"));
+    }
+
+    #[test]
     fn exact_mode_only_matches_exact_ids() {
         let allow = ModelIdAllow {
             mode: ModelIdMatchMode::Exact,

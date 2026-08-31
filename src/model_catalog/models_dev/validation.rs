@@ -132,6 +132,22 @@ impl ValidationEngine {
                 },
             );
         }
+        // Register the derived `deepseek@responses` route. This endpoint is
+        // synthesized at runtime from `deepseek@default` (see config::models),
+        // using OpenAiResponses transport with the same DEEPSEEK_API_KEY
+        // credential. It is not a standalone ProviderDefinition entry because
+        // its base URL and web-search config are derived from the default
+        // endpoint at runtime, but it is a valid Holon route identity.
+        if let Some(default) = routes.get("deepseek@default") {
+            routes.insert(
+                "deepseek@responses".to_string(),
+                RouteRegistration {
+                    transport: ProviderTransportKind::OpenAiResponses,
+                    credential_envs: default.credential_envs.clone(),
+                    legacy_provider: default.legacy_provider.clone(),
+                },
+            );
+        }
         Self { routes }
     }
 
@@ -942,6 +958,201 @@ mod tests {
         assert!(!report.has_errors());
         assert_eq!(report.total_upstream_providers, 0);
         assert!(report.unmapped_providers.is_empty());
+        assert!(report.offerings.is_empty());
+    }
+
+    // -- DeepSeek baseline (Phase 3B: OpenAI-compatible) --
+
+    /// A valid DeepSeek baseline manifest entry using the derived
+    /// `deepseek@responses` route with `openai_responses` transport.
+    fn deepseek_entry() -> ProviderMappingEntry {
+        ProviderMappingEntry {
+            models_dev_id: "deepseek".to_string(),
+            holon_provider_id: "deepseek".to_string(),
+            kind: ProviderKind::OpenAiCompatible,
+            transport: "openai_responses".to_string(),
+            route_registration: "deepseek@responses".to_string(),
+            model_id: ModelIdAllow {
+                mode: ModelIdMatchMode::ExactOrPattern,
+                allow: vec![
+                    "deepseek-v4-pro".to_string(),
+                    "deepseek-v4-flash".to_string(),
+                ],
+            },
+            capability_ceiling: CapabilityCeiling {
+                tool_calling: true,
+                image_input: false,
+                image_generation: false,
+                reasoning: true,
+                structured_output: false,
+            },
+            limit_ceiling: LimitCeiling {
+                context_window_tokens: Some(1_000_000),
+                max_output_tokens: Some(384_000),
+            },
+            credential_ref: "deepseek".to_string(),
+            enabled: false,
+            provenance: MappingProvenance {
+                owner: "holon".to_string(),
+                reviewed_at: Some("2026-08-31".to_string()),
+            },
+        }
+    }
+
+    /// Minimal models.dev snapshot with one DeepSeek model.
+    fn deepseek_snapshot() -> ModelsDevSnapshot {
+        let mut providers = BTreeMap::new();
+        providers.insert(
+            "deepseek".to_string(),
+            ModelsDevProvider {
+                id: "deepseek".to_string(),
+                env: vec!["DEEPSEEK_API_KEY".to_string()],
+                npm: None,
+                api: None,
+                name: None,
+                doc: None,
+                models: {
+                    let mut m = BTreeMap::new();
+                    m.insert(
+                        "deepseek-v4-flash".to_string(),
+                        ModelsDevModel {
+                            id: "deepseek-v4-flash".to_string(),
+                            name: Some("DeepSeek V4 Flash".to_string()),
+                            description: None,
+                            family: None,
+                            attachment: Some(false),
+                            reasoning: Some(true),
+                            reasoning_options: vec![],
+                            tool_call: Some(true),
+                            structured_output: Some(true),
+                            temperature: None,
+                            knowledge: None,
+                            release_date: None,
+                            last_updated: None,
+                            modalities: Some(ModelsDevModalities {
+                                input: vec!["text".to_string()],
+                                output: vec!["text".to_string()],
+                            }),
+                            open_weights: None,
+                            limit: Some(ModelsDevLimit {
+                                context: Some(1_000_000),
+                                output: Some(384_000),
+                                input: None,
+                            }),
+                            cost: None,
+                            interleaved: None,
+                        },
+                    );
+                    m
+                },
+            },
+        );
+        ModelsDevSnapshot { providers }
+    }
+
+    #[test]
+    fn validates_deepseek_baseline_without_errors() {
+        let engine = ValidationEngine::new();
+        let manifest = simple_manifest(deepseek_entry());
+        let snapshot = deepseek_snapshot();
+        let report = engine.validate(&manifest, Some(&snapshot));
+
+        assert!(
+            !report.has_errors(),
+            "expected no errors, got: {:?}",
+            report
+                .entries
+                .iter()
+                .filter(|e| e.severity == ValidationSeverity::Error)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(report.mapped_providers, 1);
+        assert_eq!(report.offerings.len(), 1);
+        assert_eq!(report.offerings[0].model_identity, "deepseek-v4-flash");
+        assert_eq!(report.offerings[0].route_registration, "deepseek@responses");
+        assert_eq!(report.offerings[0].callability, Callability::DiscoveryOnly);
+        // Should report disabled mapping as info
+        assert!(report.entries.iter().any(|e| e.code == "mapping_disabled"));
+        // structured_output=true upstream but ceiling=false → warning
+        assert!(report
+            .entries
+            .iter()
+            .any(|e| e.code == "capability_widening_structured_output"));
+    }
+
+    #[test]
+    fn deepseek_baseline_fixture_parses_and_validates() {
+        let raw = include_str!("manifests/deepseek_v1.json");
+        let manifest = ProviderMappingManifest::parse(raw).unwrap();
+        let engine = ValidationEngine::new();
+        let report = engine.validate(&manifest, None);
+        assert!(!report.has_errors());
+        // Should report disabled mapping as info
+        assert!(report
+            .entries
+            .iter()
+            .any(|e| e.code == "mapping_disabled" && e.severity == ValidationSeverity::Info));
+    }
+
+    #[test]
+    fn rejects_deepseek_transport_mismatch() {
+        let engine = ValidationEngine::new();
+        let mut entry = deepseek_entry();
+        // deepseek@responses route uses OpenAiResponses transport;
+        // claiming anthropic_messages must fail.
+        entry.transport = "anthropic_messages".to_string();
+        let manifest = simple_manifest(entry);
+        let report = engine.validate(&manifest, None);
+        assert!(report.has_errors());
+        assert!(report
+            .entries
+            .iter()
+            .any(|e| e.code == "transport_mismatch"));
+    }
+
+    #[test]
+    fn rejects_deepseek_unknown_credential_ref() {
+        let engine = ValidationEngine::new();
+        let mut entry = deepseek_entry();
+        entry.credential_ref = "totally-unknown".to_string();
+        let manifest = simple_manifest(entry);
+        let report = engine.validate(&manifest, None);
+        assert!(report.has_errors());
+        assert!(report
+            .entries
+            .iter()
+            .any(|e| e.code == "unknown_credential_ref"));
+    }
+
+    #[test]
+    fn rejects_deepseek_missing_route_registration() {
+        let engine = ValidationEngine::new();
+        let mut entry = deepseek_entry();
+        entry.route_registration = "deepseek@nonexistent".to_string();
+        let manifest = simple_manifest(entry);
+        let report = engine.validate(&manifest, None);
+        assert!(report.has_errors());
+        assert!(report
+            .entries
+            .iter()
+            .any(|e| e.code == "missing_route_registration"));
+    }
+
+    #[test]
+    fn deepseek_model_outside_allowlist_excluded() {
+        let engine = ValidationEngine::new();
+        let mut entry = deepseek_entry();
+        // Narrow allowlist to only pro; flash should be excluded.
+        entry.model_id.allow = vec!["deepseek-v4-pro".to_string()];
+        let manifest = simple_manifest(entry);
+        let snapshot = deepseek_snapshot();
+        let report = engine.validate(&manifest, Some(&snapshot));
+        assert!(!report.has_errors());
+        assert!(report
+            .entries
+            .iter()
+            .any(|e| e.code == "model_outside_allowlist"
+                && e.severity == ValidationSeverity::Warning));
         assert!(report.offerings.is_empty());
     }
 }

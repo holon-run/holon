@@ -1,7 +1,8 @@
 //! `models.dev` upstream adapter: DTO, projection, and artifact generation.
 //!
-//! This module implements Phase 2A+2B (metadata ingestion) and Phase 3A
-//! (explicit provider mapping) of the models.dev integration:
+//! This module implements Phase 2A+2B (metadata ingestion), Phase 3A
+//! (explicit provider mapping — Anthropic baseline), and Phase 3B
+//! (OpenAI-compatible baseline — DeepSeek) of the models.dev integration:
 //!
 //! - [`dto`] defines an independent upstream DTO that mirrors the
 //!   `models.dev` JSON schema with tri-state `Option<T>` fields.
