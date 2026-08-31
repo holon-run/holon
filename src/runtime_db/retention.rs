@@ -796,7 +796,7 @@ fn collect_transcript_tool_roots(connection: &Connection, roots: &mut StrongRoot
     let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
     for row in rows {
         let record: TranscriptEntry = serde_json::from_str(&row?)?;
-        let Ok(ToolResultData::RefsWithWrapper { refs }) =
+        let Ok(ToolResultData::RefsWithWrapper { refs, .. }) =
             serde_json::from_value::<ToolResultData>(record.data)
         else {
             continue;

@@ -111,6 +111,7 @@ pub(crate) struct RecentTurnsReprojection {
     messages: Vec<MessageEnvelope>,
     briefs: Vec<BriefRecord>,
     tools: Vec<ToolExecutionRecord>,
+    transcript: Vec<TranscriptEntry>,
     current_message: MessageEnvelope,
     current_work_item: Option<WorkItemRecord>,
     initial_budget: usize,
@@ -133,6 +134,7 @@ pub(crate) fn reproject_recent_turns(
         &reprojection.messages,
         &reprojection.briefs,
         &reprojection.tools,
+        &reprojection.transcript,
         &reprojection.current_message,
         reprojection.current_work_item.as_ref(),
         budget,
@@ -532,6 +534,7 @@ pub fn build_context_with_default_external_ingress(
             messages: messages.clone(),
             briefs: briefs.clone(),
             tools: tools.clone(),
+            transcript: transcript.clone(),
             current_message: current_message.clone(),
             current_work_item: current_work_item.cloned(),
             initial_budget: recent_turns_budget,
@@ -542,6 +545,7 @@ pub fn build_context_with_default_external_ingress(
         &messages,
         &briefs,
         &tools,
+        &transcript,
         current_message,
         current_work_item,
         recent_turns_budget,
@@ -552,6 +556,7 @@ pub fn build_context_with_default_external_ingress(
             &messages,
             &briefs,
             &tools,
+            &transcript,
             current_message,
             current_work_item,
             recent_turns_compact_budget,
@@ -2092,6 +2097,7 @@ fn render_recent_turns_with_budget(
     messages: &[MessageEnvelope],
     briefs: &[BriefRecord],
     tools: &[ToolExecutionRecord],
+    transcript: &[TranscriptEntry],
     current_message: &MessageEnvelope,
     current_work_item: Option<&WorkItemRecord>,
     budget: usize,
@@ -2102,6 +2108,7 @@ fn render_recent_turns_with_budget(
         messages,
         briefs,
         tools,
+        transcript,
         current_message,
         current_work_item,
         budget,
@@ -2114,6 +2121,7 @@ fn render_turn_records_with_budget(
     messages: &[MessageEnvelope],
     briefs: &[BriefRecord],
     tools: &[ToolExecutionRecord],
+    transcript: &[TranscriptEntry],
     current_message: &MessageEnvelope,
     current_work_item: Option<&WorkItemRecord>,
     budget: usize,
@@ -2157,8 +2165,8 @@ fn render_turn_records_with_budget(
                 continuity_turn_id.as_deref(),
                 &nearby_turn_ids,
             );
-            render_turn_record_projection(
-                storage, record, messages, briefs, tools, None, mode, budget,
+            render_turn_record_projection_with_transcript(
+                storage, record, messages, briefs, tools, transcript, None, mode, budget,
             )
         })
         .collect::<Vec<_>>();
@@ -2176,6 +2184,7 @@ fn render_turn_records_with_budget(
                 messages,
                 briefs,
                 tools,
+                transcript,
                 current_work_item,
                 budget,
             ) {
@@ -2205,12 +2214,38 @@ fn recent_turn_projection_mode(
     }
 }
 
+#[cfg(test)]
 fn render_turn_record_projection(
     storage: &AppStorage,
     record: &TurnRecord,
     messages: &[MessageEnvelope],
     briefs: &[BriefRecord],
     tools: &[ToolExecutionRecord],
+    continuation: Option<&MessageEnvelope>,
+    mode: RecentTurnProjectionMode,
+    budget: usize,
+) -> Option<String> {
+    let transcript = storage.read_all_transcript().unwrap_or_default();
+    render_turn_record_projection_with_transcript(
+        storage,
+        record,
+        messages,
+        briefs,
+        tools,
+        &transcript,
+        continuation,
+        mode,
+        budget,
+    )
+}
+
+fn render_turn_record_projection_with_transcript(
+    storage: &AppStorage,
+    record: &TurnRecord,
+    messages: &[MessageEnvelope],
+    briefs: &[BriefRecord],
+    tools: &[ToolExecutionRecord],
+    transcript: &[TranscriptEntry],
     continuation: Option<&MessageEnvelope>,
     mode: RecentTurnProjectionMode,
     budget: usize,
@@ -2316,8 +2351,8 @@ fn render_turn_record_projection(
         lines.push(render_recent_turn_input_line(trigger_message, mode));
     }
 
-    let execution_sequence = render_turn_execution_sequence(storage, record, tools, mode);
-    let has_execution_sequence = !execution_sequence.is_empty();
+    let (execution_sequence, has_execution_sequence) =
+        render_turn_execution_sequence(record, briefs, tools, transcript, mode);
     if has_execution_sequence {
         lines.push("  - execution sequence:".to_string());
         lines.extend(execution_sequence);
@@ -2335,9 +2370,52 @@ fn render_turn_record_projection(
             related_briefs.push(rendered);
         }
     }
-    if !related_briefs.is_empty() && !has_execution_sequence {
-        lines.push("  - produced briefs:".to_string());
-        lines.extend(related_briefs);
+    if !related_briefs.is_empty() {
+        if !has_execution_sequence {
+            lines.push("  - produced briefs:".to_string());
+            lines.extend(related_briefs);
+        } else {
+            let sequence_brief_ids = transcript
+                .iter()
+                .filter(|entry| {
+                    entry.agent_id == record.agent_id
+                        && entry
+                            .data
+                            .get("turn_id")
+                            .and_then(Value::as_str)
+                            .is_some_and(|turn_id| turn_id == record.turn_id)
+                        && entry.kind == TranscriptEntryKind::AssistantRound
+                })
+                .filter_map(|entry| {
+                    briefs
+                        .iter()
+                        .find(|brief| {
+                            brief.finalizes_assistant_round_id.as_deref() == Some(entry.id.as_str())
+                                && turn_record_owns_object(record, brief.turn_id.as_deref())
+                        })
+                        .map(|brief| brief.id.as_str())
+                })
+                .collect::<BTreeSet<_>>();
+            let fallback_refs = record
+                .produced_brief_ids
+                .iter()
+                .filter_map(|id| briefs.iter().find(|brief| &brief.id == id))
+                .filter(|brief| {
+                    turn_record_owns_object(record, brief.turn_id.as_deref())
+                        && !sequence_brief_ids.contains(brief.id.as_str())
+                })
+                .map(|brief| {
+                    format!(
+                        "    - result fallback: brief_ref=brief:{}",
+                        sanitize_inline(&brief.id)
+                    )
+                })
+                .collect::<Vec<_>>();
+            if !fallback_refs.is_empty() {
+                lines.push("  - retrieval fallbacks:".to_string());
+                lines.extend(fallback_refs);
+            }
+        }
     }
 
     let related_tools = record
@@ -2362,36 +2440,22 @@ fn render_turn_record_projection(
 }
 
 fn render_turn_execution_sequence(
-    storage: &AppStorage,
     record: &TurnRecord,
+    briefs: &[BriefRecord],
     tools: &[ToolExecutionRecord],
+    transcript: &[TranscriptEntry],
     mode: RecentTurnProjectionMode,
-) -> Vec<String> {
-    let entries = match storage.read_all_transcript() {
-        Ok(entries) => entries
-            .into_iter()
-            .filter(|entry| {
-                entry.agent_id == record.agent_id
-                    && entry
-                        .data
-                        .get("turn_id")
-                        .and_then(Value::as_str)
-                        .is_some_and(|turn_id| turn_id == record.turn_id)
-            })
-            .collect::<Vec<_>>(),
-        Err(error) => {
-            tracing::warn!(
-                turn_id = %record.turn_id,
-                %error,
-                "recent_turns could not load transcript execution sequence"
-            );
-            return Vec::new();
-        }
-    };
-
+) -> (Vec<String>, bool) {
     let mut rendered = Vec::new();
     let mut rendered_tool_ids = BTreeSet::new();
-    for entry in entries {
+    for entry in transcript.iter().filter(|entry| {
+        entry.agent_id == record.agent_id
+            && entry
+                .data
+                .get("turn_id")
+                .and_then(Value::as_str)
+                .is_some_and(|turn_id| turn_id == record.turn_id)
+    }) {
         match entry.kind {
             TranscriptEntryKind::AssistantRound
                 if entry.data.get("visibility").and_then(Value::as_str)
@@ -2405,9 +2469,18 @@ fn render_turn_execution_sequence(
                         RecentTurnProjectionMode::Nearby => 480,
                         RecentTurnProjectionMode::Older => 240,
                     };
+                    let brief_ref = briefs
+                        .iter()
+                        .find(|brief| {
+                            brief.finalizes_assistant_round_id.as_deref() == Some(entry.id.as_str())
+                                && turn_record_owns_object(record, brief.turn_id.as_deref())
+                        })
+                        .map(|brief| format!(" brief_ref=brief:{}", sanitize_inline(&brief.id)))
+                        .unwrap_or_default();
                     rendered.push(format!(
-                        "    - assistant: {}",
-                        sanitize_inline(&truncate_text(&text.replace('\n', " "), limit))
+                        "    - assistant: {}{}",
+                        sanitize_inline(&truncate_text(&text.replace('\n', " "), limit)),
+                        brief_ref
                     ));
                 }
             }
@@ -2450,7 +2523,34 @@ fn render_turn_execution_sequence(
             _ => {}
         }
     }
-    rendered
+    let has_execution_sequence = !rendered.is_empty();
+    if has_execution_sequence {
+        let unsequenced_tools = record
+            .tool_execution_ids
+            .iter()
+            .filter_map(|id| {
+                tools.iter().find(|tool| {
+                    tool.id == *id
+                        && turn_record_owns_object(record, tool.turn_id.as_deref())
+                        && !rendered_tool_ids.contains(tool.id.as_str())
+                })
+            })
+            .collect::<Vec<_>>();
+        rendered.extend(unsequenced_tools.into_iter().map(|tool| {
+            let limit = match mode {
+                RecentTurnProjectionMode::Continuity => 480,
+                RecentTurnProjectionMode::Nearby => 240,
+                RecentTurnProjectionMode::Older => 120,
+            };
+            format!(
+                "    - tool (unsequenced): {} summary={} tool_execution_id={}",
+                sanitize_inline(&tool.tool_name),
+                sanitize_inline(&truncate_text(&tool.summary.replace('\n', " "), limit)),
+                sanitize_inline(&tool.id)
+            )
+        }));
+    }
+    (rendered, has_execution_sequence)
 }
 
 fn render_current_continuation_turn_record_projection(
@@ -2461,15 +2561,17 @@ fn render_current_continuation_turn_record_projection(
     messages: &[MessageEnvelope],
     briefs: &[BriefRecord],
     tools: &[ToolExecutionRecord],
+    transcript: &[TranscriptEntry],
     current_work_item: Option<&WorkItemRecord>,
     budget: usize,
 ) -> Option<String> {
-    let mut rendered = render_turn_record_projection(
+    let mut rendered = render_turn_record_projection_with_transcript(
         storage,
         record,
         messages,
         briefs,
         tools,
+        transcript,
         Some(current_message),
         RecentTurnProjectionMode::Continuity,
         budget,
@@ -5125,6 +5227,7 @@ mod tests {
             &turns,
             &messages,
             &briefs,
+            &[],
             &[],
             &current_message,
             None,

@@ -2951,7 +2951,7 @@ impl TurnExecution<'_> {
                 completed_work_item_this_turn = true;
             }
             // Build ref-backed tool result metadata for transcript
-            use crate::types::ToolResultRef;
+            use crate::types::{ToolResultData, ToolResultRef};
             let refs: Vec<ToolResultRef> = tool_results
                 .iter()
                 .map(|result| {
@@ -2972,15 +2972,16 @@ impl TurnExecution<'_> {
                     }
                 })
                 .collect();
+            let data = serde_json::to_value(ToolResultData::RefsWithWrapper {
+                turn_id: turn_id.clone(),
+                refs,
+            })?;
             let tool_results_transcript = TranscriptEntry::new(
                 agent_id.to_string(),
                 TranscriptEntryKind::ToolResults,
                 Some(round),
                 None,
-                serde_json::json!({
-                    "turn_id": turn_id.clone(),
-                    "refs": refs,
-                }),
+                data,
             );
             if let Some(prepared) = prepared_work_item_completion.as_mut() {
                 prepared.transcript_entries.push(tool_results_transcript);
