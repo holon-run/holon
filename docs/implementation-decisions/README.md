@@ -114,3 +114,4 @@ Current decision notes:
 - [114 Reasoning Effort Scope In Model Chains](./114-reasoning-effort-scope-in-model-chains.md)
 - [115 macOS Menu App Keeps Standalone Daemon](./115-macos-menu-app-keeps-standalone-daemon.md)
 - [116 Universal macOS App DMG](./116-universal-macos-app-dmg.md)
+- [118 Explicit models.dev Provider Mapping](./118-explicit-models-dev-provider-mapping.md)
