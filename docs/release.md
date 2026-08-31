@@ -7,12 +7,13 @@ Holon releases are published from version tags.
 The macOS release also builds `Holon.app` for macOS 13 or later. The app is a
 native SwiftUI menu bar control plane and bundles the matching Rust runtime at
 `Contents/Resources/bin/holon`.
+The DMG is a universal (x86_64 + arm64) artifact, so one download supports
+Apple Silicon and Intel Macs.
 
 Local packaging:
 
 ```bash
-cargo build --release
-scripts/package-macos-menu-app.sh target/release/holon dist
+make macos-menu-package
 ```
 
 Pull requests that change the macOS menu app, its packaging scripts, the
@@ -92,6 +93,8 @@ The release workflow builds and uploads:
 - `holon-linux-amd64.tar.gz`
 - `holon-darwin-amd64.tar.gz`
 - `holon-darwin-arm64.tar.gz`
+- `Holon-<version>.dmg` (universal macOS app) with its SHA-256 file and the
+  signed Sparkle `appcast.xml`
 - `checksums.txt`
 
 After the GitHub release is published successfully, the workflow promotes the

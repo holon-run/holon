@@ -135,20 +135,20 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Select matching macOS target
-        id: macos-target
-        run: |
-          set -euo pipefail
-          case "$(uname -m)" in
-            arm64) target="aarch64-apple-darwin" ;;
-            x86_64) target="x86_64-apple-darwin" ;;
-            *) echo "Unsupported macOS runner architecture: $(uname -m)" >&2; exit 1 ;;
-          esac
-          rustup target add "$target"
-          echo "target=$target" >> "$GITHUB_OUTPUT"
+      - name: Install both macOS Rust targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
       - name: Build bundled Holon runtime
-        run: cargo build --release --locked --target "${{ steps.macos-target.outputs.target }}"
+        run: cargo build --release --locked --target aarch64-apple-darwin --target x86_64-apple-darwin
+
+      - name: Merge universal Holon runtime
+        run: |
+          set -euo pipefail
+          mkdir -p target/universal-macos/release
+          lipo -create \
+            target/aarch64-apple-darwin/release/holon \
+            target/x86_64-apple-darwin/release/holon \
+            -output target/universal-macos/release/holon
 
       - name: Test macOS menu app
         run: swift test --package-path apps/macos/HolonMenu
@@ -158,7 +158,7 @@ jobs:
           set -euo pipefail
           version="$(awk -F '"' '/^version = / { print $2; exit }' Cargo.toml)"
           scripts/package-macos-menu-app.sh \
-            "target/${{ steps.macos-target.outputs.target }}/release/holon" \
+            target/universal-macos/release/holon \
             dist \
             "$version"
 

@@ -25,14 +25,20 @@ package_dir="$repo_root/apps/macos/HolonMenu"
 rm -rf "$app_dir"
 mkdir -p "$contents_dir/MacOS" "$contents_dir/Resources/bin"
 
+# One DMG must run on Apple Silicon and Intel Macs, so the menu app and its
+# resource bundles are built as universal (arm64 + x86_64) binaries.
 swift build \
   --package-path "$package_dir" \
   -c release \
-  --product HolonMenu
+  --product HolonMenu \
+  --arch arm64 \
+  --arch x86_64
 
 swift_bin_path="$(swift build \
   --package-path "$package_dir" \
   -c release \
+  --arch arm64 \
+  --arch x86_64 \
   --show-bin-path)"
 cp "$swift_bin_path/HolonMenu" "$contents_dir/MacOS/HolonMenu"
 cp "$holon_binary" "$contents_dir/Resources/bin/holon"

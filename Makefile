@@ -38,9 +38,13 @@ web-ci: ## Test and build the web GUI with one clean dependency install
 macos-menu-test: ## Build and test the native macOS menu app
 	swift test --package-path apps/macos/HolonMenu
 
-macos-menu-package: ## Package Holon.app and a DMG from target/release/holon
-	cargo build --release --locked
-	scripts/package-macos-menu-app.sh target/release/holon dist
+macos-menu-package: ## Package a universal (x86_64 + arm64) Holon.app and DMG
+	rustup target add aarch64-apple-darwin x86_64-apple-darwin
+	cargo build --release --locked --target aarch64-apple-darwin --target x86_64-apple-darwin
+	mkdir -p target/universal-macos/release
+	lipo -create target/aarch64-apple-darwin/release/holon target/x86_64-apple-darwin/release/holon \
+		-output target/universal-macos/release/holon
+	scripts/package-macos-menu-app.sh target/universal-macos/release/holon dist
 
 transport-types: ## Refresh OpenAPI and generated TypeScript transport types
 	cargo test --test openapi_snapshot refresh_openapi_snapshot -- --ignored

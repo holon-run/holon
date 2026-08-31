@@ -33,8 +33,8 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Select matching macOS target
-        run: rustup target add aarch64-apple-darwin
+      - name: Install both macOS Rust targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
       - name: Import Developer ID certificate
         run: |
@@ -60,13 +60,22 @@ jobs:
             "$keychain"
 
       - name: Build bundled Holon runtime
-        run: cargo build --release --locked --target aarch64-apple-darwin
+        run: cargo build --release --locked --target aarch64-apple-darwin --target x86_64-apple-darwin
+
+      - name: Merge universal Holon runtime
+        run: |
+          set -euo pipefail
+          mkdir -p target/universal-macos/release
+          lipo -create \
+            target/aarch64-apple-darwin/release/holon \
+            target/x86_64-apple-darwin/release/holon \
+            -output target/universal-macos/release/holon
 
       - name: Package macOS app (expected to fail at stapler)
         run: |
           set +e
           scripts/package-macos-menu-app.sh \
-            target/aarch64-apple-darwin/release/holon \
+            target/universal-macos/release/holon \
             dist \
             "0.34.1"
           package_status=$?

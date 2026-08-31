@@ -17,6 +17,20 @@ holon_binary="$app_dir/Contents/Resources/bin/holon"
   exit 1
 }
 
+# The DMG is the only macOS app artifact, so both first-party binaries must
+# carry x86_64 and arm64 slices; Sparkle ships prebuilt universal binaries.
+require_universal() {
+  local binary="$1"
+  local archs
+  archs="$(lipo -archs "$binary")"
+  if [[ "$archs" != *x86_64* || "$archs" != *arm64* ]]; then
+    echo "$binary is not a universal (x86_64 + arm64) binary: $archs" >&2
+    exit 1
+  fi
+}
+require_universal "$menu_binary"
+require_universal "$holon_binary"
+
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$info_plist")" == "run.holon.menu" ]]
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$info_plist")" == "$expected_version" ]]
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$info_plist")" == "13.0" ]]

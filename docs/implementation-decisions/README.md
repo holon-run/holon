@@ -112,3 +112,5 @@ Current decision notes:
 - [101 Scheduler Authority Convergence](./101-scheduler-authority-convergence.md)
 - [103 DeepSeek Responses Endpoint Dialect](./103-deepseek-responses-endpoint-dialect.md)
 - [114 Reasoning Effort Scope In Model Chains](./114-reasoning-effort-scope-in-model-chains.md)
+- [115 macOS Menu App Keeps Standalone Daemon](./115-macos-menu-app-keeps-standalone-daemon.md)
+- [116 Universal macOS App DMG](./116-universal-macos-app-dmg.md)
