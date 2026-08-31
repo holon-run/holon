@@ -1,0 +1,47 @@
+name: models.dev validate
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "models.dev/**"
+      - "src/model_catalog/models_dev/**"
+      - "src/provider/registry/providers.rs"
+      - "tests/models_dev_adapter.rs"
+      - "tests/fixtures/models_dev/**"
+      - ".github/workflows/models-dev-validate.yml"
+      - "Cargo.toml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate models.dev mapping and artifact
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Build
+        run: cargo check --all-targets --locked
+
+      - name: Validate checked-in artifact (if present)
+        run: |
+          if [ -f models.dev/snapshot.json ] && [ -f models.dev/artifact.json ]; then
+            cargo run --locked -- models-dev validate --input-dir models.dev
+          else
+            echo "No checked-in snapshot/artifact; skipping validate."
+          fi
+
+      - name: Run models.dev tests
+        run: cargo test --locked models_dev

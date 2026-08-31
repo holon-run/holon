@@ -59,8 +59,9 @@ use tracing_subscriber::EnvFilter;
 use holon::cli::{
     AgentCommands, AgentModelCommands, Cli, Commands, ConfigCommands, ConfigCredentialCommands,
     ConfigModelCommands, ConfigProviderCommands, ControlCommandAction, DaemonCommands,
-    DebugCommands, EventsCommands, MemoryIndexCommands, ServeAccess, ServeOptions, SkillsCommands,
-    TaskCommands, TimerCommands, TimerCreateArgs, WorkItemCommands, WorkspaceCommands,
+    DebugCommands, EventsCommands, MemoryIndexCommands, ModelsDevCommands, ServeAccess,
+    ServeOptions, SkillsCommands, TaskCommands, TimerCommands, TimerCreateArgs, WorkItemCommands,
+    WorkspaceCommands,
 };
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -271,6 +272,7 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
         Commands::Run { .. } => unreachable!("run command is handled separately"),
         Commands::Solve { .. } => unreachable!("solve command is handled separately"),
         Commands::Debug { command } => handle_debug_command(config, command).await,
+        Commands::ModelsDev { command } => handle_models_dev_command(command).await,
         Commands::Onboard { .. } => unreachable!("onboard command is handled before runtime load"),
         Commands::Config { .. } => unreachable!("config commands are handled separately"),
     }
@@ -2998,6 +3000,138 @@ fn filter_scheduler_recovery_report(
         .task_result_claim_recoveries
         .retain(|candidate| candidate.message_id == message_id);
     Ok(())
+}
+
+async fn handle_models_dev_command(command: ModelsDevCommands) -> Result<()> {
+    use holon::model_catalog::models_dev::{
+        audit_mappings, generate_artifact, parse_snapshot, MappingAuditReport, ProviderMapping,
+    };
+    use sha2::Digest;
+
+    match command {
+        ModelsDevCommands::Refresh { url, output_dir } => {
+            println!("Fetching models.dev snapshot from {url} …");
+            let response = reqwest::blocking::get(&url)
+                .map_err(|e| anyhow!("failed to fetch models.dev snapshot: {e}"))?;
+            if !response.status().is_success() {
+                anyhow::bail!("models.dev fetch returned status {}", response.status());
+            }
+            let raw_json = response
+                .text()
+                .map_err(|e| anyhow!("failed to read models.dev response: {e}"))?;
+            let fetched_at = chrono::Utc::now().to_rfc3339();
+            let sha = sha2::Sha256::digest(raw_json.as_bytes());
+            let upstream_revision = sha.iter().map(|b| format!("{b:02x}")).collect::<String>();
+
+            std::fs::create_dir_all(&output_dir)
+                .map_err(|e| anyhow!("failed to create output dir: {e}"))?;
+            let snapshot_path = output_dir.join("snapshot.json");
+            std::fs::write(&snapshot_path, &raw_json)
+                .map_err(|e| anyhow!("failed to write snapshot: {e}"))?;
+
+            let generated = generate_artifact(
+                &raw_json,
+                &upstream_revision,
+                &fetched_at,
+                env!("HOLON_VERSION"),
+            )
+            .map_err(|e| anyhow!("artifact generation failed: {e}"))?;
+
+            let artifact_path = output_dir.join("artifact.json");
+            let artifact_json = generated
+                .artifact
+                .to_json()
+                .map_err(|e| anyhow!("failed to serialize artifact: {e}"))?;
+            std::fs::write(&artifact_path, &artifact_json)
+                .map_err(|e| anyhow!("failed to write artifact: {e}"))?;
+
+            let report = audit_mappings(
+                &parse_snapshot(&raw_json).map_err(|e| anyhow!("parse error: {e}"))?,
+                &ProviderMapping::default_mappings(),
+            );
+
+            println!("Snapshot  → {}", snapshot_path.display());
+            println!(
+                "Artifact  → {} ({} models)",
+                artifact_path.display(),
+                generated.artifact.model_count()
+            );
+            println!("Mapped    → {} providers", report.mapped.len());
+            println!(
+                "Unmapped  → {} upstream providers",
+                report.unmapped_upstream.len()
+            );
+            println!("Stale     → {} Holon mappings", report.stale_holon.len());
+            if !report.stale_holon.is_empty() {
+                eprintln!("WARNING: stale mappings (models.dev ID not in snapshot):");
+                for entry in &report.stale_holon {
+                    eprintln!("  {} → {}", entry.models_dev_id, entry.holon_provider_id);
+                }
+            }
+            Ok(())
+        }
+        ModelsDevCommands::Validate { input_dir } => {
+            let snapshot_path = input_dir.join("snapshot.json");
+            let artifact_path = input_dir.join("artifact.json");
+            let raw_json = std::fs::read_to_string(&snapshot_path)
+                .map_err(|e| anyhow!("failed to read snapshot: {e}"))?;
+            let artifact_json = std::fs::read_to_string(&artifact_path)
+                .map_err(|e| anyhow!("failed to read artifact: {e}"))?;
+            let artifact: holon::model_catalog::models_dev::ModelsDevArtifact =
+                serde_json::from_str(&artifact_json)
+                    .map_err(|e| anyhow!("failed to parse artifact JSON: {e}"))?;
+            artifact
+                .validate()
+                .map_err(|e| anyhow!("artifact validation failed: {e}"))?;
+            let snapshot =
+                parse_snapshot(&raw_json).map_err(|e| anyhow!("failed to parse snapshot: {e}"))?;
+            let report = audit_mappings(&snapshot, &ProviderMapping::default_mappings());
+            println!("Artifact valid ({} models)", artifact.model_count());
+            println!(
+                "Audit: mapped={}, unmapped={}, stale={}",
+                report.mapped.len(),
+                report.unmapped_upstream.len(),
+                report.stale_holon.len()
+            );
+            if !report.stale_holon.is_empty() {
+                eprintln!(
+                    "WARNING: {} stale mapping(s) need attention",
+                    report.stale_holon.len()
+                );
+            }
+            Ok(())
+        }
+        ModelsDevCommands::Audit { snapshot, json } => {
+            let raw_json = std::fs::read_to_string(&snapshot)
+                .map_err(|e| anyhow!("failed to read snapshot: {e}"))?;
+            let parsed =
+                parse_snapshot(&raw_json).map_err(|e| anyhow!("failed to parse snapshot: {e}"))?;
+            let report: MappingAuditReport =
+                audit_mappings(&parsed, &ProviderMapping::default_mappings());
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&report)
+                        .map_err(|e| anyhow!("failed to serialize audit: {e}"))?
+                );
+            } else {
+                println!("Provider mapping audit");
+                println!("Mapped ({}):", report.mapped.len());
+                for entry in &report.mapped {
+                    println!("  {} → {}", entry.models_dev_id, entry.holon_provider_id);
+                }
+                println!("Unmapped upstream ({}):", report.unmapped_upstream.len());
+                for id in &report.unmapped_upstream {
+                    println!("  {id}");
+                }
+                println!("Stale Holon mappings ({}):", report.stale_holon.len());
+                for entry in &report.stale_holon {
+                    println!("  {} → {}", entry.models_dev_id, entry.holon_provider_id);
+                }
+            }
+            Ok(())
+        }
+    }
 }
 
 fn handle_runtime_db_debug_command(

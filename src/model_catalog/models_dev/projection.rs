@@ -30,47 +30,61 @@ pub struct ProviderMapping {
 }
 
 impl ProviderMapping {
-    /// Returns the default set of direct provider ID matches.
+    /// Returns the default set of provider mappings.
     ///
-    /// These are providers whose `models.dev` ID directly matches the Holon
-    /// canonical provider ID. Unmapped providers are skipped during
-    /// projection.
+    /// Includes both direct ID matches (models.dev ID == Holon provider ID)
+    /// and name-mismatched mappings (e.g. `moonshotai` → `moonshot`).
+    /// Unmapped providers are skipped during projection.
     pub fn default_mappings() -> Vec<Self> {
-        [
+        // Direct matches: models.dev provider ID == Holon provider ID.
+        let direct = [
             "anthropic",
             "openai",
             "deepseek",
             "mistral",
-            "moonshot",
             "nvidia",
             "openrouter",
-            "together",
-            "fireworks",
             "huggingface",
             "xai",
-            "gemini",
             "minimax",
             "zai",
-            "bigmodel",
             "volcengine",
             "stepfun",
-            "qianfan",
-            "byteplus",
             "arcee",
             "chutes",
             "nearai",
             "venice",
-            "vllm",
-            "ollama",
             "xiaomi",
-            "dashscope",
         ]
         .into_iter()
         .map(|id| Self {
             models_dev_id: id.to_string(),
             holon_provider_id: id.to_string(),
         })
-        .collect()
+        .collect::<Vec<_>>();
+
+        // Name-mismatched mappings: the models.dev provider ID differs from
+        // the Holon canonical provider ID. Verified against the live
+        // `models.dev/api.json` snapshot.
+        let mismatched = [
+            ("moonshotai", "moonshot"),
+            ("togetherai", "together"),
+            ("fireworks-ai", "fireworks"),
+            ("google", "gemini"),
+            ("zhipuai", "bigmodel"),
+            ("alibaba", "dashscope"),
+        ];
+        let mismatched = mismatched
+            .into_iter()
+            .map(|(md_id, holon_id)| Self {
+                models_dev_id: md_id.to_string(),
+                holon_provider_id: holon_id.to_string(),
+            })
+            .collect::<Vec<_>>();
+
+        let mut mappings = direct;
+        mappings.extend(mismatched);
+        mappings
     }
 }
 

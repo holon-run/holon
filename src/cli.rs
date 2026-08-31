@@ -241,6 +241,14 @@ pub enum Commands {
         #[command(subcommand)]
         command: DebugCommands,
     },
+    #[command(
+        name = "models-dev",
+        about = "models.dev snapshot refresh, validation, and audit"
+    )]
+    ModelsDev {
+        #[command(subcommand)]
+        command: ModelsDevCommands,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -667,6 +675,31 @@ pub enum DebugCommands {
         stage: String,
         #[arg(long)]
         objective: String,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ModelsDevCommands {
+    #[command(
+        about = "Fetch the models.dev snapshot, generate artifact, and write to models.dev/"
+    )]
+    Refresh {
+        #[arg(long, default_value = "https://models.dev/api.json")]
+        url: String,
+        #[arg(long, default_value = "models.dev")]
+        output_dir: PathBuf,
+    },
+    #[command(about = "Validate the checked-in models.dev snapshot and artifact")]
+    Validate {
+        #[arg(long, default_value = "models.dev")]
+        input_dir: PathBuf,
+    },
+    #[command(about = "Audit provider mappings against a snapshot")]
+    Audit {
+        #[arg(long, default_value = "models.dev/snapshot.json")]
+        snapshot: PathBuf,
         #[arg(long)]
         json: bool,
     },

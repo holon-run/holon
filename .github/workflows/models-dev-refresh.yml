@@ -1,0 +1,52 @@
+name: models.dev refresh
+
+on:
+  schedule:
+    # Every Monday at 06:00 UTC
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  refresh:
+    name: Refresh models.dev snapshot and artifact
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build holon
+        run: cargo build --locked
+
+      - name: Fetch snapshot and generate artifact
+        run: cargo run --locked -- models-dev refresh --output-dir models.dev
+
+      - name: Check for changes
+        id: diff
+        run: |
+          if git diff --exit-code -- models.dev/; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create or update PR
+        if: steps.diff.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: models-dev-refresh
+          title: "chore: refresh models.dev snapshot and artifact"
+          body: |
+            Automated models.dev snapshot refresh.
+
+            - Snapshot and artifact regenerated from `https://models.dev/api.json`.
+            - Review the provider mapping audit output.
+            - No provider enablement or route changes.
+          commit-message: "chore: refresh models.dev snapshot and artifact"
+          labels: models-dev
