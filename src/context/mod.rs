@@ -2214,31 +2214,6 @@ fn recent_turn_projection_mode(
     }
 }
 
-#[cfg(test)]
-fn render_turn_record_projection(
-    storage: &AppStorage,
-    record: &TurnRecord,
-    messages: &[MessageEnvelope],
-    briefs: &[BriefRecord],
-    tools: &[ToolExecutionRecord],
-    continuation: Option<&MessageEnvelope>,
-    mode: RecentTurnProjectionMode,
-    budget: usize,
-) -> Option<String> {
-    let transcript = storage.read_all_transcript().unwrap_or_default();
-    render_turn_record_projection_with_transcript(
-        storage,
-        record,
-        messages,
-        briefs,
-        tools,
-        &transcript,
-        continuation,
-        mode,
-        budget,
-    )
-}
-
 fn render_turn_record_projection_with_transcript(
     storage: &AppStorage,
     record: &TurnRecord,
@@ -2523,6 +2498,8 @@ fn render_turn_execution_sequence(
             _ => {}
         }
     }
+    // This flag describes transcript-backed entries only; unsequenced tools
+    // appended below are deliberately rendered as a fallback.
     let has_execution_sequence = !rendered.is_empty();
     if has_execution_sequence {
         let unsequenced_tools = record
@@ -3755,7 +3732,7 @@ mod tests {
         turn.tool_execution_ids = vec!["tool-ordered".into(), "tool-unrelated".into()];
         storage.append_turn(&turn).unwrap();
 
-        for entry in [
+        let transcript = [
             TranscriptEntry::new(
                 "default",
                 TranscriptEntryKind::AssistantRound,
@@ -3789,8 +3766,9 @@ mod tests {
                     "blocks": [{"type": "text", "text": "The tool confirmed it."}]
                 }),
             ),
-        ] {
-            storage.append_transcript_entry(&entry).unwrap();
+        ];
+        for entry in &transcript {
+            storage.append_transcript_entry(entry).unwrap();
         }
 
         for (id, tool_name, summary, owned_turn_id) in [
@@ -3828,7 +3806,7 @@ mod tests {
                 .unwrap();
         }
 
-        let rendered = render_turn_record_projection(
+        let rendered = render_turn_record_projection_with_transcript(
             &storage,
             &turn,
             &[operator],
@@ -3843,6 +3821,7 @@ mod tests {
                     .unwrap()
                     .unwrap(),
             ],
+            &transcript,
             None,
             RecentTurnProjectionMode::Continuity,
             20_000,
@@ -3858,6 +3837,116 @@ mod tests {
         assert!(!rendered.contains("tool-unrelated"));
         assert!(!rendered.contains("produced briefs:"));
         assert!(!rendered.contains("tool executions:"));
+    }
+
+    #[test]
+    fn recent_turns_covers_transcript_sequence_and_fallback_references() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
+        let turn_id = "turn-sequence-fallbacks";
+        let mut operator = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Run both tools and summarize them.".into(),
+            },
+        );
+        operator.turn_id = Some(turn_id.into());
+        storage.append_message(&operator).unwrap();
+
+        let assistant_entry = TranscriptEntry::new(
+            "default",
+            TranscriptEntryKind::AssistantRound,
+            Some(1),
+            None,
+            json!({
+                "turn_id": turn_id,
+                "blocks": [{"type": "text", "text": "I ran the requested tools."}]
+            }),
+        );
+        let tool_results_entry = TranscriptEntry::new(
+            "default",
+            TranscriptEntryKind::ToolResults,
+            Some(1),
+            None,
+            json!({
+                "turn_id": turn_id,
+                "refs": [{"tool_execution_id": "tool-sequenced"}]
+            }),
+        );
+        let transcript = [assistant_entry.clone(), tool_results_entry];
+
+        let mut sequenced_brief = BriefRecord::new(
+            "default",
+            BriefKind::Result,
+            "sequenced brief preview",
+            Some(operator.id.clone()),
+            None,
+        );
+        sequenced_brief.id = "brief-sequenced".into();
+        sequenced_brief.turn_id = Some(turn_id.into());
+        sequenced_brief.finalizes_assistant_round_id = Some(assistant_entry.id.clone());
+
+        let mut fallback_brief = BriefRecord::new(
+            "default",
+            BriefKind::Result,
+            "fallback brief preview",
+            Some(operator.id.clone()),
+            None,
+        );
+        fallback_brief.id = "brief-fallback".into();
+        fallback_brief.turn_id = Some(turn_id.into());
+
+        let make_tool = |id: &str, summary: &str| ToolExecutionRecord {
+            id: id.into(),
+            agent_id: "default".into(),
+            work_item_id: None,
+            turn_index: 1,
+            turn_id: Some(turn_id.into()),
+            tool_name: "ExecCommand".into(),
+            created_at: chrono::Utc::now(),
+            completed_at: Some(chrono::Utc::now()),
+            duration_ms: 1,
+            authority_class: AuthorityClass::RuntimeInstruction,
+            status: ToolExecutionStatus::Success,
+            input: json!({}),
+            output: json!({}),
+            summary: summary.into(),
+            invocation_surface: None,
+        };
+        let sequenced_tool = make_tool("tool-sequenced", "sequenced tool summary");
+        let unsequenced_tool = make_tool("tool-unsequenced", "unsequenced tool summary");
+
+        let mut turn = TurnRecord::new("default", turn_id, 1);
+        turn.input_message_ids = vec![operator.id.clone()];
+        turn.produced_brief_ids = vec![sequenced_brief.id.clone(), fallback_brief.id.clone()];
+        turn.tool_execution_ids = vec![sequenced_tool.id.clone(), unsequenced_tool.id.clone()];
+        turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&operator));
+
+        let rendered = render_turn_record_projection_with_transcript(
+            &storage,
+            &turn,
+            &[operator],
+            &[sequenced_brief, fallback_brief],
+            &[sequenced_tool, unsequenced_tool],
+            &transcript,
+            None,
+            RecentTurnProjectionMode::Continuity,
+            20_000,
+        )
+        .expect("turn with transcript fallbacks should render");
+
+        assert!(rendered
+            .contains("assistant: I ran the requested tools. brief_ref=brief:brief-sequenced"));
+        assert!(rendered.contains("tool: ExecCommand summary=sequenced tool summary"));
+        assert!(
+            rendered.contains("tool (unsequenced): ExecCommand summary=unsequenced tool summary")
+        );
+        assert!(rendered.contains("retrieval fallbacks:"));
+        assert!(rendered.contains("result fallback: brief_ref=brief:brief-fallback"));
     }
 
     #[test]
@@ -4179,11 +4268,12 @@ mod tests {
         turn.produced_brief_ids = vec![brief.id.clone()];
         turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&message));
 
-        let rendered = render_turn_record_projection(
+        let rendered = render_turn_record_projection_with_transcript(
             &storage,
             &turn,
             &[message.clone()],
             &[brief],
+            &[],
             &[],
             None,
             RecentTurnProjectionMode::Older,
@@ -4241,12 +4331,13 @@ mod tests {
         turn.produced_brief_ids = vec![brief.id.clone()];
         turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&message));
 
-        let rendered = render_turn_record_projection(
+        let rendered = render_turn_record_projection_with_transcript(
             &storage,
             &turn,
             &[message],
             &[brief],
             &[],
+            std::slice::from_ref(&entry),
             None,
             RecentTurnProjectionMode::Continuity,
             2048,
@@ -5132,11 +5223,12 @@ mod tests {
         turn.produced_brief_ids = vec![brief.id.clone()];
         turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&message));
 
-        let rendered = render_turn_record_projection(
+        let rendered = render_turn_record_projection_with_transcript(
             &storage,
             &turn,
             &[message],
             &[brief],
+            &[],
             &[],
             None,
             RecentTurnProjectionMode::Continuity,
