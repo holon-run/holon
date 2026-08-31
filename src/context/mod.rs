@@ -1283,6 +1283,13 @@ fn assistant_round_text_preview(entry: &TranscriptEntry) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
+fn is_projectable_assistant_round(entry: &TranscriptEntry) -> bool {
+    entry.kind == TranscriptEntryKind::AssistantRound
+        && entry.data.get("visibility").and_then(Value::as_str) != Some("runtime_private")
+        && entry.data.get("round_purpose").and_then(Value::as_str) != Some("runtime_checkpoint")
+        && assistant_round_text_preview(entry).is_some()
+}
+
 fn render_work_item_candidates(
     projection: &crate::storage::WorkQueueReadModel,
     storage: &AppStorage,
@@ -2359,7 +2366,7 @@ fn render_turn_record_projection_with_transcript(
                             .get("turn_id")
                             .and_then(Value::as_str)
                             .is_some_and(|turn_id| turn_id == record.turn_id)
-                        && entry.kind == TranscriptEntryKind::AssistantRound
+                        && is_projectable_assistant_round(entry)
                 })
                 .filter_map(|entry| {
                     briefs
@@ -2432,12 +2439,7 @@ fn render_turn_execution_sequence(
                 .is_some_and(|turn_id| turn_id == record.turn_id)
     }) {
         match entry.kind {
-            TranscriptEntryKind::AssistantRound
-                if entry.data.get("visibility").and_then(Value::as_str)
-                    != Some("runtime_private")
-                    && entry.data.get("round_purpose").and_then(Value::as_str)
-                        != Some("runtime_checkpoint") =>
-            {
+            TranscriptEntryKind::AssistantRound if is_projectable_assistant_round(&entry) => {
                 if let Some(text) = assistant_round_text_preview(&entry) {
                     let limit = match mode {
                         RecentTurnProjectionMode::Continuity => 1200,
