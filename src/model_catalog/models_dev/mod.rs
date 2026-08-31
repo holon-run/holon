@@ -1,6 +1,7 @@
 //! `models.dev` upstream adapter: DTO, projection, and artifact generation.
 //!
-//! This module implements Phase 2A+2B of the models.dev integration:
+//! This module implements Phase 2A+2B (metadata ingestion) and Phase 3A
+//! (explicit provider mapping) of the models.dev integration:
 //!
 //! - [`dto`] defines an independent upstream DTO that mirrors the
 //!   `models.dev` JSON schema with tri-state `Option<T>` fields.
@@ -9,6 +10,11 @@
 //!   stay `unknown`.
 //! - [`artifact`] wraps the projected data with provenance metadata
 //!   (upstream revision, content SHA-256, adapter version).
+//! - [`mapping`] defines the versioned, Holon-owned provider mapping manifest
+//!   schema that connects `models.dev` provider IDs to Holon route identities.
+//! - [`validation`] validates a manifest against Holon's built-in provider
+//!   definitions and optionally a `models.dev` snapshot, producing a
+//!   deterministic report with rejection diagnostics.
 //!
 //! The runtime does not consume `models.dev` directly. CI uses this module
 //! to generate an immutable artifact that enters Holon through review and
@@ -16,7 +22,9 @@
 
 pub mod artifact;
 pub mod dto;
+pub mod mapping;
 pub mod projection;
+pub mod validation;
 
 pub use artifact::{
     ArtifactAlias, ArtifactBuilder, ArtifactPreferredModel, ArtifactPreferredModelRoute,
@@ -26,7 +34,13 @@ pub use dto::{
     ModelsDevCost, ModelsDevInterleaved, ModelsDevLimit, ModelsDevModalities, ModelsDevModel,
     ModelsDevProvider, ModelsDevReasoningOption, ModelsDevSnapshot,
 };
+pub use mapping::{
+    Callability, CapabilityCeiling, LimitCeiling, MappingProvenance, ModelIdAllow,
+    ModelIdMatchMode, OfferingRecord, ProviderKind, ProviderMappingEntry, ProviderMappingManifest,
+    MAPPING_SCHEMA_VERSION,
+};
 pub use projection::{ProjectedModel, ProjectionResult, Projector, ProviderMapping, UnmappedModel};
+pub use validation::{ValidationEngine, ValidationEntry, ValidationReport, ValidationSeverity};
 
 /// Parses a `models.dev` JSON snapshot from raw bytes.
 pub fn parse_snapshot(raw: &str) -> Result<ModelsDevSnapshot, serde_json::Error> {

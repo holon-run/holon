@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "providers": [
+    {
+      "models_dev_id": "anthropic",
+      "holon_provider_id": "anthropic",
+      "kind": "direct",
+      "transport": "anthropic_messages",
+      "route_registration": "anthropic@default",
+      "model_id": {
+        "mode": "exact_or_pattern",
+        "allow": ["claude-*"]
+      },
+      "capability_ceiling": {
+        "tool_calling": true,
+        "image_input": true,
+        "image_generation": false,
+        "reasoning": true,
+        "structured_output": false
+      },
+      "limit_ceiling": {
+        "context_window_tokens": 200000,
+        "max_output_tokens": 32000
+      },
+      "credential_ref": "anthropic",
+      "enabled": false,
+      "provenance": {
+        "owner": "holon",
+        "reviewed_at": "2026-08-31"
+      }
+    }
+  ]
+}
