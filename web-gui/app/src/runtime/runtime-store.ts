@@ -1543,7 +1543,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
   displayLevel: "info",
   displayLevelsByAgentId: readStoredDisplayLevels(),
   rightPanelOpen: true,
-    rightPanelMode: "normal",
+  rightPanelMode: "normal",
   rightPanelView: undefined,
   rightPanelViewStack: [],
   timelineEventsByAgentId: {},
