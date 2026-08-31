@@ -2865,11 +2865,11 @@ code {
 }
 
 .model-menu {
-  position: absolute;
-  right: 0;
-  bottom: calc(100% + 8px);
-  z-index: 20;
-  width: min(720px, calc(100vw - 56px));
+  /* Rendered via portal with fixed positioning anchored to the picker in JS:
+     escapes the overflow-hidden shells so narrow main columns stop clipping
+     the menu behind the sidebar. */
+  position: fixed;
+  z-index: 60;
   max-height: 480px;
   overflow: auto;
   padding: 10px;
@@ -3061,10 +3061,6 @@ code {
 }
 
 @media (max-width: 640px) {
-  .model-menu {
-    width: min(440px, calc(100vw - 24px));
-  }
-
   .model-picker-grid {
     display: block;
   }

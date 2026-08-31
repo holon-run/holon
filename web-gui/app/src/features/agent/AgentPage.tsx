@@ -6,8 +6,9 @@ import {
 } from "lucide-react";
 import {
   useEffect, useLayoutEffect, useMemo, useRef, useState,
-  type DragEvent, type FormEvent, type KeyboardEvent, type MutableRefObject, type RefObject,
+  type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent, type MutableRefObject, type RefObject,
 } from "react";
+import { createPortal } from "react-dom";
 import { useVirtualizer, type VirtualItem, type Virtualizer } from "@tanstack/react-virtual";
 
 import { Button } from "../../components/ui/Button";
@@ -344,10 +345,12 @@ export function AgentPage({
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
   const [selectedReasoningEffort, setSelectedReasoningEffort] = useState("auto");
   const [reasoningPopoverOpen, setReasoningPopoverOpen] = useState(false);
+  const [modelMenuStyle, setModelMenuStyle] = useState<CSSProperties | null>(null);
   const [visibleTimelineItemLimit, setVisibleTimelineItemLimit] = useState(() => defaultTimelineItemLimit("info"));
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const virtualWrapperRef = useRef<HTMLDivElement | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const modelPickerRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const dragCounterRef = useRef(0);
   const preserveScrollRef = useRef<ScrollAnchor | null>(null);
@@ -356,6 +359,39 @@ export function AgentPage({
   const userScrollIntentRef = useRef(false);
   const userScrollIntentTimerRef = useRef<number | null>(null);
   const scheduledBottomScrollRef = useRef<number | null>(null);
+
+  // The model menu renders through a portal with fixed positioning so narrow
+  // main columns no longer clip it behind the sidebar. Track the picker anchor
+  // each frame while open so resizes, panel toggles, and scroll stay aligned.
+  useLayoutEffect(() => {
+    if (!modelPickerOpen) {
+      setModelMenuStyle(null);
+      return;
+    }
+    let frame = 0;
+    let lastKey = "";
+    const position = () => {
+      frame = requestAnimationFrame(position);
+      const anchor = modelPickerRef.current;
+      if (!anchor) return;
+      const rect = anchor.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0) return;
+      const margin = 12;
+      const next = {
+        right: Math.max(window.innerWidth - rect.right, 0),
+        bottom: window.innerHeight - rect.top + 8,
+        width: Math.max(280, Math.min(720, rect.right - margin, window.innerWidth - margin * 2)),
+        maxHeight: Math.max(180, Math.min(480, rect.top - 16)),
+      };
+      const key = `${next.right}|${next.bottom}|${next.width}|${next.maxHeight}`;
+      if (key === lastKey) return;
+      lastKey = key;
+      setModelMenuStyle(next);
+    };
+    position();
+    return () => cancelAnimationFrame(frame);
+  }, [modelPickerOpen]);
+
   const activeAgent = detail?.agent ?? agent;
   const sourceTimeline = detail?.timeline ?? [];
   const timeline = useMemo(
@@ -923,7 +959,7 @@ export function AgentPage({
                 >
                   <Paperclip size={16} />
                 </Button>
-                <div className="model-picker">
+                <div className="model-picker" ref={modelPickerRef}>
                   <Button
                     className="model-button"
                     type="button"
@@ -971,8 +1007,9 @@ export function AgentPage({
                       ) : null}
                     </div>
                   ) : null}
-                  {modelPickerOpen ? (
-                    <div className="model-menu" role="dialog" aria-label={t("agent.switchModelAria")}>
+                  {modelPickerOpen && modelMenuStyle ? (
+                    createPortal(
+                      <div className="model-menu" role="dialog" aria-label={t("agent.switchModelAria")} style={modelMenuStyle}>
                       <div className="model-menu-header">
                         <div>
                           <strong>{t("agent.switchModel")}</strong>
@@ -1064,7 +1101,9 @@ export function AgentPage({
                           description={t("agent.modelRefreshDesc")}
                         />
                       ) : null}
-                    </div>
+                      </div>,
+                      document.body,
+                    )
                   ) : null}
                 </div>
                 <Button className="send-button" type="submit" size="icon" variant="accent" aria-label={t("common.send")} disabled={!canSendPrompt}>
