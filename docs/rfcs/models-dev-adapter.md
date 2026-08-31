@@ -87,8 +87,11 @@ conservative defaults.
 The projection cannot manufacture capabilities absent from the upstream.
 If `models.dev` says `reasoning: false`, Holon's
 `capabilities.supports_reasoning` is `false`. If `models.dev` omits the
-field, it stays `None` (unknown) and the projection skips it, letting
-runtime defaults apply.
+field, the DTO preserves `None` (unknown), but the serialized artifact's
+`ModelCapabilityFlags` uses plain `bool`, so the omitted field collapses
+to conservative `false`. Phase 3 narrowing must check the DTO's
+`Option<bool>` presence before AND-ing; it must not narrow built-in
+capabilities based on absent evidence in the artifact.
 
 ### Provider mapping
 

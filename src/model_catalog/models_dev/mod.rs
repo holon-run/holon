@@ -46,7 +46,7 @@ pub fn generate_artifact(
 ) -> Result<GeneratedArtifact, String> {
     let snapshot = parse_snapshot(raw_json)
         .map_err(|e| format!("failed to parse models.dev snapshot: {e}"))?;
-    let result = Projector::new().project(&snapshot);
+    let result = Projector::new().project(&snapshot)?;
     let artifact = ArtifactBuilder::new(
         upstream_revision,
         fetched_at,

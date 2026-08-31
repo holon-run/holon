@@ -30,7 +30,7 @@ fn parse_fixture_snapshot() {
 fn project_fixture_with_default_mappings() {
     let json = fixture_json();
     let snapshot = parse_snapshot(&json).unwrap();
-    let result = Projector::new().project(&snapshot);
+    let result = Projector::new().project(&snapshot).unwrap();
 
     // openai and anthropic are mapped; hpc-ai and zai-org are not.
     assert!(result.projected.len() >= 3); // 2 openai + 1 anthropic
@@ -41,7 +41,7 @@ fn project_fixture_with_default_mappings() {
 fn projected_model_has_correct_capabilities() {
     let json = fixture_json();
     let snapshot = parse_snapshot(&json).unwrap();
-    let result = Projector::new().project(&snapshot);
+    let result = Projector::new().project(&snapshot).unwrap();
 
     let gpt55 = result
         .projected
@@ -64,7 +64,7 @@ fn projected_model_has_correct_capabilities() {
 fn projected_image_generation_model() {
     let json = fixture_json();
     let snapshot = parse_snapshot(&json).unwrap();
-    let result = Projector::new().project(&snapshot);
+    let result = Projector::new().project(&snapshot).unwrap();
 
     let gpt4o = result
         .projected
@@ -80,7 +80,7 @@ fn projected_image_generation_model() {
 fn unmapped_providers_are_skipped() {
     let json = fixture_json();
     let snapshot = parse_snapshot(&json).unwrap();
-    let result = Projector::new().project(&snapshot);
+    let result = Projector::new().project(&snapshot).unwrap();
 
     assert!(result
         .unmapped
@@ -143,7 +143,7 @@ fn artifact_rejects_zero_context_window() {
         }
     }"#;
     let snapshot = parse_snapshot(json).unwrap();
-    let result = Projector::new().project(&snapshot);
+    let result = Projector::new().project(&snapshot).unwrap();
     let artifact = ArtifactBuilder::new("rev", "ts", b"raw", "v").build(&result);
     // The artifact validate should catch zero context window.
     assert!(artifact.validate().is_err());
@@ -166,7 +166,7 @@ fn schema_drift_unknown_fields_ignored() {
         }
     }"#;
     let snapshot = parse_snapshot(json).expect("unknown fields must not break parsing");
-    let result = Projector::new().project(&snapshot);
+    let result = Projector::new().project(&snapshot).unwrap();
     assert_eq!(result.projected.len(), 1);
     assert!(result.projected[0].metadata.capabilities.supports_reasoning);
 }
@@ -184,7 +184,7 @@ fn missing_fields_do_not_become_true() {
         }
     }"#;
     let snapshot = parse_snapshot(json).unwrap();
-    let result = Projector::new().project(&snapshot);
+    let result = Projector::new().project(&snapshot).unwrap();
 
     let model = &result.projected[0].metadata;
     assert!(!model.capabilities.supports_reasoning);
@@ -208,7 +208,7 @@ fn custom_provider_mapping_projects_unmapped() {
     });
 
     let projector = Projector::with_mappings(mappings);
-    let result = projector.project(&snapshot);
+    let result = projector.project(&snapshot).unwrap();
 
     assert!(result.projected.iter().any(|m| {
         m.metadata.model_ref.provider.as_str() == "zai" && m.metadata.model_ref.model == "glm-5.2"

@@ -3,8 +3,11 @@
 //! The projection maps upstream provider/model fields to Holon
 //! `BuiltInModelMetadata`. It uses an explicit provider mapping to connect
 //! `models.dev` provider IDs to Holon provider IDs. Capabilities can only
-//! narrow; missing upstream fields stay `unknown` and are not converted to
-//! `false`.
+//! narrow, never widen. The DTO preserves tri-state (`Option<bool>`), but
+//! the serialized artifact's `ModelCapabilityFlags` uses plain `bool`;
+//! omitted upstream capability fields collapse to conservative `false`.
+//! Phase 3 narrowing must check the DTO's `Option<bool>` presence before
+//! AND-ing, not the artifact's bool value.
 
 use std::collections::BTreeMap;
 
@@ -14,7 +17,7 @@ use crate::model_catalog::{BuiltInModelMetadata, ModelCapabilityFlags, ModelMeta
 use super::dto::{ModelsDevModel, ModelsDevSnapshot};
 
 /// Default effective context window percentage projected from models.dev.
-const DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT: u8 = 90;
+const DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT: u8 = 95;
 
 /// Default tool output truncation estimate projected from models.dev.
 const DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS: usize = 2_500;
@@ -121,7 +124,7 @@ impl Projector {
     }
 
     /// Projects an entire `models.dev` snapshot into Holon model metadata.
-    pub fn project(&self, snapshot: &ModelsDevSnapshot) -> ProjectionResult {
+    pub fn project(&self, snapshot: &ModelsDevSnapshot) -> Result<ProjectionResult, String> {
         let mut projected = Vec::new();
         let mut unmapped = Vec::new();
 
@@ -140,9 +143,9 @@ impl Projector {
                 }
             };
 
-            let holon_provider = ProviderId::parse(&holon_provider_id).unwrap_or_else(|_| {
-                panic!("invalid Holon provider ID from mapping: {holon_provider_id}")
-            });
+            let holon_provider = ProviderId::parse(&holon_provider_id).map_err(|e| {
+                format!("invalid Holon provider ID from mapping: {holon_provider_id}: {e}")
+            })?;
 
             for (md_model_id, model) in &provider.models {
                 let model_ref = ModelRef::new(holon_provider.clone(), md_model_id.clone());
@@ -163,10 +166,10 @@ impl Projector {
                 .cmp(&b.metadata.model_ref.as_string())
         });
 
-        ProjectionResult {
+        Ok(ProjectionResult {
             projected,
             unmapped,
-        }
+        })
     }
 }
 
@@ -296,7 +299,7 @@ mod tests {
     #[test]
     fn projects_mapped_provider() {
         let snapshot = sample_snapshot();
-        let result = Projector::new().project(&snapshot);
+        let result = Projector::new().project(&snapshot).unwrap();
 
         assert_eq!(result.projected.len(), 2);
         assert_eq!(result.unmapped.len(), 1);
@@ -325,7 +328,7 @@ mod tests {
     #[test]
     fn projects_image_generation() {
         let snapshot = sample_snapshot();
-        let result = Projector::new().project(&snapshot);
+        let result = Projector::new().project(&snapshot).unwrap();
 
         let gpt4o = result
             .projected
@@ -339,7 +342,7 @@ mod tests {
     #[test]
     fn skips_unmapped_provider() {
         let snapshot = sample_snapshot();
-        let result = Projector::new().project(&snapshot);
+        let result = Projector::new().project(&snapshot).unwrap();
 
         assert_eq!(result.unmapped.len(), 1);
         assert_eq!(
@@ -352,15 +355,15 @@ mod tests {
     #[test]
     fn auto_compact_token_limit_derived() {
         let snapshot = sample_snapshot();
-        let result = Projector::new().project(&snapshot);
+        let result = Projector::new().project(&snapshot).unwrap();
 
         let gpt55 = result
             .projected
             .iter()
             .find(|m| m.models_dev_model_id == "gpt-5.5")
             .unwrap();
-        // 1050000 * 90 / 100 = 945000
-        assert_eq!(gpt55.metadata.auto_compact_token_limit, Some(945_000));
+        // 1050000 * 95 / 100 = 997500
+        assert_eq!(gpt55.metadata.auto_compact_token_limit, Some(997_500));
     }
 
     #[test]
@@ -370,7 +373,7 @@ mod tests {
             models_dev_id: "openai".to_string(),
             holon_provider_id: "openrouter".to_string(),
         }]);
-        let result = projector.project(&snapshot);
+        let result = projector.project(&snapshot).unwrap();
 
         assert_eq!(result.projected.len(), 2);
         assert!(result.projected[0]

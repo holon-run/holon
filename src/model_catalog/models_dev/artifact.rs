@@ -160,7 +160,9 @@ impl ModelsDevArtifact {
 
     /// Computes the SHA-256 digest of the artifact JSON.
     pub fn content_sha256(&self) -> String {
-        let json = self.to_json().unwrap_or_default();
+        let json = self
+            .to_json()
+            .expect("artifact serialization must not fail");
         hex_encode(Sha256::digest(json.as_bytes()).as_slice())
     }
 
@@ -243,7 +245,7 @@ mod tests {
             }
         }"#;
         let snapshot: ModelsDevSnapshot = serde_json::from_str(json).unwrap();
-        Projector::new().project(&snapshot)
+        Projector::new().project(&snapshot).unwrap()
     }
 
     #[test]
