@@ -6,13 +6,39 @@
 
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
+use serde_json::Value;
 
 /// The top-level `models.dev` API response: a map of provider ID to provider.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ModelsDevSnapshot {
-    #[serde(flatten)]
     pub providers: BTreeMap<String, ModelsDevProvider>,
+}
+
+impl<'de> Deserialize<'de> for ModelsDevSnapshot {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = BTreeMap::<String, Value>::deserialize(deserializer)?;
+        let mut providers = BTreeMap::new();
+
+        for (key, value) in raw {
+            let Some(object) = value.as_object() else {
+                // Keep the adapter forward-compatible with future scalar
+                // metadata added alongside provider entries.
+                continue;
+            };
+            if !object.contains_key("id") {
+                continue;
+            }
+
+            let provider = serde_json::from_value(value).map_err(D::Error::custom)?;
+            providers.insert(key, provider);
+        }
+
+        Ok(Self { providers })
+    }
 }
 
 /// A single provider entry in the `models.dev` API.
@@ -226,5 +252,20 @@ mod tests {
         }"#;
         let snapshot: ModelsDevSnapshot = serde_json::from_str(json).unwrap();
         assert_eq!(snapshot.providers["test"].models["m"].id, "m");
+    }
+
+    #[test]
+    fn ignores_unknown_top_level_scalar_fields() {
+        let json = r#"{
+            "schema_version": 2,
+            "generated_at": "2026-08-31T00:00:00Z",
+            "test": {
+                "id": "test",
+                "models": {}
+            }
+        }"#;
+        let snapshot: ModelsDevSnapshot = serde_json::from_str(json).unwrap();
+        assert_eq!(snapshot.providers.len(), 1);
+        assert_eq!(snapshot.providers["test"].id, "test");
     }
 }
