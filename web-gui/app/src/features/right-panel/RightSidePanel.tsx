@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 import type { AgentSummary, RightPanelView, RuntimeConnection, SkillCatalogState, TaskDetailState, ToolExecutionDetailState, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
 import type { AgentControlAction, AgentDeletionStatus } from "../../runtime/types";
 import type { AgentSessionState, TimelineEventsState } from "../../runtime/runtime-store";
+import { getRuntimeTraceRevision, isRuntimeTraceEnabled, subscribeRuntimeTrace } from "../../runtime/runtime-trace";
 import type { TaskSummary } from "../../runtime/types";
 import { Maximize2, Minimize2, X } from "lucide-react";
 import { ActivityInspectorPanel, activityInspectorTitle } from "../inspector/ActivityInspectorPanel";
@@ -158,9 +159,11 @@ export function RightSidePanel({
 
   const [showSkillManager, setShowSkillManager] = useState(false);
   const [showRuntimeTrace, setShowRuntimeTrace] = useState(false);
+  useSyncExternalStore(subscribeRuntimeTrace, getRuntimeTraceRevision, getRuntimeTraceRevision);
+  const runtimeTraceEnabled = isRuntimeTraceEnabled();
   const activeView = view?.agentId === agent.id ? view : { kind: "agent_overview" as const, agentId: agent.id };
   const skillManagerActive = activeView.kind === "agent_overview" && showSkillManager;
-  const runtimeTraceActive = activeView.kind === "agent_overview" && showRuntimeTrace;
+  const runtimeTraceActive = activeView.kind === "agent_overview" && showRuntimeTrace && runtimeTraceEnabled;
   const title =
     runtimeTraceActive
       ? t("runtimeTrace.title")
@@ -195,6 +198,10 @@ export function RightSidePanel({
     setShowRuntimeTrace(false);
   }, [agent.id, activeView.kind]);
 
+  useEffect(() => {
+    if (!runtimeTraceEnabled) setShowRuntimeTrace(false);
+  }, [runtimeTraceEnabled]);
+
   const openSkillManager = () => {
     setShowSkillManager(true);
     if (!availableSkillCatalogLoading && (availableSkillCatalog?.catalog.length ?? 0) === 0) {
@@ -226,7 +233,7 @@ export function RightSidePanel({
               {t("rightPanel.agentOverview")}
             </button>
           ) : null}
-          {activeView.kind === "agent_overview" ? (
+        {activeView.kind === "agent_overview" && runtimeTraceEnabled ? (
             <button
               type="button"
               aria-label={t("runtimeTrace.open")}
