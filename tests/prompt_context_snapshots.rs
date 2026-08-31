@@ -8,6 +8,7 @@ use anyhow::Result;
 use chrono::Utc;
 use holon::{
     context::ContextConfig,
+    projection_eval::{ProjectionEvidenceRole, ProjectionInvariantStatus, ProjectionOwner},
     prompt::build_effective_prompt,
     storage::AppStorage,
     system::{ExecutionProfile, ExecutionSnapshot, WorkspaceAccessMode, WorkspaceProjectionKind},
@@ -17,8 +18,8 @@ use holon::{
         ContinuationClass, ContinuationResolution, ContinuationTriggerKind, LoadedAgentMemory,
         LoadedAgentsMd, MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind,
         MessageOrigin, Priority, SkillsRuntimeView, TodoItem, TodoItemState, ToolExecutionRecord,
-        ToolExecutionStatus, TurnRecord, TurnTriggerSummary, WaitingReason, WorkItemRecord,
-        WorkItemState, WorkingMemorySnapshot,
+        ToolExecutionStatus, TurnOwner, TurnRecord, TurnTriggerSummary, WaitingReason,
+        WorkItemExecutionBinding, WorkItemRecord, WorkItemState, WorkingMemorySnapshot,
     },
 };
 use serde_json::{json, Value};
@@ -411,6 +412,25 @@ fn append_turn_for_message(
     Ok(turn)
 }
 
+fn append_owned_turn_for_message(
+    storage: &AppStorage,
+    message: &MessageEnvelope,
+    turn_id: &str,
+    turn_index: u64,
+    owner: TurnOwner,
+) -> Result<TurnRecord> {
+    let mut message = message.clone();
+    message.turn_id = Some(turn_id.into());
+    storage.append_message(&message)?;
+    let mut turn = TurnRecord::new(&message.agent_id, turn_id, turn_index);
+    turn.current_work_item_id = owner.work_item_id().map(str::to_owned);
+    turn.owner = Some(owner);
+    turn.input_message_ids = vec![message.id.clone()];
+    turn.trigger = Some(TurnTriggerSummary::from_message(&message));
+    storage.append_turn(&turn)?;
+    Ok(turn)
+}
+
 #[test]
 fn recent_turns_snapshot_links_operator_input_to_result_brief() -> Result<()> {
     let dir = tempdir()?;
@@ -506,6 +526,209 @@ Current input:
   Continue with the next prompt projection case."#
     );
     assert_snapshot(&rendered, &expected);
+    Ok(())
+}
+
+#[test]
+fn owner_centered_projection_preserves_multi_turn_continuity() -> Result<()> {
+    let dir = tempdir()?;
+    let storage = AppStorage::new_for_test(dir.path())?;
+    let mut work_item = WorkItemRecord::new(
+        "default",
+        "Keep the deployment diagnosis coherent",
+        WorkItemState::Open,
+    );
+    work_item.id = "work_owner_continuity".into();
+    storage.append_work_item(&work_item)?;
+    append_work_item_todo(
+        &storage,
+        work_item.id.clone(),
+        vec![
+            TodoItem {
+                text: "Collect the first service symptom".into(),
+                state: TodoItemState::Completed,
+            },
+            TodoItem {
+                text: "Compare the second service symptom".into(),
+                state: TodoItemState::InProgress,
+            },
+            TodoItem {
+                text: "Choose the next diagnostic step".into(),
+                state: TodoItemState::Pending,
+            },
+        ],
+    )?;
+
+    let owner = TurnOwner::WorkItem {
+        work_item_id: work_item.id.clone(),
+    };
+    let first_operator = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("operator:jolestar".into()),
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "The service reports symptom alpha; keep that fact attached to this diagnosis."
+                .into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::CliPrompt,
+        AdmissionContext::LocalProcess,
+    );
+    let mut first_operator = first_operator;
+    first_operator.work_item_id = Some(work_item.id.clone());
+    let mut first_brief = BriefRecord::new(
+        "default",
+        BriefKind::Result,
+        "Diagnosis note: symptom alpha is a connection timeout.",
+        Some(first_operator.id.clone()),
+        None,
+    );
+    first_brief.id = "brief_owner_alpha".into();
+    first_brief.turn_id = Some("turn_owner_alpha".into());
+    first_brief.work_item_id = Some(work_item.id.clone());
+    storage.append_brief(&first_brief)?;
+    let mut first_turn = append_owned_turn_for_message(
+        &storage,
+        &first_operator,
+        "turn_owner_alpha",
+        1,
+        owner.clone(),
+    )?;
+    first_turn.produced_brief_ids = vec![first_brief.id.clone()];
+    storage.append_turn(&first_turn)?;
+
+    let second_result = MessageEnvelope::new(
+        "default",
+        MessageKind::TaskResult,
+        MessageOrigin::Task {
+            task_id: "task_owner_beta".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Next,
+        MessageBody::Text {
+            text: "The service also reports symptom beta; the diagnostic command completed.".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    let mut second_result = second_result;
+    second_result.work_item_id = Some(work_item.id.clone());
+    let mut second_brief = BriefRecord::new(
+        "default",
+        BriefKind::Result,
+        "Diagnosis note: symptom beta is isolated to the gateway.",
+        Some(second_result.id.clone()),
+        Some("task_owner_beta".into()),
+    );
+    second_brief.id = "brief_owner_beta".into();
+    second_brief.turn_id = Some("turn_owner_beta".into());
+    second_brief.work_item_id = Some(work_item.id.clone());
+    storage.append_brief(&second_brief)?;
+    let mut second_turn = append_owned_turn_for_message(
+        &storage,
+        &second_result,
+        "turn_owner_beta",
+        2,
+        owner.clone(),
+    )?;
+    second_turn.produced_brief_ids = vec![second_brief.id.clone()];
+    storage.append_turn(&second_turn)?;
+
+    let current_message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("operator:jolestar".into()),
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "Given alpha and beta together, choose the next diagnostic step.".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::CliPrompt,
+        AdmissionContext::LocalProcess,
+    );
+    let mut current_message = current_message;
+    current_message.work_item_id = Some(work_item.id.clone());
+    current_message.turn_id = Some("turn_owner_current".into());
+
+    let mut session = AgentState::new("default");
+    session.current_work_item_id = Some(work_item.id.clone());
+    session.current_execution_binding = Some(WorkItemExecutionBinding {
+        activation_id: Some("activation_owner_continuity".into()),
+        admission_provenance: None,
+        source_message_id: current_message.id.clone(),
+        turn_id: "turn_owner_current".into(),
+        owner: Some(owner.clone()),
+        work_item_id: Some(work_item.id.clone()),
+        claimed_work_revision: Some(work_item.revision),
+    });
+
+    let prompt = build_effective_prompt(
+        &storage,
+        &session,
+        &sample_execution(),
+        &current_message,
+        &test_config(),
+        Path::new("/workspace"),
+        Path::new("/tmp/agent-home"),
+        &sample_identity(),
+        LoadedAgentsMd::default(),
+        LoadedAgentMemory::default(),
+        &SkillsRuntimeView::default(),
+        &[],
+        None,
+    )?;
+    let rendered = &prompt.rendered_context_attachment;
+    let recent_turns = section_content(&rendered, "recent_turns").expect("recent turns section");
+    let current_input = section_content(&rendered, "current_input").expect("current input section");
+    let manifest = prompt.projection_manifest();
+
+    assert!(recent_turns.contains("symptom alpha"));
+    assert!(recent_turns.contains("symptom beta"));
+    assert!(recent_turns.contains("Diagnosis note: symptom alpha"));
+    assert!(recent_turns.contains("Diagnosis note: symptom beta"));
+    assert!(
+        recent_turns.find("symptom alpha").unwrap() < recent_turns.find("symptom beta").unwrap(),
+        "earlier turn must remain before the later turn:\n{recent_turns}"
+    );
+    assert!(current_input.contains("choose the next diagnostic step"));
+    assert!(!current_input.contains("symptom alpha"));
+
+    assert_eq!(
+        manifest.activation_owner,
+        ProjectionOwner::WorkItem {
+            work_item_id: work_item.id.clone()
+        }
+    );
+    let recent_evidence = manifest
+        .context_sections
+        .iter()
+        .find(|section| section.section_id == "recent_turns")
+        .expect("recent turns manifest section");
+    assert!(recent_evidence
+        .selected_evidence_refs
+        .iter()
+        .any(|evidence| evidence.role == ProjectionEvidenceRole::DirectPredecessor));
+    assert!(recent_evidence
+        .selected_evidence_refs
+        .iter()
+        .all(|evidence| evidence.owner == manifest.activation_owner));
+    assert!(manifest.invariant_results.iter().all(|result| {
+        matches!(
+            result.status,
+            ProjectionInvariantStatus::Pass | ProjectionInvariantStatus::NotApplicable
+        )
+    }));
     Ok(())
 }
 
