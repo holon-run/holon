@@ -814,6 +814,119 @@ fn append_default_host_identity(runtime: &RuntimeHandle) {
         .unwrap();
 }
 
+#[tokio::test]
+async fn canonical_agent_lifecycle_binding_does_not_inherit_message_work_item() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item("unrelated focused work item".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(work_item.id.clone()).await.unwrap();
+
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "agent_lifecycle".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "agent lifecycle wake".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+    message.work_item_id = Some(work_item.id.clone());
+    let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+    let state = crate::domain::execution_protocol::ExecutionProtocolState::empty("default");
+    let admitted = crate::domain::execution_protocol::admit_execution(
+        &state,
+        &crate::domain::execution_protocol::AdmitExecution {
+            attempt: crate::domain::execution_protocol::ExecutionAttempt {
+                attempt_id: activation_id.clone(),
+                agent_id: "default".into(),
+                source_message_id: Some(message.id.clone()),
+                source: crate::domain::execution_protocol::ExecutionSource {
+                    identity:
+                        crate::domain::execution_protocol::ExecutionSourceIdentity::QueueMessage {
+                            message_id: message.id.clone(),
+                        },
+                    generation: 1,
+                },
+                binding: crate::domain::execution_protocol::ExecutionBinding::AgentLifecycle {
+                    agent_id: "default".into(),
+                },
+                provenance: crate::domain::execution_protocol::ExecutionProvenance {
+                    origin: crate::domain::execution_protocol::ExecutionOrigin::System,
+                    trust: crate::domain::execution_protocol::ExecutionTrust::RuntimeInstruction,
+                    priority: crate::domain::execution_protocol::ExecutionPriority::Normal,
+                    correlation_id: None,
+                    causation_id: None,
+                },
+                admitted_fences: crate::domain::execution_protocol::AdmittedFences {
+                    source_revision: 1,
+                    work_item_source_revision: None,
+                    work_item_generation: None,
+                    rejoin: None,
+                    agent_control_revision: 1,
+                    host_registry_revision: 1,
+                },
+                state: crate::domain::execution_protocol::ExecutionAttemptState::Open,
+                run_id: None,
+                turn_id: None,
+                recovery_of_attempt_id: None,
+                terminal_outcome_id: None,
+                admitted_at: Utc::now().to_rfc3339(),
+                terminal_at: None,
+            },
+        },
+    )
+    .unwrap();
+    runtime
+        .inner
+        .runtime_db
+        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &admitted.state))
+        .unwrap();
+
+    runtime
+        .begin_interactive_turn_with_provenance(
+            Some(&message),
+            None,
+            None,
+            crate::types::ExecutionAdmissionProvenance::Canonical {
+                scenario_class: scheduler::WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO,
+                activation_id,
+            },
+        )
+        .await
+        .unwrap();
+    let state = runtime.agent_state().await.unwrap();
+    let binding = state.current_execution_binding.unwrap();
+    assert!(matches!(
+        binding.owner,
+        Some(crate::types::TurnOwner::AgentLifecycle { .. })
+    ));
+    assert_eq!(binding.work_item_id, None);
+    assert_eq!(state.current_turn_work_item_id, None);
+}
+
 struct OperatorInterjectionProbeProvider {
     calls: Mutex<usize>,
     requests: Mutex<Vec<ProviderTurnRequest>>,

@@ -3484,15 +3484,16 @@ impl RuntimeHandle {
                 guard.state.current_turn_work_item_id = guard.state.current_work_item_id.clone();
             }
             guard.state.current_execution_binding = message.map(|message| {
-                let work_item_id = canonical_execution_binding
-                    .as_ref()
-                    .and_then(|(_, owner)| owner.work_item_id().map(ToString::to_string))
-                    .or_else(|| {
-                        message
-                            .work_item_id
-                            .clone()
-                            .or_else(|| guard.state.current_turn_work_item_id.clone())
-                    });
+                let work_item_id = if canonical_execution_binding.is_some() {
+                    canonical_execution_binding
+                        .as_ref()
+                        .and_then(|(_, owner)| owner.work_item_id().map(ToString::to_string))
+                } else {
+                    message
+                        .work_item_id
+                        .clone()
+                        .or_else(|| guard.state.current_turn_work_item_id.clone())
+                };
                 let claimed_work_revision = work_item_id
                     .as_deref()
                     .and_then(|work_item_id| {
