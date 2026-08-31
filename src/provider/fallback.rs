@@ -9,8 +9,8 @@ use super::{
     catalog::ProviderCandidate,
     provider_error_token_usage, provider_transport_diagnostics, provider_turn_error,
     retry::{
-        classify_provider_error, format_provider_failure, provider_max_attempts,
-        provider_retry_backoff, RetryDisposition,
+        classify_provider_error, format_provider_failure, provider_error_retry_after,
+        provider_max_attempts, provider_retry_delay, ProviderRetryDelay, RetryDisposition,
     },
     AgentProvider, PromptContentBlock, ProviderAttemptOutcome, ProviderAttemptRecord,
     ProviderAttemptTimeline, ProviderBuiltinWebSearchCapability, ProviderContextManagementPolicy,
@@ -185,6 +185,179 @@ mod tests {
             trigger_input_tokens,
             clear_at_least_input_tokens: None,
         }
+    }
+
+    #[derive(Clone, Copy)]
+    enum ScriptedFailure {
+        Fail {
+            retry_after: Option<std::time::Duration>,
+        },
+        Succeed,
+    }
+
+    #[derive(Clone)]
+    struct ScriptedProvider {
+        script: Arc<Mutex<Vec<ScriptedFailure>>>,
+    }
+
+    #[async_trait]
+    impl AgentProvider for ScriptedProvider {
+        async fn complete_turn(
+            &self,
+            _request: ProviderTurnRequest,
+        ) -> Result<ProviderTurnResponse> {
+            let next = self.script.lock().await.remove(0);
+            match next {
+                ScriptedFailure::Fail { retry_after } => Err(
+                    crate::provider::retry::provider_transport_error_with_code_and_retry_after(
+                        crate::provider::retry::ProviderFailureClassification {
+                            kind: crate::provider::ProviderFailureKind::RateLimited,
+                            disposition: RetryDisposition::Retryable,
+                        },
+                        Some("rate_limit_exceeded"),
+                        Some(429),
+                        None,
+                        retry_after,
+                        "scripted rate limit",
+                    ),
+                ),
+                ScriptedFailure::Succeed => Ok(ProviderTurnResponse {
+                    blocks: vec![ModelBlock::Text { text: "ok".into() }],
+                    stop_reason: None,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cache_usage: Some(ProviderCacheUsage {
+                        read_input_tokens: 0,
+                        creation_input_tokens: 0,
+                    }),
+                    provider_message_id: None,
+                    provider_request_id: None,
+                    request_diagnostics: None,
+                }),
+            }
+        }
+    }
+
+    fn scripted_candidate(model_ref: &str, script: Vec<ScriptedFailure>) -> ProviderCandidate {
+        ProviderCandidate {
+            model_ref: model_ref.into(),
+            provider_name: "openai".into(),
+            resolved_image_input: false,
+            provider: Arc::new(ScriptedProvider {
+                script: Arc::new(Mutex::new(script)),
+            }),
+        }
+    }
+
+    fn plain_turn_request() -> ProviderTurnRequest {
+        ProviderTurnRequest {
+            continuation_scope_id: None,
+            prompt_frame: ProviderPromptFrame::plain("system"),
+            conversation: Vec::new(),
+            tools: Vec::new(),
+            native_web_search: None,
+            response_format: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn retry_records_server_retry_after_backoff_source() {
+        let provider = FallbackProvider {
+            candidates: vec![scripted_candidate(
+                "openai/gpt-5.4",
+                vec![
+                    ScriptedFailure::Fail {
+                        retry_after: Some(std::time::Duration::from_millis(1)),
+                    },
+                    ScriptedFailure::Succeed,
+                ],
+            )],
+        };
+
+        let (_, diagnostics) = provider
+            .complete_turn_with_diagnostics(plain_turn_request())
+            .await
+            .expect("second attempt should succeed");
+        let timeline = diagnostics.expect("timeline");
+        assert_eq!(timeline.attempts.len(), 2);
+        assert_eq!(
+            timeline.attempts[0].outcome,
+            ProviderAttemptOutcome::Retrying
+        );
+        assert_eq!(timeline.attempts[0].backoff_ms, Some(200));
+        assert_eq!(
+            timeline.attempts[0].backoff_source.as_deref(),
+            Some("server_retry_after")
+        );
+        assert_eq!(
+            timeline.attempts[1].outcome,
+            ProviderAttemptOutcome::Succeeded
+        );
+    }
+
+    #[tokio::test]
+    async fn oversized_server_hint_skips_remaining_retries() {
+        let provider = FallbackProvider {
+            candidates: vec![scripted_candidate(
+                "openai/gpt-5.4",
+                vec![
+                    ScriptedFailure::Fail {
+                        retry_after: Some(std::time::Duration::from_secs(45)),
+                    },
+                    ScriptedFailure::Fail {
+                        retry_after: Some(std::time::Duration::from_secs(45)),
+                    },
+                ],
+            )],
+        };
+
+        let error = provider
+            .complete_turn(plain_turn_request())
+            .await
+            .expect_err("oversized hint should defer to fallback");
+        let timeline = crate::provider::provider_attempt_timeline(&error).expect("timeline");
+        assert_eq!(timeline.attempts.len(), 1);
+        assert_eq!(
+            timeline.attempts[0].failure_kind.as_deref(),
+            Some("rate_limited")
+        );
+        assert_eq!(
+            timeline.attempts[0].outcome,
+            ProviderAttemptOutcome::RetriesExhausted
+        );
+        assert_eq!(timeline.attempts[0].backoff_ms, None);
+        assert_eq!(timeline.attempts[0].backoff_source, None);
+    }
+
+    #[tokio::test]
+    async fn retry_without_server_hint_keeps_computed_backoff() {
+        let provider = FallbackProvider {
+            candidates: vec![scripted_candidate(
+                "openai/gpt-5.4",
+                vec![
+                    ScriptedFailure::Fail { retry_after: None },
+                    ScriptedFailure::Fail { retry_after: None },
+                    ScriptedFailure::Succeed,
+                ],
+            )],
+        };
+
+        let (_, diagnostics) = provider
+            .complete_turn_with_diagnostics(plain_turn_request())
+            .await
+            .expect("third attempt should succeed");
+        let timeline = diagnostics.expect("timeline");
+        assert_eq!(timeline.attempts.len(), 3);
+        assert_eq!(timeline.attempts[0].backoff_ms, Some(200));
+        assert_eq!(
+            timeline.attempts[0].backoff_source.as_deref(),
+            Some("computed_backoff")
+        );
+        assert_eq!(timeline.attempts[1].backoff_ms, Some(400));
+        assert_eq!(
+            timeline.attempts[1].backoff_source.as_deref(),
+            Some("computed_backoff")
+        );
     }
 
     fn candidate(model_ref: &str, policy: ProviderContextManagementPolicy) -> ProviderCandidate {
@@ -546,6 +719,7 @@ impl AgentProvider for FallbackProvider {
                         outcome: ProviderAttemptOutcome::Succeeded,
                         advanced_to_fallback: false,
                         backoff_ms: None,
+                        backoff_source: None,
                         token_usage: Some(crate::types::TokenUsage::new(
                             response.input_tokens,
                             response.output_tokens,
@@ -568,8 +742,16 @@ impl AgentProvider for FallbackProvider {
                     let classification = classify_provider_error(&error);
                     let should_retry = classification.disposition == RetryDisposition::Retryable
                         && attempt < max_attempts;
-                    if should_retry {
-                        let backoff = provider_retry_backoff(attempt);
+                    let retry_delay = if should_retry {
+                        Some(provider_retry_delay(
+                            attempt,
+                            classification.kind,
+                            provider_error_retry_after(&error),
+                        ))
+                    } else {
+                        None
+                    };
+                    if let Some(ProviderRetryDelay::Wait { backoff, source }) = retry_delay {
                         timeline.push(ProviderAttemptRecord {
                             provider: candidate.provider_name.clone(),
                             model_ref: candidate.model_ref.clone(),
@@ -583,6 +765,7 @@ impl AgentProvider for FallbackProvider {
                             outcome: ProviderAttemptOutcome::Retrying,
                             advanced_to_fallback: false,
                             backoff_ms: Some(backoff.as_millis() as u64),
+                            backoff_source: Some(source.as_str().to_string()),
                             token_usage: provider_error_token_usage(&error).cloned(),
                             transport_diagnostics: provider_transport_diagnostics(&error).cloned(),
                         });
@@ -593,6 +776,7 @@ impl AgentProvider for FallbackProvider {
                             failure_kind = classification.kind.as_str(),
                             disposition = classification.disposition.as_str(),
                             backoff_ms = backoff.as_millis(),
+                            backoff_source = source.as_str(),
                             "provider turn failed; retrying"
                         );
                         let retry_started = std::time::Instant::now();
@@ -602,6 +786,16 @@ impl AgentProvider for FallbackProvider {
                         continue;
                     }
                     let has_fallback = pending_fallback_model_ref.is_some();
+                    if matches!(retry_delay, Some(ProviderRetryDelay::SkipToFallback)) {
+                        warn!(
+                            model_ref = %candidate.model_ref,
+                            attempt,
+                            max_attempts,
+                            failure_kind = classification.kind.as_str(),
+                            server_hint_cap_ms = super::retry::PROVIDER_RETRY_SERVER_HINT_CAP_MS,
+                            "server Retry-After hint exceeds retry cap; skipping remaining retries"
+                        );
+                    }
                     timeline.push(ProviderAttemptRecord {
                         provider: candidate.provider_name.clone(),
                         model_ref: candidate.model_ref.clone(),
@@ -618,6 +812,7 @@ impl AgentProvider for FallbackProvider {
                         },
                         advanced_to_fallback: has_fallback,
                         backoff_ms: None,
+                        backoff_source: None,
                         token_usage: provider_error_token_usage(&error).cloned(),
                         transport_diagnostics: provider_transport_diagnostics(&error).cloned(),
                     });

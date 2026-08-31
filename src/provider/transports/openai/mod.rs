@@ -46,7 +46,7 @@ use crate::{
 use super::{build_http_client, request_send_timeout, response_body_timeout, stream_idle_timeout};
 use crate::provider::retry::{
     classify_reqwest_transport_error_with_trace, classify_status_error_with_trace,
-    empty_response_error, invalid_response_error, provider_transport_error,
+    empty_response_error, invalid_response_error, parse_retry_after, provider_transport_error,
     timeout_transport_error_with_trace, ProviderFailureClassification, ProviderFailureKind,
     ProviderTransportError, RetryDisposition,
 };

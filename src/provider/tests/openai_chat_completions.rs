@@ -808,6 +808,7 @@ fn chat_completion_provider_classifies_rate_limit_errors() {
         Some("openai/gpt-test"),
         Some("https://example.com/v1/chat/completions"),
         None,
+        None,
     );
     let classification = classify_provider_error(&error);
 
@@ -845,6 +846,7 @@ fn chat_completion_provider_classifies_auth_errors() {
         None,
         None,
         None,
+        None,
     );
     let classification = classify_provider_error(&error);
 
@@ -869,6 +871,7 @@ fn chat_completion_provider_classifies_context_length_errors() {
         "test context",
         &error_json["error"],
         reqwest::StatusCode::BAD_REQUEST,
+        None,
         None,
         None,
         None,
@@ -899,6 +902,7 @@ fn chat_completion_provider_classifies_server_errors() {
         None,
         None,
         None,
+        None,
     );
     let classification = classify_provider_error(&error);
 
@@ -923,6 +927,7 @@ fn chat_completion_provider_classifies_unknown_errors_as_contract_errors() {
         "test context",
         &error_json["error"],
         reqwest::StatusCode::BAD_REQUEST,
+        None,
         None,
         None,
         None,

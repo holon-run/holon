@@ -18,7 +18,7 @@ use crate::{
 use super::{build_http_client, request_send_timeout, response_body_timeout};
 use crate::provider::retry::{
     classify_reqwest_transport_error_with_trace, classify_status_error_with_trace,
-    invalid_response_error, timeout_transport_error_with_trace,
+    invalid_response_error, parse_retry_after, timeout_transport_error_with_trace,
 };
 
 #[derive(Clone)]
@@ -193,6 +193,7 @@ impl AgentProvider for GeminiProvider {
         }
         if !response.status().is_success() {
             let status = response.status();
+            let retry_after = parse_retry_after(response.headers());
             let body = match tokio::time::timeout(response_body_timeout(), response.text()).await {
                 Ok(Ok(text)) => text,
                 _ => String::new(),
@@ -209,6 +210,7 @@ impl AgentProvider for GeminiProvider {
                 status,
                 body,
                 request_trace.as_ref(),
+                retry_after,
             ));
         }
 

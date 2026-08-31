@@ -703,6 +703,8 @@ pub struct ProviderAttemptRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backoff_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backoff_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_usage: Option<TokenUsage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transport_diagnostics: Option<ProviderTransportDiagnostics>,

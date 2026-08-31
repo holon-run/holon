@@ -13,6 +13,7 @@ use crate::types::TokenUsage;
 
 pub(crate) const PROVIDER_MAX_RETRIES: usize = 2;
 const PROVIDER_RETRY_BASE_BACKOFF_MS: u64 = 200;
+pub(crate) const PROVIDER_RETRY_SERVER_HINT_CAP_MS: u64 = 30_000;
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -48,9 +49,34 @@ pub(crate) struct ProviderTransportError {
     pub classification: ProviderFailureClassification,
     pub code: Option<String>,
     pub status: Option<u16>,
+    pub retry_after: Option<Duration>,
     pub diagnostics: Option<ProviderTransportDiagnostics>,
     pub token_usage: Option<TokenUsage>,
     message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProviderRetryDelaySource {
+    ServerRetryAfter,
+    ComputedBackoff,
+}
+
+impl ProviderRetryDelaySource {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::ServerRetryAfter => "server_retry_after",
+            Self::ComputedBackoff => "computed_backoff",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProviderRetryDelay {
+    Wait {
+        backoff: Duration,
+        source: ProviderRetryDelaySource,
+    },
+    SkipToFallback,
 }
 
 impl ProviderFailureKind {
@@ -84,6 +110,8 @@ pub(crate) fn provider_retry_policy_json() -> Value {
         "max_retries_per_provider": PROVIDER_MAX_RETRIES,
         "max_attempts_per_provider": provider_max_attempts(),
         "base_backoff_ms": PROVIDER_RETRY_BASE_BACKOFF_MS,
+        "server_hint_cap_ms": PROVIDER_RETRY_SERVER_HINT_CAP_MS,
+        "server_hint_semantics": "429/503 Retry-After at or below the cap extends the computed backoff; hints above the cap skip remaining retries and defer to fallback",
         "retryable_failure_kinds": [
             ProviderFailureKind::Timeout.as_str(),
             ProviderFailureKind::Connection.as_str(),
@@ -109,6 +137,56 @@ pub(crate) fn provider_retry_backoff(attempt: usize) -> Duration {
     Duration::from_millis(PROVIDER_RETRY_BASE_BACKOFF_MS * attempt as u64)
 }
 
+pub(crate) fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    let raw = headers
+        .get(&reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim();
+    if raw.is_empty() {
+        return None;
+    }
+    // RFC 9110 delta-seconds: a non-negative integer; zero means no wait is
+    // required, so fall back to the computed backoff.
+    if let Ok(seconds) = raw.parse::<u64>() {
+        let duration = Duration::from_secs(seconds);
+        return (!duration.is_zero()).then_some(duration);
+    }
+    let date = chrono::DateTime::parse_from_rfc2822(raw).ok()?;
+    date.with_timezone(&chrono::Utc)
+        .signed_duration_since(chrono::Utc::now())
+        .to_std()
+        .ok()
+        .filter(|duration| !duration.is_zero())
+}
+
+pub(crate) fn provider_retry_delay(
+    attempt: usize,
+    kind: ProviderFailureKind,
+    retry_after: Option<Duration>,
+) -> ProviderRetryDelay {
+    let computed = provider_retry_backoff(attempt);
+    // Retry-After is a server-side throttle hint; only the kinds that carry
+    // that semantic (429 rate limits and 5xx server errors) may extend the wait.
+    let server_hint = match kind {
+        ProviderFailureKind::RateLimited | ProviderFailureKind::ServerError => retry_after,
+        _ => None,
+    };
+    let Some(server_hint) = server_hint else {
+        return ProviderRetryDelay::Wait {
+            backoff: computed,
+            source: ProviderRetryDelaySource::ComputedBackoff,
+        };
+    };
+    if server_hint > Duration::from_millis(PROVIDER_RETRY_SERVER_HINT_CAP_MS) {
+        return ProviderRetryDelay::SkipToFallback;
+    }
+    ProviderRetryDelay::Wait {
+        backoff: server_hint.max(computed),
+        source: ProviderRetryDelaySource::ServerRetryAfter,
+    }
+}
+
 pub(crate) fn classify_provider_error(error: &anyhow::Error) -> ProviderFailureClassification {
     error
         .downcast_ref::<ProviderTransportError>()
@@ -117,6 +195,12 @@ pub(crate) fn classify_provider_error(error: &anyhow::Error) -> ProviderFailureC
             kind: ProviderFailureKind::Unknown,
             disposition: RetryDisposition::FailFast,
         })
+}
+
+pub(crate) fn provider_error_retry_after(error: &anyhow::Error) -> Option<Duration> {
+    error
+        .downcast_ref::<ProviderTransportError>()
+        .and_then(|error| error.retry_after)
 }
 
 pub(crate) fn provider_transport_error(
@@ -134,6 +218,7 @@ fn provider_transport_error_with_evidence(
     status: Option<u16>,
     diagnostics: Option<ProviderTransportDiagnostics>,
     token_usage: Option<TokenUsage>,
+    retry_after: Option<Duration>,
     message: impl Into<String>,
 ) -> anyhow::Error {
     ProviderTransportError {
@@ -142,6 +227,7 @@ fn provider_transport_error_with_evidence(
         status,
         diagnostics,
         token_usage,
+        retry_after,
         message: message.into(),
     }
     .into()
@@ -154,7 +240,34 @@ pub(crate) fn provider_transport_error_with_code(
     diagnostics: Option<ProviderTransportDiagnostics>,
     message: impl Into<String>,
 ) -> anyhow::Error {
-    provider_transport_error_with_evidence(classification, code, status, diagnostics, None, message)
+    provider_transport_error_with_evidence(
+        classification,
+        code,
+        status,
+        diagnostics,
+        None,
+        None,
+        message,
+    )
+}
+
+pub(crate) fn provider_transport_error_with_code_and_retry_after(
+    classification: ProviderFailureClassification,
+    code: Option<&str>,
+    status: Option<u16>,
+    diagnostics: Option<ProviderTransportDiagnostics>,
+    retry_after: Option<Duration>,
+    message: impl Into<String>,
+) -> anyhow::Error {
+    provider_transport_error_with_evidence(
+        classification,
+        code,
+        status,
+        diagnostics,
+        None,
+        retry_after,
+        message,
+    )
 }
 
 pub(crate) fn classify_reqwest_transport_error_with_trace(
@@ -267,6 +380,7 @@ pub(crate) fn classify_status_error_with_trace(
     status: StatusCode,
     body: String,
     trace: Option<&ProviderHttpTraceRequest>,
+    retry_after: Option<Duration>,
 ) -> anyhow::Error {
     let classification = match status {
         StatusCode::TOO_MANY_REQUESTS => ProviderFailureClassification {
@@ -291,7 +405,7 @@ pub(crate) fn classify_status_error_with_trace(
         },
     };
     let code = status_error_code(&body);
-    provider_transport_error_with_code(
+    provider_transport_error_with_code_and_retry_after(
         classification,
         code,
         Some(status.as_u16()),
@@ -305,6 +419,7 @@ pub(crate) fn classify_status_error_with_trace(
             http_trace: trace.and_then(|trace| trace.diagnostics(Some(status.as_u16()))),
             source_chain: status_error_source_chain(provider, status),
         }),
+        retry_after,
         format!("{context} with status {status}"),
     )
 }
@@ -386,6 +501,7 @@ pub(crate) fn empty_response_error(
         None,
         None,
         Some(token_usage),
+        None,
         format!("{context}: {error}"),
     )
 }
@@ -419,6 +535,7 @@ pub(crate) fn empty_response_error_with_trace(
             source_chain: vec![error.clone()],
         }),
         Some(token_usage),
+        None,
         format!("{context}: {error}"),
     )
 }
@@ -536,8 +653,159 @@ pub(crate) fn format_provider_failure(
 #[cfg(test)]
 mod tests {
     use reqwest::StatusCode;
+    use std::time::Duration;
 
-    use super::{classify_status_error_with_trace, ProviderTransportError};
+    use super::{
+        classify_status_error_with_trace, provider_retry_delay, ProviderFailureKind,
+        ProviderRetryDelay, ProviderRetryDelaySource, ProviderTransportError,
+    };
+
+    fn retry_after_headers(value: &str) -> reqwest::header::HeaderMap {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            reqwest::header::HeaderValue::from_str(value).expect("valid header value"),
+        );
+        headers
+    }
+
+    #[test]
+    fn parse_retry_after_reads_delta_seconds() {
+        assert_eq!(
+            super::parse_retry_after(&retry_after_headers("13")),
+            Some(Duration::from_secs(13))
+        );
+    }
+
+    #[test]
+    fn parse_retry_after_reads_future_http_date() {
+        let date = (chrono::Utc::now() + chrono::Duration::seconds(30)).to_rfc2822();
+        let parsed =
+            super::parse_retry_after(&retry_after_headers(&date)).expect("future date parses");
+        assert!(parsed > Duration::from_secs(20));
+        assert!(parsed <= Duration::from_secs(30));
+    }
+
+    #[test]
+    fn parse_retry_after_ignores_past_http_date() {
+        let date = (chrono::Utc::now() - chrono::Duration::seconds(30)).to_rfc2822();
+        assert_eq!(super::parse_retry_after(&retry_after_headers(&date)), None);
+    }
+
+    #[test]
+    fn parse_retry_after_ignores_missing_malformed_and_zero_values() {
+        assert_eq!(
+            super::parse_retry_after(&reqwest::header::HeaderMap::new()),
+            None
+        );
+        assert_eq!(super::parse_retry_after(&retry_after_headers("soon")), None);
+        assert_eq!(super::parse_retry_after(&retry_after_headers("0")), None);
+        assert_eq!(super::parse_retry_after(&retry_after_headers(" ")), None);
+    }
+
+    #[test]
+    fn parse_retry_after_header_lookup_is_case_insensitive() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::HeaderName::from_static("retry-after"),
+            reqwest::header::HeaderValue::from_static("5"),
+        );
+        assert_eq!(
+            super::parse_retry_after(&headers),
+            Some(Duration::from_secs(5))
+        );
+    }
+
+    #[test]
+    fn retry_delay_uses_server_hint_within_cap() {
+        assert_eq!(
+            provider_retry_delay(
+                1,
+                ProviderFailureKind::RateLimited,
+                Some(Duration::from_secs(5))
+            ),
+            ProviderRetryDelay::Wait {
+                backoff: Duration::from_secs(5),
+                source: ProviderRetryDelaySource::ServerRetryAfter
+            }
+        );
+    }
+
+    #[test]
+    fn retry_delay_keeps_computed_floor_when_hint_is_smaller() {
+        assert_eq!(
+            provider_retry_delay(
+                2,
+                ProviderFailureKind::ServerError,
+                Some(Duration::from_millis(50))
+            ),
+            ProviderRetryDelay::Wait {
+                backoff: Duration::from_millis(400),
+                source: ProviderRetryDelaySource::ServerRetryAfter
+            }
+        );
+    }
+
+    #[test]
+    fn retry_delay_skips_to_fallback_when_hint_exceeds_cap() {
+        assert_eq!(
+            provider_retry_delay(
+                1,
+                ProviderFailureKind::RateLimited,
+                Some(Duration::from_secs(45))
+            ),
+            ProviderRetryDelay::SkipToFallback
+        );
+    }
+
+    #[test]
+    fn retry_delay_without_hint_uses_computed_backoff() {
+        assert_eq!(
+            provider_retry_delay(1, ProviderFailureKind::RateLimited, None),
+            ProviderRetryDelay::Wait {
+                backoff: Duration::from_millis(200),
+                source: ProviderRetryDelaySource::ComputedBackoff
+            }
+        );
+    }
+
+    #[test]
+    fn retry_delay_ignores_hint_for_non_throttle_kinds() {
+        assert_eq!(
+            provider_retry_delay(
+                1,
+                ProviderFailureKind::Timeout,
+                Some(Duration::from_secs(5))
+            ),
+            ProviderRetryDelay::Wait {
+                backoff: Duration::from_millis(200),
+                source: ProviderRetryDelaySource::ComputedBackoff
+            }
+        );
+    }
+
+    #[test]
+    fn status_error_carries_retry_after_hint() {
+        let error = classify_status_error_with_trace(
+            "OpenAI request failed",
+            "response_status",
+            Some("openai-codex"),
+            Some("openai-codex/gpt-5.3-codex-spark"),
+            Some("https://chatgpt.com/backend-api/codex/responses"),
+            StatusCode::TOO_MANY_REQUESTS,
+            r#"{"error":{"message":"rate limited"}}"#.into(),
+            None,
+            Some(Duration::from_secs(5)),
+        );
+        let transport = error
+            .downcast_ref::<ProviderTransportError>()
+            .expect("transport error");
+        assert_eq!(
+            transport.classification.kind,
+            ProviderFailureKind::RateLimited
+        );
+        assert_eq!(transport.retry_after, Some(Duration::from_secs(5)));
+    }
 
     #[test]
     fn transport_url_sanitizer_removes_credentials_query_and_fragment() {
@@ -559,6 +827,7 @@ mod tests {
             Some("https://api.openai.com/v1/responses/compact"),
             StatusCode::NOT_FOUND,
             r#"{"error":{"message":"Items are not persisted when `store` is set to false","access_token":"short-secret"}}"#.into(),
+            None,
             None,
         );
 

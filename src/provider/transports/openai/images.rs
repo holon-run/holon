@@ -136,6 +136,7 @@ pub(super) async fn send_openai_images_request(
     );
     if !response.status().is_success() {
         let status = response.status();
+        let retry_after = parse_retry_after(response.headers());
         let body = match tokio::time::timeout(response_body_timeout(), response.text()).await {
             Ok(Ok(text)) => text,
             _ => String::new(),
@@ -150,6 +151,7 @@ pub(super) async fn send_openai_images_request(
             status,
             body,
             request_trace.as_ref(),
+            retry_after,
         ));
     }
     let body = match tokio::time::timeout(response_body_timeout(), response.text()).await {

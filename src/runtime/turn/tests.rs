@@ -935,6 +935,7 @@ fn normalize_provider_attempt_timing_backfills_missing_attempt_timing() {
             outcome: crate::provider::ProviderAttemptOutcome::Succeeded,
             advanced_to_fallback: false,
             backoff_ms: None,
+            backoff_source: None,
             token_usage: None,
             transport_diagnostics: None,
         }

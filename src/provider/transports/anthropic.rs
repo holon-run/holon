@@ -32,9 +32,9 @@ use crate::{
 use super::{build_http_client, request_send_timeout, response_body_timeout, stream_idle_timeout};
 use crate::provider::retry::{
     classify_reqwest_transport_error_with_trace, classify_status_error_with_trace,
-    empty_response_error_with_trace, invalid_response_error_with_trace, provider_transport_error,
-    timeout_transport_error_with_trace, ProviderFailureClassification, ProviderFailureKind,
-    RetryDisposition,
+    empty_response_error_with_trace, invalid_response_error_with_trace, parse_retry_after,
+    provider_transport_error, timeout_transport_error_with_trace, ProviderFailureClassification,
+    ProviderFailureKind, RetryDisposition,
 };
 
 const ANTHROPIC_PROVIDER_BLOCK_FORMAT: &str = "anthropic_messages/v1";
@@ -387,6 +387,7 @@ impl AgentProvider for AnthropicProvider {
 
         if !response.status().is_success() {
             let status = response.status();
+            let retry_after = parse_retry_after(response.headers());
             let body = match tokio::time::timeout(response_body_timeout(), response.text()).await {
                 Ok(Ok(text)) => text,
                 _ => String::new(),
@@ -403,6 +404,7 @@ impl AgentProvider for AnthropicProvider {
                 status,
                 body,
                 request_trace.as_ref(),
+                retry_after,
             ));
         }
 

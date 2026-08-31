@@ -51,6 +51,7 @@ pub(crate) async fn send_chat_completion_request(
 
     if !response.status().is_success() {
         let status = response.status();
+        let retry_after = parse_retry_after(response.headers());
         let body = match tokio::time::timeout(response_body_timeout(), response.text()).await {
             Ok(Ok(text)) => text,
             _ => String::new(),
@@ -63,6 +64,7 @@ pub(crate) async fn send_chat_completion_request(
             Some(&model_ref),
             Some(url.as_str()),
             request_trace.as_ref(),
+            retry_after,
         ));
     }
 
@@ -107,12 +109,19 @@ fn classify_chat_completion_status_error(
     model_ref: Option<&str>,
     url: Option<&str>,
     trace: Option<&ProviderHttpTraceRequest>,
+    retry_after: Option<std::time::Duration>,
 ) -> anyhow::Error {
     // Try to parse as OpenAI error response
     if let Ok(error_json) = serde_json::from_str::<Value>(&body) {
         if let Some(error_obj) = error_json.get("error") {
             return classify_openai_chat_completion_error(
-                context, error_obj, status, model_ref, url, trace,
+                context,
+                error_obj,
+                status,
+                model_ref,
+                url,
+                trace,
+                retry_after,
             );
         }
     }
@@ -127,6 +136,7 @@ fn classify_chat_completion_status_error(
         status,
         body,
         trace,
+        retry_after,
     )
 }
 
@@ -137,6 +147,7 @@ pub(crate) fn classify_openai_chat_completion_error(
     model_ref: Option<&str>,
     url: Option<&str>,
     trace: Option<&ProviderHttpTraceRequest>,
+    retry_after: Option<std::time::Duration>,
 ) -> anyhow::Error {
     let error_type = error
         .get("type")
@@ -205,7 +216,7 @@ pub(crate) fn classify_openai_chat_completion_error(
         format!("{}: {}", error_type, error_message)
     };
 
-    crate::provider::retry::provider_transport_error_with_code(
+    crate::provider::retry::provider_transport_error_with_code_and_retry_after(
         classification,
         error_code,
         Some(status.as_u16()),
@@ -219,6 +230,7 @@ pub(crate) fn classify_openai_chat_completion_error(
             http_trace: trace.and_then(|trace| trace.diagnostics(Some(status.as_u16()))),
             source_chain: Vec::new(),
         }),
+        retry_after,
         format!("{}: {}", context, detail),
     )
 }
@@ -250,6 +262,7 @@ pub(crate) async fn send_chat_completion_stream_request(
 
     if !response.status().is_success() {
         let status = response.status();
+        let retry_after = parse_retry_after(response.headers());
         let body = match tokio::time::timeout(response_body_timeout(), response.text()).await {
             Ok(Ok(text)) => text,
             _ => String::new(),
@@ -261,6 +274,7 @@ pub(crate) async fn send_chat_completion_stream_request(
             None,
             None,
             None,
+            retry_after,
         ));
     }
 
