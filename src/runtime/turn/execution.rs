@@ -1719,7 +1719,7 @@ impl TurnExecution<'_> {
             let request_diagnostics = response.request_diagnostics.clone();
             let model_attempt_state = provider_attempt_model_state(attempt_timeline.as_ref());
 
-            let (turn_index, run_id, round_work_item_id) = {
+            let (turn_index, run_id, round_work_item_id, turn_id) = {
                 let mut guard = runtime.inner.agent.lock().await;
                 guard.state.total_input_tokens += response.input_tokens;
                 guard.state.total_output_tokens += response.output_tokens;
@@ -1739,6 +1739,7 @@ impl TurnExecution<'_> {
                         .current_turn_work_item_id
                         .clone()
                         .or_else(|| guard.state.current_work_item_id.clone()),
+                    guard.state.current_turn_id.clone(),
                 )
             };
 
@@ -1970,6 +1971,7 @@ impl TurnExecution<'_> {
                     None,
                     serde_json::json!({
                         "blocks": &completed_round_assistant_blocks,
+                        "turn_id": turn_id.clone(),
                         "round_purpose": round_purpose.as_str(),
                         "visibility": if round_purpose == AssistantRoundPurpose::RuntimeCheckpoint {
                             "runtime_private"
@@ -2949,7 +2951,7 @@ impl TurnExecution<'_> {
                 completed_work_item_this_turn = true;
             }
             // Build ref-backed tool result metadata for transcript
-            use crate::types::{ToolResultData, ToolResultRef};
+            use crate::types::ToolResultRef;
             let refs: Vec<ToolResultRef> = tool_results
                 .iter()
                 .map(|result| {
@@ -2975,7 +2977,10 @@ impl TurnExecution<'_> {
                 TranscriptEntryKind::ToolResults,
                 Some(round),
                 None,
-                to_json_value(&ToolResultData::RefsWithWrapper { refs }),
+                serde_json::json!({
+                    "turn_id": turn_id.clone(),
+                    "refs": refs,
+                }),
             );
             if let Some(prepared) = prepared_work_item_completion.as_mut() {
                 prepared.transcript_entries.push(tool_results_transcript);

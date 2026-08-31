@@ -2316,6 +2316,13 @@ fn render_turn_record_projection(
         lines.push(render_recent_turn_input_line(trigger_message, mode));
     }
 
+    let execution_sequence = render_turn_execution_sequence(storage, record, tools, mode);
+    let has_execution_sequence = !execution_sequence.is_empty();
+    if has_execution_sequence {
+        lines.push("  - execution sequence:".to_string());
+        lines.extend(execution_sequence);
+    }
+
     let mut related_briefs = Vec::new();
     let mut brief_budget = budget.saturating_sub(estimate_text_tokens(&lines.join("\n")));
     for brief in record.produced_brief_ids.iter().filter_map(|id| {
@@ -2328,7 +2335,7 @@ fn render_turn_record_projection(
             related_briefs.push(rendered);
         }
     }
-    if !related_briefs.is_empty() {
+    if !related_briefs.is_empty() && !has_execution_sequence {
         lines.push("  - produced briefs:".to_string());
         lines.extend(related_briefs);
     }
@@ -2342,7 +2349,7 @@ fn render_turn_record_projection(
             })
         })
         .collect::<Vec<_>>();
-    if !related_tools.is_empty() {
+    if !related_tools.is_empty() && !has_execution_sequence {
         lines.push("  - tool executions:".to_string());
         lines.extend(
             render_recent_tool_execution_rollup(&related_tools)
@@ -2352,6 +2359,98 @@ fn render_turn_record_projection(
     }
 
     Some(lines.join("\n"))
+}
+
+fn render_turn_execution_sequence(
+    storage: &AppStorage,
+    record: &TurnRecord,
+    tools: &[ToolExecutionRecord],
+    mode: RecentTurnProjectionMode,
+) -> Vec<String> {
+    let entries = match storage.read_all_transcript() {
+        Ok(entries) => entries
+            .into_iter()
+            .filter(|entry| {
+                entry.agent_id == record.agent_id
+                    && entry
+                        .data
+                        .get("turn_id")
+                        .and_then(Value::as_str)
+                        .is_some_and(|turn_id| turn_id == record.turn_id)
+            })
+            .collect::<Vec<_>>(),
+        Err(error) => {
+            tracing::warn!(
+                turn_id = %record.turn_id,
+                %error,
+                "recent_turns could not load transcript execution sequence"
+            );
+            return Vec::new();
+        }
+    };
+
+    let mut rendered = Vec::new();
+    let mut rendered_tool_ids = BTreeSet::new();
+    for entry in entries {
+        match entry.kind {
+            TranscriptEntryKind::AssistantRound
+                if entry.data.get("visibility").and_then(Value::as_str)
+                    != Some("runtime_private")
+                    && entry.data.get("round_purpose").and_then(Value::as_str)
+                        != Some("runtime_checkpoint") =>
+            {
+                if let Some(text) = assistant_round_text_preview(&entry) {
+                    let limit = match mode {
+                        RecentTurnProjectionMode::Continuity => 1200,
+                        RecentTurnProjectionMode::Nearby => 480,
+                        RecentTurnProjectionMode::Older => 240,
+                    };
+                    rendered.push(format!(
+                        "    - assistant: {}",
+                        sanitize_inline(&truncate_text(&text.replace('\n', " "), limit))
+                    ));
+                }
+            }
+            TranscriptEntryKind::ToolResults => {
+                let limit = match mode {
+                    RecentTurnProjectionMode::Continuity => 480,
+                    RecentTurnProjectionMode::Nearby => 240,
+                    RecentTurnProjectionMode::Older => 120,
+                };
+                let tool_ids = entry
+                    .data
+                    .get("refs")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|reference| {
+                        reference
+                            .get("tool_execution_id")
+                            .and_then(Value::as_str)
+                            .filter(|id| !id.trim().is_empty())
+                    });
+                for tool_id in tool_ids {
+                    let Some(tool) = tools.iter().find(|tool| {
+                        tool.id == tool_id
+                            && turn_record_owns_object(record, tool.turn_id.as_deref())
+                    }) else {
+                        continue;
+                    };
+                    if !rendered_tool_ids.insert(tool.id.as_str()) {
+                        continue;
+                    }
+                    rendered.push(format!(
+                        "    - tool: {} summary={} tool_execution_id={}",
+                        sanitize_inline(&tool.tool_name),
+                        sanitize_inline(&truncate_text(&tool.summary.replace('\n', " "), limit)),
+                        sanitize_inline(&tool.id)
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    rendered
 }
 
 fn render_current_continuation_turn_record_projection(
@@ -3528,6 +3627,135 @@ mod tests {
         assert!(!recent_turns.contains("cross-turn operator input must stay hidden"));
         assert!(!recent_turns.contains("cross-turn result must stay hidden"));
         assert!(!recent_turns.contains("tool_execution:tool-cross-turn:output"));
+    }
+
+    #[test]
+    fn recent_turns_preserves_ordered_assistant_tool_assistant_sequence() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
+        let turn_id = "turn-ordered-sequence";
+        let mut operator = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Use the tool and explain the result.".into(),
+            },
+        );
+        operator.turn_id = Some(turn_id.into());
+        storage.append_message(&operator).unwrap();
+
+        let mut turn = TurnRecord::new("default", turn_id, 1);
+        turn.input_message_ids = vec![operator.id.clone()];
+        turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&operator));
+        turn.tool_execution_ids = vec!["tool-ordered".into(), "tool-unrelated".into()];
+        storage.append_turn(&turn).unwrap();
+
+        for entry in [
+            TranscriptEntry::new(
+                "default",
+                TranscriptEntryKind::AssistantRound,
+                Some(1),
+                None,
+                json!({
+                    "turn_id": turn_id,
+                    "blocks": [{"type": "text", "text": "I will check that now."}]
+                }),
+            ),
+            TranscriptEntry::new(
+                "default",
+                TranscriptEntryKind::ToolResults,
+                Some(1),
+                None,
+                json!({
+                    "turn_id": turn_id,
+                    "refs": [{
+                        "tool_execution_id": "tool-ordered",
+                        "tool_call_id": "call-ordered"
+                    }]
+                }),
+            ),
+            TranscriptEntry::new(
+                "default",
+                TranscriptEntryKind::AssistantRound,
+                Some(2),
+                None,
+                json!({
+                    "turn_id": turn_id,
+                    "blocks": [{"type": "text", "text": "The tool confirmed it."}]
+                }),
+            ),
+        ] {
+            storage.append_transcript_entry(&entry).unwrap();
+        }
+
+        for (id, tool_name, summary, owned_turn_id) in [
+            (
+                "tool-unrelated",
+                "OtherTool",
+                "must not be projected",
+                "turn-other",
+            ),
+            (
+                "tool-ordered",
+                "ExecCommand",
+                "ordered tool result",
+                turn_id,
+            ),
+        ] {
+            storage
+                .append_tool_execution(&ToolExecutionRecord {
+                    id: id.into(),
+                    agent_id: "default".into(),
+                    work_item_id: None,
+                    turn_index: 1,
+                    turn_id: Some(owned_turn_id.into()),
+                    tool_name: tool_name.into(),
+                    created_at: chrono::Utc::now(),
+                    completed_at: Some(chrono::Utc::now()),
+                    duration_ms: 1,
+                    authority_class: AuthorityClass::RuntimeInstruction,
+                    status: ToolExecutionStatus::Success,
+                    input: json!({}),
+                    output: json!({}),
+                    summary: summary.into(),
+                    invocation_surface: None,
+                })
+                .unwrap();
+        }
+
+        let rendered = render_turn_record_projection(
+            &storage,
+            &turn,
+            &[operator],
+            &[],
+            &[
+                storage
+                    .read_tool_execution_by_id("tool-ordered")
+                    .unwrap()
+                    .unwrap(),
+                storage
+                    .read_tool_execution_by_id("tool-unrelated")
+                    .unwrap()
+                    .unwrap(),
+            ],
+            None,
+            RecentTurnProjectionMode::Continuity,
+            20_000,
+        )
+        .unwrap();
+
+        let before = rendered.find("assistant: I will check that now.").unwrap();
+        let tool = rendered.find("tool: ExecCommand").unwrap();
+        let after = rendered.find("assistant: The tool confirmed it.").unwrap();
+        assert!(before < tool && tool < after);
+        assert_eq!(rendered.matches("tool-ordered").count(), 1);
+        assert!(!rendered.contains("must not be projected"));
+        assert!(!rendered.contains("tool-unrelated"));
+        assert!(!rendered.contains("produced briefs:"));
+        assert!(!rendered.contains("tool executions:"));
     }
 
     #[test]
