@@ -1048,26 +1048,13 @@ pub async fn notify_operator_prefers_reply_route_for_delivery() -> Result<()> {
         ))
         .await?;
 
-    let inbound = MessageEnvelope {
-        metadata: Some(json!({
-            "operator_transport": {
-                "binding_id": "opbind-z-ingress",
-                "reply_route_id": "route-reply-preferred"
-            }
-        })),
-        ..MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator {
-                actor_id: Some("operator:jolestar".into()),
-            },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "route preference check".into(),
-            },
-        )
-    };
+    let mut inbound = admitted_operator_prompt("default", "route preference check");
+    inbound.metadata = Some(json!({
+        "operator_transport": {
+            "binding_id": "opbind-z-ingress",
+            "reply_route_id": "route-reply-preferred"
+        }
+    }));
     runtime.enqueue(inbound).await?;
     wait_until_async(|| {
         let runtime = runtime.clone();
@@ -1112,26 +1099,13 @@ pub async fn notify_operator_ignores_reply_route_when_binding_no_longer_matches(
         ))
         .await?;
 
-    let inbound = MessageEnvelope {
-        metadata: Some(json!({
-            "operator_transport": {
-                "binding_id": "opbind-z-ingress",
-                "reply_route_id": "route-reply-preferred"
-            }
-        })),
-        ..MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator {
-                actor_id: Some("operator:jolestar".into()),
-            },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "route mismatch fallback check".into(),
-            },
-        )
-    };
+    let mut inbound = admitted_operator_prompt("default", "route mismatch fallback check");
+    inbound.metadata = Some(json!({
+        "operator_transport": {
+            "binding_id": "opbind-z-ingress",
+            "reply_route_id": "route-reply-preferred"
+        }
+    }));
     runtime.enqueue(inbound).await?;
     wait_until_async(|| {
         let runtime = runtime.clone();
@@ -1177,25 +1151,12 @@ pub async fn notify_operator_falls_back_to_default_route_without_reply_route() -
         ))
         .await?;
 
-    let inbound = MessageEnvelope {
-        metadata: Some(json!({
-            "operator_transport": {
-                "binding_id": "opbind-default"
-            }
-        })),
-        ..MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator {
-                actor_id: Some("operator:jolestar".into()),
-            },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "default route fallback check".into(),
-            },
-        )
-    };
+    let mut inbound = admitted_operator_prompt("default", "default route fallback check");
+    inbound.metadata = Some(json!({
+        "operator_transport": {
+            "binding_id": "opbind-default"
+        }
+    }));
     runtime.enqueue(inbound).await?;
     wait_until_async(|| {
         let runtime = runtime.clone();
