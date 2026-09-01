@@ -64,6 +64,24 @@ use crate::support::{
 // ============================================================================
 // Runtime waiting and reactivation domain test support
 
+fn admitted_operator_prompt(
+    agent_id: impl Into<String>,
+    text: impl Into<String>,
+) -> MessageEnvelope {
+    MessageEnvelope::new(
+        agent_id,
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator { actor_id: None },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text { text: text.into() },
+    )
+    .with_admission(
+        holon::types::MessageDeliverySurface::CliPrompt,
+        holon::types::AdmissionContext::LocalProcess,
+    )
+}
+
 struct WaitForDispatchProvider {
     calls: Mutex<usize>,
     assistant_text: Option<&'static str>,
@@ -227,16 +245,7 @@ pub async fn tool_only_wait_for_persists_turn_without_result_brief() -> Result<(
     let host = RuntimeHost::new_with_provider(test_config(), provider.clone())?;
     let runtime = host.default_runtime().await?;
     let message = runtime
-        .enqueue(MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "wait for the checks".into(),
-            },
-        ))
+        .enqueue(admitted_operator_prompt("default", "wait for the checks"))
         .await?;
 
     wait_until(|| {
@@ -293,15 +302,9 @@ pub async fn wait_for_with_assistant_text_persists_result_brief() -> Result<()> 
     let host = RuntimeHost::new_with_provider(test_config(), provider.clone())?;
     let runtime = host.default_runtime().await?;
     let message = runtime
-        .enqueue(MessageEnvelope::new(
+        .enqueue(admitted_operator_prompt(
             "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "wait for the checks and tell me".into(),
-            },
+            "wait for the checks and tell me",
         ))
         .await?;
 
@@ -349,15 +352,9 @@ pub async fn queued_task_result_wait_settles_tool_only_turn_and_reduces_result()
     attach_default_workspace(&host).await?;
     let runtime = host.default_runtime().await?;
     let message = runtime
-        .enqueue(MessageEnvelope::new(
+        .enqueue(admitted_operator_prompt(
             "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "wait for the promoted command result".into(),
-            },
+            "wait for the promoted command result",
         ))
         .await?;
 
@@ -429,15 +426,9 @@ pub async fn turn_execution_boundary_persists_queue_transcript_and_briefs() -> R
     let runtime = host.default_runtime().await?;
 
     let message = runtime
-        .enqueue(MessageEnvelope::new(
+        .enqueue(admitted_operator_prompt(
             "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "exercise the turn boundary".into(),
-            },
+            "exercise the turn boundary",
         ))
         .await?;
 
@@ -463,7 +454,8 @@ pub async fn turn_execution_boundary_persists_queue_transcript_and_briefs() -> R
             && entry.related_message_id.as_deref() == Some(message.id.as_str())
             && entry.data["body"].is_null()
             && entry.data["metadata"].is_null()
-            && entry.data["delivery_surface"].is_null()
+            && entry.data["delivery_surface"] == "cli_prompt"
+            && entry.data["admission_context"] == "local_process"
     }));
     assert!(transcript.iter().any(|entry| {
         entry.kind == TranscriptEntryKind::AssistantRound && entry.round == Some(1)
@@ -504,16 +496,7 @@ pub async fn message_processing_creates_briefs_and_sleeps() -> Result<()> {
         RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("stub result")))?;
     let runtime = host.default_runtime().await?;
 
-    let message = MessageEnvelope::new(
-        "default",
-        MessageKind::OperatorPrompt,
-        MessageOrigin::Operator { actor_id: None },
-        AuthorityClass::OperatorInstruction,
-        Priority::Normal,
-        MessageBody::Text {
-            text: "hello".into(),
-        },
-    );
+    let message = admitted_operator_prompt("default", "hello");
     runtime.enqueue(message.clone()).await?;
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
 
@@ -543,16 +526,7 @@ pub async fn terminal_brief_uses_last_assistant_message_without_terminal_deliver
     attach_default_workspace(&host).await?;
     let runtime = host.default_runtime().await?;
 
-    let message = MessageEnvelope::new(
-        "default",
-        MessageKind::OperatorPrompt,
-        MessageOrigin::Operator { actor_id: None },
-        AuthorityClass::OperatorInstruction,
-        Priority::Normal,
-        MessageBody::Text {
-            text: "write and verify a file".into(),
-        },
-    );
+    let message = admitted_operator_prompt("default", "write and verify a file");
     runtime.enqueue(message.clone()).await?;
 
     eventually_for(Duration::from_secs(15), || {
@@ -629,16 +603,7 @@ pub async fn sleep_only_completion_keeps_last_assistant_message_from_previous_ro
     attach_default_workspace(&host).await?;
     let runtime = host.default_runtime().await?;
 
-    let message = MessageEnvelope::new(
-        "default",
-        MessageKind::OperatorPrompt,
-        MessageOrigin::Operator { actor_id: None },
-        AuthorityClass::OperatorInstruction,
-        Priority::Normal,
-        MessageBody::Text {
-            text: "write a file and then sleep".into(),
-        },
-    );
+    let message = admitted_operator_prompt("default", "write a file and then sleep");
     runtime.enqueue(message.clone()).await?;
 
     wait_until(|| {
@@ -812,16 +777,7 @@ pub async fn wake_hint_coalesces_while_running_and_reenters_once() -> Result<()>
     let runtime = host.default_runtime().await?;
 
     runtime
-        .enqueue(MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "do the first turn".into(),
-            },
-        ))
+        .enqueue(admitted_operator_prompt("default", "do the first turn"))
         .await?;
 
     tokio::time::timeout(Duration::from_secs(10), provider.wait_for_first_call()).await?;
@@ -937,27 +893,9 @@ pub async fn multi_session_state_is_isolated() -> Result<()> {
     let a = host.get_or_create_agent("alpha").await?;
     let b = host.get_or_create_agent("beta").await?;
 
-    let alpha_message = MessageEnvelope::new(
-        "alpha",
-        MessageKind::OperatorPrompt,
-        MessageOrigin::Operator { actor_id: None },
-        AuthorityClass::OperatorInstruction,
-        Priority::Normal,
-        MessageBody::Text {
-            text: "alpha".into(),
-        },
-    );
+    let alpha_message = admitted_operator_prompt("alpha", "alpha");
     a.enqueue(alpha_message.clone()).await?;
-    let beta_message = MessageEnvelope::new(
-        "beta",
-        MessageKind::OperatorPrompt,
-        MessageOrigin::Operator { actor_id: None },
-        AuthorityClass::OperatorInstruction,
-        Priority::Normal,
-        MessageBody::Text {
-            text: "beta".into(),
-        },
-    );
+    let beta_message = admitted_operator_prompt("beta", "beta");
     b.enqueue(beta_message.clone()).await?;
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
 
@@ -1290,16 +1228,7 @@ pub async fn agent_summary_last_turn_token_usage_survives_transcript_windowing()
     let runtime = host.default_runtime().await?;
 
     runtime
-        .enqueue(MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "inspect session state".into(),
-            },
-        ))
+        .enqueue(admitted_operator_prompt("default", "inspect session state"))
         .await?;
     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
 
@@ -1501,18 +1430,12 @@ pub async fn sleep_only_completion_preserves_brief_after_max_output_recovery() -
 
     // Send a prompt that will trigger max-output recovery followed by Sleep-only completion
     runtime
-        .enqueue(MessageEnvelope::new(
+        .enqueue(admitted_operator_prompt(
             "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "Generate a comprehensive technical report covering multiple domains. \
-                      Include detailed sections on: 1) System architecture patterns 2) Data flow strategies \
-                      3) Security considerations 4) Performance optimization 5) Monitoring approaches. \
-                      After completing your analysis, finish with Sleep.".into()
-            },
+            "Generate a comprehensive technical report covering multiple domains. \
+             Include detailed sections on: 1) System architecture patterns 2) Data flow strategies \
+             3) Security considerations 4) Performance optimization 5) Monitoring approaches. \
+             After completing your analysis, finish with Sleep.",
         ))
         .await?;
 
