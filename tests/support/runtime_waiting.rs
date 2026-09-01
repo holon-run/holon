@@ -206,7 +206,10 @@ impl AgentProvider for QueuedTaskResultWaitProvider {
                 }),
                 kind: holon::provider::ModelToolCallKind::Function,
             }],
-            _ => anyhow::bail!("WaitFor should complete the turn after the third provider call"),
+            4 => vec![ModelBlock::Text {
+                text: "background command result observed".into(),
+            }],
+            _ => anyhow::bail!("unexpected provider call {call}"),
         };
 
         Ok(ProviderTurnResponse {
@@ -343,7 +346,7 @@ pub async fn wait_for_with_assistant_text_persists_result_brief() -> Result<()> 
     Ok(())
 }
 
-pub async fn queued_task_result_wait_settles_tool_only_turn_and_reduces_result() -> Result<()> {
+pub async fn queued_task_result_wait_settles_tool_only_turn_and_reenters_model() -> Result<()> {
     let provider = Arc::new(QueuedTaskResultWaitProvider::new());
     let host = RuntimeHost::new_with_provider(test_config(), provider.clone())?;
     attach_default_workspace(&host).await?;
@@ -369,7 +372,7 @@ pub async fn queued_task_result_wait_settles_tool_only_turn_and_reduces_result()
     })
     .await?;
 
-    assert_eq!(provider.calls().await, 3);
+    assert_eq!(provider.calls().await, 4);
     let task_id = provider
         .task_id()
         .await
@@ -409,15 +412,13 @@ pub async fn queued_task_result_wait_settles_tool_only_turn_and_reduces_result()
     let reducer_turn = turns
         .iter()
         .find(|turn| turn.input_message_ids.contains(&task_result.id))
-        .expect("queued task result should be consumed by a reducer-only turn");
-    assert!(matches!(
-        reducer_turn
-            .terminal
-            .as_ref()
-            .and_then(|terminal| terminal.no_brief_reason.as_ref()),
-        Some(TurnNoBriefReason::ReducerOnly { reason })
-            if reason == "task_result_without_model_reentry"
-    ));
+        .expect("queued task result should re-enter the model");
+    assert!(!reducer_turn.produced_brief_ids.is_empty());
+    assert!(reducer_turn
+        .terminal
+        .as_ref()
+        .and_then(|terminal| terminal.no_brief_reason.as_ref())
+        .is_none());
     Ok(())
 }
 
