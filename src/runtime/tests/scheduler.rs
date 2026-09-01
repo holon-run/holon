@@ -1740,7 +1740,7 @@ fn unbound_operator_input_exactly_resumes_agent_wait_or_becomes_nudge() {
         matched_waiting_reason: true,
         evidence: Vec::new(),
     };
-    let message = MessageEnvelope::new(
+    let mut message = MessageEnvelope::new(
         "default",
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
@@ -1751,7 +1751,12 @@ fn unbound_operator_input_exactly_resumes_agent_wait_or_becomes_nudge() {
         MessageBody::Text {
             text: "continue".into(),
         },
+    )
+    .with_admission(
+        MessageDeliverySurface::CliPrompt,
+        AdmissionContext::LocalProcess,
     );
+    message.message_seq = Some(1);
 
     append_operator_wait_condition(&storage, "wait-operator", "default", None);
     let mut projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
@@ -1831,6 +1836,80 @@ fn explicitly_bound_operator_input_resumes_work_item_wait() {
 }
 
 #[test]
+fn authenticated_operator_ingress_can_activate_low_authority_prompt_without_upgrade() {
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("holon_run".into()),
+        },
+        AuthorityClass::IntegrationSignal,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "run controlled prompt".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RunOnce,
+        AdmissionContext::LocalProcess,
+    );
+    message.message_seq = Some(1);
+
+    assert!(scheduler::authenticated_operator_ingress(&message));
+    let candidate = scheduler::canonical_activation_candidate(&message, None, None)
+        .unwrap()
+        .expect("authenticated low-authority operator input should be activatable");
+    assert_eq!(
+        candidate,
+        scheduler::CanonicalActivationCandidate::ExactWaitResume {
+            expected_work_item_id: None,
+            correlated_wait: None,
+        }
+    );
+    assert_eq!(message.authority_class, AuthorityClass::IntegrationSignal);
+
+    message.message_seq = None;
+    assert!(!scheduler::authenticated_operator_ingress(&message));
+    assert_eq!(
+        scheduler::canonical_activation_candidate(&message, None, None).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn explicitly_bound_low_authority_operator_input_preserves_content_trust() {
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("holon_run".into()),
+        },
+        AuthorityClass::ExternalEvidence,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "run external evidence".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::CliPrompt,
+        AdmissionContext::LocalProcess,
+    );
+    message.message_seq = Some(1);
+    message.work_item_id = Some("wi-operator".into());
+
+    assert!(scheduler::authenticated_operator_ingress(&message));
+    let candidate = scheduler::canonical_activation_candidate(&message, None, None)
+        .unwrap()
+        .expect("bound low-authority operator input should be activatable");
+    assert!(matches!(
+        candidate,
+        scheduler::CanonicalActivationCandidate::ExplicitlyBoundOperatorInput {
+            work_item_id
+        } if work_item_id == "wi-operator"
+    ));
+}
+
+#[test]
 fn normal_operator_input_resumes_work_item_wait_but_interject_does_not() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
@@ -1841,7 +1920,7 @@ fn normal_operator_input_resumes_work_item_wait_but_interject_does_not() {
 
     let mut projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
     projection.enable_canonical_authority_for_test();
-    let message = MessageEnvelope::new(
+    let mut message = MessageEnvelope::new(
         "default",
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
@@ -1852,7 +1931,12 @@ fn normal_operator_input_resumes_work_item_wait_but_interject_does_not() {
         MessageBody::Text {
             text: "continue".into(),
         },
+    )
+    .with_admission(
+        MessageDeliverySurface::CliPrompt,
+        AdmissionContext::LocalProcess,
     );
+    message.message_seq = Some(1);
     let candidate = scheduler::canonical_activation_candidate(&message, None, None)
         .unwrap()
         .unwrap();

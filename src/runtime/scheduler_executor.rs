@@ -1477,6 +1477,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         let invariant_event = scheduler::scheduler_invariant_diagnostic_event(
             &message.agent_id,
             reason,
+            "run_loop",
             message.work_item_id.clone(),
             Some(message.id.clone()),
             vec![
@@ -2273,7 +2274,7 @@ fn canonical_execution_trust_for_scenario(
             ExecutionTrust::RuntimeInstruction
         }
         scheduler::CanonicalActivationScenario::ExplicitlyBoundOperatorInput { .. } => {
-            ExecutionTrust::OperatorInstruction
+            canonical_execution_trust(message)
         }
         scheduler::CanonicalActivationScenario::InternalFollowup { .. }
         | scheduler::CanonicalActivationScenario::ExactWaitResume { .. }
