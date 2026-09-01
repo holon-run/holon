@@ -1907,6 +1907,7 @@ fn explicitly_bound_low_authority_operator_input_preserves_content_trust() {
             work_item_id
         } if work_item_id == "wi-operator"
     ));
+    assert_eq!(message.authority_class, AuthorityClass::ExternalEvidence);
 }
 
 #[test]

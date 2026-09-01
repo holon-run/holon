@@ -26,11 +26,11 @@ use holon::{
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
     tool::{ToolCall, ToolError, ToolRegistry, ToolResult},
     types::{
-        AgentKind, AgentProfilePreset, AgentStatus, AuthorityClass, BriefKind,
+        AdmissionContext, AgentKind, AgentProfilePreset, AgentStatus, AuthorityClass, BriefKind,
         CallbackDeliveryMode, ChildAgentPhase, ClosureOutcome, CommandTaskSpec, ControlAction,
-        ExternalTriggerStatus, FailureArtifactCategory, MessageBody, MessageEnvelope, MessageKind,
-        MessageOrigin, OperatorNotificationBoundary, OperatorTransportBinding,
-        OperatorTransportBindingStatus, OperatorTransportCapabilities,
+        ExternalTriggerStatus, FailureArtifactCategory, MessageBody, MessageDeliverySurface,
+        MessageEnvelope, MessageKind, MessageOrigin, OperatorNotificationBoundary,
+        OperatorTransportBinding, OperatorTransportBindingStatus, OperatorTransportCapabilities,
         OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind, Priority, TaskStatus,
         TodoItem, TodoItemState, TokenUsage, TranscriptEntry, TranscriptEntryKind, WaitingReason,
         WorkItemState,
@@ -178,16 +178,22 @@ pub async fn background_command_task_result_wakes_sleeping_agent_via_canonical_l
     let runtime = host.default_runtime().await?;
 
     runtime
-        .enqueue(MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "sleep until the background command finishes".into(),
-            },
-        ))
+        .enqueue(
+            MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator { actor_id: None },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "sleep until the background command finishes".into(),
+                },
+            )
+            .with_admission(
+                MessageDeliverySurface::CliPrompt,
+                AdmissionContext::LocalProcess,
+            ),
+        )
         .await?;
 
     wait_until_async_for(Duration::from_secs(10), || {
@@ -354,16 +360,22 @@ pub async fn tool_use_round_trip_executes_and_returns_result() -> Result<()> {
     let runtime = host.default_runtime().await?;
 
     runtime
-        .enqueue(MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "inspect session state".into(),
-            },
-        ))
+        .enqueue(
+            MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator { actor_id: None },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "inspect session state".into(),
+                },
+            )
+            .with_admission(
+                MessageDeliverySurface::CliPrompt,
+                AdmissionContext::LocalProcess,
+            ),
+        )
         .await?;
     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
 
@@ -458,16 +470,22 @@ pub async fn file_tools_can_modify_workspace_and_reenter_context() -> Result<()>
     let runtime = host.default_runtime().await?;
 
     runtime
-        .enqueue(MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "create a note and confirm its content".into(),
-            },
-        ))
+        .enqueue(
+            MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator { actor_id: None },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "create a note and confirm its content".into(),
+                },
+            )
+            .with_admission(
+                MessageDeliverySurface::CliPrompt,
+                AdmissionContext::LocalProcess,
+            ),
+        )
         .await?;
     eventually_for(Duration::from_secs(10), || {
         Ok(workspace.join("notes/result.txt").exists())
@@ -495,16 +513,22 @@ pub async fn shell_tools_capture_command_output() -> Result<()> {
     let runtime = host.default_runtime().await?;
 
     runtime
-        .enqueue(MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "run a shell command and summarize it".into(),
-            },
-        ))
+        .enqueue(
+            MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator { actor_id: None },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "run a shell command and summarize it".into(),
+                },
+            )
+            .with_admission(
+                MessageDeliverySurface::CliPrompt,
+                AdmissionContext::LocalProcess,
+            ),
+        )
         .await?;
     wait_until_async_for(Duration::from_secs(10), || {
         let runtime = runtime.clone();
@@ -531,16 +555,22 @@ pub async fn shell_tools_truncate_large_output_before_provider_reinjection() -> 
     let runtime = host.default_runtime().await?;
 
     runtime
-        .enqueue(MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "inspect a large shell output safely".into(),
-            },
-        ))
+        .enqueue(
+            MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator { actor_id: None },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "inspect a large shell output safely".into(),
+                },
+            )
+            .with_admission(
+                MessageDeliverySurface::CliPrompt,
+                AdmissionContext::LocalProcess,
+            ),
+        )
         .await?;
     wait_until_async_for(Duration::from_secs(10), || {
         let runtime = runtime.clone();
@@ -891,16 +921,22 @@ pub async fn tool_schema_and_dispatch_errors_are_recorded_without_corrupting_run
     let runtime = host.default_runtime().await?;
 
     runtime
-        .enqueue(MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "trigger tool failures".into(),
-            },
-        ))
+        .enqueue(
+            MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator { actor_id: None },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "trigger tool failures".into(),
+                },
+            )
+            .with_admission(
+                MessageDeliverySurface::CliPrompt,
+                AdmissionContext::LocalProcess,
+            ),
+        )
         .await?;
 
     eventually_for(Duration::from_secs(10), || {
@@ -1019,16 +1055,22 @@ pub async fn runtime_provider_failure_surfaces_failure_brief_and_transcript_entr
     let runtime = host.default_runtime().await?;
 
     runtime
-        .enqueue(MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "trigger runtime failure".into(),
-            },
-        ))
+        .enqueue(
+            MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator { actor_id: None },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "trigger runtime failure".into(),
+                },
+            )
+            .with_admission(
+                MessageDeliverySurface::CliPrompt,
+                AdmissionContext::LocalProcess,
+            ),
+        )
         .await?;
 
     eventually_for(Duration::from_secs(10), || {
@@ -1116,16 +1158,22 @@ pub async fn runtime_failure_brief_and_transcript_sanitize_long_provider_error()
     let runtime = host.default_runtime().await?;
 
     runtime
-        .enqueue(MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "trigger verbose runtime failure".into(),
-            },
-        ))
+        .enqueue(
+            MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator { actor_id: None },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "trigger verbose runtime failure".into(),
+                },
+            )
+            .with_admission(
+                MessageDeliverySurface::CliPrompt,
+                AdmissionContext::LocalProcess,
+            ),
+        )
         .await?;
 
     eventually_for(Duration::from_secs(10), || {
@@ -1188,16 +1236,22 @@ pub async fn runtime_failure_brief_and_transcript_redact_short_provider_secret()
     let runtime = host.default_runtime().await?;
 
     runtime
-        .enqueue(MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "trigger sensitive runtime failure".into(),
-            },
-        ))
+        .enqueue(
+            MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator { actor_id: None },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "trigger sensitive runtime failure".into(),
+                },
+            )
+            .with_admission(
+                MessageDeliverySurface::CliPrompt,
+                AdmissionContext::LocalProcess,
+            ),
+        )
         .await?;
 
     eventually_for(Duration::from_secs(10), || {
@@ -2558,16 +2612,22 @@ pub async fn exec_command_auto_promotes_long_running_command_task() -> Result<()
     let runtime = host.default_runtime().await?;
 
     runtime
-        .enqueue(MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "run a long command".into(),
-            },
-        ))
+        .enqueue(
+            MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator { actor_id: None },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "run a long command".into(),
+                },
+            )
+            .with_admission(
+                MessageDeliverySurface::CliPrompt,
+                AdmissionContext::LocalProcess,
+            ),
+        )
         .await?;
 
     eventually_for(Duration::from_secs(10), || {
