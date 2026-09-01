@@ -34,6 +34,7 @@ skills/<skill-name>/SKILL.md
 Example skills in this repository include:
 
 - `ghx`
+- `code-review`
 - `github-issue-solve`
 - `github-pr-fix`
 - `github-review`
