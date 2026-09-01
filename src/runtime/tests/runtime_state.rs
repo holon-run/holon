@@ -815,7 +815,7 @@ fn append_default_host_identity(runtime: &RuntimeHandle) {
 }
 
 #[tokio::test]
-async fn canonical_agent_lifecycle_binding_does_not_inherit_message_work_item() {
+async fn canonical_agent_lifecycle_binding_does_not_inherit_replay_or_message_work_item() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -854,6 +854,13 @@ async fn canonical_agent_lifecycle_binding_does_not_inherit_message_work_item() 
         AdmissionContext::RuntimeOwned,
     );
     message.work_item_id = Some(work_item.id.clone());
+    let source_turn_id = "turn-interrupted-agent-lifecycle";
+    let mut source_turn = TurnRecord::new("default", source_turn_id, 1);
+    source_turn.current_work_item_id = Some(work_item.id.clone());
+    runtime.storage().append_turn(&source_turn).unwrap();
+    message
+        .source_refs
+        .insert("replay_source_turn_id".into(), source_turn_id.into());
     let activation_id = scheduler_executor::canonical_activation_id(&message.id);
     let state = crate::domain::execution_protocol::ExecutionProtocolState::empty("default");
     let admitted = crate::domain::execution_protocol::admit_execution(
@@ -918,13 +925,20 @@ async fn canonical_agent_lifecycle_binding_does_not_inherit_message_work_item() 
         .await
         .unwrap();
     let state = runtime.agent_state().await.unwrap();
-    let binding = state.current_execution_binding.unwrap();
+    let binding = state.current_execution_binding.as_ref().unwrap();
     assert!(matches!(
         binding.owner,
         Some(crate::types::TurnOwner::AgentLifecycle { .. })
     ));
     assert_eq!(binding.work_item_id, None);
     assert_eq!(state.current_turn_work_item_id, None);
+    assert_eq!(
+        state
+            .current_execution_binding
+            .as_ref()
+            .and_then(|binding| binding.claimed_work_revision),
+        None
+    );
 }
 
 struct OperatorInterjectionProbeProvider {
