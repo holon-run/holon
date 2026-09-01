@@ -546,6 +546,23 @@ mod tests {
     }
 
     #[test]
+    fn unbound_terminal_task_result_does_not_override_operator_input_wait() {
+        let resolution = resolve_continuation(
+            &waiting(WaitingReason::AwaitingOperatorInput),
+            &ContinuationTrigger {
+                kind: ContinuationTriggerKind::TaskResult,
+                contentful: true,
+                task_result_outcome: Some(TaskResultOutcome::Succeeded),
+                wake_hint_source: None,
+                task_work_item_id: None,
+            },
+            None,
+        );
+        assert_eq!(resolution.class, ContinuationClass::LivenessOnly);
+        assert!(!resolution.model_reentry);
+    }
+
+    #[test]
     fn empty_external_event_waiting_for_external_change_is_liveness_only() {
         let resolution = resolve_continuation(
             &waiting(WaitingReason::AwaitingExternalChange),
