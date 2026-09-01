@@ -89,9 +89,17 @@ pub(super) fn resolve_continuation(
     trigger: &ContinuationTrigger,
     agent_work_item_id: Option<&str>,
 ) -> ContinuationResolution {
+    let prior_waiting_reason = prior.waiting_reason;
     let same_work_item = match (trigger.task_work_item_id.as_deref(), agent_work_item_id) {
         (Some(_), None) | (None, Some(_)) => false,
-        (None, None) => false,
+        (None, None) => {
+            trigger.kind == ContinuationTriggerKind::TaskResult
+                && trigger.task_result_outcome.is_some()
+                && matches!(
+                    prior_waiting_reason,
+                    None | Some(WaitingReason::AwaitingTaskResult)
+                )
+        }
         (Some(t), Some(a)) => t == a,
     };
     let mut evidence = Vec::new();
@@ -109,7 +117,6 @@ pub(super) fn resolve_continuation(
         evidence.push(format!("wake_hint_source={source}"));
     }
 
-    let prior_waiting_reason = prior.waiting_reason;
     let prior_closure_outcome = prior.outcome;
 
     if prior.outcome == ClosureOutcome::Waiting {
@@ -334,7 +341,7 @@ mod tests {
     }
 
     #[test]
-    fn unbound_terminal_task_result_does_not_resume_expected_wait() {
+    fn unbound_terminal_task_result_resumes_expected_wait() {
         let resolution = resolve_continuation(
             &waiting(WaitingReason::AwaitingTaskResult),
             &ContinuationTrigger {
@@ -346,8 +353,8 @@ mod tests {
             },
             None,
         );
-        assert_eq!(resolution.class, ContinuationClass::LivenessOnly);
-        assert!(!resolution.model_reentry);
+        assert_eq!(resolution.class, ContinuationClass::ResumeExpectedWait);
+        assert!(resolution.model_reentry);
     }
 
     #[test]
@@ -469,30 +476,37 @@ mod tests {
     }
 
     #[test]
-    fn unbound_terminal_task_result_does_not_resume_without_prior_wait() {
-        let resolution = resolve_continuation(
-            &ClosureDecision {
-                outcome: ClosureOutcome::Completed,
-                waiting_reason: None,
-                work_signal: None,
-                runtime_posture: RuntimePosture::Awake,
-                evidence: vec![],
-            },
-            &ContinuationTrigger {
-                kind: ContinuationTriggerKind::TaskResult,
-                contentful: true,
-                task_result_outcome: Some(TaskResultOutcome::Succeeded),
-                wake_hint_source: None,
-                task_work_item_id: None,
-            },
-            None,
-        );
-        assert_eq!(resolution.class, ContinuationClass::LivenessOnly);
-        assert!(!resolution.model_reentry);
+    fn unbound_terminal_task_results_reenter_without_prior_wait() {
+        for outcome in [
+            TaskResultOutcome::Succeeded,
+            TaskResultOutcome::Failed,
+            TaskResultOutcome::Cancelled,
+            TaskResultOutcome::Interrupted,
+        ] {
+            let resolution = resolve_continuation(
+                &ClosureDecision {
+                    outcome: ClosureOutcome::Completed,
+                    waiting_reason: None,
+                    work_signal: None,
+                    runtime_posture: RuntimePosture::Awake,
+                    evidence: vec![],
+                },
+                &ContinuationTrigger {
+                    kind: ContinuationTriggerKind::TaskResult,
+                    contentful: true,
+                    task_result_outcome: Some(outcome),
+                    wake_hint_source: None,
+                    task_work_item_id: None,
+                },
+                None,
+            );
+            assert_eq!(resolution.class, ContinuationClass::TaskResultReentry);
+            assert!(resolution.model_reentry);
+        }
     }
 
     #[test]
-    fn unbound_terminal_task_result_does_not_resume_from_sleeping_posture() {
+    fn unbound_terminal_task_result_reenters_from_sleeping_posture() {
         let resolution = resolve_continuation(
             &ClosureDecision {
                 outcome: ClosureOutcome::Completed,
@@ -510,8 +524,8 @@ mod tests {
             },
             None,
         );
-        assert_eq!(resolution.class, ContinuationClass::LivenessOnly);
-        assert!(!resolution.model_reentry);
+        assert_eq!(resolution.class, ContinuationClass::TaskResultReentry);
+        assert!(resolution.model_reentry);
     }
 
     #[test]
