@@ -913,7 +913,12 @@ fn validate_provenance(attempt: &ExecutionAttempt) -> Result<(), String> {
     use ExecutionTrust::*;
     let provenance = &attempt.provenance;
     let valid = match provenance.origin {
-        Operator => provenance.trust == OperatorInstruction,
+        // An authenticated operator ingress establishes activation authority,
+        // while the message's content trust remains independently classified.
+        Operator => matches!(
+            provenance.trust,
+            OperatorInstruction | IntegrationSignal | ExternalEvidence
+        ),
         Channel | Webhook => matches!(provenance.trust, IntegrationSignal | ExternalEvidence),
         Callback => matches!(
             provenance.trust,
@@ -1982,6 +1987,30 @@ mod tests {
                 .unwrap_err()
                 .contains("provenance")
         );
+    }
+
+    #[test]
+    fn admission_accepts_operator_origin_with_low_content_trust() {
+        for (index, trust) in [
+            (1, ExecutionTrust::IntegrationSignal),
+            (2, ExecutionTrust::ExternalEvidence),
+        ] {
+            let mut state = ExecutionProtocolState::empty("agent-a");
+            state.work_items.insert(
+                "work-a".into(),
+                work_item_record(WorkItemExecutionState::Runnable {
+                    generation: 1,
+                    recovery_ref: None,
+                }),
+            );
+            let mut attempt = attempt(&format!("attempt-operator-low-trust-{index}"), None);
+            attempt.provenance.origin = ExecutionOrigin::Operator;
+            attempt.provenance.trust = trust;
+            let transition = admit_execution(&state, &AdmitExecution { attempt }).unwrap();
+            state = transition.state;
+            let attempt_id = format!("attempt-operator-low-trust-{index}");
+            assert_eq!(state.attempts[&attempt_id].provenance.trust, trust);
+        }
     }
 
     #[test]
