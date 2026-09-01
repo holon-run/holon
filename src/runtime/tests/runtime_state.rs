@@ -6029,7 +6029,7 @@ async fn exact_task_rejoin_claim_is_atomic_and_restart_safe() {
 }
 
 #[tokio::test]
-async fn terminal_task_result_without_work_item_uses_non_reentrant_dispatch() {
+async fn terminal_task_result_without_work_item_uses_reentrant_dispatch() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -6093,19 +6093,19 @@ async fn terminal_task_result_without_work_item_uses_non_reentrant_dispatch() {
         .await
         .unwrap();
     let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
-        panic!("unbound terminal TaskResult should be reduced as the queued message");
+        panic!("unbound terminal TaskResult should be dispatched as the queued message");
     };
     assert_eq!(scheduled.message.id, message.id);
     assert_eq!(
         scheduled.scheduler_decision.kind,
-        scheduler::SchedulerDecisionKind::ReduceMessageOnly
+        scheduler::SchedulerDecisionKind::StartModelTurn
     );
-    assert!(!scheduled.scheduler_decision.model_reentry);
+    assert!(scheduled.scheduler_decision.model_reentry);
     assert!(scheduled
         .dispatch_plan
         .continuation_resolution
         .as_ref()
-        .is_none_or(|resolution| !resolution.model_reentry));
+        .is_some_and(|resolution| resolution.model_reentry));
     assert_eq!(
         runtime
             .inner
@@ -13858,7 +13858,7 @@ fn task_rejoin_fence_requires_live_persisted_contract() {
 }
 
 #[tokio::test]
-async fn unbound_task_result_routes_only_through_reduction() {
+async fn unbound_task_result_reenters_the_model() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let provider = Arc::new(CountingProvider {
@@ -13924,7 +13924,7 @@ async fn unbound_task_result_routes_only_through_reduction() {
         .await
         .unwrap();
 
-    assert_eq!(provider.call_count().await, 0);
+    assert_eq!(provider.call_count().await, 1);
     let active_tasks = runtime.active_tasks(10).await.unwrap();
     assert!(!active_tasks.iter().any(|task| task.id == "task-1"));
     let events = runtime.storage().read_recent_events(100).unwrap();

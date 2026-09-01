@@ -241,7 +241,7 @@ pub async fn background_command_task_result_wakes_sleeping_agent_via_canonical_l
         .as_ref()
         .is_some_and(|continuation| {
             continuation.trigger_kind == holon::types::ContinuationTriggerKind::TaskResult
-                && !continuation.model_reentry
+                && continuation.model_reentry
         }));
     let tasks = runtime.storage().latest_task_records()?;
     assert!(tasks.iter().any(|record| {
@@ -2258,7 +2258,7 @@ pub async fn command_task_result_is_canonical_lifecycle_nudge_on_completion() ->
             event.kind == "continuation_resolved"
                 && event.data["message_id"] == message.id
                 && event.data["resolution"]["trigger_kind"] == "task_result"
-                && event.data["resolution"]["model_reentry"] == false
+                && event.data["resolution"]["model_reentry"] == true
         }))
     })
     .await?;
