@@ -38,18 +38,28 @@ jobs:
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Compose PR body from refresh summary
+        if: steps.diff.outputs.changed == 'true'
+        id: pr_body
+        run: |
+          {
+            echo 'body<<SUMMARY_EOF'
+            cat models.dev/refresh-summary.md
+            echo ''
+            echo '---'
+            echo 'Automated models.dev snapshot/artifact/supplement refresh. Supplement'
+            echo 'entries join the built-in catalog when this PR merges; provider'
+            echo 'enablement, routes, and credentials are unchanged.'
+            echo 'SUMMARY_EOF'
+          } >> "$GITHUB_OUTPUT"
+
       - name: Create or update PR
         if: steps.diff.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@v6
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           branch: models-dev-refresh
-          title: "chore: refresh models.dev snapshot and artifact"
-          body: |
-            Automated models.dev snapshot refresh.
-
-            - Snapshot and artifact regenerated from `https://models.dev/api.json`.
-            - Review the provider mapping audit output.
-            - No provider enablement or route changes.
-          commit-message: "chore: refresh models.dev snapshot and artifact"
+          title: "chore: refresh models.dev snapshot, artifact, and supplement"
+          body: ${{ steps.pr_body.outputs.body }}
+          commit-message: "chore: refresh models.dev snapshot, artifact, and supplement"
           labels: models-dev

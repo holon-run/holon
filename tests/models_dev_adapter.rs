@@ -130,13 +130,13 @@ fn artifact_json_roundtrips_through_serde() {
 }
 
 #[test]
-fn artifact_rejects_zero_context_window() {
+fn artifact_treats_zero_upstream_limits_as_unknown() {
     let json = r#"{
         "openai": {
             "id": "openai",
             "models": {
-                "bad-model": {
-                    "id": "bad-model",
+                "zero-limits-model": {
+                    "id": "zero-limits-model",
                     "limit": {"context": 0, "output": 128000}
                 }
             }
@@ -144,9 +144,16 @@ fn artifact_rejects_zero_context_window() {
     }"#;
     let snapshot = parse_snapshot(json).unwrap();
     let result = Projector::new().project(&snapshot).unwrap();
+    let model = result
+        .projected
+        .iter()
+        .find(|m| m.models_dev_model_id == "zero-limits-model")
+        .unwrap();
+    // Upstream reports 0 limits for some models; projection must treat them
+    // as unknown rather than emitting invalid token limits.
+    assert_eq!(model.metadata.context_window_tokens, None);
     let artifact = ArtifactBuilder::new("rev", "ts", b"raw", "v").build(&result);
-    // The artifact validate should catch zero context window.
-    assert!(artifact.validate().is_err());
+    assert!(artifact.validate().is_ok());
 }
 
 #[test]

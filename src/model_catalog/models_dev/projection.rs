@@ -193,15 +193,28 @@ impl Default for Projector {
     }
 }
 
-fn project_model(model_ref: &ModelRef, model: &ModelsDevModel) -> BuiltInModelMetadata {
+/// Projects one upstream model into Holon metadata using the shared
+/// conservative projection rules. Also used by the supplemental catalog
+/// generator, which overrides the provenance source afterwards.
+pub(super) fn project_model(model_ref: &ModelRef, model: &ModelsDevModel) -> BuiltInModelMetadata {
     let display_name = model.name.clone().unwrap_or_else(|| model.id.clone());
     let description = model
         .description
         .clone()
         .unwrap_or_else(|| format!("Holon projected metadata for {}.", model.id));
 
-    let context_window_tokens = model.limit.as_ref().and_then(|l| l.context);
-    let default_max_output_tokens = model.limit.as_ref().and_then(|l| l.output);
+    // Upstream reports `0` limits for some models; treat them as unknown
+    // instead of projecting invalid token limits.
+    let context_window_tokens = model
+        .limit
+        .as_ref()
+        .and_then(|l| l.context)
+        .filter(|v| *v > 0);
+    let default_max_output_tokens = model
+        .limit
+        .as_ref()
+        .and_then(|l| l.output)
+        .filter(|v| *v > 0);
     let max_output_tokens_upper_limit = default_max_output_tokens;
 
     let auto_compact_token_limit = context_window_tokens

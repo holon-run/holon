@@ -9,6 +9,10 @@ use super::{
 
 const SCHEMA_VERSION: u32 = 1;
 const BUILT_IN_SNAPSHOT: &str = include_str!("builtin_snapshot_v1.json");
+/// Checked-in `models.dev` supplemental catalog. Drafted by
+/// `holon models-dev refresh` for allowlisted providers and admitted through
+/// PR review; the runtime merges it into the built-in catalog.
+const MODELS_DEV_SUPPLEMENT: &str = include_str!("../../models.dev/supplemental_catalog.json");
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -59,7 +63,20 @@ struct SnapshotPreferredModelRoute {
 }
 
 pub(super) fn built_in_catalog() -> Result<BuiltInModelCatalog, String> {
+    let mut catalog = legacy_catalog()?;
+    apply_models_dev_supplement(&mut catalog, MODELS_DEV_SUPPLEMENT)?;
+    Ok(catalog)
+}
+
+/// The compiled-in built-in snapshot without the models.dev supplement.
+/// Used as the drafting baseline by supplement generation and tests.
+pub(super) fn legacy_catalog() -> Result<BuiltInModelCatalog, String> {
     parse_and_validate(BUILT_IN_SNAPSHOT)
+}
+
+fn apply_models_dev_supplement(catalog: &mut BuiltInModelCatalog, raw: &str) -> Result<(), String> {
+    let supplement = crate::model_catalog::models_dev::supplement::ModelsDevSupplement::parse(raw)?;
+    supplement.apply_to(catalog)
 }
 
 fn parse_and_validate(raw: &str) -> Result<BuiltInModelCatalog, String> {
@@ -83,59 +100,7 @@ impl RegistrySnapshot {
 
         let mut models = HashMap::new();
         for model in &self.models {
-            if model.model_ref.model.trim().is_empty() {
-                return Err("model id must not be empty".to_string());
-            }
-            if model.endpoint.is_some() {
-                return Err(format!(
-                    "canonical model {} must not declare an endpoint",
-                    model.model_ref.as_string()
-                ));
-            }
-            if model.effective_context_window_percent == 0
-                || model.effective_context_window_percent > 100
-            {
-                return Err(format!(
-                    "model {} has invalid effective context window percent {}",
-                    model.model_ref.as_string(),
-                    model.effective_context_window_percent
-                ));
-            }
-            if model.context_window_tokens.is_some_and(|value| value == 0)
-                || model
-                    .default_max_output_tokens
-                    .is_some_and(|value| value == 0)
-                || model
-                    .max_output_tokens_upper_limit
-                    .is_some_and(|value| value == 0)
-            {
-                return Err(format!(
-                    "model {} token limits must be positive",
-                    model.model_ref.as_string()
-                ));
-            }
-            if let (Some(default), Some(upper)) = (
-                model.default_max_output_tokens,
-                model.max_output_tokens_upper_limit,
-            ) {
-                if default > upper {
-                    return Err(format!(
-                        "model {} default max output {default} exceeds upper limit {upper}",
-                        model.model_ref.as_string()
-                    ));
-                }
-            }
-            let mut reasoning_options = HashSet::new();
-            if model
-                .reasoning_effort_options
-                .iter()
-                .any(|option| !reasoning_options.insert(option))
-            {
-                return Err(format!(
-                    "model {} has duplicate reasoning effort options",
-                    model.model_ref.as_string()
-                ));
-            }
+            validate_model_entry(model)?;
             if models.insert(model.model_ref.clone(), model).is_some() {
                 return Err(format!("duplicate model {}", model.model_ref.as_string()));
             }
@@ -367,6 +332,63 @@ fn validate_preferred_routes(
     Ok(())
 }
 
+/// Per-model invariants shared by the built-in snapshot and the models.dev
+/// supplemental catalog.
+pub(super) fn validate_model_entry(model: &BuiltInModelMetadata) -> Result<(), String> {
+    if model.model_ref.model.trim().is_empty() {
+        return Err("model id must not be empty".to_string());
+    }
+    if model.endpoint.is_some() {
+        return Err(format!(
+            "canonical model {} must not declare an endpoint",
+            model.model_ref.as_string()
+        ));
+    }
+    if model.effective_context_window_percent == 0 || model.effective_context_window_percent > 100 {
+        return Err(format!(
+            "model {} has invalid effective context window percent {}",
+            model.model_ref.as_string(),
+            model.effective_context_window_percent
+        ));
+    }
+    if model.context_window_tokens.is_some_and(|value| value == 0)
+        || model
+            .default_max_output_tokens
+            .is_some_and(|value| value == 0)
+        || model
+            .max_output_tokens_upper_limit
+            .is_some_and(|value| value == 0)
+    {
+        return Err(format!(
+            "model {} token limits must be positive",
+            model.model_ref.as_string()
+        ));
+    }
+    if let (Some(default), Some(upper)) = (
+        model.default_max_output_tokens,
+        model.max_output_tokens_upper_limit,
+    ) {
+        if default > upper {
+            return Err(format!(
+                "model {} default max output {default} exceeds upper limit {upper}",
+                model.model_ref.as_string()
+            ));
+        }
+    }
+    let mut reasoning_options = HashSet::new();
+    if model
+        .reasoning_effort_options
+        .iter()
+        .any(|option| !reasoning_options.insert(option))
+    {
+        return Err(format!(
+            "model {} has duplicate reasoning effort options",
+            model.model_ref.as_string()
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -389,9 +411,40 @@ mod tests {
 
     #[test]
     fn built_in_snapshot_matches_legacy_catalog() {
-        let snapshot = built_in_catalog().expect("built-in snapshot must be valid");
+        let snapshot = legacy_catalog().expect("built-in snapshot must be valid");
         let legacy = BuiltInModelCatalog::from_legacy_definitions();
         assert_eq!(snapshot, legacy);
+    }
+
+    #[test]
+    fn built_in_catalog_includes_checked_in_supplement() {
+        let catalog = built_in_catalog().expect("built-in snapshot must be valid");
+        let supplement = crate::model_catalog::models_dev::supplement::ModelsDevSupplement::parse(
+            MODELS_DEV_SUPPLEMENT,
+        )
+        .expect("checked-in supplement must parse");
+        for model in &supplement.models {
+            let entry = catalog.get(&model.model_ref).unwrap_or_else(|| {
+                panic!(
+                    "supplement model {} must merge",
+                    model.model_ref.as_string()
+                )
+            });
+            assert_eq!(
+                entry.source,
+                crate::model_catalog::ModelMetadataSource::ModelsDevSupplement
+            );
+            let route = ModelRouteRef::new(
+                model.model_ref.provider.clone(),
+                crate::config::ProviderEndpointId::default_endpoint(),
+                model.model_ref.model.clone(),
+            );
+            assert!(
+                catalog.get_route(&route).is_some(),
+                "supplement model {} must have a default route",
+                model.model_ref.as_string()
+            );
+        }
     }
 
     #[test]

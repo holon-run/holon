@@ -118,8 +118,18 @@ pub struct ModelsDevModel {
 pub struct ModelsDevReasoningOption {
     #[serde(default)]
     pub r#type: Option<String>,
-    #[serde(default)]
+    /// Null entries appear upstream (e.g. sarvam models) and are dropped.
+    #[serde(default, deserialize_with = "deserialize_reasoning_values")]
     pub values: Vec<String>,
+}
+
+/// Deserializes `Vec<String>` while dropping upstream `null` entries.
+fn deserialize_reasoning_values<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = Vec::<Option<String>>::deserialize(deserializer)?;
+    Ok(raw.into_iter().flatten().collect())
 }
 
 /// Input and output modalities.
@@ -156,10 +166,40 @@ pub struct ModelsDevCost {
 }
 
 /// Interleaved reasoning content configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+///
+/// The live `models.dev` API encodes this either as a boolean flag or as an
+/// object carrying the interleaved field name; both shapes deserialize into
+/// this struct (`enabled` records the boolean form).
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ModelsDevInterleaved {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub field: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for ModelsDevInterleaved {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Boolean(bool),
+            Object { field: Option<String> },
+        }
+        Ok(match Raw::deserialize(deserializer)? {
+            Raw::Boolean(enabled) => Self {
+                enabled: Some(enabled),
+                field: None,
+            },
+            Raw::Object { field } => Self {
+                enabled: None,
+                field,
+            },
+        })
+    }
 }
 
 #[cfg(test)]
@@ -236,6 +276,39 @@ mod tests {
         assert_eq!(
             model.modalities.as_ref().unwrap().input,
             vec!["text", "image"]
+        );
+    }
+
+    #[test]
+    fn parses_both_interleaved_shapes() {
+        let json = r#"{
+            "bool-provider": {
+                "id": "bool-provider",
+                "models": {
+                    "m": {"id": "m", "interleaved": true}
+                }
+            },
+            "obj-provider": {
+                "id": "obj-provider",
+                "models": {
+                    "m": {"id": "m", "interleaved": {"field": "reasoning_content"}}
+                }
+            }
+        }"#;
+        let snapshot: ModelsDevSnapshot = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            snapshot.providers["bool-provider"].models["m"].interleaved,
+            Some(ModelsDevInterleaved {
+                enabled: Some(true),
+                field: None
+            })
+        );
+        assert_eq!(
+            snapshot.providers["obj-provider"].models["m"].interleaved,
+            Some(ModelsDevInterleaved {
+                enabled: None,
+                field: Some("reasoning_content".to_string())
+            })
         );
     }
 

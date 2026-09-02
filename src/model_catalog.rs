@@ -22,6 +22,10 @@ pub enum ModelMetadataSource {
     ConservativeBuiltin,
     ConfigOverride,
     RemoteDiscovered,
+    /// Checked-in `models.dev/supplemental_catalog.json` entry, drafted by
+    /// `holon models-dev refresh` for already-supported providers and
+    /// admitted through PR review.
+    ModelsDevSupplement,
     UnknownFallback,
 }
 
@@ -573,9 +577,9 @@ impl BuiltInModelCatalog {
 
     #[cfg(test)]
     fn from_legacy_definitions() -> Self {
+        let mut route_entries = HashMap::new();
         let mut entries = HashMap::new();
         let mut preferred_models = HashMap::new();
-        let mut route_entries = HashMap::new();
         let mut preferred_routes = HashMap::new();
         let mut preferred_routes_by_model = HashMap::new();
         let mut aliases = Self::legacy_aliases();
@@ -1532,6 +1536,14 @@ impl BuiltInModelCatalog {
     }
 }
 
+/// The compiled-in built-in catalog without the models.dev supplemental
+/// entries. This is the drafting baseline for
+/// `models_dev::supplement::generate` and the collision-check base for
+/// `holon models-dev validate`.
+pub fn legacy_builtin_catalog() -> Result<BuiltInModelCatalog, String> {
+    snapshot::legacy_catalog()
+}
+
 impl Default for BuiltInModelCatalog {
     fn default() -> Self {
         Self::new()
@@ -1725,6 +1737,13 @@ fn default_verbosity_for_model(model_ref: &ModelRef) -> Option<ModelVerbosity> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn curated_catalog() -> BuiltInModelCatalog {
+        // Curation-tracking tests document the compiled-in Rust catalog;
+        // models.dev supplement entries are a separate reviewed data layer.
+        legacy_builtin_catalog().expect("legacy catalog must be valid")
+    }
+
     use crate::provider::{provider_definitions, ProviderCatalogPolicy, ProviderMaterializer};
 
     fn base_context() -> ContextConfig {
@@ -1803,7 +1822,7 @@ mod tests {
 
     #[test]
     fn arcee_catalog_tracks_current_hosted_models_conservatively() {
-        let catalog = BuiltInModelCatalog::new();
+        let catalog = curated_catalog();
         let arcee = ProviderId::parse("arcee").unwrap();
         let models = catalog
             .list()
@@ -1847,7 +1866,7 @@ mod tests {
 
     #[test]
     fn anthropic_catalog_tracks_current_generally_available_models() {
-        let catalog = BuiltInModelCatalog::new();
+        let catalog = curated_catalog();
         let expected = [
             ("claude-fable-5", 1_000_000, 128_000),
             ("claude-opus-4-8", 1_000_000, 128_000),
@@ -1890,7 +1909,7 @@ mod tests {
 
     #[test]
     fn gemini_catalog_tracks_current_generate_content_models() {
-        let catalog = BuiltInModelCatalog::new();
+        let catalog = curated_catalog();
         let expected = [
             "gemini-3.5-flash",
             "gemini-3.1-pro-preview",
@@ -1929,7 +1948,7 @@ mod tests {
 
     #[test]
     fn xai_catalog_tracks_current_recommended_models() {
-        let catalog = BuiltInModelCatalog::new();
+        let catalog = curated_catalog();
         let expected = [
             (
                 "grok-4.3",
@@ -1980,7 +1999,7 @@ mod tests {
 
     #[test]
     fn deepseek_catalog_tracks_current_api_models() {
-        let catalog = BuiltInModelCatalog::new();
+        let catalog = curated_catalog();
 
         for model in ["deepseek-v4-flash", "deepseek-v4-pro"] {
             let metadata = catalog
@@ -2160,7 +2179,7 @@ mod tests {
 
     #[test]
     fn resolves_anthropic_compatible_provider_model_policy() {
-        let catalog = BuiltInModelCatalog::new();
+        let catalog = curated_catalog();
 
         let deepseek = catalog.resolve_policy(
             &ModelRef::parse("deepseek/deepseek-v4-flash").unwrap(),
@@ -2423,7 +2442,7 @@ mod tests {
 
     #[test]
     fn dashscope_catalog_tracks_current_modalities_and_reasoning() {
-        let catalog = BuiltInModelCatalog::new();
+        let catalog = curated_catalog();
         let expected = [
             ("qwen3.5-plus", 1_000_000, true, true),
             ("qwen3.8-max-preview", 1_000_000, true, true),
@@ -2472,7 +2491,7 @@ mod tests {
 
     #[test]
     fn chutes_catalog_tracks_the_public_live_model_directory() {
-        let catalog = BuiltInModelCatalog::new();
+        let catalog = curated_catalog();
         let expected = [
             ("moonshotai/Kimi-K2.6-TEE", 262_144, Some(65_535), true),
             ("zai-org/GLM-5.2-TEE", 1_048_576, Some(65_535), false),
@@ -2528,7 +2547,7 @@ mod tests {
 
     #[test]
     fn fireworks_catalog_tracks_current_serverless_chat_models() {
-        let catalog = BuiltInModelCatalog::new();
+        let catalog = curated_catalog();
         let expected = [
             (
                 "accounts/fireworks/models/deepseek-v4-flash",
@@ -2603,7 +2622,7 @@ mod tests {
 
     #[test]
     fn nvidia_catalog_tracks_the_public_hosted_model_directory() {
-        let catalog = BuiltInModelCatalog::new();
+        let catalog = curated_catalog();
         let expected = [
             ("nvidia/nemotron-3-super-120b-a12b", 1_000_000, false),
             ("moonshotai/kimi-k2.6", 262_144, true),
@@ -2643,7 +2662,7 @@ mod tests {
 
     #[test]
     fn together_catalog_tracks_current_serverless_chat_models() {
-        let catalog = BuiltInModelCatalog::new();
+        let catalog = curated_catalog();
         let expected = [
             ("MiniMaxAI/MiniMax-M3", 524_288, false, true),
             ("MiniMaxAI/MiniMax-M2.7", 202_752, true, false),
@@ -2758,7 +2777,7 @@ mod tests {
 
     #[test]
     fn kilocode_catalog_tracks_the_current_auto_virtual_models() {
-        let catalog = BuiltInModelCatalog::new();
+        let catalog = curated_catalog();
         let expected = [
             ("kilo-auto/frontier", 1_000_000, 128_000, true),
             ("kilo-auto/balanced", 1_000_000, 65_536, true),
@@ -2786,7 +2805,7 @@ mod tests {
 
     #[test]
     fn synthetic_catalog_tracks_current_always_on_models() {
-        let catalog = BuiltInModelCatalog::new();
+        let catalog = curated_catalog();
         let synthetic = ProviderId::parse("synthetic").unwrap();
         let models = catalog
             .list()
@@ -2839,7 +2858,7 @@ mod tests {
 
     #[test]
     fn vercel_ai_gateway_catalog_tracks_current_picker_defaults() {
-        let catalog = BuiltInModelCatalog::new();
+        let catalog = curated_catalog();
         let expected = [
             ("anthropic/claude-opus-4.6", 1_000_000, 128_000),
             ("openai/gpt-5.4", 1_050_000, 128_000),
@@ -2880,7 +2899,7 @@ mod tests {
 
     #[test]
     fn stepfun_catalog_tracks_current_chat_models_and_reasoning_controls() {
-        let catalog = BuiltInModelCatalog::new();
+        let catalog = curated_catalog();
         let expected = [
             ("step-3.7-flash", true, &["low", "medium", "high"][..]),
             ("step-3.5-flash-2603", false, &["low", "high"][..]),
@@ -2988,7 +3007,7 @@ mod tests {
 
     #[test]
     fn minimax_catalog_tracks_current_anthropic_models_and_modalities() {
-        let catalog = BuiltInModelCatalog::new();
+        let catalog = curated_catalog();
         let minimax = ProviderId::parse("minimax").unwrap();
         let models = catalog
             .list()
@@ -3034,7 +3053,7 @@ mod tests {
 
     #[test]
     fn qianfan_catalog_tracks_current_v2_models_limits_and_modalities() {
-        let catalog = BuiltInModelCatalog::new();
+        let catalog = curated_catalog();
         let qianfan = ProviderId::parse("qianfan").unwrap();
         let models = catalog
             .list()
@@ -3740,7 +3759,7 @@ mod tests {
 
     #[test]
     fn moonshot_catalog_tracks_current_models_and_retirements() {
-        let catalog = BuiltInModelCatalog::new();
+        let catalog = curated_catalog();
         let moonshot = ProviderId::parse("moonshot").unwrap();
         let models = catalog
             .list()
@@ -3816,7 +3835,7 @@ mod tests {
 
     #[test]
     fn mistral_catalog_tracks_current_models_and_retirements() {
-        let catalog = BuiltInModelCatalog::new();
+        let catalog = curated_catalog();
         let mistral = ProviderId::parse("mistral").unwrap();
         let models = catalog
             .list()
@@ -3900,7 +3919,7 @@ mod tests {
 
     #[test]
     fn opencode_go_catalog_tracks_the_current_dual_transport_model_table() {
-        let catalog = BuiltInModelCatalog::new();
+        let catalog = curated_catalog();
         let provider = provider_id("opencode-go");
         let models = catalog
             .list()
@@ -3979,7 +3998,7 @@ mod tests {
 
     #[test]
     fn tencent_tokenhub_catalog_tracks_current_language_and_image_understanding_models() {
-        let catalog = BuiltInModelCatalog::new();
+        let catalog = curated_catalog();
         let provider = provider_id("tencent-tokenhub");
         let models = catalog
             .list()
@@ -4043,7 +4062,7 @@ mod tests {
 
     #[test]
     fn venice_catalog_tracks_stable_trait_defaults() {
-        let catalog = BuiltInModelCatalog::new();
+        let catalog = curated_catalog();
         let provider = provider_id("venice");
         let models = catalog
             .list()

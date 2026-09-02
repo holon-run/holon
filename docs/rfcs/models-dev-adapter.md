@@ -13,7 +13,10 @@ issue:
 This RFC defines Phase 2A+2B of the models.dev integration: a CI-time
 adapter that reads a pinned `models.dev` snapshot, projects it into Holon's
 canonical model registry format, and emits an immutable artifact with
-provenance metadata. The runtime does not consume `models.dev` directly.
+provenance metadata. The runtime never fetches `models.dev` at run time; the
+reviewed supplemental catalog (`models.dev/supplemental_catalog.json`, see
+[119 models.dev Supplemental Catalog](../implementation-decisions/119-models-dev-supplemental-catalog.md))
+merges into the built-in catalog only through PR review and merge.
 
 This RFC builds on the accepted [Versioned Model Registry Snapshot][snap-rfc]
 and its four fact layers: `ModelDefinition`, `ProviderOffering`,
@@ -130,7 +133,9 @@ and default selections are Holon-controlled and not derivable from
 
 The artifact is a CI intermediate. After review and merge, selected model
 entries are integrated into the next built-in snapshot revision. The
-runtime does not load the artifact directly in this phase.
+runtime does not load the artifact directly in this phase; the supplemental
+catalog is the only reviewed channel through which models.dev metadata joins
+the built-in catalog.
 
 ### Artifact validation
 
