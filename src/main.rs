@@ -287,7 +287,7 @@ fn runtime_command_uses_config_inspection(command: &Commands) -> bool {
             command: DebugCommands::SchedulerRecovery { .. }
                 | DebugCommands::SchedulerRecoveryFixture { .. }
                 | DebugCommands::SchedulerRestartFixture { .. }
-        }
+        } | Commands::ModelsDev { .. }
     )
 }
 

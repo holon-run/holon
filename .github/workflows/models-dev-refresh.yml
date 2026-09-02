@@ -32,7 +32,7 @@ jobs:
       - name: Check for changes
         id: diff
         run: |
-          if git diff --exit-code -- models.dev/; then
+          if [ -z "$(git status --porcelain -- models.dev/)" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"

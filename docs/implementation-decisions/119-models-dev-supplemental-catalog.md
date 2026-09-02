@@ -20,6 +20,10 @@ Decision:
 - the refresh PR body is generated from `models.dev/refresh-summary.md`
   (drafted/retained/removed/deferred lists); merge review is the admission
   gate
+- `holon models-dev` commands are pure data utilities and load config in
+  inspection mode, so the refresh workflow runs on credential-less CI
+  runners; refresh change detection uses `git status --porcelain` because
+  the first refresh run creates previously untracked files
 
 Reason:
 
