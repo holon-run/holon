@@ -54,6 +54,7 @@ use holon::{
     types::{
         AgentDeletionPhase, AgentDeletionStatus, AgentInvocationContext, AgentRegistryStatus,
         AuditEvent, AuthorityClass, ControlAction, TimerStatus, TodoItem, WorkItemPlanStatus,
+        HOLON_CALLER_AUTHORITY_CLASS_ENV,
     },
 };
 use tokio::net::TcpListener;
@@ -1138,6 +1139,30 @@ mod tests {
             providers: provider_registry_for_tests(None, Some("dummy"), home.join(".codex")),
             web_config: holon::web::WebConfig::default(),
         }
+    }
+
+    #[test]
+    fn agent_cli_context_without_inherited_authority_rejects_operator_fallback() {
+        let error = authority_class_for_cli_context(Some(AgentInvocationContext {
+            caller_agent_id: "agent-a".into(),
+            source_task_id: None,
+            source_turn_id: None,
+            source_work_item_id: None,
+            source_activation_id: None,
+            inherited_authority_class: None,
+        }))
+        .unwrap_err();
+
+        assert!(error.to_string().contains(HOLON_CALLER_AUTHORITY_CLASS_ENV));
+        assert!(error.to_string().contains("operator authority"));
+    }
+
+    #[test]
+    fn context_free_cli_uses_operator_authority() {
+        assert_eq!(
+            authority_class_for_cli_context(None).unwrap(),
+            AuthorityClass::OperatorInstruction
+        );
     }
 
     #[test]
@@ -4202,9 +4227,21 @@ fn cli_invocation_context() -> Result<Option<AgentInvocationContext>> {
 }
 
 fn cli_authority_class() -> Result<AuthorityClass> {
-    Ok(cli_invocation_context()?
-        .and_then(|context| context.inherited_authority_class)
-        .unwrap_or(AuthorityClass::OperatorInstruction))
+    authority_class_for_cli_context(cli_invocation_context()?)
+}
+
+fn authority_class_for_cli_context(
+    context: Option<AgentInvocationContext>,
+) -> Result<AuthorityClass> {
+    match context {
+        Some(context) => context.inherited_authority_class.ok_or_else(|| {
+            anyhow!(
+                "agent invocation context is missing {HOLON_CALLER_AUTHORITY_CLASS_ENV}; \
+                 refusing to fall back to operator authority"
+            )
+        }),
+        None => Ok(AuthorityClass::OperatorInstruction),
+    }
 }
 
 fn parse_work_item_plan_status(value: &str) -> Result<WorkItemPlanStatus> {
