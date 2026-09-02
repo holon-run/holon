@@ -57,7 +57,7 @@ struct IdTokenClaims {
     sub: String,
     aud: Audience,
     exp: i64,
-    iat: Option<i64>,
+    iat: i64,
     nbf: Option<i64>,
     nonce: Option<String>,
     azp: Option<String>,
@@ -82,7 +82,7 @@ impl Audience {
     }
 
     fn requires_authorized_party(&self) -> bool {
-        matches!(self, Self::Many(_))
+        matches!(self, Self::Many(aud) if aud.len() > 1)
     }
 }
 
@@ -109,6 +109,13 @@ pub struct OidcClient {
 impl OidcClient {
     pub fn new(config: AuthConfig) -> Result<Self> {
         config.validate()?;
+        if config
+            .oidc
+            .as_ref()
+            .is_some_and(|oidc| oidc.redirect_uri.is_none())
+        {
+            bail!("OIDC redirect_uri is required");
+        }
         Ok(Self {
             config,
             http: reqwest::Client::builder()
@@ -139,13 +146,11 @@ impl OidcClient {
         {
             bail!("OIDC discovery response is too large");
         }
-        let document = response.bytes().await?;
-        if document.len() as u64 > MAX_DISCOVERY_BYTES {
-            bail!("OIDC discovery response is too large");
-        }
+        let document =
+            read_limited_body(response, MAX_DISCOVERY_BYTES, "OIDC discovery response").await?;
         let discovery: OidcDiscovery =
             serde_json::from_slice(&document).context("parsing OIDC discovery response")?;
-        if discovery.issuer.trim_end_matches('/') != oidc.issuer_url.trim_end_matches('/') {
+        if discovery.issuer != oidc.issuer_url {
             bail!("OIDC discovery issuer does not match configured issuer");
         }
         for endpoint in [
@@ -251,10 +256,8 @@ impl OidcClient {
         {
             bail!("OIDC token response is too large");
         }
-        let token_response = response.bytes().await?;
-        if token_response.len() as u64 > MAX_TOKEN_RESPONSE_BYTES {
-            bail!("OIDC token response is too large");
-        }
+        let token_response =
+            read_limited_body(response, MAX_TOKEN_RESPONSE_BYTES, "OIDC token response").await?;
         let tokens: TokenResponse =
             serde_json::from_slice(&token_response).context("parsing OIDC token response")?;
         let claims = self
@@ -303,10 +306,7 @@ impl OidcClient {
         {
             bail!("OIDC JWKS response is too large");
         }
-        let bytes = key_set.bytes().await?;
-        if bytes.len() as u64 > MAX_JWKS_BYTES {
-            bail!("OIDC JWKS response is too large");
-        }
+        let bytes = read_limited_body(key_set, MAX_JWKS_BYTES, "OIDC JWKS response").await?;
         let keys: Jwks = serde_json::from_slice(&bytes).context("parsing OIDC JWKS response")?;
         let jwk = keys
             .keys
@@ -345,9 +345,7 @@ impl OidcClient {
             || claims
                 .nbf
                 .is_some_and(|value| value > now.timestamp() + ID_TOKEN_LEEWAY_SECONDS)
-            || claims
-                .iat
-                .is_some_and(|value| value > now.timestamp() + ID_TOKEN_LEEWAY_SECONDS)
+            || claims.iat > now.timestamp() + ID_TOKEN_LEEWAY_SECONDS
             || !claims.aud.contains(client_id)
             || (claims.aud.requires_authorized_party() && claims.azp.as_deref() != Some(client_id))
             || claims
@@ -370,12 +368,19 @@ pub fn issue_session(
 ) -> Result<IssuedSession> {
     config.session.validate()?;
     let credential = random_secret();
+    let ttl_seconds = i64::try_from(config.session.absolute_ttl_seconds)
+        .context("session absolute TTL is too large")?;
+    let ttl = chrono::Duration::try_seconds(ttl_seconds)
+        .context("session absolute TTL is out of range")?;
+    let expires_at = now
+        .checked_add_signed(ttl)
+        .context("session expiration is out of range")?;
     let record = AuthSessionRecord {
         session_digest: digest_secret(&credential),
         user_id: user_id.to_string(),
         auth_method: auth_method.to_string(),
         created_at: now,
-        expires_at: now + chrono::Duration::seconds(config.session.absolute_ttl_seconds as i64),
+        expires_at,
         last_seen_at: now,
         revoked_at: None,
     };
@@ -412,6 +417,31 @@ fn pkce_challenge(verifier: &str) -> String {
     URL_SAFE_NO_PAD.encode(digest.finalize())
 }
 
+async fn read_limited_body(
+    mut response: reqwest::Response,
+    max_bytes: u64,
+    description: &str,
+) -> Result<Vec<u8>> {
+    if response
+        .content_length()
+        .is_some_and(|size| size > max_bytes)
+    {
+        bail!("{description} is too large");
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        let next_len = body
+            .len()
+            .checked_add(chunk.len())
+            .context("response body length overflow")?;
+        if u64::try_from(next_len).is_ok_and(|size| size > max_bytes) {
+            bail!("{description} is too large");
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -429,6 +459,7 @@ mod tests {
         assert!(Audience::One("client".into()).contains("client"));
         assert!(Audience::Many(vec!["other".into(), "client".into()]).contains("client"));
         assert!(!Audience::One("client".into()).requires_authorized_party());
+        assert!(!Audience::Many(vec!["client".into()]).requires_authorized_party());
         assert!(Audience::Many(vec!["client".into(), "other".into()]).requires_authorized_party());
     }
 }
