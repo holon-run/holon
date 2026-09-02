@@ -979,6 +979,7 @@ impl RuntimeTransitionRepository<'_> {
             None,
             None,
             &[],
+            &[],
         )
     }
 
@@ -987,7 +988,7 @@ impl RuntimeTransitionRepository<'_> {
         command: &QueueTransitionCommand,
         execution_protocol: &ExecutionProtocolTransition,
     ) -> Result<TransitionCommit> {
-        self.commit_queue_transaction(command, execution_protocol, None, None, None, &[])
+        self.commit_queue_transaction(command, execution_protocol, None, None, None, &[], &[])
     }
 
     pub fn commit_queue_with_execution_protocol_and_terminal_tool_executions(
@@ -1003,6 +1004,7 @@ impl RuntimeTransitionRepository<'_> {
             None,
             None,
             terminal_tool_executions,
+            &[],
         )
     }
 
@@ -1017,6 +1019,7 @@ impl RuntimeTransitionRepository<'_> {
             wait_transition,
             None,
             None,
+            &[],
             &[],
         )
     }
@@ -1034,14 +1037,16 @@ impl RuntimeTransitionRepository<'_> {
             None,
             None,
             &[],
+            &[],
         )
     }
 
-    pub fn commit_queue_with_execution_protocol_and_task_expectation(
+    pub fn commit_queue_with_execution_protocol_task_expectation_and_wait_conditions(
         &self,
         command: &QueueTransitionCommand,
         execution_protocol: &ExecutionProtocolTransition,
         task_expectation: &TaskExpectation,
+        wait_conditions: &[crate::types::WaitConditionRecord],
     ) -> Result<TransitionCommit> {
         self.commit_queue_transaction(
             command,
@@ -1050,6 +1055,7 @@ impl RuntimeTransitionRepository<'_> {
             Some(task_expectation),
             None,
             &[],
+            wait_conditions,
         )
     }
 
@@ -1066,6 +1072,7 @@ impl RuntimeTransitionRepository<'_> {
             None,
             Some(completion),
             &[],
+            &[],
         )
     }
 
@@ -1077,6 +1084,7 @@ impl RuntimeTransitionRepository<'_> {
         task_expectation: Option<&TaskExpectation>,
         completion: Option<&CompletionTransition>,
         terminal_tool_executions: &[ToolExecutionRecord],
+        extra_wait_conditions: &[crate::types::WaitConditionRecord],
     ) -> Result<TransitionCommit> {
         self.db.transaction(|tx| {
             validate_queue_operation(command)?;
@@ -1087,6 +1095,9 @@ impl RuntimeTransitionRepository<'_> {
                 if let Some(work_item) = wait_transition.work_item.as_ref() {
                     validate_work_item_mutation_tx(tx, work_item)?;
                 }
+            }
+            for condition in extra_wait_conditions {
+                validate_wait_condition_tx(tx, condition)?;
             }
             if let Some(task_expectation) = task_expectation {
                 validate_task_expectation_tx(tx, task_expectation)?;
@@ -1156,6 +1167,18 @@ impl RuntimeTransitionRepository<'_> {
                     .map(|completion| completion.wait_conditions.as_slice())
                     .unwrap_or_default()
             };
+            let mut merged_wait_conditions: Vec<crate::types::WaitConditionRecord>;
+            let execution_wait_conditions: &[crate::types::WaitConditionRecord] =
+                if extra_wait_conditions.is_empty() {
+                    execution_wait_conditions
+                } else {
+                    merged_wait_conditions = Vec::with_capacity(
+                        execution_wait_conditions.len() + extra_wait_conditions.len(),
+                    );
+                    merged_wait_conditions.extend_from_slice(execution_wait_conditions);
+                    merged_wait_conditions.extend_from_slice(extra_wait_conditions);
+                    &merged_wait_conditions
+                };
             let execution_continuations = completion
                 .map(|completion| completion.continuations.as_slice())
                 .unwrap_or_default();
@@ -1197,6 +1220,10 @@ impl RuntimeTransitionRepository<'_> {
                 .map(|wait_transition| upsert_wait_condition_tx(tx, &wait_transition.record))
                 .transpose()?
                 .unwrap_or(false);
+            let mut extra_wait_conditions_applied = false;
+            for condition in extra_wait_conditions {
+                extra_wait_conditions_applied |= upsert_wait_condition_tx(tx, condition)?;
+            }
             let mut wait_work_items = Vec::new();
             let wait_work_item_applied = if let Some(work_item) =
                 wait_transition.and_then(|wait_transition| wait_transition.work_item.as_ref())
@@ -1281,6 +1308,7 @@ impl RuntimeTransitionRepository<'_> {
                 || agent_state_applied
                 || execution_protocol_applied
                 || wait_transition_applied
+                || extra_wait_conditions_applied
                 || wait_work_item_applied
                 || completion_applied
                 || terminal_tool_execution_applied;

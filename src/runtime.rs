@@ -1042,6 +1042,41 @@ fn exact_triggered_or_resolved_task_result_wait(
     })
 }
 
+/// Agent-scope counterpart of [`exact_triggered_or_resolved_task_result_wait`]:
+/// durable evidence that the agent explicitly waited on the exact task whose
+/// result this message carries, without any WorkItem binding.
+fn exact_agent_scope_task_result_wait(
+    storage: &AppStorage,
+    message: &MessageEnvelope,
+    task_id: &str,
+) -> Result<Option<WaitConditionRecord>> {
+    let matching_waits = storage
+        .latest_wait_conditions()?
+        .into_iter()
+        .filter(|wait| {
+            wait.agent_id == message.agent_id
+                && wait.work_item_id.is_none()
+                && matches!(
+                    wait.status,
+                    WaitConditionStatus::Triggered | WaitConditionStatus::Resolved
+                )
+                && wait.kind == crate::types::WaitConditionKind::Task
+                && wait.trigger_message_id() == Some(message.id.as_str())
+                && wait.wake_sources.iter().any(|source| {
+                    matches!(
+                        source,
+                        crate::types::WakeSource::TaskResult { task_id: expected }
+                            if expected == task_id
+                    )
+                })
+        })
+        .collect::<Vec<_>>();
+    let [wait] = matching_waits.as_slice() else {
+        return Ok(None);
+    };
+    Ok(Some(wait.clone()))
+}
+
 enum TaskResultClaimRecovery {
     Replayable {
         transition: crate::runtime_db::transitions::ExecutionProtocolTransition,

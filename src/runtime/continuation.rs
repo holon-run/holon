@@ -11,6 +11,11 @@ pub(super) struct ContinuationTrigger {
     pub(super) task_result_outcome: Option<TaskResultOutcome>,
     pub(super) wake_hint_source: Option<String>,
     pub(super) task_work_item_id: Option<String>,
+    /// Durable evidence that an explicit same-scope WaitFor targeted the
+    /// exact task whose result this message carries.  It authorizes terminal
+    /// task result reentry even when the prior closure waiting_reason was
+    /// polluted by unrelated waits.
+    pub(super) exact_task_wait: bool,
 }
 
 impl ContinuationTrigger {
@@ -25,6 +30,7 @@ impl ContinuationTrigger {
                 task_result_outcome: None,
                 wake_hint_source: None,
                 task_work_item_id: None,
+                exact_task_wait: false,
             }),
             MessageKind::WebhookEvent | MessageKind::CallbackEvent | MessageKind::ChannelEvent => {
                 Some(Self {
@@ -33,6 +39,7 @@ impl ContinuationTrigger {
                     task_result_outcome: None,
                     wake_hint_source: None,
                     task_work_item_id: None,
+                    exact_task_wait: false,
                 })
             }
             MessageKind::TimerTick => Some(Self {
@@ -41,6 +48,7 @@ impl ContinuationTrigger {
                 task_result_outcome: None,
                 wake_hint_source: None,
                 task_work_item_id: None,
+                exact_task_wait: false,
             }),
             MessageKind::InternalFollowup => Some(Self {
                 kind: admission_trigger_kind_for_message_kind(&message.kind),
@@ -48,6 +56,7 @@ impl ContinuationTrigger {
                 task_result_outcome: None,
                 task_work_item_id: None,
                 wake_hint_source: None,
+                exact_task_wait: false,
             }),
             MessageKind::SystemTick => Some(Self {
                 kind: admission_trigger_kind_for_message_kind(&message.kind),
@@ -61,6 +70,7 @@ impl ContinuationTrigger {
                     .and_then(serde_json::Value::as_str)
                     .map(ToString::to_string),
                 task_work_item_id: None,
+                exact_task_wait: false,
             }),
             MessageKind::TaskResult => Some(Self {
                 kind: admission_trigger_kind_for_message_kind(&message.kind),
@@ -75,6 +85,9 @@ impl ContinuationTrigger {
                 wake_hint_source: None,
                 task_work_item_id: task
                     .and_then(|t| t.effective_work_item_id().map(ToString::to_string)),
+                // Filled by the dispatch plan builder from durable wait
+                // evidence; from_message alone cannot see wait conditions.
+                exact_task_wait: false,
             }),
             MessageKind::TaskStatus
             | MessageKind::Control
@@ -95,10 +108,11 @@ pub(super) fn resolve_continuation(
         (None, None) => {
             trigger.kind == ContinuationTriggerKind::TaskResult
                 && trigger.task_result_outcome.is_some()
-                && matches!(
-                    prior_waiting_reason,
-                    None | Some(WaitingReason::AwaitingTaskResult)
-                )
+                && (trigger.exact_task_wait
+                    || matches!(
+                        prior_waiting_reason,
+                        None | Some(WaitingReason::AwaitingTaskResult)
+                    ))
         }
         (Some(t), Some(a)) => t == a,
     };
@@ -112,6 +126,9 @@ pub(super) fn resolve_continuation(
     if let Some(outcome) = trigger.task_result_outcome {
         evidence.push("task_terminal".to_string());
         evidence.push(format!("task_result_outcome={}", enum_label(outcome)));
+    }
+    if trigger.exact_task_wait {
+        evidence.push("exact_task_wait".to_string());
     }
     if let Some(source) = trigger.wake_hint_source.as_ref() {
         evidence.push(format!("wake_hint_source={source}"));
@@ -350,6 +367,7 @@ mod tests {
                 task_result_outcome: Some(TaskResultOutcome::Succeeded),
                 wake_hint_source: None,
                 task_work_item_id: None,
+                exact_task_wait: false,
             },
             None,
         );
@@ -367,6 +385,7 @@ mod tests {
                 task_result_outcome: None,
                 wake_hint_source: None,
                 task_work_item_id: None,
+                exact_task_wait: false,
             },
             None,
         );
@@ -390,6 +409,7 @@ mod tests {
                 task_result_outcome: Some(TaskResultOutcome::Succeeded),
                 wake_hint_source: None,
                 task_work_item_id: Some("other-work".into()),
+                exact_task_wait: false,
             },
             Some("active-work"),
         );
@@ -409,6 +429,7 @@ mod tests {
                 task_result_outcome: None,
                 wake_hint_source: Some("callback".into()),
                 task_work_item_id: None,
+                exact_task_wait: false,
             },
             None,
         );
@@ -426,6 +447,7 @@ mod tests {
                 task_result_outcome: None,
                 wake_hint_source: None,
                 task_work_item_id: None,
+                exact_task_wait: false,
             },
             None,
         );
@@ -445,6 +467,7 @@ mod tests {
                 task_result_outcome: None,
                 wake_hint_source: None,
                 task_work_item_id: None,
+                exact_task_wait: false,
             },
             None,
         );
@@ -468,6 +491,7 @@ mod tests {
                 task_result_outcome: None,
                 wake_hint_source: None,
                 task_work_item_id: None,
+                exact_task_wait: false,
             },
             None,
         );
@@ -497,6 +521,7 @@ mod tests {
                     task_result_outcome: Some(outcome),
                     wake_hint_source: None,
                     task_work_item_id: None,
+                    exact_task_wait: false,
                 },
                 None,
             );
@@ -521,6 +546,7 @@ mod tests {
                 task_result_outcome: Some(TaskResultOutcome::Succeeded),
                 wake_hint_source: None,
                 task_work_item_id: None,
+                exact_task_wait: false,
             },
             None,
         );
@@ -538,6 +564,7 @@ mod tests {
                 task_result_outcome: Some(TaskResultOutcome::Succeeded),
                 wake_hint_source: None,
                 task_work_item_id: None,
+                exact_task_wait: false,
             },
             None,
         );
@@ -555,6 +582,7 @@ mod tests {
                 task_result_outcome: Some(TaskResultOutcome::Succeeded),
                 wake_hint_source: None,
                 task_work_item_id: None,
+                exact_task_wait: false,
             },
             None,
         );
@@ -572,6 +600,7 @@ mod tests {
                 task_result_outcome: None,
                 wake_hint_source: None,
                 task_work_item_id: None,
+                exact_task_wait: false,
             },
             None,
         );
@@ -590,6 +619,7 @@ mod tests {
                 task_result_outcome: None,
                 wake_hint_source: None,
                 task_work_item_id: None,
+                exact_task_wait: false,
             },
             None,
         );
@@ -635,5 +665,51 @@ mod tests {
     fn wake_hint_with_empty_reason_and_no_body_is_not_contentful() {
         let message = wake_hint_system_tick("", None);
         assert!(!system_tick_is_contentful(&message));
+    }
+
+    #[test]
+    fn exact_task_wait_overrides_polluted_closure_for_terminal_task_result() {
+        let trigger = ContinuationTrigger {
+            kind: ContinuationTriggerKind::TaskResult,
+            contentful: true,
+            task_result_outcome: Some(TaskResultOutcome::Succeeded),
+            wake_hint_source: None,
+            task_work_item_id: None,
+            exact_task_wait: true,
+        };
+        let resolution = resolve_continuation(
+            &waiting(WaitingReason::AwaitingOperatorInput),
+            &trigger,
+            None,
+        );
+        assert!(resolution.model_reentry);
+        assert_eq!(resolution.class, ContinuationClass::ResumeOverride);
+        assert!(resolution
+            .evidence
+            .iter()
+            .any(|entry| entry == "exact_task_wait"));
+    }
+
+    #[test]
+    fn polluted_closure_without_exact_task_wait_stays_liveness_only() {
+        let trigger = ContinuationTrigger {
+            kind: ContinuationTriggerKind::TaskResult,
+            contentful: true,
+            task_result_outcome: Some(TaskResultOutcome::Succeeded),
+            wake_hint_source: None,
+            task_work_item_id: None,
+            exact_task_wait: false,
+        };
+        let resolution = resolve_continuation(
+            &waiting(WaitingReason::AwaitingOperatorInput),
+            &trigger,
+            None,
+        );
+        assert!(!resolution.model_reentry);
+        assert_eq!(resolution.class, ContinuationClass::LivenessOnly);
+        assert!(resolution
+            .evidence
+            .iter()
+            .any(|entry| entry == "does_not_satisfy_waiting_reason"));
     }
 }

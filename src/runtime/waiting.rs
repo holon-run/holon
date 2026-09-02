@@ -48,6 +48,7 @@ pub(crate) enum WaitForRegistrationOutcome {
     TaskResultQueued {
         task_id: String,
         result_message_id: String,
+        wait_condition_id: String,
     },
     TaskResultAlreadyConsumed {
         task_id: String,
@@ -214,6 +215,7 @@ impl RuntimeHandle {
             WaitForRegistrationOutcome::TaskResultQueued {
                 task_id,
                 result_message_id,
+                wait_condition_id: _,
             } => Err(RuntimeError::validation(
                 "task_result_already_queued",
                 format!(
@@ -265,7 +267,7 @@ impl RuntimeHandle {
                 })?;
             self.validate_wait_for_task_owner(agent_id, work_item_id.as_deref(), &task)?;
             if task_state_reducer::is_terminal_task_status(&task.status) {
-                return self.settle_terminal_task_result(task).await;
+                return self.settle_terminal_task_result(task, reason).await;
             }
             expected_task = Some(task_expectation(&task));
         }
@@ -521,7 +523,7 @@ impl RuntimeHandle {
                             &task,
                         )?;
                         if task_state_reducer::is_terminal_task_status(&task.status) {
-                            return self.settle_terminal_task_result(task).await;
+                            return self.settle_terminal_task_result(task, reason.clone()).await;
                         }
                         if attempt + 1 == 3 {
                             return Err(error);
@@ -582,6 +584,7 @@ impl RuntimeHandle {
     async fn settle_terminal_task_result(
         &self,
         task: TaskRecord,
+        reason: String,
     ) -> Result<WaitForRegistrationOutcome> {
         let result_message_id = task.parent_message_id.clone().ok_or_else(|| {
             RuntimeError::validation(
@@ -632,6 +635,114 @@ impl RuntimeHandle {
         }
 
         let now = self.now();
+        // The fast path must leave the same durable wait semantics as a
+        // normal WaitFor registration: the re-queued result message is the
+        // exact promised wake, so the wait condition starts Triggered and
+        // replaced same-scope waits are cancelled atomically with the queue
+        // admission. Without this record the terminal result can be resolved
+        // as liveness_only and the agent never re-enters the model.
+        let current_turn_id = self.agent_state().await?.current_turn_id.clone();
+        let condition = WaitConditionRecord {
+            id: crate::ids::wait_condition_id(),
+            agent_id: task.agent_id.clone(),
+            work_item_id: task.work_item_id.clone(),
+            status: WaitConditionStatus::Triggered,
+            kind: WaitConditionKind::Task,
+            source: Some("WaitFor".to_string()),
+            subject_ref: Some(task.id.clone()),
+            waiting_for: reason,
+            wake_sources: vec![WakeSource::TaskResult {
+                task_id: task.id.clone(),
+            }],
+            continuation: Some(serde_json::json!({
+                "created_by": "WaitFor",
+                "wake": WaitForWakeKind::TaskResult,
+                "resource": task.id,
+                "recheck_after_ms": null,
+                "recheck_at": null,
+                "clear_blocker_on_task_result": true,
+                "late_result_settled": true,
+            })),
+            created_at: now,
+            updated_at: now,
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: current_turn_id,
+            trigger_message_id: Some(result_message_id.clone()),
+            triggered_at: Some(now),
+        };
+        let mut wait_conditions = self
+            .inner
+            .storage
+            .raw_unresolved_wait_conditions_for_agent(&task.agent_id)?
+            .into_iter()
+            .filter(|record| match task.work_item_id.as_deref() {
+                Some(work_item_id) => record.work_item_id.as_deref() == Some(work_item_id),
+                None => record.work_item_id.is_none(),
+            })
+            .map(|mut record| {
+                record.status = WaitConditionStatus::Cancelled;
+                record.updated_at = now;
+                record.cancelled_at = Some(now);
+                record
+            })
+            .collect::<Vec<_>>();
+        let cancelled_wait_condition_ids = wait_conditions
+            .iter()
+            .map(|record| record.id.clone())
+            .collect::<Vec<_>>();
+        let mut audit_events = vec![AuditEvent::legacy(
+            "wait_condition_registered",
+            serde_json::json!({
+                "agent_id": task.agent_id,
+                "work_item_id": task.work_item_id,
+                "wait_condition_id": condition.id,
+                "source": "WaitFor",
+                "kind": &condition.kind,
+                "subject_ref": &condition.subject_ref,
+                "waiting_for": &condition.waiting_for,
+                "wake_sources": &condition.wake_sources,
+                "cancelled_wait_condition_ids": &cancelled_wait_condition_ids,
+                "initial_status": "triggered",
+                "trigger_message_id": result_message_id,
+            }),
+        )];
+        audit_events.extend(
+            self.inner
+                .storage
+                .wait_condition_auxiliary_events(&condition),
+        );
+        if !cancelled_wait_condition_ids.is_empty() {
+            audit_events.push(AuditEvent::legacy(
+                "wait_conditions_cancelled",
+                serde_json::json!({
+                    "agent_id": task.agent_id,
+                    "work_item_id": task.work_item_id,
+                    "reason": "wait_for_replaced",
+                    "wait_condition_ids": &cancelled_wait_condition_ids,
+                }),
+            ));
+        }
+        audit_events.push(AuditEvent::legacy(
+            "wait_condition_triggered",
+            serde_json::json!({
+                "agent_id": task.agent_id,
+                "wait_condition_id": condition.id,
+                "trigger_message_id": result_message_id,
+                "work_item_id": task.work_item_id,
+            }),
+        ));
+        wait_conditions.push(condition.clone());
+        audit_events.push(AuditEvent::legacy(
+            "late_task_result_queued",
+            serde_json::json!({
+                "agent_id": task.agent_id,
+                "task_id": task.id,
+                "result_message_id": result_message_id,
+                "wait_condition_id": condition.id,
+            }),
+        ));
         let expected_task = task_expectation(&task);
         let execution_protocol =
             self.execution_continue_settlement_transition(&task, &result_message, now)?;
@@ -664,7 +775,7 @@ impl RuntimeHandle {
                 .inner
                 .runtime_db
                 .transitions()
-                .commit_queue_with_execution_protocol_and_task_expectation(
+                .commit_queue_with_execution_protocol_task_expectation_and_wait_conditions(
                     &crate::runtime_db::transitions::QueueTransitionCommand {
                         agent_id: task.agent_id.clone(),
                         operation: crate::runtime_db::transitions::QueueOperation::Admit,
@@ -679,20 +790,14 @@ impl RuntimeHandle {
                         message_evidence: vec![result_message.clone()],
                         transcript_entries: Vec::new(),
                         turn_record: None,
-                        audit_events: vec![AuditEvent::legacy(
-                            "late_task_result_queued",
-                            serde_json::json!({
-                                "agent_id": task.agent_id,
-                                "task_id": task.id,
-                                "result_message_id": result_message_id,
-                            }),
-                        )],
+                        audit_events,
                         notify_scheduler: true,
                         fault: self.take_transition_fault(),
                         brief_evidence: Vec::new(),
                     },
                     &execution_protocol,
                     &expected_task,
+                    &wait_conditions,
                 )?;
             if !already_in_memory {
                 guard.queue.push(result_message);
@@ -705,6 +810,7 @@ impl RuntimeHandle {
         Ok(WaitForRegistrationOutcome::TaskResultQueued {
             task_id: task.id,
             result_message_id,
+            wait_condition_id: condition.id,
         })
     }
 

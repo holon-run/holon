@@ -50,6 +50,7 @@ macro_rules! runtime_async_tests {
 runtime_async_tests!(
     background_task_rejoins_main_session,
     background_command_task_result_wakes_sleeping_agent_via_canonical_lifecycle_nudge,
+    late_terminal_task_wait_fast_path_wakes_agent_with_durable_wait,
     stop_task_cancels_running_background_task,
     lifecycle_stop_interrupts_active_command_task,
     file_tools_can_modify_workspace_and_reenter_context,
