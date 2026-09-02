@@ -11,6 +11,7 @@
 //! - [`index_outbox`]: runtime index outbox repository.
 
 pub mod audit;
+pub mod authentication;
 pub mod connection;
 pub mod evidence;
 mod legacy_scheduler_wire;
@@ -34,6 +35,7 @@ pub use crate::runtime_db::audit::{
     RuntimeDbAuditCheck, RuntimeDbAuditDatabase, RuntimeDbAuditOptions, RuntimeDbAuditReport,
     ViolationSplit,
 };
+pub use crate::runtime_db::authentication::AuthenticationRepository;
 pub use crate::runtime_db::evidence::{
     EvidenceKind, EvidencePayloadRow, EvidenceQuery, EvidenceRow,
 };
@@ -498,6 +500,10 @@ impl RuntimeDb {
 
     pub fn audit_events(&self) -> AuditEventSink<'_> {
         AuditEventSink { db: self }
+    }
+
+    pub fn authentication(&self) -> AuthenticationRepository<'_> {
+        AuthenticationRepository { db: self }
     }
 
     pub fn agent_states(&self) -> AgentStateRepository<'_> {

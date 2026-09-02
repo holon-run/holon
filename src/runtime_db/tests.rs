@@ -88,7 +88,10 @@ mod tests {
             ActivationTrust, AdmitActivationCommand, AgentActivation, PreemptionPolicy, WorkDemand,
             WorkStatus,
         },
-        runtime_db::migrations::{RETAINED_SCHEDULER_AUDIT_TABLES, RETIRED_SCHEDULER_TABLES},
+        runtime_db::migrations::{
+            RETAINED_SCHEDULER_AUDIT_TABLES, RETIRED_SCHEDULER_SCHEMA_PREDECESSOR,
+            RETIRED_SCHEDULER_TABLES,
+        },
         runtime_db::observer_sync::{
             AGENT_ROSTER_LATEST_BRIEFS_SQL, EVENT_PROJECTION_EFFECT_VERIFIER_VERSION,
         },
@@ -1725,9 +1728,11 @@ INSERT INTO storage_domains (
         let error = RuntimeDb::open_for_scheduler_recovery(&db_path, &lock_path)
             .expect_err("schema 45 is too old for the schema 46 recovery contract");
         assert!(
-            error
-                .to_string()
-                .contains("supports runtime db schemas 46 through 52, found 45"),
+            error.to_string().contains(&format!(
+                "supports runtime db schemas {} through {}, found 45",
+                RETIRED_SCHEDULER_SCHEMA_PREDECESSOR,
+                max_known_migration_version()
+            )),
             "{error:#}"
         );
         Ok(())

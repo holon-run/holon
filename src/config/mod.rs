@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 
 use crate::{
     auth::{codex_cli_auth_file_exists, load_codex_cli_credential},
+    authentication::{AuthConfig, AuthenticationMode, OidcProviderConfig, SessionPolicy},
     context::ContextConfig,
     model_catalog::{
         BuiltInModelCatalog, BuiltInModelMetadata, ModelRuntimeOverride, ResolvedRuntimeModelPolicy,
@@ -60,6 +61,7 @@ pub struct AppConfig {
     pub max_relevant_episodes: usize,
     pub control_token: Option<String>,
     pub control_auth_mode: ControlAuthMode,
+    pub auth: AuthConfig,
     pub api_cors: ApiCorsConfigFile,
     pub config_file_path: PathBuf,
     pub stored_config: HolonConfigFile,
@@ -225,6 +227,7 @@ impl AppConfig {
             .map(|value| ControlAuthMode::parse(&value))
             .transpose()?
             .unwrap_or(ControlAuthMode::Auto);
+        let auth = materialize_auth_config(&stored_config.auth)?;
         let runtime_max_output_tokens = env::var("HOLON_MAX_OUTPUT_TOKENS")
             .ok()
             .and_then(|value| value.parse::<u32>().ok())
@@ -324,6 +327,7 @@ impl AppConfig {
             max_relevant_episodes,
             control_token,
             control_auth_mode,
+            auth,
             api_cors: stored_config.api.cors.clone(),
             config_file_path,
             stored_config,
@@ -344,7 +348,36 @@ impl AppConfig {
             providers,
         })
     }
+}
 
+fn materialize_auth_config(file: &AuthConfigFile) -> Result<AuthConfig> {
+    let defaults = SessionPolicy::default();
+    let session = SessionPolicy {
+        absolute_ttl_seconds: file
+            .session
+            .absolute_ttl_seconds
+            .unwrap_or(defaults.absolute_ttl_seconds),
+        idle_ttl_seconds: file
+            .session
+            .idle_ttl_seconds
+            .unwrap_or(defaults.idle_ttl_seconds),
+    };
+    let oidc = file.oidc.as_ref().map(|oidc| OidcProviderConfig {
+        issuer_url: oidc.issuer_url.clone(),
+        client_id: oidc.client_id.clone(),
+        client_secret_env: oidc.client_secret_env.clone(),
+        redirect_uri: oidc.redirect_uri.clone(),
+    });
+    let config = AuthConfig {
+        mode: file.mode.unwrap_or(AuthenticationMode::Local),
+        oidc,
+        session,
+    };
+    config.validate()?;
+    Ok(config)
+}
+
+impl AppConfig {
     pub fn run_dir(&self) -> PathBuf {
         self.home_dir.join("run")
     }

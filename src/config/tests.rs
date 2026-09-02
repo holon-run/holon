@@ -152,6 +152,7 @@ fn test_app_config(default_model: &str, fallback_models: &[&str]) -> TestAppConf
         max_relevant_episodes: 3,
         control_token: Some("control-value".into()),
         control_auth_mode: ControlAuthMode::Auto,
+        auth: Default::default(),
         api_cors: Default::default(),
         config_file_path: home_path.join("config.json"),
         stored_config: Default::default(),
@@ -2244,6 +2245,9 @@ fn schema_contains_expected_keys() {
         .map(|entry| entry.key)
         .collect::<Vec<_>>();
     assert!(keys.contains(&"model.default"));
+    assert!(keys.contains(&"auth.mode"));
+    assert!(keys.contains(&"auth.oidc.issuer_url"));
+    assert!(keys.contains(&"auth.session.absolute_ttl_seconds"));
     assert!(keys.contains(&"models.catalog"));
     assert!(keys.contains(&"model.unknown_fallback"));
     assert!(keys.contains(&"providers.<id>.endpoints.<endpoint_id>.transport"));
@@ -2263,6 +2267,142 @@ fn schema_contains_expected_keys() {
     assert!(keys.contains(&"web.fetch.max_redirects"));
     assert!(keys.contains(&"web.search.provider"));
     assert!(keys.contains(&"web.providers.<name>.capabilities"));
+}
+
+#[test]
+fn auth_config_schema_round_trips_persisted_values() {
+    let mut config = HolonConfigFile::default();
+    set_config_key(&mut config, "auth.mode", "oidc").unwrap();
+    set_config_key(
+        &mut config,
+        "auth.oidc.issuer_url",
+        "https://issuer.example",
+    )
+    .unwrap();
+    set_config_key(&mut config, "auth.oidc.client_id", "client").unwrap();
+    set_config_key(&mut config, "auth.session.idle_ttl_seconds", "120").unwrap();
+
+    assert_eq!(get_config_key(&config, "auth.mode").unwrap(), json!("oidc"));
+    assert_eq!(
+        get_config_key(&config, "auth.oidc.issuer_url").unwrap(),
+        json!("https://issuer.example")
+    );
+    assert_eq!(
+        get_config_key(&config, "auth.session.idle_ttl_seconds").unwrap(),
+        json!(120)
+    );
+}
+
+#[test]
+fn load_persisted_config_materializes_auth_settings() {
+    let home = tempdir().unwrap();
+    save_persisted_config_at(
+        &persisted_config_path(home.path()),
+        &HolonConfigFile {
+            auth: crate::config::AuthConfigFile {
+                mode: Some(crate::authentication::AuthenticationMode::Oidc),
+                oidc: Some(crate::config::OidcConfigFile {
+                    issuer_url: "https://issuer.example".into(),
+                    client_id: "client".into(),
+                    client_secret_env: None,
+                    redirect_uri: Some("http://localhost/callback".into()),
+                }),
+                session: crate::config::SessionConfigFile {
+                    absolute_ttl_seconds: Some(900),
+                    idle_ttl_seconds: Some(300),
+                },
+            },
+            model: ModelConfigFile {
+                default: Some("anthropic/claude-sonnet-4-6".into()),
+                ..ModelConfigFile::default()
+            },
+            ..HolonConfigFile::default()
+        },
+    )
+    .unwrap();
+
+    let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+    assert_eq!(
+        config.auth.mode,
+        crate::authentication::AuthenticationMode::Oidc
+    );
+    let oidc = config.auth.oidc.as_ref().expect("OIDC settings");
+    assert_eq!(oidc.issuer_url, "https://issuer.example");
+    assert_eq!(oidc.client_id, "client");
+    assert_eq!(
+        oidc.redirect_uri.as_deref(),
+        Some("http://localhost/callback")
+    );
+    assert_eq!(config.auth.session.absolute_ttl_seconds, 900);
+    assert_eq!(config.auth.session.idle_ttl_seconds, 300);
+}
+
+#[test]
+fn load_persisted_config_rejects_invalid_auth_settings() {
+    let oidc = || crate::config::OidcConfigFile {
+        issuer_url: "https://issuer.example".into(),
+        client_id: "client".into(),
+        client_secret_env: None,
+        redirect_uri: None,
+    };
+    let cases = vec![
+        (
+            "local mode with OIDC settings",
+            crate::config::AuthConfigFile {
+                mode: Some(crate::authentication::AuthenticationMode::Local),
+                oidc: Some(oidc()),
+                ..Default::default()
+            },
+        ),
+        (
+            "OIDC mode without provider settings",
+            crate::config::AuthConfigFile {
+                mode: Some(crate::authentication::AuthenticationMode::Oidc),
+                ..Default::default()
+            },
+        ),
+        (
+            "zero absolute session TTL",
+            crate::config::AuthConfigFile {
+                session: crate::config::SessionConfigFile {
+                    absolute_ttl_seconds: Some(0),
+                    idle_ttl_seconds: Some(1),
+                },
+                ..Default::default()
+            },
+        ),
+        (
+            "idle session TTL greater than absolute TTL",
+            crate::config::AuthConfigFile {
+                session: crate::config::SessionConfigFile {
+                    absolute_ttl_seconds: Some(60),
+                    idle_ttl_seconds: Some(61),
+                },
+                ..Default::default()
+            },
+        ),
+    ];
+
+    for (name, auth) in cases {
+        let home = tempdir().unwrap();
+        save_persisted_config_at(
+            &persisted_config_path(home.path()),
+            &HolonConfigFile {
+                auth,
+                model: ModelConfigFile {
+                    default: Some("anthropic/claude-sonnet-4-6".into()),
+                    ..ModelConfigFile::default()
+                },
+                ..HolonConfigFile::default()
+            },
+        )
+        .unwrap();
+
+        assert!(
+            AppConfig::load_with_home(Some(home.path().to_path_buf())).is_err(),
+            "{name} should be rejected"
+        );
+    }
 }
 
 #[test]

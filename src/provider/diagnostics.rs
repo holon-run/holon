@@ -576,6 +576,7 @@ mod tests {
             max_relevant_episodes: 3,
             control_token: Some("control-value".into()),
             control_auth_mode: ControlAuthMode::Auto,
+            auth: Default::default(),
             api_cors: Default::default(),
             config_file_path: home_path.join("config.json"),
             stored_config: Default::default(),

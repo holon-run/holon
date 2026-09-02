@@ -13,6 +13,55 @@ pub struct ConfigSchemaEntry {
 pub fn config_schema() -> Vec<ConfigSchemaEntry> {
     vec![
         ConfigSchemaEntry {
+            key: "auth.mode",
+            kind: "string",
+            description: "Authentication mode. Changes are persisted and require restart.",
+            default: json!("local"),
+            allowed_values: vec!["local", "oidc"],
+        },
+        ConfigSchemaEntry {
+            key: "auth.oidc.issuer_url",
+            kind: "string",
+            description: "OIDC issuer URL.",
+            default: Value::Null,
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "auth.oidc.client_id",
+            kind: "string",
+            description: "OIDC client identifier.",
+            default: Value::Null,
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "auth.oidc.client_secret_env",
+            kind: "string",
+            description: "Environment variable containing the OIDC client secret.",
+            default: Value::Null,
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "auth.oidc.redirect_uri",
+            kind: "string",
+            description: "OIDC callback redirect URI.",
+            default: Value::Null,
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "auth.session.absolute_ttl_seconds",
+            kind: "positive_integer",
+            description: "Absolute authentication session lifetime in seconds.",
+            default: json!(SessionPolicy::default().absolute_ttl_seconds),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "auth.session.idle_ttl_seconds",
+            kind: "positive_integer",
+            description: "Idle authentication session lifetime in seconds.",
+            default: json!(SessionPolicy::default().idle_ttl_seconds),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
             key: "api.cors.enabled",
             kind: "boolean",
             description: "Enable CORS responses on the HTTP/control API. Enabled by default for localhost/loopback browser origins.",
@@ -632,6 +681,45 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
 
 pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
     match key {
+        "auth.mode" => Ok(json!(config.auth.mode)),
+        "auth.oidc.issuer_url" => Ok(config
+            .auth
+            .oidc
+            .as_ref()
+            .map(|oidc| json!(oidc.issuer_url))
+            .unwrap_or(Value::Null)),
+        "auth.oidc.client_id" => Ok(config
+            .auth
+            .oidc
+            .as_ref()
+            .map(|oidc| json!(oidc.client_id))
+            .unwrap_or(Value::Null)),
+        "auth.oidc.client_secret_env" => Ok(config
+            .auth
+            .oidc
+            .as_ref()
+            .and_then(|oidc| oidc.client_secret_env.as_ref())
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
+        "auth.oidc.redirect_uri" => Ok(config
+            .auth
+            .oidc
+            .as_ref()
+            .and_then(|oidc| oidc.redirect_uri.as_ref())
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
+        "auth.session.absolute_ttl_seconds" => Ok(config
+            .auth
+            .session
+            .absolute_ttl_seconds
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
+        "auth.session.idle_ttl_seconds" => Ok(config
+            .auth
+            .session
+            .idle_ttl_seconds
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
         "api.cors.enabled" => Ok(config
             .api
             .cors
@@ -995,6 +1083,27 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
 
 pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) -> Result<()> {
     match key {
+        "auth.mode" => {
+            config.auth.mode = Some(match raw_value.trim().to_ascii_lowercase().as_str() {
+                "local" => AuthenticationMode::Local,
+                "oidc" => AuthenticationMode::Oidc,
+                _ => return Err(anyhow!("{key} expects one of: local, oidc")),
+            });
+        }
+        "auth.oidc.issuer_url" => ensure_auth_oidc(config).issuer_url = raw_value.to_owned(),
+        "auth.oidc.client_id" => ensure_auth_oidc(config).client_id = raw_value.to_owned(),
+        "auth.oidc.client_secret_env" => {
+            ensure_auth_oidc(config).client_secret_env = Some(raw_value.to_owned())
+        }
+        "auth.oidc.redirect_uri" => {
+            ensure_auth_oidc(config).redirect_uri = Some(raw_value.to_owned())
+        }
+        "auth.session.absolute_ttl_seconds" => {
+            config.auth.session.absolute_ttl_seconds = Some(parse_positive_u64_key(key, raw_value)?)
+        }
+        "auth.session.idle_ttl_seconds" => {
+            config.auth.session.idle_ttl_seconds = Some(parse_positive_u64_key(key, raw_value)?)
+        }
         "api.cors.enabled" => {
             config.api.cors.enabled = Some(
                 parse_bool_value(raw_value)?.ok_or_else(|| anyhow!("{key} expects a boolean"))?,
@@ -1346,6 +1455,15 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
 
 pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
     match key {
+        "auth.mode" => config.auth.mode = None,
+        "auth.oidc.issuer_url" => clear_auth_oidc_field(config, |oidc| oidc.issuer_url.clear()),
+        "auth.oidc.client_id" => clear_auth_oidc_field(config, |oidc| oidc.client_id.clear()),
+        "auth.oidc.client_secret_env" => {
+            clear_auth_oidc_field(config, |oidc| oidc.client_secret_env = None)
+        }
+        "auth.oidc.redirect_uri" => clear_auth_oidc_field(config, |oidc| oidc.redirect_uri = None),
+        "auth.session.absolute_ttl_seconds" => config.auth.session.absolute_ttl_seconds = None,
+        "auth.session.idle_ttl_seconds" => config.auth.session.idle_ttl_seconds = None,
         "api.cors.enabled" => config.api.cors.enabled = None,
         "api.cors.allowed_origins" => config.api.cors.allowed_origins.clear(),
         "api.cors.allowed_methods" => {
@@ -1639,6 +1757,24 @@ pub(crate) fn parse_url_value(key: &str, raw_value: &str) -> Result<()> {
         return Err(anyhow!("{key} expects an http or https URL"));
     }
     Ok(())
+}
+
+fn ensure_auth_oidc(config: &mut HolonConfigFile) -> &mut OidcConfigFile {
+    config.auth.oidc.get_or_insert_with(|| OidcConfigFile {
+        issuer_url: String::new(),
+        client_id: String::new(),
+        client_secret_env: None,
+        redirect_uri: None,
+    })
+}
+
+fn clear_auth_oidc_field<F>(config: &mut HolonConfigFile, clear: F)
+where
+    F: FnOnce(&mut OidcConfigFile),
+{
+    if let Some(oidc) = config.auth.oidc.as_mut() {
+        clear(oidc);
+    }
 }
 
 pub(crate) fn is_startup_only_config_key(key: &str) -> bool {

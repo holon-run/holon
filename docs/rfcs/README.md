@@ -58,6 +58,7 @@ implementation and tests.
 ## Provenance, Policy, And Execution
 
 - [Provenance, Admission, and Authority](./default-trust-auth-and-control.md)
+- [Session-First Authentication](./session-first-authentication.md)
 - [Remote Operator Transport and Delivery](./remote-operator-transport-and-delivery.md)
 - [Execution Policy and Virtual Execution Boundary](./execution-policy-and-virtual-execution-boundary.md)
 - [Runtime Configuration Surface](./runtime-configuration-surface.md)
