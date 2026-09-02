@@ -2312,6 +2312,10 @@ fn load_persisted_config_materializes_auth_settings() {
                     idle_ttl_seconds: Some(300),
                 },
             },
+            model: ModelConfigFile {
+                default: Some("anthropic/claude-sonnet-4-6".into()),
+                ..ModelConfigFile::default()
+            },
             ..HolonConfigFile::default()
         },
     )
@@ -2385,6 +2389,10 @@ fn load_persisted_config_rejects_invalid_auth_settings() {
             &persisted_config_path(home.path()),
             &HolonConfigFile {
                 auth,
+                model: ModelConfigFile {
+                    default: Some("anthropic/claude-sonnet-4-6".into()),
+                    ..ModelConfigFile::default()
+                },
                 ..HolonConfigFile::default()
             },
         )
