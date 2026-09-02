@@ -72,6 +72,20 @@ impl AuthenticationRepository<'_> {
             .context("looking up authenticated user")
     }
 
+    pub fn find_user_by_id(&self, user_id: &str) -> Result<Option<AuthUserRecord>> {
+        let connection = self.db.connection()?;
+        connection
+            .query_row(
+                "SELECT user_id, issuer, subject, display_name, email,
+                        created_at, updated_at, disabled_at
+                 FROM auth_users WHERE user_id = ?1",
+                [user_id],
+                row_to_user,
+            )
+            .optional()
+            .context("looking up authenticated user by id")
+    }
+
     pub fn create_session(&self, session: &AuthSessionRecord) -> Result<()> {
         self.db.transaction(|tx| {
             tx.execute(

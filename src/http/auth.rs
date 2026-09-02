@@ -1,5 +1,123 @@
 use super::*;
 
+#[derive(Debug, Deserialize)]
+pub struct OidcCallbackQuery {
+    pub state: String,
+    pub code: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SessionExchangeRequest {
+    pub credential: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SessionResponse {
+    ok: bool,
+    expires_at: chrono::DateTime<Utc>,
+    user_id: String,
+}
+
+pub async fn start_oidc_login(
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    let config = state.host.config().auth.clone();
+    let client = crate::oidc::OidcClient::new(config).map_err(error_response)?;
+    let login = client
+        .begin_login(state.host.runtime_db(), Utc::now())
+        .await
+        .map_err(error_response)?;
+    let location = HeaderValue::from_str(&login.authorization_url)
+        .map_err(|error| error_response(anyhow!("invalid OIDC authorization URL: {error}")))?;
+    Ok((StatusCode::FOUND, [(LOCATION, location)]))
+}
+
+pub async fn complete_oidc_login(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<OidcCallbackQuery>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    let config = state.host.config().auth.clone();
+    let client = crate::oidc::OidcClient::new(config).map_err(error_response)?;
+    let session = client
+        .complete_login(
+            state.host.runtime_db(),
+            &query.state,
+            &query.code,
+            Utc::now(),
+        )
+        .await
+        .map_err(error_response)?;
+    let cookie = format!(
+        "{}={}; Path=/; HttpOnly; SameSite=Lax",
+        SESSION_COOKIE_NAME, session.credential
+    );
+    Ok((
+        StatusCode::FOUND,
+        [
+            (LOCATION, HeaderValue::from_static("/")),
+            (
+                SET_COOKIE,
+                HeaderValue::from_str(&cookie)
+                    .map_err(|error| error_response(anyhow!("invalid session cookie: {error}")))?,
+            ),
+        ],
+    ))
+}
+
+pub async fn exchange_session(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<SessionExchangeRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    if request.credential.trim().is_empty() {
+        return Err(bad_request("credential must not be empty"));
+    }
+    let session = crate::oidc::exchange_bootstrap(
+        state.host.runtime_db(),
+        &state.host.config().auth,
+        &request.credential,
+        Utc::now(),
+    )
+    .map_err(error_response)?;
+    let cookie = format!(
+        "{}={}; Path=/; HttpOnly; SameSite=Lax",
+        SESSION_COOKIE_NAME, session.credential
+    );
+    Ok((
+        StatusCode::OK,
+        [(
+            SET_COOKIE,
+            HeaderValue::from_str(&cookie)
+                .map_err(|error| error_response(anyhow!("invalid session cookie: {error}")))?,
+        )],
+        Json(SessionResponse {
+            ok: true,
+            expires_at: session.record.expires_at,
+            user_id: session.record.user_id,
+        }),
+    ))
+}
+
+pub async fn logout(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    let session =
+        authenticate_session(&headers, &state).map_err(|error| auth_required(error.to_string()))?;
+    state
+        .host
+        .runtime_db()
+        .authentication()
+        .revoke_session(&session.session_digest, Utc::now())
+        .map_err(error_response)?;
+    Ok((
+        StatusCode::NO_CONTENT,
+        [(
+            SET_COOKIE,
+            HeaderValue::from_static("holon_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"),
+        )],
+    ))
+}
+
 #[derive(Debug, Serialize)]
 struct OAuthDeviceStartResponse {
     ok: bool,

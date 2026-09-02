@@ -15,6 +15,15 @@ pub async fn web_or_not_found_handler(
             }
         }
         if accepts_html(&headers) {
+            if state.host.config().auth.mode == crate::authentication::AuthenticationMode::Oidc
+                && super::authenticate_session(&headers, &state).is_err()
+            {
+                return (
+                    StatusCode::FOUND,
+                    [(LOCATION, HeaderValue::from_static("/api/auth/oidc/start"))],
+                )
+                    .into_response();
+            }
             if let Some(response) = web_asset_response(&state, "index.html", head_only).await {
                 return response;
             }
