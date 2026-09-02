@@ -1,6 +1,621 @@
 {
   "schema_version": 1,
-  "upstream_revision": "",
-  "adapter_version": "",
-  "models": []
+  "upstream_revision": "6da309c2371f58a05fb2f7af9805be438218ad3012772e648a8381fa40eb37d8",
+  "adapter_version": "0.35.0 (7d7b85f)",
+  "models": [
+    {
+      "model_ref": "anthropic/claude-fable-5-1",
+      "display_name": "Claude Fable 5.1",
+      "description": "Claude model for demanding reasoning and long-horizon agentic work",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 128000,
+      "max_output_tokens_upper_limit": 128000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "anthropic/claude-opus-5",
+      "display_name": "Claude Opus 5",
+      "description": "Strongest Claude Opus model for coding, agents, and professional work",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 128000,
+      "max_output_tokens_upper_limit": 128000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "deepseek/deepseek-v4-flash-vision-exp",
+      "display_name": "DeepSeek V4 Flash Vision Exp",
+      "description": "Experimental multimodal DeepSeek V4 Flash model for image understanding, coding, and agentic work",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 384000,
+      "max_output_tokens_upper_limit": 384000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "high",
+        "max"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "gemini/gemini-3-pro-image",
+      "display_name": "Nano Banana Pro",
+      "description": "Nano Banana Pro for higher-fidelity image generation and design-heavy edits",
+      "context_window_tokens": 131072,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 124518,
+      "default_max_output_tokens": 32768,
+      "max_output_tokens_upper_limit": 32768,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": true,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "high"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "gemini/gemini-3.1-flash-image",
+      "display_name": "Nano Banana 2",
+      "description": "Image model for prompt-driven generation, editing, and visual design workflows",
+      "context_window_tokens": 65536,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 62259,
+      "default_max_output_tokens": 65536,
+      "max_output_tokens_upper_limit": 65536,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": true,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "minimal",
+        "high"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "gemini/gemini-3.1-flash-lite-image",
+      "display_name": "Nano Banana 2 Lite",
+      "description": "Fastest, most cost-efficient Gemini image model for high-volume 1K generation and editing",
+      "context_window_tokens": 65536,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 62259,
+      "default_max_output_tokens": 65536,
+      "max_output_tokens_upper_limit": 65536,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": true,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "minimal",
+        "high"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "gemini/gemini-3.5-flash-lite",
+      "display_name": "Gemini 3.5 Flash Lite",
+      "description": "Fast Gemini model balancing multimodal reasoning, tool use, and cost",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 996147,
+      "default_max_output_tokens": 65536,
+      "max_output_tokens_upper_limit": 65536,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "gemini/gemini-3.5-live-translate-preview",
+      "display_name": "Gemini 3.5 Live Translate Preview",
+      "description": "Low-latency audio-to-audio model for real-time speech translation across 70+ languages",
+      "context_window_tokens": 16384,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 15564,
+      "default_max_output_tokens": 32768,
+      "max_output_tokens_upper_limit": 32768,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "gemini/gemini-3.6-flash",
+      "display_name": "Gemini 3.6 Flash",
+      "description": "Fast Gemini model balancing multimodal reasoning, tool use, and cost",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 996147,
+      "default_max_output_tokens": 65536,
+      "max_output_tokens_upper_limit": 65536,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "gemini/gemini-3.7-flash",
+      "display_name": "Gemini 3.7 Flash",
+      "description": "High-efficiency Gemini model for agentic workflows, coding, and multimodal reasoning",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 996147,
+      "default_max_output_tokens": 65536,
+      "max_output_tokens_upper_limit": 65536,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "gemini/gemini-flash-latest",
+      "display_name": "Gemini Flash Latest",
+      "description": "High-efficiency Gemini model for agentic workflows, coding, and multimodal reasoning",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 996147,
+      "default_max_output_tokens": 65536,
+      "max_output_tokens_upper_limit": 65536,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "gemini/gemini-flash-lite-latest",
+      "display_name": "Gemini Flash-Lite Latest",
+      "description": "Fast Gemini model balancing multimodal reasoning, tool use, and cost",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 996147,
+      "default_max_output_tokens": 65536,
+      "max_output_tokens_upper_limit": 65536,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "mistral/zai-glm-5-2",
+      "display_name": "GLM-5.2",
+      "description": "Open flagship GLM for long-horizon coding agents and million-token context work",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "high",
+        "max"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "openai/gpt-5.6",
+      "display_name": "GPT-5.6",
+      "description": "Frontier GPT-5.6 model for complex professional work, coding, and agentic workflows",
+      "context_window_tokens": 1050000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 997500,
+      "default_max_output_tokens": 128000,
+      "max_output_tokens_upper_limit": 128000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "openai/gpt-realtime-2.1",
+      "display_name": "GPT-Realtime-2.1",
+      "description": "Realtime speech-to-speech model with configurable reasoning, tool use, and robust voice-agent behavior",
+      "context_window_tokens": 128000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 121600,
+      "default_max_output_tokens": 32000,
+      "max_output_tokens_upper_limit": 32000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "volcengine/deepseek-v4-flash-ga-260731",
+      "display_name": "DeepSeek V4 Flash 0731",
+      "description": "Official DeepSeek V4 Flash release with enhanced agentic capabilities and integrated DSpark speculative decoding",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 384000,
+      "max_output_tokens_upper_limit": 384000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "volcengine/deepseek-v4-pro-ga-260813",
+      "display_name": "DeepSeek V4 Pro 0813",
+      "description": "DeepSeek V4 Pro snapshot with million-token context and support for thinking and non-thinking modes",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 384000,
+      "max_output_tokens_upper_limit": 384000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "volcengine/doubao-seed-2-1-pro-260628",
+      "display_name": "Seed 2.1 Pro",
+      "description": "Flagship ByteDance Seed 2.1 model for complex multimodal reasoning, coding, and agents",
+      "context_window_tokens": 256000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 243200,
+      "default_max_output_tokens": 256000,
+      "max_output_tokens_upper_limit": 256000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "volcengine/doubao-seed-2-1-turbo-260628",
+      "display_name": "Seed 2.1 Turbo",
+      "description": "Faster ByteDance Seed 2.1 model for multimodal reasoning and latency-sensitive agent workflows",
+      "context_window_tokens": 256000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 243200,
+      "default_max_output_tokens": 256000,
+      "max_output_tokens_upper_limit": 256000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "volcengine/doubao-seed-character-260628",
+      "display_name": "Seed Character",
+      "description": "ByteDance Seed model optimized for character-driven dialogue and consistent conversational behavior",
+      "context_window_tokens": 256000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 243200,
+      "default_max_output_tokens": 256000,
+      "max_output_tokens_upper_limit": 256000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "minimal",
+        "low",
+        "high"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "volcengine/doubao-seed-evolving",
+      "display_name": "Seed Evolving",
+      "description": "Rolling ByteDance Seed model for rapidly updated reasoning, coding, and agent capabilities",
+      "context_window_tokens": 256000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 243200,
+      "default_max_output_tokens": 256000,
+      "max_output_tokens_upper_limit": 256000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "volcengine/glm-5-2-260617",
+      "display_name": "GLM-5.2",
+      "description": "Open flagship GLM for long-horizon coding agents and million-token context work",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "xai/grok-4.6",
+      "display_name": "Grok 4.6",
+      "description": "xAI's frontier model for long-running agents, coding, knowledge work, and visual projects",
+      "context_window_tokens": 500000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 475000,
+      "default_max_output_tokens": 500000,
+      "max_output_tokens_upper_limit": 500000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "xiaomi/mimo-v2.5-pro-ultraspeed",
+      "display_name": "MiMo-V2.5-Pro-UltraSpeed",
+      "description": "MiMo pro model for strong multimodal reasoning and agent execution",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 996147,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "models_dev_supplement"
+    }
+  ]
 }
