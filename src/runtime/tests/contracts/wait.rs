@@ -1,7 +1,8 @@
 use super::super::support::*;
 use crate::runtime::{WaitForRegistrationOutcome, WaitForWakeKind};
 use crate::types::{
-    AdmissionContext, MessageEnvelope, QueueEntryRecord, WaitConditionStatus, WorkItemState,
+    AdmissionContext, MessageEnvelope, QueueEntryRecord, WaitConditionKind, WaitConditionStatus,
+    WorkItemState,
 };
 use chrono::DateTime;
 
@@ -435,10 +436,28 @@ async fn late_task_result_queue_and_execution_settlement_are_atomic() {
             WaitForRegistrationOutcome::TaskResultQueued {
                 task_id,
                 result_message_id,
+                wait_condition_id: _,
             } if task_id == terminal.id && result_message_id == result_message.id
         ));
         let after = harness.snapshot();
-        assert!(after.wait_conditions.is_empty());
+        let triggered_waits = after
+            .wait_conditions
+            .iter()
+            .filter(|condition| condition.status == WaitConditionStatus::Triggered)
+            .collect::<Vec<_>>();
+        assert_eq!(triggered_waits.len(), 1);
+        assert_eq!(
+            triggered_waits[0].trigger_message_id().as_deref(),
+            Some(result_message.id.as_str())
+        );
+        assert_eq!(
+            triggered_waits[0].subject_ref.as_deref(),
+            Some(terminal.id.as_str())
+        );
+        assert!(after.audit_events.iter().any(|event| {
+            event.kind == "wait_condition_registered"
+                && event.data["trigger_message_id"].as_str() == Some(result_message.id.as_str())
+        }));
         assert!(after.queue_entries.iter().any(|entry| {
             entry.message_id == result_message.id && entry.status == QueueEntryStatus::Queued
         }));
@@ -532,6 +551,104 @@ async fn late_task_result_terminal_queue_states_are_already_consumed() {
         ));
         harness.assert_unchanged(&before);
     }
+}
+
+#[tokio::test]
+async fn late_task_result_agent_scope_registers_triggered_wait_and_replaces_stale_waits() {
+    let harness = LifecycleHarness::new();
+    // A stale agent-scope wait from an earlier turn pollutes closure facts;
+    // the fast path must replace it exactly like a normal registration.
+    harness
+        .runtime()
+        .register_wait_for(
+            "default",
+            None,
+            WaitForWakeKind::OperatorInput,
+            None,
+            "stale operator wait".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let running = TaskRecord {
+        id: "task-late-agent-scope".into(),
+        work_item_id: None,
+        ..running_task("task-late-agent-scope", "unused", harness.now())
+    };
+    harness
+        .runtime()
+        .persist_task_transition(&running, "task_created")
+        .await
+        .unwrap();
+    let mut result_message = task_result_message("task-late-agent-scope").with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    result_message.task_id = Some("task-late-agent-scope".into());
+    result_message.turn_id = Some("turn-late-task-agent-scope".into());
+    let terminal = terminal_task_with_result(&running, &result_message, harness.now());
+    harness
+        .runtime()
+        .persist_task_transition_with_message(&terminal, "task_status_updated", &result_message)
+        .await
+        .unwrap();
+
+    let outcome = harness
+        .runtime()
+        .register_wait_for_outcome(
+            "default",
+            None,
+            WaitForWakeKind::TaskResult,
+            Some(terminal.id.clone()),
+            "late agent-scope result should continue".into(),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let wait_condition_id = match outcome {
+        WaitForRegistrationOutcome::TaskResultQueued {
+            task_id,
+            result_message_id,
+            wait_condition_id,
+        } => {
+            assert_eq!(task_id, terminal.id);
+            assert_eq!(result_message_id, result_message.id);
+            wait_condition_id
+        }
+        other => panic!("expected queued late task result, got {other:?}"),
+    };
+    let after = harness.snapshot();
+    let cancelled = after
+        .wait_conditions
+        .iter()
+        .filter(|condition| condition.status == WaitConditionStatus::Cancelled)
+        .collect::<Vec<_>>();
+    assert_eq!(cancelled.len(), 1, "stale agent-scope wait is replaced");
+    assert_eq!(cancelled[0].kind, WaitConditionKind::Operator);
+    let triggered = after
+        .wait_conditions
+        .iter()
+        .find(|condition| condition.id == wait_condition_id)
+        .expect("triggered fast-path wait is registered");
+    assert_eq!(triggered.status, WaitConditionStatus::Triggered);
+    assert_eq!(triggered.kind, WaitConditionKind::Task);
+    assert_eq!(
+        triggered.trigger_message_id().as_deref(),
+        Some(result_message.id.as_str())
+    );
+    assert!(after.queue_entries.iter().any(|entry| {
+        entry.message_id == result_message.id && entry.status == QueueEntryStatus::Queued
+    }));
+    assert!(after
+        .audit_events
+        .iter()
+        .any(|event| event.kind == "wait_conditions_cancelled"
+            && event.data["reason"].as_str() == Some("wait_for_replaced")));
+    assert!(after.audit_events.iter().any(|event| {
+        event.kind == "wait_condition_triggered"
+            && event.data["wait_condition_id"].as_str() == Some(wait_condition_id.as_str())
+    }));
 }
 
 #[tokio::test]

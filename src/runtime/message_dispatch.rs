@@ -78,8 +78,23 @@ impl RuntimeHandle {
                 .map(Some),
             _ => Ok(None),
         };
-        let continuation_trigger =
+        let mut continuation_trigger =
             ContinuationTrigger::from_message(message, task.as_ref().ok().and_then(Option::as_ref));
+        if let Some(trigger) = continuation_trigger.as_mut() {
+            // An explicit agent-scope WaitFor that targeted this exact task
+            // authorizes terminal task result reentry even when the prior
+            // closure waiting_reason was polluted by unrelated waits.
+            if trigger.kind == crate::types::ContinuationTriggerKind::TaskResult
+                && trigger.task_result_outcome.is_some()
+                && trigger.task_work_item_id.is_none()
+            {
+                if let Some(task_id) = message.task_id.as_deref() {
+                    trigger.exact_task_wait =
+                        exact_agent_scope_task_result_wait(&self.inner.storage, message, task_id)?
+                            .is_some();
+                }
+            }
+        }
         let matching_wait_work_item_id = if continuation_trigger.is_some() {
             let matching_waits = self
                 .inner

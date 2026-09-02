@@ -119,6 +119,7 @@ pub(crate) async fn execute(
         WaitForRegistrationOutcome::TaskResultQueued {
             task_id,
             result_message_id,
+            wait_condition_id,
         } => {
             let mut result = ToolResult::success(
                 NAME,
@@ -126,9 +127,10 @@ pub(crate) async fn execute(
                     "disposition": "task_result_queued",
                     "task_id": task_id,
                     "result_message_id": result_message_id,
+                    "wait_condition_id": wait_condition_id,
                 }),
                 Some(format!(
-                    "task result already completed; queued exact result message {result_message_id}"
+                    "task result already completed; queued exact result message {result_message_id} and registered the triggered wait"
                 )),
             );
             result.should_sleep = true;

@@ -685,6 +685,21 @@ message and changes the exact matching `task_result` wait from `Active` to
 `Resolved(message_id)`; terminal task state alone is not sufficient evidence
 that a continuation consumed the result.
 
+When `WaitFor(task_result)` arrives after the task is already terminal (the
+fast path), the runtime re-queues the exact result message and, in the same
+atomic transition, materializes the wait directly as
+`Triggered(result_message_id)` and cancels replaced same-scope waits exactly
+like a normal registration. The wake promise of `WaitFor` must be durable even
+when the result already exists; otherwise the queued message can be resolved
+as `liveness_only` and the agent sleeps forever.
+
+For agent-scope (WorkItem-unbound) terminal task results, the continuation
+resolver treats an exact matching wait (`kind = task`,
+`trigger_message_id = message_id`, matching wake source) as reentry authority
+even when the prior closure `waiting_reason` was polluted by unrelated waits.
+Closure cleanliness is a fallback signal, not the only proof of an explicit
+wait.
+
 ### 5. Add external wait audit
 
 Surface weak external waits that have no timer, durable queue, or explicit
