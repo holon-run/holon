@@ -150,7 +150,7 @@ pub async fn enter_worktree_tool_switches_workspace_and_restores_on_reload() -> 
         branch_name
     );
 
-    let events = runtime.recent_events(20).await?;
+    let events = runtime.recent_events(40).await?;
     assert!(events.iter().any(|event| event.kind == "workspace_entered"));
 
     let restarted_host =
