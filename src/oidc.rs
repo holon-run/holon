@@ -1,0 +1,416 @@
+//! OIDC authorization-code flow and session issuance.
+//!
+//! This module intentionally stops at issuing Holon sessions. HTTP handlers,
+//! cookies, and request extractors belong to the HTTP integration layer.
+
+use std::time::Duration;
+
+use anyhow::{bail, Context, Result};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use chrono::{DateTime, Utc};
+use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
+use reqwest::Url;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
+
+use crate::authentication::{
+    digest_secret, AuthConfig, AuthSessionRecord, AuthUserRecord, LoginTransactionRecord,
+};
+use crate::runtime_db::RuntimeDb;
+
+const MAX_DISCOVERY_BYTES: u64 = 1024 * 1024;
+const MAX_JWKS_BYTES: u64 = 2 * 1024 * 1024;
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct OidcDiscovery {
+    pub issuer: String,
+    pub authorization_endpoint: String,
+    pub token_endpoint: String,
+    pub jwks_uri: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct TokenResponse {
+    id_token: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct Jwks {
+    keys: Vec<Jwk>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct Jwk {
+    kid: Option<String>,
+    kty: String,
+    n: Option<String>,
+    e: Option<String>,
+    alg: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct IdTokenClaims {
+    iss: String,
+    sub: String,
+    aud: Audience,
+    exp: i64,
+    iat: Option<i64>,
+    nbf: Option<i64>,
+    nonce: Option<String>,
+    azp: Option<String>,
+    name: Option<String>,
+    preferred_username: Option<String>,
+    email: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum Audience {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl Audience {
+    fn contains(&self, value: &str) -> bool {
+        match self {
+            Self::One(aud) => aud == value,
+            Self::Many(aud) => aud.iter().any(|aud| aud == value),
+        }
+    }
+
+    fn requires_authorized_party(&self) -> bool {
+        matches!(self, Self::Many(_))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoginStart {
+    pub state: String,
+    pub nonce: String,
+    pub code_verifier: String,
+    pub authorization_url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IssuedSession {
+    pub credential: String,
+    pub record: AuthSessionRecord,
+}
+
+#[derive(Debug, Clone)]
+pub struct OidcClient {
+    pub config: AuthConfig,
+    pub http: reqwest::Client,
+}
+
+impl OidcClient {
+    pub fn new(config: AuthConfig) -> Result<Self> {
+        config.validate()?;
+        Ok(Self {
+            config,
+            http: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(Duration::from_secs(10))
+                .build()?,
+        })
+    }
+
+    pub async fn discover(&self) -> Result<OidcDiscovery> {
+        let oidc = self
+            .config
+            .oidc
+            .as_ref()
+            .context("OIDC is not configured")?;
+        let issuer = Url::parse(&oidc.issuer_url)?;
+        let endpoint = issuer
+            .join(".well-known/openid-configuration")
+            .context("building OIDC discovery URL")?;
+        let response = self.http.get(endpoint).send().await?;
+        if !response.status().is_success() {
+            bail!("OIDC discovery failed with HTTP {}", response.status());
+        }
+        if response
+            .content_length()
+            .is_some_and(|size| size > MAX_DISCOVERY_BYTES)
+        {
+            bail!("OIDC discovery response is too large");
+        }
+        let document = response.bytes().await?;
+        if document.len() as u64 > MAX_DISCOVERY_BYTES {
+            bail!("OIDC discovery response is too large");
+        }
+        let discovery: OidcDiscovery =
+            serde_json::from_slice(&document).context("parsing OIDC discovery response")?;
+        if discovery.issuer.trim_end_matches('/') != oidc.issuer_url.trim_end_matches('/') {
+            bail!("OIDC discovery issuer does not match configured issuer");
+        }
+        for endpoint in [
+            &discovery.authorization_endpoint,
+            &discovery.token_endpoint,
+            &discovery.jwks_uri,
+        ] {
+            let url = Url::parse(endpoint)?;
+            if url.scheme() != "https" {
+                bail!("OIDC endpoints must use HTTPS");
+            }
+        }
+        Ok(discovery)
+    }
+
+    pub async fn begin_login(&self, db: &RuntimeDb, now: DateTime<Utc>) -> Result<LoginStart> {
+        let discovery = self.discover().await?;
+        let state = random_secret();
+        let nonce = random_secret();
+        let code_verifier = random_secret();
+        let transaction_digest = digest_secret(&random_secret());
+        let transaction = LoginTransactionRecord {
+            transaction_digest,
+            state_digest: digest_secret(&state),
+            nonce_digest: digest_secret(&nonce),
+            code_verifier: code_verifier.clone(),
+            created_at: now,
+            expires_at: now + chrono::Duration::minutes(10),
+            consumed_at: None,
+        };
+        db.authentication().insert_login_transaction(&transaction)?;
+
+        let oidc = self.config.oidc.as_ref().expect("validated OIDC config");
+        let redirect_uri = oidc
+            .redirect_uri
+            .as_deref()
+            .context("OIDC redirect_uri is required")?;
+        let challenge = pkce_challenge(&code_verifier);
+        let mut url = Url::parse(&discovery.authorization_endpoint)?;
+        url.query_pairs_mut()
+            .append_pair("response_type", "code")
+            .append_pair("client_id", &oidc.client_id)
+            .append_pair("redirect_uri", redirect_uri)
+            .append_pair("scope", "openid profile email")
+            .append_pair("state", &state)
+            .append_pair("nonce", &nonce)
+            .append_pair("code_challenge", &challenge)
+            .append_pair("code_challenge_method", "S256");
+        Ok(LoginStart {
+            state,
+            nonce,
+            code_verifier,
+            authorization_url: url.to_string(),
+        })
+    }
+
+    pub async fn complete_login(
+        &self,
+        db: &RuntimeDb,
+        state: &str,
+        code: &str,
+        now: DateTime<Utc>,
+    ) -> Result<IssuedSession> {
+        if code.is_empty() || state.is_empty() {
+            bail!("OIDC callback is missing required parameters");
+        }
+        let transaction = db
+            .authentication()
+            .consume_login_transaction(&digest_secret(state), now)?
+            .context("OIDC login transaction is invalid or expired")?;
+        let discovery = self.discover().await?;
+        let oidc = self.config.oidc.as_ref().expect("validated OIDC config");
+        let mut form = vec![
+            ("grant_type", "authorization_code".to_string()),
+            ("code", code.to_string()),
+            ("client_id", oidc.client_id.clone()),
+            (
+                "redirect_uri",
+                oidc.redirect_uri
+                    .clone()
+                    .context("OIDC redirect_uri is required")?,
+            ),
+            ("code_verifier", transaction.code_verifier.clone()),
+        ];
+        if let Some(env_name) = &oidc.client_secret_env {
+            let secret = std::env::var(env_name).with_context(|| {
+                format!("OIDC client secret environment variable {env_name} is missing")
+            })?;
+            form.push(("client_secret", secret));
+        }
+        let response = self
+            .http
+            .post(&discovery.token_endpoint)
+            .form(&form)
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            bail!("OIDC token exchange failed with HTTP {}", response.status());
+        }
+        let tokens: TokenResponse = response
+            .json()
+            .await
+            .context("parsing OIDC token response")?;
+        let claims = self
+            .validate_id_token(&discovery, &tokens.id_token, &transaction, now)
+            .await?;
+        let user_id = if let Some(user) = db.authentication().find_user(&claims.iss, &claims.sub)? {
+            user.user_id
+        } else {
+            format!("oidc-{}", Uuid::new_v4())
+        };
+        let display_name = claims
+            .name
+            .or(claims.preferred_username)
+            .or(claims.email.clone());
+        db.authentication().upsert_user(&AuthUserRecord {
+            user_id: user_id.clone(),
+            issuer: claims.iss,
+            subject: claims.sub,
+            display_name,
+            email: claims.email,
+            created_at: now,
+            updated_at: now,
+            disabled_at: None,
+        })?;
+        issue_session(db, &self.config, &user_id, "oidc", now)
+    }
+
+    async fn validate_id_token(
+        &self,
+        discovery: &OidcDiscovery,
+        token: &str,
+        transaction: &LoginTransactionRecord,
+        now: DateTime<Utc>,
+    ) -> Result<IdTokenClaims> {
+        let header = decode_header(token).context("invalid OIDC ID Token header")?;
+        let key_set = self.http.get(&discovery.jwks_uri).send().await?;
+        if !key_set.status().is_success() {
+            bail!("OIDC JWKS request failed with HTTP {}", key_set.status());
+        }
+        if key_set
+            .content_length()
+            .is_some_and(|size| size > MAX_JWKS_BYTES)
+        {
+            bail!("OIDC JWKS response is too large");
+        }
+        let bytes = key_set.bytes().await?;
+        if bytes.len() as u64 > MAX_JWKS_BYTES {
+            bail!("OIDC JWKS response is too large");
+        }
+        let keys: Jwks = serde_json::from_slice(&bytes).context("parsing OIDC JWKS response")?;
+        let jwk = keys
+            .keys
+            .iter()
+            .find(|key| {
+                key.kty == "RSA"
+                    && key.kid.as_deref() == header.kid.as_deref()
+                    && key.alg.as_deref().is_none_or(|alg| alg == "RS256")
+            })
+            .context("OIDC signing key was not found")?;
+        let key = DecodingKey::from_rsa_components(
+            jwk.n.as_deref().context("OIDC JWK is missing modulus")?,
+            jwk.e.as_deref().context("OIDC JWK is missing exponent")?,
+        )?;
+        let mut validation = Validation::new(Algorithm::RS256);
+        validation.set_issuer(&[discovery.issuer.as_str()]);
+        validation.set_audience(&[self
+            .config
+            .oidc
+            .as_ref()
+            .expect("validated")
+            .client_id
+            .as_str()]);
+        validation.leeway = 5;
+        let claims = decode::<IdTokenClaims>(token, &key, &validation)
+            .context("OIDC ID Token signature or claims validation failed")?
+            .claims;
+        let client_id = self
+            .config
+            .oidc
+            .as_ref()
+            .expect("validated")
+            .client_id
+            .as_str();
+        if claims.exp <= now.timestamp()
+            || claims.nbf.is_some_and(|value| value > now.timestamp() + 5)
+            || claims.iat.is_some_and(|value| value > now.timestamp() + 5)
+            || !claims.aud.contains(client_id)
+            || (claims.aud.requires_authorized_party() && claims.azp.as_deref() != Some(client_id))
+            || claims
+                .nonce
+                .as_deref()
+                .is_none_or(|nonce| digest_secret(nonce) != transaction.nonce_digest)
+        {
+            bail!("OIDC ID Token claims are invalid");
+        }
+        Ok(claims)
+    }
+}
+
+pub fn issue_session(
+    db: &RuntimeDb,
+    config: &AuthConfig,
+    user_id: &str,
+    auth_method: &str,
+    now: DateTime<Utc>,
+) -> Result<IssuedSession> {
+    config.session.validate()?;
+    let credential = random_secret();
+    let record = AuthSessionRecord {
+        session_digest: digest_secret(&credential),
+        user_id: user_id.to_string(),
+        auth_method: auth_method.to_string(),
+        created_at: now,
+        expires_at: now + chrono::Duration::seconds(config.session.absolute_ttl_seconds as i64),
+        last_seen_at: now,
+        revoked_at: None,
+    };
+    db.authentication().create_session(&record)?;
+    Ok(IssuedSession { credential, record })
+}
+
+pub fn exchange_bootstrap(
+    db: &RuntimeDb,
+    config: &AuthConfig,
+    credential: &str,
+    now: DateTime<Utc>,
+) -> Result<IssuedSession> {
+    let bootstrap = db
+        .authentication()
+        .consume_bootstrap_credential(&digest_secret(credential), now)?
+        .context("bootstrap credential is invalid or expired")?;
+    if bootstrap.scope != "session" && bootstrap.scope != "recovery" {
+        bail!("bootstrap credential cannot create a session");
+    }
+    let user_id = bootstrap
+        .user_id
+        .context("bootstrap credential has no user")?;
+    issue_session(db, config, &user_id, "bootstrap", now)
+}
+
+fn random_secret() -> String {
+    format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
+}
+
+fn pkce_challenge(verifier: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(verifier.as_bytes());
+    URL_SAFE_NO_PAD.encode(digest.finalize())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pkce_uses_base64url_without_padding() {
+        let challenge = pkce_challenge("test-verifier");
+        assert!(!challenge.contains('='));
+        assert!(!challenge.contains('+'));
+        assert!(!challenge.contains('/'));
+    }
+
+    #[test]
+    fn audience_supports_single_and_multiple_values() {
+        assert!(Audience::One("client".into()).contains("client"));
+        assert!(Audience::Many(vec!["other".into(), "client".into()]).contains("client"));
+        assert!(!Audience::One("client".into()).requires_authorized_party());
+        assert!(Audience::Many(vec!["client".into(), "other".into()]).requires_authorized_party());
+    }
+}

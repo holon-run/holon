@@ -3216,6 +3216,13 @@ CREATE INDEX IF NOT EXISTS idx_auth_login_expiry
   ON auth_login_transactions (expires_at);
 "#,
     },
+    Migration {
+        version: 54,
+        name: "authentication_login_verifier",
+        sql: r#"
+ALTER TABLE auth_login_transactions ADD COLUMN code_verifier TEXT NOT NULL DEFAULT '';
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
