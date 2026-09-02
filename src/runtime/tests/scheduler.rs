@@ -1877,6 +1877,28 @@ fn authenticated_operator_ingress_can_activate_low_authority_prompt_without_upgr
 }
 
 #[test]
+fn trusted_high_authority_operator_prompt_keeps_legacy_activation_path() {
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator { actor_id: None },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "legacy trusted prompt".into(),
+        },
+    );
+
+    assert_eq!(
+        scheduler::canonical_activation_candidate(&message, None, None).unwrap(),
+        Some(scheduler::CanonicalActivationCandidate::ExactWaitResume {
+            expected_work_item_id: None,
+            correlated_wait: None,
+        })
+    );
+}
+
+#[test]
 fn explicitly_bound_low_authority_operator_input_preserves_content_trust() {
     let mut message = MessageEnvelope::new(
         "default",

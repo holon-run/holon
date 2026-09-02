@@ -1277,7 +1277,9 @@ pub(crate) fn canonical_activation_candidate(
     }
 
     if message.kind == MessageKind::OperatorPrompt {
-        if authenticated_operator_ingress(message) && message.work_item_id.is_some() {
+        let operator_ingress =
+            trusted_operator_prompt(message) || authenticated_operator_ingress(message);
+        if operator_ingress && message.work_item_id.is_some() {
             let work_item_id = message
                 .work_item_id
                 .clone()
@@ -1286,7 +1288,7 @@ pub(crate) fn canonical_activation_candidate(
                 CanonicalActivationCandidate::ExplicitlyBoundOperatorInput { work_item_id },
             ));
         }
-        if authenticated_operator_ingress(message) {
+        if operator_ingress {
             return Ok(Some(CanonicalActivationCandidate::ExactWaitResume {
                 expected_work_item_id: None,
                 correlated_wait: None,
@@ -1324,6 +1326,11 @@ pub(crate) fn canonical_activation_candidate(
     }
 
     Ok(None)
+}
+
+fn trusted_operator_prompt(message: &MessageEnvelope) -> bool {
+    message.authority_class == AuthorityClass::OperatorInstruction
+        && matches!(message.origin, MessageOrigin::Operator { .. })
 }
 
 pub(crate) fn runtime_owned_internal_followup(message: &MessageEnvelope) -> bool {
