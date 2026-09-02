@@ -124,10 +124,11 @@ impl OidcClient {
             .oidc
             .as_ref()
             .context("OIDC is not configured")?;
-        let issuer = Url::parse(&oidc.issuer_url)?;
-        let endpoint = issuer
-            .join(".well-known/openid-configuration")
-            .context("building OIDC discovery URL")?;
+        let endpoint = Url::parse(&format!(
+            "{}/.well-known/openid-configuration",
+            oidc.issuer_url.trim_end_matches('/')
+        ))
+        .context("building OIDC discovery URL")?;
         let response = self.http.get(endpoint).send().await?;
         if !response.status().is_success() {
             bail!("OIDC discovery failed with HTTP {}", response.status());
@@ -260,6 +261,9 @@ impl OidcClient {
             .validate_id_token(&discovery, &tokens.id_token, &transaction, now)
             .await?;
         let user_id = if let Some(user) = db.authentication().find_user(&claims.iss, &claims.sub)? {
+            if user.disabled_at.is_some() {
+                bail!("OIDC principal is disabled");
+            }
             user.user_id
         } else {
             format!("oidc-{}", Uuid::new_v4())
