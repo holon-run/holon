@@ -21,6 +21,8 @@ use crate::runtime_db::RuntimeDb;
 
 const MAX_DISCOVERY_BYTES: u64 = 1024 * 1024;
 const MAX_JWKS_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_TOKEN_RESPONSE_BYTES: u64 = 1024 * 1024;
+const ID_TOKEN_LEEWAY_SECONDS: i64 = 5;
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct OidcDiscovery {
@@ -242,10 +244,18 @@ impl OidcClient {
         if !response.status().is_success() {
             bail!("OIDC token exchange failed with HTTP {}", response.status());
         }
-        let tokens: TokenResponse = response
-            .json()
-            .await
-            .context("parsing OIDC token response")?;
+        if response
+            .content_length()
+            .is_some_and(|size| size > MAX_TOKEN_RESPONSE_BYTES)
+        {
+            bail!("OIDC token response is too large");
+        }
+        let token_response = response.bytes().await?;
+        if token_response.len() as u64 > MAX_TOKEN_RESPONSE_BYTES {
+            bail!("OIDC token response is too large");
+        }
+        let tokens: TokenResponse =
+            serde_json::from_slice(&token_response).context("parsing OIDC token response")?;
         let claims = self
             .validate_id_token(&discovery, &tokens.id_token, &transaction, now)
             .await?;
@@ -316,7 +326,7 @@ impl OidcClient {
             .expect("validated")
             .client_id
             .as_str()]);
-        validation.leeway = 5;
+        validation.leeway = ID_TOKEN_LEEWAY_SECONDS as u64;
         let claims = decode::<IdTokenClaims>(token, &key, &validation)
             .context("OIDC ID Token signature or claims validation failed")?
             .claims;
@@ -327,9 +337,13 @@ impl OidcClient {
             .expect("validated")
             .client_id
             .as_str();
-        if claims.exp <= now.timestamp()
-            || claims.nbf.is_some_and(|value| value > now.timestamp() + 5)
-            || claims.iat.is_some_and(|value| value > now.timestamp() + 5)
+        if claims.exp <= now.timestamp() - ID_TOKEN_LEEWAY_SECONDS
+            || claims
+                .nbf
+                .is_some_and(|value| value > now.timestamp() + ID_TOKEN_LEEWAY_SECONDS)
+            || claims
+                .iat
+                .is_some_and(|value| value > now.timestamp() + ID_TOKEN_LEEWAY_SECONDS)
             || !claims.aud.contains(client_id)
             || (claims.aud.requires_authorized_party() && claims.azp.as_deref() != Some(client_id))
             || claims
