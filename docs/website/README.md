@@ -40,6 +40,9 @@ holon --help
 
 Or download binaries from [GitHub Releases](https://github.com/holon-run/holon/releases/latest).
 
+macOS 13 or later users can install the universal `Holon-<version>.dmg` from
+the same release page for a native menu bar app with launch-at-login support.
+
 ### Configure a provider
 
 ```bash

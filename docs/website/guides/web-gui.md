@@ -39,6 +39,9 @@ The Dashboard provides a runtime overview:
   command, workdir, and output. Task events (creation, status updates,
   completion) refresh the list in real time.
 - **Quick actions** — create agents, attach workspaces, and view agent detail.
+- **Agent lifecycle** — start, stop, and delete agents directly from the
+  dashboard. Deleting an agent permanently removes it and its data, with an
+  option to also remove its private child agents.
 
 ### Agent Conversation
 
@@ -184,6 +187,8 @@ Configure Holon from the browser:
   automatically determines the right credential method for each provider
   (API key input for api_key providers, device login link for OAuth
   providers like Codex).
+- **Ollama discovery** — a locally running Ollama server is discovered
+  automatically with no API key; its models appear in the model selectors.
 - **Language** — switch the Web GUI display language. Supported languages are
   English (EN) and Simplified Chinese (ZH-CN). All UI text — navigation,
   buttons, labels, and status messages — updates in real time without a
@@ -227,6 +232,10 @@ When viewing an agent or the Dashboard, the right panel shows:
 The right panel also hosts contextual detail views. For example, clicking
 a task in the Dashboard opens a **Task Detail** panel showing status,
 kind, command, workdir, and output right alongside the main view.
+
+The right panel supports an expanded fullscreen mode, and the model menu
+renders through a fixed-position portal so it is never clipped by layout
+overflow.
 
 ## Remote Access
 

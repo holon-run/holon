@@ -199,6 +199,25 @@ holon config providers list
 
 Each provider entry shows its transport protocol (`anthropic_messages`, `openai_chat_completions`, etc.), base URL, and credential requirement.
 
+### Ollama (local)
+
+Holon includes a built-in [`ollama`](./models.md) provider for running models
+locally with [Ollama](https://ollama.com). It requires no API key and targets
+a local Ollama server at `http://127.0.0.1:11434` over the Anthropic Messages
+transport.
+
+1. Install and start Ollama, then pull a model, for example
+   `ollama pull qwen3.8:latest`.
+2. Select Ollama during `holon onboard`, or set it directly:
+
+```bash
+holon config set model.default "ollama/qwen3.8:latest"
+```
+
+The Web GUI discovers locally running Ollama models without any credential
+configuration, and `ViewImage` automatically discovers Ollama vision models
+for image analysis.
+
 ### Adding a Custom Provider
 
 ```bash

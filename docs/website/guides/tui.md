@@ -70,6 +70,7 @@ and `Enter` to select. Press `Esc` to dismiss.
 | `/agent create <name>` | Create a new agent |
 | `/agent start [id]` | Start an agent |
 | `/agent stop [id]` | Stop an agent |
+| `/agent delete [id]` | Delete an agent (optionally `--cascade-private-children`) |
 | `/model` | Open model picker for selected agent |
 | `/state` | Open agent state overlay |
 | `/abort` | Abort current agent run |

@@ -16,7 +16,7 @@ For scripting guidance, stability levels, and support policy, see
 ## Command Tree
 
 ```
-holon (v0.30.0)
+holon (v0.35.0)
 ├── serve        Start HTTP control plane server
 ├── onboard      Interactive setup wizard or secret-safe diagnostics
 ├── daemon       Background daemon lifecycle
@@ -39,8 +39,10 @@ holon (v0.30.0)
 │   │   ├── set    Store a credential
 │   │   ├── list   List stored credentials
 │   │   └── remove Remove a credential
-│   ├── models  Model catalog
-│   │   └── list List available models
+│   ├── models  Model catalog and discovery
+│   │   ├── list    List available models
+│   │   └── refresh Refresh discovered models for a provider
+│   ├── migrate-model-routes  Inspect/rewrite legacy model selections
 │   ├── list     List all current config
 │   ├── schema   Show all config keys with types and defaults
 │   └── doctor   Full system health check
@@ -66,6 +68,7 @@ holon (v0.30.0)
 │   ├── create   Create a new agent
 │   ├── start    Start an agent
 │   ├── stop     Stop an agent
+│   ├── delete   Permanently delete an agent and its data
 │   ├── abort    Abort current run
 │   └── model    Per-agent model configuration
 │       ├── get  Get agent model override
@@ -104,9 +107,16 @@ holon (v0.30.0)
 ├── memory-index Memory indexing management
 │   ├── status   Show indexing status
 │   └── rebuild  Rebuild the memory search index
+├── models-dev   models.dev snapshot refresh, validation, and audit
+│   ├── refresh  Fetch the snapshot and regenerate the artifact
+│   ├── validate Validate the checked-in snapshot and artifact
+│   └── audit    Audit provider mappings against a snapshot
 ├── debug        Debug utilities
 │   ├── prompt   Debug-mode prompt
 │   ├── latency  Show latency metrics
+│   ├── performance  Show performance metrics
+│   ├── runtime-db   Runtime database audit and retention
+│   ├── scheduler-recovery  Inspect/apply scheduler recovery
 │   └── scheduler-fixture Generate scheduler fixture data
 └── help         Print help
 ```
@@ -139,6 +149,7 @@ holon run --agent reviewer "Review src/runtime/turn.rs"
 holon agent start reviewer
 holon agent stop reviewer
 holon agent abort reviewer
+holon agent delete reviewer --yes
 ```
 
 > **Deprecated:** The `holon control` command has been replaced by
@@ -146,6 +157,11 @@ holon agent abort reviewer
 > The old `control` command is kept for backward compatibility only; see
 > [CLI stability policy](./cli-stability-policy.md#deprecated-holon-control)
 > for the compatibility and removal criteria.
+
+`holon agent delete` permanently removes an agent and its associated data.
+Pass `--cascade-private-children` to also remove its private child agents and
+`--wait` to block until the deletion job completes. It requires `--yes` in
+non-interactive mode.
 
 ### Model selection
 
@@ -164,6 +180,24 @@ accepted. Inspect or rewrite persisted legacy values with:
 holon config migrate-model-routes          # dry-run
 holon config migrate-model-routes --write  # validated canonical rewrite
 ```
+
+### models.dev provider mapping
+
+Holon ships a checked-in [models.dev](https://models.dev) snapshot and a
+versioned provider mapping manifest that reconciles upstream model metadata
+with Holon provider/route identities. The `holon models-dev` subcommands
+audit, validate, and refresh this snapshot:
+
+```bash
+holon models-dev validate        # validate the checked-in snapshot and artifact
+holon models-dev audit           # audit provider mappings against the snapshot
+holon models-dev audit --json    # machine-readable mapping audit report
+holon models-dev refresh         # fetch upstream and regenerate the artifact
+```
+
+`refresh` and `validate` target the repository's checked-in `models.dev/`
+files and are intended for Holon development and release automation. See
+[Supported Models](./models.md) for the runtime model catalog.
 
 ### Daemon management
 

@@ -7,7 +7,7 @@ generated: auto-generated from holon source — do not edit directly
 # Supported Models
 
 Holon includes built-in configuration for **34 provider accounts**
-across **43 endpoints** and **264 models**.
+across **43 endpoints** and **267 models**.
 
 This page is auto-generated from the Holon source code
 ([`src/model_catalog.rs`](../../../src/model_catalog.rs) and
@@ -103,6 +103,7 @@ and capabilities.
 | `bigmodel` | `glm-5.1` | `bigmodel/glm-5.1` | 204800 | 131072 | ✅ | — |
 | `bigmodel` | `glm-5.2` | `bigmodel/glm-5.2` | 1000000 | 131072 | ✅ | — |
 | `bigmodel` | `glm-5.3` | `bigmodel/glm-5.3` | 1000000 | 131072 | ✅ | — |
+| `bigmodel` | `glm-5.3-flash` | `bigmodel/glm-5.3-flash` | 1000000 | 131072 | ✅ | ✅ |
 | `bigmodel` | `glm-5v-turbo` | `bigmodel/glm-5v-turbo` | 204800 | 131072 | ✅ | ✅ |
 | `chutes` | `MiniMaxAI/MiniMax-M2.5-TEE` | `chutes/MiniMaxAI/MiniMax-M2.5-TEE` | 196608 | 65536 | ✅ | — |
 | `chutes` | `Qwen/Qwen3-235B-A22B-Thinking-2507-TEE` | `chutes/Qwen/Qwen3-235B-A22B-Thinking-2507-TEE` | 262144 | 262144 | ✅ | — |
@@ -146,6 +147,7 @@ and capabilities.
 | `dashscope` | `qwen3.7-max-2026-06-08` | `dashscope/qwen3.7-max-2026-06-08` | 1000000 | 65536 | ✅ | — |
 | `dashscope` | `qwen3.7-plus` | `dashscope/qwen3.7-plus` | 1000000 | 65536 | ✅ | ✅ |
 | `dashscope` | `qwen3.7-plus-2026-05-26` | `dashscope/qwen3.7-plus-2026-05-26` | 1000000 | 65536 | ✅ | ✅ |
+| `dashscope` | `qwen3.8-flash` | `dashscope/qwen3.8-flash` | 1000000 | 131072 | ✅ | ✅ |
 | `dashscope` | `qwen3.8-max` | `dashscope/qwen3.8-max` | 1000000 | 131072 | ✅ | ✅ |
 | `dashscope` | `qwen3.8-max-preview` | `dashscope/qwen3.8-max-preview` | 1000000 | 65536 | ✅ | ✅ |
 | `deepseek` | `deepseek-v4-flash` | `deepseek/deepseek-v4-flash` | 1000000 | 384000 | ✅ | — |
@@ -340,4 +342,5 @@ and capabilities.
 | `zai` | `glm-5.1` | `zai/glm-5.1` | 202800 | 131072 | ✅ | — |
 | `zai` | `glm-5.2` | `zai/glm-5.2` | 1000000 | 131072 | ✅ | — |
 | `zai` | `glm-5.3` | `zai/glm-5.3` | 1000000 | 131072 | ✅ | — |
+| `zai` | `glm-5.3-flash` | `zai/glm-5.3-flash` | 1000000 | 131072 | ✅ | ✅ |
 | `zai` | `glm-5v-turbo` | `zai/glm-5v-turbo` | 202800 | 131072 | ✅ | ✅ |
