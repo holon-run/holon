@@ -1381,7 +1381,7 @@ async fn turn_local_continuation_recovers_by_reprojecting_recent_turns() {
         .filter(|(_, tool)| tool.name != crate::tool::names::X_SEARCH)
         .map(|(_, tool)| tool)
         .collect::<Vec<_>>();
-    let continuation_effective_budget = 12_000;
+    let continuation_effective_budget = 14_000;
     let prompt_budget_estimated_tokens = turn::estimate_tool_specs_tokens(&available_tools)
         + turn::CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS
         + continuation_effective_budget;

@@ -79,6 +79,10 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
+    #[command(about = "Show the declared caller context for this CLI invocation")]
+    Context,
+    #[command(about = "Show machine-readable CLI command metadata")]
+    Commands,
     #[command(about = "Interactively set up Holon or print secret-safe onboarding diagnostics")]
     Onboard {
         #[arg(long)]
@@ -445,6 +449,12 @@ pub enum WorkspaceCommands {
 
 #[derive(Debug, Subcommand)]
 pub enum TaskCommands {
+    List {
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        #[arg(long)]
+        agent: Option<String>,
+    },
     Run {
         summary: String,
         #[arg(long)]
@@ -575,6 +585,44 @@ pub enum WorkItemCommands {
     },
     Get {
         work_item_id: String,
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    Create {
+        objective: String,
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    Pick {
+        work_item_id: String,
+        #[arg(long)]
+        reason: Option<String>,
+        #[arg(long)]
+        clear_blocker: bool,
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    Update {
+        work_item_id: String,
+        #[arg(long)]
+        objective: Option<String>,
+        #[arg(long)]
+        plan_status: Option<String>,
+        #[arg(long)]
+        todo_json: Option<String>,
+        #[arg(long)]
+        blocked_by_json: Option<String>,
+        #[arg(long)]
+        recheck_after: Option<u64>,
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    Complete {
+        work_item_id: String,
+        #[arg(long, conflicts_with = "report_file")]
+        report: Option<String>,
+        #[arg(long, conflicts_with = "report")]
+        report_file: Option<PathBuf>,
         #[arg(long)]
         agent: Option<String>,
     },
@@ -1013,6 +1061,14 @@ mod tests {
             .filter(|e| !e.path.contains('.'))
             .map(|e| e.path.as_str())
             .collect();
+        assert!(
+            top_level.contains(&"context"),
+            "context should be in snapshot"
+        );
+        assert!(
+            top_level.contains(&"commands"),
+            "commands should be in snapshot"
+        );
         assert!(top_level.contains(&"serve"), "serve should be in snapshot");
         assert!(top_level.contains(&"run"), "run should be in snapshot");
         assert!(top_level.contains(&"agent"), "agent should be in snapshot");

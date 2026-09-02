@@ -146,6 +146,11 @@ pub fn tool_sections_with_context(
             PromptStability::Stable,
             guidance(include_str!("tool_guidance/tool_exec_command.md")),
         ));
+        sections.push(section(
+            "holon_cli_contract",
+            PromptStability::Stable,
+            guidance(include_str!("tool_guidance/tool_holon_cli.md")),
+        ));
     }
     if names.contains(&tn::EXEC_COMMAND_BATCH) {
         sections.push(section(
@@ -351,6 +356,25 @@ mod tests {
         }];
         let sections = tool_sections(&tools);
         assert!(sections.iter().any(|s| s.name == "tool_exec_command"));
+        assert!(sections.iter().any(|s| s.name == "holon_cli_contract"));
+    }
+
+    #[test]
+    fn holon_cli_guidance_preserves_provenance_boundary() {
+        let tools = vec![ToolSpec {
+            name: "ExecCommand".into(),
+            description: String::new(),
+            input_schema: json!({}),
+            freeform_grammar: None,
+        }];
+        let section = tool_sections(&tools)
+            .into_iter()
+            .find(|section| section.name == "holon_cli_contract")
+            .expect("holon cli contract section");
+        assert!(section.content.contains("not authentication"));
+        assert!(section.content.contains("holon commands"));
+        assert!(section.content.contains("holon context"));
+        assert!(section.content.contains("recursive `holon run`"));
     }
 
     #[test]

@@ -134,6 +134,7 @@ pub use skills::{
     add_skill_to_catalog, disable_skill, enable_skill, install_skill, list_skills,
     remove_skill_from_catalog, skills_catalog, uninstall_skill,
 };
+pub(crate) use state::validate_invocation_context;
 pub use state::{
     agent_state, brief, briefs, briefs_batch_get, briefs_default, enqueue, enqueue_default,
     state_default, status, status_default, transcript, transcript_batch_get, transcript_default,

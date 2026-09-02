@@ -221,6 +221,7 @@ pub async fn task_input(
     let authority_class = request
         .authority_class
         .unwrap_or(AuthorityClass::OperatorInstruction);
+    validate_invocation_context(request.invocation_context.as_ref(), Some(authority_class))?;
     let result = runtime
         .managed_tasks()
         .task_input_with_trust(&task_id, &request.text, &authority_class)
@@ -252,6 +253,7 @@ pub async fn task_stop(
     let authority_class = request
         .authority_class
         .unwrap_or(AuthorityClass::OperatorInstruction);
+    validate_invocation_context(request.invocation_context.as_ref(), Some(authority_class))?;
     let task = runtime
         .managed_tasks()
         .stop_task(&task_id, &authority_class)
@@ -286,6 +288,7 @@ pub async fn create_command_task(
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let admission_context = control_admission_context(&state);
     let provided_trust = request.authority_class;
+    validate_invocation_context(request.invocation_context.as_ref(), provided_trust)?;
     let effective_trust = provided_trust
         .clone()
         .unwrap_or(AuthorityClass::OperatorInstruction);
@@ -341,6 +344,7 @@ pub async fn create_work_item(
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let admission_context = control_admission_context(&state);
     let provided_trust = request.authority_class;
+    validate_invocation_context(request.invocation_context.as_ref(), provided_trust)?;
     let objective = request.objective.trim().to_string();
     if objective.is_empty() {
         return Err(bad_request("objective must not be empty"));
@@ -377,6 +381,7 @@ pub async fn pick_work_item(
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let admission_context = control_admission_context(&state);
     let provided_trust = request.authority_class;
+    validate_invocation_context(request.invocation_context.as_ref(), provided_trust)?;
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -425,6 +430,7 @@ pub async fn update_work_item(
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let admission_context = control_admission_context(&state);
     let provided_trust = request.authority_class;
+    validate_invocation_context(request.invocation_context.as_ref(), provided_trust)?;
     let objective = request
         .objective
         .map(|value| {
@@ -505,6 +511,7 @@ pub async fn complete_work_item(
     }
     let admission_context = control_admission_context(&state);
     let provided_trust = request.authority_class;
+    validate_invocation_context(request.invocation_context.as_ref(), provided_trust)?;
     let runtime = state
         .host
         .get_public_agent(&agent_id)

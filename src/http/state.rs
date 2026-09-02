@@ -43,6 +43,26 @@ pub(crate) fn control_admission_context(state: &AppState) -> AdmissionContext {
     }
 }
 
+pub(crate) fn validate_invocation_context(
+    invocation_context: Option<&crate::types::AgentInvocationContext>,
+    authority_class: Option<crate::types::AuthorityClass>,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    let Some(invocation_context) = invocation_context else {
+        return Ok(());
+    };
+    if let (Some(inherited), Some(provided)) = (
+        invocation_context.inherited_authority_class,
+        authority_class,
+    ) {
+        if inherited != provided {
+            return Err(bad_request(
+                "authority_class conflicts with declared invocation context",
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub(crate) async fn current_boundary_metadata(
     runtime: &crate::runtime::RuntimeHandle,
 ) -> Result<Value> {

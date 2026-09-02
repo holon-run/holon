@@ -1380,6 +1380,107 @@ pub enum AuthorityClass {
     ExternalEvidence,
 }
 
+pub const HOLON_CALLER_AGENT_ID_ENV: &str = "HOLON_CALLER_AGENT_ID";
+pub const HOLON_CALLER_SOURCE_TASK_ID_ENV: &str = "HOLON_CALLER_SOURCE_TASK_ID";
+pub const HOLON_CALLER_SOURCE_TURN_ID_ENV: &str = "HOLON_CALLER_SOURCE_TURN_ID";
+pub const HOLON_CALLER_SOURCE_WORK_ITEM_ID_ENV: &str = "HOLON_CALLER_SOURCE_WORK_ITEM_ID";
+pub const HOLON_CALLER_SOURCE_ACTIVATION_ID_ENV: &str = "HOLON_CALLER_SOURCE_ACTIVATION_ID";
+pub const HOLON_CALLER_AUTHORITY_CLASS_ENV: &str = "HOLON_CALLER_AUTHORITY_CLASS";
+
+/// Declaration-based provenance supplied to a CLI launched by an agent.
+///
+/// These values describe the caller and its source activation, but are not
+/// authentication material. A local process can forge them.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct AgentInvocationContext {
+    pub caller_agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_work_item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_activation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inherited_authority_class: Option<AuthorityClass>,
+}
+
+impl AgentInvocationContext {
+    pub fn from_env() -> Result<Option<Self>, String> {
+        let read = |name: &str| {
+            std::env::var(name)
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        };
+        let caller_agent_id = read(HOLON_CALLER_AGENT_ID_ENV);
+        let any_context_field = [
+            HOLON_CALLER_SOURCE_TASK_ID_ENV,
+            HOLON_CALLER_SOURCE_TURN_ID_ENV,
+            HOLON_CALLER_SOURCE_WORK_ITEM_ID_ENV,
+            HOLON_CALLER_SOURCE_ACTIVATION_ID_ENV,
+            HOLON_CALLER_AUTHORITY_CLASS_ENV,
+        ]
+        .into_iter()
+        .any(|name| std::env::var_os(name).is_some());
+
+        Self::from_fields(
+            caller_agent_id,
+            read(HOLON_CALLER_SOURCE_TASK_ID_ENV),
+            read(HOLON_CALLER_SOURCE_TURN_ID_ENV),
+            read(HOLON_CALLER_SOURCE_WORK_ITEM_ID_ENV),
+            read(HOLON_CALLER_SOURCE_ACTIVATION_ID_ENV),
+            read(HOLON_CALLER_AUTHORITY_CLASS_ENV),
+            any_context_field,
+        )
+    }
+
+    fn from_fields(
+        caller_agent_id: Option<String>,
+        source_task_id: Option<String>,
+        source_turn_id: Option<String>,
+        source_work_item_id: Option<String>,
+        source_activation_id: Option<String>,
+        inherited_authority_class: Option<String>,
+        any_context_field: bool,
+    ) -> Result<Option<Self>, String> {
+        let Some(caller_agent_id) = caller_agent_id else {
+            if any_context_field {
+                return Err(format!(
+                    "{HOLON_CALLER_AGENT_ID_ENV} is required when caller context is present"
+                ));
+            }
+            return Ok(None);
+        };
+
+        let inherited_authority_class = inherited_authority_class
+            .map(|value| parse_agent_invocation_authority(&value))
+            .transpose()?;
+
+        Ok(Some(Self {
+            caller_agent_id,
+            source_task_id,
+            source_turn_id,
+            source_work_item_id,
+            source_activation_id,
+            inherited_authority_class,
+        }))
+    }
+}
+
+fn parse_agent_invocation_authority(value: &str) -> Result<AuthorityClass, String> {
+    match value.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+        "operator_instruction" | "trusted_operator" => Ok(AuthorityClass::OperatorInstruction),
+        "runtime_instruction" | "trusted_system" => Ok(AuthorityClass::RuntimeInstruction),
+        "integration_signal" | "trusted_integration" => Ok(AuthorityClass::IntegrationSignal),
+        "external_evidence" | "untrusted_external" => Ok(AuthorityClass::ExternalEvidence),
+        _ => Err(format!(
+            "invalid {HOLON_CALLER_AUTHORITY_CLASS_ENV}: {value}"
+        )),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct MessageEnvelope {
     pub id: String,
@@ -5326,6 +5427,57 @@ impl AgentListEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_invocation_context_requires_caller_when_any_field_is_present() {
+        let error = AgentInvocationContext::from_fields(
+            None,
+            None,
+            Some("turn-1".into()),
+            None,
+            None,
+            None,
+            true,
+        )
+        .unwrap_err();
+        assert!(error.contains(HOLON_CALLER_AGENT_ID_ENV));
+    }
+
+    #[test]
+    fn agent_invocation_context_parses_declared_fields_and_authority_aliases() {
+        let context = AgentInvocationContext::from_fields(
+            Some("agent-a".into()),
+            Some("task-1".into()),
+            Some("turn-1".into()),
+            Some("work-1".into()),
+            Some("activation-1".into()),
+            Some("trusted-integration".into()),
+            true,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(context.caller_agent_id, "agent-a");
+        assert_eq!(context.source_task_id.as_deref(), Some("task-1"));
+        assert_eq!(context.source_turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(context.source_work_item_id.as_deref(), Some("work-1"));
+        assert_eq!(
+            context.source_activation_id.as_deref(),
+            Some("activation-1")
+        );
+        assert_eq!(
+            context.inherited_authority_class,
+            Some(AuthorityClass::IntegrationSignal)
+        );
+    }
+
+    #[test]
+    fn context_free_agent_invocation_context_is_operator_mode() {
+        assert_eq!(
+            AgentInvocationContext::from_fields(None, None, None, None, None, None, false).unwrap(),
+            None
+        );
+    }
 
     #[test]
     fn legacy_scheduler_contract_names_deserialize_as_current_terms() {

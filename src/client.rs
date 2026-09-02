@@ -622,6 +622,7 @@ impl LocalClient {
             &TaskInputRequest {
                 text: text.into(),
                 authority_class: Some(AuthorityClass::OperatorInstruction),
+                invocation_context: None,
             },
         )
         .await
@@ -632,6 +633,7 @@ impl LocalClient {
             &format!("/control/agents/{agent_id}/tasks/{task_id}/stop"),
             &TaskStopRequest {
                 authority_class: Some(AuthorityClass::OperatorInstruction),
+                invocation_context: None,
             },
         )
         .await

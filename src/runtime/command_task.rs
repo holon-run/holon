@@ -26,6 +26,9 @@ use crate::{
         ExecCommandDuplicatePolicy, ExecCommandOutcome, ExecCommandResult, ExternalTriggerScope,
         ExternalTriggerStatus, MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority,
         TaskHandle, TaskKind, TaskRecord, TaskRecoverySpec, TaskStatus, ToolArtifactRef,
+        HOLON_CALLER_AGENT_ID_ENV, HOLON_CALLER_AUTHORITY_CLASS_ENV,
+        HOLON_CALLER_SOURCE_ACTIVATION_ID_ENV, HOLON_CALLER_SOURCE_TASK_ID_ENV,
+        HOLON_CALLER_SOURCE_TURN_ID_ENV, HOLON_CALLER_SOURCE_WORK_ITEM_ID_ENV,
     },
     utf8::IncrementalUtf8LossyDecoder,
 };
@@ -519,6 +522,40 @@ impl RuntimeHandle {
                 self.agent_home().to_string_lossy().into_owned(),
             ),
         ];
+        let state = self.agent_state().await?;
+        if let Some(binding) = state.current_execution_binding.as_ref() {
+            env.push((HOLON_CALLER_AGENT_ID_ENV.to_string(), agent_id.clone()));
+            env.push((
+                HOLON_CALLER_SOURCE_TURN_ID_ENV.to_string(),
+                binding.turn_id.clone(),
+            ));
+            if let Some(work_item_id) = binding.work_item_id.as_ref() {
+                env.push((
+                    HOLON_CALLER_SOURCE_WORK_ITEM_ID_ENV.to_string(),
+                    work_item_id.clone(),
+                ));
+            }
+            if let Some(activation_id) = binding.activation_id.as_ref() {
+                env.push((
+                    HOLON_CALLER_SOURCE_ACTIVATION_ID_ENV.to_string(),
+                    activation_id.clone(),
+                ));
+            }
+            if let Some(message) = self
+                .storage()
+                .read_message_by_id(&binding.source_message_id)?
+            {
+                if let Some(task_id) = message.task_id {
+                    env.push((HOLON_CALLER_SOURCE_TASK_ID_ENV.to_string(), task_id));
+                }
+                env.push((
+                    HOLON_CALLER_AUTHORITY_CLASS_ENV.to_string(),
+                    serde_json::to_string(&message.authority_class)?
+                        .trim_matches('"')
+                        .to_string(),
+                ));
+            }
+        }
         if let Some(trigger_url) = self.command_external_trigger_url(&agent_id).await? {
             env.push(("HOLON_EXTERNAL_TRIGGER_URL".to_string(), trigger_url));
         }

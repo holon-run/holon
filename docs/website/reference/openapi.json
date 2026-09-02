@@ -2726,6 +2726,58 @@
               "null"
             ]
           },
+          "invocation_context": {
+            "description": "Declaration-based provenance supplied to a CLI launched by an agent.\n\n These values describe the caller and its source activation, but are not\n authentication material. A local process can forge them.",
+            "properties": {
+              "caller_agent_id": {
+                "type": "string"
+              },
+              "inherited_authority_class": {
+                "enum": [
+                  "operator_instruction",
+                  "runtime_instruction",
+                  "integration_signal",
+                  "external_evidence",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source_activation_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source_task_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source_turn_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source_work_item_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "caller_agent_id"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          },
           "report_text": {
             "type": "string"
           }
@@ -3888,6 +3940,58 @@
           "clear_blocker": {
             "default": false,
             "type": "boolean"
+          },
+          "invocation_context": {
+            "description": "Declaration-based provenance supplied to a CLI launched by an agent.\n\n These values describe the caller and its source activation, but are not\n authentication material. A local process can forge them.",
+            "properties": {
+              "caller_agent_id": {
+                "type": "string"
+              },
+              "inherited_authority_class": {
+                "enum": [
+                  "operator_instruction",
+                  "runtime_instruction",
+                  "integration_signal",
+                  "external_evidence",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source_activation_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source_task_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source_turn_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source_work_item_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "caller_agent_id"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
           },
           "reason": {
             "type": [
@@ -8802,6 +8906,58 @@
             ]
           },
           "blocked_by": true,
+          "invocation_context": {
+            "description": "Declaration-based provenance supplied to a CLI launched by an agent.\n\n These values describe the caller and its source activation, but are not\n authentication material. A local process can forge them.",
+            "properties": {
+              "caller_agent_id": {
+                "type": "string"
+              },
+              "inherited_authority_class": {
+                "enum": [
+                  "operator_instruction",
+                  "runtime_instruction",
+                  "integration_signal",
+                  "external_evidence",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source_activation_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source_task_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source_turn_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source_work_item_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "caller_agent_id"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          },
           "objective": {
             "type": [
               "string",

@@ -211,6 +211,12 @@
     "aliases": []
   },
   {
+    "path": "commands",
+    "positionals": [],
+    "flags": [],
+    "aliases": []
+  },
+  {
     "path": "config",
     "positionals": [],
     "flags": [],
@@ -496,6 +502,12 @@
         "required": true
       }
     ],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "context",
+    "positionals": [],
     "flags": [],
     "aliases": []
   },
@@ -1894,6 +1906,27 @@
     "aliases": []
   },
   {
+    "path": "task.list",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "limit",
+        "short": null,
+        "default_value": "50",
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
     "path": "task.output",
     "positionals": [
       {
@@ -2234,6 +2267,62 @@
     "aliases": []
   },
   {
+    "path": "work-item.complete",
+    "positionals": [
+      {
+        "name": "work_item_id",
+        "value_name": "WORK_ITEM_ID",
+        "index": null,
+        "required": true
+      }
+    ],
+    "flags": [
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "report",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "report-file",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "work-item.create",
+    "positionals": [
+      {
+        "name": "objective",
+        "value_name": "OBJECTIVE",
+        "index": null,
+        "required": true
+      }
+    ],
+    "flags": [
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
     "path": "work-item.get",
     "positionals": [
       {
@@ -2269,6 +2358,100 @@
         "long": "limit",
         "short": null,
         "default_value": "50",
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "work-item.pick",
+    "positionals": [
+      {
+        "name": "work_item_id",
+        "value_name": "WORK_ITEM_ID",
+        "index": null,
+        "required": true
+      }
+    ],
+    "flags": [
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "clear-blocker",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
+        "long": "reason",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "work-item.update",
+    "positionals": [
+      {
+        "name": "work_item_id",
+        "value_name": "WORK_ITEM_ID",
+        "index": null,
+        "required": true
+      }
+    ],
+    "flags": [
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "blocked-by-json",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "objective",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "plan-status",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "recheck-after",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "todo-json",
+        "short": null,
+        "default_value": null,
         "possible_values": null,
         "required": false
       }
