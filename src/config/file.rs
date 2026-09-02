@@ -2,6 +2,8 @@ use super::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct HolonConfigFile {
+    #[serde(default, skip_serializing_if = "AuthConfigFile::is_empty")]
+    pub auth: AuthConfigFile,
     #[serde(default, skip_serializing_if = "ApiConfigFile::is_empty")]
     pub api: ApiConfigFile,
     #[serde(default, skip_serializing_if = "ModelConfigFile::is_empty")]
@@ -24,6 +26,46 @@ pub struct HolonConfigFile {
     pub x_search: XSearchConfigFile,
     #[serde(default, skip_serializing_if = "AgentTemplatesConfigFile::is_empty")]
     pub agent_templates: AgentTemplatesConfigFile,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct AuthConfigFile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<AuthenticationMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oidc: Option<OidcConfigFile>,
+    #[serde(default, skip_serializing_if = "SessionConfigFile::is_empty")]
+    pub session: SessionConfigFile,
+}
+
+impl AuthConfigFile {
+    pub fn is_empty(&self) -> bool {
+        self.mode.is_none() && self.oidc.is_none() && self.session.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OidcConfigFile {
+    pub issuer_url: String,
+    pub client_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redirect_uri: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct SessionConfigFile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub absolute_ttl_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_ttl_seconds: Option<u64>,
+}
+
+impl SessionConfigFile {
+    pub fn is_empty(&self) -> bool {
+        self.absolute_ttl_seconds.is_none() && self.idle_ttl_seconds.is_none()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]

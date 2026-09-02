@@ -79,6 +79,7 @@ fn test_config() -> AppConfig {
         max_relevant_episodes: 3,
         control_token: Some("secret".into()),
         control_auth_mode: crate::config::ControlAuthMode::Auto,
+        auth: Default::default(),
         api_cors: Default::default(),
         config_file_path: home.path().join("config.json"),
         stored_config: Default::default(),
