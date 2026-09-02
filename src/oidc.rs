@@ -445,6 +445,113 @@ async fn read_limited_body(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{routing::get, Json, Router};
+    use chrono::TimeZone;
+    use jsonwebtoken::{encode, EncodingKey, Header};
+    use serde_json::json;
+    use std::net::SocketAddr;
+    use tokio::task::JoinHandle;
+
+    const TEST_PRIVATE_KEY: &[u8] = br#"-----BEGIN RSA PRIVATE KEY-----
+MIIEogIBAAKCAQEA2vXoTk97CPIP3HQ7mkj/rgeKWQeSpYwdTBAGzMfnJge5lnbn
+nNnX56iooviJoxrC1GRvMyP/WoNMl9Lq3X/mhHRDGhjMzHcy01/v7U6ytZP4EerW
+kh+ZNOHpsqpIGRxfCeyoh7WhPqlIzKog2c5u8enDmTTNTtuMtsmFLFa0WuT5k+Zm
+W2k8QF9JqzXW+JmMGIha08uGODZB3duSlOlBug/OrYOM2Mm20SPADWnRsRHukgbO
+HqQE6p0EQ+rd9kpAVbf+p/k4yIIhoblSsyeErLsg+1sV7oXF19rvo8TxeXkTCFOn
+WBF9LjeiTTYFh44AIKe+F1BQ9VsdwDaVOQ/jDwIDAQABAoIBAADT8wP0JLmZSgGM
+XCAsgwEtpf3iYcTMB0jY3BX7C0QgMSiNdUGUkxjfJa3mAtBA0AnYhhVwhE8dkKBi
+FH5M4nlqg8UmM4CPEICFhtx2h0PAX2rKL05r8lvnmugY0HoCJzJcJura5nIFwjsZ
+C2RNoxJF8BLR15UnI16vX5xwytf72CDZQNUA6iUbo5rkYIqMwbPHZtQXMLoe5g6S
+QOsQq7Vk4czqdMGqO/zdyHUnUvVQbDMvM9dxvaIsqeAEMvsXm70paE2I47Xs+CAx
+472WmUU8XcBduvbNAvCeYaXtbUXFRUy1X1/B3jjfk64F8iA/KnyR9HkE6TZNNw3J
+zYHQg3ECgYEA98QgrwJXAuu7CrjeQTdzgl6/f9w0e5jAoHIYTh8ROBptNTky/ZLt
+1MTkH7NJRQeR85wQxmNQgxsH32EUF3jZ7hYMZSvJYokV5zwsWb3R94kNxmWC49bP
+By+m4G3PidhEVGTcX9EVpJA7gX1qSLbnqsaaPcnfm33Or7JlAuzOVuMCgYEA4jy3
+YhrQ2qpPIZr7ulIJUXyo5xayH3Z0+wMRtTOehQ7LwR6a8g4u0fs5IGrht4ZZSuEe
+Brr1N8jPi1tUtksLBaxB6eP+kBchdgt919b90fWIApW2oT+HW7tMteozalMyxcqg
+t3bFajaNhMyEVdfHkSRpEP3UxvFXk4pvMR5hTuUCgYA5XrGOtIT/SSQzNGFKSpO1
+gUjoS03fvJwFysVz+V+cVQoqg8cZzhbB6KFF8daqZDlYZi/AMCjpYq3s/GaRlMsp
+hPNzzbLA3Ss0Msu2L+zZW2PUJ5cqOIgRiugiGWsv6OLRg9U/XoObakZNEoQ0uB1m
+frwiSIc9UuEz76PSDJEurwKBgCR+vuZohQCBMLqvEaSAz1gB0A1XL+y7YyuK1zRv
+20aDmILSuRQLDap56EE+fKLqXUUjA4D6b8xL7I8CcKvndyO3Ifrk+I+t64vrVqWW
+3OMdxI8GL6vbX66AjGNcIGcqfKpDgaGW20nC+xlNFJv0bxEO2pQPHl/pVsNKNZ2q
+1O+xAoGAFhj8jb5woGwsnSzfGAnV2i8qw7n2RmKGK2VZ+kMYo4iFDMuSQJGyWzMi
+S9EtDiHCy3C8YSNteIO+GbIeiywMybix6z/lQIEjR0stXFuqyNpmb2Wz+Wmz908m
+51Px2LQJgTrJdJsLB0/A2C9clNsf+fuH4zVtGYlQyCOlXCv5STM=
+-----END RSA PRIVATE KEY-----"#;
+    const TEST_JWK_N: &str = "2vXoTk97CPIP3HQ7mkj_rgeKWQeSpYwdTBAGzMfnJge5lnbnnNnX56iooviJoxrC1GRvMyP_WoNMl9Lq3X_mhHRDGhjMzHcy01_v7U6ytZP4EerWkh-ZNOHpsqpIGRxfCeyoh7WhPqlIzKog2c5u8enDmTTNTtuMtsmFLFa0WuT5k-ZmW2k8QF9JqzXW-JmMGIha08uGODZB3duSlOlBug_OrYOM2Mm20SPADWnRsRHukgbOHqQE6p0EQ-rd9kpAVbf-p_k4yIIhoblSsyeErLsg-1sV7oXF19rvo8TxeXkTCFOnWBF9LjeiTTYFh44AIKe-F1BQ9VsdwDaVOQ_jDw";
+    const TEST_JWK_E: &str = "AQAB";
+
+    fn test_time() -> DateTime<Utc> {
+        Utc.timestamp_opt(2_000_000_000, 0).single().unwrap()
+    }
+
+    fn test_client() -> OidcClient {
+        OidcClient {
+            config: AuthConfig {
+                mode: crate::authentication::AuthenticationMode::Oidc,
+                oidc: Some(crate::authentication::OidcProviderConfig {
+                    issuer_url: "https://issuer.example".into(),
+                    client_id: "client".into(),
+                    client_secret_env: None,
+                    redirect_uri: Some("https://app.example/callback".into()),
+                }),
+                session: Default::default(),
+            },
+            http: reqwest::Client::new(),
+        }
+    }
+
+    async fn jwks_server() -> (String, JoinHandle<()>) {
+        let app = Router::new().route(
+            "/jwks",
+            get(|| async {
+                Json(json!({
+                    "keys": [{
+                        "kid": "test-key",
+                        "kty": "RSA",
+                        "alg": "RS256",
+                        "n": TEST_JWK_N,
+                        "e": TEST_JWK_E
+                    }]
+                }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (format!("http://{address}/jwks"), task)
+    }
+
+    fn test_token(
+        now: DateTime<Utc>,
+        issuer: &str,
+        audience: serde_json::Value,
+        nonce: Option<&str>,
+        azp: Option<&str>,
+    ) -> String {
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some("test-key".into());
+        let claims = json!({
+            "iss": issuer,
+            "sub": "subject",
+            "aud": audience,
+            "exp": now.timestamp() + 300,
+            "iat": now.timestamp(),
+            "nonce": nonce,
+            "azp": azp,
+        });
+        encode(
+            &header,
+            &claims,
+            &EncodingKey::from_rsa_pem(TEST_PRIVATE_KEY).unwrap(),
+        )
+        .unwrap()
+    }
 
     #[test]
     fn pkce_uses_base64url_without_padding() {
@@ -461,5 +568,112 @@ mod tests {
         assert!(!Audience::One("client".into()).requires_authorized_party());
         assert!(!Audience::Many(vec!["client".into()]).requires_authorized_party());
         assert!(Audience::Many(vec!["client".into(), "other".into()]).requires_authorized_party());
+    }
+
+    #[tokio::test]
+    async fn id_token_validation_rejects_security_critical_claims() -> Result<()> {
+        let (jwks_uri, server) = jwks_server().await;
+        let client = test_client();
+        let discovery = OidcDiscovery {
+            issuer: "https://issuer.example".into(),
+            authorization_endpoint: "https://issuer.example/authorize".into(),
+            token_endpoint: "https://issuer.example/token".into(),
+            jwks_uri,
+        };
+        let now = test_time();
+        let transaction = LoginTransactionRecord {
+            transaction_digest: "transaction".into(),
+            state_digest: "state".into(),
+            nonce_digest: digest_secret("nonce"),
+            code_verifier: "verifier".into(),
+            created_at: now,
+            expires_at: now + chrono::Duration::minutes(10),
+            consumed_at: None,
+        };
+
+        let valid = test_token(
+            now,
+            "https://issuer.example",
+            json!("client"),
+            Some("nonce"),
+            None,
+        );
+        let valid_result = client
+            .validate_id_token(&discovery, &valid, &transaction, now)
+            .await;
+        assert!(valid_result.is_ok(), "{valid_result:?}");
+
+        for (issuer, audience, nonce, azp) in [
+            (
+                "https://attacker.example",
+                json!("client"),
+                Some("nonce"),
+                None,
+            ),
+            (
+                "https://issuer.example",
+                json!("other"),
+                Some("nonce"),
+                None,
+            ),
+            (
+                "https://issuer.example",
+                json!("client"),
+                Some("wrong"),
+                None,
+            ),
+            (
+                "https://issuer.example",
+                json!(["client", "other"]),
+                Some("nonce"),
+                None,
+            ),
+        ] {
+            let token = test_token(now, issuer, audience, nonce, azp);
+            assert!(client
+                .validate_id_token(&discovery, &token, &transaction, now)
+                .await
+                .is_err());
+        }
+        server.abort();
+        Ok(())
+    }
+
+    #[test]
+    fn bootstrap_exchange_issues_a_session_once() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let db = RuntimeDb::open_and_migrate(
+            temp_dir.path().join("runtime.sqlite"),
+            temp_dir.path().join("runtime.lock"),
+        )?;
+        let now = test_time();
+        let credential = "bootstrap-secret";
+        db.authentication().upsert_user(&AuthUserRecord {
+            user_id: "user".into(),
+            issuer: "https://issuer.example".into(),
+            subject: "subject".into(),
+            display_name: None,
+            email: None,
+            created_at: now,
+            updated_at: now,
+            disabled_at: None,
+        })?;
+        db.authentication().insert_bootstrap_credential(
+            &crate::authentication::BootstrapCredentialRecord {
+                credential_digest: digest_secret(credential),
+                user_id: Some("user".into()),
+                scope: "session".into(),
+                created_at: now,
+                expires_at: now + chrono::Duration::hours(1),
+                consumed_at: None,
+                revoked_at: None,
+            },
+        )?;
+
+        let session = exchange_bootstrap(&db, &AuthConfig::default(), credential, now)?;
+        assert_eq!(session.record.user_id, "user");
+        assert_eq!(session.record.auth_method, "bootstrap");
+        assert!(exchange_bootstrap(&db, &AuthConfig::default(), credential, now).is_err());
+        Ok(())
     }
 }
