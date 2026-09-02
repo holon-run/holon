@@ -327,7 +327,7 @@ pub async fn generic_webhook_requires_bearer_token_when_configured() -> Result<(
         .json(&serde_json::json!({ "status": "opened" }))
         .send()
         .await?;
-    assert_eq!(denied.status(), reqwest::StatusCode::FORBIDDEN);
+    assert_eq!(denied.status(), reqwest::StatusCode::UNAUTHORIZED);
     let denied_payload: serde_json::Value = denied.json().await?;
     assert_eq!(denied_payload["ok"], false);
     assert!(runtime.storage().read_recent_messages(10)?.is_empty());
