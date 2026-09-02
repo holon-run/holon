@@ -1,4 +1,5 @@
 use super::*;
+use url::Url;
 
 #[derive(Debug, Deserialize)]
 pub struct OidcCallbackQuery {
@@ -16,6 +17,23 @@ pub struct SessionResponse {
     ok: bool,
     expires_at: chrono::DateTime<Utc>,
     user_id: String,
+}
+
+fn session_cookie(state: &AppState, credential: &str) -> String {
+    let secure = state
+        .host
+        .config()
+        .auth
+        .oidc
+        .as_ref()
+        .and_then(|oidc| oidc.redirect_uri.as_deref())
+        .and_then(|redirect_uri| Url::parse(redirect_uri).ok())
+        .is_some_and(|redirect_uri| redirect_uri.scheme() == "https");
+    let secure_attribute = if secure { "; Secure" } else { "" };
+    format!(
+        "{}={}; Path=/; HttpOnly; SameSite=Lax{}",
+        SESSION_COOKIE_NAME, credential, secure_attribute
+    )
 }
 
 pub async fn start_oidc_login(
@@ -47,10 +65,7 @@ pub async fn complete_oidc_login(
         )
         .await
         .map_err(error_response)?;
-    let cookie = format!(
-        "{}={}; Path=/; HttpOnly; SameSite=Lax",
-        SESSION_COOKIE_NAME, session.credential
-    );
+    let cookie = session_cookie(&state, &session.credential);
     Ok((
         StatusCode::FOUND,
         [
@@ -78,10 +93,7 @@ pub async fn exchange_session(
         Utc::now(),
     )
     .map_err(error_response)?;
-    let cookie = format!(
-        "{}={}; Path=/; HttpOnly; SameSite=Lax",
-        SESSION_COOKIE_NAME, session.credential
-    );
+    let cookie = session_cookie(&state, &session.credential);
     Ok((
         StatusCode::OK,
         [(
