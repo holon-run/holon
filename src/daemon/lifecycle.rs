@@ -1,4 +1,5 @@
 use std::{
+    env,
     ffi::{OsStr, OsString},
     fs,
     future::Future,
@@ -32,12 +33,14 @@ use super::{
     RuntimeServiceMetadata, RuntimeStatusResponse, DAEMON_CONTROL_PROTOCOL_VERSION,
 };
 
-const START_TIMEOUT: Duration = Duration::from_secs(10);
+const DEFAULT_START_TIMEOUT: Duration = Duration::from_secs(60);
+const MAX_START_TIMEOUT_SECS: u64 = 24 * 60 * 60;
 const START_STABILITY_WINDOW: Duration = Duration::from_secs(2);
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 pub const PRE_SERVER_PREPARED_ENV: &str = "HOLON_PRE_SERVER_RUNTIME_PREPARED";
 pub const DAEMON_SERVE_ARGS_ENV: &str = "HOLON_DAEMON_SERVE_ARGS";
+pub const DAEMON_START_TIMEOUT_ENV: &str = "HOLON_DAEMON_START_TIMEOUT_SECS";
 const UNIX_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 
 pub(crate) fn web_url(http_addr: &str) -> String {
@@ -201,9 +204,20 @@ pub async fn daemon_start(
     serve_args: &[OsString],
     control_token_env: Option<&str>,
 ) -> Result<DaemonLifecycleResult> {
+    daemon_start_with_timeout(config, serve_args, control_token_env, None).await
+}
+
+pub async fn daemon_start_with_timeout(
+    config: &AppConfig,
+    serve_args: &[OsString],
+    control_token_env: Option<&str>,
+    start_timeout_secs: Option<u64>,
+) -> Result<DaemonLifecycleResult> {
     let _lock = lifecycle_lock(config).await?;
     persist_daemon_desired_running(config, true)?;
-    let mut result = daemon_start_unlocked(config, serve_args, control_token_env).await?;
+    let start_timeout = resolve_start_timeout(start_timeout_secs)?;
+    let mut result =
+        daemon_start_unlocked(config, serve_args, control_token_env, start_timeout).await?;
     result.status.desired_running = true;
     Ok(result)
 }
@@ -212,6 +226,7 @@ async fn daemon_start_unlocked(
     config: &AppConfig,
     serve_args: &[OsString],
     control_token_env: Option<&str>,
+    start_timeout: Duration,
 ) -> Result<DaemonLifecycleResult> {
     let current_fingerprint = config_fingerprint(config)?;
     match probe_runtime(config).await {
@@ -290,10 +305,10 @@ async fn daemon_start_unlocked(
     command.env(PRE_SERVER_PREPARED_ENV, "1");
     let mut child = command.spawn().context("failed to spawn 'holon serve'")?;
 
-    let deadline = tokio::time::Instant::now() + START_TIMEOUT;
+    let deadline = tokio::time::Instant::now() + start_timeout;
     loop {
         match probe_runtime(config).await {
-            ProbeRuntime::Running(status) => {
+            ProbeRuntime::Running(status) if status.healthy => {
                 if status.config_fingerprint != current_fingerprint {
                     let details = effective_config_mismatch_summary(config, &status);
                     best_effort_cleanup_spawned_start(config, &mut child).await;
@@ -343,6 +358,7 @@ async fn daemon_start_unlocked(
                     status: daemon_status(config).await?,
                 });
             }
+            ProbeRuntime::Running(_) => {}
             ProbeRuntime::Stopped { .. } => {}
             ProbeRuntime::Incompatible { details } => {
                 best_effort_cleanup_spawned_start(config, &mut child).await;
@@ -390,8 +406,9 @@ async fn daemon_start_unlocked(
                 &RuntimeFailureSummary {
                     occurred_at: Utc::now(),
                     summary: format!(
-                        "timed out waiting for runtime on {}",
-                        config.socket_path.display()
+                        "timed out waiting for healthy runtime on {} after {}s",
+                        config.socket_path.display(),
+                        start_timeout.as_secs()
                     ),
                     phase: RuntimeFailurePhase::Startup,
                     detail_hint: Some(daemon_log_hint()),
@@ -399,13 +416,30 @@ async fn daemon_start_unlocked(
                 },
             );
             return Err(anyhow!(
-                "timed out waiting for runtime on {}; {}",
+                "timed out waiting for healthy runtime on {} after {}s; {}",
                 config.socket_path.display(),
+                start_timeout.as_secs(),
                 daemon_log_hint()
             ));
         }
         tokio::time::sleep(POLL_INTERVAL).await;
     }
+}
+
+fn resolve_start_timeout(explicit_secs: Option<u64>) -> Result<Duration> {
+    let secs = explicit_secs
+        .or_else(|| {
+            env::var(DAEMON_START_TIMEOUT_ENV)
+                .ok()
+                .and_then(|value| value.parse().ok())
+        })
+        .unwrap_or(DEFAULT_START_TIMEOUT.as_secs());
+    if secs == 0 || secs > MAX_START_TIMEOUT_SECS {
+        return Err(anyhow!(
+            "daemon start timeout must be between 1 and {MAX_START_TIMEOUT_SECS} seconds"
+        ));
+    }
+    Ok(Duration::from_secs(secs))
 }
 
 pub fn prepare_runtime_before_server(config: &AppConfig) -> Result<()> {
@@ -617,6 +651,15 @@ pub async fn daemon_restart(
     serve_args: &[OsString],
     control_token_env: Option<&str>,
 ) -> Result<DaemonLifecycleResult> {
+    daemon_restart_with_timeout(config, serve_args, control_token_env, None).await
+}
+
+pub async fn daemon_restart_with_timeout(
+    config: &AppConfig,
+    serve_args: &[OsString],
+    control_token_env: Option<&str>,
+    start_timeout_secs: Option<u64>,
+) -> Result<DaemonLifecycleResult> {
     let _lock = lifecycle_lock(config).await?;
     persist_daemon_desired_running(config, true)?;
     match probe_runtime(config).await {
@@ -627,7 +670,9 @@ pub async fn daemon_restart(
             let _ = daemon_stop_unlocked(config).await?;
         }
     }
-    let mut started = daemon_start_unlocked(config, serve_args, control_token_env).await?;
+    let start_timeout = resolve_start_timeout(start_timeout_secs)?;
+    let mut started =
+        daemon_start_unlocked(config, serve_args, control_token_env, start_timeout).await?;
     started.status.desired_running = true;
     Ok(DaemonLifecycleResult {
         ok: true,

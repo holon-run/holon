@@ -24,9 +24,9 @@ use holon::{
     },
     config::{AgentTemplateRemoteSourceConfigFile, AgentTemplatesConfigFile},
     daemon::{
-        daemon_logs, daemon_prepare_update, daemon_restart, daemon_start, daemon_status,
-        daemon_stop, ensure_serve_preflight, prepare_runtime_before_server, RuntimeServiceHandle,
-        DAEMON_SERVE_ARGS_ENV, PRE_SERVER_PREPARED_ENV,
+        daemon_logs, daemon_prepare_update, daemon_restart_with_timeout, daemon_start_with_timeout,
+        daemon_status, daemon_stop, ensure_serve_preflight, prepare_runtime_before_server,
+        RuntimeServiceHandle, DAEMON_SERVE_ARGS_ENV, PRE_SERVER_PREPARED_ENV,
     },
     fd_limit::{apply_nofile_limit_policy, DEFAULT_NOFILE_TARGET},
     host::RuntimeHost,
@@ -865,6 +865,25 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
     }
 
     let host = RuntimeHost::new(config.clone())?;
+    let runtime_service = RuntimeServiceHandle::new_starting(&config)?;
+    #[cfg(unix)]
+    let unix_server = {
+        ensure_socket_parent(&config.socket_path)?;
+        let unix_listener = tokio::net::UnixListener::bind(&config.socket_path)
+            .with_context(|| format!("failed to bind {}", config.socket_path.display()))?;
+        runtime_service.write_state_files(&config)?;
+        println!("Holon control socket on {}", config.socket_path.display());
+        let unix_router = http::router(
+            AppState::for_unix_with_runtime_service(host.clone(), Some(runtime_service.clone()))
+                .with_web_dist(web_dist.clone()),
+        );
+        Some(tokio::spawn(http::serve_unix(
+            unix_listener,
+            unix_router,
+            runtime_service.shutdown_signal(),
+        )))
+    };
+
     host.recover_orphaned_queue_claims_at_startup().await?;
     let runtime = host.default_runtime().await?;
     host.spawn_daemon_memory_indexer();
@@ -872,7 +891,7 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
     host.spawn_daemon_deletion_coordinator();
     spawn_stale_agent_template_remote_source_sync(&config, &host);
     emit_first_run_intro(&config, &runtime).await;
-    let runtime_service = RuntimeServiceHandle::new(&config)?;
+    runtime_service.mark_healthy();
 
     let tcp_router = http::router(
         AppState::for_tcp_with_runtime_service(host.clone(), Some(runtime_service.clone()))
@@ -909,30 +928,34 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
 
     #[cfg(unix)]
     {
-        ensure_socket_parent(&config.socket_path)?;
-        let unix_listener = tokio::net::UnixListener::bind(&config.socket_path)
-            .with_context(|| format!("failed to bind {}", config.socket_path.display()))?;
-        runtime_service.write_state_files(&config)?;
-        println!("Holon control socket on {}", config.socket_path.display());
-        let unix_router = http::router(
-            AppState::for_unix_with_runtime_service(host.clone(), Some(runtime_service.clone()))
-                .with_web_dist(web_dist.clone()),
-        );
-        let tcp_server = axum::serve(listener, tcp_router)
-            .with_graceful_shutdown(wait_for_shutdown(runtime_service.shutdown_signal()));
-        let unix_server = http::serve_unix(
-            unix_listener,
-            unix_router,
-            runtime_service.shutdown_signal(),
-        );
+        let tcp_server = async {
+            axum::serve(listener, tcp_router)
+                .with_graceful_shutdown(wait_for_shutdown(runtime_service.shutdown_signal()))
+                .await
+                .context("TCP server failed")?;
+            Ok::<(), anyhow::Error>(())
+        };
+        let unix_server =
+            unix_server.expect("unix control server was initialized before runtime recovery");
+        let unix_server = async {
+            unix_server
+                .await
+                .context("unix control server task failed")??;
+            Ok::<(), anyhow::Error>(())
+        };
         let result = if let Some(local) = local_listener {
             let local_router = http::router(
                 AppState::for_tcp_with_runtime_service(host.clone(), Some(runtime_service.clone()))
                     .with_advertise_url(advertise_url.clone())
                     .with_web_dist(web_dist.clone()),
             );
-            let local_server = axum::serve(local, local_router)
-                .with_graceful_shutdown(wait_for_shutdown(runtime_service.shutdown_signal()));
+            let local_server = async {
+                axum::serve(local, local_router)
+                    .with_graceful_shutdown(wait_for_shutdown(runtime_service.shutdown_signal()))
+                    .await
+                    .context("localhost server failed")?;
+                Ok::<(), anyhow::Error>(())
+            };
             tokio::try_join!(tcp_server, unix_server, local_server)
                 .map(|_| ())
                 .context("runtime servers failed")
@@ -1231,7 +1254,7 @@ mod tests {
             "/tmp/holon.token",
         ]);
         let Commands::Daemon {
-            command: DaemonCommands::Start { options },
+            command: DaemonCommands::Start { options, .. },
         } = cli.command
         else {
             panic!("expected daemon start command");
@@ -3988,15 +4011,19 @@ fn format_duration_ms(duration_ms: u64) -> String {
 
 async fn handle_daemon_command(config: AppConfig, command: DaemonCommands) -> Result<()> {
     let value = match command {
-        DaemonCommands::Start { options } => {
+        DaemonCommands::Start {
+            options,
+            start_timeout,
+        } => {
             let mut config = config;
             let serve_launch = serve_args_for_options(&options);
             apply_serve_options(&mut config, options)?;
             serde_json::to_value(
-                daemon_start(
+                daemon_start_with_timeout(
                     &config,
                     &serve_launch.args,
                     serve_launch.control_token_env.as_deref(),
+                    start_timeout,
                 )
                 .await?,
             )?
@@ -4006,16 +4033,20 @@ async fn handle_daemon_command(config: AppConfig, command: DaemonCommands) -> Re
             serde_json::to_value(daemon_prepare_update(&config).await?)?
         }
         DaemonCommands::Status => serde_json::to_value(daemon_status(&config).await?)?,
-        DaemonCommands::Restart { options } => {
+        DaemonCommands::Restart {
+            options,
+            start_timeout,
+        } => {
             let mut config = config;
             let metadata = holon::daemon::load_daemon_metadata(&config)?;
             let serve_launch =
                 restart_serve_launch_options(&mut config, options, metadata.as_ref())?;
             serde_json::to_value(
-                daemon_restart(
+                daemon_restart_with_timeout(
                     &config,
                     &serve_launch.args,
                     serve_launch.control_token_env.as_deref(),
+                    start_timeout,
                 )
                 .await?,
             )?

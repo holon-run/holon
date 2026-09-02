@@ -18,7 +18,7 @@ axum = { version = "0.8", features = ["json"] }
 base64 = "0.22"
 arc-swap = "1.7"
 chrono = { version = "0.4", features = ["serde"] }
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.5", features = ["derive", "env"] }
 crossterm = "0.28"
 encoding_rs = "0.8"
 hyper = { version = "1.5", features = ["server", "http1", "http2"] }
