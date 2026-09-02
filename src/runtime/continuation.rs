@@ -1,3 +1,4 @@
+use super::wake_matching::{resolve_resume_authorization, ResumeAuthorization};
 use crate::types::{
     admission_trigger_kind_for_message_kind, ClosureDecision, ClosureOutcome, ContinuationClass,
     ContinuationResolution, ContinuationTriggerKind, MessageBody, MessageEnvelope, MessageKind,
@@ -116,6 +117,14 @@ pub(super) fn resolve_continuation(
         }
         (Some(t), Some(a)) => t == a,
     };
+    let authorization = resolve_resume_authorization(
+        prior.outcome,
+        prior_waiting_reason,
+        trigger.kind,
+        trigger.contentful,
+        trigger.task_result_outcome,
+        same_work_item,
+    );
     let mut evidence = Vec::new();
     evidence.push(format!("trigger_kind={}", enum_label(trigger.kind)));
     if trigger.contentful {
@@ -130,49 +139,49 @@ pub(super) fn resolve_continuation(
     if trigger.exact_task_wait {
         evidence.push("exact_task_wait".to_string());
     }
+    if authorization.matched_waiting_reason {
+        evidence.push("matches_waiting_reason".to_string());
+    } else {
+        evidence.push("does_not_satisfy_waiting_reason".to_string());
+    }
     if let Some(source) = trigger.wake_hint_source.as_ref() {
         evidence.push(format!("wake_hint_source={source}"));
     }
-
-    let prior_closure_outcome = prior.outcome;
-
-    if prior.outcome == ClosureOutcome::Waiting {
-        return resolve_waiting(
-            prior_waiting_reason,
-            prior_closure_outcome,
-            trigger,
-            same_work_item,
-            evidence,
-        );
+    match authorization.authorization {
+        ResumeAuthorization::ExpectedWait => {
+            evidence.push("resume_authorization=expected_wait".into())
+        }
+        ResumeAuthorization::RuntimeEventReentry => {
+            evidence.push("resume_authorization=runtime_event_reentry".into())
+        }
+        ResumeAuthorization::Override => evidence.push("resume_authorization=override".into()),
+        ResumeAuthorization::LocalContinuation => {
+            evidence.push("resume_authorization=local_continuation".into())
+        }
+        ResumeAuthorization::LivenessOnly => {
+            evidence.push("resume_authorization=liveness_only".into())
+        }
     }
-
-    let terminal_task_result = trigger.kind == ContinuationTriggerKind::TaskResult
-        && trigger.task_result_outcome.is_some()
-        && same_work_item;
-    let model_reentry = terminal_task_result
-        || matches!(
-            trigger.kind,
-            ContinuationTriggerKind::OperatorInput
-                | ContinuationTriggerKind::TimerFire
-                | ContinuationTriggerKind::InternalFollowup
-        )
-        || ((trigger.kind == ContinuationTriggerKind::ExternalEvent
-            || trigger.kind == ContinuationTriggerKind::SystemTick)
-            && trigger.contentful);
-    let class = if terminal_task_result {
-        ContinuationClass::TaskResultReentry
-    } else if model_reentry {
-        ContinuationClass::LocalContinuation
-    } else {
-        ContinuationClass::LivenessOnly
+    let class = match authorization.authorization {
+        ResumeAuthorization::ExpectedWait => ContinuationClass::ResumeExpectedWait,
+        ResumeAuthorization::RuntimeEventReentry => {
+            if prior.outcome == ClosureOutcome::Waiting {
+                ContinuationClass::ResumeOverride
+            } else {
+                ContinuationClass::TaskResultReentry
+            }
+        }
+        ResumeAuthorization::Override => ContinuationClass::ResumeOverride,
+        ResumeAuthorization::LocalContinuation => ContinuationClass::LocalContinuation,
+        ResumeAuthorization::LivenessOnly => ContinuationClass::LivenessOnly,
     };
     ContinuationResolution {
         trigger_kind: trigger.kind,
         class,
-        model_reentry,
-        prior_closure_outcome,
+        model_reentry: authorization.model_reentry,
+        prior_closure_outcome: prior.outcome,
         prior_waiting_reason,
-        matched_waiting_reason: false,
+        matched_waiting_reason: authorization.matched_waiting_reason,
         evidence,
     }
 }
@@ -182,120 +191,6 @@ fn enum_label<T: serde::Serialize + std::fmt::Debug>(value: T) -> String {
         .ok()
         .and_then(|value| value.as_str().map(ToString::to_string))
         .unwrap_or_else(|| format!("{value:?}").to_lowercase())
-}
-
-fn resolve_waiting(
-    prior_waiting_reason: Option<WaitingReason>,
-    prior_closure_outcome: ClosureOutcome,
-    trigger: &ContinuationTrigger,
-    same_work_item: bool,
-    mut evidence: Vec<String>,
-) -> ContinuationResolution {
-    let reason = prior_waiting_reason;
-    let expected = matches!(
-        (reason, trigger.kind),
-        (
-            Some(WaitingReason::AwaitingOperatorInput),
-            ContinuationTriggerKind::OperatorInput
-        ) | (
-            Some(WaitingReason::AwaitingTaskResult),
-            ContinuationTriggerKind::TaskResult
-        ) | (
-            Some(WaitingReason::AwaitingExternalChange),
-            ContinuationTriggerKind::ExternalEvent
-        ) | (
-            Some(WaitingReason::AwaitingExternalChange),
-            ContinuationTriggerKind::SystemTick
-        ) | (
-            Some(WaitingReason::AwaitingTimer),
-            ContinuationTriggerKind::TimerFire
-        )
-    );
-    let override_allowed = trigger.kind == ContinuationTriggerKind::OperatorInput;
-    if expected {
-        let model_reentry = match trigger.kind {
-            ContinuationTriggerKind::TaskResult => {
-                trigger.task_result_outcome.is_some() && same_work_item
-            }
-            ContinuationTriggerKind::ExternalEvent => trigger.contentful,
-            ContinuationTriggerKind::SystemTick => trigger.contentful,
-            _ => true,
-        };
-        evidence.push("matches_waiting_reason".to_string());
-        return ContinuationResolution {
-            trigger_kind: trigger.kind,
-            class: if model_reentry {
-                ContinuationClass::ResumeExpectedWait
-            } else {
-                ContinuationClass::LivenessOnly
-            },
-            model_reentry,
-            prior_closure_outcome,
-            prior_waiting_reason,
-            matched_waiting_reason: true,
-            evidence,
-        };
-    }
-
-    if override_allowed {
-        evidence.push("override_waiting_reason".to_string());
-        return ContinuationResolution {
-            trigger_kind: trigger.kind,
-            class: ContinuationClass::ResumeOverride,
-            model_reentry: true,
-            prior_closure_outcome,
-            prior_waiting_reason,
-            matched_waiting_reason: false,
-            evidence,
-        };
-    }
-
-    if trigger.kind == ContinuationTriggerKind::SystemTick && trigger.contentful {
-        evidence.push("contentful_system_tick_expected_external_recheck".to_string());
-        let matched_waiting_reason = reason == Some(WaitingReason::AwaitingExternalChange);
-        return ContinuationResolution {
-            trigger_kind: trigger.kind,
-            class: if matched_waiting_reason {
-                ContinuationClass::ResumeExpectedWait
-            } else {
-                ContinuationClass::LivenessOnly
-            },
-            model_reentry: matched_waiting_reason,
-            prior_closure_outcome,
-            prior_waiting_reason,
-            matched_waiting_reason,
-            evidence,
-        };
-    }
-
-    if trigger.kind == ContinuationTriggerKind::TaskResult
-        && trigger.task_result_outcome.is_some()
-        && same_work_item
-    {
-        // Terminal task state is persisted before TaskResult enqueue, so
-        // resuming here cannot reopen the stale active-task wait that just ended.
-        evidence.push("terminal_task_result".to_string());
-        return ContinuationResolution {
-            trigger_kind: trigger.kind,
-            class: ContinuationClass::ResumeOverride,
-            model_reentry: true,
-            prior_closure_outcome,
-            prior_waiting_reason,
-            matched_waiting_reason: false,
-            evidence,
-        };
-    }
-
-    evidence.push("does_not_satisfy_waiting_reason".to_string());
-    ContinuationResolution {
-        trigger_kind: trigger.kind,
-        class: ContinuationClass::LivenessOnly,
-        model_reentry: false,
-        prior_closure_outcome,
-        prior_waiting_reason,
-        matched_waiting_reason: false,
-        evidence,
-    }
 }
 
 fn body_is_contentful(body: &MessageBody) -> bool {
