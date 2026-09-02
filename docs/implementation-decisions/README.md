@@ -115,3 +115,4 @@ Current decision notes:
 - [115 macOS Menu App Keeps Standalone Daemon](./115-macos-menu-app-keeps-standalone-daemon.md)
 - [116 Universal macOS App DMG](./116-universal-macos-app-dmg.md)
 - [118 Explicit models.dev Provider Mapping](./118-explicit-models-dev-provider-mapping.md)
+- [119 models.dev Supplemental Catalog](./119-models-dev-supplemental-catalog.md)

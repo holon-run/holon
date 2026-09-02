@@ -1787,9 +1787,50 @@ impl RuntimeHandle {
             )
             .await?;
         self.append_state_changed_events(&state)?;
+        if sleeping_until.is_none() {
+            self.observe_indefinite_sleep_without_wake_source(&state)?;
+        }
         if let (Some(duration_ms), Some(sleeping_until)) = (duration_ms, sleeping_until) {
             self.spawn_session_sleep_wake(duration_ms, sleeping_until);
         }
+        Ok(())
+    }
+
+    fn observe_indefinite_sleep_without_wake_source(&self, state: &AgentState) -> Result<()> {
+        let projection = scheduler::SchedulerProjection::from_state(&self.inner.storage, state)?;
+        let has_runnable_work = projection.work_reactivation_signal().is_some();
+        let has_queue_entries = projection.queue_len > 0 || projection.queued_work_items > 0;
+        let has_pending_task = !projection.active_tasks.is_empty();
+        let has_wake_source = has_queue_entries
+            || has_runnable_work
+            || projection.active_waiting_intents > 0
+            || has_pending_task
+            || projection.active_timers > 0
+            || projection.pending_wake_hint
+            || projection.has_interrupted_replay;
+        if state.status != AgentStatus::Asleep || state.sleeping_until.is_some() || has_wake_source
+        {
+            return Ok(());
+        }
+
+        self.inner.storage.append_event(&AuditEvent::legacy(
+            "orphan_sleep_observed",
+            serde_json::json!({
+                "agent_id": state.id,
+                "sleeping_until": state.sleeping_until,
+                "evidence": [
+                    "indefinite_sleep".to_string(),
+                    "queue_len=0".to_string(),
+                    "queued_work_items=0".to_string(),
+                    "active_waiting_intents=0".to_string(),
+                    "active_tasks=0".to_string(),
+                    "active_timers=0".to_string(),
+                    "pending_wake_hint=false".to_string(),
+                    "has_interrupted_replay=false".to_string(),
+                ],
+                "severity": "warning",
+            }),
+        ))?;
         Ok(())
     }
 

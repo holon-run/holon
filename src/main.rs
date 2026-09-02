@@ -306,6 +306,7 @@ fn runtime_command_uses_config_inspection(command: &Commands) -> bool {
                     | DebugCommands::SchedulerRecoveryFixture { .. }
                     | DebugCommands::SchedulerRestartFixture { .. }
             }
+            | Commands::ModelsDev { .. }
     )
 }
 
@@ -3089,13 +3090,15 @@ async fn handle_models_dev_command(command: ModelsDevCommands) -> Result<()> {
     match command {
         ModelsDevCommands::Refresh { url, output_dir } => {
             println!("Fetching models.dev snapshot from {url} …");
-            let response = reqwest::blocking::get(&url)
+            let response = reqwest::get(&url)
+                .await
                 .map_err(|e| anyhow!("failed to fetch models.dev snapshot: {e}"))?;
             if !response.status().is_success() {
                 anyhow::bail!("models.dev fetch returned status {}", response.status());
             }
             let raw_json = response
                 .text()
+                .await
                 .map_err(|e| anyhow!("failed to read models.dev response: {e}"))?;
             let fetched_at = chrono::Utc::now().to_rfc3339();
             let sha = sha2::Sha256::digest(raw_json.as_bytes());
@@ -3123,10 +3126,47 @@ async fn handle_models_dev_command(command: ModelsDevCommands) -> Result<()> {
             std::fs::write(&artifact_path, &artifact_json)
                 .map_err(|e| anyhow!("failed to write artifact: {e}"))?;
 
-            let report = audit_mappings(
-                &parse_snapshot(&raw_json).map_err(|e| anyhow!("parse error: {e}"))?,
-                &ProviderMapping::default_mappings(),
-            );
+            let parsed_snapshot =
+                parse_snapshot(&raw_json).map_err(|e| anyhow!("parse error: {e}"))?;
+            let report = audit_mappings(&parsed_snapshot, &ProviderMapping::default_mappings());
+
+            // Draft the supplemental catalog for allowlisted providers.
+            let supplement_path = output_dir.join("supplemental_catalog.json");
+            let previous_supplement = match std::fs::read_to_string(&supplement_path) {
+                Ok(raw) => Some(
+                    holon::model_catalog::models_dev::ModelsDevSupplement::parse(&raw)
+                        .map_err(|e| anyhow!("previous supplement invalid: {e}"))?,
+                ),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+                Err(err) => {
+                    return Err(anyhow!("failed to read previous supplement: {err}"));
+                }
+            };
+            let legacy = holon::model_catalog::legacy_builtin_catalog()
+                .map_err(|e| anyhow!("built-in catalog invalid: {e}"))?;
+            let cutoff = (chrono::Utc::now().date_naive()
+                - chrono::Duration::days(holon::model_catalog::models_dev::RECENCY_WINDOW_DAYS))
+            .format("%Y-%m-%d")
+            .to_string();
+            let update = holon::model_catalog::models_dev::supplement::generate(
+                &parsed_snapshot,
+                previous_supplement.as_ref(),
+                &legacy,
+                &cutoff,
+                &upstream_revision,
+                env!("HOLON_VERSION"),
+            )
+            .map_err(|e| anyhow!("supplement generation failed: {e}"))?;
+            let supplement_json = update
+                .supplement
+                .to_json()
+                .map_err(|e| anyhow!("failed to serialize supplement: {e}"))?;
+            std::fs::write(&supplement_path, format!("{supplement_json}\n"))
+                .map_err(|e| anyhow!("failed to write supplement: {e}"))?;
+            let summary = holon::model_catalog::models_dev::render_summary_markdown(&update);
+            let summary_path = output_dir.join("refresh-summary.md");
+            std::fs::write(&summary_path, &summary)
+                .map_err(|e| anyhow!("failed to write refresh summary: {e}"))?;
 
             println!("Snapshot  → {}", snapshot_path.display());
             println!(
@@ -3140,6 +3180,16 @@ async fn handle_models_dev_command(command: ModelsDevCommands) -> Result<()> {
                 report.unmapped_upstream.len()
             );
             println!("Stale     → {} Holon mappings", report.stale_holon.len());
+            println!(
+                "Supplement→ {} ({} models: {} drafted, {} retained, {} removed, {} deferred)",
+                supplement_path.display(),
+                update.supplement.models.len(),
+                update.drafted.len(),
+                update.retained.len(),
+                update.removed.len(),
+                update.deferred.len()
+            );
+            println!("Summary   → {}", summary_path.display());
             if !report.stale_holon.is_empty() {
                 eprintln!("WARNING: stale mappings (models.dev ID not in snapshot):");
                 for entry in &report.stale_holon {
@@ -3176,6 +3226,20 @@ async fn handle_models_dev_command(command: ModelsDevCommands) -> Result<()> {
                     "WARNING: {} stale mapping(s) need attention",
                     report.stale_holon.len()
                 );
+            }
+            let supplement_path = input_dir.join("supplemental_catalog.json");
+            if supplement_path.exists() {
+                let raw = std::fs::read_to_string(&supplement_path)
+                    .map_err(|e| anyhow!("failed to read supplement: {e}"))?;
+                let supplement = holon::model_catalog::models_dev::ModelsDevSupplement::parse(&raw)
+                    .map_err(|e| anyhow!("supplement validation failed: {e}"))?;
+                let legacy = holon::model_catalog::legacy_builtin_catalog()
+                    .map_err(|e| anyhow!("built-in catalog invalid: {e}"))?;
+                let mut catalog = legacy.clone();
+                supplement
+                    .apply_to(&mut catalog)
+                    .map_err(|e| anyhow!("supplement validation failed: {e}"))?;
+                println!("Supplement valid ({} models)", supplement.models.len());
             }
             Ok(())
         }

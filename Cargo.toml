@@ -2,6 +2,7 @@
 name = "holon"
 version = "0.35.0"
 edition = "2021"
+default-run = "holon"
 authors = ["Holon Contributors"]
 description = "A headless, event-driven runtime for long-lived agents"
 license = "Apache-2.0"

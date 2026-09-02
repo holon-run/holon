@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - "models.dev/**"
+      - "src/model_catalog.rs"
+      - "src/model_catalog/snapshot.rs"
       - "src/model_catalog/models_dev/**"
       - "src/provider/registry/providers.rs"
       - "tests/models_dev_adapter.rs"

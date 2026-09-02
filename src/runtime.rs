@@ -26,6 +26,7 @@ mod test_util;
 mod turn;
 mod unsettled_claim;
 mod waiting;
+mod wake_matching;
 pub(crate) mod workspace;
 pub(crate) mod workspace_control;
 mod worktree;

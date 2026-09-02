@@ -15,20 +15,23 @@
 //!   (upstream revision, content SHA-256, adapter version).
 //! - [`mapping`] defines the versioned, Holon-owned provider mapping manifest
 //!   schema that connects `models.dev` provider IDs to Holon route identities.
+//! - [`supplement`] drafts new models for already-supported providers into a
+//!   checked-in supplemental catalog that the runtime merges after review.
 //! - [`validation`] validates a manifest against Holon's built-in provider
 //!   definitions and optionally a `models.dev` snapshot, producing a
 //!   deterministic report with rejection diagnostics.
 //! - [`audit_mappings`] compares provider mappings against a live snapshot
 //!   to surface unmapped upstream providers and stale Holon mappings.
 //!
-//! The runtime does not consume `models.dev` directly. CI uses this module
-//! to generate an immutable artifact that enters Holon through review and
-//! merge.
+//! The runtime never fetches `models.dev` at run time. CI uses this module
+//! to generate an immutable artifact and a supplemental catalog draft; both
+//! enter Holon through review and merge.
 
 pub mod artifact;
 pub mod dto;
 pub mod mapping;
 pub mod projection;
+pub mod supplement;
 pub mod validation;
 
 pub use artifact::{
@@ -45,6 +48,10 @@ pub use mapping::{
     MAPPING_SCHEMA_VERSION,
 };
 pub use projection::{ProjectedModel, ProjectionResult, Projector, ProviderMapping, UnmappedModel};
+pub use supplement::{
+    render_summary_markdown, DeferredModel, DeferredReason, ModelsDevSupplement, RemovalReason,
+    RemovedModel, SupplementUpdate, AUTO_SUPPLEMENT_PROVIDERS, RECENCY_WINDOW_DAYS,
+};
 pub use validation::{ValidationEngine, ValidationEntry, ValidationReport, ValidationSeverity};
 
 /// Parses a `models.dev` JSON snapshot from raw bytes.

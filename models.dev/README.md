@@ -10,6 +10,11 @@ artifact generated from it.
 - `artifact.json` — Holon canonical model metadata projected from the
   snapshot using the explicit provider mapping in
   `src/model_catalog/models_dev/projection.rs`.
+- `supplemental_catalog.json` — auto-drafted catalog entries for
+  already-supported providers (see below). The runtime merges it into the
+  built-in catalog after review.
+- `refresh-summary.md` — human-readable summary of the latest refresh:
+  drafted, retained, removed, and deferred models.
 
 ## Refresh
 
@@ -17,10 +22,11 @@ artifact generated from it.
 cargo run -- models-dev refresh
 ```
 
-This fetches the live `models.dev` snapshot, regenerates the artifact, and
-prints a provider mapping audit summary. The GitHub Actions workflow
-`models-dev-refresh.yml` runs this weekly and opens a PR when the snapshot
-or artifact changes.
+This fetches the live `models.dev` snapshot, regenerates the artifact,
+drafts the supplemental catalog, and prints a provider mapping audit
+summary. The GitHub Actions workflow `models-dev-refresh.yml` runs this
+weekly and opens a PR (with the refresh summary as the PR body) when
+anything under `models.dev/` changes.
 
 ## Validate
 
