@@ -326,17 +326,19 @@ jobs:
         run: |
           set -euo pipefail
           cat > release-notes.md <<EOF
-          This release ships the macOS menu bar application as a universal DMG that runs natively on Apple Silicon and Intel Macs, with stronger daemon lifecycle compatibility, explicit activation and Turn ownership, a versioned model registry snapshot, and more reliable WorkItem-bound operator waits.
+          This release introduces the models.dev-backed provider mapping system — upstream adapter, projection, and artifact generation, an explicit mapping manifest with a validation engine and Anthropic and DeepSeek baselines, plus an audit CLI with refresh and validate workflows — alongside web GUI improvements including an expanded fullscreen mode for the right side panel. Runtime correctness work preserves semantic recent-turn projection and canonical AgentLifecycle binding ownership, reliably re-enters terminal task results, admits authenticated low-authority operator prompts, and respects the standard Retry-After header in provider retries.
 
           Supported binary assets for this release are Linux amd64, macOS amd64, and macOS arm64. The macOS app DMG is a universal binary supporting both x86_64 and arm64. The Linux amd64 binary supports Ubuntu 22.04 or newer (glibc 2.35 or newer).
 
           ## Changes
 
-          - Add the native macOS menu bar application with daemon lifecycle compatibility, Sparkle update support, signed DMG packaging, and appcast generation ([#2701](https://github.com/holon-run/holon/pull/2701), [#2705](https://github.com/holon-run/holon/pull/2705), [#2707](https://github.com/holon-run/holon/pull/2707)).
-          - Introduce explicit activation and Turn owner identity, add a versioned model registry snapshot, and make WorkItem-bound operator waits resume reliably ([#2703](https://github.com/holon-run/holon/pull/2703), [#2704](https://github.com/holon-run/holon/pull/2704), [#2708](https://github.com/holon-run/holon/pull/2708), [#2709](https://github.com/holon-run/holon/pull/2709)).
-          - Re-enter the model for terminal task results so terminal command-task and delegated-agent results reliably resume their owning conversation ([#2714](https://github.com/holon-run/holon/pull/2714)).
-          - Harden release automation with strict tag/version verification, resilient Release E2E turn-record imports, and macOS notarization diagnostics ([#2711](https://github.com/holon-run/holon/pull/2711), [#2712](https://github.com/holon-run/holon/pull/2712)).
-          - Ship the macOS app DMG as a universal binary supporting both Apple Silicon and Intel Macs, publish the signed Sparkle appcast with the release archives, and re-sign Sparkle helper executables before notarization ([#2716](https://github.com/holon-run/holon/pull/2716), [#2717](https://github.com/holon-run/holon/pull/2717), [#2718](https://github.com/holon-run/holon/pull/2718)).
+          - Introduce the models.dev provider mapping system with an upstream adapter, projection, and artifact generation, and define the explicit mapping design ([#2721](https://github.com/holon-run/holon/pull/2721), [#2725](https://github.com/holon-run/holon/pull/2725)).
+          - Add the provider mapping manifest, validation engine, and Anthropic baseline; add the DeepSeek OpenAI-compatible baseline; add the mapping audit CLI with refresh and validate workflows ([#2726](https://github.com/holon-run/holon/pull/2726), [#2729](https://github.com/holon-run/holon/pull/2729), [#2731](https://github.com/holon-run/holon/pull/2731), [#2733](https://github.com/holon-run/holon/pull/2733)).
+          - Add an expanded fullscreen mode to the web GUI right side panel and render the model menu through a fixed-position portal to escape overflow clipping ([#2727](https://github.com/holon-run/holon/pull/2727), [#2728](https://github.com/holon-run/holon/pull/2728)).
+          - Preserve semantic recent-turn projection and canonical AgentLifecycle binding ownership, with owner-centered projection continuity test coverage ([#2723](https://github.com/holon-run/holon/pull/2723), [#2724](https://github.com/holon-run/holon/pull/2724), [#2730](https://github.com/holon-run/holon/pull/2730), [#2734](https://github.com/holon-run/holon/pull/2734)).
+          - Re-enter the model on unbound terminal task results so terminal command-task and delegated-agent results reliably resume their owning conversation, and admit authenticated low-authority operator prompts ([#2738](https://github.com/holon-run/holon/pull/2738), [#2736](https://github.com/holon-run/holon/pull/2736)).
+          - Respect the standard Retry-After header in provider retries and decouple the code review skill from the GitHub adapter ([#2722](https://github.com/holon-run/holon/pull/2722), [#2739](https://github.com/holon-run/holon/pull/2739)).
+          - Polish the macOS DMG with a baked-in drag-to-Applications Finder layout and harden its packaging script CI.
 
           ## Install
 
