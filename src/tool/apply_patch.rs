@@ -961,6 +961,7 @@ async fn apply_file_patches(
                         trailing_newline: false,
                     },
                     &patch.hunks,
+                    &mut diagnostics,
                 )?;
                 state.insert(target, Some(updated));
                 changed_files.push(apply_patch_changed_file(
@@ -976,7 +977,7 @@ async fn apply_file_patches(
                     .await?
                     .ok_or_else(|| missing_file("delete", path, &target, workspace_root))?;
                 if !patch.hunks.is_empty() {
-                    let _ = apply_hunks(path, existing, &patch.hunks)?;
+                    let _ = apply_hunks(path, existing, &patch.hunks, &mut diagnostics)?;
                 }
                 state.insert(target, None);
                 changed_files.push(apply_patch_changed_file(
@@ -991,7 +992,7 @@ async fn apply_file_patches(
                 let existing = load_state(&target, &mut state, &mut originals)
                     .await?
                     .ok_or_else(|| missing_file("update", path, &target, workspace_root))?;
-                let updated = apply_hunks(path, existing, &patch.hunks)?;
+                let updated = apply_hunks(path, existing, &patch.hunks, &mut diagnostics)?;
                 state.insert(target, Some(updated));
                 changed_files.push(apply_patch_changed_file(
                     ApplyPatchAction::Modify,
@@ -1015,7 +1016,7 @@ async fn apply_file_patches(
                     return Err(existing_file(to));
                 }
                 let final_state = if with_edit {
-                    apply_hunks(from, existing, &patch.hunks)?
+                    apply_hunks(from, existing, &patch.hunks, &mut diagnostics)?
                 } else {
                     existing
                 };
@@ -1235,32 +1236,111 @@ async fn load_state(
     Ok(loaded)
 }
 
-fn apply_hunks(path: &str, mut state: FileState, hunks: &[PatchHunk]) -> Result<FileState> {
+fn old_block_of(lines: &[HunkLine]) -> Vec<String> {
+    lines
+        .iter()
+        .filter(|line| line.kind != HunkLineKind::Add)
+        .map(|line| line.text.clone())
+        .collect()
+}
+
+fn new_block_of(lines: &[HunkLine]) -> Vec<String> {
+    lines
+        .iter()
+        .filter(|line| line.kind != HunkLineKind::Remove)
+        .map(|line| line.text.clone())
+        .collect()
+}
+
+/// #2439: build an alternative hunk-line set with doubled diff-marker
+/// prefixes stripped (`-- text` as Remove of `text`, `+- text` / `++ text`
+/// as Add of `text`). Returns `None` when nothing changes, so strict
+/// interpretation keeps priority.
+fn doubled_prefix_alternative(lines: &[HunkLine]) -> Option<Vec<HunkLine>> {
+    let mut changed = false;
+    let mut alternative = Vec::with_capacity(lines.len());
+    for line in lines {
+        match line.kind {
+            HunkLineKind::Remove if line.text.starts_with("- ") => {
+                alternative.push(HunkLine {
+                    kind: HunkLineKind::Remove,
+                    text: line.text["- ".len()..].to_string(),
+                });
+                changed = true;
+            }
+            HunkLineKind::Add if line.text.starts_with("- ") || line.text.starts_with("+ ") => {
+                let text = if let Some(rest) = line.text.strip_prefix("+ ") {
+                    rest.to_string()
+                } else {
+                    line.text["- ".len()..].to_string()
+                };
+                alternative.push(HunkLine {
+                    kind: HunkLineKind::Add,
+                    text,
+                });
+                changed = true;
+            }
+            _ => alternative.push(line.clone()),
+        }
+    }
+    if changed {
+        Some(alternative)
+    } else {
+        None
+    }
+}
+
+fn apply_hunks(
+    path: &str,
+    mut state: FileState,
+    hunks: &[PatchHunk],
+    diagnostics: &mut Vec<ApplyPatchDiagnostic>,
+) -> Result<FileState> {
     for hunk in hunks {
-        let old_block = hunk
-            .lines
-            .iter()
-            .filter(|line| line.kind != HunkLineKind::Add)
-            .map(|line| line.text.clone())
-            .collect::<Vec<_>>();
-        let mut new_block = hunk
-            .lines
-            .iter()
-            .filter(|line| line.kind != HunkLineKind::Remove)
-            .map(|line| line.text.clone())
-            .collect::<Vec<_>>();
+        let mut effective_lines = hunk.lines.clone();
+        let mut old_block = old_block_of(&effective_lines);
+        let mut new_block = new_block_of(&effective_lines);
 
         let index = if old_block.is_empty() {
             hunk.old_start.saturating_sub(1).min(state.lines.len())
         } else {
-            let m = find_unique_match(path, &state.lines, &old_block, hunk.old_start)?;
+            let m = match find_unique_match(path, &state.lines, &old_block, hunk.old_start) {
+                Ok(m) => m,
+                // #2439: DSL-style doubled prefixes (`-- x`, `+- x`) parse as
+                // Remove/Add of `- x`. When strict matching fails, retry once
+                // with the doubled marker stripped. Legitimate edits of
+                // marker-initial content (`-- item` removing `- item`) still
+                // match strictly first, so they are unaffected.
+                Err(strict_error) => {
+                    let alternative = doubled_prefix_alternative(&hunk.lines)
+                        .filter(|alt| old_block_of(alt) != old_block);
+                    match alternative.and_then(|alt| {
+                        find_unique_match(path, &state.lines, &old_block_of(&alt), hunk.old_start)
+                            .ok()
+                            .map(|m| (alt, m))
+                    }) {
+                        Some((alt, m)) => {
+                            diagnostics.push(ApplyPatchDiagnostic {
+                                path: path.to_string(),
+                                kind: "double_prefix_reinterpreted".to_string(),
+                                message: "hunk context matched only after stripping a doubled diff-marker prefix (e.g. `-- text` treated as removing `text`); keep diff markers single-character unless the target line itself starts with the marker".to_string(),
+                            });
+                            effective_lines = alt;
+                            old_block = old_block_of(&effective_lines);
+                            new_block = new_block_of(&effective_lines);
+                            m
+                        }
+                        None => return Err(strict_error),
+                    }
+                }
+            };
             if m.relaxed_level.is_some() {
                 // Relaxed match: rebuild new_block so context lines use the
                 // file's actual content, preserving whitespace exactly.
                 // Added lines keep LLM content; removed lines advance offset.
                 let mut rebuilt = Vec::with_capacity(new_block.len());
                 let mut file_offset = 0usize;
-                for line in &hunk.lines {
+                for line in &effective_lines {
                     match line.kind {
                         HunkLineKind::Context => {
                             rebuilt.push(state.lines[m.index + file_offset].clone());
@@ -1562,6 +1642,50 @@ fn unsupported_git_patch_feature(line: &str, path: Option<&str>) -> anyhow::Erro
     )
 }
 
+struct ContextCandidate {
+    start: usize,
+    matched: usize,
+}
+
+/// #2741: find the position whose following lines share the longest exact
+/// prefix with `needle`; ties prefer the position closest to `hint`. Only
+/// runs on the failure path, and positions whose first line differs are
+/// skipped in O(1).
+fn best_context_candidate(
+    lines: &[String],
+    needle: &[String],
+    hint: usize,
+) -> Option<ContextCandidate> {
+    if lines.is_empty() || needle.is_empty() {
+        return None;
+    }
+    let hint_index = hint.saturating_sub(1);
+    let mut best: Option<ContextCandidate> = None;
+    for start in 0..lines.len() {
+        if lines[start] != needle[0] {
+            continue;
+        }
+        let limit = (lines.len() - start).min(needle.len());
+        let mut matched = 0usize;
+        while matched < limit && lines[start + matched] == needle[matched] {
+            matched += 1;
+        }
+        let closer_to_hint = |candidate: usize| candidate.abs_diff(hint_index);
+        let better = match &best {
+            None => true,
+            Some(current) => {
+                matched > current.matched
+                    || (matched == current.matched
+                        && closer_to_hint(start) < closer_to_hint(current.start))
+            }
+        };
+        if better {
+            best = Some(ContextCandidate { start, matched });
+        }
+    }
+    best
+}
+
 fn context_not_found(
     path: &str,
     needle: &[String],
@@ -1569,8 +1693,18 @@ fn context_not_found(
     hint: usize,
 ) -> anyhow::Error {
     let hint_index = hint.saturating_sub(1).min(lines.len().saturating_sub(1));
+    let candidate = best_context_candidate(lines, needle, hint);
+    let divergence_index = candidate
+        .as_ref()
+        .map(|candidate| candidate.start + candidate.matched);
     let (window_start, window_end) = if lines.is_empty() {
         (0, 0)
+    } else if hint <= 1 && divergence_index.is_some() {
+        // #2741 A2: a hunk without a usable line number (DSL hunks declare
+        // old_start=1) used to always show the file head nearby. Center the
+        // window on the best candidate's divergence point instead.
+        let index = divergence_index.unwrap_or_default();
+        (index.saturating_sub(5), (index + 6).min(lines.len()))
     } else {
         let window_start = hint_index.saturating_sub(5);
         let window_end = (hint_index + 6).min(lines.len());
@@ -1610,16 +1744,53 @@ fn context_not_found(
         },
         "nearby_lines": nearby_lines,
     });
+    let mut divergence_note = String::new();
+    if let Some(candidate) = &candidate {
+        let divergence_index = candidate.start + candidate.matched;
+        let expected: Vec<&String> = needle.iter().skip(candidate.matched).take(3).collect();
+        let actual: Vec<&String> = lines
+            .get(divergence_index..(divergence_index + 3).min(lines.len()))
+            .unwrap_or(&[])
+            .iter()
+            .collect();
+        let expected_preview = needle.get(candidate.matched).cloned().unwrap_or_default();
+        let actual_preview = lines
+            .get(divergence_index)
+            .cloned()
+            .unwrap_or_else(|| "<end of file>".to_string());
+        details["first_divergence"] = serde_json::json!({
+            "candidate_line": candidate.start + 1,
+            "matched_prefix_lines": candidate.matched,
+            "file_line": divergence_index + 1,
+            "expected": expected,
+            "actual": actual,
+        });
+        divergence_note = format!(
+            " Closest match: line {} matched the first {} context line(s), then diverged at line {}: expected {:?} but the file has {:?}.",
+            candidate.start + 1,
+            candidate.matched,
+            divergence_index + 1,
+            expected_preview,
+            actual_preview
+        );
+    } else if hint <= 1 && !lines.is_empty() {
+        // #2741 A2: say explicitly that no similar region exists instead of
+        // implying the file head is the target region.
+        details["candidate_search"] = serde_json::Value::String("none".to_string());
+        divergence_note = format!(
+            " No region in {path} matches even the first context line and this hunk carries no usable line number, so the nearby lines show the file head rather than the target region. Re-read the target region before retrying."
+        );
+    }
     let markdown_list_hint = "If you are editing Markdown list lines, keep the diff prefix separate from the list marker: context ` - item`, deletion `-- item`, addition `+- item`.";
     let recovery_hint = if markdown_list_prefix_suspected {
         details["suspected_issue"] =
             serde_json::Value::String("markdown_list_diff_prefix".to_string());
         format!(
-            "read the exact target region in {path} and retry with explicit diff prefixes. {markdown_list_hint} Nearby current content:\n{nearby_preview}"
+            "read the exact target region in {path} and retry with explicit diff prefixes. {markdown_list_hint}{divergence_note} Nearby current content:\n{nearby_preview}"
         )
     } else {
         format!(
-            "read the exact target region in {path} and submit a hunk with matching context. Nearby current content:\n{nearby_preview}"
+            "read the exact target region in {path} and submit a hunk with matching context.{divergence_note} Nearby current content:\n{nearby_preview}"
         )
     };
 
@@ -2646,6 +2817,82 @@ foo
     }
 
     #[tokio::test]
+    async fn apply_patch_doubled_prefix_remove_is_reinterpreted_after_strict_failure() {
+        let dir = tempdir().unwrap();
+        tokio::fs::write(dir.path().join("sample.txt"), "alpha\nbeta\n")
+            .await
+            .unwrap();
+
+        // `-​- alpha` parses as Remove("- alpha"), which does not exist in
+        // the file; the doubled-marker alternative removes "alpha" instead.
+        let patch =
+            "--- a/sample.txt\n+++ b/sample.txt\n@@ -1,2 +1,2 @@\n-- alpha\n+- gamma\n+delta\n";
+
+        let outcome = apply_patch(dir.path(), patch).await.unwrap();
+
+        assert_eq!(
+            tokio::fs::read_to_string(dir.path().join("sample.txt"))
+                .await
+                .unwrap(),
+            "gamma\ndelta\nbeta\n"
+        );
+        assert!(outcome
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.kind == "double_prefix_reinterpreted"));
+    }
+
+    #[tokio::test]
+    async fn apply_patch_doubled_prefix_marker_initial_content_keeps_strict_priority() {
+        let dir = tempdir().unwrap();
+        tokio::fs::write(dir.path().join("sample.md"), "- item\nnext\n")
+            .await
+            .unwrap();
+
+        // `-- item` is the legitimate way to remove the line "- item".
+        let patch = "--- a/sample.md\n+++ b/sample.md\n@@ -1,1 +1,1 @@\n-- item\n+done\n";
+
+        let outcome = apply_patch(dir.path(), patch).await.unwrap();
+
+        assert_eq!(
+            tokio::fs::read_to_string(dir.path().join("sample.md"))
+                .await
+                .unwrap(),
+            "done\nnext\n"
+        );
+        assert!(!outcome
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.kind == "double_prefix_reinterpreted"));
+    }
+
+    #[tokio::test]
+    async fn apply_patch_doubled_prefix_add_lines_are_reinterpreted_together() {
+        let dir = tempdir().unwrap();
+        tokio::fs::write(dir.path().join("sample.txt"), "alpha\n")
+            .await
+            .unwrap();
+
+        // Strict match on "- alpha" fails, so the whole hunk is retried with
+        // doubled markers stripped from Remove and Add lines alike.
+        let patch =
+            "--- a/sample.txt\n+++ b/sample.txt\n@@ -1,1 +1,2 @@\n-- alpha\n+- gamma\n++ delta\n";
+
+        let outcome = apply_patch(dir.path(), patch).await.unwrap();
+
+        assert_eq!(
+            tokio::fs::read_to_string(dir.path().join("sample.txt"))
+                .await
+                .unwrap(),
+            "gamma\ndelta\n"
+        );
+        assert!(outcome
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.kind == "double_prefix_reinterpreted"));
+    }
+
+    #[tokio::test]
     async fn apply_patch_rejects_ambiguous_context() {
         let dir = tempdir().unwrap();
         let file = dir.path().join("sample.txt");
@@ -2815,6 +3062,143 @@ foo
         assert_eq!(details["nearby_range"]["start"], 0);
         assert_eq!(details["nearby_range"]["end"], 0);
         assert!(details["nearby_lines"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn apply_patch_context_not_found_reports_first_divergence() {
+        let dir = tempdir().unwrap();
+        let content = (1..=30)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        tokio::fs::write(dir.path().join("sample.txt"), content)
+            .await
+            .unwrap();
+
+        let matching_context = (1..=20)
+            .map(|line| format!(" line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let patch = format!(
+            r#"--- a/sample.txt
++++ b/sample.txt
+@@ -1,21 +1,1 @@
+{matching_context}
+-wrong 21
++replacement
+"#
+        );
+
+        let error = apply_patch(dir.path(), &patch).await.unwrap_err();
+        let tool_error = ToolError::from_anyhow(&error);
+        assert_eq!(tool_error.kind, "context_not_found");
+        let details = tool_error.details.as_ref().unwrap();
+        let divergence = &details["first_divergence"];
+        assert_eq!(divergence["candidate_line"], 1);
+        assert_eq!(divergence["matched_prefix_lines"], 20);
+        assert_eq!(divergence["file_line"], 21);
+        assert_eq!(divergence["expected"][0], "wrong 21");
+        assert_eq!(divergence["actual"][0], "line 21");
+        let recovery_hint = tool_error.recovery_hint.unwrap();
+        assert!(recovery_hint.contains("matched the first 20 context line(s)"));
+        assert!(recovery_hint.contains("diverged at line 21"));
+    }
+
+    #[tokio::test]
+    async fn apply_patch_context_not_found_unnumbered_hunk_uses_candidate_window() {
+        let dir = tempdir().unwrap();
+        let content = (1..=50)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        tokio::fs::write(dir.path().join("sample.txt"), content)
+            .await
+            .unwrap();
+
+        let patch = r#"--- a/sample.txt
++++ b/sample.txt
+@@ -1,3 +1,1 @@
+ line 40
+ line 41
+-wrong 42
++replacement
+"#;
+
+        let error = apply_patch(dir.path(), patch).await.unwrap_err();
+        let tool_error = ToolError::from_anyhow(&error);
+        assert_eq!(tool_error.kind, "context_not_found");
+        let details = tool_error.details.as_ref().unwrap();
+        let divergence = &details["first_divergence"];
+        assert_eq!(divergence["candidate_line"], 40);
+        assert_eq!(divergence["matched_prefix_lines"], 2);
+        assert_eq!(divergence["file_line"], 42);
+        // nearby window follows the divergence point instead of the file head
+        assert_eq!(details["nearby_range"]["start"], 37);
+        assert!(details["nearby_lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["text"] == "line 42"));
+    }
+
+    #[tokio::test]
+    async fn apply_patch_context_not_found_unnumbered_hunk_without_candidate_says_so() {
+        let dir = tempdir().unwrap();
+        let content = (1..=50)
+            .map(|line| format!("entry {line}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        tokio::fs::write(dir.path().join("sample.txt"), content)
+            .await
+            .unwrap();
+
+        let patch = r#"--- a/sample.txt
++++ b/sample.txt
+@@ -1,2 +1,1 @@
+ missing-first
+-missing-second
++replacement
+"#;
+
+        let error = apply_patch(dir.path(), patch).await.unwrap_err();
+        let tool_error = ToolError::from_anyhow(&error);
+        assert_eq!(tool_error.kind, "context_not_found");
+        let details = tool_error.details.as_ref().unwrap();
+        assert_eq!(details["candidate_search"], "none");
+        assert_eq!(details["first_divergence"], serde_json::Value::Null);
+        assert!(tool_error
+            .recovery_hint
+            .as_deref()
+            .unwrap()
+            .contains("no usable line number"));
+    }
+
+    #[tokio::test]
+    async fn apply_patch_doubled_prefix_context_still_fails_when_no_match() {
+        let dir = tempdir().unwrap();
+        tokio::fs::write(dir.path().join("sample.txt"), "other\ncontent\n")
+            .await
+            .unwrap();
+
+        let patch = r#"--- a/sample.txt
++++ b/sample.txt
+@@ -1,1 +1,1 @@
+-- alpha
++replacement
+"#;
+
+        let error = apply_patch(dir.path(), patch).await.unwrap_err();
+        let tool_error = ToolError::from_anyhow(&error);
+        assert_eq!(tool_error.kind, "context_not_found");
+        assert_eq!(
+            tokio::fs::read_to_string(dir.path().join("sample.txt"))
+                .await
+                .unwrap(),
+            "other\ncontent\n"
+        );
     }
 
     #[tokio::test]
