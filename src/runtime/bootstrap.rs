@@ -517,7 +517,7 @@ impl RuntimeHandle {
         model_state
     }
 
-    pub(crate) async fn current_apply_patch_surface(&self) -> ApplyPatchSurface {
+    pub(crate) async fn current_apply_patch_surface(&self) -> Result<ApplyPatchSurface> {
         let state = {
             let guard = self.inner.agent.lock().await;
             guard.state.clone()
@@ -531,7 +531,10 @@ impl RuntimeHandle {
         let _ = self.inner.storage.enable_memory_index_notify(notify);
     }
 
-    pub(crate) fn apply_patch_surface_for_state(&self, state: &AgentState) -> ApplyPatchSurface {
+    pub(crate) fn apply_patch_surface_for_state(
+        &self,
+        state: &AgentState,
+    ) -> Result<ApplyPatchSurface> {
         self.apply_patch_surface_for_turn(state, None)
     }
 
@@ -539,11 +542,11 @@ impl RuntimeHandle {
         &self,
         state: &AgentState,
         fallback_model: Option<&ModelRouteRef>,
-    ) -> ApplyPatchSurface {
+    ) -> Result<ApplyPatchSurface> {
         let route_ref = self
             .selected_model_ref_for_state(state, fallback_model)
             .unwrap_or_else(|| self.model_state_for(state).effective_model);
-        ApplyPatchSurface::for_model_route_ref(&route_ref.as_string())
+        ApplyPatchSurface::for_model_route_ref_with_env(&route_ref.as_string())
     }
 
     fn selected_model_ref_for_state(

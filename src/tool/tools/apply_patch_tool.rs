@@ -76,7 +76,7 @@ pub(crate) async fn execute(
     _authority_class: &AuthorityClass,
     input: &Value,
 ) -> Result<crate::tool::ToolResult> {
-    let surface = runtime.current_apply_patch_surface().await;
+    let surface = runtime.current_apply_patch_surface().await?;
     let patch_input = extract_patch_input(input, surface)?;
     let contains_replacement_character = patch_input.contains('\u{FFFD}');
     let execution = runtime

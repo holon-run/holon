@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
@@ -12,6 +12,7 @@ use crate::{
 };
 
 const DIFF_PREVIEW_MAX_LINES: usize = 80;
+const FORCE_PATCH_SURFACE_ENV: &str = "HOLON_FORCE_PATCH_SURFACE";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ApplyPatchOutcome {
@@ -36,6 +37,27 @@ impl ApplyPatchSurface {
             Self::CodexDslFreeform
         } else {
             Self::UnifiedDiffJson
+        }
+    }
+
+    pub(crate) fn for_model_route_ref_with_env(model_ref: &str) -> Result<Self> {
+        Self::for_model_route_ref_with_override(
+            model_ref,
+            std::env::var(FORCE_PATCH_SURFACE_ENV).ok().as_deref(),
+        )
+    }
+
+    fn for_model_route_ref_with_override(
+        model_ref: &str,
+        override_value: Option<&str>,
+    ) -> Result<Self> {
+        match override_value {
+            None | Some("") | Some("auto") => Ok(Self::for_model_route_ref(model_ref)),
+            Some("codex_dsl") => Ok(Self::CodexDslFreeform),
+            Some("unified_diff") => Ok(Self::UnifiedDiffJson),
+            Some(value) => bail!(
+                "{FORCE_PATCH_SURFACE_ENV} must be one of auto, codex_dsl, unified_diff; got `{value}`"
+            ),
         }
     }
 

@@ -511,7 +511,7 @@ impl RuntimeHandle {
         let native_web_search = native_web_search_selection.request;
         let apply_patch_surface = {
             let guard = self.inner.agent.lock().await;
-            self.apply_patch_surface_for_turn(&guard.state, fallback_model)
+            self.apply_patch_surface_for_turn(&guard.state, fallback_model)?
         };
         let available_tools = filter_native_web_search_tools(
             self.filtered_tool_specs_for_apply_patch_surface(identity, apply_patch_surface)?,
