@@ -988,13 +988,38 @@ async fn apply_file_patches(
             }
             PatchOperationKind::Modify { path } => {
                 let target = resolve_patch_path(workspace_root, path)?;
-                let existing = load_state(&target, &mut state, &mut originals)
-                    .await?
-                    .ok_or_else(|| missing_file("update", path, &target, workspace_root))?;
+                let loaded = load_state(&target, &mut state, &mut originals).await?;
+                // A missing modify target whose hunks are all pure-add
+                // (`@@ -0,0 +1,N @@`, no context/remove lines) is an add by
+                // another spelling; tolerate it instead of hard-failing.
+                let tolerated_as_add = loaded.is_none() && patch.hunks.iter().all(is_pure_add_hunk);
+                let existing = match loaded {
+                    Some(existing) => existing,
+                    None if tolerated_as_add => FileState {
+                        lines: Vec::new(),
+                        trailing_newline: false,
+                    },
+                    None => {
+                        return Err(missing_file("update", path, &target, workspace_root));
+                    }
+                };
+                if tolerated_as_add {
+                    diagnostics.push(ApplyPatchDiagnostic {
+                        path: path.to_string(),
+                        kind: "modify_to_missing_treated_as_add".to_string(),
+                        message: format!(
+                            "modify target {path} is missing and all hunks are pure-add; applied as file creation"
+                        ),
+                    });
+                }
                 let updated = apply_hunks(path, existing, &patch.hunks)?;
                 state.insert(target, Some(updated));
                 changed_files.push(apply_patch_changed_file(
-                    ApplyPatchAction::Modify,
+                    if tolerated_as_add {
+                        ApplyPatchAction::Add
+                    } else {
+                        ApplyPatchAction::Modify
+                    },
                     path,
                     None,
                     patch,
@@ -1115,6 +1140,10 @@ fn apply_patch_hunk_summary(hunk: &PatchHunk) -> ApplyPatchHunkSummary {
             .try_into()
             .unwrap_or(u32::MAX),
     }
+}
+
+fn is_pure_add_hunk(hunk: &PatchHunk) -> bool {
+    hunk.lines.iter().all(|line| line.kind == HunkLineKind::Add)
 }
 
 fn normalized_diff_preview(patch: &FilePatch) -> (Option<String>, bool) {
@@ -1799,7 +1828,14 @@ fn missing_file(action: &str, path: &str, resolved: &Path, workspace_root: &Path
                 .unwrap_or_else(|_| "<unavailable>".to_string()),
         }))
         .with_recovery_hint(format!(
-            "read {path} first or adjust the patch so it targets an existing file. If {path} was meant for another workspace, switch workspace first or provide the intended absolute path."
+            "read {path} first or adjust the patch so it targets an existing file. If {path} was meant for another workspace, switch workspace first or provide the intended absolute path.{}",
+            if action == "update" {
+                format!(
+                    " If {path} is meant to be a new file, use --- /dev/null + +++ b/{path} headers, or keep hunks purely additive (@@ -0,0 +1,N @@ with only + lines)."
+                )
+            } else {
+                String::new()
+            }
         )),
     )
 }
@@ -2840,6 +2876,90 @@ foo
             details["active_workspace_root"],
             normalize_path(dir.path()).unwrap().display().to_string()
         );
+    }
+
+    #[tokio::test]
+    async fn apply_patch_modify_missing_target_with_pure_add_hunks_creates_file() {
+        let dir = tempdir().unwrap();
+        let patch = r#"--- a/created.txt
++++ b/created.txt
+@@ -0,0 +1,2 @@
++first
++second
+"#;
+
+        let outcome = apply_patch(dir.path(), patch).await.unwrap();
+
+        assert_eq!(
+            tokio::fs::read_to_string(dir.path().join("created.txt"))
+                .await
+                .unwrap(),
+            "first\nsecond\n"
+        );
+        assert_eq!(outcome.changed_files.len(), 1);
+        assert_eq!(outcome.changed_files[0].action, ApplyPatchAction::Add);
+        assert!(outcome
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.kind == "modify_to_missing_treated_as_add"));
+    }
+
+    #[tokio::test]
+    async fn apply_patch_modify_missing_target_with_context_hunks_still_fails() {
+        let dir = tempdir().unwrap();
+        let patch = r#"--- a/missing.txt
++++ b/missing.txt
+@@ -1,2 +1,2 @@
+ context
+-old
++new
+"#;
+
+        let error = apply_patch(dir.path(), patch).await.unwrap_err();
+        let tool_error = ToolError::from_anyhow(&error);
+        assert_eq!(tool_error.kind, "missing_file");
+        let details = tool_error.details.as_ref().unwrap();
+        assert_eq!(details["action"], "update");
+        assert!(tool_error
+            .recovery_hint
+            .as_deref()
+            .unwrap()
+            .contains("/dev/null"));
+        assert!(!dir.path().join("missing.txt").try_exists().unwrap());
+    }
+
+    #[tokio::test]
+    async fn apply_patch_modify_missing_target_with_remove_hunks_still_fails() {
+        let dir = tempdir().unwrap();
+        let patch = r#"--- a/missing.txt
++++ b/missing.txt
+@@ -1,1 +1,1 @@
+-old
++new
+"#;
+
+        let error = apply_patch(dir.path(), patch).await.unwrap_err();
+        let tool_error = ToolError::from_anyhow(&error);
+        assert_eq!(tool_error.kind, "missing_file");
+        assert!(!dir.path().join("missing.txt").try_exists().unwrap());
+    }
+
+    #[tokio::test]
+    async fn apply_patch_modify_missing_target_mixed_hunks_still_fails() {
+        let dir = tempdir().unwrap();
+        let patch = r#"--- a/missing.txt
++++ b/missing.txt
+@@ -0,0 +1,1 @@
++first
+@@ -1,1 +1,1 @@
+-old
++new
+"#;
+
+        let error = apply_patch(dir.path(), patch).await.unwrap_err();
+        let tool_error = ToolError::from_anyhow(&error);
+        assert_eq!(tool_error.kind, "missing_file");
+        assert!(!dir.path().join("missing.txt").try_exists().unwrap());
     }
 
     #[tokio::test]
