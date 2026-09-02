@@ -353,8 +353,7 @@ impl AgentProvider for FastPathWaitProvider {
     }
 }
 
-pub async fn late_terminal_task_wait_fast_path_wakes_agent_with_durable_wait() -> Result<()>
-{
+pub async fn late_terminal_task_wait_fast_path_wakes_agent_with_durable_wait() -> Result<()> {
     let provider = Arc::new(FastPathWaitProvider::new());
     let host = RuntimeHost::new_with_provider(test_config(), provider.clone())?;
     let runtime = host.default_runtime().await?;
