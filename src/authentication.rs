@@ -38,7 +38,9 @@ impl OidcProviderConfig {
         }
         if let Some(redirect_uri) = &self.redirect_uri {
             let redirect = Url::parse(redirect_uri)?;
-            if redirect.scheme() != "https" && redirect.host_str() != Some("localhost") {
+            if redirect.scheme() != "https"
+                && !(redirect.scheme() == "http" && redirect.host_str() == Some("localhost"))
+            {
                 bail!("OIDC redirect_uri must use HTTPS or target localhost");
             }
         }
@@ -191,6 +193,20 @@ mod tests {
             redirect_uri: None,
         };
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn localhost_redirect_must_use_http() {
+        let mut config = OidcProviderConfig {
+            issuer_url: "https://issuer.example".into(),
+            client_id: "client".into(),
+            client_secret_env: None,
+            redirect_uri: Some("ftp://localhost/callback".into()),
+        };
+        assert!(config.validate().is_err());
+
+        config.redirect_uri = Some("http://localhost/callback".into());
+        assert!(config.validate().is_ok());
     }
 
     #[test]

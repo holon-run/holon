@@ -16,6 +16,21 @@ pub struct AuthenticationRepository<'a> {
 impl AuthenticationRepository<'_> {
     pub fn upsert_user(&self, user: &AuthUserRecord) -> Result<()> {
         self.db.transaction(|tx| {
+            let existing_identity = tx
+                .query_row(
+                    "SELECT issuer, subject FROM auth_users WHERE user_id = ?1",
+                    [user.user_id.as_str()],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()?;
+            if let Some((issuer, subject)) = existing_identity {
+                if issuer != user.issuer || subject != user.subject {
+                    anyhow::bail!(
+                        "authentication user_id {} is already bound to a different issuer/subject",
+                        user.user_id
+                    );
+                }
+            }
             tx.execute(
                 "INSERT INTO auth_users (
                     user_id, issuer, subject, display_name, email,
@@ -99,7 +114,8 @@ impl AuthenticationRepository<'_> {
                  SET last_seen_at = ?2
                  WHERE session_digest = ?1
                    AND revoked_at IS NULL
-                   AND expires_at > ?2",
+                   AND expires_at > ?2
+                   AND last_seen_at <= ?2",
                 params![session_digest, timestamp(last_seen_at)],
             )? == 1)
         })
@@ -289,6 +305,76 @@ mod tests {
             .authentication()
             .consume_bootstrap_credential("digest", now)?
             .is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn touching_session_does_not_move_last_seen_backwards() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let db = RuntimeDb::open_and_migrate(
+            temp_dir.path().join("runtime.sqlite"),
+            temp_dir.path().join("runtime.lock"),
+        )?;
+        let now = chrono::DateTime::from_timestamp_millis(Utc::now().timestamp_millis())
+            .expect("valid timestamp");
+        db.authentication().upsert_user(&AuthUserRecord {
+            user_id: "user".into(),
+            issuer: "local".into(),
+            subject: "user".into(),
+            display_name: None,
+            email: None,
+            created_at: now,
+            updated_at: now,
+            disabled_at: None,
+        })?;
+        db.authentication().create_session(&AuthSessionRecord {
+            session_digest: "session".into(),
+            user_id: "user".into(),
+            auth_method: "local".into(),
+            created_at: now,
+            expires_at: now + chrono::Duration::hours(1),
+            last_seen_at: now + chrono::Duration::minutes(5),
+            revoked_at: None,
+        })?;
+
+        assert!(!db.authentication().touch_session("session", now)?);
+        assert_eq!(
+            db.authentication()
+                .find_session("session")?
+                .expect("session exists")
+                .last_seen_at,
+            chrono::DateTime::from_timestamp_millis(
+                (now + chrono::Duration::minutes(5)).timestamp_millis()
+            )
+            .expect("valid timestamp")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn user_identity_cannot_be_rebound_to_another_external_identity() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let db = RuntimeDb::open_and_migrate(
+            temp_dir.path().join("runtime.sqlite"),
+            temp_dir.path().join("runtime.lock"),
+        )?;
+        let now = Utc::now();
+        let user = AuthUserRecord {
+            user_id: "user".into(),
+            issuer: "https://issuer.example".into(),
+            subject: "subject-a".into(),
+            display_name: None,
+            email: None,
+            created_at: now,
+            updated_at: now,
+            disabled_at: None,
+        };
+        db.authentication().upsert_user(&user)?;
+
+        let mut rebound = user;
+        rebound.subject = "subject-b".into();
+        let error = db.authentication().upsert_user(&rebound).unwrap_err();
+        assert!(error.to_string().contains("already bound"));
         Ok(())
     }
 }

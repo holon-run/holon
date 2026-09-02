@@ -311,7 +311,14 @@ fn validate_runtime_config_candidate(
 fn is_runtime_mutable_config_key(key: &str) -> bool {
     matches!(
         key,
-        "api.cors.enabled"
+        "auth.mode"
+            | "auth.oidc.issuer_url"
+            | "auth.oidc.client_id"
+            | "auth.oidc.client_secret_env"
+            | "auth.oidc.redirect_uri"
+            | "auth.session.absolute_ttl_seconds"
+            | "auth.session.idle_ttl_seconds"
+            | "api.cors.enabled"
             | "api.cors.allowed_origins"
             | "api.cors.allowed_methods"
             | "api.cors.allowed_headers"
