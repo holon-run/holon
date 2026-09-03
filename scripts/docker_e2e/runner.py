@@ -2474,6 +2474,7 @@ def run_runtime_upgrade_interrupted_schema47_case(
     deadline = time.monotonic() + harness.timeout_seconds
     old_live: dict[str, Any] | None = None
     matching: list[dict[str, Any]] = []
+    prompt_binding: dict[str, Any] = {}
     while time.monotonic() < deadline:
         old_live = harness.runtime_db_snapshot("upgrade-schema47-open-attempt")
         matching = [
@@ -2481,21 +2482,30 @@ def run_runtime_upgrade_interrupted_schema47_case(
             for row in old_live["execution_protocol_attempts"]
             if row["lifecycle_state"] == "open"
         ]
+        prompt_binding = {
+            row["agent_id"]: json.loads(row["payload_json"]).get("binding")
+            for row in matching
+        }
         binding_kinds = {
             json.loads(row["payload_json"]).get("binding", {}).get("kind")
             for row in matching
         }
         matching_agents = {row["agent_id"] for row in matching}
-        if {"agent_lifecycle", "work_item"}.issubset(binding_kinds) and {
-            lifecycle_agent,
-            work_item_agent,
-        }.issubset(matching_agents):
+        # Previous releases since v0.35.0 bind HTTP-control operator prompts
+        # to their conversation interaction instead of the bare agent
+        # lifecycle, so accept either binding for the interrupted prompt.
+        if (
+            "work_item" in binding_kinds
+            and binding_kinds & {"agent_lifecycle", "conversation"}
+            and {lifecycle_agent, work_item_agent}.issubset(matching_agents)
+        ):
             break
         matching = []
         time.sleep(0.5)
     require(
         matching,
-        "previous image did not retain open agent-lifecycle and WorkItem attempts",
+        "previous image did not retain open agent-lifecycle/conversation and "
+        f"WorkItem attempts: {prompt_binding}",
     )
     harness.crash()
     prompt_thread.join(timeout=35)
