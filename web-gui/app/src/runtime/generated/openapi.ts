@@ -601,6 +601,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/auth/method": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Authentication method
+         * @description Return the configured authentication mode used by the Web login page.
+         */
+        get: operations["authMethod"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/auth/{provider}/device/start": {
         parameters: {
             query?: never;
@@ -2769,6 +2789,21 @@ export interface components {
         CompleteWorkItemRequest: {
             /** @enum {string|null} */
             authority_class?: "operator_instruction" | "runtime_instruction" | "integration_signal" | "external_evidence" | null;
+            /**
+             * @description Declaration-based provenance supplied to a CLI launched by an agent.
+             *
+             *      These values describe the caller and its source activation, but are not
+             *      authentication material. A local process can forge them.
+             */
+            invocation_context?: {
+                caller_agent_id: string;
+                /** @enum {string|null} */
+                inherited_authority_class?: "operator_instruction" | "runtime_instruction" | "integration_signal" | "external_evidence" | null;
+                source_activation_id?: string | null;
+                source_task_id?: string | null;
+                source_turn_id?: string | null;
+                source_work_item_id?: string | null;
+            } | null;
             report_text: string;
         };
         /** @description Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize. */
@@ -3152,6 +3187,21 @@ export interface components {
             authority_class?: "operator_instruction" | "runtime_instruction" | "integration_signal" | "external_evidence" | null;
             /** @default false */
             clear_blocker: boolean;
+            /**
+             * @description Declaration-based provenance supplied to a CLI launched by an agent.
+             *
+             *      These values describe the caller and its source activation, but are not
+             *      authentication material. A local process can forge them.
+             */
+            invocation_context?: {
+                caller_agent_id: string;
+                /** @enum {string|null} */
+                inherited_authority_class?: "operator_instruction" | "runtime_instruction" | "integration_signal" | "external_evidence" | null;
+                source_activation_id?: string | null;
+                source_task_id?: string | null;
+                source_turn_id?: string | null;
+                source_work_item_id?: string | null;
+            } | null;
             reason?: string | null;
         };
         /** PickWorkItemResponse */
@@ -4365,6 +4415,21 @@ export interface components {
             /** @enum {string|null} */
             authority_class?: "operator_instruction" | "runtime_instruction" | "integration_signal" | "external_evidence" | null;
             blocked_by?: unknown;
+            /**
+             * @description Declaration-based provenance supplied to a CLI launched by an agent.
+             *
+             *      These values describe the caller and its source activation, but are not
+             *      authentication material. A local process can forge them.
+             */
+            invocation_context?: {
+                caller_agent_id: string;
+                /** @enum {string|null} */
+                inherited_authority_class?: "operator_instruction" | "runtime_instruction" | "integration_signal" | "external_evidence" | null;
+                source_activation_id?: string | null;
+                source_task_id?: string | null;
+                source_turn_id?: string | null;
+                source_work_item_id?: string | null;
+            } | null;
             objective?: string | null;
             /** @enum {string|null} */
             plan_status?: "draft" | "ready" | "needs_input" | null;
@@ -5676,6 +5741,44 @@ export interface operations {
         };
     };
     startCodexDeviceLogin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JsonValue"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    authMethod: {
         parameters: {
             query?: never;
             header?: never;
