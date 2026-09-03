@@ -435,6 +435,28 @@ describe("AgentSessionRepository ledger ingestion", () => {
     expect(acknowledged?.unreadBaselineSeq).toBe(4);
   });
 
+  it("acknowledges truncation at an explicit gated head instead of the observed head", async () => {
+    const harness = createHarness(
+      emptyAgentSession(),
+      { ledgerIngestion: ledgerIntegration() },
+    );
+    await harness.repository.initializeLedgerIngestion();
+
+    await harness.repository.ingestSessionEvents("agent-a", [
+      event(1),
+      event(2),
+      event(3),
+    ]);
+    await harness.repository.advanceReadMarker("agent-a", 3);
+
+    // The auto-restore path passes the gated head it caught up to; the
+    // acknowledgement boundary must not jump to the higher observed head.
+    const acknowledged = await harness.repository.acknowledgeReadTruncation("agent-a", 2);
+    expect(acknowledged?.certainty).toBe("exact");
+    expect(acknowledged?.unreadBaselineSeq).toBe(2);
+    expect(acknowledged?.acknowledgedTruncationBeforeSeq).toBe(2);
+  });
+
   it("returns null read-marker results when the scope is unresolved", async () => {
     const harness = createHarness(
       emptyAgentSession(),

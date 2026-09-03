@@ -47,7 +47,7 @@ import {
   type AgentRosterActivity,
   type LedgerUnreadView,
 } from "./read-state";
-import { ReadStateBus } from "./event-ledger";
+import { ReadStateBus, shouldAutoRestoreExactCertainty } from "./event-ledger";
 import {
   CACHE_SCHEMA_VERSION,
   cacheGetModelCatalog,
@@ -1324,9 +1324,21 @@ export async function retryPendingReadMarker(agentId: string): Promise<void> {
     }
     pendingReadMarkerAgentIds.delete(agentId);
     if (result.advanced) publishReadStateInvalidation(agentId);
+    // A marker that reached the gated observed head makes every event
+    // above it known from here on, so the truncated generation retires
+    // itself instead of waiting for the manual acknowledgement (RFC
+    // LocalReadState). Acknowledging at the gated candidate keeps the
+    // new boundary at what the marker actually reached.
+    const restored = shouldAutoRestoreExactCertainty(result.record, decision.candidateSeq)
+      ? await agentSessionRepository
+          .acknowledgeReadTruncation(agentId, decision.candidateSeq)
+          .catch(() => null)
+      : null;
+    if (restored) publishReadStateInvalidation(agentId);
     await refreshLedgerUnreadInView(agentId);
     span.end("ok", {
       advanced: result.advanced,
+      autoRestoreExact: Boolean(restored),
       candidateSeq: decision.candidateSeq,
     });
   } catch (error) {

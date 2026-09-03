@@ -747,6 +747,9 @@ describe("roster activity unread state", () => {
           updatedAt: 1,
         },
       });
+    const acknowledgeReadTruncation = vi
+      .spyOn(AgentSessionRepository.prototype, "acknowledgeReadTruncation")
+      .mockResolvedValue(null);
     vi.spyOn(AgentSessionRepository.prototype, "unreadSnapshot").mockResolvedValue({
       scopeAgentId: "agent-retry",
       boundarySeq: 12,
@@ -780,7 +783,88 @@ describe("roster activity unread state", () => {
     await retryPendingReadMarker("agent-retry");
 
     expect(advanceReadMarker).toHaveBeenCalledWith("agent-retry", 12);
+    // An exact record never triggers the auto-restore acknowledgement.
+    expect(acknowledgeReadTruncation).not.toHaveBeenCalled();
     expect(useRuntimeStore.getState().ledgerUnreadByAgentId["agent-retry"]).toEqual({
+      mode: "exact",
+      count: 0,
+    });
+  });
+
+  it("auto-restores exact certainty when a sticky truncated marker already covers the head", async () => {
+    vi.stubGlobal("document", { visibilityState: "visible" });
+    let ready = false;
+    vi.spyOn(AgentSessionRepository.prototype, "sessionLedgerReadiness")
+      .mockImplementation(() => ready
+        ? { readyThroughSeq: 12, ingestedThroughSeq: 12, observedHeadSeq: 12 }
+        : null);
+    // Pre-fix durable state: the marker already reached the head, so the
+    // monotonic advance is a no-op while certainty stays truncated.
+    const advanceReadMarker = vi
+      .spyOn(AgentSessionRepository.prototype, "advanceReadMarker")
+      .mockResolvedValue({
+      advanced: false,
+      record: {
+        remoteKey: "local",
+        runtimeId: "runtime-1",
+        visibilityScopeId: "scope-1",
+        eventLogEpoch: "epoch-1",
+        agentId: "agent-auto",
+        readThroughEventSeq: 12,
+        certainty: "truncated",
+        updatedAt: 1,
+      },
+    });
+    const acknowledgeReadTruncation = vi
+      .spyOn(AgentSessionRepository.prototype, "acknowledgeReadTruncation")
+      .mockResolvedValue({
+        remoteKey: "local",
+        runtimeId: "runtime-1",
+        visibilityScopeId: "scope-1",
+        eventLogEpoch: "epoch-1",
+        agentId: "agent-auto",
+        readThroughEventSeq: 12,
+        unreadBaselineSeq: 12,
+        acknowledgedTruncationBeforeSeq: 12,
+        certainty: "exact",
+        updatedAt: 2,
+      });
+    vi.spyOn(AgentSessionRepository.prototype, "unreadSnapshot").mockResolvedValue({
+      scopeAgentId: "agent-auto",
+      boundarySeq: 12,
+      countedThroughSeq: 12,
+      certainty: "exact",
+      count: 0,
+      historyTruncatedBeforeSeq: 5,
+      acknowledgedTruncationBeforeSeq: 12,
+    });
+    useRuntimeStore.setState({
+      route: "agent",
+      selectedAgentId: "agent-auto",
+      discovery: {
+        mode: "authoritative",
+        freshness: "fresh",
+        retryAttempt: 0,
+      },
+      sessionsByAgentId: {
+        "agent-auto": sessionState(),
+      },
+      ledgerUnreadByAgentId: {
+        "agent-auto": { mode: "truncated", count: 2 },
+      },
+    });
+
+    useRuntimeStore.getState().markAgentConversationRead("agent-auto");
+    await Promise.resolve();
+    expect(advanceReadMarker).not.toHaveBeenCalled();
+
+    ready = true;
+    await retryPendingReadMarker("agent-auto");
+
+    // Auto-restore retires the truncated generation at the gated head the
+    // marker already covers, flipping the badge back to exact.
+    expect(acknowledgeReadTruncation).toHaveBeenCalledWith("agent-auto", 12);
+    expect(useRuntimeStore.getState().ledgerUnreadByAgentId["agent-auto"]).toEqual({
       mode: "exact",
       count: 0,
     });

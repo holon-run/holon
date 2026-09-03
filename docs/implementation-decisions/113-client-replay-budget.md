@@ -11,3 +11,8 @@ projection bootstrap. If replay after that snapshot also exceeds a limit, the
 Agent remains out of live state with an explicit error. A budget-driven
 bootstrap preserves the prior read marker but marks unread certainty truncated
 at the skipped snapshot boundary.
+
+That truncated generation retires itself once the read marker catches up with
+the observed head: the client acknowledges automatically at the gated head the
+marker reached, and the explicit acknowledgement stays available as an early
+confirmation.

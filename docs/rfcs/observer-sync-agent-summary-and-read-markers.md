@@ -795,8 +795,9 @@ If the effective local read boundary
 retains any visible retained unread as a lower bound, changes `certainty` to
 `Truncated`, and displays a truncation indicator instead of an exact badge.
 
-The user may explicitly acknowledge the unknown history after opening and
-catching up the conversation. That action records:
+The unknown history is acknowledged in one of two ways: explicitly by the
+user, or automatically once the read marker itself reaches the observed head
+after contiguous catch-up. Either action records:
 
 ```text
 acknowledged_truncation_before_seq = current_head
@@ -810,8 +811,12 @@ lost interval.
 
 Budget-driven bootstrap does not fabricate acknowledgement. It preserves the
 prior marker where meaningful, marks unread certainty as `Truncated`, and
-records the first sequence after the snapshot boundary until explicit
-acknowledgement establishes a new exact generation.
+records the first sequence after the snapshot boundary until an
+acknowledgement establishes a new exact generation. The automatic
+acknowledgement fires only at the gated head the marker actually reached and
+never claims a boundary beyond it; the explicit acknowledgement remains the
+early-confirmation path for users who do not read through the retained
+backlog first.
 
 ### Runtime Epoch Reset
 
@@ -1159,7 +1164,8 @@ snapshot watermark is valid only with a proven consistency boundary.
 
 After a gap, the client cannot know which qualifying Brief events were deleted.
 Showing an exact count would be a false statement. Truncation must remain
-visible until the user starts a new acknowledged generation.
+visible until a new acknowledged generation starts (explicitly on request, or
+automatically when the read marker catches up with the observed head).
 
 ## Proposed Decision
 

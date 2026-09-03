@@ -619,12 +619,16 @@ export class LedgerIngestionPipeline {
   /**
    * Record an explicit truncation acknowledgement at the current observed
    * event head. Null on memory-only durability or when no read state exists.
+   * An explicit `headSeq` (the gated head a read marker caught up to)
+   * overrides the observed head so the auto-restore path never claims a
+   * boundary beyond what the marker actually reached.
    */
   async acknowledgeReadTruncation(
     scope: LedgerScopeKey,
+    headSeq?: number,
   ): Promise<LedgerReadStateRecord | null> {
     if (!(await this.ensureExactHandle())) return null;
-    const head = this.status(scope)?.observedEventHeadSeq;
+    const head = headSeq ?? this.status(scope)?.observedEventHeadSeq;
     if (head == null) return null;
     return this.ledger!.acknowledgeReadTruncation(scope, head);
   }

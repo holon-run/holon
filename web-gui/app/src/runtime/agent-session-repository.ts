@@ -601,10 +601,13 @@ export class AgentSessionRepository<State extends AgentSessionRepositoryState> {
   /**
    * Record an explicit acknowledgement that truncated history is unknown.
    * Opens a new exact generation while preserving the recorded truncation
-   * facts. Null when unavailable; false-y records when nothing changed.
+   * facts. Null when unavailable; false-y records when nothing changed. An
+   * explicit `headSeq` acknowledges at the gated head a read marker caught
+   * up to instead of the current observed head.
    */
   async acknowledgeReadTruncation(
     agentId: string,
+    headSeq?: number,
   ): Promise<LedgerReadStateRecord | null> {
     await this.initializeLedgerIngestion();
     const pipeline = this.ledgerPipeline;
@@ -612,7 +615,7 @@ export class AgentSessionRepository<State extends AgentSessionRepositoryState> {
       this.dependencies.ledgerIngestion?.resolveScope(agentId) ??
       this.knownLedgerScope(agentId);
     if (!pipeline || !scope) return null;
-    return pipeline.acknowledgeReadTruncation(scope);
+    return pipeline.acknowledgeReadTruncation(scope, headSeq);
   }
 
   /**

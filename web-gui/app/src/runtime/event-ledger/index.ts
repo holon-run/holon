@@ -93,6 +93,7 @@ export {
   mergeReadMarkerCandidate,
   mergeTruncationAcknowledgement,
   readMarkerBoundary,
+  shouldAutoRestoreExactCertainty,
   unreadSnapshotFromRecord,
   type LedgerUnreadSnapshot,
   type ReadCertainty,

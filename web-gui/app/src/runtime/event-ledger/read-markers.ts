@@ -16,6 +16,23 @@ export function readMarkerBoundary(record: LedgerReadStateRecord | undefined): n
   return Math.max(record.unreadBaselineSeq ?? 0, record.readThroughEventSeq ?? 0);
 }
 
+/**
+ * True when a truncated read state may retire itself into a new exact
+ * generation because the read marker caught up with the gated observed
+ * head: every event above that boundary is known from then on, so future
+ * unread counts are exact again. The explicit acknowledgement remains the
+ * early-confirmation path before the marker catches up.
+ */
+export function shouldAutoRestoreExactCertainty(
+  record: LedgerReadStateRecord | null | undefined,
+  gatedHeadSeq: number,
+): boolean {
+  return (
+    record?.certainty === "truncated" &&
+    (record.readThroughEventSeq ?? 0) >= gatedHeadSeq
+  );
+}
+
 /** True when one raw envelope qualifies as a user-facing unread brief. */
 export function isQualifyingUnreadEnvelope(envelope: unknown): boolean {
   return (

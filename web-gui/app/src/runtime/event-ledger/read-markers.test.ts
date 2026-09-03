@@ -4,7 +4,10 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { EventLedger } from "./ledger";
 import type { LedgerScopeKey } from "./keys";
-import { readMarkerBoundary } from "./read-markers";
+import {
+  readMarkerBoundary,
+  shouldAutoRestoreExactCertainty,
+} from "./read-markers";
 
 function makeScope(): LedgerScopeKey {
   return {
@@ -125,6 +128,52 @@ describe("read markers", () => {
     expect(again?.acknowledgedTruncationBeforeSeq).toBe(9);
     expect(again?.unreadBaselineSeq).toBe(9);
     ledger.close();
+  });
+
+  it("auto-restores exact certainty once the marker reaches the gated head", async () => {
+    const ledger = await openLedger();
+    const scope = makeScope();
+    await seedReadState(ledger, scope, {
+      unreadBaselineSeq: 3,
+      certainty: "truncated",
+      historyTruncatedBeforeSeq: 5,
+    });
+
+    // Advancing the marker preserves the truncated certainty; the pure
+    // rule stays quiet until the marker reaches the gated head.
+    const midCatchUp = await ledger.advanceReadMarker(scope, 7);
+    expect(midCatchUp.record.certainty).toBe("truncated");
+    expect(shouldAutoRestoreExactCertainty(midCatchUp.record, 9)).toBe(false);
+
+    const caughtUp = await ledger.advanceReadMarker(scope, 9);
+    expect(caughtUp.record.certainty).toBe("truncated");
+    expect(shouldAutoRestoreExactCertainty(caughtUp.record, 9)).toBe(true);
+
+    // Acknowledging at the gated head opens the exact generation without
+    // touching the marker or the recorded truncation facts.
+    const restored = await ledger.acknowledgeReadTruncation(scope, 9);
+    expect(restored?.certainty).toBe("exact");
+    expect(restored?.unreadBaselineSeq).toBe(9);
+    expect(restored?.readThroughEventSeq).toBe(9);
+    expect(restored?.historyTruncatedBeforeSeq).toBe(5);
+    expect(shouldAutoRestoreExactCertainty(restored, 9)).toBe(false);
+    ledger.close();
+  });
+
+  it("never auto-restores without a truncated record or marker", async () => {
+    expect(shouldAutoRestoreExactCertainty(undefined, 9)).toBe(false);
+    expect(
+      shouldAutoRestoreExactCertainty(
+        { agentId: "agent-a", certainty: "exact", readThroughEventSeq: 9 } as never,
+        9,
+      ),
+    ).toBe(false);
+    expect(
+      shouldAutoRestoreExactCertainty(
+        { agentId: "agent-a", certainty: "truncated" } as never,
+        9,
+      ),
+    ).toBe(false);
   });
 
   it("acknowledging an absent read state changes nothing", async () => {
