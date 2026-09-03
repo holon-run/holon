@@ -2225,7 +2225,7 @@ def run_runtime_case(harness: CaseHarness, case: dict[str, Any]) -> None:
     unauthorized = harness.request(
         "GET",
         "/api/control/runtime/readiness",
-        expected_status=403,
+        expected_status=401,
         authenticated=False,
     )
     write_json(harness.evidence / "unauthorized-readiness.json", unauthorized)
