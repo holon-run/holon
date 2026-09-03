@@ -227,7 +227,7 @@ pub async fn operator_ingress_requires_control_auth() -> Result<()> {
         }))
         .send()
         .await?;
-    assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
+    assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
 
     server.abort();
     Ok(())

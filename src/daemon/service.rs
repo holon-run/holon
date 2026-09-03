@@ -1,4 +1,11 @@
-use std::{env, fs, path::PathBuf, sync::Arc};
+use std::{
+    env, fs,
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
 
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
@@ -282,10 +289,19 @@ pub struct RuntimeServiceHandle {
 struct RuntimeServiceInner {
     metadata: RuntimeServiceMetadata,
     shutdown_tx: watch::Sender<bool>,
+    healthy: AtomicBool,
 }
 
 impl RuntimeServiceHandle {
     pub fn new(config: &AppConfig) -> Result<Self> {
+        Self::new_with_health(config, true)
+    }
+
+    pub fn new_starting(config: &AppConfig) -> Result<Self> {
+        Self::new_with_health(config, false)
+    }
+
+    fn new_with_health(config: &AppConfig, healthy: bool) -> Result<Self> {
         let (shutdown_tx, _) = watch::channel(false);
         Ok(Self {
             inner: Arc::new(RuntimeServiceInner {
@@ -308,8 +324,13 @@ impl RuntimeServiceHandle {
                     control_token_env_configured: env::var_os("HOLON_CONTROL_TOKEN").is_some(),
                 },
                 shutdown_tx,
+                healthy: AtomicBool::new(healthy),
             }),
         })
+    }
+
+    pub fn mark_healthy(&self) {
+        self.inner.healthy.store(true, Ordering::Release);
     }
 
     pub fn status_response(
@@ -321,7 +342,7 @@ impl RuntimeServiceHandle {
     ) -> RuntimeStatusResponse {
         RuntimeStatusResponse {
             ok: true,
-            healthy: true,
+            healthy: self.inner.healthy.load(Ordering::Acquire),
             pid: self.inner.metadata.pid,
             home_dir: self.inner.metadata.home_dir.clone(),
             socket_path: self.inner.metadata.socket_path.clone(),
@@ -346,7 +367,7 @@ impl RuntimeServiceHandle {
     ) -> RuntimeStatusResponse {
         RuntimeStatusResponse {
             ok: true,
-            healthy: true,
+            healthy: self.inner.healthy.load(Ordering::Acquire),
             pid: self.inner.metadata.pid,
             home_dir: self.inner.metadata.home_dir.clone(),
             socket_path: self.inner.metadata.socket_path.clone(),

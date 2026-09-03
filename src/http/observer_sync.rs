@@ -874,7 +874,7 @@ mod tests {
             let mut state = AppState::for_tcp(host);
             state.require_control_token = true;
             let (status, body) = get_snapshot(state).await;
-            assert_eq!(status, StatusCode::FORBIDDEN);
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
             assert_eq!(body["code"], "auth_required");
             assert!(body.get("agents").is_none());
         }
@@ -1225,7 +1225,7 @@ mod tests {
             let mut state = AppState::for_tcp(host);
             state.require_control_token = true;
             let (status, body) = get_projection_snapshot(state, "web").await;
-            assert_eq!(status, StatusCode::FORBIDDEN);
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
             assert_eq!(body["code"], "auth_required");
             assert!(body.get("projection").is_none());
             assert!(body.get("runtime_id").is_none());

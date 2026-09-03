@@ -1627,7 +1627,7 @@ pub async fn control_prompt_requires_bearer_token_when_required() -> Result<()> 
         .json(&serde_json::json!({ "text": "hello" }))
         .send()
         .await?;
-    assert_eq!(denied.status(), reqwest::StatusCode::FORBIDDEN);
+    assert_eq!(denied.status(), reqwest::StatusCode::UNAUTHORIZED);
     let allowed = client
         .post(format!("{base}/api/control/agents/default/prompt"))
         .bearer_auth("secret")
@@ -1783,7 +1783,7 @@ pub async fn remote_tcp_surfaces_require_bearer_token_when_required() -> Result<
         let denied = client.get(format!("{base}{path}")).send().await?;
         assert_eq!(
             denied.status(),
-            reqwest::StatusCode::FORBIDDEN,
+            reqwest::StatusCode::UNAUTHORIZED,
             "{path} should require bearer auth"
         );
         let body: serde_json::Value = denied.json().await?;
@@ -1829,7 +1829,7 @@ pub async fn remote_tcp_surfaces_require_bearer_token_when_required() -> Result<
         .await?;
     assert_eq!(
         invalid_runtime_status.status(),
-        reqwest::StatusCode::FORBIDDEN
+        reqwest::StatusCode::UNAUTHORIZED
     );
     let invalid_body: serde_json::Value = invalid_runtime_status.json().await?;
     assert_eq!(invalid_body["ok"], false);
@@ -1850,7 +1850,7 @@ pub async fn remote_tcp_surfaces_require_bearer_token_when_required() -> Result<
         .json(&serde_json::json!({ "text": "hello" }))
         .send()
         .await?;
-    assert_eq!(denied_enqueue.status(), reqwest::StatusCode::FORBIDDEN);
+    assert_eq!(denied_enqueue.status(), reqwest::StatusCode::UNAUTHORIZED);
     let denied_enqueue_body: serde_json::Value = denied_enqueue.json().await?;
     assert_eq!(denied_enqueue_body["ok"], false);
     assert!(denied_enqueue_body["error"].is_string());
@@ -1927,7 +1927,7 @@ pub async fn control_prompt_requires_bearer_token_for_non_loopback_auto() -> Res
         .json(&serde_json::json!({ "text": "hello" }))
         .send()
         .await?;
-    assert_eq!(denied.status(), reqwest::StatusCode::FORBIDDEN);
+    assert_eq!(denied.status(), reqwest::StatusCode::UNAUTHORIZED);
 
     let allowed = client
         .post(format!("{base}/api/control/agents/default/prompt"))

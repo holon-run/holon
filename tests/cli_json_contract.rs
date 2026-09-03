@@ -108,17 +108,12 @@ fn spawn_local_serve(home: &tempfile::TempDir) -> (ServeChild, String) {
                             .trim_start_matches("Holon listening on ")
                             .to_string(),
                     );
-                } else if line.starts_with("Holon control socket on ") {
-                    let addr = addr.expect("serve should print TCP listener before control socket");
-                    return (ServeChild { child }, addr);
                 }
                 if line.starts_with("Holon listening on ") && addr.is_some() {
                     let Some(addr) = addr.clone() else {
                         unreachable!("addr should be set")
                     };
-                    if !cfg!(unix) {
-                        return (ServeChild { child }, addr);
-                    }
+                    return (ServeChild { child }, addr);
                 }
             }
             Ok(Err(error)) => panic!("read serve stdout: {error}"),

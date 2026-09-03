@@ -3216,6 +3216,14 @@ CREATE INDEX IF NOT EXISTS idx_auth_login_expiry
   ON auth_login_transactions (expires_at);
 "#,
     },
+    Migration {
+        version: 54,
+        name: "authentication_login_verifier",
+        // The column helper is idempotent for downgrade/re-upgrade paths that
+        // retain additive authentication schema while losing its migration
+        // record.
+        sql: "",
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -3467,6 +3475,9 @@ fn apply_migration_transaction(transaction: &Transaction<'_>, migration: &Migrat
     if migration.name == "turn_owner_identity" {
         ensure_turn_owner_identity_schema(transaction)?;
     }
+    if migration.name == "authentication_login_verifier" {
+        ensure_authentication_login_verifier_schema(transaction)?;
+    }
     transaction.execute_batch(migration.sql)?;
     if migration.name == "execution_protocol_authority" {
         backfill_execution_protocol_authority(transaction)?;
@@ -3565,6 +3576,23 @@ fn ensure_turn_owner_identity_schema(transaction: &Transaction<'_>) -> Result<()
         "CREATE INDEX IF NOT EXISTS idx_turn_records_owner
            ON turn_records(agent_id, owner_kind, owner_id, turn_index, created_at);",
     )?;
+    Ok(())
+}
+
+fn ensure_authentication_login_verifier_schema(transaction: &Transaction<'_>) -> Result<()> {
+    if !table_exists_tx(transaction, "auth_login_transactions")? {
+        return Ok(());
+    }
+    let columns = transaction
+        .prepare("PRAGMA table_info(auth_login_transactions)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    if !columns.iter().any(|column| column == "code_verifier") {
+        transaction.execute_batch(
+            "ALTER TABLE auth_login_transactions
+             ADD COLUMN code_verifier TEXT NOT NULL DEFAULT '';",
+        )?;
+    }
     Ok(())
 }
 

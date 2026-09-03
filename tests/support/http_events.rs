@@ -1145,7 +1145,7 @@ pub async fn events_stream_requires_control_auth_when_configured() -> Result<()>
         .get(format!("{base}/api/agents/default/events/stream"))
         .send()
         .await?;
-    assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
+    assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
 
     server.abort();
     Ok(())

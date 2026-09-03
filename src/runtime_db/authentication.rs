@@ -72,6 +72,20 @@ impl AuthenticationRepository<'_> {
             .context("looking up authenticated user")
     }
 
+    pub fn find_user_by_id(&self, user_id: &str) -> Result<Option<AuthUserRecord>> {
+        let connection = self.db.connection()?;
+        connection
+            .query_row(
+                "SELECT user_id, issuer, subject, display_name, email,
+                        created_at, updated_at, disabled_at
+                 FROM auth_users WHERE user_id = ?1",
+                [user_id],
+                row_to_user,
+            )
+            .optional()
+            .context("looking up authenticated user by id")
+    }
+
     pub fn create_session(&self, session: &AuthSessionRecord) -> Result<()> {
         self.db.transaction(|tx| {
             tx.execute(
@@ -192,18 +206,62 @@ impl AuthenticationRepository<'_> {
             tx.execute(
                 "INSERT INTO auth_login_transactions (
                     transaction_digest, state_digest, nonce_digest,
-                    created_at, expires_at, consumed_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    code_verifier, created_at, expires_at, consumed_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     login.transaction_digest,
                     login.state_digest,
                     login.nonce_digest,
+                    login.code_verifier,
                     timestamp(login.created_at),
                     timestamp(login.expires_at),
                     login.consumed_at.map(timestamp),
                 ],
             )?;
             Ok(())
+        })
+    }
+
+    pub fn consume_login_transaction(
+        &self,
+        state_digest: &str,
+        consumed_at: DateTime<Utc>,
+    ) -> Result<Option<LoginTransactionRecord>> {
+        self.db.transaction(|tx| {
+            let updated = tx.execute(
+                "UPDATE auth_login_transactions
+                 SET consumed_at = ?2
+                 WHERE state_digest = ?1
+                   AND consumed_at IS NULL
+                   AND expires_at > ?2",
+                params![state_digest, timestamp(consumed_at)],
+            )?;
+            if updated == 0 {
+                return Ok(None);
+            }
+            tx.query_row(
+                "SELECT transaction_digest, state_digest, nonce_digest,
+                        code_verifier, created_at, expires_at, consumed_at
+                 FROM auth_login_transactions
+                 WHERE state_digest = ?1",
+                [state_digest],
+                |row| {
+                    Ok(LoginTransactionRecord {
+                        transaction_digest: row.get(0)?,
+                        state_digest: row.get(1)?,
+                        nonce_digest: row.get(2)?,
+                        code_verifier: row.get(3)?,
+                        created_at: parse_timestamp(row.get(4)?)?,
+                        expires_at: parse_timestamp(row.get(5)?)?,
+                        consumed_at: row
+                            .get::<_, Option<String>>(6)?
+                            .map(parse_timestamp)
+                            .transpose()?,
+                    })
+                },
+            )
+            .map(Some)
+            .context("reading consumed login transaction")
         })
     }
 }

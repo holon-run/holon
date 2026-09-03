@@ -603,6 +603,13 @@
         "required": false
       },
       {
+        "long": "start-timeout",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
         "long": "token",
         "short": null,
         "default_value": null,
@@ -665,6 +672,13 @@
       },
       {
         "long": "port",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "start-timeout",
         "short": null,
         "default_value": null,
         "possible_values": null,

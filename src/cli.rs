@@ -317,6 +317,8 @@ pub enum DaemonCommands {
     Start {
         #[command(flatten)]
         options: ServeOptions,
+        #[arg(long, env = "HOLON_DAEMON_START_TIMEOUT_SECS", value_parser = clap::value_parser!(u64).range(1..=86400))]
+        start_timeout: Option<u64>,
     },
     Stop,
     #[command(hide = true)]
@@ -325,6 +327,8 @@ pub enum DaemonCommands {
     Restart {
         #[command(flatten)]
         options: ServeOptions,
+        #[arg(long, env = "HOLON_DAEMON_START_TIMEOUT_SECS", value_parser = clap::value_parser!(u64).range(1..=86400))]
+        start_timeout: Option<u64>,
     },
     Logs {
         #[arg(long, default_value_t = 80)]
