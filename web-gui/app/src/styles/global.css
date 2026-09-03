@@ -3295,6 +3295,11 @@ code {
   text-transform: uppercase;
 }
 
+.settings-form-field {
+  display: grid;
+  gap: 6px;
+}
+
 .settings-form input:not([type="checkbox"]),
 .settings-form select {
   width: 100%;

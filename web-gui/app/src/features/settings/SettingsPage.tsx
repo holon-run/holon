@@ -811,7 +811,7 @@ export function SettingsPage({
                 </label>
                 <details className="settings-advanced">
                   <summary>{t("settings.tabAdvanced")}</summary>
-                  <div>
+                  <div className="settings-form-field">
                     <label htmlFor="settings-fallback-model-input">{t("settings.fallbackModels")}</label>
                    <div className="settings-chip-input">
                      {modelFallbacks.map((model, index) => (
