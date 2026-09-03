@@ -5,7 +5,9 @@ import {
   buildSearchProviderConfigUpdates,
   buildStandardSearchProviderDefinitions,
   buildVisionConfigUpdates,
+  filterFallbackSuggestions,
   providerCredentialReady,
+  reorderModelFallbacks,
   sortProvidersForSettings,
   sortSearchProvidersForSettings,
 } from "./SettingsPage";
@@ -144,6 +146,52 @@ describe("buildImageGenerationConfigUpdates", () => {
 
   it("unsets image generation default when left empty for auto-selection", () => {
     expect(buildImageGenerationConfigUpdates("   ")).toEqual([{ key: "image_generation.default", unset: true }]);
+  });
+});
+
+describe("fallback model settings helpers", () => {
+  it("reorders fallback models without mutating the input", () => {
+    const models = ["a", "b", "c"];
+
+    expect(reorderModelFallbacks(models, 0, 2)).toEqual(["b", "c", "a"]);
+    expect(models).toEqual(["a", "b", "c"]);
+    expect(reorderModelFallbacks(models, 1, 1)).toBe(models);
+  });
+
+  it("filters fallback suggestions using route and display names", () => {
+    const models = [
+      {
+        model: "gpt-5",
+        routeRef: "openai/default/gpt-5",
+        provider: "openai",
+        providerFamily: "openai",
+        endpoint: "default",
+        routeProvider: "openai",
+        displayName: "GPT-5",
+        available: true,
+        supportsImageInput: false,
+        supportsImageGeneration: false,
+        supportsReasoningEffort: false,
+        reasoningEffortOptions: [],
+      },
+      {
+        model: "claude-sonnet",
+        routeRef: "anthropic/default/claude-sonnet",
+        provider: "anthropic",
+        providerFamily: "anthropic",
+        endpoint: "default",
+        routeProvider: "anthropic",
+        displayName: "Sonnet",
+        available: true,
+        supportsImageInput: false,
+        supportsImageGeneration: false,
+        supportsReasoningEffort: false,
+        reasoningEffortOptions: [],
+      },
+    ];
+
+    expect(filterFallbackSuggestions(models, "son", [])).toEqual([models[1]]);
+    expect(filterFallbackSuggestions(models, "gpt", [models[0].routeRef])).toEqual([]);
   });
 });
 

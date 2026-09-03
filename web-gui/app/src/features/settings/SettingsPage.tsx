@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { ArrowRight } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -74,6 +74,46 @@ export function buildVisionConfigUpdates(visionDefault: string): Array<{ key: st
 export function buildImageGenerationConfigUpdates(imageGenDefault: string): Array<{ key: string; value?: unknown; unset?: boolean }> {
   const trimmed = imageGenDefault.trim();
   return [trimmed ? { key: "image_generation.default", value: trimmed } : { key: "image_generation.default", unset: true }];
+}
+
+export function reorderModelFallbacks(
+  models: string[],
+  fromIndex: number,
+  toIndex: number,
+): string[] {
+  if (
+    fromIndex === toIndex
+    || fromIndex < 0
+    || toIndex < 0
+    || fromIndex >= models.length
+    || toIndex >= models.length
+  ) {
+    return models;
+  }
+  const next = [...models];
+  const [moved] = next.splice(fromIndex, 1);
+  if (moved === undefined) return models;
+  next.splice(toIndex, 0, moved);
+  return next;
+}
+
+export function filterFallbackSuggestions(
+  availableModels: readonly RuntimeModelOption[],
+  input: string,
+  selectedModels: readonly string[],
+): RuntimeModelOption[] {
+  const query = input.trim().toLowerCase();
+  if (!query) return [];
+  const selected = new Set(selectedModels);
+  return availableModels
+    .filter((model) =>
+      !selected.has(model.routeRef)
+      && (
+        model.model.toLowerCase().includes(query)
+        || model.routeRef.toLowerCase().includes(query)
+        || model.displayName.toLowerCase().includes(query)
+      ))
+    .slice(0, 10);
 }
 type ProviderDraft = Pick<
   RuntimeProviderSummary,
@@ -180,6 +220,7 @@ export function SettingsPage({
   const [modelFallbacks, setModelFallbacks] = useState<string[]>([]);
   const [fallbackInput, setFallbackInput] = useState("");
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+  const draggedIndexRef = useRef<number | null>(null);
   const [visionDefault, setVisionDefault] = useState("");
   const [imageGenDefault, setImageGenDefault] = useState("");
   const [defaultToolOutputTokens, setDefaultToolOutputTokens] = useState("");
@@ -211,6 +252,10 @@ export function SettingsPage({
   const availableModels = useMemo(() => modelCatalog.options.filter((model) => model.available), [modelCatalog.options]);
   const visionModels = useMemo(() => modelCatalog.options.filter((model) => model.available && model.supportsImageInput), [modelCatalog.options]);
   const imageGenModels = useMemo(() => modelCatalog.options.filter((model) => model.available && model.supportsImageGeneration), [modelCatalog.options]);
+  const fallbackSuggestions = useMemo(
+    () => filterFallbackSuggestions(availableModels, fallbackInput, modelFallbacks),
+    [availableModels, fallbackInput, modelFallbacks],
+  );
   const providersWithModels = useMemo(
     () => new Set(modelCatalog.options.map((model) => model.routeProvider)),
     [modelCatalog.options],
@@ -766,25 +811,30 @@ export function SettingsPage({
                 </label>
                 <details className="settings-advanced">
                   <summary>{t("settings.tabAdvanced")}</summary>
-                  <label>
-                    <span>{t("settings.fallbackModels")}</span>
+                  <div>
+                    <label htmlFor="settings-fallback-model-input">{t("settings.fallbackModels")}</label>
                    <div className="settings-chip-input">
                      {modelFallbacks.map((model, index) => (
                        <span
                          key={model}
                          className={`settings-chip${draggedIndex === index ? " dragging" : ""}`}
                          draggable
-                         onDragStart={() => setDraggedIndex(index)}
+                         onDragStart={() => {
+                           draggedIndexRef.current = index;
+                           setDraggedIndex(index);
+                         }}
                          onDragOver={(e) => {
                            e.preventDefault();
-                           if (draggedIndex === null || draggedIndex === index) return;
-                           const next = [...modelFallbacks];
-                           const [moved] = next.splice(draggedIndex, 1);
-                           next.splice(index, 0, moved);
+                           const fromIndex = draggedIndexRef.current;
+                           if (fromIndex === null || fromIndex === index) return;
+                           draggedIndexRef.current = index;
                            setDraggedIndex(index);
-                           setModelFallbacks(next);
+                           setModelFallbacks((current) => reorderModelFallbacks(current, fromIndex, index));
                          }}
-                         onDragEnd={() => setDraggedIndex(null)}
+                         onDragEnd={() => {
+                           draggedIndexRef.current = null;
+                           setDraggedIndex(null);
+                         }}
                        >
                          <span className="settings-chip-grip" aria-hidden="true">⠿</span>
                          {model}
@@ -798,6 +848,7 @@ export function SettingsPage({
                        </span>
                      ))}
                      <input
+                       id="settings-fallback-model-input"
                        value={fallbackInput}
                        onChange={(e) => setFallbackInput(e.target.value)}
                        onKeyDown={(e) => {
@@ -814,16 +865,9 @@ export function SettingsPage({
                        }}
                          placeholder={modelFallbacks.length === 0 ? "provider@endpoint/model" : ""}
                      />
-                     {fallbackInput && (
-                       availableModels
-                        .filter((m) => (m.model.toLowerCase().includes(fallbackInput.toLowerCase()) || m.routeRef.toLowerCase().includes(fallbackInput.toLowerCase()) || m.displayName.toLowerCase().includes(fallbackInput.toLowerCase())) && !modelFallbacks.includes(m.routeRef))
-                         .slice(0, 10)
-                         .length > 0 && (
+                     {fallbackSuggestions.length > 0 && (
                          <div className="settings-chip-suggestions">
-                           {availableModels
-                            .filter((m) => (m.model.toLowerCase().includes(fallbackInput.toLowerCase()) || m.routeRef.toLowerCase().includes(fallbackInput.toLowerCase()) || m.displayName.toLowerCase().includes(fallbackInput.toLowerCase())) && !modelFallbacks.includes(m.routeRef))
-                             .slice(0, 10)
-                             .map((model) => (
+                           {fallbackSuggestions.map((model) => (
                                <button
                                  key={model.routeRef}
                                  type="button"
@@ -840,10 +884,9 @@ export function SettingsPage({
                                </button>
                              ))}
                          </div>
-                       )
                      )}
                    </div>
-                  </label>
+                  </div>
                   <div className="settings-form-row">
                     <label>
                       <span>{t("settings.defaultToolOutputTokens")}</span>
