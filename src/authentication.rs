@@ -50,26 +50,31 @@ impl OidcProviderConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionPolicy {
-    pub absolute_ttl_seconds: u64,
+    pub absolute_ttl_seconds: Option<u64>,
     pub idle_ttl_seconds: u64,
 }
 
 impl Default for SessionPolicy {
     fn default() -> Self {
         Self {
-            absolute_ttl_seconds: Duration::from_secs(8 * 60 * 60).as_secs(),
-            idle_ttl_seconds: Duration::from_secs(30 * 60).as_secs(),
+            absolute_ttl_seconds: None,
+            idle_ttl_seconds: Duration::from_secs(24 * 60 * 60).as_secs(),
         }
     }
 }
 
 impl SessionPolicy {
     pub fn validate(&self) -> Result<()> {
-        if self.absolute_ttl_seconds == 0 || self.idle_ttl_seconds == 0 {
-            bail!("session TTLs must be greater than zero");
+        if self.idle_ttl_seconds == 0 {
+            bail!("session idle TTL must be greater than zero");
         }
-        if self.idle_ttl_seconds > self.absolute_ttl_seconds {
-            bail!("session idle TTL must not exceed absolute TTL");
+        if let Some(absolute_ttl_seconds) = self.absolute_ttl_seconds {
+            if absolute_ttl_seconds == 0 {
+                bail!("session absolute TTL must be greater than zero or null for unlimited");
+            }
+            if self.idle_ttl_seconds > absolute_ttl_seconds {
+                bail!("session idle TTL must not exceed absolute TTL");
+            }
         }
         Ok(())
     }
@@ -126,7 +131,7 @@ pub struct AuthSessionRecord {
     pub user_id: String,
     pub auth_method: String,
     pub created_at: DateTime<Utc>,
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
     pub last_seen_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
 }
@@ -134,7 +139,7 @@ pub struct AuthSessionRecord {
 impl AuthSessionRecord {
     pub fn is_active_at(&self, now: DateTime<Utc>, idle_ttl: Duration) -> bool {
         self.revoked_at.is_none()
-            && self.expires_at > now
+            && self.expires_at.is_none_or(|expires_at| expires_at > now)
             && self.last_seen_at + chrono::Duration::from_std(idle_ttl).unwrap_or_default() > now
     }
 }

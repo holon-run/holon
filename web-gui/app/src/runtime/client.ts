@@ -681,7 +681,9 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
   const connectionMode = options.mode ?? (options.baseUrl ? "remote" : "local");
   const defaultBaseUrl = connectionMode === "local" ? DEFAULT_DEV_API_BASE : undefined;
   const baseUrl = normalizeBaseUrl(options.baseUrl ?? import.meta.env.VITE_HOLON_API_BASE ?? defaultBaseUrl);
-  const fetchImpl = options.fetchImpl ?? fetch;
+  const rawFetchImpl = options.fetchImpl ?? fetch;
+  const fetchImpl = ((input: RequestInfo | URL, init?: RequestInit) =>
+    rawFetchImpl(input, { ...init, credentials: "include" })) as typeof fetch;
   const requestHeaders = authorizationHeaders(options.token);
   const hasToken = Boolean(options.token?.trim());
 

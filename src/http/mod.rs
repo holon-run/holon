@@ -551,6 +551,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/auth/oidc/start", get(auth::start_oidc_login))
         .route("/auth/oidc/callback", get(auth::complete_oidc_login))
+        .route("/auth/method", get(auth::auth_method))
         .route("/auth/session/exchange", post(auth::exchange_session))
         .route("/auth/session/logout", post(auth::logout))
         .route(
@@ -882,6 +883,9 @@ pub(crate) fn authorize_control(headers: &HeaderMap, state: &AppState) -> Result
     if state.host.config().auth.mode == crate::authentication::AuthenticationMode::Oidc {
         return authenticate_session(headers, state).map(|_| ());
     }
+    if session_credential(headers).is_some_and(|_| authenticate_session(headers, state).is_ok()) {
+        return Ok(());
+    }
     if !state.require_control_token {
         return Ok(());
     }
@@ -985,7 +989,11 @@ async fn session_auth_middleware(
     let api_path = path.strip_prefix("/api").unwrap_or(path);
     let anonymous = matches!(
         api_path,
-        "/auth/oidc/start" | "/auth/oidc/callback" | "/auth/session/exchange"
+        "/auth/oidc/start"
+            | "/auth/oidc/callback"
+            | "/auth/method"
+            | "/auth/session/exchange"
+            | "/login"
     ) || api_path.starts_with("/callbacks/")
         || api_path.starts_with("/webhooks/");
 
@@ -1512,6 +1520,7 @@ mod tests {
         assert_eq!(body["code"], "auth_required");
 
         let web_response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("GET")
@@ -1523,10 +1532,20 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(web_response.status(), StatusCode::FOUND);
-        assert_eq!(
-            web_response.headers()[header::LOCATION],
-            "/api/auth/oidc/start"
-        );
+        assert_eq!(web_response.headers()[header::LOCATION], "/login");
+
+        let login_response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/login")
+                    .header(header::ACCEPT, "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(login_response.status(), StatusCode::OK);
     }
 
     #[tokio::test]

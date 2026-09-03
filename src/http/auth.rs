@@ -15,8 +15,19 @@ pub struct SessionExchangeRequest {
 #[derive(Debug, Serialize)]
 pub struct SessionResponse {
     ok: bool,
-    expires_at: chrono::DateTime<Utc>,
+    expires_at: Option<chrono::DateTime<Utc>>,
     user_id: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AuthMethodResponse {
+    mode: crate::authentication::AuthenticationMode,
+}
+
+pub async fn auth_method(State(state): State<Arc<AppState>>) -> Json<AuthMethodResponse> {
+    Json(AuthMethodResponse {
+        mode: state.host.config().auth.mode,
+    })
 }
 
 fn session_cookie(state: &AppState, credential: &str) -> String {
@@ -86,13 +97,49 @@ pub async fn exchange_session(
     if request.credential.trim().is_empty() {
         return Err(bad_request("credential must not be empty"));
     }
-    let session = crate::oidc::exchange_bootstrap(
-        state.host.runtime_db(),
-        &state.host.config().auth,
-        &request.credential,
-        Utc::now(),
-    )
-    .map_err(error_response)?;
+    let config = state.host.config();
+    let now = Utc::now();
+    let session = if config.auth.mode == crate::authentication::AuthenticationMode::Local {
+        let expected = config
+            .control_token
+            .as_deref()
+            .ok_or_else(|| bad_request("static token authentication is not configured"))?;
+        if request.credential != expected {
+            return Err(auth_required("invalid static token"));
+        }
+        let user_id = "local-static-token";
+        state
+            .host
+            .runtime_db()
+            .authentication()
+            .upsert_user(&crate::authentication::AuthUserRecord {
+                user_id: user_id.to_string(),
+                issuer: "local".to_string(),
+                subject: "static-token".to_string(),
+                display_name: Some("Local token user".to_string()),
+                email: None,
+                created_at: now,
+                updated_at: now,
+                disabled_at: None,
+            })
+            .map_err(error_response)?;
+        crate::oidc::issue_session(
+            state.host.runtime_db(),
+            &config.auth,
+            user_id,
+            "static_token",
+            now,
+        )
+        .map_err(error_response)?
+    } else {
+        crate::oidc::exchange_bootstrap(
+            state.host.runtime_db(),
+            &config.auth,
+            &request.credential,
+            now,
+        )
+        .map_err(error_response)?
+    };
     let cookie = session_cookie(&state, &session.credential);
     Ok((
         StatusCode::OK,

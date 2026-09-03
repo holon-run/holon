@@ -368,13 +368,18 @@ pub fn issue_session(
 ) -> Result<IssuedSession> {
     config.session.validate()?;
     let credential = random_secret();
-    let ttl_seconds = i64::try_from(config.session.absolute_ttl_seconds)
-        .context("session absolute TTL is too large")?;
-    let ttl = chrono::Duration::try_seconds(ttl_seconds)
-        .context("session absolute TTL is out of range")?;
-    let expires_at = now
-        .checked_add_signed(ttl)
-        .context("session expiration is out of range")?;
+    let expires_at = config
+        .session
+        .absolute_ttl_seconds
+        .map(|ttl_seconds| {
+            let ttl_seconds =
+                i64::try_from(ttl_seconds).context("session absolute TTL is too large")?;
+            let ttl = chrono::Duration::try_seconds(ttl_seconds)
+                .context("session absolute TTL is out of range")?;
+            now.checked_add_signed(ttl)
+                .context("session expiration is out of range")
+        })
+        .transpose()?;
     let record = AuthSessionRecord {
         session_digest: digest_secret(&credential),
         user_id: user_id.to_string(),

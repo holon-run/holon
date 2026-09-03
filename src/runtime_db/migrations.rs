@@ -3224,6 +3224,40 @@ CREATE INDEX IF NOT EXISTS idx_auth_login_expiry
         // record.
         sql: "",
     },
+    Migration {
+        version: 55,
+        name: "authentication_unlimited_sessions",
+        sql: r#"
+ALTER TABLE auth_sessions RENAME TO auth_sessions_previous;
+
+CREATE TABLE auth_sessions (
+  session_digest TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES auth_users(user_id),
+  auth_method TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  expires_at TEXT,
+  last_seen_at TEXT NOT NULL,
+  revoked_at TEXT
+);
+
+INSERT INTO auth_sessions (
+  session_digest, user_id, auth_method, created_at, expires_at,
+  last_seen_at, revoked_at
+)
+SELECT
+  session_digest, user_id, auth_method, created_at, expires_at,
+  last_seen_at, revoked_at
+FROM auth_sessions_previous;
+
+DROP TABLE auth_sessions_previous;
+
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_user
+  ON auth_sessions (user_id);
+
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_expiry
+  ON auth_sessions (expires_at);
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

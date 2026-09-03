@@ -10,6 +10,19 @@ pub struct ConfigSchemaEntry {
     pub allowed_values: Vec<&'static str>,
 }
 
+fn parse_optional_session_ttl(key: &str, raw_value: &str) -> Result<Option<u64>> {
+    let value = raw_value.trim();
+    if value.eq_ignore_ascii_case("null") || value == "0" {
+        return Ok(None);
+    }
+    value
+        .parse::<u64>()
+        .ok()
+        .filter(|value| *value > 0)
+        .map(Some)
+        .ok_or_else(|| anyhow!("{key} expects a positive integer or null"))
+}
+
 pub fn config_schema() -> Vec<ConfigSchemaEntry> {
     vec![
         ConfigSchemaEntry {
@@ -49,9 +62,9 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
         },
         ConfigSchemaEntry {
             key: "auth.session.absolute_ttl_seconds",
-            kind: "positive_integer",
-            description: "Absolute authentication session lifetime in seconds.",
-            default: json!(SessionPolicy::default().absolute_ttl_seconds),
+            kind: "positive_integer_or_null",
+            description: "Absolute authentication session lifetime in seconds; null means unlimited.",
+            default: Value::Null,
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
@@ -1099,7 +1112,7 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
             ensure_auth_oidc(config).redirect_uri = Some(raw_value.to_owned())
         }
         "auth.session.absolute_ttl_seconds" => {
-            config.auth.session.absolute_ttl_seconds = Some(parse_positive_u64_key(key, raw_value)?)
+            config.auth.session.absolute_ttl_seconds = parse_optional_session_ttl(key, raw_value)?
         }
         "auth.session.idle_ttl_seconds" => {
             config.auth.session.idle_ttl_seconds = Some(parse_positive_u64_key(key, raw_value)?)

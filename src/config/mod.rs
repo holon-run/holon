@@ -356,7 +356,8 @@ fn materialize_auth_config(file: &AuthConfigFile) -> Result<AuthConfig> {
         absolute_ttl_seconds: file
             .session
             .absolute_ttl_seconds
-            .unwrap_or(defaults.absolute_ttl_seconds),
+            .and_then(|value| (value != 0).then_some(value))
+            .or(defaults.absolute_ttl_seconds),
         idle_ttl_seconds: file
             .session
             .idle_ttl_seconds

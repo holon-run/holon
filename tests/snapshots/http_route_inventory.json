@@ -622,6 +622,20 @@
   },
   {
     "method": "get",
+    "path": "/api/auth/method",
+    "handler": "auth_method",
+    "operation_id": "authMethod",
+    "tag": "auth",
+    "parameters": [],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": []
+  },
+  {
+    "method": "get",
     "path": "/api/briefs",
     "handler": "briefs_default",
     "operation_id": "defaultBriefs",

@@ -24,6 +24,7 @@ import type { ComponentType } from "react";
 
 import holonMarkUrl from "../assets/holon-mark.png";
 import { AgentPage } from "../features/agent/AgentPage";
+import { LoginPage } from "../features/auth/LoginPage";
 import { Button } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";
 import { SegmentedControl, SegmentedControlButton } from "../components/ui/SegmentedControl";
@@ -486,6 +487,9 @@ export function App() {
 
   if (isInitialBootstrapping) {
     return <BootstrappingPage connection={bootstrap.connection} onSetConnection={setRuntimeConnection} />;
+  }
+  if (bootstrap.connection.authRequired) {
+    return <LoginPage />;
   }
 
   return (

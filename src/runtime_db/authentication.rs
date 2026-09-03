@@ -98,7 +98,7 @@ impl AuthenticationRepository<'_> {
                     session.user_id,
                     session.auth_method,
                     timestamp(session.created_at),
-                    timestamp(session.expires_at),
+                    session.expires_at.map(timestamp),
                     timestamp(session.last_seen_at),
                     session.revoked_at.map(timestamp),
                 ],
@@ -128,7 +128,7 @@ impl AuthenticationRepository<'_> {
                  SET last_seen_at = ?2
                  WHERE session_digest = ?1
                    AND revoked_at IS NULL
-                   AND expires_at > ?2
+                    AND (expires_at IS NULL OR expires_at > ?2)
                    AND last_seen_at <= ?2",
                 params![session_digest, timestamp(last_seen_at)],
             )? == 1)
@@ -304,7 +304,10 @@ fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuthSessionRecord
         user_id: row.get(1)?,
         auth_method: row.get(2)?,
         created_at: parse_timestamp(row.get(3)?)?,
-        expires_at: parse_timestamp(row.get(4)?)?,
+        expires_at: row
+            .get::<_, Option<String>>(4)?
+            .map(parse_timestamp)
+            .transpose()?,
         last_seen_at: parse_timestamp(row.get(5)?)?,
         revoked_at: row
             .get::<_, Option<String>>(6)?
@@ -390,7 +393,7 @@ mod tests {
             user_id: "user".into(),
             auth_method: "local".into(),
             created_at: now,
-            expires_at: now + chrono::Duration::hours(1),
+            expires_at: Some(now + chrono::Duration::hours(1)),
             last_seen_at: now + chrono::Duration::minutes(5),
             revoked_at: None,
         })?;

@@ -9,6 +9,12 @@ pub async fn web_or_not_found_handler(
     if matches!(method, Method::GET | Method::HEAD) {
         let head_only = method == Method::HEAD;
         let request_path = uri.path().trim_start_matches('/');
+        if request_path == "login" {
+            if let Some(response) = web_asset_response(&state, "index.html", head_only).await {
+                return response;
+            }
+            return login_page_response(head_only);
+        }
         if !request_path.is_empty() {
             if let Some(response) = web_asset_response(&state, request_path, head_only).await {
                 return response;
@@ -20,7 +26,7 @@ pub async fn web_or_not_found_handler(
             {
                 return (
                     StatusCode::FOUND,
-                    [(LOCATION, HeaderValue::from_static("/api/auth/oidc/start"))],
+                    [(LOCATION, HeaderValue::from_static("/login"))],
                 )
                     .into_response();
             }
@@ -30,6 +36,33 @@ pub async fn web_or_not_found_handler(
         }
     }
     not_found("Not Found").into_response()
+}
+
+fn login_page_response(head_only: bool) -> AxumResponse {
+    let body = r#"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Holon login</title>
+  <style>body{font-family:system-ui,sans-serif;max-width:32rem;margin:12vh auto;padding:1.5rem;line-height:1.5}a{display:inline-block;background:#111;color:#fff;padding:.65rem 1rem;border-radius:.5rem;text-decoration:none}.hint{color:#666}</style>
+</head>
+<body>
+  <h1>Sign in to Holon</h1>
+  <p class="hint">Continue with the configured Holon authentication method.</p>
+  <p><a href="/api/auth/oidc/start">Continue with organization login</a></p>
+</body>
+</html>"#;
+    let body = if head_only {
+        Body::empty()
+    } else {
+        Body::from(body)
+    };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, "text/html; charset=utf-8")
+        .body(body)
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 pub(crate) fn accepts_html(headers: &HeaderMap) -> bool {

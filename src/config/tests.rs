@@ -2333,7 +2333,7 @@ fn load_persisted_config_materializes_auth_settings() {
         oidc.redirect_uri.as_deref(),
         Some("http://localhost/callback")
     );
-    assert_eq!(config.auth.session.absolute_ttl_seconds, 900);
+    assert_eq!(config.auth.session.absolute_ttl_seconds, Some(900));
     assert_eq!(config.auth.session.idle_ttl_seconds, 300);
 }
 
@@ -2358,16 +2358,6 @@ fn load_persisted_config_rejects_invalid_auth_settings() {
             "OIDC mode without provider settings",
             crate::config::AuthConfigFile {
                 mode: Some(crate::authentication::AuthenticationMode::Oidc),
-                ..Default::default()
-            },
-        ),
-        (
-            "zero absolute session TTL",
-            crate::config::AuthConfigFile {
-                session: crate::config::SessionConfigFile {
-                    absolute_ttl_seconds: Some(0),
-                    idle_ttl_seconds: Some(1),
-                },
                 ..Default::default()
             },
         ),
@@ -2403,6 +2393,33 @@ fn load_persisted_config_rejects_invalid_auth_settings() {
             "{name} should be rejected"
         );
     }
+}
+
+#[test]
+fn load_persisted_config_normalizes_zero_absolute_session_ttl_to_unlimited() {
+    let home = tempdir().unwrap();
+    save_persisted_config_at(
+        &persisted_config_path(home.path()),
+        &HolonConfigFile {
+            auth: crate::config::AuthConfigFile {
+                session: crate::config::SessionConfigFile {
+                    absolute_ttl_seconds: Some(0),
+                    idle_ttl_seconds: Some(1),
+                },
+                ..Default::default()
+            },
+            model: ModelConfigFile {
+                default: Some("anthropic/claude-sonnet-4-6".into()),
+                ..ModelConfigFile::default()
+            },
+            ..HolonConfigFile::default()
+        },
+    )
+    .unwrap();
+
+    let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+    assert_eq!(config.auth.session.absolute_ttl_seconds, None);
+    assert_eq!(config.auth.session.idle_ttl_seconds, 1);
 }
 
 #[test]
