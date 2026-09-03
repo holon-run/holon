@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { KeyRound } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import holonMarkUrl from "../../assets/holon-mark.png";
 import { Button } from "../../components/ui/Button";
 
 export function LoginPage() {
+  const { t } = useTranslation();
   const [token, setToken] = useState("");
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
@@ -24,7 +26,7 @@ export function LoginPage() {
       headers: { Accept: "application/json" },
     })
       .then(async (response) => {
-        if (!response.ok) throw new Error("Unable to discover authentication method.");
+        if (!response.ok) throw new Error(t("auth.authMethodError"));
         const body = (await response.json()) as { mode?: string };
         setOidc(body.mode === "oidc");
       })
@@ -47,10 +49,10 @@ export function LoginPage() {
         headers: { "Content-Type": "application/json", Accept: "application/json" },
         body: JSON.stringify({ credential: token }),
       });
-      if (!response.ok) throw new Error("The token could not be exchanged.");
+      if (!response.ok) throw new Error(t("auth.tokenExchangeError"));
       window.location.replace(returnTo || "/");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Login failed.");
+      setError(cause instanceof Error ? cause.message : t("auth.loginFailed"));
     } finally {
       setBusy(false);
     }
@@ -59,10 +61,10 @@ export function LoginPage() {
   const oidcStart = `/api/auth/oidc/start?return_to=${encodeURIComponent(returnTo || "/")}`;
   const description =
     oidc === false
-      ? "Enter your static token to create a secure browser session."
+      ? t("auth.tokenDescription")
       : oidc === true
-        ? "Continue with your organization account."
-        : "Checking the authentication method for this runtime…";
+        ? t("auth.oidcDescription")
+        : t("auth.checkingMethod");
 
   return (
     <main className="login-page">
@@ -77,20 +79,20 @@ export function LoginPage() {
               <KeyRound size={20} strokeWidth={2} />
             </span>
             <div>
-              <p className="login-eyebrow">Runtime access</p>
-              <h1 id="login-title">Sign in to Holon</h1>
+              <p className="login-eyebrow">{t("auth.runtimeAccess")}</p>
+              <h1 id="login-title">{t("auth.signInTitle")}</h1>
               <p className="login-description">{description}</p>
             </div>
           </div>
           {oidc === true ? (
             <a className="login-action" href={oidcStart}>
-              Continue with organization login
+              {t("auth.organizationLogin")}
             </a>
           ) : null}
           {oidc === false ? (
             <form className="login-form" onSubmit={submit}>
               <div className="login-field">
-                <label htmlFor="login-token">Static token</label>
+                <label htmlFor="login-token">{t("auth.staticToken")}</label>
                 <div className="login-input">
                   <KeyRound size={17} aria-hidden="true" />
                   <input
@@ -98,16 +100,16 @@ export function LoginPage() {
                     type="password"
                     value={token}
                     onChange={(event) => setToken(event.target.value)}
-                    placeholder="Paste your access token"
+                    placeholder={t("auth.pasteToken")}
                     autoComplete="current-password"
                     aria-describedby="login-token-hint"
                     autoFocus
                   />
                 </div>
-                <p id="login-token-hint">The token is exchanged for a browser session.</p>
+                <p id="login-token-hint">{t("auth.tokenHint")}</p>
               </div>
               <Button className="login-submit" variant="accent" type="submit" disabled={busy || !token.trim()}>
-                {busy ? "Signing in…" : "Sign in with token"}
+                {busy ? t("auth.signingIn") : t("auth.signInWithToken")}
               </Button>
               {error ? (
                 <p className="login-error" role="alert">
