@@ -1,4 +1,8 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { KeyRound } from "lucide-react";
+
+import holonMarkUrl from "../../assets/holon-mark.png";
+import { Button } from "../../components/ui/Button";
 
 export function LoginPage() {
   const [token, setToken] = useState("");
@@ -53,37 +57,67 @@ export function LoginPage() {
   }
 
   const oidcStart = `/api/auth/oidc/start?return_to=${encodeURIComponent(returnTo || "/")}`;
+  const description =
+    oidc === false
+      ? "Enter your static token to create a secure browser session."
+      : oidc === true
+        ? "Continue with your organization account."
+        : "Checking the authentication method for this runtime…";
+
   return (
     <main className="login-page">
-      <section className="login-card" aria-labelledby="login-title">
-        <h1 id="login-title">Sign in to Holon</h1>
-        <p>
-          {oidc === false
-            ? "Enter a static token to create a session."
-            : "Continue with organization login."}
-        </p>
-        {oidc === true ? (
-          <a className="button button-primary" href={oidcStart}>
-            Continue with organization login
-          </a>
-        ) : null}
-        {oidc === false ? (
-          <form onSubmit={submit}>
-            <label htmlFor="login-token">Static token</label>
-            <input
-              id="login-token"
-              type="password"
-              value={token}
-              onChange={(event) => setToken(event.target.value)}
-              autoComplete="current-password"
-            />
-            <button className="button" type="submit" disabled={busy || !token.trim()}>
-              {busy ? "Signing in…" : "Sign in with token"}
-            </button>
-            {error ? <p role="alert">{error}</p> : null}
-          </form>
-        ) : null}
-      </section>
+      <div className="login-shell">
+        <div className="login-brand" aria-label="Holon">
+          <img src={holonMarkUrl} alt="" />
+          <span>Holon</span>
+        </div>
+        <section className="login-card" aria-labelledby="login-title">
+          <div className="login-card-header">
+            <span className="login-card-icon" aria-hidden="true">
+              <KeyRound size={20} strokeWidth={2} />
+            </span>
+            <div>
+              <p className="login-eyebrow">Runtime access</p>
+              <h1 id="login-title">Sign in to Holon</h1>
+              <p className="login-description">{description}</p>
+            </div>
+          </div>
+          {oidc === true ? (
+            <a className="login-action" href={oidcStart}>
+              Continue with organization login
+            </a>
+          ) : null}
+          {oidc === false ? (
+            <form className="login-form" onSubmit={submit}>
+              <div className="login-field">
+                <label htmlFor="login-token">Static token</label>
+                <div className="login-input">
+                  <KeyRound size={17} aria-hidden="true" />
+                  <input
+                    id="login-token"
+                    type="password"
+                    value={token}
+                    onChange={(event) => setToken(event.target.value)}
+                    placeholder="Paste your access token"
+                    autoComplete="current-password"
+                    aria-describedby="login-token-hint"
+                    autoFocus
+                  />
+                </div>
+                <p id="login-token-hint">The token is exchanged for a browser session.</p>
+              </div>
+              <Button className="login-submit" variant="accent" type="submit" disabled={busy || !token.trim()}>
+                {busy ? "Signing in…" : "Sign in with token"}
+              </Button>
+              {error ? (
+                <p className="login-error" role="alert">
+                  {error}
+                </p>
+              ) : null}
+            </form>
+          ) : null}
+        </section>
+      </div>
     </main>
   );
 }

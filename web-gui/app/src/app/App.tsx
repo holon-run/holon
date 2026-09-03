@@ -14,6 +14,7 @@ import {
   LayoutTemplate,
   ListTree,
   LoaderCircle,
+  LogOut,
   RefreshCw,
   Search as SearchIcon,
   Settings as SettingsIcon,
@@ -1055,8 +1056,14 @@ function ConnectionSwitcher({
       >
         <span className={`runtime-dot ${connection.error ? "error" : ""}`} />
         <span>
-          <strong>{connection.mode}</strong>
-          <small>{connection.summary}</small>
+          <strong>
+            {connection.mode === "local" && !remoteConnectionsAllowed ? t("connection.currentServer") : connection.mode}
+          </strong>
+          <small>
+            {connection.mode === "local" && !remoteConnectionsAllowed
+              ? globalThis.location?.host ?? connection.summary
+              : connection.summary}
+          </small>
         </span>
       </button>
       {open ? (
@@ -1111,8 +1118,14 @@ function ConnectionSwitcher({
             onClick={() => void applyConnection({ mode: "local" })}
           >
             <span>
-              <strong>{t("connection.localhost")}</strong>
-              <small>{remoteConnectionsAllowed ? t("connection.localRuntime") : t("connection.sameOrigin")}</small>
+              <strong>
+                {remoteConnectionsAllowed ? t("connection.localhost") : t("connection.currentServer")}
+              </strong>
+              <small>
+                {remoteConnectionsAllowed
+                  ? t("connection.localRuntime")
+                  : globalThis.location?.host ?? t("connection.currentSite")}
+              </small>
             </span>
             <span>{connection.mode === "local" ? t("status.current") : t("status.use")}</span>
           </button>
@@ -1179,8 +1192,50 @@ function ConnectionSwitcher({
               </Button>
             </div>
           ) : null}
+          {!connection.hasToken ? <SessionLogout /> : null}
         </form>
       ) : null}
+    </div>
+  );
+}
+
+function SessionLogout() {
+  const { t } = useTranslation();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(false);
+
+  async function logout() {
+    setBusy(true);
+    setError(false);
+    try {
+      const response = await fetch("/api/auth/session/logout", {
+        method: "POST",
+        credentials: "include",
+        headers: { Accept: "application/json" },
+      });
+      if (!response.ok) throw new Error("Logout failed");
+      const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+      window.location.replace(`/login?return_to=${encodeURIComponent(returnTo || "/")}`);
+    } catch {
+      setError(true);
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="session-logout">
+      <button
+        className="session-logout-button"
+        type="button"
+        onClick={() => void logout()}
+        disabled={busy}
+        aria-label={t("connection.logout")}
+        title={t("connection.logout")}
+      >
+        <LogOut size={16} />
+        <span>{busy ? t("connection.loggingOut") : t("connection.logout")}</span>
+      </button>
+      {error ? <span className="session-logout-error" role="alert">{t("connection.logoutFailed")}</span> : null}
     </div>
   );
 }
