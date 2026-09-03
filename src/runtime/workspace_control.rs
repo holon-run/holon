@@ -775,6 +775,7 @@ impl RuntimeHandle {
                     .and_then(|worktree| worktree.head_commit.clone()),
                 changed_files: Vec::new(),
                 error: None,
+                branch_retained_reason: None,
                 summary_text: Some("worktree was already removed".into()),
             });
         }
@@ -923,12 +924,14 @@ impl RuntimeHandle {
                 branch_tip: record.head,
                 changed_files,
                 error: None,
+                branch_retained_reason: None,
                 summary_text: Some("dirty worktree retained".into()),
             });
         }
 
         let branch = record.branch_ref.as_deref().and_then(short_branch_name);
         let tip = record.head.clone();
+        let mut branch_retained_reason = None;
         if record.detached && merged_into.is_none() {
             return Err(anyhow!(
                 "detached HEAD removal requires `merged_into` reachability proof"
@@ -947,9 +950,12 @@ impl RuntimeHandle {
                 )
                 .await?
             {
-                return Err(anyhow!(
-                    "worktree HEAD is not merged into `{merged_into}`; artifact retained"
-                ));
+                if record.detached {
+                    return Err(anyhow!(
+                        "worktree HEAD is not merged into `{merged_into}`; artifact retained"
+                    ));
+                }
+                branch_retained_reason = Some("not_ancestor_of_merged_into".to_string());
             }
         }
 
@@ -999,6 +1005,7 @@ impl RuntimeHandle {
                 branch_tip: tip,
                 changed_files: Vec::new(),
                 error: Some(remove.stderr),
+                branch_retained_reason: None,
                 summary_text: Some("git refused worktree removal; artifact retained".into()),
             });
         }
@@ -1008,7 +1015,8 @@ impl RuntimeHandle {
             .execution_root_entries()
             .mark_removed(execution_root_id)?;
         let mut branch_deleted = false;
-        if branch_policy == WorktreeBranchPolicy::DeleteIfMerged {
+        if branch_policy == WorktreeBranchPolicy::DeleteIfMerged && branch_retained_reason.is_none()
+        {
             if let (Some(branch_ref), Some(tip)) = (record.branch_ref.as_deref(), tip.as_deref()) {
                 let delete = self
                     .run_git(
@@ -1033,6 +1041,7 @@ impl RuntimeHandle {
                         branch_tip: Some(tip.to_string()),
                         changed_files: Vec::new(),
                         error: Some(delete.stderr),
+                        branch_retained_reason: Some("branch_deletion_failed".into()),
                         summary_text: Some(
                             "worktree removed but branch deletion failed safely".into(),
                         ),
@@ -1047,11 +1056,17 @@ impl RuntimeHandle {
                 "execution_root_id": execution_root_id,
                 "branch": branch,
                 "branch_deleted": branch_deleted,
+                "branch_retained_reason": branch_retained_reason,
             }),
         )?;
+        let branch_retained = branch_retained_reason.is_some();
         Ok(RemoveWorktreeResult {
             execution_root_id: execution_root_id.into(),
-            disposition: "removed".into(),
+            disposition: if branch_retained {
+                "removed_branch_retained".into()
+            } else {
+                "removed".into()
+            },
             switched,
             removed: true,
             branch_deleted,
@@ -1059,7 +1074,13 @@ impl RuntimeHandle {
             branch_tip: tip,
             changed_files: Vec::new(),
             error: None,
-            summary_text: Some("worktree removed safely".into()),
+            branch_retained_reason,
+            summary_text: Some(if branch_retained {
+                "worktree removed; branch retained because merge reachability could not be proven"
+                    .into()
+            } else {
+                "worktree removed safely".into()
+            }),
         })
     }
 

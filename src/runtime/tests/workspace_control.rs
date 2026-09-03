@@ -330,6 +330,55 @@ async fn remove_worktree_retains_dirty_then_removes_clean_without_deleting_branc
 }
 
 #[tokio::test]
+async fn remove_worktree_keeps_branch_when_merge_reachability_check_fails() {
+    let (_home, _host, runtime) = host_backed_test_runtime().await;
+    let repo = init_git_repo();
+    let workspace = runtime
+        .attach_workspace_path(repo.path().to_path_buf())
+        .await
+        .unwrap()
+        .workspace;
+    let created = runtime
+        .create_worktree_for_workspace(
+            &workspace.workspace_id,
+            "feature/not-merged",
+            "main",
+            None,
+            false,
+            ExistingWorktreePolicy::Reuse,
+        )
+        .await
+        .unwrap();
+    let execution_root_id = created.execution_root_id.unwrap();
+    let worktree_path = created.worktree_path.unwrap();
+
+    git(repo.path(), &["branch", "unrelated", "main"]);
+    std::fs::write(worktree_path.join("feature.txt"), "feature\n").unwrap();
+    git(&worktree_path, &["add", "."]);
+    git(&worktree_path, &["commit", "-m", "feature commit"]);
+
+    let removed = runtime
+        .remove_registered_worktree(
+            &execution_root_id,
+            None,
+            WorktreeBranchPolicy::DeleteIfMerged,
+            Some("unrelated"),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(removed.disposition, "removed_branch_retained");
+    assert!(removed.removed);
+    assert!(!removed.branch_deleted);
+    assert_eq!(
+        removed.branch_retained_reason.as_deref(),
+        Some("not_ancestor_of_merged_into")
+    );
+    assert!(!worktree_path.exists());
+    assert!(!git(repo.path(), &["branch", "--list", "feature/not-merged"]).is_empty());
+}
+
+#[tokio::test]
 async fn active_dirty_remove_preflight_does_not_switch_workspace() {
     let (_home, _host, runtime) = host_backed_test_runtime().await;
     let repo = init_git_repo();
