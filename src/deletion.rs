@@ -274,6 +274,20 @@ impl RuntimeHost {
             }
         }
 
+        // Abort pending queue entries to prevent orphaned queued messages.
+        let queue_aborted = self
+            .runtime_db()
+            .queue_entries()
+            .abort_pending_for_agent(agent_id)
+            .unwrap_or(0);
+        if queue_aborted > 0 {
+            debug!(
+                agent_id,
+                count = queue_aborted,
+                "aborted pending queue entries"
+            );
+        }
+
         // Emit audit event via storage if available.
         let _ = storage.append_event(&AuditEvent::legacy(
             "deletion_quiesce",
@@ -281,6 +295,7 @@ impl RuntimeHost {
                 "agent_id": agent_id,
                 "tasks_cancelled": tasks_count,
                 "waits_cancelled": waits_count,
+                "queue_entries_aborted": queue_aborted,
             }),
         ));
 

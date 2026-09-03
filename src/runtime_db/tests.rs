@@ -4516,6 +4516,70 @@ CREATE TABLE working_memory_deltas (
     }
 
     #[test]
+    fn abort_pending_for_agent_aborts_queued_and_interrupted_entries() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let now = Utc::now();
+
+        let queued_entry = QueueEntryRecord {
+            message_id: "msg-queued-abort".into(),
+            agent_id: "agent-abort".into(),
+            priority: crate::types::Priority::Normal,
+            status: QueueEntryStatus::Queued,
+            created_at: now,
+            updated_at: now,
+        };
+        let interrupted_entry = QueueEntryRecord {
+            message_id: "msg-interrupted-abort".into(),
+            agent_id: "agent-abort".into(),
+            priority: crate::types::Priority::Normal,
+            status: QueueEntryStatus::Interrupted,
+            created_at: now,
+            updated_at: now,
+        };
+        let processed_entry = QueueEntryRecord {
+            message_id: "msg-processed-keep".into(),
+            agent_id: "agent-abort".into(),
+            priority: crate::types::Priority::Normal,
+            status: QueueEntryStatus::Processed,
+            created_at: now,
+            updated_at: now,
+        };
+
+        db.queue_entries().upsert(&queued_entry)?;
+        db.queue_entries().upsert(&interrupted_entry)?;
+        db.queue_entries().upsert(&processed_entry)?;
+
+        let count = db.queue_entries().abort_pending_for_agent("agent-abort")?;
+        assert_eq!(count, 2, "should abort queued and interrupted entries");
+
+        assert_eq!(
+            db.queue_entries()
+                .latest("msg-queued-abort")?
+                .unwrap()
+                .status,
+            QueueEntryStatus::Aborted
+        );
+        assert_eq!(
+            db.queue_entries()
+                .latest("msg-interrupted-abort")?
+                .unwrap()
+                .status,
+            QueueEntryStatus::Aborted
+        );
+        // Processed entries should be untouched.
+        assert_eq!(
+            db.queue_entries()
+                .latest("msg-processed-keep")?
+                .unwrap()
+                .status,
+            QueueEntryStatus::Processed
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn recovery_candidate_agent_ids_include_dequeued_and_interrupted_entries() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;

@@ -1641,6 +1641,23 @@ impl QueueEntryRepository<'_> {
         records.reverse();
         Ok(records)
     }
+
+    /// Abort all pending (Queued or Interrupted) queue entries for an agent.
+    ///
+    /// Used during agent stop/deletion to prevent orphaned entries that would
+    /// never be consumed. Returns the number of entries aborted.
+    pub fn abort_pending_for_agent(&self, agent_id: &str) -> Result<usize> {
+        let entries = self.queued_for_agent(agent_id)?;
+        let now = chrono::Utc::now();
+        let mut count = 0;
+        for mut entry in entries {
+            entry.status = QueueEntryStatus::Aborted;
+            entry.updated_at = now;
+            self.upsert(&entry)?;
+            count += 1;
+        }
+        Ok(count)
+    }
 }
 
 impl TimerRepository<'_> {

@@ -3012,6 +3012,26 @@ impl RuntimeHost {
                 }
             }
         }
+        // Abort pending queue entries to prevent orphaned queued messages
+        // that would never be consumed after the agent is removed.
+        if let Ok(aborted_count) = self
+            .runtime_db()
+            .queue_entries()
+            .abort_pending_for_agent(agent_id)
+        {
+            if aborted_count > 0 {
+                if let Ok(storage) = self.agent_storage(agent_id) {
+                    let _ = storage.append_event(&crate::types::AuditEvent::legacy(
+                        "queue_entries_aborted",
+                        serde_json::json!({
+                            "agent_id": agent_id,
+                            "reason": "agent_archived",
+                            "count": aborted_count,
+                        }),
+                    ));
+                }
+            }
+        }
 
         let data_dir = self.agent_data_dir(agent_id);
         if data_dir.exists() {
@@ -3083,6 +3103,12 @@ impl RuntimeHost {
                 self.append_agent_identity(&identity)?;
             }
         }
+        // Abort pending queue entries as a safety net for agents that were
+        // stopped through a different path (e.g. data dir already removed).
+        let _ = self
+            .runtime_db()
+            .queue_entries()
+            .abort_pending_for_agent(agent_id)?;
 
         let data_dir = self.agent_data_dir(agent_id);
         if data_dir.exists() {
@@ -6804,6 +6830,138 @@ mod tests {
                 .unwrap()
                 .status,
             AgentRegistryStatus::Deleted
+        );
+    }
+
+    #[tokio::test]
+    async fn archive_private_agent_aborts_pending_queue_entries() {
+        let (_home, host) = test_host();
+        let parent_id = "archive-queue-parent";
+
+        // Create parent agent.
+        let parent = AgentIdentityRecord::new(
+            parent_id,
+            AgentKind::Default,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        host.append_agent_identity(&parent).unwrap();
+        host.runtime_db()
+            .agent_identities()
+            .upsert(&parent)
+            .unwrap();
+
+        // Create a private child with queued entries.
+        let child_id = "archive-queue-child";
+        let child = AgentIdentityRecord::new(
+            child_id,
+            AgentKind::Child,
+            AgentVisibility::Private,
+            AgentOwnership::ParentSupervised,
+            AgentProfilePreset::PrivateChild,
+            Some(parent_id.to_string()),
+            Some("task-queue-1".to_string()),
+        );
+        host.append_agent_identity(&child).unwrap();
+        host.runtime_db().agent_identities().upsert(&child).unwrap();
+
+        let now = Utc::now();
+        host.runtime_db()
+            .queue_entries()
+            .upsert(&QueueEntryRecord {
+                message_id: "msg-queued-orphan-1".into(),
+                agent_id: child_id.into(),
+                priority: Priority::Normal,
+                status: QueueEntryStatus::Queued,
+                created_at: now,
+                updated_at: now,
+            })
+            .unwrap();
+        host.runtime_db()
+            .queue_entries()
+            .upsert(&QueueEntryRecord {
+                message_id: "msg-interrupted-orphan-1".into(),
+                agent_id: child_id.into(),
+                priority: Priority::Normal,
+                status: QueueEntryStatus::Interrupted,
+                created_at: now,
+                updated_at: now,
+            })
+            .unwrap();
+
+        // Archive the private child agent.
+        host.archive_private_agent(child_id).await.unwrap();
+
+        // Verify queued entries were aborted.
+        assert_eq!(
+            host.runtime_db()
+                .queue_entries()
+                .latest("msg-queued-orphan-1")
+                .unwrap()
+                .unwrap()
+                .status,
+            QueueEntryStatus::Aborted
+        );
+        assert_eq!(
+            host.runtime_db()
+                .queue_entries()
+                .latest("msg-interrupted-orphan-1")
+                .unwrap()
+                .unwrap()
+                .status,
+            QueueEntryStatus::Aborted
+        );
+    }
+
+    #[tokio::test]
+    async fn deletion_pipeline_aborts_pending_queue_entries() {
+        let (_home, host) = test_host();
+
+        // Create a public self-owned agent with queued entries.
+        let agent = AgentIdentityRecord::new(
+            "delete-queue-me",
+            AgentKind::Default,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        host.append_agent_identity(&agent).unwrap();
+        host.runtime_db().agent_identities().upsert(&agent).unwrap();
+
+        let now = Utc::now();
+        host.runtime_db()
+            .queue_entries()
+            .upsert(&QueueEntryRecord {
+                message_id: "msg-queued-delete-1".into(),
+                agent_id: "delete-queue-me".into(),
+                priority: Priority::Normal,
+                status: QueueEntryStatus::Queued,
+                created_at: now,
+                updated_at: now,
+            })
+            .unwrap();
+
+        // Begin deletion and execute the full pipeline.
+        let (_, job, _) = host
+            .begin_public_agent_deletion("delete-queue-me", false, "operator")
+            .await
+            .unwrap();
+        host.execute_deletion_job(job).await.unwrap();
+
+        // Verify the queued entry was aborted.
+        assert_eq!(
+            host.runtime_db()
+                .queue_entries()
+                .latest("msg-queued-delete-1")
+                .unwrap()
+                .unwrap()
+                .status,
+            QueueEntryStatus::Aborted
         );
     }
 
