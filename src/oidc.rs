@@ -462,4 +462,25 @@ mod tests {
         assert!(!Audience::Many(vec!["client".into()]).requires_authorized_party());
         assert!(Audience::Many(vec!["client".into(), "other".into()]).requires_authorized_party());
     }
+
+    #[test]
+    fn validates_a_real_rs256_id_token_signature() {
+        let token = "eyJhbGciOiJSUzI1NiIsImtpZCI6InRlc3Qta2V5IiwidHlwIjoiSldUIn0.eyJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlIiwic3ViIjoidXNlci0xIiwiYXVkIjoiY2xpZW50LWlkIiwiZXhwIjo0MTAyNDQ0ODAwLCJpYXQiOjE3MDAwMDAwMDB9.DInTkMDwCEWkq8ur4VROtKtjoAoVgdA3FoFxcANuUNTYeCL_vFok_ygkAy8uXXQvhg5FucM8bNil2XHoAgSQH4xfP2vDI-S0ZkcKWv-15vYjp_oQZ9wEJiwqGp-yBiJ9UdvZeS5MLVFDt8MWxlznm8UUlAvteOyDf8Hv7YmIHkYTQoYEmTSMi2jK5zFryLn_vjeW9r2sIWjj5OTzxF-Tvx1dgv7sLOzYl90dIL3Fg7_ZuWqgsDVPrfLFx_ygH9QBKB5LjLXmUkqgasQiF52fwdDhPXDS3z9oi40yPvsTovGF1Z0DgGY9NBteHgGVn6fqOfMpC3blDRfeIArzdGxjNg";
+        let key = DecodingKey::from_rsa_components(
+            "tB64pcpgi1oFG8JlacqqFcXtG2YYzAQxhRJbTwOZhf101qwsyjt89NE_u2RV8jKp9jjpsKizK-FMKEEZ5EPpGHEF4Y63djA1MJ3pNp3dY9tzK3ZvfEUSApDEgVvok_zXqiRok_CntIpcCJDaPF2GOULOHrBEeEZq4h0P7uQqxrgOaCv-R_jW1ycRynYmneLhCHlOEKYzOn6wOzQZ2qRNmcl5c_wBtwtpBLFLh4WwmjvYQKamJDqEowlirjYKjzrSuTWcDJG2Lbs7F0sVZzTdIdoao2q32C3y1GlVgPQCPcCOflt3YG73KNFLIa08B77nzajZJEAdUT6xQ09W0WzCbw",
+            "AQAB",
+        )
+        .expect("valid RSA JWK components");
+        let mut validation = Validation::new(Algorithm::RS256);
+        validation.set_issuer(&["https://issuer.example"]);
+        validation.set_audience(&["client-id"]);
+
+        let claims = decode::<IdTokenClaims>(token, &key, &validation)
+            .expect("RSA ID Token signature should validate")
+            .claims;
+
+        assert_eq!(claims.iss, "https://issuer.example");
+        assert_eq!(claims.sub, "user-1");
+        assert!(claims.aud.contains("client-id"));
+    }
 }
