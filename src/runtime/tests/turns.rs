@@ -1,6 +1,8 @@
 use super::super::*;
 use super::support::*;
 
+use crate::tool::ApplyPatchSurface;
+
 struct PickThenExecProvider {
     calls: Mutex<usize>,
     target_work_item_id: String,
@@ -2060,6 +2062,37 @@ async fn view_image_selection_uses_current_turn_fallback_model() {
         selection.primary_model.as_deref(),
         Some("claude-sonnet-4-6")
     );
+}
+
+#[tokio::test]
+async fn apply_patch_surface_uses_current_turn_fallback_model() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    // Without the turn-local fallback binding the surface follows the primary
+    // chain head (anthropic in this test setup).
+    assert_eq!(
+        runtime.current_apply_patch_surface().await,
+        ApplyPatchSurface::UnifiedDiffJson
+    );
+
+    *runtime.inner.turn_fallback_model.write().await = Some(
+        crate::config::ModelRouteRef::parse_compatible("deepseek@responses/deepseek-v4-pro")
+            .unwrap(),
+    );
+
+    let surface = runtime.current_apply_patch_surface().await;
+    assert_eq!(surface, ApplyPatchSurface::CodexDslFreeform);
 }
 
 #[tokio::test]

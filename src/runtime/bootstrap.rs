@@ -522,17 +522,16 @@ impl RuntimeHandle {
             let guard = self.inner.agent.lock().await;
             guard.state.clone()
         };
-        self.apply_patch_surface_for_state(&state)
+        // The turn-local fallback binding keeps invocation-time patch parsing on
+        // the surface of the model that is actually serving this turn.
+        let fallback_model = self.inner.turn_fallback_model.read().await.clone();
+        self.apply_patch_surface_for_turn(&state, fallback_model.as_ref())
     }
 
     /// Attach a shared memory-index notify so the daemon-level indexer is
     /// woken when this runtime writes new evidence for indexing.
     pub(crate) fn enable_memory_index_notify(&self, notify: Arc<tokio::sync::Notify>) {
         let _ = self.inner.storage.enable_memory_index_notify(notify);
-    }
-
-    pub(crate) fn apply_patch_surface_for_state(&self, state: &AgentState) -> ApplyPatchSurface {
-        self.apply_patch_surface_for_turn(state, None)
     }
 
     pub(crate) fn apply_patch_surface_for_turn(
