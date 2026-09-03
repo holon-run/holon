@@ -764,7 +764,7 @@ fn build_system_sections(
         section(
             "core_contract",
             PromptStability::Stable,
-            "Read before changing. When analyzing a project, describe the current structure before recommending changes. When changing code, keep edits as small and local as possible, but use ApplyPatch as the default file-mutation primitive instead of shell rewrite tricks or whole-file rewrites. Avoid redundant tool calls once you already have enough evidence to act. Do not re-read files, AGENTS guidance, or command output already present in the current context unless a concrete changed-state question requires it.".to_string(),
+            "Read before changing. When analyzing a project, describe the current structure before recommending changes. When changing code, keep edits as small and local as possible, and prefer mutation primitives whose success and failure are explicit; the file-mutation guidance defines the scenario defaults. Avoid redundant tool calls once you already have enough evidence to act. Do not re-read files, AGENTS guidance, or command output already present in the current context unless a concrete changed-state question requires it.".to_string(),
         ),
         section(
             "tool_use_contract",

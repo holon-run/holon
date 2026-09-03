@@ -732,7 +732,9 @@ mod tests {
             .iter()
             .find(|s| s.name == "tool_file_mutation")
             .expect("file mutation section");
-        assert!(section.content.contains("centered on ApplyPatch"));
+        assert!(section.content.contains("scenario-based"));
+        assert!(section.content.contains("default to ApplyPatch"));
+        assert!(section.content.contains("bounded heredoc are equivalent"));
         assert!(section
             .content
             .contains("Relative patch paths resolve from the active workspace"));
@@ -743,7 +745,7 @@ mod tests {
         assert!(section
             .content
             .contains("do not retry the same large failed patch unchanged"));
-        assert!(section.content.contains("bounded script or heredoc"));
+        assert!(section.content.contains("Avoid in-place shell rewrites"));
         assert!(section
             .content
             .contains("do not re-read the same file merely to confirm"));
