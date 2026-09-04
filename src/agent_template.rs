@@ -329,6 +329,7 @@ struct GitHubContentsDirEntry {
 pub enum AgentTemplateRemoteSourceSyncStatus {
     NotSynced,
     Synced,
+    PartiallyFailed,
     Failed,
     Disabled,
 }
@@ -1077,6 +1078,7 @@ fn load_remote_source_row(
 fn parse_remote_source_sync_status(value: &str) -> AgentTemplateRemoteSourceSyncStatus {
     match value {
         "synced" => AgentTemplateRemoteSourceSyncStatus::Synced,
+        "partially_failed" => AgentTemplateRemoteSourceSyncStatus::PartiallyFailed,
         "failed" => AgentTemplateRemoteSourceSyncStatus::Failed,
         "disabled" => AgentTemplateRemoteSourceSyncStatus::Disabled,
         _ => AgentTemplateRemoteSourceSyncStatus::NotSynced,
@@ -1087,6 +1089,7 @@ fn remote_source_sync_status_label(status: &AgentTemplateRemoteSourceSyncStatus)
     match status {
         AgentTemplateRemoteSourceSyncStatus::NotSynced => "not_synced",
         AgentTemplateRemoteSourceSyncStatus::Synced => "synced",
+        AgentTemplateRemoteSourceSyncStatus::PartiallyFailed => "partially_failed",
         AgentTemplateRemoteSourceSyncStatus::Failed => "failed",
         AgentTemplateRemoteSourceSyncStatus::Disabled => "disabled",
     }
@@ -1161,8 +1164,11 @@ pub async fn sync_agent_template_remote_source(
             synced_at: now,
         },
     );
+    let mut diagnostics = Vec::new();
+    let mut failures = Vec::new();
+    let mut installed = 0usize;
     for entry in &catalog {
-        let record = install_remote_template_catalog_entry(
+        let result = install_remote_template_catalog_entry(
             &github,
             &templates_root,
             &registry,
@@ -1172,23 +1178,46 @@ pub async fn sync_agent_template_remote_source(
             now,
             entry,
         )
-        .await?;
-        registry.installed.insert(record.local_path.clone(), record);
-        write_template_registry(&templates_root, &registry)?;
+        .await;
+        match result {
+            Ok(record) => {
+                installed += 1;
+                registry.installed.insert(record.local_path.clone(), record);
+                write_template_registry(&templates_root, &registry)?;
+            }
+            Err(error) => {
+                let message = format!(
+                    "failed to install remote template {}: {error:#}",
+                    entry.template_id
+                );
+                diagnostics.push(AgentTemplateCatalogDiagnostic {
+                    source_id: source_id.to_string(),
+                    severity: "error".into(),
+                    message: message.clone(),
+                });
+                failures.push(message);
+            }
+        }
     }
+    let status_kind = match (failures.is_empty(), installed > 0) {
+        (true, _) => AgentTemplateRemoteSourceSyncStatus::Synced,
+        (false, true) => AgentTemplateRemoteSourceSyncStatus::PartiallyFailed,
+        (false, false) => AgentTemplateRemoteSourceSyncStatus::Failed,
+    };
+    let error = (!failures.is_empty()).then(|| failures.join("; "));
     let status = AgentTemplateRemoteSourceStatus {
         source_id: source_id.to_string(),
         kind: "github".into(),
         url: config.url.clone(),
         requested_ref: config.git_ref.clone(),
         enabled: true,
-        status: AgentTemplateRemoteSourceSyncStatus::Synced,
+        status: status_kind,
         last_synced_at: Some(now),
         resolved_ref: Some(resolved_ref),
         resolved_revision: None,
-        error: None,
+        error,
     };
-    upsert_remote_source_sync(db, &status, &catalog, &[])?;
+    upsert_remote_source_sync(db, &status, &catalog, &diagnostics)?;
     Ok(status)
 }
 
@@ -5345,7 +5374,7 @@ name = "Worker"
     }
 
     #[tokio::test]
-    async fn sync_remote_source_refuses_to_overwrite_dirty_managed_template() {
+    async fn sync_remote_source_reports_dirty_managed_template_failure() {
         let _lock = crate::test_env::lock_env();
         let home = tempdir().unwrap();
         let db = RuntimeDb::open_and_migrate(
@@ -5415,15 +5444,157 @@ name = "Worker"
             "HOLON_TEMPLATE_GITHUB_API_BASE",
             format!("http://{}", server.addr),
         );
-        let err = sync_agent_template_remote_source(&db, home.path(), "official", &config)
+        let status = sync_agent_template_remote_source(&db, home.path(), "official", &config)
             .await
-            .unwrap_err();
+            .unwrap();
 
-        assert!(err.to_string().contains("local changes"), "{err:#}");
+        assert_eq!(status.status, AgentTemplateRemoteSourceSyncStatus::Failed);
+        assert!(status.error.as_deref().unwrap().contains("local changes"));
         assert_eq!(
             fs::read_to_string(template_dir.join(TEMPLATE_AGENTS_FILENAME)).unwrap(),
             "local edit"
         );
+        let snapshot = load_remote_template_catalog_snapshot(
+            &db,
+            &BTreeMap::from([("official".into(), config.clone())]),
+        )
+        .unwrap();
+        assert_eq!(snapshot.diagnostics.len(), 1);
+        assert!(snapshot.diagnostics[0].message.contains("worker"));
+    }
+
+    #[tokio::test]
+    async fn sync_remote_source_continues_after_dirty_managed_template() {
+        let _lock = crate::test_env::lock_env();
+        let home = tempdir().unwrap();
+        let db = RuntimeDb::open_and_migrate(
+            home.path().join("runtime.sqlite"),
+            home.path().join("runtime.sqlite.lock"),
+        )
+        .unwrap();
+        let routes = || {
+            vec![
+                (
+                    "/repos/owner/repo/contents/agent_templates",
+                    200,
+                    github_dir_response(&[("worker", "dir"), ("reviewer", "dir")]),
+                ),
+                (
+                    "/repos/owner/repo/contents/agent_templates/worker/template.toml",
+                    200,
+                    github_file_response(
+                        r#"schema = "holon.agent_template.v1"
+id = "worker"
+name = "Worker"
+"#,
+                    ),
+                ),
+                (
+                    "/repos/owner/repo/contents/agent_templates/reviewer/template.toml",
+                    200,
+                    github_file_response(
+                        r#"schema = "holon.agent_template.v1"
+id = "reviewer"
+name = "Reviewer"
+"#,
+                    ),
+                ),
+                (
+                    "/repos/owner/repo/contents/agent_templates/worker/AGENTS.md",
+                    200,
+                    github_file_response("local worker"),
+                ),
+                (
+                    "/repos/owner/repo/contents/agent_templates/worker/skills.toml",
+                    404,
+                    "{\"message\":\"not found\"}".to_string(),
+                ),
+                (
+                    "/repos/owner/repo/contents/agent_templates/worker/template.toml",
+                    200,
+                    github_file_response(
+                        r#"schema = "holon.agent_template.v1"
+id = "worker"
+name = "Worker"
+"#,
+                    ),
+                ),
+                (
+                    "/repos/owner/repo/contents/agent_templates/reviewer/AGENTS.md",
+                    200,
+                    github_file_response("remote reviewer"),
+                ),
+                (
+                    "/repos/owner/repo/contents/agent_templates/reviewer/skills.toml",
+                    404,
+                    "{\"message\":\"not found\"}".to_string(),
+                ),
+                (
+                    "/repos/owner/repo/contents/agent_templates/reviewer/template.toml",
+                    200,
+                    github_file_response(
+                        r#"schema = "holon.agent_template.v1"
+id = "reviewer"
+name = "Reviewer"
+"#,
+                    ),
+                ),
+            ]
+        };
+        let server = MockGithubServer::start(routes());
+        let _api_guard = EnvGuard::set(
+            "HOLON_TEMPLATE_GITHUB_API_BASE",
+            format!("http://{}", server.addr),
+        );
+        let config = AgentTemplateRemoteSourceConfigFile {
+            url: "https://github.com/owner/repo".into(),
+            git_ref: Some("main".into()),
+            enabled: Some(true),
+            credential_profile: None,
+        };
+
+        sync_agent_template_remote_source(&db, home.path(), "official", &config)
+            .await
+            .unwrap();
+        let worker_dir = templates_root_for_home(home.path()).join("worker");
+        fs::write(worker_dir.join(TEMPLATE_AGENTS_FILENAME), "local edit").unwrap();
+
+        let server = MockGithubServer::start(routes());
+        let _api_guard = EnvGuard::set(
+            "HOLON_TEMPLATE_GITHUB_API_BASE",
+            format!("http://{}", server.addr),
+        );
+        let status = sync_agent_template_remote_source(&db, home.path(), "official", &config)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            status.status,
+            AgentTemplateRemoteSourceSyncStatus::PartiallyFailed
+        );
+        assert!(status.error.as_deref().unwrap().contains("worker"));
+        assert_eq!(
+            fs::read_to_string(worker_dir.join(TEMPLATE_AGENTS_FILENAME)).unwrap(),
+            "local edit"
+        );
+        let reviewer_dir = templates_root_for_home(home.path()).join("reviewer");
+        assert_eq!(
+            fs::read_to_string(reviewer_dir.join(TEMPLATE_AGENTS_FILENAME)).unwrap(),
+            "remote reviewer"
+        );
+        let registry = load_template_registry(&templates_root_for_home(home.path())).unwrap();
+        assert!(registry.installed.contains_key("reviewer"));
+        let snapshot = load_remote_template_catalog_snapshot(
+            &db,
+            &BTreeMap::from([("official".into(), config)]),
+        )
+        .unwrap();
+        assert_eq!(
+            snapshot.sources[0].status,
+            AgentTemplateRemoteSourceSyncStatus::PartiallyFailed
+        );
+        assert_eq!(snapshot.diagnostics.len(), 1);
+        assert!(snapshot.diagnostics[0].message.contains("worker"));
     }
 
     #[tokio::test]
@@ -5497,11 +5668,12 @@ name = "Worker"
             "HOLON_TEMPLATE_GITHUB_API_BASE",
             format!("http://{}", server.addr),
         );
-        let err = sync_agent_template_remote_source(&db, home.path(), "official", &config)
+        let status = sync_agent_template_remote_source(&db, home.path(), "official", &config)
             .await
-            .unwrap_err();
+            .unwrap();
 
-        assert!(err.to_string().contains("local changes"), "{err:#}");
+        assert_eq!(status.status, AgentTemplateRemoteSourceSyncStatus::Failed);
+        assert!(status.error.as_deref().unwrap().contains("local changes"));
         assert_eq!(
             fs::read_to_string(template_dir.join(TEMPLATE_AGENTS_FILENAME)).unwrap(),
             ""

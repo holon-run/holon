@@ -539,14 +539,29 @@ pub(super) async fn create_template_remote_source_sync_job(
             .await
             {
                 Ok(status) => {
-                    completed += 1;
+                    let source_failed = matches!(
+                        status.status,
+                        crate::agent_template::AgentTemplateRemoteSourceSyncStatus::PartiallyFailed
+                            | crate::agent_template::AgentTemplateRemoteSourceSyncStatus::Failed
+                    );
+                    if source_failed {
+                        failed += 1;
+                    } else {
+                        completed += 1;
+                    }
                     source_results.push(json!(status));
                     jobs.update(&job_id, |job| {
                         job.progress.current = completed + failed;
                         if let Some(item) = job.items.iter_mut().find(|item| item.id == source_id) {
-                            item.status = JobStatus::Completed;
-                            item.summary = format!("Synced {source_id}");
-                            item.error = None;
+                            if source_failed {
+                                item.status = JobStatus::Failed;
+                                item.summary = format!("Failed to fully sync {source_id}");
+                                item.error = status.error.clone();
+                            } else {
+                                item.status = JobStatus::Completed;
+                                item.summary = format!("Synced {source_id}");
+                                item.error = None;
+                            }
                         }
                     });
                 }
