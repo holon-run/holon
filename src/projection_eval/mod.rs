@@ -19,6 +19,68 @@ use crate::{
 
 pub const PROJECTION_MANIFEST_SCHEMA_VERSION: u32 = 1;
 pub const PROJECTION_SCORECARD_SCHEMA_VERSION: u32 = 1;
+pub const HISTORY_SELECTOR_SCHEMA_VERSION: u32 = 1;
+
+/// Selects which canonical history candidates are eligible for a request
+/// projection. Selectors are pure request-scoped policy; they do not own
+/// runtime state, scheduling, settlement, or provider calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HistorySelector {
+    RecentTurns,
+    WorkItemScoped,
+}
+
+impl HistorySelector {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::RecentTurns => "recent_turns",
+            Self::WorkItemScoped => "work_item_scoped",
+        }
+    }
+}
+
+/// Request-scoped diagnostic metadata shared by all history selectors.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectionDiagnostics {
+    pub schema_version: u32,
+    pub history_selector: HistorySelector,
+    pub selection_reason: String,
+    pub current_work_item_id: Option<String>,
+    pub input_message_count: usize,
+    pub input_estimated_tokens: usize,
+    pub input_chars: usize,
+    pub fallback_reason: Option<String>,
+    pub policy_version: String,
+}
+
+impl ProjectionDiagnostics {
+    pub fn new(
+        history_selector: HistorySelector,
+        selection_reason: impl Into<String>,
+        current_work_item_id: Option<String>,
+        input_message_count: usize,
+        input_estimated_tokens: usize,
+        input_chars: usize,
+    ) -> Self {
+        Self {
+            schema_version: HISTORY_SELECTOR_SCHEMA_VERSION,
+            history_selector,
+            selection_reason: selection_reason.into(),
+            current_work_item_id,
+            input_message_count,
+            input_estimated_tokens,
+            input_chars,
+            fallback_reason: None,
+            policy_version: format!("history_selector_v{}", HISTORY_SELECTOR_SCHEMA_VERSION),
+        }
+    }
+
+    pub fn with_fallback_reason(mut self, reason: impl Into<String>) -> Self {
+        self.fallback_reason = Some(reason.into());
+        self
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -156,6 +218,8 @@ pub struct ProjectionManifest {
     pub turn_id: Option<String>,
     pub prompt_budget_estimated_tokens: usize,
     pub allocated_estimated_tokens: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostics: Option<ProjectionDiagnostics>,
     pub system_sections: Vec<ProjectionSectionManifest>,
     pub context_sections: Vec<ProjectionSectionManifest>,
     pub invariant_results: Vec<ProjectionInvariantResult>,
@@ -274,6 +338,66 @@ pub fn compare_projection_manifests(
     })
 }
 
+/// Build a selector comparison without invoking a provider or mutating
+/// runtime state. The caller supplies manifests produced from the same
+/// canonical runtime snapshot.
+pub fn compare_history_selectors(
+    recent_turns: &ProjectionManifest,
+    work_item_scoped: &ProjectionManifest,
+) -> serde_json::Result<ProjectionScorecard> {
+    let mut scorecard = compare_projection_manifests(recent_turns, work_item_scoped)?;
+    scorecard
+        .assertions
+        .push(selector_comparison_is_pure(recent_turns, work_item_scoped));
+    scorecard.passed = scorecard.passed
+        && scorecard
+            .assertions
+            .iter()
+            .all(|assertion| assertion.status != ProjectionInvariantStatus::Fail);
+    Ok(scorecard)
+}
+
+/// Evaluate both history selectors from one already-built prompt. This keeps
+/// selector comparison request-scoped and guarantees a shared activation
+/// snapshot without issuing another provider request.
+pub fn compare_prompt_history_selectors(
+    prompt: &EffectivePrompt,
+) -> serde_json::Result<ProjectionScorecard> {
+    let recent_turns =
+        manifest_from_effective_prompt_with_selector(prompt, HistorySelector::RecentTurns);
+    let work_item_scoped =
+        manifest_from_effective_prompt_with_selector(prompt, HistorySelector::WorkItemScoped);
+    compare_history_selectors(&recent_turns, &work_item_scoped)
+}
+
+fn selector_comparison_is_pure(
+    recent_turns: &ProjectionManifest,
+    work_item_scoped: &ProjectionManifest,
+) -> ProjectionInvariantResult {
+    let same_owner = recent_turns.activation_owner == work_item_scoped.activation_owner;
+    let same_binding = recent_turns.activation_binding == work_item_scoped.activation_binding;
+    let same_turn = recent_turns.turn_id == work_item_scoped.turn_id;
+    if same_owner && same_binding && same_turn {
+        invariant(
+            "selector_comparison_same_activation",
+            ProjectionInvariantStatus::Pass,
+            std::iter::empty::<String>(),
+        )
+    } else {
+        invariant(
+            "selector_comparison_same_activation",
+            ProjectionInvariantStatus::Fail,
+            [
+                (!same_owner).then_some("activation owner differs"),
+                (!same_binding).then_some("activation binding differs"),
+                (!same_turn).then_some("turn id differs"),
+            ]
+            .into_iter()
+            .flatten(),
+        )
+    }
+}
+
 pub fn compare_budget_monotonicity(
     larger_budget: &ProjectionManifest,
     smaller_budget: &ProjectionManifest,
@@ -307,7 +431,18 @@ pub fn compare_budget_monotonicity(
 }
 
 pub(crate) fn manifest_from_effective_prompt(prompt: &EffectivePrompt) -> ProjectionManifest {
-    let system_sections = prompt
+    let mut manifest =
+        manifest_from_effective_prompt_with_selector(prompt, HistorySelector::RecentTurns);
+    manifest.projector = "legacy_context_sections_v1".to_string();
+    manifest.diagnostics = None;
+    manifest.evaluate()
+}
+
+pub(crate) fn manifest_from_effective_prompt_with_selector(
+    prompt: &EffectivePrompt,
+    selector: HistorySelector,
+) -> ProjectionManifest {
+    let system_sections: Vec<ProjectionSectionManifest> = prompt
         .system_sections
         .iter()
         .enumerate()
@@ -318,7 +453,7 @@ pub(crate) fn manifest_from_effective_prompt(prompt: &EffectivePrompt) -> Projec
         .iter()
         .map(|section| (section.id.as_str(), section))
         .collect::<BTreeMap<_, _>>();
-    let context_sections = prompt
+    let context_sections: Vec<ProjectionSectionManifest> = prompt
         .context_plan_evidence
         .decisions
         .iter()
@@ -367,17 +502,70 @@ pub(crate) fn manifest_from_effective_prompt(prompt: &EffectivePrompt) -> Projec
         .collect();
     ProjectionManifest {
         schema_version: PROJECTION_MANIFEST_SCHEMA_VERSION,
-        projector: "legacy_context_sections_v1".to_string(),
+        projector: "context_sections_v1".to_string(),
         activation_owner: prompt.projection_owner.clone(),
         activation_binding: prompt.projection_binding.clone(),
         turn_id: prompt.projection_turn_id.clone(),
         prompt_budget_estimated_tokens: prompt.context_plan_evidence.total_budget_estimated_tokens,
         allocated_estimated_tokens: prompt.context_plan_evidence.allocated_estimated_tokens,
+        diagnostics: Some(diagnostics_for_prompt(
+            prompt,
+            selector,
+            &system_sections,
+            &context_sections,
+        )),
         system_sections,
         context_sections,
         invariant_results: Vec::new(),
     }
     .evaluate()
+}
+
+fn diagnostics_for_prompt(
+    prompt: &EffectivePrompt,
+    selector: HistorySelector,
+    system_sections: &[ProjectionSectionManifest],
+    context_sections: &[ProjectionSectionManifest],
+) -> ProjectionDiagnostics {
+    let current_work_item_id = match &prompt.projection_owner {
+        ProjectionOwner::WorkItem { work_item_id } => Some(work_item_id.clone()),
+        _ => None,
+    };
+    let input_message_count = prompt
+        .projection_evidence
+        .values()
+        .flatten()
+        .filter(|evidence| {
+            matches!(
+                evidence.role,
+                ProjectionEvidenceRole::CurrentInput | ProjectionEvidenceRole::Input
+            )
+        })
+        .map(|evidence| evidence.reference.as_str())
+        .collect::<BTreeSet<_>>()
+        .len();
+    let input_chars = system_sections
+        .iter()
+        .chain(context_sections.iter())
+        .map(|section| section.rendered_chars)
+        .sum();
+    let input_estimated_tokens = system_sections
+        .iter()
+        .chain(context_sections.iter())
+        .map(|section| section.allocated_estimated_tokens)
+        .sum();
+    ProjectionDiagnostics::new(
+        selector,
+        if selector == HistorySelector::RecentTurns {
+            "default_compatible_selector"
+        } else {
+            "request_scoped_comparison"
+        },
+        current_work_item_id,
+        input_message_count,
+        input_estimated_tokens,
+        input_chars,
+    )
 }
 
 fn selected_section_manifest(order: usize, section: &PromptSection) -> ProjectionSectionManifest {
@@ -724,6 +912,7 @@ mod tests {
             turn_id: Some("turn-1".into()),
             prompt_budget_estimated_tokens: 100,
             allocated_estimated_tokens: 20,
+            diagnostics: None,
             system_sections: Vec::new(),
             context_sections: vec![ProjectionSectionManifest {
                 order: 0,
@@ -764,6 +953,38 @@ mod tests {
             omitted_evidence_refs: refs,
         });
         manifest.evaluate()
+    }
+
+    #[test]
+    fn history_selector_serializes_stably() {
+        let recent: HistorySelector = serde_json::from_str("\"recent_turns\"").unwrap();
+        let scoped: HistorySelector = serde_json::from_str("\"work_item_scoped\"").unwrap();
+        assert_eq!(recent, HistorySelector::RecentTurns);
+        assert_eq!(scoped, HistorySelector::WorkItemScoped);
+        assert_eq!(serde_json::to_string(&recent).unwrap(), "\"recent_turns\"");
+        assert_eq!(
+            serde_json::to_string(&scoped).unwrap(),
+            "\"work_item_scoped\""
+        );
+    }
+
+    #[test]
+    fn selector_comparison_requires_same_activation() {
+        let recent = manifest(vec![evidence(
+            "message:current",
+            ProjectionEvidenceRole::CurrentInput,
+        )]);
+        let scorecard = compare_history_selectors(&recent, &recent).unwrap();
+        assert!(scorecard.passed);
+
+        let mut different = recent.clone();
+        different.turn_id = Some("turn-2".into());
+        let scorecard = compare_history_selectors(&recent, &different).unwrap();
+        assert!(!scorecard.passed);
+        assert!(scorecard.assertions.iter().any(|assertion| {
+            assertion.code == "selector_comparison_same_activation"
+                && assertion.status == ProjectionInvariantStatus::Fail
+        }));
     }
 
     #[test]

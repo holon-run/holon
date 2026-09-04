@@ -21,8 +21,9 @@ use crate::{
         ContextConfig, ContextPlanEvidence, RecentTurnsReprojection,
     },
     projection_eval::{
-        manifest_from_effective_prompt, ProjectionBindingSummary, ProjectionEvidenceIndex,
-        ProjectionManifest, ProjectionOwner,
+        compare_prompt_history_selectors, manifest_from_effective_prompt,
+        manifest_from_effective_prompt_with_selector, HistorySelector, ProjectionBindingSummary,
+        ProjectionEvidenceIndex, ProjectionManifest, ProjectionOwner, ProjectionScorecard,
     },
     storage::AppStorage,
     system::{execution_policy_summary_lines, ExecutionSnapshot},
@@ -96,6 +97,19 @@ pub struct EffectivePrompt {
 impl EffectivePrompt {
     pub fn projection_manifest(&self) -> ProjectionManifest {
         manifest_from_effective_prompt(self)
+    }
+
+    /// Build a request-scoped manifest for selector comparison. This does not
+    /// alter the prompt, runtime state, scheduler, or provider request.
+    pub fn projection_manifest_for_selector(
+        &self,
+        selector: HistorySelector,
+    ) -> ProjectionManifest {
+        manifest_from_effective_prompt_with_selector(self, selector)
+    }
+
+    pub fn compare_history_selectors(&self) -> serde_json::Result<ProjectionScorecard> {
+        compare_prompt_history_selectors(self)
     }
 
     pub(crate) fn recent_turns_initial_budget(&self) -> Option<usize> {

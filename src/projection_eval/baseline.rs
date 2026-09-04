@@ -13,8 +13,9 @@ use crate::context::{
 };
 use crate::projection_eval::baseline_specs::baseline_case_specs;
 use crate::projection_eval::{
-    manifest_from_effective_prompt, ProjectionBindingSummary, ProjectionEvidenceIndex,
-    ProjectionEvidenceRef, ProjectionEvidenceRole, ProjectionManifest, ProjectionOwner,
+    manifest_from_effective_prompt, manifest_from_effective_prompt_with_selector, HistorySelector,
+    ProjectionBindingSummary, ProjectionEvidenceIndex, ProjectionEvidenceRef,
+    ProjectionEvidenceRole, ProjectionManifest, ProjectionOwner,
 };
 use crate::prompt::{EffectivePrompt, PromptCacheIdentity, PromptSection, PromptStability};
 use crate::system::{ExecutionProfile, ExecutionSnapshot};
@@ -251,6 +252,16 @@ pub fn build_baseline_prompt(spec: &BaselineCaseSpec, budget: usize) -> Effectiv
 pub fn generate_manifest(spec: &BaselineCaseSpec, budget: usize) -> ProjectionManifest {
     let prompt = build_baseline_prompt(spec, budget);
     manifest_from_effective_prompt(&prompt)
+}
+
+/// Generate a request-scoped manifest for a specific history selector.
+pub fn generate_manifest_for_selector(
+    spec: &BaselineCaseSpec,
+    budget: usize,
+    selector: HistorySelector,
+) -> ProjectionManifest {
+    let prompt = build_baseline_prompt(spec, budget);
+    manifest_from_effective_prompt_with_selector(&prompt, selector)
 }
 
 /// Generate all 36 baseline manifests (12 cases x 3 budgets).
@@ -696,6 +707,45 @@ mod tests {
             .entries
             .iter()
             .any(|entry| entry.activation_owner_changed));
+    }
+
+    #[test]
+    fn selector_comparison_is_deterministic_and_same_activation_scoped() {
+        let spec = baseline_case_specs()
+            .into_iter()
+            .find(|spec| spec.case_id == "work-item-switch-return")
+            .expect("selector comparison fixture");
+        let recent =
+            generate_manifest_for_selector(&spec, BUDGET_MEDIUM, HistorySelector::RecentTurns);
+        let scoped =
+            generate_manifest_for_selector(&spec, BUDGET_MEDIUM, HistorySelector::WorkItemScoped);
+        let prompt = build_baseline_prompt(&spec, BUDGET_MEDIUM);
+        let scorecard = prompt.compare_history_selectors().unwrap();
+
+        assert!(scorecard.passed);
+        assert_eq!(
+            recent.diagnostics.as_ref().unwrap().history_selector,
+            HistorySelector::RecentTurns
+        );
+        assert_eq!(
+            scoped.diagnostics.as_ref().unwrap().history_selector,
+            HistorySelector::WorkItemScoped
+        );
+        assert_eq!(recent.activation_owner, scoped.activation_owner);
+        assert_eq!(recent.activation_binding, scoped.activation_binding);
+        assert_eq!(recent.turn_id, scoped.turn_id);
+        assert!(scorecard.assertions.iter().any(|assertion| {
+            assertion.code == "selector_comparison_same_activation"
+                && assertion.status == ProjectionInvariantStatus::Pass
+        }));
+        assert_eq!(
+            scorecard.diff.baseline_sha256,
+            recent.byte_sha256().unwrap()
+        );
+        assert_eq!(
+            scorecard.diff.candidate_sha256,
+            scoped.byte_sha256().unwrap()
+        );
     }
 
     #[test]
