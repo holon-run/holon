@@ -41,7 +41,10 @@ use super::completion::{
     exec_command_disposition_field, exec_command_exit_status_field, exec_command_task_handle_field,
     rejects_truncated_mutation_tool_call, result_work_item_id, truncated_mutation_recovery_hint,
 };
-use super::context_management::context_management_diagnostic;
+use super::context_management::{
+    configured_history_selector, context_management_diagnostic, projection_diagnostic,
+    projection_fallback_reason as provider_projection_fallback_reason,
+};
 use super::projection::{
     build_round_estimated_tokens, build_turn_local_projection_with_runtime_reminder,
     normalize_provider_attempt_timing, provider_attempt_model_state, TurnLocalProjectionOutcome,
@@ -1144,6 +1147,31 @@ impl TurnExecution<'_> {
         ) = runtime
             .provider_tool_selection_for_turn(&identity, model_selection.fallback_model())
             .await?;
+        let configured_selector =
+            configured_history_selector(agent_id, &turn_model_state.effective_model);
+        let mut projection_selector = configured_selector;
+        let mut projection_fallback_reason =
+            provider_projection_fallback_reason(provider.as_ref(), configured_selector);
+        if configured_selector == crate::projection_eval::HistorySelector::WorkItemScoped {
+            if projection_fallback_reason.is_none() {
+                let context_config = runtime.current_context_config().await;
+                if effective_prompt
+                    .reproject_for_history_selector(
+                        &runtime.inner.storage,
+                        context_config.turn_projection_budget(),
+                        &available_tools,
+                        configured_selector,
+                    )
+                    .map(|projected| effective_prompt = projected)
+                    .is_none()
+                {
+                    projection_fallback_reason = Some("work_item_scoped_projection_unavailable");
+                }
+            }
+            if projection_fallback_reason.is_some() {
+                projection_selector = crate::projection_eval::HistorySelector::RecentTurns;
+            }
+        }
         let allowed_tool_names = available_tools
             .iter()
             .map(|tool| tool.name.clone())
@@ -1255,7 +1283,13 @@ impl TurnExecution<'_> {
                     native_web_search.clone(),
                 );
                 crate::diagnostics::record_provider_request_build(request_build_started.elapsed());
-                let context_management = context_management_diagnostic(provider.as_ref(), &request);
+                let mut context_management =
+                    context_management_diagnostic(provider.as_ref(), &request);
+                context_management["history_projection"] = projection_diagnostic(
+                    &effective_prompt,
+                    projection_selector,
+                    projection_fallback_reason,
+                );
                 let context_build_ms = context_build_started.elapsed().as_millis() as u64;
                 let (result, provider_started_at, provider_completed_at, provider_round_ms) =
                     runtime
@@ -1644,7 +1678,13 @@ impl TurnExecution<'_> {
                     available_tools.clone(),
                     native_web_search.clone(),
                 );
-                let context_management = context_management_diagnostic(provider.as_ref(), &request);
+                let mut context_management =
+                    context_management_diagnostic(provider.as_ref(), &request);
+                context_management["history_projection"] = projection_diagnostic(
+                    &effective_prompt,
+                    projection_selector,
+                    projection_fallback_reason,
+                );
                 let context_build_ms = context_build_started.elapsed().as_millis() as u64;
                 let (result, provider_started_at, provider_completed_at, provider_round_ms) =
                     runtime

@@ -142,6 +142,35 @@ pub(crate) fn reproject_recent_turns(
     .map(|content| turn_section("recent_turns", content))
 }
 
+pub(crate) fn reproject_work_item_scoped(
+    storage: &AppStorage,
+    reprojection: &RecentTurnsReprojection,
+    budget: usize,
+) -> Option<PromptSection> {
+    let work_item_id = reprojection.current_work_item.as_ref()?.id.as_str();
+    let turn_records = reprojection
+        .turn_records
+        .iter()
+        .filter(|record| record.effective_owner().work_item_id() == Some(work_item_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    if turn_records.is_empty() {
+        return None;
+    }
+    render_turn_records_with_budget(
+        storage,
+        &turn_records,
+        &reprojection.messages,
+        &reprojection.briefs,
+        &reprojection.tools,
+        &reprojection.transcript,
+        &reprojection.current_message,
+        reprojection.current_work_item.as_ref(),
+        budget,
+    )
+    .map(|content| turn_section("recent_turns", content))
+}
+
 pub fn build_context(
     storage: &AppStorage,
     agent: &AgentState,

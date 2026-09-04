@@ -212,6 +212,12 @@ fn isolated_holon_command() -> (Command, tempfile::TempDir) {
             "HOLON_SOCKET_PATH",
             home.path().join("run").join("missing.sock"),
         )
+        .env_remove("HOLON_CALLER_AGENT_ID")
+        .env_remove("HOLON_CALLER_SOURCE_TASK_ID")
+        .env_remove("HOLON_CALLER_SOURCE_TURN_ID")
+        .env_remove("HOLON_CALLER_SOURCE_WORK_ITEM_ID")
+        .env_remove("HOLON_CALLER_SOURCE_ACTIVATION_ID")
+        .env_remove("HOLON_CALLER_AUTHORITY_CLASS")
         .env_remove("HOLON_CONTROL_TOKEN")
         .env_remove("HOLON_CONTROL_AUTH_MODE")
         .env_remove("RUST_LOG");
