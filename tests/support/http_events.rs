@@ -647,7 +647,10 @@ pub async fn events_route_max_level_filters_with_bounded_visible_pages() -> Resu
     let operator_message = MessageEnvelope::new(
         "default",
         MessageKind::OperatorPrompt,
-        MessageOrigin::Operator { actor_id: None },
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
@@ -1460,7 +1463,10 @@ pub async fn filtered_event_page_does_not_claim_raw_continuity() -> Result<()> {
     let operator_message = MessageEnvelope::new(
         "default",
         MessageKind::OperatorPrompt,
-        MessageOrigin::Operator { actor_id: None },
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {

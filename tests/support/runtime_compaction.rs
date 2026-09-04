@@ -139,7 +139,10 @@ pub async fn preview_prompt_after_compaction_keeps_work_item_plan_and_pending_wo
         runtime.storage().append_message(&MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
@@ -224,7 +227,10 @@ pub async fn task_result_rejoin_after_compaction_preserves_current_work_truth() 
         runtime.storage().append_message(&MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
@@ -237,7 +243,10 @@ pub async fn task_result_rejoin_after_compaction_preserves_current_work_truth() 
         .enqueue(MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
@@ -344,7 +353,10 @@ pub async fn contentful_wake_hint_after_compaction_keeps_active_work_truth() -> 
         runtime.storage().append_message(&MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
@@ -357,7 +369,10 @@ pub async fn contentful_wake_hint_after_compaction_keeps_active_work_truth() -> 
         .enqueue(MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
@@ -453,7 +468,10 @@ pub async fn queued_notification_after_compaction_keeps_queued_work_visible() ->
         runtime.storage().append_message(&MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
@@ -466,7 +484,10 @@ pub async fn queued_notification_after_compaction_keeps_queued_work_visible() ->
         .enqueue(MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
@@ -524,7 +545,7 @@ pub async fn repeated_turn_local_compaction_evolves_checkpoint_mode_and_keeps_la
         .enqueue(MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
+            MessageOrigin::Operator { actor_id: None, actor_display_name: None },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
@@ -651,7 +672,7 @@ pub async fn max_output_recovery_followed_by_turn_local_compaction_preserves_pro
         .enqueue(MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
+            MessageOrigin::Operator { actor_id: None, actor_display_name: None },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
@@ -790,7 +811,7 @@ pub async fn sleep_only_completion_preserves_brief_after_max_output_recovery() -
         .enqueue(MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
+            MessageOrigin::Operator { actor_id: None, actor_display_name: None },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
@@ -913,7 +934,10 @@ pub async fn runtime_compaction_multi_pass_recovery_preserves_progress_and_artif
         .enqueue(MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {

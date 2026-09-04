@@ -2386,7 +2386,10 @@ mod tests {
         let mut message = MessageEnvelope::new(
             "agent-a",
             crate::types::MessageKind::OperatorPrompt,
-            crate::types::MessageOrigin::Operator { actor_id: None },
+            crate::types::MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             crate::types::MessageBody::Text {

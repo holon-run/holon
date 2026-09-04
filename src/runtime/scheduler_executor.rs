@@ -2338,6 +2338,7 @@ mod tests {
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator {
                 actor_id: Some("control".into()),
+                actor_display_name: None,
             },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,

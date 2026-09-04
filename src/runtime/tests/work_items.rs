@@ -2179,7 +2179,10 @@ async fn interactive_tool_execution_binds_current_turn_work_item() {
     let message = MessageEnvelope::new(
         "default",
         MessageKind::OperatorPrompt,
-        MessageOrigin::Operator { actor_id: None },
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
@@ -2257,6 +2260,7 @@ async fn complete_work_item_promotes_same_round_report_and_binds_evidence() {
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("control".into()),
+            actor_display_name: None,
         },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
@@ -2480,6 +2484,7 @@ async fn lifecycle_completion_registers_missing_legacy_work_item_execution() {
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("control".into()),
+            actor_display_name: None,
         },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
@@ -3096,6 +3101,7 @@ async fn followup_final_report_completes_child_and_resumes_caller() {
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("control".into()),
+            actor_display_name: None,
         },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
@@ -3234,7 +3240,10 @@ async fn completion_intent_does_not_borrow_mismatched_execution_identity() {
     let mut message = MessageEnvelope::new(
         "default",
         MessageKind::OperatorPrompt,
-        MessageOrigin::Operator { actor_id: None },
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
@@ -3288,7 +3297,10 @@ async fn turn_end_marks_unbound_completion_report_missing_and_persists_restart()
     let mut message = MessageEnvelope::new(
         "default",
         MessageKind::OperatorPrompt,
-        MessageOrigin::Operator { actor_id: None },
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
@@ -3415,6 +3427,7 @@ async fn complete_work_item_followed_by_same_round_tool_keeps_terminal_brief() {
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("control".into()),
+            actor_display_name: None,
         },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
@@ -3532,6 +3545,7 @@ async fn complete_work_item_uses_followup_report_after_text_before_other_tool() 
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("control".into()),
+            actor_display_name: None,
         },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
@@ -3678,6 +3692,7 @@ async fn promoted_completion_report_resumes_next_queued_work_item_via_system_tic
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("control".into()),
+            actor_display_name: None,
         },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
@@ -3795,6 +3810,7 @@ async fn complete_work_item_without_same_round_report_uses_followup_final_text()
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("control".into()),
+            actor_display_name: None,
         },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
@@ -3962,6 +3978,7 @@ async fn abandoned_completion_report_protocol_interrupts_deferred_tool_atomicall
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("control".into()),
+            actor_display_name: None,
         },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
@@ -4164,6 +4181,7 @@ async fn invalidated_completion_report_binding_interrupts_deferred_tool_atomical
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("control".into()),
+            actor_display_name: None,
         },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
@@ -4323,6 +4341,7 @@ async fn complete_work_item_is_a_hard_turn_boundary() {
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("control".into()),
+            actor_display_name: None,
         },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
@@ -4462,7 +4481,10 @@ async fn repeated_complete_work_item_does_not_overwrite_existing_report() {
     let message = MessageEnvelope::new(
         "default",
         MessageKind::OperatorPrompt,
-        MessageOrigin::Operator { actor_id: None },
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
@@ -4759,7 +4781,10 @@ async fn runtime_sleeps_after_processing() {
     let message = MessageEnvelope::new(
         "default",
         MessageKind::OperatorPrompt,
-        MessageOrigin::Operator { actor_id: None },
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
@@ -6344,7 +6369,10 @@ async fn queued_notification_keeps_working_memory_unfocused_before_pick() {
         .enqueue(MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {

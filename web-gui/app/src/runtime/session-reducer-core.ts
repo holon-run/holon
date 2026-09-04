@@ -79,6 +79,7 @@ interface SessionItemDraft {
   id: string;
   kind: AgentTimelineItemKind;
   label: string;
+  senderName?: string;
   body: string;
   timestamp: string;
   meta: string;
@@ -391,13 +392,14 @@ export function projectRuntimeEvent(
   messagesById?: Record<string, RuntimeMessageEnvelope>,
   transcriptEntriesById?: Record<string, RuntimeTranscriptEntry>,
   briefRecordsById?: Record<string, RuntimeBriefRecord>,
-): (Pick<SessionItemDraft, "kind" | "label" | "body" | "citations" | "minDisplayLevel" | "detail" | "executionMeta" | "statusTrail"> & { timestamp?: string }) | undefined {
+): (Pick<SessionItemDraft, "kind" | "label" | "senderName" | "body" | "citations" | "minDisplayLevel" | "detail" | "executionMeta" | "statusTrail"> & { timestamp?: string }) | undefined {
   if (eventType === "message_enqueued") {
     const message = messageEnvelopeProjection(payload, messagesById);
     if (message?.origin === "operator") {
       return {
         kind: "operator",
         label: "Operator input",
+        senderName: message.senderName,
         body: message.body || "Loading operator input…",
         minDisplayLevel: "info",
       };
@@ -1774,15 +1776,18 @@ function turnTriggerLabel(messageKind: string): string | undefined {
 function messageEnvelopeProjection(
   payload: Record<string, unknown> | undefined,
   messagesById?: Record<string, RuntimeMessageEnvelope>,
-): { origin: "operator" | "runtime"; body: string } | undefined {
+): { origin: "operator" | "runtime"; body: string; senderName?: string } | undefined {
   if (!payload) return undefined;
   const source = hydratedMessageForPayload(payload, messagesById) ?? payload;
   const origin = asRecord(source.origin);
   const originKind = stringField(origin, "kind")?.toLowerCase();
+  const senderName =
+    originKind === "operator" ? stringField(origin, "actor_display_name")?.trim() || undefined : undefined;
   const body = asRecord(source.body);
   return {
     origin: originKind === "operator" ? "operator" : "runtime",
     body: messageBodyText(body),
+    senderName,
   };
 }
 

@@ -71,7 +71,10 @@ fn admitted_operator_prompt(
     MessageEnvelope::new(
         agent_id,
         MessageKind::OperatorPrompt,
-        MessageOrigin::Operator { actor_id: None },
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text { text: text.into() },
@@ -1378,7 +1381,10 @@ pub async fn timer_wait_surfaces_waiting_reason() -> Result<()> {
 pub fn policy_blocks_mismatched_origin() {
     let mismatch = validate_message_kind_for_origin(
         &MessageKind::WebhookEvent,
-        &MessageOrigin::Operator { actor_id: None },
+        &MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
     );
     assert!(!mismatch.allowed);
 }

@@ -57,6 +57,7 @@ export function renderDomainObject(
     id: obj.id,
     kind: projection.kind,
     label: projection.label,
+    senderName: projection.senderName,
     body: projection.body,
     timestamp: projection.timestamp || event.ts || obj.updatedAt,
     meta: eventMeta(eventType, payload, event.event_seq),

@@ -27,7 +27,10 @@ fn message_of_kind(kind: MessageKind, body: MessageBody) -> MessageEnvelope {
     MessageEnvelope::new(
         "default",
         kind,
-        MessageOrigin::Operator { actor_id: None },
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
         body,

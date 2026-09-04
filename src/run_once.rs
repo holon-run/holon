@@ -230,6 +230,7 @@ pub async fn run_once_with_host(
         priority: Priority::Normal,
         origin: MessageOrigin::Operator {
             actor_id: Some("holon_run".into()),
+            actor_display_name: None,
         },
         authority_class: request.authority_class.clone(),
         body: MessageBody::Text {

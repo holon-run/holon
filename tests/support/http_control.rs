@@ -36,7 +36,7 @@ use super::{
     attach_default_workspace, connect_addr, git, init_git_repo, spawn_server,
     spawn_server_for_host, spawn_server_with_config, spawn_server_with_runtime_config,
     spawn_unix_server, tempdir, test_config, test_config_with_paths, test_work_item, unix_request,
-    wait_until, RuntimeFailureProvider,
+    wait_until, RuntimeFailureProvider, TestConfigBuilder,
 };
 
 pub async fn control_prompt_is_open_on_loopback_auto() -> Result<()> {
@@ -256,6 +256,7 @@ pub async fn runtime_search_route_returns_memory_search_results() -> Result<()> 
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("operator:test".into()),
+            actor_display_name: None,
         },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
@@ -326,6 +327,7 @@ pub async fn runtime_search_route_filters_memory_results_by_agent_ids() -> Resul
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("operator:test".into()),
+            actor_display_name: None,
         },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
@@ -341,6 +343,7 @@ pub async fn runtime_search_route_filters_memory_results_by_agent_ids() -> Resul
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("operator:test".into()),
+            actor_display_name: None,
         },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
@@ -2926,7 +2929,10 @@ pub async fn runtime_status_route_reports_last_runtime_failure_summary() -> Resu
         .enqueue(holon::types::MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
-            holon::types::MessageOrigin::Operator { actor_id: None },
+            holon::types::MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             AuthorityClass::OperatorInstruction,
             holon::types::Priority::Normal,
             holon::types::MessageBody::Text {
@@ -2997,6 +3003,249 @@ pub async fn runtime_shutdown_route_requests_shutdown() -> Result<()> {
     shutdown.changed().await?;
     assert!(*shutdown.borrow());
 
+    server.abort();
+    Ok(())
+}
+
+pub async fn control_prompt_attributes_oidc_user_identity() -> Result<()> {
+    let test_config = TestConfigBuilder::new().build();
+    let mut config = test_config.config().clone();
+    config.auth.mode = holon::authentication::AuthenticationMode::Oidc;
+    config.auth.oidc = Some(holon::authentication::OidcProviderConfig {
+        issuer_url: "https://issuer.example.com".to_string(),
+        client_id: "holon-test".to_string(),
+        client_secret_env: None,
+        redirect_uri: None,
+    });
+    let (host, base, server) = spawn_server_with_config(config).await?;
+    let runtime = host.default_runtime().await?;
+    let client = reqwest::Client::new();
+    let now = chrono::Utc::now();
+    let auth = host.runtime_db().authentication();
+    for (user_id, display_name) in [("oidc-user-one", Some("Alice")), ("oidc-user-two", None)] {
+        auth.upsert_user(&holon::authentication::AuthUserRecord {
+            user_id: user_id.to_string(),
+            issuer: "https://issuer.example.com".to_string(),
+            subject: format!("subject-{user_id}"),
+            display_name: display_name.map(str::to_string),
+            email: None,
+            created_at: now,
+            updated_at: now,
+            disabled_at: None,
+        })?;
+    }
+    let session_one = holon::oidc::issue_session(
+        host.runtime_db(),
+        &host.config().auth,
+        "oidc-user-one",
+        "oidc",
+        now,
+    )?;
+    let session_two = holon::oidc::issue_session(
+        host.runtime_db(),
+        &host.config().auth,
+        "oidc-user-two",
+        "oidc",
+        now,
+    )?;
+
+    let mut message_ids = Vec::new();
+    for credential in [&session_one.credential, &session_two.credential] {
+        let response = client
+            .post(format!("{base}/api/control/agents/default/prompt"))
+            .bearer_auth(credential)
+            .json(&serde_json::json!({ "text": "hello attribution" }))
+            .send()
+            .await?;
+        assert!(response.status().is_success());
+        let accepted: serde_json::Value = response.json().await?;
+        message_ids.push(
+            accepted["message_id"]
+                .as_str()
+                .expect("control prompt should return message_id")
+                .to_string(),
+        );
+    }
+
+    wait_until(|| {
+        let messages = runtime.storage().read_recent_messages(10)?;
+        Ok(message_ids.iter().all(|message_id| {
+            messages.iter().any(|message| {
+                message.id == *message_id && message.kind == MessageKind::OperatorPrompt
+            })
+        }))
+    })
+    .await?;
+    let messages = runtime.storage().read_recent_messages(10)?;
+    let find = |message_id: &str| {
+        messages
+            .iter()
+            .find(|message| message.id == message_id)
+            .expect("enqueued message")
+    };
+    assert_eq!(
+        find(&message_ids[0]).origin,
+        MessageOrigin::Operator {
+            actor_id: Some("oidc-user-one".into()),
+            actor_display_name: Some("Alice".into()),
+        }
+    );
+    assert_eq!(
+        find(&message_ids[1]).origin,
+        MessageOrigin::Operator {
+            actor_id: Some("oidc-user-two".into()),
+            // No name claims: the stable user id is the visible fallback.
+            actor_display_name: Some("oidc-user-two".into()),
+        }
+    );
+    server.abort();
+    Ok(())
+}
+
+pub async fn control_prompt_local_credentials_keep_control_identity() -> Result<()> {
+    let config = test_config_with_paths(
+        tempdir().unwrap().keep(),
+        tempdir().unwrap().keep(),
+        "127.0.0.1:0".into(),
+        ControlAuthMode::Required,
+    );
+    let (host, base, server) = spawn_server_with_config(config).await?;
+    let runtime = host.default_runtime().await?;
+    let client = reqwest::Client::new();
+
+    let exchange = client
+        .post(format!("{base}/api/auth/session/exchange"))
+        .json(&serde_json::json!({ "credential": "secret" }))
+        .send()
+        .await?;
+    assert_eq!(exchange.status(), reqwest::StatusCode::OK);
+    let session_credential = exchange
+        .headers()
+        .get(reqwest::header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .expect("session exchange should set the session cookie")
+        .split(';')
+        .next()
+        .and_then(|pair| pair.split_once('='))
+        .map(|(_, value)| value.to_string())
+        .expect("session cookie should carry a credential");
+
+    let mut message_ids = Vec::new();
+    for credential in [session_credential.as_str(), "secret"] {
+        let response = client
+            .post(format!("{base}/api/control/agents/default/prompt"))
+            .bearer_auth(credential)
+            .json(&serde_json::json!({ "text": "hello local" }))
+            .send()
+            .await?;
+        assert!(response.status().is_success());
+        let accepted: serde_json::Value = response.json().await?;
+        message_ids.push(
+            accepted["message_id"]
+                .as_str()
+                .expect("control prompt should return message_id")
+                .to_string(),
+        );
+    }
+
+    wait_until(|| {
+        let messages = runtime.storage().read_recent_messages(10)?;
+        Ok(message_ids
+            .iter()
+            .all(|message_id| messages.iter().any(|message| message.id == *message_id)))
+    })
+    .await?;
+    let messages = runtime.storage().read_recent_messages(10)?;
+    for message_id in &message_ids {
+        let message = messages
+            .iter()
+            .find(|message| message.id == *message_id)
+            .expect("enqueued message");
+        assert_eq!(
+            message.origin,
+            MessageOrigin::Operator {
+                actor_id: Some("control".into()),
+                actor_display_name: None,
+            }
+        );
+    }
+    server.abort();
+    Ok(())
+}
+
+pub async fn auth_session_me_returns_oidc_user_identity() -> Result<()> {
+    let test_config = TestConfigBuilder::new().build();
+    let mut config = test_config.config().clone();
+    config.auth.mode = holon::authentication::AuthenticationMode::Oidc;
+    config.auth.oidc = Some(holon::authentication::OidcProviderConfig {
+        issuer_url: "https://issuer.example.com".to_string(),
+        client_id: "holon-test".to_string(),
+        client_secret_env: None,
+        redirect_uri: None,
+    });
+    let (host, base, server) = spawn_server_with_config(config).await?;
+    let client = reqwest::Client::new();
+    let now = chrono::Utc::now();
+    host.runtime_db()
+        .authentication()
+        .upsert_user(&holon::authentication::AuthUserRecord {
+            user_id: "oidc-user-one".to_string(),
+            issuer: "https://issuer.example.com".to_string(),
+            subject: "subject-oidc-user-one".to_string(),
+            display_name: Some("Alice".to_string()),
+            email: None,
+            created_at: now,
+            updated_at: now,
+            disabled_at: None,
+        })?;
+    let session = holon::oidc::issue_session(
+        host.runtime_db(),
+        &host.config().auth,
+        "oidc-user-one",
+        "oidc",
+        now,
+    )?;
+
+    let denied = client
+        .get(format!("{base}/api/auth/session/me"))
+        .send()
+        .await?;
+    assert_eq!(denied.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    let response = client
+        .get(format!("{base}/api/auth/session/me"))
+        .bearer_auth(&session.credential)
+        .send()
+        .await?;
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let payload: serde_json::Value = response.json().await?;
+    assert_eq!(payload["ok"], serde_json::json!(true));
+    assert_eq!(payload["user_id"], serde_json::json!("oidc-user-one"));
+    assert_eq!(payload["display_name"], serde_json::json!("Alice"));
+    assert_eq!(payload["auth_method"], serde_json::json!("oidc"));
+    server.abort();
+    Ok(())
+}
+
+pub async fn auth_session_me_returns_local_control_identity() -> Result<()> {
+    let config = test_config_with_paths(
+        tempdir().unwrap().keep(),
+        tempdir().unwrap().keep(),
+        "127.0.0.1:0".into(),
+        ControlAuthMode::Required,
+    );
+    let (_host, base, server) = spawn_server_with_config(config).await?;
+    let client = reqwest::Client::new();
+
+    let response = client
+        .get(format!("{base}/api/auth/session/me"))
+        .send()
+        .await?;
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let payload: serde_json::Value = response.json().await?;
+    assert_eq!(payload["user_id"], serde_json::json!("control"));
+    assert_eq!(payload["display_name"], serde_json::json!(null));
+    assert_eq!(payload["auth_method"], serde_json::json!("local_control"));
     server.abort();
     Ok(())
 }

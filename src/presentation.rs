@@ -3604,7 +3604,10 @@ mod tests {
         let mut message = MessageEnvelope::new(
             "default",
             crate::types::MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             crate::types::AuthorityClass::OperatorInstruction,
             crate::types::Priority::Normal,
             MessageBody::Text {
@@ -3637,7 +3640,10 @@ mod tests {
         let message = crate::types::MessageEnvelope::new(
             "default",
             crate::types::MessageKind::OperatorPrompt,
-            crate::types::MessageOrigin::Operator { actor_id: None },
+            crate::types::MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             crate::types::AuthorityClass::OperatorInstruction,
             crate::types::Priority::Normal,
             crate::types::MessageBody::Text {

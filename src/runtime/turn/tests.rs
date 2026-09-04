@@ -60,7 +60,10 @@ async fn persist_turn_record_uses_turn_id_not_numeric_sequence_collisions() {
     let mut owned_message = MessageEnvelope::new(
         "default",
         crate::types::MessageKind::OperatorPrompt,
-        crate::types::MessageOrigin::Operator { actor_id: None },
+        crate::types::MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
         crate::types::AuthorityClass::OperatorInstruction,
         crate::types::Priority::Normal,
         crate::types::MessageBody::Text {
@@ -246,7 +249,10 @@ async fn replay_persists_a_new_turn_with_source_provenance() {
     let mut source_message = MessageEnvelope::new(
         "default",
         MessageKind::OperatorPrompt,
-        MessageOrigin::Operator { actor_id: None },
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {

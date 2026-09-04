@@ -438,7 +438,10 @@ fn operator_message_event_envelope(
     let mut message = crate::types::MessageEnvelope::new(
         agent_id,
         crate::types::MessageKind::OperatorPrompt,
-        crate::types::MessageOrigin::Operator { actor_id: None },
+        crate::types::MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
         crate::types::AuthorityClass::OperatorInstruction,
         crate::types::Priority::Normal,
         MessageBody::Text { text: text.into() },
@@ -4237,7 +4240,10 @@ fn slim_projection_operator_message_hydrates_from_message_evidence() {
     let mut message = crate::types::MessageEnvelope::new(
         "default",
         crate::types::MessageKind::OperatorPrompt,
-        crate::types::MessageOrigin::Operator { actor_id: None },
+        crate::types::MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
         crate::types::AuthorityClass::OperatorInstruction,
         crate::types::Priority::Normal,
         MessageBody::Text {

@@ -169,7 +169,10 @@ async fn queue_replays_unprocessed_message_once_after_restart() {
             MessageEnvelope::new(
                 "default",
                 MessageKind::OperatorPrompt,
-                MessageOrigin::Operator { actor_id: None },
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
                 AuthorityClass::OperatorInstruction,
                 Priority::Normal,
                 MessageBody::Text {

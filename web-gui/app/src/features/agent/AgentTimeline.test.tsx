@@ -4,7 +4,8 @@ import i18next from "i18next";
 
 import "../../i18n";
 import type { AgentTimelineActivity } from "../../runtime/types";
-import { ActivityTrail, BriefHydrationStatus } from "./AgentTimeline";
+import type { AgentTimelineItem } from "../../runtime/types";
+import { ActivityTrail, BriefHydrationStatus, TimelineMessage } from "./AgentTimeline";
 
 function activity(overrides: Partial<AgentTimelineActivity> = {}): AgentTimelineActivity {
   return {
@@ -15,6 +16,20 @@ function activity(overrides: Partial<AgentTimelineActivity> = {}): AgentTimeline
     timestamp: "2026-07-17T10:00:00Z",
     meta: "tool_executed",
     minDisplayLevel: "verbose",
+    sourceIds: ["event-1"],
+    ...overrides,
+  };
+}
+
+function operatorItem(overrides: Partial<AgentTimelineItem> = {}): AgentTimelineItem {
+  return {
+    id: "item-1",
+    kind: "operator",
+    label: "Operator input",
+    body: "hello",
+    timestamp: "2026-07-17T10:00:00Z",
+    meta: "",
+    minDisplayLevel: "info",
     sourceIds: ["event-1"],
     ...overrides,
   };
@@ -69,6 +84,29 @@ describe("ActivityTrail", () => {
     expect(markup).toContain('data-status="running"');
     expect(markup).toContain("is-spinning");
     expect(markup).not.toContain("Task queued");
+  });
+});
+
+describe("TimelineMessage", () => {
+  const renderMessage = (item: AgentTimelineItem) =>
+    renderToStaticMarkup(
+      <TimelineMessage
+        item={item}
+        compactAssistant={false}
+        displayLevel="info"
+        onOpenInspector={() => undefined}
+        onInspectActivity={() => undefined}
+      />,
+    );
+
+  it("renders the sender name row only for attributed operator messages", () => {
+    const attributed = renderMessage(operatorItem({ senderName: "Alice" }));
+    expect(attributed).toContain("Alice");
+    expect(attributed).toContain('class="message-label"');
+
+    const local = renderMessage(operatorItem());
+    expect(local).not.toContain('class="message-label"');
+    expect(local).not.toContain("Alice");
   });
 });
 

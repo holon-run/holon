@@ -2712,6 +2712,7 @@ impl RuntimeHost {
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator {
                 actor_id: Some("debug_prompt".into()),
+                actor_display_name: None,
             },
             authority_class,
             Priority::Normal,
@@ -4016,7 +4017,10 @@ mod tests {
         let mut message = MessageEnvelope::new(
             &agent_id,
             MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
@@ -6014,7 +6018,10 @@ mod tests {
             .enqueue(MessageEnvelope::new(
                 &agent_id,
                 MessageKind::OperatorPrompt,
-                MessageOrigin::Operator { actor_id: None },
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
                 AuthorityClass::OperatorInstruction,
                 Priority::Normal,
                 MessageBody::Text {
@@ -6100,7 +6107,10 @@ mod tests {
             .enqueue(MessageEnvelope::new(
                 &agent_id,
                 MessageKind::OperatorPrompt,
-                MessageOrigin::Operator { actor_id: None },
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
                 AuthorityClass::OperatorInstruction,
                 Priority::Normal,
                 MessageBody::Text {
@@ -6128,7 +6138,10 @@ mod tests {
             .enqueue(MessageEnvelope::new(
                 &agent_id,
                 MessageKind::OperatorPrompt,
-                MessageOrigin::Operator { actor_id: None },
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
                 AuthorityClass::OperatorInstruction,
                 Priority::Normal,
                 MessageBody::Text {
@@ -6253,7 +6266,10 @@ mod tests {
             .enqueue(MessageEnvelope::new(
                 &agent_id,
                 MessageKind::OperatorPrompt,
-                MessageOrigin::Operator { actor_id: None },
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
                 AuthorityClass::OperatorInstruction,
                 Priority::Normal,
                 MessageBody::Text {
@@ -6294,7 +6310,10 @@ mod tests {
             .enqueue(MessageEnvelope::new(
                 &agent_id,
                 MessageKind::OperatorPrompt,
-                MessageOrigin::Operator { actor_id: None },
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
                 AuthorityClass::OperatorInstruction,
                 Priority::Normal,
                 MessageBody::Text {
@@ -6430,7 +6449,10 @@ mod tests {
             .enqueue(MessageEnvelope::new(
                 &agent_id,
                 MessageKind::OperatorPrompt,
-                MessageOrigin::Operator { actor_id: None },
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
                 AuthorityClass::OperatorInstruction,
                 Priority::Normal,
                 MessageBody::Text {
@@ -7078,7 +7100,10 @@ mod tests {
         let mut message = MessageEnvelope::new(
             agent_id,
             MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
@@ -7274,7 +7299,10 @@ mod tests {
             let mut msg = MessageEnvelope::new(
                 &agent_id,
                 MessageKind::OperatorPrompt,
-                MessageOrigin::Operator { actor_id: None },
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
                 AuthorityClass::OperatorInstruction,
                 Priority::Normal,
                 MessageBody::Text {

@@ -782,6 +782,7 @@ async fn wait_resolution_and_execution_admission_are_atomic_across_pre_commit_fa
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator {
                 actor_id: Some("control".into()),
+                actor_display_name: None,
             },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,

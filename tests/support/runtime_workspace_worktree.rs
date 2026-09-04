@@ -123,7 +123,10 @@ pub async fn enter_worktree_tool_switches_workspace_and_restores_on_reload() -> 
         .enqueue(MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
@@ -408,7 +411,10 @@ pub async fn exit_worktree_keep_restores_workspace_and_persists_state() -> Resul
         .enqueue(MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
@@ -429,7 +435,10 @@ pub async fn exit_worktree_keep_restores_workspace_and_persists_state() -> Resul
         .enqueue(MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
@@ -491,7 +500,10 @@ pub async fn exit_worktree_does_not_remove_clean_worktree() -> Result<()> {
         .enqueue(MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
@@ -512,7 +524,10 @@ pub async fn exit_worktree_does_not_remove_clean_worktree() -> Result<()> {
         .enqueue(MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
@@ -574,7 +589,10 @@ pub async fn exit_worktree_does_not_remove_dirty_worktree() -> Result<()> {
         .enqueue(MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
@@ -596,7 +614,10 @@ pub async fn exit_worktree_does_not_remove_dirty_worktree() -> Result<()> {
         .enqueue(MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
@@ -913,7 +934,10 @@ pub async fn worktree_subagent_task_returns_metadata_to_parent_session() -> Resu
 pub fn policy_blocks_mismatched_origin() {
     let mismatch = validate_message_kind_for_origin(
         &MessageKind::WebhookEvent,
-        &MessageOrigin::Operator { actor_id: None },
+        &MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
     );
     assert!(!mismatch.allowed);
 }

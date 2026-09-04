@@ -118,6 +118,7 @@ mod tests {
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator {
                 actor_id: Some("test".into()),
+                actor_display_name: None,
             },
             AuthorityClass::OperatorInstruction,
             priority,

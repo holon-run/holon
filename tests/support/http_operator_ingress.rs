@@ -103,7 +103,8 @@ pub async fn operator_ingress_records_remote_operator_provenance() -> Result<()>
     assert_eq!(
         message.origin,
         MessageOrigin::Operator {
-            actor_id: Some("operator:jolestar".into())
+            actor_id: Some("operator:jolestar".into()),
+            actor_display_name: None,
         }
     );
     assert_eq!(message.authority_class, AuthorityClass::OperatorInstruction);

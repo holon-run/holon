@@ -1954,7 +1954,7 @@ fn matching_wake_source(
                 .iter()
                 .any(|source| matches!(source, WakeSource::Timer { .. })))
         .then(|| ("timer".to_string(), Some(timer_id.clone()))),
-        (MessageKind::OperatorPrompt, MessageOrigin::Operator { actor_id }) => {
+        (MessageKind::OperatorPrompt, MessageOrigin::Operator { actor_id, .. }) => {
             let owner_matches = match message.work_item_id.as_deref() {
                 Some(work_item_id) => condition.work_item_id.as_deref() == Some(work_item_id),
                 None => condition.work_item_id.is_none(),

@@ -3324,6 +3324,7 @@ mod tests {
             crate::types::MessageKind::OperatorPrompt,
             crate::types::MessageOrigin::Operator {
                 actor_id: Some("operator:test".into()),
+                actor_display_name: None,
             },
             crate::types::AuthorityClass::OperatorInstruction,
             crate::types::Priority::Normal,
@@ -3506,7 +3507,10 @@ mod tests {
         let mut other_agent_message = MessageEnvelope::new(
             "other-agent",
             crate::types::MessageKind::OperatorPrompt,
-            crate::types::MessageOrigin::Operator { actor_id: None },
+            crate::types::MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             crate::types::AuthorityClass::OperatorInstruction,
             crate::types::Priority::Normal,
             MessageBody::Text {
@@ -3889,6 +3893,7 @@ mod tests {
             crate::types::MessageKind::OperatorPrompt,
             crate::types::MessageOrigin::Operator {
                 actor_id: Some("operator:test".into()),
+                actor_display_name: None,
             },
             crate::types::AuthorityClass::OperatorInstruction,
             crate::types::Priority::Normal,

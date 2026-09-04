@@ -183,7 +183,10 @@ pub async fn background_command_task_result_wakes_sleeping_agent_via_canonical_l
             MessageEnvelope::new(
                 "default",
                 MessageKind::OperatorPrompt,
-                MessageOrigin::Operator { actor_id: None },
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
                 AuthorityClass::OperatorInstruction,
                 Priority::Normal,
                 MessageBody::Text {
@@ -368,7 +371,10 @@ pub async fn late_terminal_task_wait_fast_path_wakes_agent_with_durable_wait() -
     let prompt = MessageEnvelope::new(
         "default",
         MessageKind::OperatorPrompt,
-        MessageOrigin::Operator { actor_id: None },
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
@@ -554,7 +560,10 @@ pub async fn tool_use_round_trip_executes_and_returns_result() -> Result<()> {
             MessageEnvelope::new(
                 "default",
                 MessageKind::OperatorPrompt,
-                MessageOrigin::Operator { actor_id: None },
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
                 AuthorityClass::OperatorInstruction,
                 Priority::Normal,
                 MessageBody::Text {
@@ -664,7 +673,10 @@ pub async fn file_tools_can_modify_workspace_and_reenter_context() -> Result<()>
             MessageEnvelope::new(
                 "default",
                 MessageKind::OperatorPrompt,
-                MessageOrigin::Operator { actor_id: None },
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
                 AuthorityClass::OperatorInstruction,
                 Priority::Normal,
                 MessageBody::Text {
@@ -707,7 +719,10 @@ pub async fn shell_tools_capture_command_output() -> Result<()> {
             MessageEnvelope::new(
                 "default",
                 MessageKind::OperatorPrompt,
-                MessageOrigin::Operator { actor_id: None },
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
                 AuthorityClass::OperatorInstruction,
                 Priority::Normal,
                 MessageBody::Text {
@@ -749,7 +764,10 @@ pub async fn shell_tools_truncate_large_output_before_provider_reinjection() -> 
             MessageEnvelope::new(
                 "default",
                 MessageKind::OperatorPrompt,
-                MessageOrigin::Operator { actor_id: None },
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
                 AuthorityClass::OperatorInstruction,
                 Priority::Normal,
                 MessageBody::Text {
@@ -1115,7 +1133,10 @@ pub async fn tool_schema_and_dispatch_errors_are_recorded_without_corrupting_run
             MessageEnvelope::new(
                 "default",
                 MessageKind::OperatorPrompt,
-                MessageOrigin::Operator { actor_id: None },
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
                 AuthorityClass::OperatorInstruction,
                 Priority::Normal,
                 MessageBody::Text {
@@ -1249,7 +1270,10 @@ pub async fn runtime_provider_failure_surfaces_failure_brief_and_transcript_entr
             MessageEnvelope::new(
                 "default",
                 MessageKind::OperatorPrompt,
-                MessageOrigin::Operator { actor_id: None },
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
                 AuthorityClass::OperatorInstruction,
                 Priority::Normal,
                 MessageBody::Text {
@@ -1352,7 +1376,10 @@ pub async fn runtime_failure_brief_and_transcript_sanitize_long_provider_error()
             MessageEnvelope::new(
                 "default",
                 MessageKind::OperatorPrompt,
-                MessageOrigin::Operator { actor_id: None },
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
                 AuthorityClass::OperatorInstruction,
                 Priority::Normal,
                 MessageBody::Text {
@@ -1430,7 +1457,10 @@ pub async fn runtime_failure_brief_and_transcript_redact_short_provider_secret()
             MessageEnvelope::new(
                 "default",
                 MessageKind::OperatorPrompt,
-                MessageOrigin::Operator { actor_id: None },
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
                 AuthorityClass::OperatorInstruction,
                 Priority::Normal,
                 MessageBody::Text {
@@ -2806,7 +2836,10 @@ pub async fn exec_command_auto_promotes_long_running_command_task() -> Result<()
             MessageEnvelope::new(
                 "default",
                 MessageKind::OperatorPrompt,
-                MessageOrigin::Operator { actor_id: None },
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
                 AuthorityClass::OperatorInstruction,
                 Priority::Normal,
                 MessageBody::Text {

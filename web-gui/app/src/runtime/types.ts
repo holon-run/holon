@@ -792,6 +792,8 @@ export interface AgentTimelineItem {
   id: string;
   kind: AgentTimelineItemKind;
   label: string;
+  /** Sender display name for user-attributed operator messages; absent for local control identity. */
+  senderName?: string;
   body: string;
   timestamp: string;
   meta: string;

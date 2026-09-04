@@ -816,6 +816,7 @@ pub async fn control_prompt(
     Json(request): Json<ControlPromptRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let actor = control_actor(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
         .host
         .get_public_agent_for_external_ingress(&agent_id)
@@ -829,9 +830,7 @@ pub async fn control_prompt(
         agent_id: agent_id.clone(),
         kind: MessageKind::OperatorPrompt,
         priority: Priority::Interject,
-        origin: MessageOrigin::Operator {
-            actor_id: Some("control".into()),
-        },
+        origin: actor.operator_origin(),
         authority_class: AuthorityClass::OperatorInstruction,
         body: MessageBody::Text { text },
         delivery_surface: MessageDeliverySurface::HttpControlPrompt,
@@ -1332,6 +1331,7 @@ pub async fn operator_ingress(
         priority: Priority::Interject,
         origin: MessageOrigin::Operator {
             actor_id: Some(actor_id),
+            actor_display_name: None,
         },
         authority_class: AuthorityClass::OperatorInstruction,
         body: MessageBody::Text { text },

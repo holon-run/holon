@@ -427,7 +427,10 @@ async fn ordinary_final_response_persists_canonical_brief_settlement() {
     let message = MessageEnvelope::new(
         "default",
         MessageKind::OperatorPrompt,
-        MessageOrigin::Operator { actor_id: None },
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
@@ -1408,7 +1411,10 @@ async fn turn_local_continuation_recovers_by_reprojecting_recent_turns() {
     let mut historical_message = MessageEnvelope::new(
         "default",
         MessageKind::OperatorPrompt,
-        MessageOrigin::Operator { actor_id: None },
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
@@ -1433,7 +1439,10 @@ async fn turn_local_continuation_recovers_by_reprojecting_recent_turns() {
     let current_message = MessageEnvelope::new(
         "default",
         MessageKind::OperatorPrompt,
-        MessageOrigin::Operator { actor_id: None },
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
@@ -1611,7 +1620,10 @@ async fn context_length_exceeded_turn_fails_fast_without_runtime_error() {
     let message = MessageEnvelope::new(
         "default",
         MessageKind::OperatorPrompt,
-        MessageOrigin::Operator { actor_id: None },
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
@@ -1885,7 +1897,10 @@ fn provider_recovery_directive_requires_runtime_owned_recovery_provenance() {
     let mut message = MessageEnvelope::new(
         "default",
         MessageKind::OperatorPrompt,
-        MessageOrigin::Operator { actor_id: None },
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
         AuthorityClass::OperatorInstruction,
         Priority::Next,
         MessageBody::Text {
@@ -1998,7 +2013,10 @@ async fn successful_ordinary_turn_supersedes_queued_provider_recovery() {
     assert_successful_same_owner_turn_supersedes_queued_provider_recovery(MessageEnvelope::new(
         "default",
         MessageKind::OperatorPrompt,
-        MessageOrigin::Operator { actor_id: None },
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
@@ -2505,7 +2523,10 @@ async fn runtime_failure_artifacts_preserve_provider_attempt_timeline() {
     let message = MessageEnvelope::new(
         "default",
         MessageKind::OperatorPrompt,
-        MessageOrigin::Operator { actor_id: None },
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
         AuthorityClass::OperatorInstruction,
         Priority::Next,
         MessageBody::Text {
@@ -2598,7 +2619,10 @@ async fn runtime_failure_artifacts_append_turn_record_after_failure_brief() {
     let message = MessageEnvelope::new(
         "default",
         MessageKind::OperatorPrompt,
-        MessageOrigin::Operator { actor_id: None },
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
         AuthorityClass::OperatorInstruction,
         Priority::Next,
         MessageBody::Text {
@@ -2679,7 +2703,10 @@ async fn runtime_failure_artifacts_create_terminal_turn_record_when_missing() {
     let message = MessageEnvelope::new(
         "default",
         MessageKind::OperatorPrompt,
-        MessageOrigin::Operator { actor_id: None },
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
         AuthorityClass::OperatorInstruction,
         Priority::Next,
         MessageBody::Text {

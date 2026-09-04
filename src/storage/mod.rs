@@ -2232,7 +2232,10 @@ mod tests {
             .append_message(&MessageEnvelope::new(
                 "default",
                 MessageKind::OperatorPrompt,
-                MessageOrigin::Operator { actor_id: None },
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
                 AuthorityClass::OperatorInstruction,
                 Priority::Normal,
                 MessageBody::Text {
@@ -2262,7 +2265,10 @@ mod tests {
                 .append_message(&MessageEnvelope::new(
                     "default",
                     MessageKind::OperatorPrompt,
-                    MessageOrigin::Operator { actor_id: None },
+                    MessageOrigin::Operator {
+                        actor_id: None,
+                        actor_display_name: None,
+                    },
                     AuthorityClass::OperatorInstruction,
                     Priority::Normal,
                     MessageBody::Text { text: text.into() },
@@ -2533,7 +2539,10 @@ mod tests {
         let mut message = MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
@@ -2633,7 +2642,10 @@ mod tests {
             .append_message(&MessageEnvelope::new(
                 "default",
                 MessageKind::OperatorPrompt,
-                MessageOrigin::Operator { actor_id: None },
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
                 AuthorityClass::OperatorInstruction,
                 Priority::Normal,
                 MessageBody::Text {
@@ -2647,7 +2659,10 @@ mod tests {
             .append_message(&MessageEnvelope::new(
                 "default",
                 MessageKind::OperatorPrompt,
-                MessageOrigin::Operator { actor_id: None },
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
                 AuthorityClass::OperatorInstruction,
                 Priority::Normal,
                 MessageBody::Text {
@@ -3087,7 +3102,10 @@ mod tests {
                 .append_message(&MessageEnvelope::new(
                     "default",
                     MessageKind::OperatorPrompt,
-                    MessageOrigin::Operator { actor_id: None },
+                    MessageOrigin::Operator {
+                        actor_id: None,
+                        actor_display_name: None,
+                    },
                     AuthorityClass::OperatorInstruction,
                     Priority::Normal,
                     MessageBody::Text { text: text.into() },
@@ -3148,7 +3166,10 @@ mod tests {
             .append_message(&MessageEnvelope::new(
                 "default",
                 MessageKind::OperatorPrompt,
-                MessageOrigin::Operator { actor_id: None },
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
                 AuthorityClass::OperatorInstruction,
                 Priority::Normal,
                 MessageBody::Text {
@@ -3160,7 +3181,10 @@ mod tests {
             .append_message(&MessageEnvelope::new(
                 "default",
                 MessageKind::OperatorPrompt,
-                MessageOrigin::Operator { actor_id: None },
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
                 AuthorityClass::OperatorInstruction,
                 Priority::Normal,
                 MessageBody::Text {
@@ -3221,7 +3245,10 @@ mod tests {
         let mut legacy_message = serde_json::to_value(MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {

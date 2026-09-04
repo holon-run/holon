@@ -1745,6 +1745,7 @@ fn unbound_operator_input_exactly_resumes_agent_wait_or_becomes_nudge() {
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("operator".into()),
+            actor_display_name: None,
         },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
@@ -1807,6 +1808,7 @@ fn explicitly_bound_operator_input_resumes_work_item_wait() {
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("operator".into()),
+            actor_display_name: None,
         },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
@@ -1842,6 +1844,7 @@ fn authenticated_operator_ingress_can_activate_low_authority_prompt_without_upgr
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("holon_run".into()),
+            actor_display_name: None,
         },
         AuthorityClass::IntegrationSignal,
         Priority::Normal,
@@ -1881,7 +1884,10 @@ fn trusted_high_authority_operator_prompt_keeps_legacy_activation_path() {
     let message = MessageEnvelope::new(
         "default",
         MessageKind::OperatorPrompt,
-        MessageOrigin::Operator { actor_id: None },
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
@@ -1905,6 +1911,7 @@ fn explicitly_bound_low_authority_operator_input_preserves_content_trust() {
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("holon_run".into()),
+            actor_display_name: None,
         },
         AuthorityClass::ExternalEvidence,
         Priority::Normal,
@@ -1948,6 +1955,7 @@ fn normal_operator_input_resumes_work_item_wait_but_interject_does_not() {
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("operator".into()),
+            actor_display_name: None,
         },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
@@ -2204,7 +2212,10 @@ fn operator_interjection_classifier_requires_trusted_operator_interjection_promp
     let trusted_interjection = MessageEnvelope::new(
         "default",
         MessageKind::OperatorPrompt,
-        MessageOrigin::Operator { actor_id: None },
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
         AuthorityClass::OperatorInstruction,
         Priority::Interject,
         MessageBody::Text {
@@ -2218,7 +2229,10 @@ fn operator_interjection_classifier_requires_trusted_operator_interjection_promp
     let normal_operator = MessageEnvelope::new(
         "default",
         MessageKind::OperatorPrompt,
-        MessageOrigin::Operator { actor_id: None },
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {

@@ -553,6 +553,7 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/oidc/callback", get(auth::complete_oidc_login))
         .route("/auth/method", get(auth::auth_method))
         .route("/auth/session/exchange", post(auth::exchange_session))
+        .route("/auth/session/me", get(auth::session_me))
         .route("/auth/session/logout", post(auth::logout))
         .route(
             "/control/runtime/credentials",
@@ -980,6 +981,73 @@ pub(crate) fn authenticate_session(
     Ok(session)
 }
 
+/// Identity resolved for a control-plane request, used for message attribution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ControlActor {
+    /// Authenticated user from an OIDC session.
+    User {
+        user_id: String,
+        auth_method: String,
+        display_name: Option<String>,
+    },
+    /// Stable local control identity for static-token deployments. Deliberately
+    /// not user-scoped: the static token is a shared control credential.
+    LocalControl,
+}
+
+impl ControlActor {
+    /// Build the operator message origin for this actor. The display name is
+    /// snapshotted at send time so persisted messages stay self-contained.
+    pub(crate) fn operator_origin(&self) -> MessageOrigin {
+        match self {
+            ControlActor::User { user_id, .. } => MessageOrigin::Operator {
+                actor_id: Some(user_id.clone()),
+                actor_display_name: self.display_name_or_fallback(),
+            },
+            ControlActor::LocalControl => MessageOrigin::Operator {
+                actor_id: Some("control".to_string()),
+                actor_display_name: None,
+            },
+        }
+    }
+
+    /// Display name snapshot shared by message attribution and the
+    /// current-user view. Falls back to the stable user id so multi-user
+    /// attribution is always visible; the local control identity has no
+    /// display name by design.
+    pub(crate) fn display_name_or_fallback(&self) -> Option<String> {
+        match self {
+            ControlActor::User {
+                user_id,
+                display_name,
+                ..
+            } => Some(display_name.clone().unwrap_or_else(|| user_id.clone())),
+            ControlActor::LocalControl => None,
+        }
+    }
+}
+
+/// Resolve the authenticated identity behind a control-plane request.
+/// `authorize_control` remains the gate; this answers *who* is acting so the
+/// enqueued message can carry user-level attribution.
+pub(crate) fn control_actor(headers: &HeaderMap, state: &AppState) -> Result<ControlActor> {
+    if state.host.config().auth.mode == crate::authentication::AuthenticationMode::Oidc {
+        let session = authenticate_session(headers, state)?;
+        let user = state
+            .host
+            .runtime_db()
+            .authentication()
+            .find_user_by_id(&session.user_id)?
+            .ok_or_else(|| anyhow!("authenticated user not found"))?;
+        return Ok(ControlActor::User {
+            user_id: user.user_id,
+            auth_method: session.auth_method,
+            display_name: user.display_name,
+        });
+    }
+    Ok(ControlActor::LocalControl)
+}
+
 async fn session_auth_middleware(
     State(state): State<Arc<AppState>>,
     request: AxumRequest<Body>,
@@ -1010,7 +1078,10 @@ async fn session_auth_middleware(
 
 pub(crate) fn into_origin(origin: IncomingOrigin) -> MessageOrigin {
     match origin {
-        IncomingOrigin::Operator { actor_id } => MessageOrigin::Operator { actor_id },
+        IncomingOrigin::Operator { actor_id } => MessageOrigin::Operator {
+            actor_id,
+            actor_display_name: None,
+        },
         IncomingOrigin::Channel {
             channel_id,
             sender_id,

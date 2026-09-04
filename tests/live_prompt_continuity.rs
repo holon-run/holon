@@ -82,7 +82,10 @@ async fn enqueue_operator_prompt(
         .enqueue(MessageEnvelope::new(
             agent_id,
             MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text { text: text.into() },

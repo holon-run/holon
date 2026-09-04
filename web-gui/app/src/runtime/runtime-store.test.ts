@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  appendOptimisticOperatorPrompt,
   agentBriefPatchFromEvents,
   agentDetailErrorKind,
   applyStreamEvents,
@@ -117,6 +118,25 @@ describe("sendOperatorPrompt", () => {
     } finally {
       useRuntimeStore.setState(previous, true);
     }
+  });
+});
+
+describe("appendOptimisticOperatorPrompt", () => {
+  it("attributes the pending prompt to the current user display name", () => {
+    const agent = { id: "agent-a" } as AgentSummary;
+    const attributed = appendOptimisticOperatorPrompt(null, agent, "hello", "client-1", "Alice");
+    expect(attributed?.timeline.at(-1)).toMatchObject({
+      kind: "operator",
+      body: "hello",
+      senderName: "Alice",
+    });
+  });
+
+  it("keeps local control prompts unattributed", () => {
+    const agent = { id: "agent-a" } as AgentSummary;
+    const local = appendOptimisticOperatorPrompt(null, agent, "hello", "client-2", undefined);
+    expect(local?.timeline.at(-1)).toMatchObject({ kind: "operator", body: "hello" });
+    expect(local?.timeline.at(-1)?.senderName).toBeUndefined();
   });
 });
 

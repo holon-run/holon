@@ -346,7 +346,10 @@ mod tests {
         let mut message = MessageEnvelope::new(
             agent_id,
             crate::types::MessageKind::OperatorPrompt,
-            crate::types::MessageOrigin::Operator { actor_id: None },
+            crate::types::MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             crate::types::AuthorityClass::OperatorInstruction,
             crate::types::Priority::Normal,
             crate::types::MessageBody::Text {
@@ -2553,7 +2556,10 @@ INSERT INTO scheduler_rollout_command_results (
                 let mut message = MessageEnvelope::new(
                     "agent-a",
                     crate::types::MessageKind::OperatorPrompt,
-                    crate::types::MessageOrigin::Operator { actor_id: None },
+                    crate::types::MessageOrigin::Operator {
+                        actor_id: None,
+                        actor_display_name: None,
+                    },
                     crate::types::AuthorityClass::OperatorInstruction,
                     crate::types::Priority::Normal,
                     crate::types::MessageBody::Text { text: text.into() },
@@ -2641,7 +2647,10 @@ INSERT INTO scheduler_rollout_command_results (
             let mut unaffected = MessageEnvelope::new(
                 "agent-b",
                 crate::types::MessageKind::OperatorPrompt,
-                crate::types::MessageOrigin::Operator { actor_id: None },
+                crate::types::MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
                 crate::types::AuthorityClass::OperatorInstruction,
                 crate::types::Priority::Normal,
                 crate::types::MessageBody::Text {
@@ -2846,7 +2855,10 @@ INSERT INTO scheduler_rollout_command_results (
             let mut historical = MessageEnvelope::new(
                 "agent-a",
                 crate::types::MessageKind::OperatorPrompt,
-                crate::types::MessageOrigin::Operator { actor_id: None },
+                crate::types::MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
                 crate::types::AuthorityClass::OperatorInstruction,
                 crate::types::Priority::Normal,
                 crate::types::MessageBody::Text {
@@ -2876,7 +2888,10 @@ INSERT INTO scheduler_rollout_command_results (
         let next = MessageEnvelope::new(
             "agent-a",
             crate::types::MessageKind::OperatorPrompt,
-            crate::types::MessageOrigin::Operator { actor_id: None },
+            crate::types::MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             crate::types::AuthorityClass::OperatorInstruction,
             crate::types::Priority::Normal,
             crate::types::MessageBody::Text {
@@ -3271,7 +3286,10 @@ INSERT INTO queue_entries (
         let message_a = MessageEnvelope::new(
             "agent-a",
             crate::types::MessageKind::OperatorPrompt,
-            crate::types::MessageOrigin::Operator { actor_id: None },
+            crate::types::MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             crate::types::AuthorityClass::OperatorInstruction,
             crate::types::Priority::Normal,
             crate::types::MessageBody::Text { text: "a".into() },
@@ -3279,7 +3297,10 @@ INSERT INTO queue_entries (
         let message_b = MessageEnvelope::new(
             "agent-a",
             crate::types::MessageKind::OperatorPrompt,
-            crate::types::MessageOrigin::Operator { actor_id: None },
+            crate::types::MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             crate::types::AuthorityClass::OperatorInstruction,
             crate::types::Priority::Normal,
             crate::types::MessageBody::Text { text: "b".into() },
@@ -3658,7 +3679,10 @@ CREATE TABLE working_memory_deltas (
         let mut sequenced_1 = MessageEnvelope::new(
             "agent-a",
             crate::types::MessageKind::OperatorPrompt,
-            crate::types::MessageOrigin::Operator { actor_id: None },
+            crate::types::MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             crate::types::AuthorityClass::OperatorInstruction,
             crate::types::Priority::Normal,
             crate::types::MessageBody::Text { text: "one".into() },
@@ -5015,6 +5039,7 @@ CREATE TABLE working_memory_deltas (
             crate::types::MessageKind::OperatorPrompt,
             crate::types::MessageOrigin::Operator {
                 actor_id: Some("operator:test".into()),
+                actor_display_name: None,
             },
             crate::types::AuthorityClass::OperatorInstruction,
             crate::types::Priority::Normal,

@@ -441,6 +441,7 @@ fn recent_turns_snapshot_links_operator_input_to_result_brief() -> Result<()> {
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("operator:jolestar".into()),
+            actor_display_name: None,
         },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
@@ -472,6 +473,7 @@ fn recent_turns_snapshot_links_operator_input_to_result_brief() -> Result<()> {
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("operator:jolestar".into()),
+            actor_display_name: None,
         },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
@@ -567,6 +569,7 @@ fn owner_centered_projection_preserves_multi_turn_continuity() -> Result<()> {
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("operator:jolestar".into()),
+            actor_display_name: None,
         },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
@@ -646,6 +649,7 @@ fn owner_centered_projection_preserves_multi_turn_continuity() -> Result<()> {
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("operator:jolestar".into()),
+            actor_display_name: None,
         },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
@@ -742,6 +746,7 @@ fn recent_turns_snapshot_links_task_result_continuation_to_operator_turn() -> Re
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("operator:jolestar".into()),
+            actor_display_name: None,
         },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
@@ -928,6 +933,7 @@ fn operator_turn_context_snapshot_includes_work_memory_and_active_work() -> Resu
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("operator:jolestar".into()),
+            actor_display_name: None,
         },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
@@ -1332,6 +1338,7 @@ fn active_work_with_queued_work_shows_both_items() -> Result<()> {
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("operator:jolestar".into()),
+            actor_display_name: None,
         },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
@@ -1424,6 +1431,7 @@ fn operator_turn_without_working_memory_delta() -> Result<()> {
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("operator:jolestar".into()),
+            actor_display_name: None,
         },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
@@ -1757,6 +1765,7 @@ fn post_compaction_snapshot_preserves_continuity() -> Result<()> {
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("operator:jolestar".into()),
+            actor_display_name: None,
         },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
@@ -1995,6 +2004,7 @@ fn multi_turn_context_eval_preserves_long_task_continuity_and_efficiency() -> Re
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("operator:jolestar".into()),
+            actor_display_name: None,
         },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
@@ -2077,6 +2087,7 @@ fn multi_turn_context_eval_preserves_long_task_continuity_and_efficiency() -> Re
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("operator:jolestar".into()),
+            actor_display_name: None,
         },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
@@ -2206,6 +2217,7 @@ fn multi_turn_context_eval_preserves_initial_issue_list_during_item_by_item_disc
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("operator:jolestar".into()),
+            actor_display_name: None,
         },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
@@ -2272,6 +2284,7 @@ fn multi_turn_context_eval_preserves_initial_issue_list_during_item_by_item_disc
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator {
                 actor_id: Some("operator:jolestar".into()),
+                actor_display_name: None,
             },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
@@ -2309,6 +2322,7 @@ fn multi_turn_context_eval_preserves_initial_issue_list_during_item_by_item_disc
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("operator:jolestar".into()),
+            actor_display_name: None,
         },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
@@ -2384,6 +2398,7 @@ fn multi_turn_context_eval_keeps_compacted_and_interleaved_work_items_clear() ->
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("operator:jolestar".into()),
+            actor_display_name: None,
         },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
@@ -2411,6 +2426,7 @@ fn multi_turn_context_eval_keeps_compacted_and_interleaved_work_items_clear() ->
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("operator:jolestar".into()),
+            actor_display_name: None,
         },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
@@ -2485,6 +2501,7 @@ fn multi_turn_context_eval_keeps_compacted_and_interleaved_work_items_clear() ->
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("operator:jolestar".into()),
+            actor_display_name: None,
         },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,

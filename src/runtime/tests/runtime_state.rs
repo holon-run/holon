@@ -655,6 +655,7 @@ fn trusted_operator_prompt(work_item_id: Option<&str>, text: &str) -> MessageEnv
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("control".into()),
+            actor_display_name: None,
         },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
@@ -6740,6 +6741,7 @@ async fn trusted_operator_conversation_owner_flows_from_admission_to_terminal_tu
                 MessageKind::OperatorPrompt,
                 MessageOrigin::Operator {
                     actor_id: Some("control".into()),
+                    actor_display_name: None,
                 },
                 AuthorityClass::OperatorInstruction,
                 Priority::Normal,
@@ -7820,7 +7822,10 @@ async fn standalone_terminal_transition_fault_rolls_back_and_restart_replays_exa
         let mut message = MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
@@ -7943,7 +7948,10 @@ async fn standalone_terminal_transition_survives_post_commit_effect_faults() {
         let mut message = MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
@@ -9231,7 +9239,10 @@ async fn message_admission_fault_rolls_back_all_canonical_facts() {
         let message = MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
@@ -9542,7 +9553,10 @@ async fn run_loop_idle_sleep_rechecks_queue_before_transition() {
         guard.queue.push(MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
@@ -10555,7 +10569,10 @@ async fn message_admission_wakes_asleep_and_booting_agents() {
             .enqueue(MessageEnvelope::new(
                 "default",
                 MessageKind::OperatorPrompt,
-                MessageOrigin::Operator { actor_id: None },
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
                 AuthorityClass::OperatorInstruction,
                 Priority::Normal,
                 MessageBody::Text {
@@ -10630,7 +10647,10 @@ async fn message_admission_does_not_wake_stopped_agents() {
         .enqueue(MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
@@ -10676,7 +10696,10 @@ async fn control_start_hands_stopped_agent_to_scheduler_without_model_turn() {
         .enqueue(MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
@@ -11054,6 +11077,7 @@ async fn enqueue_normalizes_operator_admission_fields() {
                 MessageKind::OperatorPrompt,
                 MessageOrigin::Operator {
                     actor_id: Some("operator-1".into()),
+                    actor_display_name: None,
                 },
                 AuthorityClass::OperatorInstruction,
                 Priority::Interject,
@@ -12983,7 +13007,10 @@ async fn enqueue_generates_turn_id_for_blank_admitted_turn_id() {
     let mut message = MessageEnvelope::new(
         "default",
         MessageKind::OperatorPrompt,
-        MessageOrigin::Operator { actor_id: None },
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
@@ -13018,7 +13045,10 @@ async fn runtime_error_marks_queue_entry_aborted_and_persists_failed_turn() {
     let message = MessageEnvelope::new(
         "default",
         MessageKind::OperatorPrompt,
-        MessageOrigin::Operator { actor_id: None },
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
@@ -13273,7 +13303,10 @@ async fn abort_current_run_aborts_provider_turn_and_stops_agent() {
             MessageEnvelope::new(
                 "default",
                 MessageKind::OperatorPrompt,
-                MessageOrigin::Operator { actor_id: None },
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
                 AuthorityClass::OperatorInstruction,
                 Priority::Normal,
                 MessageBody::Text {
@@ -13389,7 +13422,10 @@ async fn operator_interjection_prompt_is_interjected_before_next_provider_round(
         .enqueue(MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
@@ -13410,6 +13446,7 @@ async fn operator_interjection_prompt_is_interjected_before_next_provider_round(
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("control".into()),
+            actor_display_name: None,
         },
         AuthorityClass::OperatorInstruction,
         Priority::Interject,
@@ -13652,7 +13689,10 @@ async fn abort_current_run_rejects_stale_run_id() {
             MessageEnvelope::new(
                 "default",
                 MessageKind::OperatorPrompt,
-                MessageOrigin::Operator { actor_id: None },
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
                 AuthorityClass::OperatorInstruction,
                 Priority::Normal,
                 MessageBody::Text {
@@ -13724,7 +13764,10 @@ async fn model_reentry_operator_and_timer_events_run_interactive_turn() {
     let operator = MessageEnvelope::new(
         "default",
         MessageKind::OperatorPrompt,
-        MessageOrigin::Operator { actor_id: None },
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
@@ -14214,6 +14257,7 @@ async fn same_turn_message_does_not_reconcile_wait_condition() {
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("operator-1".into()),
+            actor_display_name: None,
         },
         AuthorityClass::OperatorInstruction,
         Priority::Interject,
@@ -14365,7 +14409,10 @@ async fn unknown_control_action_fails_without_mutating_runtime_state() {
     let message = MessageEnvelope::new(
         "default",
         MessageKind::Control,
-        MessageOrigin::Operator { actor_id: None },
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
         AuthorityClass::OperatorInstruction,
         Priority::Next,
         MessageBody::Text {

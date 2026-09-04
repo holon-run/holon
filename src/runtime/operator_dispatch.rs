@@ -303,6 +303,7 @@ impl RuntimeHandle {
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator {
                 actor_id: Some("debug_prompt".into()),
+                actor_display_name: None,
             },
             authority_class.clone(),
             Priority::Normal,

@@ -1315,6 +1315,8 @@ pub enum Priority {
 pub enum MessageOrigin {
     Operator {
         actor_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        actor_display_name: Option<String>,
     },
     Channel {
         channel_id: String,
@@ -1651,7 +1653,7 @@ impl MessageEnvelope {
             .map(ToString::to_string)
             .or_else(|| {
                 let actor_id = match &self.origin {
-                    MessageOrigin::Operator { actor_id } => {
+                    MessageOrigin::Operator { actor_id, .. } => {
                         actor_id.as_deref().unwrap_or("operator")
                     }
                     _ => unreachable!("operator origin checked above"),
@@ -5431,6 +5433,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn operator_origin_reads_ledger_entries_without_display_name() {
+        let origin: MessageOrigin =
+            serde_json::from_str(r#"{"kind":"operator","actor_id":"control"}"#).unwrap();
+        assert_eq!(
+            origin,
+            MessageOrigin::Operator {
+                actor_id: Some("control".into()),
+                actor_display_name: None,
+            }
+        );
+    }
+
+    #[test]
+    fn operator_origin_display_name_round_trips() {
+        let origin = MessageOrigin::Operator {
+            actor_id: Some("oidc-user-one".into()),
+            actor_display_name: Some("Alice".into()),
+        };
+        let value = serde_json::to_value(&origin).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "kind": "operator",
+                "actor_id": "oidc-user-one",
+                "actor_display_name": "Alice",
+            })
+        );
+        let decoded: MessageOrigin = serde_json::from_value(value).unwrap();
+        assert_eq!(decoded, origin);
+    }
+
+    #[test]
     fn agent_invocation_context_requires_caller_when_any_field_is_present() {
         let error = AgentInvocationContext::from_fields(
             None,
@@ -5627,6 +5661,7 @@ mod tests {
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator {
                 actor_id: Some("operator:jolestar".into()),
+                actor_display_name: None,
             },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
@@ -6226,7 +6261,10 @@ mod tests {
         let mut message = MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {

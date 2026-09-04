@@ -24,6 +24,40 @@ pub struct AuthMethodResponse {
     mode: crate::authentication::AuthenticationMode,
 }
 
+#[derive(Debug, Serialize)]
+pub struct CurrentUserResponse {
+    ok: bool,
+    user_id: String,
+    display_name: Option<String>,
+    auth_method: String,
+}
+
+pub async fn session_me(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    let actor =
+        control_actor(&headers, &state).map_err(|error| auth_required(error.to_string()))?;
+    let (user_id, display_name, auth_method) = match &actor {
+        ControlActor::User {
+            user_id,
+            auth_method,
+            ..
+        } => (
+            user_id.clone(),
+            actor.display_name_or_fallback(),
+            auth_method.clone(),
+        ),
+        ControlActor::LocalControl => ("control".to_string(), None, "local_control".to_string()),
+    };
+    Ok(Json(CurrentUserResponse {
+        ok: true,
+        user_id,
+        display_name,
+        auth_method,
+    }))
+}
+
 pub async fn auth_method(State(state): State<Arc<AppState>>) -> Json<AuthMethodResponse> {
     Json(AuthMethodResponse {
         mode: state.host.config().auth.mode,

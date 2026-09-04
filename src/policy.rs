@@ -80,6 +80,7 @@ mod tests {
             (
                 MessageOrigin::Operator {
                     actor_id: Some("operator".into()),
+                    actor_display_name: None,
                 },
                 AuthorityClass::OperatorInstruction,
             ),
@@ -138,7 +139,10 @@ mod tests {
         let allowed_cases = [
             (
                 MessageKind::OperatorPrompt,
-                MessageOrigin::Operator { actor_id: None },
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
             ),
             (
                 MessageKind::WebhookEvent,
@@ -193,7 +197,10 @@ mod tests {
             ),
             (
                 MessageKind::Control,
-                MessageOrigin::Operator { actor_id: None },
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
             ),
             (
                 MessageKind::Control,
@@ -217,7 +224,10 @@ mod tests {
     fn mismatched_origin_is_denied() {
         let decision = validate_message_kind_for_origin(
             &MessageKind::WebhookEvent,
-            &MessageOrigin::Operator { actor_id: None },
+            &MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
         );
         assert!(!decision.allowed);
     }

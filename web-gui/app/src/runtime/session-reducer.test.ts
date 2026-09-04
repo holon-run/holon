@@ -64,6 +64,48 @@ describe("reduceAgentSessionTimeline", () => {
     ]);
   });
 
+  it("carries the operator sender name only when the origin attributes a user", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          {
+            id: "event-1",
+            event_seq: 1,
+            ts: "2026-06-15T10:00:00Z",
+            type: "message_enqueued",
+            payload: {
+              origin: {
+                kind: "operator",
+                actor_id: "oidc-user-one",
+                actor_display_name: "Alice",
+              },
+              body: { text: "hello" },
+            },
+          },
+          {
+            id: "event-2",
+            event_seq: 2,
+            ts: "2026-06-15T10:01:00Z",
+            type: "message_enqueued",
+            payload: {
+              origin: { kind: "operator", actor_id: "control" },
+              body: { text: "local hello" },
+            },
+          },
+        ],
+      },
+    });
+
+    expect(timeline).toHaveLength(2);
+    expect(timeline[0]).toMatchObject({
+      id: "event-1",
+      kind: "operator",
+      senderName: "Alice",
+    });
+    expect(timeline[1]).toMatchObject({ id: "event-2", kind: "operator" });
+    expect(timeline[1].senderName).toBeUndefined();
+  });
+
   it("hydrates slim operator message events from the message cache", () => {
     const timeline = reduceAgentSessionTimeline({
       events: {

@@ -2047,6 +2047,7 @@ mod tests {
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator {
                 actor_id: Some("user".into()),
+                actor_display_name: None,
             },
             AuthorityClass::OperatorInstruction,
             Priority::Interject,
@@ -2068,6 +2069,7 @@ mod tests {
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator {
                 actor_id: Some("user".into()),
+                actor_display_name: None,
             },
             AuthorityClass::OperatorInstruction,
             Priority::Next,
@@ -2089,6 +2091,7 @@ mod tests {
             MessageKind::SystemTick,
             MessageOrigin::Operator {
                 actor_id: Some("user".into()),
+                actor_display_name: None,
             },
             AuthorityClass::OperatorInstruction,
             Priority::Interject,

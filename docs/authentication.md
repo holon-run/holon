@@ -49,3 +49,23 @@ Missing, expired, revoked, or disabled-user sessions return HTTP `401` with the
 ingress, `/login`, and webhook routes retain their separate non-session
 credentials and are not treated as browser sessions. The Web GUI uses the
 Holon service's same origin for all API, SSE, and login requests.
+
+## Message attribution
+
+Operator messages created through the control plane (`POST
+/api/control/agents/{agent_id}/prompt`) record who sent them in the message
+origin:
+
+- In OIDC mode, the origin is the authenticated user: `actor_id` is the stable
+  user id (for example `oidc-<uuid>`), and `actor_display_name` snapshots the
+  user's display name at send time. When the user has no name claim, the user
+  id is used as the display name fallback. Persisted messages therefore stay
+  self-contained and do not drift when a user is renamed later.
+- In local mode, the static control token is a shared control credential, not a
+  per-user identity. Messages keep the stable `actor_id` of `control` and no
+  `actor_display_name`. Local deployments see no per-user attribution, which
+  matches the single-operator deployment model.
+
+The origin is carried on `GET /api/agents/{agent_id}/messages/{message_id}`,
+`messages:batchGet`, and the `message_enqueued` SSE event, so history and
+real-time views observe the same attribution fields.

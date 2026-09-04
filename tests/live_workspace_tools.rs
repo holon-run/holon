@@ -104,7 +104,7 @@ async fn live_llm_completes_canonical_workspace_tool_lifecycle() -> Result<()> {
         .enqueue(MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
+            MessageOrigin::Operator { actor_id: None, actor_display_name: None },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {

@@ -274,6 +274,63 @@ describe("projectModelOptions", () => {
 });
 
 describe("createRuntimeClient", () => {
+  it("maps the current session user response", async () => {
+    const seen: string[] = [];
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: (async (input: RequestInfo | URL) => {
+        seen.push(String(input));
+        return Response.json({
+          ok: true,
+          user_id: "oidc-user-one",
+          display_name: "Alice",
+          auth_method: "oidc",
+        });
+      }) as typeof fetch,
+    });
+
+    await expect(client.getCurrentUser()).resolves.toEqual({
+      userId: "oidc-user-one",
+      displayName: "Alice",
+      authMethod: "oidc",
+    });
+    expect(seen).toEqual(["http://example.test:7878/api/auth/session/me"]);
+  });
+
+  it("returns a null current user when the session is unauthenticated", async () => {
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: (async () =>
+        new Response(JSON.stringify({ code: "auth_required", error: "auth required" }), {
+          status: 401,
+          headers: { "Content-Type": "application/json" },
+        })) as typeof fetch,
+    });
+
+    await expect(client.getCurrentUser()).resolves.toBeNull();
+  });
+
+  it("omits the display name for the local control identity", async () => {
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: (async () =>
+        Response.json({
+          ok: true,
+          user_id: "control",
+          display_name: null,
+          auth_method: "local_control",
+        })) as typeof fetch,
+    });
+
+    await expect(client.getCurrentUser()).resolves.toEqual({
+      userId: "control",
+      authMethod: "local_control",
+    });
+  });
+
   it("uses the explicit refresh endpoint when refreshing the model catalog", async () => {
     const seen: Array<{ url: string; method: string; body: unknown }> = [];
     const client = createRuntimeClient({

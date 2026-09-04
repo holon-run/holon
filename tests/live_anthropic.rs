@@ -186,7 +186,10 @@ async fn live_runtime_wakes_sleeps_and_preserves_context() -> Result<()> {
         .enqueue(MessageEnvelope::new(
             &config.default_agent_id,
             MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
@@ -201,7 +204,10 @@ async fn live_runtime_wakes_sleeps_and_preserves_context() -> Result<()> {
         .enqueue(MessageEnvelope::new(
             &config.default_agent_id,
             MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {

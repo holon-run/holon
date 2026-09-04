@@ -627,6 +627,19 @@ interface AgentSkillsResponseDto {
   skills?: SkillCatalogEntryDto[];
 }
 
+interface CurrentUserResponseDto {
+  ok?: boolean;
+  user_id?: string;
+  display_name?: string | null;
+  auth_method?: string;
+}
+
+export interface CurrentUser {
+  userId: string;
+  displayName?: string;
+  authMethod: string;
+}
+
 interface JobResponseDto {
   job?: JobDto;
 }
@@ -699,6 +712,26 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         if (isProjectionBusyError(error)) throw error;
         const message = error instanceof Error ? error.message : String(error);
         return buildDisconnectedBootstrap(baseUrl, message, connectionMode, hasToken, isAuthRequiredError(error));
+      }
+    },
+    async getCurrentUser(): Promise<CurrentUser | null> {
+      if (!baseUrl) {
+        return null;
+      }
+      try {
+        const payload = await getJson<CurrentUserResponseDto>(fetchImpl, baseUrl, "/auth/session/me", { headers: requestHeaders });
+        if (!payload.user_id) {
+          return null;
+        }
+        return {
+          userId: payload.user_id,
+          displayName: payload.display_name?.trim() ? payload.display_name : undefined,
+          authMethod: payload.auth_method ?? "unknown",
+        };
+      } catch {
+        // The current user is advisory metadata for message attribution; auth
+        // or connectivity failures leave it unset rather than failing the app.
+        return null;
       }
     },
     async getAgentDetail(agentId: string, displayLevel: DisplayLevel = "info"): Promise<AgentDetail> {

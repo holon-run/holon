@@ -1,3 +1,4 @@
+import type { CurrentUser } from "./client";
 import { create } from "zustand";
 
 import {
@@ -258,11 +259,12 @@ const OPTIMISTIC_OPERATOR_CLIENT_PREFIX = "operator-prompt-client:";
 const OPTIMISTIC_OPERATOR_MESSAGE_PREFIX = "operator-prompt-message:";
 const MAX_SEMANTIC_HISTORY_PAGES_PER_LOAD = 5;
 
-function appendOptimisticOperatorPrompt(
+export function appendOptimisticOperatorPrompt(
   detail: AgentDetail | null,
   agent: AgentSummary | undefined,
   prompt: string,
   clientId: string,
+  senderName: string | undefined,
 ): AgentDetail | null {
   const baseDetail = detail ?? createLiveAgentDetail(agent);
   if (!baseDetail) return null;
@@ -275,6 +277,7 @@ function appendOptimisticOperatorPrompt(
         id: `operator-prompt:pending:${clientId}`,
         kind: "operator",
         label: "Operator input",
+        senderName,
         body: prompt,
         timestamp,
         meta: "sending",
@@ -328,6 +331,8 @@ export interface RuntimeStoreState {
 
   bootstrap: RuntimeBootstrap;
   bootstrapLoading: boolean;
+  /** Identity behind the current session, used to attribute pending operator prompts. */
+  currentUser?: CurrentUser;
   bootstrapError?: string;
   globalStreamStatus: "idle" | "connecting" | "catching_up" | "streaming" | "reconnecting";
   discovery: RosterDiscoveryState;
@@ -1563,6 +1568,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
 
   bootstrap: pendingBootstrap(runtimeConnectionConfig),
   bootstrapLoading: true,
+  currentUser: undefined,
   globalStreamStatus: "idle",
   discovery: {
     mode: "pending",
@@ -2077,6 +2083,12 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
       try {
         const bootstrap = await runtimeClient.getBootstrap();
         if (!isCurrentClientGeneration(generation)) return;
+        // Current-user identity is advisory: resolve it in the background so
+        // pending prompts can be attributed without blocking the bootstrap.
+        void runtimeClient.getCurrentUser().then((currentUser) => {
+          if (!isCurrentClientGeneration(generation)) return;
+          set({ currentUser: currentUser ?? undefined });
+        });
         set((state) => {
           if (bootstrap.connection.source === "fixture" && state.bootstrap.connection.source === "http") {
             return {
@@ -3450,6 +3462,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
                 state.bootstrap.agents.find((agent) => agent.id === agentId),
                 prompt,
                 clientId,
+                get().currentUser?.displayName,
               ),
             },
           },

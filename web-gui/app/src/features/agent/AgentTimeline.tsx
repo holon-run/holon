@@ -91,7 +91,7 @@ export const TimelineTurnGroup = memo(function TimelineTurnGroup({
   );
 });
 
-const TimelineMessage = memo(function TimelineMessage({
+export const TimelineMessage = memo(function TimelineMessage({
   item,
   compactAssistant,
   displayLevel,
@@ -155,6 +155,9 @@ const TimelineMessage = memo(function TimelineMessage({
       data-timeline-item-id={item.id}
     >
       <div className="bubble">
+        {item.kind === "operator" && item.senderName ? (
+          <div className="message-label">{item.senderName}</div>
+        ) : null}
         <TimelineItemContent item={item} />
         <TimelineItemDetail detail={item.detail} />
         {item.briefHydration ? (
