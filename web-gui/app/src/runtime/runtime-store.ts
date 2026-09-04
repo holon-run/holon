@@ -828,6 +828,34 @@ function writeStoredRemoteProfile(config: RuntimeConnectionConfig): void {
   }
 }
 
+/**
+ * Drop any stored static control token for the active connection and its
+ * remote profile. OIDC runtimes authenticate through the session cookie; a
+ * stale static token kept from an earlier local-mode deployment would still
+ * be sent as a Bearer header and mask the fresh cookie, looping the login
+ * flow between the callback and the login page.
+ */
+export function clearStoredRuntimeConnectionToken(): void {
+  if (typeof window === "undefined") return;
+  const activeConfig = coerceRuntimeConnectionConfig(
+    readStoredJson(window.sessionStorage, ACTIVE_RUNTIME_CONNECTION_STORAGE_KEY),
+  );
+  if (activeConfig?.token) {
+    writeActiveRuntimeConnectionConfig({ ...activeConfig, token: undefined });
+  }
+  if (activeConfig?.mode !== "remote" || !activeConfig.baseUrl) return;
+  const profiles = readStoredRemoteProfiles();
+  const key = remoteProfileKey(activeConfig.baseUrl);
+  const profile = profiles[key];
+  if (!profile?.token) return;
+  profiles[key] = { ...profile, token: undefined };
+  try {
+    window.localStorage.setItem(RUNTIME_CONNECTION_PROFILES_STORAGE_KEY, JSON.stringify(profiles));
+  } catch {
+    // Ignore storage failures; the in-memory connection still applies.
+  }
+}
+
 export function readStoredRemoteConnectionProfiles(): RuntimeConnectionProfile[] {
   if (!canUseRemoteRuntimeConnections()) return [];
   return Object.values(readStoredRemoteProfiles())

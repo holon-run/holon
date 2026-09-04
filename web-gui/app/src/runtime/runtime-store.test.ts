@@ -16,6 +16,7 @@ import {
   modelCatalogCacheKey,
   missingBriefIdsForHydration,
   observerSyncDiagnostics,
+  clearStoredRuntimeConnectionToken,
   readStoredRemoteConnectionProfiles,
   retryPendingReadMarker,
   resetSessionsForResume,
@@ -648,6 +649,37 @@ describe("runtime connection storage", () => {
 
     expect(readStoredRuntimeConnectionConfig()).toEqual({ mode: "local" });
     expect(readStoredRemoteConnectionProfiles()).toEqual([]);
+  });
+
+  it("clears stale stored tokens once an oidc runtime is confirmed", () => {
+    const sharedLocalStorage = new MemoryStorage();
+    const windowSession = new MemoryStorage();
+
+    installWindow(sharedLocalStorage, windowSession);
+    writeStoredRuntimeConnectionConfig({
+      mode: "remote",
+      baseUrl: "https://holon.example",
+      token: "stale-static-token",
+    });
+    expect(readStoredRuntimeConnectionConfig()).toEqual({
+      mode: "remote",
+      baseUrl: "https://holon.example",
+      token: "stale-static-token",
+    });
+
+    clearStoredRuntimeConnectionToken();
+
+    expect(readStoredRuntimeConnectionConfig()).toEqual({
+      mode: "remote",
+      baseUrl: "https://holon.example",
+    });
+
+    // A fresh window session must not rehydrate the stale profile token.
+    installWindow(sharedLocalStorage, new MemoryStorage());
+    expect(readStoredRuntimeConnectionConfig()).toEqual({ mode: "local" });
+    expect(readStoredRemoteConnectionProfiles()).toEqual([
+      { baseUrl: "https://holon.example", hasToken: false },
+    ]);
   });
 });
 

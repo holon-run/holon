@@ -917,23 +917,25 @@ pub(crate) fn authorize_remote_access(headers: &HeaderMap, state: &AppState) -> 
     Ok(())
 }
 
-pub(crate) fn session_credential(headers: &HeaderMap) -> Option<String> {
-    if let Some(value) = headers
+fn bearer_session_credential(headers: &HeaderMap) -> Option<String> {
+    let value = headers
         .get(AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.to_str().ok())?;
+    let mut parts = value.split_whitespace();
+    if !parts
+        .next()
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("Bearer"))
     {
-        let mut parts = value.split_whitespace();
-        if parts
-            .next()
-            .is_some_and(|scheme| scheme.eq_ignore_ascii_case("Bearer"))
-        {
-            if let Some(token) = parts.next().filter(|token| !token.is_empty()) {
-                if parts.next().is_none() {
-                    return Some(token.to_string());
-                }
-            }
-        }
+        return None;
     }
+    let token = parts.next().filter(|token| !token.is_empty())?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(token.to_string())
+}
+
+fn cookie_session_credential(headers: &HeaderMap) -> Option<String> {
     headers
         .get(COOKIE)
         .and_then(|value| value.to_str().ok())
@@ -945,13 +947,40 @@ pub(crate) fn session_credential(headers: &HeaderMap) -> Option<String> {
         })
 }
 
+pub(crate) fn session_credential(headers: &HeaderMap) -> Option<String> {
+    bearer_session_credential(headers).or_else(|| cookie_session_credential(headers))
+}
+
+/// Authenticate a request by trying each presented session credential in
+/// priority order: the `Authorization: Bearer` session first, then the
+/// `holon_session` cookie. Browsers upgrading from a static-token deployment
+/// may keep sending a stale Bearer token; it must not mask a valid session
+/// cookie, or OIDC logins loop between the callback and the login page.
 pub(crate) fn authenticate_session(
     headers: &HeaderMap,
     state: &AppState,
 ) -> Result<crate::authentication::AuthSessionRecord> {
-    let credential =
-        session_credential(headers).ok_or_else(|| anyhow!("missing session credential"))?;
-    let digest = crate::authentication::digest_secret(&credential);
+    let mut last_error = anyhow!("missing session credential");
+    for credential in [
+        bearer_session_credential(headers),
+        cookie_session_credential(headers),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        match authenticate_session_credential(&credential, state) {
+            Ok(session) => return Ok(session),
+            Err(error) => last_error = error,
+        }
+    }
+    Err(last_error)
+}
+
+fn authenticate_session_credential(
+    credential: &str,
+    state: &AppState,
+) -> Result<crate::authentication::AuthSessionRecord> {
+    let digest = crate::authentication::digest_secret(credential);
     let session = state
         .host
         .runtime_db()
@@ -1449,8 +1478,8 @@ pub async fn serve_unix(
 #[cfg(test)]
 mod tests {
     use super::{
-        error_response, projection_gate_error_response, router, session_credential, AppState,
-        ProjectionGate, ProjectionGateError,
+        authenticate_session, error_response, projection_gate_error_response, router,
+        session_credential, AppState, ProjectionGate, ProjectionGateError,
     };
     use crate::{
         config::AppConfig,
@@ -1539,6 +1568,89 @@ mod tests {
             HeaderValue::from_static("holon_session=; theme=dark"),
         );
         assert!(session_credential(&headers).is_none());
+    }
+
+    fn oidc_test_host_with_session() -> (tempfile::TempDir, RuntimeHost, String) {
+        let (home, host) = oidc_test_host();
+        let now = chrono::Utc::now();
+        let authentication = host.runtime_db().authentication();
+        authentication
+            .upsert_user(&crate::authentication::AuthUserRecord {
+                user_id: "user-1".to_string(),
+                issuer: "https://issuer.example".to_string(),
+                subject: "subject-1".to_string(),
+                display_name: None,
+                email: None,
+                created_at: now,
+                updated_at: now,
+                disabled_at: None,
+            })
+            .unwrap();
+        let session_secret = "cookie-session-secret".to_string();
+        authentication
+            .create_session(&crate::authentication::AuthSessionRecord {
+                session_digest: crate::authentication::digest_secret(&session_secret),
+                user_id: "user-1".to_string(),
+                auth_method: "oidc".to_string(),
+                created_at: now,
+                expires_at: None,
+                last_seen_at: now,
+                revoked_at: None,
+            })
+            .unwrap();
+        (home, host, session_secret)
+    }
+
+    #[test]
+    fn authenticate_session_falls_back_to_cookie_when_bearer_is_stale() {
+        let (_home, host, session_secret) = oidc_test_host_with_session();
+        let app = AppState::for_tcp(host);
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer stale-static-token"),
+        );
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_str(&format!("theme=dark; holon_session={session_secret}")).unwrap(),
+        );
+        let session = authenticate_session(&headers, &app)
+            .expect("valid cookie should authenticate when the bearer token is stale");
+        assert_eq!(session.user_id, "user-1");
+    }
+
+    #[test]
+    fn authenticate_session_keeps_bearer_priority_and_rejects_stale_credentials() {
+        let (_home, host, session_secret) = oidc_test_host_with_session();
+        let app = AppState::for_tcp(host);
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {session_secret}")).unwrap(),
+        );
+        assert!(authenticate_session(&headers, &app).is_ok());
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer stale-static-token"),
+        );
+        assert!(authenticate_session(&headers, &app).is_err());
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer stale-static-token"),
+        );
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_static("holon_session=wrong-cookie"),
+        );
+        assert!(authenticate_session(&headers, &app).is_err());
+
+        let headers = HeaderMap::new();
+        assert!(authenticate_session(&headers, &app).is_err());
     }
 
     #[tokio::test]

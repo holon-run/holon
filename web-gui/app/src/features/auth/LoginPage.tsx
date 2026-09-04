@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 
 import holonMarkUrl from "../../assets/holon-mark.png";
 import { Button } from "../../components/ui/Button";
+import { clearStoredRuntimeConnectionToken } from "../../runtime/runtime-store";
 
 export function LoginPage() {
   const { t } = useTranslation();
@@ -28,6 +29,11 @@ export function LoginPage() {
       .then(async (response) => {
         if (!response.ok) throw new Error(t("auth.authMethodError"));
         const body = (await response.json()) as { mode?: string };
+        if (body.mode === "oidc") {
+          // OIDC runtimes authenticate via the session cookie; a stored
+          // static token would be sent as a stale Bearer header and mask it.
+          clearStoredRuntimeConnectionToken();
+        }
         setOidc(body.mode === "oidc");
       })
       .catch(() => setOidc(true));

@@ -43,6 +43,12 @@ The same session can be supplied to API clients as
 `Authorization: Bearer <session>`. `POST /api/auth/session/logout` revokes the
 current session and clears the cookie.
 
+When a request presents both a Bearer session credential and a session cookie,
+the runtime tries the Bearer credential first and falls back to the cookie. A
+stale Bearer token (for example a static control token cached by a browser
+before the deployment switched to OIDC) therefore cannot mask a valid session
+cookie.
+
 In OIDC mode, normal API, SSE, and Web requests require an active session.
 Missing, expired, revoked, or disabled-user sessions return HTTP `401` with the
 `auth_required` error code. Bootstrap/session exchange, OIDC callback, callback
