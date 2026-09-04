@@ -3103,9 +3103,11 @@ pub async fn control_prompt_attributes_oidc_user_identity() -> Result<()> {
 }
 
 pub async fn control_prompt_local_credentials_keep_control_identity() -> Result<()> {
+    let data_dir = tempdir()?;
+    let workspace_dir = tempdir()?;
     let config = test_config_with_paths(
-        tempdir().unwrap().keep(),
-        tempdir().unwrap().keep(),
+        data_dir.path().to_path_buf(),
+        workspace_dir.path().to_path_buf(),
         "127.0.0.1:0".into(),
         ControlAuthMode::Required,
     );
@@ -3228,9 +3230,11 @@ pub async fn auth_session_me_returns_oidc_user_identity() -> Result<()> {
 }
 
 pub async fn auth_session_me_returns_local_control_identity() -> Result<()> {
+    let data_dir = tempdir()?;
+    let workspace_dir = tempdir()?;
     let config = test_config_with_paths(
-        tempdir().unwrap().keep(),
-        tempdir().unwrap().keep(),
+        data_dir.path().to_path_buf(),
+        workspace_dir.path().to_path_buf(),
         "127.0.0.1:0".into(),
         ControlAuthMode::Required,
     );
