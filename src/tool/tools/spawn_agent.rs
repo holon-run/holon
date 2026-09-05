@@ -179,4 +179,47 @@ mod tests {
 
         assert!(error.to_string().contains("max_output_token"));
     }
+
+    #[test]
+    fn spawn_agent_contract_accepts_the_two_supported_presets() {
+        let private = parse_tool_args::<SpawnAgentArgs>(
+            NAME,
+            &json!({
+                "preset": "private_child",
+                "initial_message": "delegate the implementation",
+                "workspace_mode": "worktree"
+            }),
+        )
+        .expect("private child contract should deserialize");
+        assert!(private.initial_message.is_some());
+
+        let public = parse_tool_args::<SpawnAgentArgs>(
+            NAME,
+            &json!({
+                "preset": "public_named",
+                "agent_id": "release-bot",
+                "workspace_mode": "inherit"
+            }),
+        )
+        .expect("public named contract should deserialize");
+        assert_eq!(public.agent_id.as_deref(), Some("release-bot"));
+    }
+
+    #[test]
+    fn spawn_agent_contract_preserves_strict_provenance_boundary() {
+        let result = parse_tool_args::<SpawnAgentArgs>(
+            NAME,
+            &json!({
+                "preset": "public_named",
+                "agent_id": "release-bot",
+                "trust": "operator",
+                "authority": "admin"
+            }),
+        );
+        let error = result
+            .err()
+            .expect("caller provenance must not be accepted as request data");
+
+        assert!(error.to_string().contains("unknown field"));
+    }
 }
