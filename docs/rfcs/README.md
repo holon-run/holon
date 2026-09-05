@@ -22,6 +22,7 @@ implementation and tests.
 - [Agent State Model And Runtime Projection](./agent-state-model.md)
 - [Agent Status Display Projection](./agent-status-display-projection.md)
 - [Agent Profile Model](./agent-profile-model.md)
+- [Canonical Agent Create Contract](./agent-create-contract.md)
 - [Runtime Scheduler Contract](./runtime-scheduler-contract.md)
 - [Scheduler Cutover Simplification](./scheduler-cutover-simplification.md)
 - [Scheduler–WorkItem Unified Execution Protocol](./scheduler-work-item-unified-execution-protocol.md)
