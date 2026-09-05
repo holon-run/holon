@@ -39,15 +39,15 @@ Do not publish replies before push completes.
 
 Use direct `gh api` reply operations for review-thread replies and related comments.
 
-## 5) Finalize outputs
+## 5) Finalize delivery
 
-Write/update:
-- `${GITHUB_OUTPUT_DIR}/summary.md`
-- `${GITHUB_OUTPUT_DIR}/manifest.json`
+Use the normal agent delivery for the result. Only write
+`${GITHUB_OUTPUT_DIR}/summary.md`, `${GITHUB_OUTPUT_DIR}/manifest.json`, or
+other artifacts when the caller or an integration explicitly requests them.
 
 ## Completion criteria
 
 Run is successful only when:
 1. Required fixes are committed and pushed.
 2. Replies planned for this run are published.
-3. `summary.md` records the replies that were posted and any residual risks.
+3. The delivery records the replies that were posted and any residual risks.

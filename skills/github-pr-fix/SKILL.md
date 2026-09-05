@@ -28,8 +28,10 @@ Use this skill when you need to remediate an existing pull request: diagnose wha
 
 ## Runtime Paths
 
-- `GITHUB_OUTPUT_DIR`: output artifacts directory (caller-provided preferred; otherwise temp dir).
+- `GITHUB_OUTPUT_DIR`: optional caller-provided output artifacts directory.
 - `GITHUB_CONTEXT_DIR`: context directory (default `${GITHUB_OUTPUT_DIR}/github-context`).
+- Do not create fixed output files unless the caller or an integration explicitly
+  requires them.
 
 ## Inputs (Manifest-First)
 
@@ -86,6 +88,8 @@ Use existing review threads/comments to avoid duplicate or stale responses.
 ### 3. Implement fixes
 
 - Apply minimal targeted fixes for blocking issues first.
+- Follow the developer agent's recorded worktree, branch, and PR preferences;
+  ask the operator when a relevant preference is not recorded.
 - Run relevant verification commands.
 - Commit and push before posting review replies.
 
@@ -100,11 +104,11 @@ gh api repos/<owner>/<repo>/pulls/<pr_number>/comments \
   -f body='Thanks, fixed in the latest commit.'
 ```
 
-### 5. Finalize outputs
+### 5. Finalize delivery
 
-Required outputs under `${GITHUB_OUTPUT_DIR}`:
-- `summary.md`
-- `manifest.json`
+Report the result in the normal agent delivery. If a caller explicitly requires
+machine-readable output, write only the requested artifacts under
+`${GITHUB_OUTPUT_DIR}` and include their paths in the delivery.
 
 ## Remediation Standards
 
@@ -113,30 +117,12 @@ Required outputs under `${GITHUB_OUTPUT_DIR}`:
 - Defer non-blocking large refactors with explicit rationale.
 - Keep review replies concrete: what changed, where, and any remaining risk.
 
-## Output Contract
-
-### `summary.md`
-
-Must include:
-- PR reference and diagnosis summary
-- fixes applied
-- verification commands and outcomes
-- reply publish result summary
-- deferred/follow-up items
-
-### `manifest.json`
-
-Execution metadata for this skill, including:
-- `provider: "github-pr-fix"`
-- PR reference
-- fix/reply counters
-- `status` (`completed|partial|failed`)
-
 ## Completion Criteria
 
 A successful run requires all of the following:
 1. Blocking fixes are committed and pushed to the PR branch.
 2. Replies planned for this run are published successfully.
-3. `summary.md` records what changed, which replies were posted, and any remaining risks.
+3. The agent delivery records what changed, which replies were posted, and any
+   remaining risks.
 
 If replies are planned but not published, the run is not successful.

@@ -28,8 +28,10 @@ Use this skill when you need to turn a GitHub issue into a concrete code change 
 
 ## Runtime Paths
 
-- `GITHUB_OUTPUT_DIR`: output artifacts directory (caller-provided preferred; otherwise temp dir).
+- `GITHUB_OUTPUT_DIR`: optional caller-provided output artifacts directory.
 - `GITHUB_CONTEXT_DIR`: context directory (default `${GITHUB_OUTPUT_DIR}/github-context`).
+- Do not create fixed output files unless the caller or an integration explicitly
+  requires them.
 
 ## Inputs (Manifest-First)
 
@@ -60,7 +62,8 @@ Resolve usable inputs from `manifest.artifacts[]` by `id`/`path`/`status`/`descr
 
 - Extract acceptance criteria and constraints from issue metadata and discussion.
 - Implement minimal complete changes for the requested outcome.
-- Use deterministic branch naming (`feature/issue-<number>` or `fix/issue-<number>`).
+- Follow the developer agent's recorded worktree, branch, and PR preferences;
+  ask the operator when a relevant preference is not recorded.
 - Run relevant verification commands before publish.
 
 ### 3. Commit and push
@@ -70,20 +73,21 @@ Resolve usable inputs from `manifest.artifacts[]` by `id`/`path`/`status`/`descr
 
 ### 4. Publish PR
 
-Use raw `gh` commands with `--body-file`:
+Use raw `gh` commands. Pass the PR body directly, or use a caller-requested
+body file when the integration needs one:
 
 ```bash
-gh pr create --repo <owner/repo> --title "<title>" --body-file <summary.md> --head <branch> --base <base>
-gh pr edit <pr_number> --repo <owner/repo> --title "<title>" --body-file <summary.md>
+gh pr create --repo <owner/repo> --title "<title>" --body "<body>" --head <branch> --base <base>
+gh pr edit <pr_number> --repo <owner/repo> --title "<title>" --body "<body>"
 ```
 
 Publish completion is mandatory; do not report success without a real PR side effect.
 
-### 5. Finalize outputs
+### 5. Finalize delivery
 
-Required outputs under `${GITHUB_OUTPUT_DIR}`:
-- `summary.md`
-- `manifest.json`
+Report the result in the normal agent delivery. If a caller explicitly requires
+machine-readable output, write only the requested artifacts under
+`${GITHUB_OUTPUT_DIR}` and include their paths in the delivery.
 
 ## Delivery Standards
 
@@ -92,26 +96,6 @@ Required outputs under `${GITHUB_OUTPUT_DIR}`:
 - Include concrete verification results (commands + outcomes).
 - If full verification is impossible, report what was attempted and why it is incomplete.
 
-## Output Contract
-
-### `summary.md`
-
-Must include:
-- issue reference and interpreted requirements
-- key code changes
-- verification performed and outcomes
-- PR publish result (`pr_number`, `pr_url`, branch)
-- explicit blockers or follow-ups (if any)
-
-### `manifest.json`
-
-Execution metadata for this skill, including:
-- `provider: "github-issue-solve"`
-- issue reference
-- branch
-- publish result fields (`pr_number`, `pr_url`)
-- `status` (`completed|failed`)
-
 ## Failure Rules
 
 Mark run as failed if any of the following is true:
@@ -119,4 +103,5 @@ Mark run as failed if any of the following is true:
 - commit/push was not completed
 - PR create/update failed or PR URL cannot be verified
 
-Do not report success from artifacts alone.
+Do not report success from artifacts alone. A summary or manifest is optional
+evidence, not a substitute for the actual commit, push, or PR side effect.

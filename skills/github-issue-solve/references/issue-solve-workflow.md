@@ -13,7 +13,8 @@ Detailed execution workflow for `github-issue-solve`.
    - `gh issue view <issue_number> --repo <owner/repo> --json ...`
    - `gh api repos/<owner>/<repo>/issues/<issue_number>/comments --paginate`
 
-If required context is missing, record explicit limitations in `summary.md`.
+If required context is missing, record explicit limitations in the agent
+delivery or in a caller-requested output artifact.
 
 ## 2) Solution planning
 
@@ -23,7 +24,8 @@ If required context is missing, record explicit limitations in `summary.md`.
 
 ## 3) Implementation and verification
 
-1. Create/switch branch (`feature/issue-<number>` or `fix/issue-<number>`).
+1. Create or switch the branch according to the developer agent's recorded
+   worktree and branch preferences; ask the operator when they are unknown.
 2. Implement code changes.
 3. Run relevant validation commands.
 4. Commit and push.
@@ -33,8 +35,8 @@ Never claim success without commit and push.
 ## 4) PR publish
 
 Publish with direct `gh` commands:
-- `gh pr create --body-file`
-- `gh pr edit --body-file`
+- `gh pr create --body` (or a caller-requested `--body-file`)
+- `gh pr edit --body` (or a caller-requested `--body-file`)
 
 After publish, verify PR identity:
 - `pr_number`
@@ -42,9 +44,9 @@ After publish, verify PR identity:
 
 ## 5) Output finalization
 
-Write/update:
-- `${GITHUB_OUTPUT_DIR}/summary.md`
-- `${GITHUB_OUTPUT_DIR}/manifest.json`
+Use the normal agent delivery for the result. Only write
+`${GITHUB_OUTPUT_DIR}/summary.md`, `${GITHUB_OUTPUT_DIR}/manifest.json`, or
+other artifacts when the caller or an integration explicitly requests them.
 
 ## Completion criteria
 
@@ -52,4 +54,4 @@ The run is complete only when:
 1. Code changes are implemented for issue intent.
 2. Changes are committed and pushed.
 3. A PR was created or updated and can be verified (`pr_number`, `pr_url`).
-4. Outputs include verification details and final status.
+4. The delivery includes verification details and final status.

@@ -5,6 +5,21 @@ path = "skills/ghx"
 
 [[skills]]
 kind = "github"
+repo = "holon-run/sview"
+path = "skills/sview"
+
+[[skills]]
+kind = "github"
+repo = "holon-run/uxc"
+path = "skills/uxc"
+
+[[skills]]
+kind = "github"
+repo = "holon-run/agentinbox"
+path = "skills/agentinbox"
+
+[[skills]]
+kind = "github"
 repo = "holon-run/holon"
 path = "skills/github-issue-solve"
 
