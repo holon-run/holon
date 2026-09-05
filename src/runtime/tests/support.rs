@@ -418,6 +418,8 @@ impl TruncatingProvider {
     }
 }
 
+pub(crate) struct EmptyTruncatingProvider;
+
 pub(crate) struct TimelineProvider;
 
 pub(crate) struct OneToolThenTextProvider {
@@ -617,6 +619,22 @@ impl AgentProvider for TruncatingProvider {
             stop_reason: None,
             input_tokens: 50,
             output_tokens: 25,
+            cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
+            request_diagnostics: None,
+        })
+    }
+}
+
+#[async_trait]
+impl AgentProvider for EmptyTruncatingProvider {
+    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        Ok(ProviderTurnResponse {
+            blocks: Vec::new(),
+            stop_reason: Some("max_tokens".into()),
+            input_tokens: 100,
+            output_tokens: 50,
             cache_usage: None,
             provider_message_id: None,
             provider_request_id: None,

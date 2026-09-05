@@ -2401,6 +2401,47 @@ impl TurnExecution<'_> {
                 }
             }
 
+            if tool_calls.is_empty()
+                && is_max_output_stop_reason(stop_reason.as_deref())
+                && max_output_recovery_count >= MAX_OUTPUT_RECOVERY_ATTEMPTS
+                && last_assistant_message
+                    .as_ref()
+                    .is_none_or(|message| message.trim().is_empty())
+            {
+                let failure_text = "Turn stopped because output recovery was exhausted before the provider produced deliverable text.".to_string();
+                runtime.inner.storage.append_event(&AuditEvent::legacy(
+                    "max_output_tokens_recovery_exhausted",
+                    serde_json::json!({
+                        "agent_id": agent_id,
+                        "attempts": max_output_recovery_count,
+                        "stop_reason": stop_reason,
+                    }),
+                ))?;
+                let terminal = runtime
+                    .persist_turn_terminal_record(
+                        TurnTerminalKind::Aborted,
+                        Some(failure_text.clone()),
+                        None,
+                        turn_started_at.elapsed().as_millis() as u64,
+                        Some(&checkpoint_state),
+                        persist_terminal,
+                    )
+                    .await?;
+                return Ok(AgentLoopOutcome {
+                    final_text: failure_text,
+                    final_citations: Vec::new(),
+                    final_text_source_assistant_round_id: None,
+                    turn_index: terminal.turn_index,
+                    terminal,
+                    should_sleep: false,
+                    sleep_duration_ms: None,
+                    allow_sleep_runnable_work_override: false,
+                    terminal_kind: TurnTerminalKind::Aborted,
+                    prepared_work_item_completion: prepared_work_item_completion.take(),
+                    terminal_tool_executions: Vec::new(),
+                });
+            }
+
             if tool_calls.is_empty() && checkpoint_recorded_this_round {
                 completed_rounds.push(build_checkpoint_resume_round(
                     round,

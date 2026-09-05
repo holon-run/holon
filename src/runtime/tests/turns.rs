@@ -339,6 +339,56 @@ async fn runtime_recovers_from_max_token_truncation() {
 }
 
 #[tokio::test]
+async fn runtime_aborts_with_failure_brief_when_empty_output_recovery_is_exhausted() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(EmptyTruncatingProvider),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let outcome = runtime
+        .run_agent_loop(
+            "default",
+            AuthorityClass::OperatorInstruction,
+            test_effective_prompt(),
+            LoopControlOptions {
+                max_tool_rounds: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.terminal_kind, TurnTerminalKind::Aborted);
+    assert_eq!(outcome.terminal.kind, TurnTerminalKind::Aborted);
+    assert!(outcome.final_text.contains("output recovery was exhausted"));
+    assert!(outcome.terminal.no_brief_reason.is_none());
+
+    let briefs = runtime.storage().read_recent_briefs(10).unwrap();
+    let failure_brief = briefs
+        .iter()
+        .find(|brief| brief.turn_id.as_deref() == Some(outcome.terminal.turn_id.as_str()))
+        .expect("empty recovery must produce a failure brief");
+    assert_eq!(failure_brief.kind, BriefKind::Failure);
+    assert_eq!(failure_brief.text, outcome.final_text);
+
+    let events = runtime.storage().read_recent_events(200).unwrap();
+    assert!(events
+        .iter()
+        .any(|event| event.kind == "max_output_tokens_recovery_exhausted"));
+    assert!(!events.iter().any(|event| {
+        event.kind == "terminal_missing_brief_settlement"
+            || event.kind == "turn_terminal_brief_settlement_failed"
+    }));
+}
+
+#[tokio::test]
 async fn runtime_records_text_only_round_observations() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
