@@ -2366,8 +2366,8 @@ def run_runtime_upgrade_previous_release_case(
         f"migrated database is invalid: {migrated}",
     )
     require(
-        migrated["schema_revision"] > old_schema_revision,
-        f"candidate did not advance the schema: {migrated}",
+        migrated["schema_revision"] >= old_schema_revision,
+        f"candidate schema regressed from the previous release: {migrated}",
     )
     require(
         len(migrated["baseline"]) == 1,
@@ -2579,8 +2579,8 @@ def run_runtime_upgrade_interrupted_schema47_case(
         migrated["integrity_check"] == "ok"
         and isinstance(candidate_schema_revision, int)
         and candidate_schema_revision >= 47
-        and candidate_schema_revision > previous_schema_revision,
-        "candidate did not migrate beyond the previous release at schema 47 or "
+        and candidate_schema_revision >= previous_schema_revision,
+        "candidate schema regressed below the previous release at schema 47 or "
         f"newer: previous={previous_schema_revision}, candidate={migrated}",
     )
     retired_tables = {

@@ -359,7 +359,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
         self.assertIn('recovery["candidate_schema_revision"] < 47', release)
         self.assertIn(
             'recovery["candidate_schema_revision"]\n'
-            '              <= recovery["previous_schema_revision"]',
+            '              < recovery["previous_schema_revision"]',
             release,
         )
         self.assertIn(
