@@ -213,6 +213,38 @@ impl RuntimeHandle {
             guard.state.worktree_session = Some(worktree_session.clone());
             guard.persist_state(&self.inner.storage)?;
         }
+        let active = self
+            .agent_state()
+            .await?
+            .active_workspace_entry
+            .ok_or_else(|| anyhow!("managed worktree entry disappeared after persistence"))?;
+        let existing = self
+            .inner
+            .runtime_db
+            .execution_root_entries()
+            .get(&active.execution_root_id)?;
+        let entry = crate::runtime::workspace::execution_root_entry_from_active(
+            &active,
+            existing
+                .as_ref()
+                .map(|entry| entry.created_at)
+                .unwrap_or_else(chrono::Utc::now),
+            existing.and_then(|entry| entry.worktree),
+        );
+        if let Err(error) = self
+            .inner
+            .runtime_db
+            .execution_root_entries()
+            .upsert(&entry)
+        {
+            tracing::warn!(
+                agent_id = %agent_id,
+                execution_root_id = %entry.execution_root_id,
+                workspace_id = %entry.workspace_id,
+                error = %error,
+                "failed to register managed worktree execution root"
+            );
+        }
 
         let boundary = crate::system::HostLocalBoundary::from_parts(
             &self.agent_state().await?.execution_profile,

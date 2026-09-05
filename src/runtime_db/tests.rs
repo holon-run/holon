@@ -2,9 +2,9 @@
 #[cfg(test)]
 use crate::runtime_db::connection::{is_retryable_db_error, open_connection};
 #[cfg(test)]
-use crate::runtime_db::evidence::content_hash;
-#[cfg(test)]
 use crate::runtime_db::evidence::insert_audit_event_tx;
+#[cfg(test)]
+use crate::runtime_db::evidence::{content_hash, upsert_execution_root_entry_tx};
 #[cfg(test)]
 use crate::runtime_db::migrations::{
     apply_migration, apply_release_baseline, backfill_wait_condition_payload_columns,
@@ -100,10 +100,10 @@ mod tests {
             AgentStateMutation, QueueHeadNoProgressCommand, QueueHeadNoProgressOutcome,
             TransitionFaultPoint,
         },
-        system::WorkspaceAccessMode,
+        system::{WorkspaceAccessMode, WorkspaceProjectionKind},
         types::{
-            AgentKind, AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentStatus,
-            AgentVisibility, BriefKind,
+            ActiveWorkspaceEntry, AgentKind, AgentOwnership, AgentProfilePreset,
+            AgentRegistryStatus, AgentStatus, AgentVisibility, BriefKind,
         },
     };
     use rusqlite::OptionalExtension;
@@ -6142,6 +6142,107 @@ CREATE TABLE working_memory_deltas (
 
         let result = repo.get("nonexistent")?;
         assert!(result.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn execution_root_registry_backfill_recovers_legacy_agent_state_idempotently() -> Result<()> {
+        let (_temp_dir, db_path, _lock_path) = temp_paths()?;
+        std::fs::create_dir_all(db_path.parent().unwrap())?;
+        let mut connection = open_connection(&db_path)?;
+        migrate_through(&mut connection, 55)?;
+
+        let execution_root_id = "git_worktree_root:ws_legacy:/tmp/restored-worktree";
+        let mut state = AgentState::new("agent-backfill");
+        state.active_workspace_entry = Some(ActiveWorkspaceEntry {
+            workspace_id: "ws_legacy".into(),
+            workspace_anchor: PathBuf::from("/tmp/repository"),
+            execution_root_id: execution_root_id.into(),
+            execution_root: PathBuf::from("/tmp/restored-worktree"),
+            projection_kind: WorkspaceProjectionKind::GitWorktreeRoot,
+            access_mode: WorkspaceAccessMode::ExclusiveWrite,
+            cwd: PathBuf::from("/tmp/restored-worktree"),
+            occupancy_id: None,
+            projection_metadata: None,
+        });
+        let state_payload = serde_json::to_string(&state)?;
+
+        let existing_created_at = Utc::now() - chrono::Duration::hours(1);
+        let existing = ExecutionRootEntry {
+            execution_root_id: execution_root_id.into(),
+            workspace_id: "ws_legacy".into(),
+            filesystem_path: PathBuf::from("/tmp/old-worktree-path"),
+            root_kind: WorkspaceProjectionKind::GitWorktreeRoot,
+            worktree: Some(crate::types::WorktreeArtifactMetadata {
+                provenance: crate::types::WorktreeProvenance::Discovered,
+                registered_by_agent_id: Some("agent-backfill".into()),
+                authorized_agent_ids: vec!["agent-backfill".into()],
+                branch: Some("legacy-branch".into()),
+                branch_ref: None,
+                head_commit: None,
+                detached: false,
+                requested_base_ref: None,
+                resolved_base_commit: None,
+                git_common_dir: None,
+                git_dir: None,
+                last_cleanup: None,
+            }),
+            created_at: existing_created_at,
+            removed_at: None,
+        };
+
+        connection.execute(
+            "INSERT INTO agent_states (
+                agent_id, status, turn_index, current_run_id, current_work_item_id,
+                active_workspace_id, updated_at, payload_json, control_revision
+             ) VALUES (?1, ?2, 0, NULL, NULL, ?3, ?4, ?5, 1)",
+            (
+                state.id.as_str(),
+                enum_string(&state.status)?,
+                "ws_legacy",
+                timestamp(Utc::now()),
+                state_payload,
+            ),
+        )?;
+        {
+            let transaction = connection.transaction()?;
+            upsert_execution_root_entry_tx(&transaction, &existing)?;
+            transaction.commit()?;
+        }
+
+        let migration = MIGRATIONS
+            .iter()
+            .find(|migration| migration.version == 56)
+            .expect("execution root backfill migration");
+        apply_migration(&mut connection, migration)?;
+
+        let payload: String = connection.query_row(
+            "SELECT payload_json FROM execution_root_entries WHERE execution_root_id = ?1",
+            [execution_root_id],
+            |row| row.get(0),
+        )?;
+        let recovered: ExecutionRootEntry = serde_json::from_str(&payload)?;
+        assert_eq!(
+            recovered.filesystem_path,
+            PathBuf::from("/tmp/restored-worktree")
+        );
+        assert_eq!(
+            timestamp(recovered.created_at),
+            timestamp(existing_created_at)
+        );
+        assert_eq!(recovered.worktree, existing.worktree);
+
+        connection.execute(
+            "DELETE FROM schema_migrations WHERE version = ?1",
+            [migration.version],
+        )?;
+        apply_migration(&mut connection, migration)?;
+        let count: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM execution_root_entries WHERE execution_root_id = ?1",
+            [execution_root_id],
+            |row| row.get(0),
+        )?;
+        assert_eq!(count, 1);
         Ok(())
     }
 

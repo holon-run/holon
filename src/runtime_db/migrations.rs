@@ -14,13 +14,16 @@ use crate::domain::{
     },
     scheduler::SchedulerOwner,
 };
-use crate::runtime_db::evidence::content_hash;
+use crate::runtime_db::evidence::{content_hash, upsert_execution_root_entry_tx};
 use crate::runtime_db::legacy_scheduler_wire::{
     ActivationBinding, ActivationCause, ActivationOrigin, ActivationPriority, ActivationTrust,
     AdmitActivationCommand, WorkDemand,
 };
 use crate::runtime_db::retired_scheduler_cleanup::retired_scheduler_cleanup_inventory;
-use crate::types::{AgentState, MessageEnvelope, TaskRecord, WaitConditionRecord, WorkItemRecord};
+use crate::types::{
+    AgentState, ExecutionRootEntry, MessageEnvelope, TaskRecord, WaitConditionRecord,
+    WorkItemRecord,
+};
 
 pub struct Migration {
     pub version: i64,
@@ -3258,6 +3261,11 @@ CREATE INDEX IF NOT EXISTS idx_auth_sessions_expiry
   ON auth_sessions (expires_at);
 "#,
     },
+    Migration {
+        version: 56,
+        name: "execution_root_registry_backfill",
+        sql: "",
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -3512,6 +3520,9 @@ fn apply_migration_transaction(transaction: &Transaction<'_>, migration: &Migrat
     if migration.name == "authentication_login_verifier" {
         ensure_authentication_login_verifier_schema(transaction)?;
     }
+    if migration.name == "execution_root_registry_backfill" {
+        backfill_execution_root_entries(transaction)?;
+    }
     transaction.execute_batch(migration.sql)?;
     if migration.name == "execution_protocol_authority" {
         backfill_execution_protocol_authority(transaction)?;
@@ -3539,6 +3550,64 @@ fn apply_migration_transaction(transaction: &Transaction<'_>, migration: &Migrat
             Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         ),
     )?;
+    Ok(())
+}
+
+fn backfill_execution_root_entries(transaction: &Transaction<'_>) -> Result<()> {
+    if !table_exists_tx(transaction, "execution_root_entries")?
+        || !table_exists_tx(transaction, "agent_states")?
+    {
+        return Ok(());
+    }
+    let mut statement = transaction.prepare(
+        "SELECT payload_json FROM agent_states
+         WHERE payload_json IS NOT NULL
+         ORDER BY agent_id ASC",
+    )?;
+    let payloads = statement
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+
+    for payload in payloads {
+        let state: AgentState = match serde_json::from_str(&payload) {
+            Ok(state) => state,
+            Err(error) => {
+                tracing::warn!(%error, "skipping invalid agent state during execution root backfill");
+                continue;
+            }
+        };
+        let Some(active) = state.active_workspace_entry else {
+            continue;
+        };
+        let existing: Option<(String, String)> = transaction
+            .query_row(
+                "SELECT created_at, payload_json
+                 FROM execution_root_entries
+                 WHERE execution_root_id = ?1",
+                [&active.execution_root_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let created_at = existing
+            .as_ref()
+            .map(|(created_at, _)| created_at.clone())
+            .and_then(|value| chrono::DateTime::parse_from_rfc3339(&value).ok())
+            .map(|value| value.with_timezone(&Utc))
+            .unwrap_or_else(Utc::now);
+        let worktree = existing
+            .and_then(|(_, payload)| serde_json::from_str::<ExecutionRootEntry>(&payload).ok())
+            .and_then(|entry| entry.worktree);
+        let entry = ExecutionRootEntry {
+            execution_root_id: active.execution_root_id,
+            workspace_id: active.workspace_id,
+            filesystem_path: active.execution_root,
+            root_kind: active.projection_kind,
+            worktree,
+            created_at,
+            removed_at: None,
+        };
+        upsert_execution_root_entry_tx(transaction, &entry)?;
+    }
     Ok(())
 }
 

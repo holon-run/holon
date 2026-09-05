@@ -1283,6 +1283,28 @@ fn prepare_runtime_storage(
             queued_messages: queue.len(),
         },
     );
+    if let Some(active) = state.active_workspace_entry.as_ref() {
+        let existing = runtime_db
+            .execution_root_entries()
+            .get(&active.execution_root_id)?;
+        let entry = workspace::execution_root_entry_from_active(
+            active,
+            existing
+                .as_ref()
+                .map(|entry| entry.created_at)
+                .unwrap_or_else(chrono::Utc::now),
+            existing.and_then(|entry| entry.worktree),
+        );
+        if let Err(error) = runtime_db.execution_root_entries().upsert(&entry) {
+            tracing::warn!(
+                agent_id = %agent_id,
+                execution_root_id = %entry.execution_root_id,
+                workspace_id = %entry.workspace_id,
+                error = %error,
+                "failed to reconcile active execution root registry entry during bootstrap"
+            );
+        }
+    }
     storage.write_agent(&state)?;
     storage
         .legacy_importer()

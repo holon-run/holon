@@ -12,8 +12,8 @@ use crate::{
         WorkspaceAccessMode, WorkspaceProjectionKind, WorkspaceView,
     },
     types::{
-        agent_home_workspace_id, ActiveWorkspaceEntry, AgentState, WorkspaceEntry,
-        AGENT_HOME_WORKSPACE_ID,
+        agent_home_workspace_id, ActiveWorkspaceEntry, AgentState, ExecutionRootEntry,
+        WorkspaceEntry, AGENT_HOME_WORKSPACE_ID,
     },
 };
 
@@ -157,6 +157,22 @@ pub(crate) fn canonical_agent_home_active_entry(
 
 pub(crate) fn detached_execution_root(storage: &AppStorage) -> PathBuf {
     storage.data_dir().to_path_buf()
+}
+
+pub(crate) fn execution_root_entry_from_active(
+    active: &ActiveWorkspaceEntry,
+    created_at: chrono::DateTime<chrono::Utc>,
+    worktree: Option<crate::types::WorktreeArtifactMetadata>,
+) -> ExecutionRootEntry {
+    ExecutionRootEntry {
+        execution_root_id: active.execution_root_id.clone(),
+        workspace_id: active.workspace_id.clone(),
+        filesystem_path: active.execution_root.clone(),
+        root_kind: active.projection_kind,
+        worktree,
+        created_at,
+        removed_at: None,
+    }
 }
 
 impl ActiveWorkspaceEntry {
