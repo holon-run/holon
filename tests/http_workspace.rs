@@ -21,6 +21,7 @@ http_async_tests!(
     workspace_files_path_traversal_rejected,
     workspace_files_symlink_escape_rejected,
     workspace_files_execution_root_id_resolves_registered_root,
+    workspace_files_distinguishes_multiple_execution_roots,
     workspace_files_returns_404_for_missing_file,
     workspace_files_metadata_only,
     workspace_files_unknown_workspace_404,

@@ -382,3 +382,50 @@ pub async fn workspace_files_execution_root_id_resolves_registered_root() -> Res
     server.abort();
     Ok(())
 }
+
+pub async fn workspace_files_distinguishes_multiple_execution_roots() -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
+    let client = reqwest::Client::new();
+
+    let workspace_id = "agent_home:default";
+    let first_root_id = "test-worktree-root-first";
+    let second_root_id = "test-worktree-root-second";
+    let first_root = tempdir()?;
+    let second_root = tempdir()?;
+    std::fs::write(first_root.path().join("same-path.txt"), "first root")?;
+    std::fs::write(second_root.path().join("same-path.txt"), "second root")?;
+
+    for (execution_root_id, filesystem_path) in [
+        (first_root_id, first_root.path()),
+        (second_root_id, second_root.path()),
+    ] {
+        host.runtime_db()
+            .execution_root_entries()
+            .upsert(&ExecutionRootEntry {
+                execution_root_id: execution_root_id.into(),
+                workspace_id: workspace_id.into(),
+                filesystem_path: filesystem_path.to_path_buf(),
+                root_kind: WorkspaceProjectionKind::GitWorktreeRoot,
+                worktree: None,
+                created_at: Utc::now(),
+                removed_at: None,
+            })?;
+    }
+
+    for (execution_root_id, expected_contents) in [
+        (first_root_id, "first root"),
+        (second_root_id, "second root"),
+    ] {
+        let response = client
+            .get(format!(
+                "{base}/api/workspaces/{workspace_id}/files/same-path.txt?root={execution_root_id}"
+            ))
+            .send()
+            .await?;
+        assert_eq!(response.status(), 200, "{}", response.text().await?);
+        assert_eq!(response.text().await?, expected_contents);
+    }
+
+    server.abort();
+    Ok(())
+}
