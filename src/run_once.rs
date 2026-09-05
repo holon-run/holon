@@ -450,7 +450,7 @@ async fn prepare_run_session(host: &RuntimeHost, request: &RunOnceRequest) -> Re
 
     if let Some(agent_id) = request.agent_id.as_deref() {
         if request.create_agent {
-            host.create_named_agent(agent_id, request.template.as_deref())
+            host.create_public_named_agent(agent_id, request.template.as_deref(), None, None)
                 .await?;
         }
         let runtime = host.get_public_agent_for_external_ingress(agent_id).await?;

@@ -468,9 +468,9 @@ pub async fn create_agent(
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let admission_context = control_admission_context(&state);
     let provided_trust = request.authority_class;
-    let agent = state
+    let created = state
         .host
-        .create_named_agent(&agent_id, request.template.as_deref())
+        .create_public_named_agent(&agent_id, request.template.as_deref(), None, None)
         .await
         .map_err(error_response)?;
     let runtime = state
@@ -492,7 +492,7 @@ pub async fn create_agent(
             }),
         )
         .map_err(error_response)?;
-    Ok(Json(agent))
+    Ok(Json(created))
 }
 
 pub async fn delete_agent(

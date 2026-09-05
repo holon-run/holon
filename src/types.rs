@@ -400,7 +400,7 @@ impl AgentProfilePreset {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentDurability {
     Persistent,
@@ -416,7 +416,7 @@ pub enum AgentRegistryStatus {
     Deleted,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct AgentIdentityRecord {
     pub agent_id: String,
     pub kind: AgentKind,
@@ -444,6 +444,31 @@ pub struct AgentIdentityRecord {
         skip_serializing_if = "Option::is_none"
     )]
     pub deleted_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentCreateStage {
+    Reserved,
+    Profiled,
+    Resolved,
+    Bootstrapped,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct AgentCreateReceipt {
+    pub receipt_id: String,
+    pub agent_id: String,
+    pub preset: AgentProfilePreset,
+    pub stage: AgentCreateStage,
+    pub lifecycle: AgentRegistryStatus,
+    pub created: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct AgentCreateResult {
+    pub identity: AgentIdentityRecord,
+    pub receipt: AgentCreateReceipt,
 }
 
 impl AgentIdentityRecord {
@@ -3599,6 +3624,8 @@ pub struct AgentGetResult {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SpawnAgentResult {
     pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub create_receipt: Option<AgentCreateReceipt>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub child_agent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

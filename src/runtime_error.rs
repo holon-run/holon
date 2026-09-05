@@ -415,7 +415,7 @@ fn descriptor_from_tool_error(
         }
     }
     RuntimeErrorDescriptor {
-        domain: RuntimeErrorDomain::Tool,
+        domain: tool_error.domain.unwrap_or(RuntimeErrorDomain::Tool),
         code: tool_error.kind.clone(),
         retryable: tool_error.retryable,
         operator_message: sanitize_runtime_error_text(&tool_error.message),

@@ -51,12 +51,13 @@ use crate::{
     },
     tool::{apply_patch::ApplyPatchSurface, ToolError, ToolRegistry},
     types::{
-        AdmissionContext, AgentDeletionJob, AgentDurability, AgentIdentityRecord,
-        AgentIdentityView, AgentKind, AgentLifecycleHint, AgentListEntry, AgentOwnership,
-        AgentProfilePreset, AgentRegistryStatus, AgentState, AgentStatus, AgentSummary,
-        AgentTokenUsageSummary, AgentVisibility, AuthorityClass, ChildAgentSummary, ClosureOutcome,
-        ExternalTriggerRecord, ExternalTriggerStatus, ExternalTriggerSummary, LoadedAgentsMdView,
-        MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin,
+        AdmissionContext, AgentCreateReceipt, AgentCreateResult, AgentCreateStage,
+        AgentDeletionJob, AgentDurability, AgentIdentityRecord, AgentIdentityView, AgentKind,
+        AgentLifecycleHint, AgentListEntry, AgentOwnership, AgentProfilePreset,
+        AgentRegistryStatus, AgentState, AgentStatus, AgentSummary, AgentTokenUsageSummary,
+        AgentVisibility, AuthorityClass, ChildAgentSummary, ClosureOutcome, ExternalTriggerRecord,
+        ExternalTriggerStatus, ExternalTriggerSummary, LoadedAgentsMdView, MessageBody,
+        MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin,
         OperatorNotificationRecord, Priority, QueueEntryStatus, RuntimeFailureSummary,
         SpawnAgentModelResolution, SpawnAgentModelResolutionStatus, TaskKind, TaskRecord,
         TaskStatus, TimerRecord, TokenUsage, TranscriptEntry, TranscriptEntryKind,
@@ -403,12 +404,34 @@ fn named_agent_already_exists_error(agent_id: &str) -> anyhow::Error {
             "already_exists",
             format!("public named agent {agent_id} already exists"),
         )
+        .with_domain(crate::runtime_error::RuntimeErrorDomain::Conflict)
         .with_details(json!({
             "agent_id": agent_id,
             "preset": AgentProfilePreset::PublicNamed,
         }))
         .with_recovery_hint(
             "use an explicit agent invocation or enqueue operation to deliver work to an existing agent",
+        ),
+    )
+}
+
+fn named_agent_create_failed_error(
+    agent_id: &str,
+    stage: AgentCreateStage,
+    source: anyhow::Error,
+) -> anyhow::Error {
+    source.context(
+        ToolError::new(
+            "agent_create_failed",
+            format!("failed to create public named agent {agent_id}"),
+        )
+        .with_details(json!({
+            "agent_id": agent_id,
+            "preset": AgentProfilePreset::PublicNamed,
+            "stage": stage,
+        }))
+        .with_recovery_hint(
+            "inspect the creation stage and retry after correcting the reported failure",
         ),
     )
 }
@@ -1981,6 +2004,35 @@ impl RuntimeHost {
         .map(|(record, _)| record)
     }
 
+    pub async fn create_public_named_agent(
+        &self,
+        agent_id: &str,
+        template: Option<&str>,
+        lineage_parent_agent_id: Option<&str>,
+        catalog_agent_home: Option<&Path>,
+    ) -> Result<AgentCreateResult> {
+        let (identity, created) = self
+            .ensure_named_agent(
+                agent_id,
+                template,
+                lineage_parent_agent_id,
+                catalog_agent_home,
+                NamedAgentExistingBehavior::Reject,
+            )
+            .await?;
+        Ok(AgentCreateResult {
+            receipt: AgentCreateReceipt {
+                receipt_id: ids::runtime_id("agent_create"),
+                agent_id: identity.agent_id.clone(),
+                preset: AgentProfilePreset::PublicNamed,
+                stage: AgentCreateStage::Bootstrapped,
+                lifecycle: identity.status,
+                created,
+            },
+            identity,
+        })
+    }
+
     async fn ensure_named_agent(
         &self,
         agent_id: &str,
@@ -2041,25 +2093,31 @@ impl RuntimeHost {
         if let Some(template) = template {
             let agent_home = self.agent_data_dir(agent_id);
             let user_home = self.config().home_dir.clone();
-            if let Some(catalog_agent_home) = catalog_agent_home {
+            let initialization = if let Some(catalog_agent_home) = catalog_agent_home {
                 initialize_agent_home_from_template_with_catalog(
                     &agent_home,
                     &user_home,
                     catalog_agent_home,
                     template,
                 )
-                .await?;
+                .await
             } else {
                 initialize_agent_home_from_template_with_home(&agent_home, &user_home, template)
-                    .await?;
-            }
+                    .await
+            };
+            initialization.map_err(|error| {
+                named_agent_create_failed_error(agent_id, AgentCreateStage::Profiled, error)
+            })?;
         } else {
             let user_home = self.config().home_dir.clone();
             initialize_agent_home_without_template_with_home(
                 &self.agent_data_dir(agent_id),
                 &user_home,
             )
-            .await?;
+            .await
+            .map_err(|error| {
+                named_agent_create_failed_error(agent_id, AgentCreateStage::Profiled, error)
+            })?;
         }
         let record = AgentIdentityRecord::new(
             agent_id,
@@ -2071,10 +2129,14 @@ impl RuntimeHost {
             None,
         )
         .with_lineage_parent_agent_id(lineage_parent_agent_id.map(ToString::to_string));
-        self.append_agent_identity(&record)?;
-        let _ = self
-            .activate_agent(agent_id, RuntimeActivationReason::AgentLifecycle)
-            .await?;
+        self.append_agent_identity(&record).map_err(|error| {
+            named_agent_create_failed_error(agent_id, AgentCreateStage::Reserved, error)
+        })?;
+        self.activate_agent(agent_id, RuntimeActivationReason::AgentLifecycle)
+            .await
+            .map_err(|error| {
+                named_agent_create_failed_error(agent_id, AgentCreateStage::Resolved, error)
+            })?;
         Ok((record, true))
     }
 
@@ -3268,20 +3330,19 @@ impl RuntimeHost {
         authority_class: AuthorityClass,
         template: Option<String>,
         model_resolution: SpawnAgentModelResolution,
-    ) -> Result<String> {
+    ) -> Result<AgentCreateResult> {
         let parent_state = parent_runtime.agent_state().await?;
         let parent_agent_home = self.agent_data_dir(&parent_state.id);
-        let (named_identity, created) = self
-            .ensure_named_agent(
+        let created = self
+            .create_public_named_agent(
                 agent_id,
                 template.as_deref(),
                 Some(parent_state.id.as_str()),
                 Some(&parent_agent_home),
-                NamedAgentExistingBehavior::Reject,
             )
             .await?;
-        let named_runtime = self.get_or_create_agent(&named_identity.agent_id).await?;
-        if created {
+        let named_runtime = self.get_or_create_agent(&created.identity.agent_id).await?;
+        if created.receipt.created {
             named_runtime
                 .inherit_attached_workspaces_from_parent_state(&parent_state)
                 .await?;
@@ -3289,11 +3350,11 @@ impl RuntimeHost {
         apply_spawn_model_resolution(&named_runtime, &model_resolution).await?;
 
         let Some(initial_message) = initial_message else {
-            return Ok(named_identity.agent_id);
+            return Ok(created);
         };
 
         let mut message = crate::types::MessageEnvelope::new(
-            named_identity.agent_id.clone(),
+            created.identity.agent_id.clone(),
             crate::types::MessageKind::InternalFollowup,
             crate::types::MessageOrigin::System {
                 subsystem: "spawn_agent".into(),
@@ -3311,11 +3372,11 @@ impl RuntimeHost {
         message.metadata = Some(json!({
             "spawn_preset": AgentProfilePreset::PublicNamed,
             "creator_agent_id": parent_state.id,
-            "spawned_agent_id": named_identity.agent_id,
+            "spawned_agent_id": created.identity.agent_id,
             "bootstrap": true,
         }));
         named_runtime.enqueue(message).await?;
-        Ok(named_identity.agent_id)
+        Ok(created)
     }
 
     async fn await_child_terminal_result(
@@ -3780,7 +3841,7 @@ impl RuntimeHostBridge {
         authority_class: AuthorityClass,
         template: Option<String>,
         model_resolution: SpawnAgentModelResolution,
-    ) -> Result<String> {
+    ) -> Result<AgentCreateResult> {
         self.host()?
             .spawn_public_named_agent(
                 parent_runtime,
@@ -4507,6 +4568,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn public_named_create_returns_receipt_and_rejects_duplicate() {
+        let (_home, host) = test_host();
+
+        let created = host
+            .create_public_named_agent("receipt-bot", None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(created.identity.agent_id, "receipt-bot");
+        assert_eq!(created.receipt.agent_id, "receipt-bot");
+        assert_eq!(created.receipt.preset, AgentProfilePreset::PublicNamed);
+        assert_eq!(created.receipt.stage, AgentCreateStage::Bootstrapped);
+        assert_eq!(created.receipt.lifecycle, AgentRegistryStatus::Active);
+        assert!(created.receipt.created);
+        assert!(!created.receipt.receipt_id.is_empty());
+
+        let error = host
+            .create_public_named_agent("receipt-bot", None, None, None)
+            .await
+            .expect_err("duplicate public named creation must fail closed");
+        let tool_error = ToolError::from_anyhow(&error);
+        assert_eq!(tool_error.kind, "already_exists");
+        assert_eq!(
+            tool_error.domain,
+            Some(crate::runtime_error::RuntimeErrorDomain::Conflict)
+        );
+    }
+
+    #[tokio::test]
     async fn spawn_public_named_rejects_existing_agent_without_side_effects() {
         let fixture = provider_test_config(Some("dummy-token"));
         let host = RuntimeHost::new(fixture.config).unwrap();
@@ -4602,16 +4691,21 @@ mod tests {
         let (_home, host) = test_host();
         let parent = host.default_runtime().await.unwrap();
 
-        host.spawn_public_named_agent(
-            parent,
-            "release-bot",
-            Some("coordinate release work".into()),
-            AuthorityClass::OperatorInstruction,
-            None,
-            inherited_model_resolution("anthropic", "claude-sonnet-4-6"),
-        )
-        .await
-        .unwrap();
+        let created = host
+            .spawn_public_named_agent(
+                parent,
+                "release-bot",
+                Some("coordinate release work".into()),
+                AuthorityClass::OperatorInstruction,
+                None,
+                inherited_model_resolution("anthropic", "claude-sonnet-4-6"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(created.identity.agent_id, "release-bot");
+        assert_eq!(created.receipt.agent_id, "release-bot");
+        assert_eq!(created.receipt.stage, AgentCreateStage::Bootstrapped);
+        assert!(created.receipt.created);
 
         let identity = host
             .agent_identity_record("release-bot")

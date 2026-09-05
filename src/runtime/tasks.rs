@@ -662,6 +662,7 @@ impl RuntimeHandle {
 
                 Ok(SpawnAgentResult {
                     agent_id: spawned.child_agent_id.clone(),
+                    create_receipt: None,
                     child_agent_id: Some(spawned.child_agent_id.clone()),
                     task_handle: Some(TaskHandle::from_task_record(&queued_task, None)),
                     supervision_task_id: Some(queued_task.id.clone()),
@@ -697,14 +698,15 @@ impl RuntimeHandle {
                     .await?;
 
                 Ok(SpawnAgentResult {
-                    agent_id: spawned_agent_id.clone(),
+                    agent_id: spawned_agent_id.identity.agent_id.clone(),
+                    create_receipt: Some(spawned_agent_id.receipt),
                     child_agent_id: None,
                     task_handle: None,
                     supervision_task_id: None,
                     child_supervision: None,
                     summary_text: Some(format!(
                         "spawned public named agent {} without a supervising task handle",
-                        spawned_agent_id
+                        spawned_agent_id.identity.agent_id
                     )),
                     delegation_id: None,
                     parent_work_item_id: None,
