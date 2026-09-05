@@ -1,35 +1,13 @@
 # models.dev refresh summary
 
-- Supplement models: 24 (drafted this run: 24, retained: 0, removed: 0)
+- Supplement models: 26 (drafted this run: 2, retained: 24, removed: 0)
 - Deferred candidates: 172 (not auto-drafted; see below)
 - Mapped providers without auto-supplement (aggregators etc.): 9
 
 ## Auto-drafted supplement models
 
-- `anthropic/claude-fable-5-1` — Claude Fable 5.1 (context 1000000, reasoning true, image input true)
-- `anthropic/claude-opus-5` — Claude Opus 5 (context 1000000, reasoning true, image input true)
-- `deepseek/deepseek-v4-flash-vision-exp` — DeepSeek V4 Flash Vision Exp (context 1000000, reasoning true, image input true)
-- `gemini/gemini-3-pro-image` — Nano Banana Pro (context 131072, reasoning true, image input true)
-- `gemini/gemini-3.1-flash-image` — Nano Banana 2 (context 65536, reasoning true, image input true)
-- `gemini/gemini-3.1-flash-lite-image` — Nano Banana 2 Lite (context 65536, reasoning true, image input true)
-- `gemini/gemini-3.5-flash-lite` — Gemini 3.5 Flash Lite (context 1048576, reasoning true, image input true)
-- `gemini/gemini-3.5-live-translate-preview` — Gemini 3.5 Live Translate Preview (context 16384, reasoning false, image input false)
-- `gemini/gemini-3.6-flash` — Gemini 3.6 Flash (context 1048576, reasoning true, image input true)
-- `gemini/gemini-3.7-flash` — Gemini 3.7 Flash (context 1048576, reasoning true, image input true)
-- `gemini/gemini-flash-latest` — Gemini Flash Latest (context 1048576, reasoning true, image input true)
-- `gemini/gemini-flash-lite-latest` — Gemini Flash-Lite Latest (context 1048576, reasoning true, image input true)
-- `mistral/zai-glm-5-2` — GLM-5.2 (context 1000000, reasoning true, image input false)
-- `openai/gpt-5.6` — GPT-5.6 (context 1050000, reasoning true, image input true)
-- `openai/gpt-realtime-2.1` — GPT-Realtime-2.1 (context 128000, reasoning true, image input true)
-- `volcengine/deepseek-v4-flash-ga-260731` — DeepSeek V4 Flash 0731 (context 1000000, reasoning true, image input false)
-- `volcengine/deepseek-v4-pro-ga-260813` — DeepSeek V4 Pro 0813 (context 1000000, reasoning true, image input false)
-- `volcengine/doubao-seed-2-1-pro-260628` — Seed 2.1 Pro (context 256000, reasoning true, image input true)
-- `volcengine/doubao-seed-2-1-turbo-260628` — Seed 2.1 Turbo (context 256000, reasoning true, image input true)
-- `volcengine/doubao-seed-character-260628` — Seed Character (context 256000, reasoning true, image input true)
-- `volcengine/doubao-seed-evolving` — Seed Evolving (context 256000, reasoning true, image input true)
-- `volcengine/glm-5-2-260617` — GLM-5.2 (context 1000000, reasoning true, image input false)
-- `xai/grok-4.6` — Grok 4.6 (context 500000, reasoning true, image input true)
-- `xiaomi/mimo-v2.5-pro-ultraspeed` — MiMo-V2.5-Pro-UltraSpeed (context 1048576, reasoning true, image input false)
+- `gemini/gemini-3.8-flash` — Gemini 3.8 Flash (context 1048576, reasoning true, image input true)
+- `openai/gpt-6-astra` — GPT-6 Astra (context 1050000, reasoning true, image input true)
 
 ## Deferred (needs human decision or outside policy)
 

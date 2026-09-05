@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "upstream_revision": "6da309c2371f58a05fb2f7af9805be438218ad3012772e648a8381fa40eb37d8",
-  "adapter_version": "0.35.0 (7d7b85f)",
+  "upstream_revision": "1c57d3c537b180a8a801fb3e4256de6273817cbc46781df26e2337c7a431d41b",
+  "adapter_version": "0.37.0 (2356855)",
   "models": [
     {
       "model_ref": "anthropic/claude-fable-5-1",
@@ -252,6 +252,31 @@
       "source": "models_dev_supplement"
     },
     {
+      "model_ref": "gemini/gemini-3.8-flash",
+      "display_name": "Gemini 3.8 Flash",
+      "description": "Google's most intelligent Flash model, engineered for long-horizon software engineering, autonomous agents, and complex enterprise workflows",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 996147,
+      "default_max_output_tokens": 65536,
+      "max_output_tokens_upper_limit": 65536,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
       "model_ref": "gemini/gemini-flash-latest",
       "display_name": "Gemini Flash Latest",
       "description": "High-efficiency Gemini model for agentic workflows, coding, and multimodal reasoning",
@@ -346,6 +371,33 @@
       },
       "reasoning_effort_options": [
         "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "openai/gpt-6-astra",
+      "display_name": "GPT-6 Astra",
+      "description": "GPT-6 Astra is OpenAI's most capable model for complex reasoning, coding, computer use, research, and document creation.",
+      "context_window_tokens": 1050000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 997500,
+      "default_max_output_tokens": 128000,
+      "max_output_tokens_upper_limit": 128000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
         "low",
         "medium",
         "high",
