@@ -1289,6 +1289,7 @@ impl RuntimeHandle {
             }
         }
 
+        let scheduled_fire_at = timer.next_fire_at;
         let work_item_id = self
             .wait_condition_work_item_id_for_timer(&timer.id)
             .await?;
@@ -1325,7 +1326,11 @@ impl RuntimeHandle {
         timer.fire_count += 1;
         if let Some(interval_ms) = timer.interval_ms {
             timer.status = TimerStatus::Active;
-            timer.next_fire_at = Some(advance_time(fired_at, interval_ms)?);
+            timer.next_fire_at = Some(next_repeating_fire_at(
+                scheduled_fire_at.unwrap_or(fired_at),
+                fired_at,
+                interval_ms,
+            )?);
         } else {
             timer.status = TimerStatus::Completed;
             timer.next_fire_at = None;
@@ -2018,7 +2023,42 @@ fn advance_time(base: chrono::DateTime<Utc>, delta_ms: u64) -> Result<chrono::Da
     let delta_ms = i64::try_from(delta_ms).context("duration_ms exceeds supported timer range")?;
     let delta = chrono::Duration::try_milliseconds(delta_ms)
         .ok_or_else(|| anyhow!("duration_ms exceeds supported timer range"))?;
-    Ok(base + delta)
+    base.checked_add_signed(delta)
+        .ok_or_else(|| anyhow!("timer deadline exceeds supported date range"))
+}
+
+fn next_repeating_fire_at(
+    scheduled_fire_at: DateTime<Utc>,
+    fired_at: DateTime<Utc>,
+    interval_ms: u64,
+) -> Result<DateTime<Utc>> {
+    let interval_ms =
+        i64::try_from(interval_ms).context("duration_ms exceeds supported timer range")?;
+    anyhow::ensure!(
+        interval_ms > 0,
+        "repeating timer interval must be greater than zero"
+    );
+
+    let first_next_fire_at = advance_time(scheduled_fire_at, interval_ms as u64)?;
+    if first_next_fire_at > fired_at {
+        return Ok(first_next_fire_at);
+    }
+
+    let elapsed_ms = fired_at
+        .signed_duration_since(scheduled_fire_at)
+        .num_milliseconds();
+    let periods = elapsed_ms
+        .checked_div(interval_ms)
+        .and_then(|periods| periods.checked_add(1))
+        .context("repeating timer schedule exceeds supported timer range")?;
+    let next_delta_ms = interval_ms
+        .checked_mul(periods)
+        .context("repeating timer schedule exceeds supported timer range")?;
+    advance_time(
+        scheduled_fire_at,
+        u64::try_from(next_delta_ms)
+            .context("repeating timer schedule exceeds supported timer range")?,
+    )
 }
 
 fn normalize_recovered_timer(mut timer: TimerRecord, now: DateTime<Utc>) -> TimerRecord {
