@@ -326,22 +326,17 @@ jobs:
         run: |
           set -euo pipefail
           cat > release-notes.md <<EOF
-          This release ships the session-first authentication stack — unified session auth across the HTTP API, SSE, and the web GUI, OIDC login with Authorization Code + PKCE and verified RSA ID tokens, and a dedicated /login page with 24-hour idle session expiry — alongside an agent-aware holon CLI control plane, models.dev supplemental catalog auto-drafting, context_not_found diagnostics, and WaitFor/wake correctness fixes.
+          This release extends context-aware runtime behavior with opt-in work item context projection and context history selector evaluation, improves authenticated control-plane attribution, isolates remote template sync failures, and makes browser session fallback robust when a stale bearer token is present.
 
           Supported binary assets for this release are Linux amd64, macOS amd64, and macOS arm64. The macOS app DMG is a universal binary supporting both x86_64 and arm64. The Linux amd64 binary supports Ubuntu 22.04 or newer (glibc 2.35 or newer).
 
           ## Changes
 
-          - Add the session-first authentication foundation and unify HTTP session-first authentication across API, SSE, and web surfaces ([#2744](https://github.com/holon-run/holon/pull/2744), [#2758](https://github.com/holon-run/holon/pull/2758)).
-          - Add OIDC session issuance with Authorization Code + PKCE, enable JWT RSA ID token verification, and improve login and session UX with a unified /login page and 24-hour idle session expiry ([#2752](https://github.com/holon-run/holon/pull/2752), [#2763](https://github.com/holon-run/holon/pull/2763), [#2772](https://github.com/holon-run/holon/pull/2772)).
-          - Add the agent-aware holon CLI control plane ([#2746](https://github.com/holon-run/holon/pull/2746)).
-          - Auto-draft new models for supported providers from the models.dev supplemental catalog and refresh the model snapshot and artifact ([#2749](https://github.com/holon-run/holon/pull/2749), [#2751](https://github.com/holon-run/holon/pull/2751)).
-          - Diagnose context_not_found divergence and fall back across doubled-prefix workspace path variants ([#2759](https://github.com/holon-run/holon/pull/2759)).
-          - Persist the WaitFor fast-path wake promise for terminal task results and unify wait/wake resume authorization ([#2745](https://github.com/holon-run/holon/pull/2745), [#2748](https://github.com/holon-run/holon/pull/2748)).
-          - Abort orphaned queue entries when an agent is stopped or deleted, and retain the worktree branch when a merge proof fails ([#2769](https://github.com/holon-run/holon/pull/2769), [#2765](https://github.com/holon-run/holon/pull/2765)).
-          - Make the file-mutation prompt goal-oriented with scenario defaults, tolerate pure-add modify patches against missing targets, and apply turn fallback binding to the ApplyPatch invocation surface ([#2764](https://github.com/holon-run/holon/pull/2764), [#2756](https://github.com/holon-run/holon/pull/2756), [#2760](https://github.com/holon-run/holon/pull/2760)).
-          - Web GUI: auto-restore exact unread certainty when the read marker catches up, clarify runtime connection status, and address settings review follow-ups ([#2771](https://github.com/holon-run/holon/pull/2771), [#2773](https://github.com/holon-run/holon/pull/2773), [#2762](https://github.com/holon-run/holon/pull/2762)).
-          - Improve the holon-reviewer template with skill layering and a permission protocol, and make daemon startup readiness explicit ([#2774](https://github.com/holon-run/holon/pull/2774), [#2757](https://github.com/holon-run/holon/pull/2757)).
+          - Add opt-in work item context projection for model turns ([#2783](https://github.com/holon-run/holon/pull/2783)).
+          - Add context history selector evaluation for explicit history boundaries ([#2782](https://github.com/holon-run/holon/pull/2782)).
+          - Attribute authenticated user identity to control-plane messages ([#2781](https://github.com/holon-run/holon/pull/2781)).
+          - Isolate remote template sync failures so one dirty managed template does not abort other entries ([#2780](https://github.com/holon-run/holon/pull/2780)).
+          - Fall back to the session cookie when a stale bearer credential masks a valid browser session ([#2785](https://github.com/holon-run/holon/pull/2785)).
 
           ## Install
 
