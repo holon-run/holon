@@ -49,7 +49,7 @@ use crate::{
         ExecutionProfile, ExecutionScopeKind, ExecutionSnapshot, HostLocalBoundary,
         WorkspaceAccessMode,
     },
-    tool::{apply_patch::ApplyPatchSurface, ToolRegistry},
+    tool::{apply_patch::ApplyPatchSurface, ToolError, ToolRegistry},
     types::{
         AdmissionContext, AgentDeletionJob, AgentDurability, AgentIdentityRecord,
         AgentIdentityView, AgentKind, AgentLifecycleHint, AgentListEntry, AgentOwnership,
@@ -389,6 +389,28 @@ pub(crate) struct ChildTaskSpawn {
     pub child_agent_id: String,
     pub child_turn_baseline: u64,
     pub task_detail: Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NamedAgentExistingBehavior {
+    Reuse,
+    Reject,
+}
+
+fn named_agent_already_exists_error(agent_id: &str) -> anyhow::Error {
+    anyhow::Error::from(
+        ToolError::new(
+            "already_exists",
+            format!("public named agent {agent_id} already exists"),
+        )
+        .with_details(json!({
+            "agent_id": agent_id,
+            "preset": AgentProfilePreset::PublicNamed,
+        }))
+        .with_recovery_hint(
+            "use an explicit agent invocation or enqueue operation to deliver work to an existing agent",
+        ),
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -1948,9 +1970,15 @@ impl RuntimeHost {
         agent_id: &str,
         template: Option<&str>,
     ) -> Result<AgentIdentityRecord> {
-        self.ensure_named_agent(agent_id, template, None, None)
-            .await
-            .map(|(record, _)| record)
+        self.ensure_named_agent(
+            agent_id,
+            template,
+            None,
+            None,
+            NamedAgentExistingBehavior::Reuse,
+        )
+        .await
+        .map(|(record, _)| record)
     }
 
     async fn ensure_named_agent(
@@ -1959,9 +1987,13 @@ impl RuntimeHost {
         template: Option<&str>,
         lineage_parent_agent_id: Option<&str>,
         catalog_agent_home: Option<&Path>,
+        existing_behavior: NamedAgentExistingBehavior,
     ) -> Result<(AgentIdentityRecord, bool)> {
         self.validate_agent_id(agent_id)?;
         if agent_id == self.config().default_agent_id {
+            if existing_behavior == NamedAgentExistingBehavior::Reject {
+                return Err(named_agent_already_exists_error(agent_id));
+            }
             if template.is_some() {
                 return Err(anyhow!(
                     "default agent does not support template initialization through create_named_agent"
@@ -1980,6 +2012,9 @@ impl RuntimeHost {
         }
         let existing = self.agent_identity_record(agent_id)?;
         if let Some(existing) = existing {
+            if existing_behavior == NamedAgentExistingBehavior::Reject {
+                return Err(named_agent_already_exists_error(agent_id));
+            }
             if existing.status != AgentRegistryStatus::Active {
                 return Err(anyhow!(self
                     .active_agent_identity(agent_id)
@@ -3242,6 +3277,7 @@ impl RuntimeHost {
                 template.as_deref(),
                 Some(parent_state.id.as_str()),
                 Some(&parent_agent_home),
+                NamedAgentExistingBehavior::Reject,
             )
             .await?;
         let named_runtime = self.get_or_create_agent(&named_identity.agent_id).await?;
@@ -4471,7 +4507,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spawn_public_named_preserves_existing_runtime_state() {
+    async fn spawn_public_named_rejects_existing_agent_without_side_effects() {
         let fixture = provider_test_config(Some("dummy-token"));
         let host = RuntimeHost::new(fixture.config).unwrap();
         let parent = host.default_runtime().await.unwrap();
@@ -4488,21 +4524,76 @@ mod tests {
         let before = named.agent_summary().await.unwrap();
         assert!(before.agent.model_override.is_none());
 
-        host.spawn_public_named_agent(
-            parent,
-            "release-bot",
-            Some("continue release work".into()),
-            AuthorityClass::OperatorInstruction,
-            None,
-            inherited_model_resolution("anthropic", "claude-sonnet-4-6"),
-        )
-        .await
-        .unwrap();
+        let error = host
+            .spawn_public_named_agent(
+                parent,
+                "release-bot",
+                Some("continue release work".into()),
+                AuthorityClass::OperatorInstruction,
+                None,
+                inherited_model_resolution("anthropic", "claude-sonnet-4-6"),
+            )
+            .await
+            .expect_err("public named spawn must not reuse an existing agent");
 
         let after = named.agent_summary().await.unwrap();
         assert!(
             after.agent.model_override.is_none(),
             "existing public named agent should keep its own runtime state"
+        );
+        let tool_error = ToolError::from_anyhow(&error);
+        assert_eq!(tool_error.kind, "already_exists");
+        assert_eq!(
+            tool_error.details,
+            Some(json!({
+                "agent_id": "release-bot",
+                "preset": AgentProfilePreset::PublicNamed,
+            }))
+        );
+        assert!(
+            named.storage().read_recent_messages(10).unwrap().is_empty(),
+            "duplicate creation must not inject a follow-up message"
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_public_named_rejects_existing_default_agent_without_side_effects() {
+        let fixture = provider_test_config(Some("dummy-token"));
+        let host = RuntimeHost::new(fixture.config).unwrap();
+        let parent = host.default_runtime().await.unwrap();
+        let before = parent.agent_summary().await.unwrap();
+        assert!(before.agent.model_override.is_none());
+
+        let error = host
+            .spawn_public_named_agent(
+                parent.clone(),
+                &host.config().default_agent_id,
+                Some("do not inject this".into()),
+                AuthorityClass::OperatorInstruction,
+                None,
+                inherited_model_resolution("anthropic", "claude-sonnet-4-6"),
+            )
+            .await
+            .expect_err("public named spawn must not reuse the default agent");
+
+        let after = parent.agent_summary().await.unwrap();
+        assert!(after.agent.model_override.is_none());
+        let tool_error = ToolError::from_anyhow(&error);
+        assert_eq!(tool_error.kind, "already_exists");
+        assert_eq!(
+            tool_error.details,
+            Some(json!({
+                "agent_id": host.config().default_agent_id,
+                "preset": AgentProfilePreset::PublicNamed,
+            }))
+        );
+        assert!(
+            parent
+                .storage()
+                .read_recent_messages(10)
+                .unwrap()
+                .is_empty(),
+            "duplicate creation must not inject a follow-up message into the default agent"
         );
     }
 
@@ -4916,7 +5007,7 @@ mod tests {
 
         host.spawn_public_named_agent(
             parent,
-            "release-bot",
+            "bootstrap-bot",
             Some("bootstrap release lane".into()),
             AuthorityClass::OperatorInstruction,
             None,
@@ -4924,7 +5015,8 @@ mod tests {
         )
         .await
         .unwrap();
-        let messages = named.storage().read_recent_messages(10).unwrap();
+        let bootstrap_named = host.get_public_agent("bootstrap-bot").await.unwrap();
+        let messages = bootstrap_named.storage().read_recent_messages(10).unwrap();
         let bootstrap = messages
             .iter()
             .find(|message| {
