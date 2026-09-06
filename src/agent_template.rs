@@ -3458,6 +3458,7 @@ mod tests {
         for template_id in [
             "holon-developer",
             "holon-github-solve",
+            "holon-ops",
             "holon-release",
             "holon-reviewer",
             "server-ops",
@@ -3507,6 +3508,25 @@ mod tests {
         assert!(server_ops_agents_md.contains("Scheduled inspection is disabled by default"));
         assert!(server_ops_agents_md.contains("report, not remediate"));
         assert!(server_ops_agents_md.contains("future `holon-ops` role"));
+
+        let holon_ops_template = syncable.join("holon-ops");
+        assert_eq!(
+            local_template_skills(&holon_ops_template),
+            vec![
+                "holon-run/holon/skills/code-review",
+                "holon-run/holon/skills/ghx",
+                "holon-run/holon/skills/holon-runtime-ops",
+                "holon-run/holon/skills/ops",
+                "holon-run/sview/skills/sview",
+            ]
+        );
+        let holon_ops_agents_md =
+            fs::read_to_string(holon_ops_template.join(TEMPLATE_AGENTS_FILENAME)).unwrap();
+        assert!(holon_ops_agents_md.contains("Scheduled patrol is disabled by default"));
+        assert!(holon_ops_agents_md.contains("runtime-metadata-only"));
+        assert!(holon_ops_agents_md.contains("The first enablement must use `draft-only`"));
+        assert!(holon_ops_agents_md.contains("grants no standing"));
+        assert!(holon_ops_agents_md.contains("submission authority"));
     }
 
     #[test]

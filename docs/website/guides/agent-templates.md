@@ -19,6 +19,7 @@ Common scenarios:
 
 - **Creating a synced reviewer agent** — `holon agent create reviewer --template holon-reviewer`
 - **Operating servers and services** — `holon agent create ops --template server-ops`
+- **Operating Holon itself** — `holon agent create holon-ops --template holon-ops`
 - **One-shot tasks with a role** — `holon run --template holon-developer "Fix the null check in handler.rs"`
 - **Solving GitHub issues** — `holon solve https://github.com/owner/repo/issues/42`
 
