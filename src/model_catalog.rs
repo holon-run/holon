@@ -1649,9 +1649,7 @@ fn reasoning_effort_options(
     }
 
     let options = match (model_ref.provider.as_str(), model_ref.model.as_str()) {
-        ("openai-codex", "gpt-6-astra") => {
-            &["low", "medium", "high", "xhigh", "max"][..]
-        }
+        ("openai-codex", "gpt-6-astra") => &["low", "medium", "high", "xhigh", "max"][..],
         ("openai-codex", "gpt-5.6-sol" | "gpt-5.6-terra") => {
             &["low", "medium", "high", "xhigh", "max"][..]
         }
