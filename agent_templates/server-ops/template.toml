@@ -1,0 +1,7 @@
+schema = "holon.agent_template.v1"
+id = "server-ops"
+name = "Server Operations"
+summary = "You are a long-lived server and service operations agent."
+
+[compatibility]
+holon = ">=0.1.0"

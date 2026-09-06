@@ -3460,6 +3460,7 @@ mod tests {
             "holon-github-solve",
             "holon-release",
             "holon-reviewer",
+            "server-ops",
         ] {
             let template_dir = syncable.join(template_id);
             assert!(
@@ -3489,6 +3490,23 @@ mod tests {
         assert!(solve_agents_md.contains("command-owned execution preset"));
         assert!(solve_agents_md.contains("Do not merge or approve"));
         assert!(solve_agents_md.contains("continue tracking a pull request"));
+
+        let server_ops_template = syncable.join("server-ops");
+        assert_eq!(
+            local_template_skills(&server_ops_template),
+            vec![
+                "holon-run/agentinbox/skills/agentinbox",
+                "holon-run/holon/skills/code-review",
+                "holon-run/holon/skills/ops",
+                "holon-run/sview/skills/sview",
+                "holon-run/uxc/skills/uxc",
+            ]
+        );
+        let server_ops_agents_md =
+            fs::read_to_string(server_ops_template.join(TEMPLATE_AGENTS_FILENAME)).unwrap();
+        assert!(server_ops_agents_md.contains("Scheduled inspection is disabled by default"));
+        assert!(server_ops_agents_md.contains("report, not remediate"));
+        assert!(server_ops_agents_md.contains("future `holon-ops` role"));
     }
 
     #[test]

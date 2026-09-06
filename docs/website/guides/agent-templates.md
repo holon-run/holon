@@ -18,6 +18,7 @@ capabilities. Without a template, agents start with a generic default contract.
 Common scenarios:
 
 - **Creating a synced reviewer agent** — `holon agent create reviewer --template holon-reviewer`
+- **Operating servers and services** — `holon agent create ops --template server-ops`
 - **One-shot tasks with a role** — `holon run --template holon-developer "Fix the null check in handler.rs"`
 - **Solving GitHub issues** — `holon solve https://github.com/owner/repo/issues/42`
 
