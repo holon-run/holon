@@ -2,6 +2,35 @@
   "siteTitle": "Holon",
   "siteDescription": "A local workbench for agents doing continuous work with explicit waits, wakes, state, and trust boundaries.",
   "siteUrl": "https://holon.run",
+  "locales": [
+    {
+      "code": "en",
+      "default": true
+    },
+    {
+      "code": "zh-CN",
+      "label": "中文",
+      "siteDescription": "为持续工作的 Agent 提供的本地工作台：显式等待与唤醒、状态持久化、清晰的信任边界。",
+      "topNav": [
+        {
+          "label": "开始",
+          "href": "/zh-CN/getting-started/"
+        },
+        {
+          "label": "概念",
+          "href": "/zh-CN/concepts/"
+        },
+        {
+          "label": "指南",
+          "href": "/zh-CN/guides/"
+        },
+        {
+          "label": "参考",
+          "href": "/zh-CN/reference/"
+        }
+      ]
+    }
+  ],
   "favicon": "/assets/logo.png",
   "socialImage": "/assets/logo.png",
   "logo": {

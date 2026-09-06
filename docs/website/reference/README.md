@@ -16,6 +16,9 @@ behavior changes.
 > version it was last regenerated against where applicable. See the repository
 > [RFC index](https://github.com/holon-run/holon/tree/main/docs/rfcs) for design direction and stability status.
 
+Machine-readable surfaces: the generated baseline
+[OpenAPI 3.1 schema](./openapi.json) describes the current HTTP control-plane.
+
 <!-- INDEX:START -->
 
 - [CLI reference](./cli.md)
@@ -40,10 +43,6 @@ behavior changes.
 
 - [HTTP control plane](./http-control-plane.md)
   How to think about Holon's headless integration surface.
-  <!-- mdorigin:index kind=article -->
-
-- [OpenAPI schema](./openapi.json)
-  Generated baseline OpenAPI 3.1 schema for Holon's current HTTP control-plane surface.
   <!-- mdorigin:index kind=article -->
 
 - [API contract inventory](./api-contract-inventory.md)
