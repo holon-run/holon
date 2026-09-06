@@ -786,6 +786,39 @@ mod tests {
     }
 
     #[test]
+    fn resolved_provider_models_includes_codex_astra_contract() {
+        let fixture = test_config(Some("openai-key"));
+        let models = resolved_provider_models(&fixture.config, "openai-codex");
+        let astra = models
+            .iter()
+            .find(|entry| entry.model_ref == "openai-codex/gpt-6-astra")
+            .expect("Codex Astra model entry");
+
+        assert_eq!(astra.provider, "openai-codex");
+        assert_eq!(astra.id, "gpt-6-astra");
+        assert_eq!(astra.metadata_source, "built_in_catalog");
+        assert_eq!(astra.policy.context_window_tokens, Some(272_000));
+        assert!(astra.policy.capabilities.parallel_tool_calls);
+        assert!(astra.policy.capabilities.image_input);
+        assert!(astra.policy.capabilities.image_generation);
+        assert!(astra.policy.capabilities.interactive_exec);
+        assert!(astra.policy.capabilities.supports_reasoning);
+        assert_eq!(
+            astra.policy.reasoning_effort_options,
+            vec!["low", "medium", "high", "xhigh", "max"]
+        );
+        let reasoning_effort = astra
+            .parameter_contracts
+            .iter()
+            .find(|parameter| parameter.name == "reasoning_effort")
+            .expect("resolved reasoning effort contract");
+        assert_eq!(
+            reasoning_effort.allowed_values,
+            vec!["low", "medium", "high", "xhigh", "max"]
+        );
+    }
+
+    #[test]
     fn resolved_model_projection_preserves_canonical_provider_endpoint_and_route_provider() {
         let mut fixture = test_config(Some("openai-key"));
         let route_provider = ProviderId::parse("volcengine").unwrap();

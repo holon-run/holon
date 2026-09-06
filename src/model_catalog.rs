@@ -1649,6 +1649,9 @@ fn reasoning_effort_options(
     }
 
     let options = match (model_ref.provider.as_str(), model_ref.model.as_str()) {
+        ("openai-codex", "gpt-6-astra") => {
+            &["low", "medium", "high", "xhigh", "max"][..]
+        }
         ("openai-codex", "gpt-5.6-sol" | "gpt-5.6-terra") => {
             &["low", "medium", "high", "xhigh", "max"][..]
         }
@@ -2124,6 +2127,57 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("orchestration semantics"));
+        let codex_astra = catalog.resolve_policy(
+            &ModelRef::parse("openai-codex/gpt-6-astra").unwrap(),
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &base_context(),
+            8192,
+        );
+        assert_eq!(codex_astra.display_name, "GPT-6-Astra (Codex)");
+        assert_eq!(codex_astra.context_window_tokens, Some(272_000));
+        assert_eq!(codex_astra.prompt_budget_estimated_tokens, 258_400);
+        assert_eq!(codex_astra.runtime_max_output_tokens, 8192);
+        assert_eq!(codex_astra.verbosity, Some(ModelVerbosity::Low));
+        assert!(codex_astra.capabilities.parallel_tool_calls);
+        assert!(codex_astra.capabilities.image_input);
+        assert!(codex_astra.capabilities.image_generation);
+        assert!(codex_astra.capabilities.interactive_exec);
+        assert!(codex_astra.capabilities.supports_reasoning);
+        assert_eq!(
+            codex_astra.reasoning_effort_options,
+            ["low", "medium", "high", "xhigh", "max"]
+        );
+        assert!(codex_astra.validate_reasoning_effort("max").is_ok());
+        assert!(codex_astra
+            .validate_reasoning_effort("ultra")
+            .unwrap_err()
+            .to_string()
+            .contains("orchestration semantics"));
+
+        let openai_astra = catalog.resolve_policy(
+            &ModelRef::parse("openai/gpt-6-astra").unwrap(),
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &base_context(),
+            8192,
+        );
+        assert_eq!(openai_astra.display_name, "GPT-6 Astra");
+        assert_eq!(openai_astra.context_window_tokens, Some(1_050_000));
+        assert_eq!(openai_astra.runtime_max_output_tokens, 128_000);
+        assert!(!openai_astra.capabilities.parallel_tool_calls);
+        assert!(!openai_astra.capabilities.image_generation);
+        assert!(!openai_astra.capabilities.interactive_exec);
+        assert_eq!(
+            openai_astra.reasoning_effort_options,
+            ["low", "medium", "high", "xhigh", "max"]
+        );
+        assert_eq!(
+            openai_astra.source,
+            ModelMetadataSource::ModelsDevSupplement
+        );
         let codex_55 = catalog.resolve_policy(
             &ModelRef::parse("openai-codex/gpt-5.5").unwrap(),
             &HashMap::new(),

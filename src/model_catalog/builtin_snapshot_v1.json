@@ -2788,6 +2788,26 @@
       "source": "built_in_catalog"
     },
     {
+      "model_ref": "openai-codex/gpt-6-astra",
+      "display_name": "GPT-6-Astra (Codex)",
+      "description": "Codex runtime defaults mirrored from the local OpenAI Codex model metadata contract.",
+      "context_window_tokens": 272000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": "low",
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "parallel_tool_calls": true,
+        "image_input": true,
+        "image_generation": true,
+        "supports_reasoning": true,
+        "interactive_exec": true
+      },
+      "source": "built_in_catalog"
+    },
+    {
       "model_ref": "openai/gpt-5.3",
       "display_name": "GPT-5.3",
       "description": "Conservative GPT-5.3 runtime defaults used when explicit model metadata is not available locally.",
@@ -8064,6 +8084,22 @@
       }
     },
     {
+      "route_ref": "openai-codex@default/gpt-6-astra",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "openai@default/gpt-5.3",
       "policy": {
         "display_name": null,
@@ -12066,6 +12102,10 @@
     {
       "model_ref": "openai-codex/gpt-5.6-terra",
       "route_ref": "openai-codex@default/gpt-5.6-terra"
+    },
+    {
+      "model_ref": "openai-codex/gpt-6-astra",
+      "route_ref": "openai-codex@default/gpt-6-astra"
     },
     {
       "model_ref": "openai/gpt-5.3",
