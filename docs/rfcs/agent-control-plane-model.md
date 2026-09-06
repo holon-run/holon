@@ -6,6 +6,11 @@ status: draft
 
 # RFC: Agent Control Plane Model
 
+> **Supersession note:** The draft
+> [Unified Agent Identity, Relations, And Message Delivery](./agent-identity-relations-and-message-delivery.md)
+> RFC replaces `public versus private` as an identity axis and separates
+> lineage, supervision, lifecycle attachment, and message policy.
+
 ## Summary
 
 This RFC defines Holon's top-level runtime and control-plane model.

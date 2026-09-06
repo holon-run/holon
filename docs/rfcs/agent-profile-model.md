@@ -6,6 +6,12 @@ status: draft
 
 # RFC: Agent Profile Model
 
+> **Supersession note:** The draft
+> [Unified Agent Identity, Relations, And Message Delivery](./agent-identity-relations-and-message-delivery.md)
+> RFC deprecates `private_child` and `public_named` as canonical product
+> profiles. Capability policy remains, but no longer defines identity class,
+> operator discoverability, or lifecycle supervision.
+
 ## Summary
 
 This RFC defines Holon's first-pass agent profile model.

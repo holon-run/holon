@@ -1,10 +1,21 @@
 ---
 title: RFC: Agent Actor Handle And Task Invocation Model
 date: 2026-06-13
-status: draft
+status: superseded
 ---
 
 # RFC: Agent Actor Handle And Task Invocation Model
+
+> **Superseded:** The
+> [Unified Agent Identity, Relations, And Message Delivery](./agent-identity-relations-and-message-delivery.md)
+> RFC is the normative contract. This document is retained only as historical
+> design context; any conflicting operation, migration, or lifecycle text below
+> is non-normative. In particular, `InvokeAgent` is the only first-release
+> result-bearing invocation tool and may target an existing agent or create a
+> supervised subagent. Ordinary asynchronous delivery returns a receipt without
+> creating an invocation task. `SpawnAgent`, `ActorSend`, and a general
+> agent-facing message-send tool are not compatibility or implementation
+> targets.
 
 ## Summary
 
@@ -29,18 +40,18 @@ TaskHandle
   = waitable asynchronous result of a concrete call or execution
 
 TaskKind::ActorInvocation
-  = a task created by sending a message to an actor
+  = a task created by an explicit result-bearing InvokeAgent call
 
 Run / Continuation
   = internal execution fragment that advances a task
 ```
 
 This deliberately avoids introducing a second public waitable handle named
-`InvocationHandle`. If sending work to an actor is an asynchronous operation,
-then the result of that send is already a task. Actor invocation, shell command
-execution, workflow execution, and compatibility child-agent supervision should
-all be represented as different task kinds under one wait and observation
-system.
+`InvocationHandle`. If a caller explicitly requests a result-bearing actor
+invocation, that invocation is a task. Actor invocation, shell command
+execution, and workflow execution should be represented as different task kinds
+under one wait and observation system. Ordinary internal message delivery
+remains a separate receipt-bearing operation.
 
 The key boundary is:
 
@@ -48,7 +59,7 @@ The key boundary is:
   agent;
 - each accepted actor call returns a `TaskHandle`;
 - `wait_for task_result <task_id>` is the common wait path for actor calls,
-  commands, workflows, and child-agent compatibility tasks;
+  commands, and workflows;
 - the runtime may use one or more internal runs and continuations to advance the
   task;
 - the agent remains alive after any task or run finishes unless its own
@@ -194,10 +205,11 @@ Messages preserve:
 - optional target task id for follow-up;
 - optional work item or conversation correlation.
 
-Not every runtime wake or internal bookkeeping event needs to become a public
-actor invocation. But every external request that asks an agent to do
-meaningful work should be admitted as a message and normally create an
-`ActorInvocation` task.
+Runtime wakes, ordinary ingress, internal delivery, and bookkeeping events do
+not become actor invocations merely because they may cause meaningful work.
+Only an explicit result-bearing `InvokeAgent` operation creates an
+`ActorInvocation` task; its input is admitted through the internal delivery
+service as part of that operation.
 
 ## 4. Task
 
@@ -218,12 +230,12 @@ enum TaskKind {
     ActorInvocation,
     Command,
     Workflow,
-    ChildAgentCompat,
 }
 ```
 
-`TaskKind::ActorInvocation` is the semantic unit created by sending a message to
-an actor. It replaces the need for a separate public `InvocationHandle`.
+`TaskKind::ActorInvocation` is the semantic unit created by an accepted
+result-bearing `InvokeAgent` call. It replaces the need for a separate public
+`InvocationHandle`.
 
 Example task handle shape:
 
@@ -330,7 +342,8 @@ For trusted in-runtime calls, this may be implicit: a tool can accept
 calls, returning an explicit `ActorRef` makes capability and routing boundaries
 visible.
 
-`SpawnAgent` creates a new actor and returns an actor reference:
+`CreateAgent` creates an independently managed actor and returns its identity
+or callable reference:
 
 ```json
 {
@@ -341,8 +354,9 @@ visible.
 }
 ```
 
-If `SpawnAgent` also includes an initial work message, it should return both
-the actor reference and the task created by sending that message:
+`InvokeAgent(target=new_subagent, ...)` creates a supervised child and its
+initial result-bearing invocation in one application-level operation. It
+returns the created agent identity and invocation task:
 
 ```json
 {
@@ -359,44 +373,39 @@ the actor reference and the task created by sending that message:
 }
 ```
 
-The important point is that `SpawnAgent` should not make the initial run the
-identity of the child. The child identity is the actor; the delegated work is
-the returned actor-invocation task.
-
-For migration, `SpawnAgent(private_child, initial_message=...)` may still return
-a parent-supervision task handle. That handle should be folded into, or clearly
-linked to, the actor-invocation task instead of becoming a separate semantic
-handle.
+The initial run is not the identity of the child. The child identity is the
+actor; the delegated work is the returned actor-invocation task. `SpawnAgent`
+has no agent-facing compatibility window and is removed rather than mapped to a
+second supervision task contract.
 
 ## Send Work To An Actor
 
-The generic semantic operation is:
+The result-bearing semantic operation is:
 
 ```text
-ActorSend(actor_ref, message, options) -> TaskHandle
+InvokeAgent(target, input, options) -> TaskHandle
 ```
 
-`ActorSend` means:
+`InvokeAgent` means:
 
-1. authorize use of the actor reference;
-2. admit the message to the target agent mailbox;
+1. resolve or create the target agent according to the declared target variant;
+2. authorize the invocation;
 3. create an `ActorInvocation` task;
-4. ensure the target agent is scheduled;
-5. return the task handle immediately.
+4. admit its input through the internal delivery service;
+5. ensure the target agent is scheduled;
+6. return the task handle immediately.
 
-The runtime may schedule a run immediately, later, or not at all if policy
-rejects the message. That scheduling detail does not change the returned task
-handle.
+If authorization or atomic admission fails, no successful task handle is
+returned. Once accepted, the runtime may schedule a run immediately or later;
+that scheduling detail does not change the returned task handle. Ordinary
+internal delivery remains a separate operation that returns a durable receipt
+without creating an invocation task.
 
-Existing surfaces can map to the same model:
-
-- operator prompt to a public agent creates an actor-invocation task;
-- parent follow-up to a child sends a message correlated with an existing task
-  or starts a new actor-invocation task;
-- external callback work creates an actor-invocation task when it asks the
-  agent to do meaningful work;
-- runtime wake hints usually resume an existing task / continuation and do not
-  create a user-visible task by themselves.
+Other ingress surfaces do not implicitly map to this model. Operator prompts,
+external callbacks, parent follow-up, and runtime wake hints use their declared
+ingress or task-correlation contracts. They create an `ActorInvocation` only
+when an authorized adapter explicitly performs the result-bearing invocation
+operation.
 
 ## Follow-Up
 
@@ -409,7 +418,7 @@ TaskInput(task_id, message) -> TaskHandle
 or, if the target actor needs to be explicit:
 
 ```text
-ActorSend(actor_ref, message, { followup_for: task_id }) -> TaskHandle
+InternalDelivery(actor_ref, message, { followup_for: task_id }) -> DeliveryReceipt
 ```
 
 This means:
@@ -552,7 +561,7 @@ TaskKind::Workflow
   = Shell VM workflow execution that may call runtime builtins
 
 TaskKind::ActorInvocation
-  = actor call created by sending a message to an agent
+  = result-bearing call created by InvokeAgent
 ```
 
 `ExecCommand` can remain a small primitive for one command. A future Shell VM
@@ -565,8 +574,7 @@ Long-term, `TaskHandle` should be the common handle for:
 
 - command execution;
 - workflow execution;
-- actor invocation;
-- compatibility child-agent supervision.
+- actor invocation.
 
 The task kind and capability policy decide which operations are available on a
 given handle.
@@ -578,9 +586,9 @@ The scheduler should treat messages and tasks as durable inputs.
 At a high level:
 
 ```text
-ActorSend
-  -> MessageQueued
+InvokeAgent
   -> TaskCreated(kind=ActorInvocation)
+  -> InternalDeliveryAdmitted
   -> AgentScheduled
   -> RunStarted
   -> ProgressRecorded*
@@ -617,7 +625,8 @@ who can invoke them and who owns cleanup.
 
 ## Phase 1: Document The Boundary
 
-- keep current `SpawnAgent` and task supervision behavior;
+- remove `SpawnAgent` from the agent-facing tool contract without a
+  compatibility window;
 - document that `agent_id` identifies the actor and task ids identify concrete
   async calls or executions;
 - introduce `ActorRef` / `AgentHandle` terminology in RFCs and prompt guidance;
@@ -626,9 +635,9 @@ who can invoke them and who owns cleanup.
 
 ## Phase 2: Normalize Task Kinds
 
-- introduce explicit task kinds such as `ActorInvocation`, `Command`,
-  `Workflow`, and `ChildAgentCompat`;
-- ensure operator prompts and `SpawnAgent` initial messages are represented as
+- introduce explicit task kinds such as `ActorInvocation`, `Command`, and
+  `Workflow`;
+- ensure only result-bearing `InvokeAgent` calls are represented as
   actor-invocation tasks;
 - record links to target agent, originating message, work item, and runs;
 - expose compact task status across task kinds.
@@ -636,8 +645,8 @@ who can invoke them and who owns cleanup.
 ## Phase 3: Unify Waiting
 
 - keep `WaitFor(wake=task_result, resource=task_id)` as the shared wait path;
-- make actor invocation, command, workflow, and child-agent compatibility tasks
-  all waitable through the same condition model;
+- make actor invocation, command, and workflow tasks all waitable through the
+  same condition model;
 - make Shell VM `wait_for` a runtime builtin that suspends the current
   continuation instead of blocking a shell process;
 - preserve external and operator waits as target kinds in the same wait system.
@@ -660,8 +669,10 @@ who can invoke them and who owns cleanup.
 
 ## Open Questions
 
-- Should the first public name be `ActorSend`, `InvokeAgent`, or
-  `SendAgentMessage` if all return a task handle?
+- The superseding identity and delivery RFC resolves the public split:
+  `InvokeAgent` returns a result-bearing task handle, while the internal
+  delivery service returns only a delivery receipt. A general agent-facing
+  message-send tool is deferred.
 - How explicit should `ActorRef` be in trusted in-runtime tool calls, where
   `agent_id` may already be sufficient?
 - Should follow-up mutate the original actor-invocation task, create a linked
@@ -680,9 +691,12 @@ Holon should use an actor-inspired model:
 
 - all agents are addressable execution containers;
 - actor handles / refs are the callable entry points;
-- sending a message to an actor creates an `ActorInvocation` task;
-- task handles are the common waitable handles for actor calls, commands,
-  workflows, and child-agent compatibility operations;
+- result-bearing `InvokeAgent` calls create an `ActorInvocation` task;
+- internal asynchronous message delivery creates or reuses a durable delivery
+  and queue record and returns a receipt without creating an invocation task;
+- a general agent-facing asynchronous message-send tool is deferred;
+- task handles are the common waitable handles for actor calls, commands, and
+  workflows;
 - `wait_for` suspends the current task continuation and waits on a target such
   as another task result, external event, or operator input;
 - internal runs are scheduler attempts, not the public identity of agent work.

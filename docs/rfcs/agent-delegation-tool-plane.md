@@ -6,6 +6,14 @@ status: draft
 
 # RFC: Agent Delegation Tool Plane
 
+> **Supersession note:** The draft
+> [Unified Agent Identity, Relations, And Message Delivery](./agent-identity-relations-and-message-delivery.md)
+> RFC preserves bounded delegation while replacing the combined `SpawnAgent`
+> product surface with `CreateAgent` and result-bearing `InvokeAgent`; reliable
+> message delivery remains an internal runtime contract in the first release.
+> `InvokeAgent(target = new_subagent)` is the canonical bounded delegation
+> entrypoint.
+
 ## Summary
 
 This RFC proposes that bounded delegation in Holon should move from a task-kind
@@ -15,12 +23,13 @@ The central direction is:
 
 - delegated work is fundamentally context creation
 - public delegation tools should reflect that directly
-- `child_agent_task` is the internal supervision shape for private child
-  delegation
+- `child_agent_task` is a legacy combined task/supervision record to migrate,
+  not the canonical target model
 - `subagent_task` and `worktree_subagent_task` should be treated as legacy
   migration records, not the final public abstraction
-- worktree-isolated delegation should be expressed as `SpawnAgent` with a
-  workspace mode, not as a separate public task kind
+- result-bearing delegation should be expressed as
+  `InvokeAgent(target = new_subagent)` with an optional workspace mode, not as
+  `SpawnAgent` or a separate public task kind
 
 ## Problem
 
@@ -74,14 +83,14 @@ not:
 - create a generic task and hope the model remembers it is actually another
   agent
 
-This suggests an eventual surface shaped more like:
+The superseding public surface is:
 
-- spawn bounded child agent
-- spawn bounded child agent with worktree isolation
+- `InvokeAgent(target = new_subagent)` for bounded child delegation
+- `InvokeAgent(target = new_subagent, workspace_mode = worktree)` for
+  worktree-isolated delegation
 
-The first public direction is `SpawnAgent` with `private_child` and
-`workspace_mode=worktree`. The important point is that delegation should belong
-to the agent plane.
+The important point is that delegation belongs to the agent plane while the
+returned `TaskHandle` represents the result-bearing invocation.
 
 ## 2. Task Should Not Stay The Primary Delegation Word
 
@@ -130,54 +139,65 @@ That should be described in agent-plane terms, not only task-plane terms.
 
 The intended public model is:
 
-- `SpawnAgent(private_child, initial_message=..., workspace_mode=worktree)`
-  creates the delegated child context
+- `InvokeAgent(target=new_subagent, initial_message=...,
+  workspace_mode=worktree)` creates the delegated child context and its first
+  result-bearing invocation
 - `initial_message` is delivered as the child agent's first delegation message
   and is used to derive the stable parent-visible task label
-- the spawned child uses the task-created worktree as its active execution
+- the created child uses the delegation-created worktree as its active execution
   projection
-- the supervising task owns the task-created worktree artifact
+- durable ownership evidence keeps the worktree artifact attached to the
+  supervised child delegation until lifecycle cleanup resolves it
 - the child agent is the active holder while it runs, but not the lifecycle
   owner of the artifact
 
 This means worktree lifecycle should not follow the child agent directly. The
-child may finish, stop, or be archived while the parent still needs to inspect
-the task result. Cleanup therefore belongs to the supervising task or later
-artifact garbage collection.
+child may finish an invocation or stop while the parent still needs to inspect
+the task result or decide its lifecycle. Cleanup therefore remains governed by
+the persistent supervision relation, durable artifact ownership evidence, and
+later artifact garbage collection; it does not belong to one invocation task.
 
-The task record now uses a single `child_agent_task` kind for supervised
-private child delegation. Worktree isolation is represented with metadata:
+The current implementation may use a single `child_agent_task` record for
+supervised child delegation. That combined record is a legacy migration shape.
+The canonical target model stores the result-bearing request as an
+`ActorInvocation` task and lifecycle authority as a separate
+`AgentSupervision` relation. Worktree isolation remains execution-projection
+metadata:
 
 - `workspace_mode=worktree`
 - worktree path and branch metadata
 - artifact cleanup state
 
-The operator-facing projection for that task is `child_supervision`. It is
-returned by `SpawnAgent(private_child, initial_message=...)` and repeated by
-`TaskStatus` and `TaskOutput` so every surface uses the same names:
+The `TaskHandle` returned by
+`InvokeAgent(target=new_subagent, initial_message=...)` identifies only the
+`ActorInvocation`. `TaskStatus` and `TaskOutput` report that invocation's
+lifecycle and result. They may include references to the delegated child and
+its supervision relation, but the task is not itself `child_supervision`:
 
 - `child_agent_id` is the delegated private context
-- `supervision_task_id` is the parent-visible handle for status, output, stop,
-  and follow-up delivery
+- `task_id` is the parent-visible invocation handle for status, output,
+  cancellation, and task-correlated input
+- `supervision_id` identifies the separate persistent lifecycle relation
 - `parent_agent_id` and optional work-item delegation ids preserve ownership
-- `cleanup_owner=supervision_task` keeps worktree artifacts attached to the
-  supervising task rather than to the child identity
-- `followup_target=parent_supervisor` keeps child blocked/notify/follow-up
-  traffic inside the parent-supervisor boundary
+- lifecycle stop/delete authority and the unresolved cleanup obligation remain
+  on the supervision relation after the invocation becomes terminal
+- later work sent to the retained child uses another
+  `InvokeAgent(target=existing_agent, ...)`, not the completed invocation task
 
 ## Migration Direction
 
 The safest migration path is:
 
 1. keep current implementation support
-2. document legacy subagent task kinds as transitional forms
+2. document legacy subagent and `child_agent_task` records as transitional forms
 3. introduce agent-plane wording in prompts and docs
-4. add an explicit `SpawnAgent` agent-plane tool
-5. route worktree-isolated delegation through `SpawnAgent(initial_message=...,
-   workspace_mode=worktree)`
+4. add explicit `CreateAgent` and `InvokeAgent` agent-plane tools
+5. route bounded and worktree-isolated delegation through
+   `InvokeAgent(target=new_subagent, ...)`
 6. retire subagent task wording once the new surface is stable
-7. merge `worktree_subagent_task` into the unified `child_agent_task`
-   representation
+7. migrate combined task/supervision records into separate `ActorInvocation`
+   tasks and `AgentSupervision` relations, and remove `SpawnAgent` from the
+   agent-facing tool surface
 
 ## Relationship To Work Items
 
@@ -252,7 +272,8 @@ The following questions remain open after this RFC:
 
 Holon treats delegation as part of the agent plane rather than keeping
 `subagent_task` as the long-term public abstraction. Runtime-created
-supervision now uses `child_agent_task`.
+delegation uses a result-bearing `ActorInvocation` task alongside a persistent
+`AgentSupervision` relation.
 
 This gives Holon a cleaner runtime story:
 

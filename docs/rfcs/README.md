@@ -23,6 +23,7 @@ implementation and tests.
 - [Agent Status Display Projection](./agent-status-display-projection.md)
 - [Agent Profile Model](./agent-profile-model.md)
 - [Canonical Agent Create Contract](./agent-create-contract.md)
+- [Unified Agent Identity, Relations, And Message Delivery](./agent-identity-relations-and-message-delivery.md)
 - [Runtime Scheduler Contract](./runtime-scheduler-contract.md)
 - [Scheduler Cutover Simplification](./scheduler-cutover-simplification.md)
 - [Scheduler–WorkItem Unified Execution Protocol](./scheduler-work-item-unified-execution-protocol.md)
