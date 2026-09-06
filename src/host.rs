@@ -51,13 +51,13 @@ use crate::{
     },
     tool::{apply_patch::ApplyPatchSurface, ToolError, ToolRegistry},
     types::{
-        AdmissionContext, AgentCreateReceipt, AgentCreateResult, AgentCreateStage,
-        AgentDeletionJob, AgentDurability, AgentIdentityRecord, AgentIdentityView, AgentKind,
-        AgentLifecycleHint, AgentListEntry, AgentOwnership, AgentProfilePreset,
-        AgentRegistryStatus, AgentState, AgentStatus, AgentSummary, AgentTokenUsageSummary,
-        AgentVisibility, AuthorityClass, ChildAgentSummary, ClosureOutcome, ExternalTriggerRecord,
-        ExternalTriggerStatus, ExternalTriggerSummary, LoadedAgentsMdView, MessageBody,
-        MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin,
+        normalize_agent_name, AdmissionContext, AgentCreateReceipt, AgentCreateResult,
+        AgentCreateStage, AgentDeletionJob, AgentDetail, AgentDurability, AgentIdentityRecord,
+        AgentIdentityView, AgentKind, AgentLifecycleHint, AgentListEntry, AgentOwnership,
+        AgentProfilePreset, AgentRegistryStatus, AgentState, AgentStatus, AgentSummary,
+        AgentTokenUsageSummary, AgentVisibility, AuthorityClass, ChildAgentSummary, ClosureOutcome,
+        ExternalTriggerRecord, ExternalTriggerStatus, ExternalTriggerSummary, LoadedAgentsMdView,
+        MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin,
         OperatorNotificationRecord, Priority, QueueEntryStatus, RuntimeFailureSummary,
         SpawnAgentModelResolution, SpawnAgentModelResolutionStatus, TaskKind, TaskRecord,
         TaskStatus, TimerRecord, TokenUsage, TranscriptEntry, TranscriptEntryKind,
@@ -226,6 +226,8 @@ pub enum PublicAgentError {
     Deleting { agent_id: String },
     Deleted { agent_id: String },
     DeleteForbidden { agent_id: String, reason: String },
+    InvalidName { agent_id: String, reason: String },
+    NameConflict { agent_id: String, name: String },
     Private { agent_id: String },
     Stopped { agent_id: String },
     ShuttingDown,
@@ -243,6 +245,16 @@ impl std::fmt::Display for PublicAgentError {
             Self::Deleted { agent_id } => write!(f, "agent {} was deleted", agent_id),
             Self::DeleteForbidden { agent_id, reason } => {
                 write!(f, "agent {} cannot be deleted: {}", agent_id, reason)
+            }
+            Self::InvalidName { agent_id, reason } => {
+                write!(f, "agent {} has an invalid name: {}", agent_id, reason)
+            }
+            Self::NameConflict { agent_id, name } => {
+                write!(
+                    f,
+                    "agent {} cannot use name {:?}: name is already in use",
+                    agent_id, name
+                )
             }
             Self::Private { agent_id } => write!(f, "agent {} is private", agent_id),
             Self::Stopped { agent_id } => {
@@ -412,6 +424,22 @@ fn named_agent_already_exists_error(agent_id: &str) -> anyhow::Error {
         .with_recovery_hint(
             "use an explicit agent invocation or enqueue operation to deliver work to an existing agent",
         ),
+    )
+}
+
+fn named_agent_name_already_exists_error(agent_id: &str, name: &str) -> anyhow::Error {
+    anyhow::Error::from(
+        ToolError::new(
+            "already_exists",
+            format!("public named agent name {name:?} is already in use"),
+        )
+        .with_domain(crate::runtime_error::RuntimeErrorDomain::Conflict)
+        .with_details(json!({
+            "agent_id": agent_id,
+            "name": name,
+            "preset": AgentProfilePreset::PublicNamed,
+        }))
+        .with_recovery_hint("choose a different name for the new public named agent"),
     )
 }
 
@@ -1758,6 +1786,114 @@ impl RuntimeHost {
         Ok((identity, job))
     }
 
+    pub fn public_agent_detail(
+        &self,
+        agent_id: &str,
+    ) -> std::result::Result<AgentDetail, PublicAgentError> {
+        self.validate_agent_id(agent_id)
+            .map_err(PublicAgentError::Runtime)?;
+        let identity = self
+            .agent_identity_record(agent_id)
+            .map_err(PublicAgentError::Runtime)?
+            .ok_or_else(|| PublicAgentError::NotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        if identity.visibility != AgentVisibility::Public
+            || identity.ownership() != AgentOwnership::SelfOwned
+        {
+            return Err(PublicAgentError::Private {
+                agent_id: agent_id.to_string(),
+            });
+        }
+        let deletion = self
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent(agent_id)
+            .map_err(PublicAgentError::Runtime)?;
+        Ok(AgentDetail {
+            display_name: identity.display_name(),
+            name: identity.name.clone(),
+            created_at: identity.created_at,
+            updated_at: identity.updated_at,
+            identity: AgentIdentityView::from_record(&identity, &self.config().default_agent_id),
+            deletion,
+        })
+    }
+
+    pub fn rename_public_agent(
+        &self,
+        agent_id: &str,
+        requested_name: &str,
+        actor: &str,
+    ) -> std::result::Result<AgentDetail, PublicAgentError> {
+        let existing_identity = self
+            .agent_identity_record(agent_id)
+            .map_err(PublicAgentError::Runtime)?
+            .ok_or_else(|| PublicAgentError::NotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        if existing_identity.visibility != AgentVisibility::Public
+            || existing_identity.ownership() != AgentOwnership::SelfOwned
+        {
+            return Err(PublicAgentError::Private {
+                agent_id: agent_id.to_string(),
+            });
+        }
+        if agent_id == self.config().default_agent_id {
+            return Err(PublicAgentError::DeleteForbidden {
+                agent_id: agent_id.to_string(),
+                reason: "the configured default agent cannot be renamed".into(),
+            });
+        }
+        normalize_agent_name(requested_name).map_err(|error| PublicAgentError::InvalidName {
+            agent_id: agent_id.to_string(),
+            reason: error.to_string(),
+        })?;
+        let identity = self
+            .runtime_db()
+            .agent_identities()
+            .rename(agent_id, requested_name, actor)
+            .map_err(|error| {
+                if error.to_string().contains("agent_name_conflict")
+                    || error.to_string().contains("UNIQUE constraint failed")
+                {
+                    PublicAgentError::NameConflict {
+                        agent_id: agent_id.to_string(),
+                        name: requested_name.trim().to_string(),
+                    }
+                } else if error.to_string().contains("cannot be renamed while it is") {
+                    match existing_identity.status {
+                        AgentRegistryStatus::Deleting => PublicAgentError::Deleting {
+                            agent_id: agent_id.to_string(),
+                        },
+                        AgentRegistryStatus::Deleted => PublicAgentError::Deleted {
+                            agent_id: agent_id.to_string(),
+                        },
+                        AgentRegistryStatus::Active => PublicAgentError::Runtime(error),
+                    }
+                } else {
+                    PublicAgentError::Runtime(error)
+                }
+            })?;
+        self.inner
+            .registry
+            .cache_agent_identity(&identity)
+            .map_err(PublicAgentError::Runtime)?;
+        let deletion = self
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent(agent_id)
+            .map_err(PublicAgentError::Runtime)?;
+        Ok(AgentDetail {
+            display_name: identity.display_name(),
+            name: identity.name.clone(),
+            created_at: identity.created_at,
+            updated_at: identity.updated_at,
+            identity: AgentIdentityView::from_record(&identity, &self.config().default_agent_id),
+            deletion,
+        })
+    }
+
     pub(crate) async fn public_agent_state_projection(
         &self,
         agent_id: &str,
@@ -1999,6 +2135,7 @@ impl RuntimeHost {
             None,
             None,
             NamedAgentExistingBehavior::Reuse,
+            None,
         )
         .await
         .map(|(record, _)| record)
@@ -2011,6 +2148,24 @@ impl RuntimeHost {
         lineage_parent_agent_id: Option<&str>,
         catalog_agent_home: Option<&Path>,
     ) -> Result<AgentCreateResult> {
+        self.create_public_named_agent_with_name(
+            agent_id,
+            template,
+            lineage_parent_agent_id,
+            catalog_agent_home,
+            None,
+        )
+        .await
+    }
+
+    pub async fn create_public_named_agent_with_name(
+        &self,
+        agent_id: &str,
+        template: Option<&str>,
+        lineage_parent_agent_id: Option<&str>,
+        catalog_agent_home: Option<&Path>,
+        requested_name: Option<&str>,
+    ) -> Result<AgentCreateResult> {
         let (identity, created) = self
             .ensure_named_agent(
                 agent_id,
@@ -2018,12 +2173,15 @@ impl RuntimeHost {
                 lineage_parent_agent_id,
                 catalog_agent_home,
                 NamedAgentExistingBehavior::Reject,
+                requested_name,
             )
             .await?;
         Ok(AgentCreateResult {
             receipt: AgentCreateReceipt {
                 receipt_id: ids::runtime_id("agent_create"),
                 agent_id: identity.agent_id.clone(),
+                name: identity.name.clone(),
+                display_name: identity.display_name(),
                 preset: AgentProfilePreset::PublicNamed,
                 stage: AgentCreateStage::Bootstrapped,
                 lifecycle: identity.status,
@@ -2040,6 +2198,7 @@ impl RuntimeHost {
         lineage_parent_agent_id: Option<&str>,
         catalog_agent_home: Option<&Path>,
         existing_behavior: NamedAgentExistingBehavior,
+        requested_name: Option<&str>,
     ) -> Result<(AgentIdentityRecord, bool)> {
         self.validate_agent_id(agent_id)?;
         if agent_id == self.config().default_agent_id {
@@ -2090,6 +2249,7 @@ impl RuntimeHost {
             }
             return Ok((existing, false));
         }
+        let normalized_name = requested_name.map(normalize_agent_name).transpose()?;
         if let Some(template) = template {
             let agent_home = self.agent_data_dir(agent_id);
             let user_home = self.config().home_dir.clone();
@@ -2119,7 +2279,7 @@ impl RuntimeHost {
                 named_agent_create_failed_error(agent_id, AgentCreateStage::Profiled, error)
             })?;
         }
-        let record = AgentIdentityRecord::new(
+        let mut record = AgentIdentityRecord::new(
             agent_id,
             AgentKind::Named,
             AgentVisibility::Public,
@@ -2129,7 +2289,16 @@ impl RuntimeHost {
             None,
         )
         .with_lineage_parent_agent_id(lineage_parent_agent_id.map(ToString::to_string));
+        record.name = normalized_name;
         self.append_agent_identity(&record).map_err(|error| {
+            if let Some(name) = record.name.as_deref() {
+                if error
+                    .to_string()
+                    .contains("UNIQUE constraint failed: agent_identities.name_key")
+                {
+                    return named_agent_name_already_exists_error(agent_id, name);
+                }
+            }
             named_agent_create_failed_error(agent_id, AgentCreateStage::Reserved, error)
         })?;
         self.activate_agent(agent_id, RuntimeActivationReason::AgentLifecycle)
@@ -4572,16 +4741,71 @@ mod tests {
         let (_home, host) = test_host();
 
         let created = host
-            .create_public_named_agent("receipt-bot", None, None, None)
+            .create_public_named_agent_with_name(
+                "receipt-bot",
+                None,
+                None,
+                None,
+                Some("Receipt Bot"),
+            )
             .await
             .unwrap();
         assert_eq!(created.identity.agent_id, "receipt-bot");
+        assert_eq!(created.identity.name.as_deref(), Some("Receipt Bot"));
+        assert_eq!(created.receipt.name.as_deref(), Some("Receipt Bot"));
+        assert_eq!(created.receipt.display_name, "Receipt Bot");
         assert_eq!(created.receipt.agent_id, "receipt-bot");
         assert_eq!(created.receipt.preset, AgentProfilePreset::PublicNamed);
         assert_eq!(created.receipt.stage, AgentCreateStage::Bootstrapped);
         assert_eq!(created.receipt.lifecycle, AgentRegistryStatus::Active);
         assert!(created.receipt.created);
         assert!(!created.receipt.receipt_id.is_empty());
+
+        let detail = host.public_agent_detail("receipt-bot").unwrap();
+        assert_eq!(detail.display_name, "Receipt Bot");
+        assert_eq!(detail.name.as_deref(), Some("Receipt Bot"));
+
+        let renamed = host
+            .rename_public_agent("receipt-bot", "Receipt Worker", "test-operator")
+            .unwrap();
+        assert_eq!(renamed.identity.agent_id, "receipt-bot");
+        assert_eq!(renamed.name.as_deref(), Some("Receipt Worker"));
+        assert_eq!(renamed.display_name, "Receipt Worker");
+        assert_eq!(
+            host.agent_identity_record("receipt-bot")
+                .unwrap()
+                .unwrap()
+                .name
+                .as_deref(),
+            Some("Receipt Worker")
+        );
+
+        let duplicate = host
+            .create_public_named_agent_with_name(
+                "other-receipt-bot",
+                None,
+                None,
+                None,
+                Some("Receipt Worker"),
+            )
+            .await
+            .expect_err("duplicate display names must fail closed");
+        assert!(duplicate.to_string().contains("already_exists"));
+
+        host.create_public_named_agent_with_name("unicode-name", None, None, None, Some("Straße"))
+            .await
+            .unwrap();
+        let unicode_duplicate = host
+            .create_public_named_agent_with_name(
+                "other-unicode-name",
+                None,
+                None,
+                None,
+                Some("STRASSE"),
+            )
+            .await
+            .expect_err("Unicode-equivalent display names must fail closed");
+        assert!(unicode_duplicate.to_string().contains("already_exists"));
 
         let error = host
             .create_public_named_agent("receipt-bot", None, None, None)
@@ -4593,6 +4817,57 @@ mod tests {
             tool_error.domain,
             Some(crate::runtime_error::RuntimeErrorDomain::Conflict)
         );
+    }
+
+    #[tokio::test]
+    async fn deleted_public_agent_detail_retains_name_and_rename_is_rejected() {
+        let (_home, host) = test_host();
+        let _created = host
+            .create_public_named_agent_with_name(
+                "delete-named",
+                None,
+                None,
+                None,
+                Some("Retained Name"),
+            )
+            .await
+            .unwrap();
+
+        let (_identity, job, created_deletion) = host
+            .begin_public_agent_deletion("delete-named", false, "test-operator")
+            .await
+            .unwrap();
+        assert!(created_deletion);
+
+        let deleting_detail = host.public_agent_detail("delete-named").unwrap();
+        assert_eq!(deleting_detail.name.as_deref(), Some("Retained Name"));
+        assert_eq!(deleting_detail.display_name, "Retained Name");
+        assert!(deleting_detail.deletion.is_some());
+
+        let rename_error = host
+            .rename_public_agent("delete-named", "New Name", "test-operator")
+            .expect_err("deleting agent must not be renamed");
+        assert!(matches!(
+            rename_error,
+            PublicAgentError::Deleting { ref agent_id } if agent_id == "delete-named"
+        ));
+
+        host.execute_deletion_job(job).await.unwrap();
+        let deleted_detail = host.public_agent_detail("delete-named").unwrap();
+        assert_eq!(deleted_detail.name.as_deref(), Some("Retained Name"));
+        assert_eq!(deleted_detail.display_name, "Retained Name");
+        assert!(matches!(
+            deleted_detail.identity.status,
+            AgentRegistryStatus::Deleted
+        ));
+
+        let rename_error = host
+            .rename_public_agent("delete-named", "New Name", "test-operator")
+            .expect_err("deleted agent must not be renamed");
+        assert!(matches!(
+            rename_error,
+            PublicAgentError::Deleted { ref agent_id } if agent_id == "delete-named"
+        ));
     }
 
     #[tokio::test]

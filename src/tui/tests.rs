@@ -190,6 +190,7 @@ fn sample_agent_summary(agent_id: &str) -> AgentSummary {
     AgentSummary {
         identity: AgentIdentityView {
             agent_id: agent_id.into(),
+            name: None,
             kind: AgentKind::Default,
             visibility: AgentVisibility::Public,
             ownership: AgentOwnership::SelfOwned,

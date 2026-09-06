@@ -734,6 +734,7 @@ impl LocalClient {
             &format!("/control/agents/{agent_id}/create"),
             &CreateAgentRequest {
                 authority_class: Some(AuthorityClass::OperatorInstruction),
+                name: None,
                 template,
             },
         )

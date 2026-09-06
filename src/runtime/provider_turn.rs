@@ -699,6 +699,7 @@ mod tests {
         EffectivePrompt {
             identity: AgentIdentityView {
                 agent_id: "default".into(),
+                name: None,
                 kind: AgentKind::Default,
                 visibility: AgentVisibility::Public,
                 ownership: AgentOwnership::SelfOwned,
@@ -757,6 +758,7 @@ mod tests {
         let effective_prompt = EffectivePrompt {
             identity: AgentIdentityView {
                 agent_id: "default".into(),
+                name: None,
                 kind: AgentKind::Default,
                 visibility: AgentVisibility::Public,
                 ownership: AgentOwnership::SelfOwned,

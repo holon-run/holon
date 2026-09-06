@@ -922,7 +922,11 @@ pub(super) fn render_model_status(agent: &AgentSummary) -> String {
 
 pub(super) fn render_summary(agent: &AgentSummary) -> String {
     let mut lines = vec![
-        format!("Agent: {}", agent.identity.agent_id),
+        format!(
+            "Agent: {} ({})",
+            agent.identity.display_name(),
+            agent.identity.agent_id
+        ),
         format!("Kind: {:?}", agent.identity.kind),
         format!("Identity contract: {}", agent.identity.contract_badge()),
         format!("Contract summary: {}", agent.identity.contract_summary()),
@@ -1009,7 +1013,8 @@ pub(super) fn render_summary(agent: &AgentSummary) -> String {
                 .iter()
                 .map(|child| {
                     format!(
-                        "{}:{:?}[{}]",
+                        "{}:{}:{:?}[{}]",
+                        child.identity.display_name(),
                         child.identity.agent_id,
                         child.status,
                         child.identity.contract_badge()
@@ -1076,6 +1081,7 @@ mod tests {
         AgentSummary {
             identity: AgentIdentityView {
                 agent_id: "default".into(),
+                name: None,
                 kind: AgentKind::Default,
                 visibility: AgentVisibility::Public,
                 ownership: AgentOwnership::SelfOwned,
@@ -1155,6 +1161,7 @@ mod tests {
             active_children: vec![ChildAgentSummary {
                 identity: AgentIdentityView {
                     agent_id: "child_1".into(),
+                    name: None,
                     kind: AgentKind::Child,
                     visibility: AgentVisibility::Private,
                     ownership: AgentOwnership::ParentSupervised,

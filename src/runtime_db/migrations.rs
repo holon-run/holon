@@ -3266,6 +3266,11 @@ CREATE INDEX IF NOT EXISTS idx_auth_sessions_expiry
         name: "execution_root_registry_backfill",
         sql: "",
     },
+    Migration {
+        version: 57,
+        name: "agent_display_names",
+        sql: "",
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -3542,6 +3547,9 @@ fn apply_migration_transaction(transaction: &Transaction<'_>, migration: &Migrat
     if migration.name == "brief_created_event_linkage" {
         backfill_brief_created_event_linkage(transaction)?;
     }
+    if migration.name == "agent_display_names" {
+        ensure_agent_display_names_schema(transaction)?;
+    }
     transaction.execute(
         "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
         (
@@ -3631,6 +3639,29 @@ fn table_exists_tx(transaction: &Transaction<'_>, table: &str) -> Result<bool> {
         |row| row.get(0),
     )?;
     Ok(count == 1)
+}
+
+fn ensure_agent_display_names_schema(transaction: &Transaction<'_>) -> Result<()> {
+    if !table_exists_tx(transaction, "agent_identities")? {
+        return Ok(());
+    }
+    let columns = transaction
+        .prepare("PRAGMA table_info(agent_identities)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    for (column, definition) in [("name", "name TEXT"), ("name_key", "name_key TEXT")] {
+        if !columns.iter().any(|existing| existing == column) {
+            transaction.execute_batch(&format!(
+                "ALTER TABLE agent_identities ADD COLUMN {definition};"
+            ))?;
+        }
+    }
+    transaction.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_identities_name_unique
+           ON agent_identities(name_key)
+           WHERE name_key IS NOT NULL;",
+    )?;
+    Ok(())
 }
 
 /// Adds the immutable `created_event_seq` linkage column and its uniqueness

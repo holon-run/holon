@@ -3072,6 +3072,7 @@ impl RuntimeHandle {
         };
         AgentIdentityView {
             agent_id: agent_id.to_string(),
+            name: None,
             kind,
             visibility: crate::types::AgentVisibility::Public,
             ownership: crate::types::AgentOwnership::SelfOwned,

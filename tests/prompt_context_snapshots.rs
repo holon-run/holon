@@ -56,6 +56,7 @@ const CONTEXT_CONTRACT: &str = r#"Interpret the memory block with this priority:
 fn sample_identity() -> AgentIdentityView {
     AgentIdentityView {
         agent_id: "default".into(),
+        name: None,
         kind: AgentKind::Default,
         visibility: AgentVisibility::Public,
         ownership: AgentOwnership::SelfOwned,

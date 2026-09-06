@@ -109,6 +109,7 @@ fn reason_for(outcome: ContextPlanOutcome) -> ContextPlanReason {
 fn baseline_identity() -> AgentIdentityView {
     AgentIdentityView {
         agent_id: "baseline-agent".into(),
+        name: None,
         kind: AgentKind::Default,
         visibility: AgentVisibility::Public,
         ownership: AgentOwnership::SelfOwned,

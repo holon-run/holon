@@ -1215,6 +1215,7 @@ mod tests {
     fn sample_identity() -> AgentIdentityView {
         AgentIdentityView {
             agent_id: "default".into(),
+            name: None,
             kind: AgentKind::Default,
             visibility: AgentVisibility::Public,
             ownership: AgentOwnership::SelfOwned,
@@ -1230,6 +1231,7 @@ mod tests {
     fn sample_child_identity() -> AgentIdentityView {
         AgentIdentityView {
             agent_id: "child_test".into(),
+            name: None,
             kind: AgentKind::Child,
             visibility: AgentVisibility::Private,
             ownership: AgentOwnership::ParentSupervised,

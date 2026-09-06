@@ -1223,6 +1223,7 @@ mod tests {
         AgentSummary {
             identity: AgentIdentityView {
                 agent_id: "default".into(),
+                name: None,
                 kind: AgentKind::Default,
                 visibility: AgentVisibility::Public,
                 ownership: AgentOwnership::SelfOwned,

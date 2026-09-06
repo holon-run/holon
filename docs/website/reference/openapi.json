@@ -186,6 +186,12 @@
                   "null"
                 ]
               },
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "ownership": {
                 "enum": [
                   "parent_supervised",
@@ -358,6 +364,12 @@
                   "null"
                 ]
               },
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "ownership": {
                 "enum": [
                   "parent_supervised",
@@ -495,6 +507,201 @@
           "identity"
         ],
         "title": "AgentDeletionStatusResponse",
+        "type": "object"
+      },
+      "AgentDetail": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deletion": {
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "attempts": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "cascade_private_children": {
+                "type": "boolean"
+              },
+              "completed_at": {
+                "format": "date-time",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "deletion_id": {
+                "type": "string"
+              },
+              "expected_identity_revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "last_error": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "phase": {
+                "enum": [
+                  "fence",
+                  "quiesce",
+                  "ingress",
+                  "scheduler",
+                  "workspace",
+                  "index",
+                  "home",
+                  "finalize"
+                ],
+                "type": "string"
+              },
+              "requested_by": {
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "pending",
+                  "running",
+                  "retryable_failed",
+                  "completed"
+                ],
+                "type": "string"
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": [
+              "deletion_id",
+              "agent_id",
+              "status",
+              "phase",
+              "requested_by",
+              "expected_identity_revision",
+              "cascade_private_children",
+              "attempts",
+              "created_at",
+              "updated_at"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "identity": {
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "delegated_from_task_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "is_default_agent": {
+                "type": "boolean"
+              },
+              "kind": {
+                "enum": [
+                  "default",
+                  "named",
+                  "child"
+                ],
+                "type": "string"
+              },
+              "lineage_parent_agent_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "ownership": {
+                "enum": [
+                  "parent_supervised",
+                  "self_owned"
+                ],
+                "type": "string"
+              },
+              "parent_agent_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "profile_preset": {
+                "enum": [
+                  "private_child",
+                  "public_named"
+                ],
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "active",
+                  "deleting",
+                  "deleted"
+                ],
+                "type": "string"
+              },
+              "visibility": {
+                "enum": [
+                  "public",
+                  "private"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "agent_id",
+              "kind",
+              "visibility",
+              "ownership",
+              "profile_preset",
+              "status",
+              "is_default_agent"
+            ],
+            "type": "object"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "identity",
+          "display_name",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "AgentDetail",
         "type": "object"
       },
       "AgentEventWindow": {
@@ -740,6 +947,12 @@
                           "type": "string"
                         },
                         "lineage_parent_agent_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "name": {
                           "type": [
                             "string",
                             "null"
@@ -1449,6 +1662,12 @@
                     "type": "string"
                   },
                   "lineage_parent_agent_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "name": {
                     "type": [
                       "string",
                       "null"
@@ -4756,6 +4975,11 @@
         "type": "object"
       },
       "RemoveTemplateRequest": {
+        "additionalProperties": true,
+        "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
+        "type": "object"
+      },
+      "RenameAgentRequest": {
         "additionalProperties": true,
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
         "type": "object"
@@ -11889,6 +12113,64 @@
         ]
       }
     },
+    "/api/control/agents/{agent_id}/detail": {
+      "get": {
+        "description": "Return the canonical Agent identity, lifecycle, profile, and deletion detail.",
+        "operationId": "agentDetail",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentDetail"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Agent detail",
+        "tags": [
+          "control"
+        ]
+      }
+    },
     "/api/control/agents/{agent_id}/model": {
       "post": {
         "description": "Set an agent model override and optional reasoning effort.",
@@ -12020,6 +12302,74 @@
           }
         ],
         "summary": "Clear agent model override",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/api/control/agents/{agent_id}/name": {
+      "patch": {
+        "description": "Update the public display name without changing the technical agent identity or lifecycle target.",
+        "operationId": "renameAgent",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenameAgentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentDetail"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Rename agent",
         "tags": [
           "control"
         ]

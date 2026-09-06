@@ -475,6 +475,14 @@ pub fn router(state: AppState) -> Router {
             "/control/agents/{agent_id}/create",
             post(control::create_agent),
         )
+        .route(
+            "/control/agents/{agent_id}/detail",
+            get(control::agent_detail),
+        )
+        .route(
+            "/control/agents/{agent_id}/name",
+            patch(control::rename_agent),
+        )
         .route("/control/agents/{agent_id}", delete(control::delete_agent))
         .route(
             "/control/agents/{agent_id}/delete-status",
@@ -1286,6 +1294,19 @@ pub(crate) fn agent_access_error(error: PublicAgentError) -> (StatusCode, Json<V
             HttpErrorEnvelope::new(reason)
                 .code("agent_delete_forbidden")
                 .extension("agent_id", agent_id),
+        ),
+        PublicAgentError::InvalidName { agent_id, reason } => http_error(
+            StatusCode::BAD_REQUEST,
+            HttpErrorEnvelope::new(reason)
+                .code("agent_name_invalid")
+                .extension("agent_id", agent_id),
+        ),
+        PublicAgentError::NameConflict { agent_id, name } => http_error(
+            StatusCode::CONFLICT,
+            HttpErrorEnvelope::new(format!("agent name {:?} is already in use", name))
+                .code("agent_name_conflict")
+                .extension("agent_id", agent_id)
+                .extension("name", name),
         ),
         PublicAgentError::Stopped { agent_id } => stopped_agent_conflict(
             format!("agent {} is stopped; start first", agent_id),

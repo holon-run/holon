@@ -470,7 +470,13 @@ pub async fn create_agent(
     let provided_trust = request.authority_class;
     let created = state
         .host
-        .create_public_named_agent(&agent_id, request.template.as_deref(), None, None)
+        .create_public_named_agent_with_name(
+            &agent_id,
+            request.template.as_deref(),
+            None,
+            None,
+            request.name.as_deref(),
+        )
         .await
         .map_err(error_response)?;
     let runtime = state
@@ -493,6 +499,33 @@ pub async fn create_agent(
         )
         .map_err(error_response)?;
     Ok(Json(created))
+}
+
+pub async fn agent_detail(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let detail = state
+        .host
+        .public_agent_detail(&agent_id)
+        .map_err(agent_access_error)?;
+    Ok(Json(detail))
+}
+
+pub async fn rename_agent(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<RenameAgentRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let detail = state
+        .host
+        .rename_public_agent(&agent_id, &request.name, "authenticated_operator_control")
+        .map_err(agent_access_error)?;
+    Ok(Json(detail))
 }
 
 pub async fn delete_agent(

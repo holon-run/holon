@@ -96,6 +96,10 @@ impl RuntimeRegistry {
 
     pub(crate) fn append_agent_identity(&self, record: &AgentIdentityRecord) -> Result<()> {
         self.inner.host_storage.append_agent_identity(record)?;
+        self.cache_agent_identity(record)
+    }
+
+    pub(crate) fn cache_agent_identity(&self, record: &AgentIdentityRecord) -> Result<()> {
         self.inner
             .agent_identities
             .write()

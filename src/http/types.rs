@@ -15,6 +15,12 @@ pub struct SearchRequest {
     pub types: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RenameAgentRequest {
+    pub name: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct DeleteAgentRequest {
@@ -479,4 +485,6 @@ pub struct ClearAgentModelRequest {
 pub struct CreateAgentRequest {
     pub authority_class: Option<AuthorityClass>,
     pub template: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
 }

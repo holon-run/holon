@@ -170,6 +170,7 @@ pub(crate) async fn host_backed_test_runtime() -> (TempDir, RuntimeHost, Runtime
 pub(crate) fn private_child_identity(agent_id: &str) -> AgentIdentityView {
     AgentIdentityView {
         agent_id: agent_id.into(),
+        name: None,
         kind: AgentKind::Child,
         visibility: AgentVisibility::Private,
         ownership: AgentOwnership::ParentSupervised,
@@ -186,6 +187,7 @@ pub(crate) fn test_effective_prompt() -> EffectivePrompt {
     EffectivePrompt {
         identity: AgentIdentityView {
             agent_id: "default".into(),
+            name: None,
             kind: AgentKind::Default,
             visibility: AgentVisibility::Public,
             ownership: AgentOwnership::SelfOwned,

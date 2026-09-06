@@ -688,6 +688,28 @@
   },
   {
     "method": "get",
+    "path": "/api/control/agents/{agent_id}/detail",
+    "handler": "agent_detail",
+    "operation_id": "agentDetail",
+    "tag": "control",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
     "path": "/api/control/agents/{agent_id}/scheduler-repair",
     "handler": "scheduler_repair_inspect",
     "operation_id": "inspectSchedulerRepair",
@@ -1012,6 +1034,28 @@
     "parameters": [],
     "request_schema": null,
     "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "patch",
+    "path": "/api/control/agents/{agent_id}/name",
+    "handler": "rename_agent",
+    "operation_id": "renameAgent",
+    "tag": "control",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "RenameAgentRequest",
+    "request_strict": false,
     "response_content_types": [
       "application/json"
     ],

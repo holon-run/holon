@@ -1306,6 +1306,7 @@ fn current_input_summary_extracts_body_from_context_section() {
     let prompt = EffectivePrompt {
         identity: AgentIdentityView {
             agent_id: "default".into(),
+            name: None,
             kind: AgentKind::Default,
             visibility: AgentVisibility::Public,
             ownership: AgentOwnership::SelfOwned,

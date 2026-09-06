@@ -393,8 +393,16 @@ impl RuntimeHandle {
             .storage
             .read_agent()?
             .unwrap_or_else(|| AgentState::new(agent_id.to_string()));
+        let name = match self.inner.host_bridge.as_ref() {
+            Some(bridge) => bridge
+                .identity_for_agent(agent_id)
+                .await?
+                .and_then(|identity| identity.name),
+            None => None,
+        };
         let identity = AgentIdentityView {
             agent_id: agent_id.to_string(),
+            name,
             kind: AgentKind::Child,
             visibility: crate::types::AgentVisibility::Private,
             ownership: crate::types::AgentOwnership::ParentSupervised,

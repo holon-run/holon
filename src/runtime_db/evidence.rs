@@ -426,6 +426,7 @@ pub(crate) fn upsert_agent_identity_tx(
     // can never regain availability, not even through a stale replay.
     reserve_agent_identity_tx(tx, record)?;
     let payload_json = serde_json::to_string(record)?;
+    let name_key = record.name.as_deref().map(crate::types::agent_name_key);
     let kind = enum_string(&record.kind)?;
     let visibility = enum_string(&record.visibility)?;
     let ownership = record.ownership.as_ref().map(enum_string).transpose()?;
@@ -437,11 +438,13 @@ pub(crate) fn upsert_agent_identity_tx(
     let status = enum_string(&record.status)?;
     tx.execute(
         "INSERT INTO agent_identities (
-            agent_id, kind, visibility, ownership, profile_preset, status,
+            agent_id, name, name_key, kind, visibility, ownership, profile_preset, status,
             parent_agent_id, lineage_parent_agent_id, delegated_from_task_id,
             created_at, updated_at, archived_at, payload_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
          ON CONFLICT(agent_id) DO UPDATE SET
+            name = excluded.name,
+            name_key = excluded.name_key,
             kind = excluded.kind,
             visibility = excluded.visibility,
             ownership = excluded.ownership,
@@ -457,6 +460,8 @@ pub(crate) fn upsert_agent_identity_tx(
          WHERE excluded.updated_at >= agent_identities.updated_at",
         params![
             record.agent_id,
+            record.name,
+            name_key,
             kind,
             visibility,
             ownership,

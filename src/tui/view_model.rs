@@ -40,7 +40,11 @@ impl StatusbarViewModel {
 }
 
 pub(super) fn render_header_line(agent: &AgentSummary) -> String {
-    format!("{}  {}", agent.identity.agent_id, agent_status_label(agent))
+    format!(
+        "{}  {}",
+        agent.identity.display_name(),
+        agent_status_label(agent)
+    )
 }
 
 fn agent_status_label(agent: &AgentSummary) -> &'static str {

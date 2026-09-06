@@ -5,6 +5,7 @@ use serde::{de, Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use unicode_casefold::UnicodeCaseFold;
 
 use crate::config::ModelRouteRef;
 use crate::domain::scheduler::{ScenarioMode, SchedulerScenarioClass};
@@ -419,6 +420,8 @@ pub enum AgentRegistryStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct AgentIdentityRecord {
     pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub kind: AgentKind,
     pub visibility: AgentVisibility,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -459,6 +462,9 @@ pub enum AgentCreateStage {
 pub struct AgentCreateReceipt {
     pub receipt_id: String,
     pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub display_name: String,
     pub preset: AgentProfilePreset,
     pub stage: AgentCreateStage,
     pub lifecycle: AgentRegistryStatus,
@@ -469,6 +475,38 @@ pub struct AgentCreateReceipt {
 pub struct AgentCreateResult {
     pub identity: AgentIdentityRecord,
     pub receipt: AgentCreateReceipt,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct AgentDetail {
+    pub identity: AgentIdentityView,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub display_name: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deletion: Option<AgentDeletionJob>,
+}
+
+pub fn normalize_agent_name(value: &str) -> anyhow::Result<String> {
+    let name = value.trim();
+    anyhow::ensure!(!name.is_empty(), "agent name must not be empty");
+    anyhow::ensure!(
+        name.chars().count() <= 64,
+        "agent name must be at most 64 characters"
+    );
+    anyhow::ensure!(
+        !name
+            .chars()
+            .any(|character| { character.is_control() || matches!(character, '/' | '\\' | ':') }),
+        "agent name must not contain control characters or path separators"
+    );
+    Ok(name.to_string())
+}
+
+pub fn agent_name_key(value: &str) -> String {
+    value.case_fold().collect()
 }
 
 impl AgentIdentityRecord {
@@ -484,6 +522,7 @@ impl AgentIdentityRecord {
         let now = Utc::now();
         Self {
             agent_id: agent_id.into(),
+            name: None,
             kind,
             visibility,
             ownership: Some(ownership),
@@ -498,6 +537,10 @@ impl AgentIdentityRecord {
             updated_at: now,
             deleted_at: None,
         }
+    }
+
+    pub fn display_name(&self) -> String {
+        self.name.clone().unwrap_or_else(|| self.agent_id.clone())
     }
 
     pub fn with_lineage_parent_agent_id(mut self, lineage_parent_agent_id: Option<String>) -> Self {
@@ -602,6 +645,8 @@ pub struct AgentDeletionJob {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct AgentIdentityView {
     pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub kind: AgentKind,
     pub visibility: AgentVisibility,
     pub ownership: AgentOwnership,
@@ -620,6 +665,7 @@ impl AgentIdentityView {
     pub fn from_record(record: &AgentIdentityRecord, default_agent_id: &str) -> Self {
         Self {
             agent_id: record.agent_id.clone(),
+            name: record.name.clone(),
             kind: record.kind,
             visibility: record.visibility,
             ownership: record.ownership(),
@@ -630,6 +676,10 @@ impl AgentIdentityView {
             lineage_parent_agent_id: record.lineage_parent_agent_id.clone(),
             delegated_from_task_id: record.delegated_from_task_id.clone(),
         }
+    }
+
+    pub fn display_name(&self) -> &str {
+        self.name.as_deref().unwrap_or(&self.agent_id)
     }
 
     pub fn contract_badge(&self) -> String {

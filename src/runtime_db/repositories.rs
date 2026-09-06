@@ -418,6 +418,65 @@ impl AgentIdentityRepository<'_> {
             .map(|payload| decode_agent_identity_payload(&payload))
             .transpose()
     }
+
+    pub fn rename(
+        &self,
+        agent_id: &str,
+        requested_name: &str,
+        actor: &str,
+    ) -> Result<AgentIdentityRecord> {
+        let name = normalize_agent_name(requested_name)?;
+        let name_key = agent_name_key(&name);
+        self.db.transaction(|tx| {
+            let payload = tx
+                .query_row(
+                    "SELECT payload_json FROM agent_identities WHERE agent_id = ?1",
+                    [agent_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .ok_or_else(|| anyhow!("agent {agent_id} not found"))?;
+            let mut identity = decode_agent_identity_payload(&payload)?;
+            anyhow::ensure!(
+                identity.status == AgentRegistryStatus::Active,
+                "agent {agent_id} cannot be renamed while it is {:?}",
+                identity.status
+            );
+            let conflict = tx
+                .query_row(
+                    "SELECT agent_id FROM agent_identities
+                     WHERE name_key = ?1 AND agent_id <> ?2",
+                    params![name_key, agent_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            if let Some(conflict) = conflict {
+                return Err(anyhow!(
+                    "agent_name_conflict: name {name:?} is already used by agent {conflict}"
+                ));
+            }
+            let previous_name = identity.name.clone();
+            let now = std::cmp::max(
+                Utc::now(),
+                identity.updated_at + chrono::Duration::nanoseconds(1),
+            );
+            identity.name = Some(name.clone());
+            identity.revision = identity.revision.saturating_add(1);
+            identity.updated_at = now;
+            upsert_agent_identity_tx(tx, &identity)?;
+            let event = AuditEvent::legacy(
+                "agent_renamed",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "actor": actor,
+                    "previous_name": previous_name,
+                    "name": identity.name,
+                }),
+            );
+            append_audit_event_tx(tx, Some(agent_id), &event)?;
+            Ok(identity)
+        })
+    }
 }
 
 impl AgentDeletionRepository<'_> {
