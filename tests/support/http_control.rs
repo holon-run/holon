@@ -156,6 +156,36 @@ pub async fn control_agent_delete_rejects_default_and_reports_unknown() -> Resul
     Ok(())
 }
 
+pub async fn control_agent_name_validation_and_default_rename_errors_are_typed() -> Result<()> {
+    let (_host, base, server) = spawn_server().await?;
+    let client = Client::new();
+
+    let invalid_create = client
+        .post(format!("{base}/api/control/agents/invalid-name/create"))
+        .json(&serde_json::json!({ "name": "   " }))
+        .send()
+        .await?;
+    assert_eq!(invalid_create.status(), reqwest::StatusCode::BAD_REQUEST);
+    assert_eq!(
+        invalid_create.json::<serde_json::Value>().await?["code"],
+        "agent_name_invalid"
+    );
+
+    let default_rename = client
+        .patch(format!("{base}/api/control/agents/default/name"))
+        .json(&serde_json::json!({ "name": "Renamed Default" }))
+        .send()
+        .await?;
+    assert_eq!(default_rename.status(), reqwest::StatusCode::CONFLICT);
+    assert_eq!(
+        default_rename.json::<serde_json::Value>().await?["code"],
+        "agent_rename_forbidden"
+    );
+
+    server.abort();
+    Ok(())
+}
+
 #[cfg(unix)]
 pub async fn control_prompt_is_open_over_unix_socket_auto() -> Result<()> {
     let config = test_config();

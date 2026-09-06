@@ -1295,6 +1295,12 @@ pub(crate) fn agent_access_error(error: PublicAgentError) -> (StatusCode, Json<V
                 .code("agent_delete_forbidden")
                 .extension("agent_id", agent_id),
         ),
+        PublicAgentError::RenameForbidden { agent_id, reason } => http_error(
+            StatusCode::CONFLICT,
+            HttpErrorEnvelope::new(reason)
+                .code("agent_rename_forbidden")
+                .extension("agent_id", agent_id),
+        ),
         PublicAgentError::InvalidName { agent_id, reason } => http_error(
             StatusCode::BAD_REQUEST,
             HttpErrorEnvelope::new(reason)

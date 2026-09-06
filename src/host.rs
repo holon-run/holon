@@ -226,6 +226,7 @@ pub enum PublicAgentError {
     Deleting { agent_id: String },
     Deleted { agent_id: String },
     DeleteForbidden { agent_id: String, reason: String },
+    RenameForbidden { agent_id: String, reason: String },
     InvalidName { agent_id: String, reason: String },
     NameConflict { agent_id: String, name: String },
     Private { agent_id: String },
@@ -245,6 +246,9 @@ impl std::fmt::Display for PublicAgentError {
             Self::Deleted { agent_id } => write!(f, "agent {} was deleted", agent_id),
             Self::DeleteForbidden { agent_id, reason } => {
                 write!(f, "agent {} cannot be deleted: {}", agent_id, reason)
+            }
+            Self::RenameForbidden { agent_id, reason } => {
+                write!(f, "agent {} cannot be renamed: {}", agent_id, reason)
             }
             Self::InvalidName { agent_id, reason } => {
                 write!(f, "agent {} has an invalid name: {}", agent_id, reason)
@@ -440,6 +444,18 @@ fn named_agent_name_already_exists_error(agent_id: &str, name: &str) -> anyhow::
             "preset": AgentProfilePreset::PublicNamed,
         }))
         .with_recovery_hint("choose a different name for the new public named agent"),
+    )
+}
+
+fn named_agent_invalid_name_error(agent_id: &str, error: anyhow::Error) -> anyhow::Error {
+    anyhow::Error::from(
+        ToolError::new("agent_name_invalid", error.to_string())
+            .with_domain(crate::runtime_error::RuntimeErrorDomain::Validation)
+            .with_details(json!({
+                "agent_id": agent_id,
+                "preset": AgentProfilePreset::PublicNamed,
+            }))
+            .with_recovery_hint("choose a valid name for the new public named agent"),
     )
 }
 
@@ -1840,7 +1856,7 @@ impl RuntimeHost {
             });
         }
         if agent_id == self.config().default_agent_id {
-            return Err(PublicAgentError::DeleteForbidden {
+            return Err(PublicAgentError::RenameForbidden {
                 agent_id: agent_id.to_string(),
                 reason: "the configured default agent cannot be renamed".into(),
             });
@@ -2249,7 +2265,12 @@ impl RuntimeHost {
             }
             return Ok((existing, false));
         }
-        let normalized_name = requested_name.map(normalize_agent_name).transpose()?;
+        let normalized_name = requested_name
+            .map(|name| {
+                normalize_agent_name(name)
+                    .map_err(|error| named_agent_invalid_name_error(agent_id, error))
+            })
+            .transpose()?;
         if let Some(template) = template {
             let agent_home = self.agent_data_dir(agent_id);
             let user_home = self.config().home_dir.clone();
