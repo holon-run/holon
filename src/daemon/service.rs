@@ -76,6 +76,8 @@ pub struct RuntimeStatusResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuntimeStartupSurface {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_home_dir: Option<PathBuf>,
     pub home_dir: PathBuf,
     pub socket_path: PathBuf,
     pub workspace_dir: PathBuf,

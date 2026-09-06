@@ -64,6 +64,7 @@ fn test_config() -> AppConfig {
         default_agent_id: "default".into(),
         http_addr: "127.0.0.1:0".into(),
         callback_base_url: "http://127.0.0.1:0".into(),
+        user_home_dir: None,
         home_dir: home.path().to_path_buf(),
         data_dir: home.path().to_path_buf(),
         socket_path: home.path().join("run").join("holon.sock"),
@@ -635,6 +636,7 @@ fn effective_config_mismatch_summary_lists_actionable_differences() {
         executable_path: std::env::current_exe().unwrap(),
         activity: None,
         startup_surface: Some(RuntimeStartupSurface {
+            user_home_dir: expected.user_home_dir.clone(),
             home_dir: expected.home_dir.clone(),
             socket_path: expected.socket_path.clone(),
             workspace_dir: expected.workspace_dir.clone(),

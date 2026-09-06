@@ -46,6 +46,7 @@ pub struct AppConfig {
     pub default_agent_id: String,
     pub http_addr: String,
     pub callback_base_url: String,
+    pub user_home_dir: Option<PathBuf>,
     pub home_dir: PathBuf,
     pub data_dir: PathBuf,
     pub socket_path: PathBuf,
@@ -114,6 +115,7 @@ impl AppConfig {
         reloaded.default_agent_id = self.default_agent_id.clone();
         reloaded.http_addr = self.http_addr.clone();
         reloaded.callback_base_url = self.callback_base_url.clone();
+        reloaded.user_home_dir = self.user_home_dir.clone();
         reloaded.home_dir = self.home_dir.clone();
         reloaded.data_dir = self.data_dir.clone();
         reloaded.socket_path = self.socket_path.clone();
@@ -156,6 +158,7 @@ impl AppConfig {
         mode: ConfigLoadMode,
     ) -> Result<Self> {
         let settings_env = load_settings_env().unwrap_or_default();
+        let user_home_dir = default_user_home_dir();
         let home_dir = home_override.unwrap_or_else(|| {
             env::var("HOLON_HOME")
                 .map(PathBuf::from)
@@ -312,6 +315,7 @@ impl AppConfig {
             default_agent_id,
             http_addr,
             callback_base_url,
+            user_home_dir,
             home_dir,
             data_dir,
             socket_path,
@@ -500,6 +504,23 @@ pub fn load_settings_env() -> Result<HashMap<String, String>> {
 pub fn default_holon_home() -> PathBuf {
     let home = env::var("HOME").unwrap_or_else(|_| ".".into());
     Path::new(&home).join(".holon")
+}
+
+pub fn default_user_home_dir() -> Option<PathBuf> {
+    env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+        .or_else(|| {
+            env::var_os("USERPROFILE")
+                .map(PathBuf::from)
+                .filter(|path| !path.as_os_str().is_empty())
+        })
+        .or_else(|| {
+            let drive = env::var_os("HOMEDRIVE")?;
+            let path = env::var_os("HOMEPATH")?;
+            let joined = PathBuf::from(drive).join(path);
+            (!joined.as_os_str().is_empty()).then_some(joined)
+        })
 }
 
 pub fn default_codex_home() -> PathBuf {

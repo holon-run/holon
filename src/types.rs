@@ -939,6 +939,16 @@ pub struct AgentsMdSource {
     pub content: String,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentsMdLoadStatus {
+    Loaded,
+    NotFound,
+    RootUnavailable,
+    #[default]
+    NotEvaluated,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct LoadedAgentsMd {
     #[serde(
@@ -947,10 +957,16 @@ pub struct LoadedAgentsMd {
         skip_serializing_if = "Option::is_none"
     )]
     pub user_global_source: Option<AgentsMdSource>,
+    #[serde(default)]
+    pub user_global_status: AgentsMdLoadStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_source: Option<AgentsMdSource>,
+    #[serde(default)]
+    pub agent_status: AgentsMdLoadStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_source: Option<AgentsMdSource>,
+    #[serde(default)]
+    pub workspace_status: AgentsMdLoadStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -978,10 +994,16 @@ pub struct LoadedAgentsMdView {
         skip_serializing_if = "Option::is_none"
     )]
     pub user_global_source: Option<AgentsMdSourceView>,
+    #[serde(default)]
+    pub user_global_status: AgentsMdLoadStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_source: Option<AgentsMdSourceView>,
+    #[serde(default)]
+    pub agent_status: AgentsMdLoadStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_source: Option<AgentsMdSourceView>,
+    #[serde(default)]
+    pub workspace_status: AgentsMdLoadStatus,
 }
 
 impl From<&LoadedAgentsMd> for LoadedAgentsMdView {
@@ -991,12 +1013,35 @@ impl From<&LoadedAgentsMd> for LoadedAgentsMdView {
                 .user_global_source
                 .as_ref()
                 .map(AgentsMdSourceView::from),
+            user_global_status: effective_agents_md_status(
+                value.user_global_source.as_ref(),
+                value.user_global_status,
+            ),
             agent_source: value.agent_source.as_ref().map(AgentsMdSourceView::from),
+            agent_status: effective_agents_md_status(
+                value.agent_source.as_ref(),
+                value.agent_status,
+            ),
             workspace_source: value
                 .workspace_source
                 .as_ref()
                 .map(AgentsMdSourceView::from),
+            workspace_status: effective_agents_md_status(
+                value.workspace_source.as_ref(),
+                value.workspace_status,
+            ),
         }
+    }
+}
+
+fn effective_agents_md_status(
+    source: Option<&AgentsMdSource>,
+    status: AgentsMdLoadStatus,
+) -> AgentsMdLoadStatus {
+    if source.is_some() {
+        AgentsMdLoadStatus::Loaded
+    } else {
+        status
     }
 }
 

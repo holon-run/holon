@@ -2367,6 +2367,15 @@ pub async fn runtime_status_route_reports_runtime_metadata() -> Result<()> {
         config.home_dir.display().to_string()
     );
     assert_eq!(
+        payload["startup_surface"]["user_home_dir"],
+        serde_json::to_value(
+            config
+                .user_home_dir
+                .as_ref()
+                .map(|path| path.display().to_string())
+        )?
+    );
+    assert_eq!(
         payload["startup_surface"]["socket_path"],
         config.socket_path.display().to_string()
     );

@@ -63,6 +63,7 @@ fn model_route_reasoning_effort_override(
 /// Stored behind an `ArcSwap` so that config reloads take effect on the next turn
 /// without disturbing an in-progress turn.
 pub(super) struct ConfigSnapshot {
+    pub user_home_dir: Option<PathBuf>,
     pub model_catalog: RuntimeModelCatalog,
     pub model_availability: Vec<ResolvedModelAvailability>,
     pub base_context_config: ContextConfig,
@@ -94,6 +95,7 @@ impl ConfigSnapshot {
             ..ContextConfig::default()
         };
         Ok(Self {
+            user_home_dir: config.user_home_dir.clone(),
             model_catalog,
             model_availability,
             base_context_config,
@@ -184,6 +186,7 @@ impl RuntimeHandle {
         context_config: ContextConfig,
     ) -> Result<Self> {
         let base_context_config = context_config.clone();
+        let user_home_dir = crate::config::default_user_home_dir();
         Self::new_internal(
             agent_id,
             data_dir,
@@ -193,6 +196,7 @@ impl RuntimeHandle {
             default_agent_id,
             base_context_config,
             context_config,
+            user_home_dir,
             RuntimeModelCatalog::default(),
             Vec::new(),
             crate::tool::helpers::DEFAULT_TOOL_OUTPUT_TOKENS,
@@ -221,6 +225,7 @@ impl RuntimeHandle {
             String::new(),
             ContextConfig::default(),
             ContextConfig::default(),
+            None,
             RuntimeModelCatalog::default(),
             Vec::new(),
             crate::tool::helpers::DEFAULT_TOOL_OUTPUT_TOKENS,
@@ -246,6 +251,7 @@ impl RuntimeHandle {
         clock: Arc<dyn Clock>,
     ) -> Result<Self> {
         let base_context_config = context_config.clone();
+        let user_home_dir = crate::config::default_user_home_dir();
         Self::new_internal(
             agent_id,
             data_dir,
@@ -255,6 +261,7 @@ impl RuntimeHandle {
             default_agent_id,
             base_context_config,
             context_config,
+            user_home_dir,
             RuntimeModelCatalog::default(),
             Vec::new(),
             crate::tool::helpers::DEFAULT_TOOL_OUTPUT_TOKENS,
@@ -276,6 +283,7 @@ impl RuntimeHandle {
         provider: Arc<dyn AgentProvider>,
         default_agent_id: String,
         context_config: ContextConfig,
+        user_home_dir: Option<PathBuf>,
         runtime_db: RuntimeDb,
         host_bridge: RuntimeHostBridge,
         model_catalog: RuntimeModelCatalog,
@@ -291,6 +299,7 @@ impl RuntimeHandle {
             default_agent_id,
             base_context_config,
             context_config,
+            user_home_dir,
             model_catalog,
             Vec::new(),
             crate::tool::helpers::DEFAULT_TOOL_OUTPUT_TOKENS,
@@ -336,6 +345,7 @@ impl RuntimeHandle {
             default_agent_id,
             base_context_config,
             resolved_context_config,
+            config.user_home_dir.clone(),
             model_catalog,
             model_availability,
             config.default_tool_output_tokens as u64,
@@ -358,6 +368,7 @@ impl RuntimeHandle {
         default_agent_id: String,
         base_context_config: ContextConfig,
         context_config: ContextConfig,
+        user_home_dir: Option<PathBuf>,
         model_catalog: RuntimeModelCatalog,
         model_availability: Vec<ResolvedModelAvailability>,
         default_tool_output_tokens: u64,
@@ -375,6 +386,7 @@ impl RuntimeHandle {
             .transpose()?
             .flatten();
         let config_snapshot = Arc::new(ConfigSnapshot {
+            user_home_dir,
             model_catalog: model_catalog.clone(),
             model_availability: model_availability.clone(),
             base_context_config: base_context_config.clone(),
@@ -641,7 +653,9 @@ impl RuntimeHandle {
     /// the old snapshot continues unaffected; the next turn picks up the
     /// new snapshot automatically.
     pub(crate) async fn reload_config(&self, config: &AppConfig) -> Result<()> {
-        let new_snapshot = Arc::new(ConfigSnapshot::from_config(config)?);
+        let mut config = config.clone();
+        config.user_home_dir = self.inner.config_snapshot.load().user_home_dir.clone();
+        let new_snapshot = Arc::new(ConfigSnapshot::from_config(&config)?);
         // Atomically swap the snapshot.
         self.inner.config_snapshot.store(new_snapshot);
         // Rebuild provider + context_config for current state.

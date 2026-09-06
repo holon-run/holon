@@ -3056,12 +3056,7 @@ impl RuntimeHandle {
     }
 
     fn user_home(&self) -> Option<PathBuf> {
-        if let Some(provider_reconfig) =
-            self.inner.config_snapshot.load().provider_reconfig.as_ref()
-        {
-            return Some(provider_reconfig.config.home_dir.clone());
-        }
-        std::env::var_os("HOME").map(PathBuf::from)
+        self.inner.config_snapshot.load().user_home_dir.clone()
     }
 
     fn fallback_identity_view(&self, agent_id: &str) -> AgentIdentityView {

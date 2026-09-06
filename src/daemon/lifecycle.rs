@@ -1095,6 +1095,20 @@ pub(crate) fn effective_config_mismatch_summary(
     if let Some(startup) = &status.startup_surface {
         push_diff(
             &mut differences,
+            "user_home_dir",
+            config
+                .user_home_dir
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "none".into()),
+            startup
+                .user_home_dir
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "none".into()),
+        );
+        push_diff(
+            &mut differences,
             "workspace_dir",
             config.workspace_dir.display().to_string(),
             startup.workspace_dir.display().to_string(),

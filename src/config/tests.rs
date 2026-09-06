@@ -137,6 +137,7 @@ fn test_app_config(default_model: &str, fallback_models: &[&str]) -> TestAppConf
         default_agent_id: "default".into(),
         http_addr: "127.0.0.1:0".into(),
         callback_base_url: "http://127.0.0.1:0".into(),
+        user_home_dir: None,
         home_dir: home_path.clone(),
         data_dir: home_path.clone(),
         socket_path: home_path.join("run").join("holon.sock"),
@@ -561,6 +562,25 @@ fn default_holon_home_uses_home_directory() {
         default_holon_home(),
         Path::new("/tmp/holon-home-test/.holon")
     );
+}
+
+#[test]
+fn app_config_keeps_user_home_separate_from_holon_home() {
+    let _home_guard = EnvVarGuard::set("HOME", "/tmp/holon-user-home-test");
+    let holon_home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        holon_home.path().join("config.json"),
+        r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+    )
+    .unwrap();
+
+    let config = AppConfig::load_with_home(Some(holon_home.path().to_path_buf())).unwrap();
+
+    assert_eq!(
+        config.user_home_dir,
+        Some(PathBuf::from("/tmp/holon-user-home-test"))
+    );
+    assert_eq!(config.home_dir, holon_home.path());
 }
 
 #[test]

@@ -184,6 +184,7 @@ impl TestConfigBuilder {
             default_agent_id: "default".into(),
             http_addr: self.http_addr,
             callback_base_url: "http://127.0.0.1:0".into(),
+            user_home_dir: None,
             home_dir: data_dir.clone(),
             data_dir: data_dir.clone(),
             socket_path: data_dir.join("run").join("holon.sock"),

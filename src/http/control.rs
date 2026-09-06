@@ -433,6 +433,7 @@ pub(super) fn runtime_surfaces(
 ) -> (crate::daemon::RuntimeStartupSurface, RuntimeConfigSurface) {
     let config = state.host.config();
     let startup_surface = crate::daemon::RuntimeStartupSurface {
+        user_home_dir: config.user_home_dir.clone(),
         home_dir: config.home_dir.clone(),
         socket_path: config.socket_path.clone(),
         workspace_dir: config.workspace_dir.clone(),

@@ -186,6 +186,7 @@ mod tests {
             default_agent_id: "default".into(),
             http_addr: "127.0.0.1:0".into(),
             callback_base_url: "http://127.0.0.1:0".into(),
+            user_home_dir: None,
             home_dir: home.clone(),
             data_dir: home.clone(),
             socket_path: home.join("holon.sock"),

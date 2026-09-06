@@ -30,9 +30,10 @@ use crate::{
     system::{execution_policy_summary_lines, ExecutionSnapshot},
     tool::{ApplyPatchSurface, ToolSpec},
     types::{
-        AgentIdentityView, AgentKind, AgentMemorySource, AgentState, AgentsMdKind, AgentsMdSource,
-        ContinuationResolution, ExternalTriggerRecord, LoadedAgentMemory, LoadedAgentsMd,
-        MessageBody, MessageEnvelope, MessageOrigin, SkillsRuntimeView,
+        AgentIdentityView, AgentKind, AgentMemorySource, AgentState, AgentsMdKind,
+        AgentsMdLoadStatus, AgentsMdSource, ContinuationResolution, ExternalTriggerRecord,
+        LoadedAgentMemory, LoadedAgentsMd, MessageBody, MessageEnvelope, MessageOrigin,
+        SkillsRuntimeView,
     },
 };
 
@@ -307,15 +308,24 @@ impl EffectivePrompt {
         output.extend(execution_policy_summary_lines(&self.execution));
         output.push(format!(
             "User-global AGENTS.md: {}",
-            describe_agents_md_source(self.loaded_agents_md.user_global_source.as_ref())
+            describe_agents_md_source(
+                self.loaded_agents_md.user_global_source.as_ref(),
+                self.loaded_agents_md.user_global_status,
+            )
         ));
         output.push(format!(
             "Agent AGENTS.md: {}",
-            describe_agents_md_source(self.loaded_agents_md.agent_source.as_ref())
+            describe_agents_md_source(
+                self.loaded_agents_md.agent_source.as_ref(),
+                self.loaded_agents_md.agent_status,
+            )
         ));
         output.push(format!(
             "Workspace AGENTS.md: {}",
-            describe_agents_md_source(self.loaded_agents_md.workspace_source.as_ref())
+            describe_agents_md_source(
+                self.loaded_agents_md.workspace_source.as_ref(),
+                self.loaded_agents_md.workspace_status,
+            )
         ));
         output.push("".to_string());
         output.push("System sections:".to_string());
@@ -1073,9 +1083,17 @@ fn workspace_agents_md_section(source: Option<&AgentsMdSource>) -> Option<Prompt
     })
 }
 
-fn describe_agents_md_source(source: Option<&AgentsMdSource>) -> String {
+fn describe_agents_md_source(
+    source: Option<&AgentsMdSource>,
+    status: AgentsMdLoadStatus,
+) -> String {
     let Some(source) = source else {
-        return "none".to_string();
+        return match status {
+            AgentsMdLoadStatus::Loaded => "loaded (source unavailable)".to_string(),
+            AgentsMdLoadStatus::NotFound => "not found".to_string(),
+            AgentsMdLoadStatus::RootUnavailable => "root unavailable".to_string(),
+            AgentsMdLoadStatus::NotEvaluated => "not evaluated".to_string(),
+        };
     };
     let kind = match source.kind {
         AgentsMdKind::AgentsMd => "AGENTS.md",
@@ -2051,6 +2069,7 @@ mod tests {
                     path: PathBuf::from("/repo/AGENTS.md"),
                     content: "Workspace guidance".into(),
                 }),
+                ..LoadedAgentsMd::default()
             },
             &LoadedAgentMemory::default(),
             &SkillsRuntimeView::default(),
@@ -2342,6 +2361,7 @@ mod tests {
                     path: PathBuf::from("/repo/AGENTS.md"),
                     content: "workspace guidance".into(),
                 }),
+                ..LoadedAgentsMd::default()
             },
             &LoadedAgentMemory::default(),
             &SkillsRuntimeView {
@@ -2429,6 +2449,7 @@ mod tests {
                     path: PathBuf::from("/repo/CLAUDE.md"),
                     content: "workspace guidance".into(),
                 }),
+                ..LoadedAgentsMd::default()
             },
             loaded_agent_memory: LoadedAgentMemory::default(),
             cache_identity: sample_cache_identity(),
@@ -2475,7 +2496,7 @@ mod tests {
         assert!(dump.contains("Workspace anchor: /repo"));
         assert!(dump.contains("Execution root: /repo"));
         assert!(dump.contains("Cwd: /repo/src"));
-        assert!(dump.contains("User-global AGENTS.md: none"));
+        assert!(dump.contains("User-global AGENTS.md: not evaluated"));
         assert!(dump.contains("Agent AGENTS.md: /tmp/agent-home/AGENTS.md (AGENTS.md)"));
         assert!(dump.contains("Workspace AGENTS.md: /repo/CLAUDE.md (CLAUDE.md fallback)"));
         assert!(dump.contains("Section inventory:"));
@@ -2571,6 +2592,7 @@ mod tests {
                     content: "very secret agent guidance".into(),
                 }),
                 workspace_source: None,
+                ..LoadedAgentsMd::default()
             },
             loaded_agent_memory: LoadedAgentMemory::default(),
             cache_identity: sample_cache_identity(),

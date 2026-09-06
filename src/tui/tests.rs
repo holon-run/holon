@@ -49,6 +49,7 @@ fn test_config() -> AppConfig {
         default_agent_id: "default".into(),
         http_addr: "127.0.0.1:0".into(),
         callback_base_url: "http://127.0.0.1:0".into(),
+        user_home_dir: None,
         home_dir: temp.clone(),
         data_dir: temp.clone(),
         socket_path: temp.join("run").join("holon.sock"),

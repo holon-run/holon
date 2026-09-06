@@ -1,8 +1,10 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
-use crate::types::{AgentsMdKind, AgentsMdScope, AgentsMdSource, LoadedAgentsMd};
+use crate::types::{
+    AgentsMdKind, AgentsMdLoadStatus, AgentsMdScope, AgentsMdSource, LoadedAgentsMd,
+};
 
 const AGENTS_MD_FILENAME: &str = "AGENTS.md";
 const CLAUDE_MD_FILENAME: &str = "CLAUDE.md";
@@ -12,35 +14,46 @@ pub fn load_agents_md(
     agent_home: &Path,
     workspace_anchor: Option<&Path>,
 ) -> Result<LoadedAgentsMd> {
+    let (user_global_source, user_global_status) = load_user_global_agents_md(user_home)?;
+    let (agent_source, agent_status) = load_agent_agents_md(agent_home)?;
+    let (workspace_source, workspace_status) = load_workspace_agents_md(workspace_anchor)?;
     Ok(LoadedAgentsMd {
-        user_global_source: load_user_global_agents_md(user_home)?,
-        agent_source: load_agent_agents_md(agent_home)?,
-        workspace_source: load_workspace_agents_md(workspace_anchor)?,
+        user_global_source,
+        user_global_status,
+        agent_source,
+        agent_status,
+        workspace_source,
+        workspace_status,
     })
 }
 
-fn load_user_global_agents_md(user_home: Option<&Path>) -> Result<Option<AgentsMdSource>> {
+fn load_user_global_agents_md(
+    user_home: Option<&Path>,
+) -> Result<(Option<AgentsMdSource>, AgentsMdLoadStatus)> {
     let Some(user_home) = user_home else {
-        return Ok(None);
+        return Ok((None, AgentsMdLoadStatus::RootUnavailable));
     };
     let path = user_home.join(".agents").join(AGENTS_MD_FILENAME);
     load_source(AgentsMdScope::UserGlobal, AgentsMdKind::AgentsMd, &path)
 }
 
-fn load_agent_agents_md(agent_home: &Path) -> Result<Option<AgentsMdSource>> {
+fn load_agent_agents_md(agent_home: &Path) -> Result<(Option<AgentsMdSource>, AgentsMdLoadStatus)> {
     let path = agent_home.join(AGENTS_MD_FILENAME);
     load_source(AgentsMdScope::Agent, AgentsMdKind::AgentsMd, &path)
 }
 
-fn load_workspace_agents_md(workspace_anchor: Option<&Path>) -> Result<Option<AgentsMdSource>> {
+fn load_workspace_agents_md(
+    workspace_anchor: Option<&Path>,
+) -> Result<(Option<AgentsMdSource>, AgentsMdLoadStatus)> {
     let Some(workspace_anchor) = workspace_anchor else {
-        return Ok(None);
+        return Ok((None, AgentsMdLoadStatus::RootUnavailable));
     };
 
     let agents_md = workspace_anchor.join(AGENTS_MD_FILENAME);
-    if let Some(source) = load_source(AgentsMdScope::Workspace, AgentsMdKind::AgentsMd, &agents_md)?
-    {
-        return Ok(Some(source));
+    let (source, status) =
+        load_source(AgentsMdScope::Workspace, AgentsMdKind::AgentsMd, &agents_md)?;
+    if source.is_some() {
+        return Ok((source, status));
     }
 
     let claude_md = workspace_anchor.join(CLAUDE_MD_FILENAME);
@@ -55,18 +68,39 @@ fn load_source(
     scope: AgentsMdScope,
     kind: AgentsMdKind,
     path: &Path,
-) -> Result<Option<AgentsMdSource>> {
+) -> Result<(Option<AgentsMdSource>, AgentsMdLoadStatus)> {
     let content = match std::fs::read_to_string(path) {
         Ok(content) => content,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(err.into()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((None, AgentsMdLoadStatus::NotFound));
+        }
+        Err(err) => {
+            return Err(err).with_context(|| {
+                format!(
+                    "failed to read {} instruction file at {}",
+                    agents_md_scope_name(&scope),
+                    path.display()
+                )
+            });
+        }
     };
-    Ok(Some(AgentsMdSource {
-        scope,
-        kind,
-        path: PathBuf::from(path),
-        content,
-    }))
+    Ok((
+        Some(AgentsMdSource {
+            scope,
+            kind,
+            path: PathBuf::from(path),
+            content,
+        }),
+        AgentsMdLoadStatus::Loaded,
+    ))
+}
+
+fn agents_md_scope_name(scope: &AgentsMdScope) -> &'static str {
+    match scope {
+        AgentsMdScope::UserGlobal => "user-global",
+        AgentsMdScope::Agent => "agent",
+        AgentsMdScope::Workspace => "workspace",
+    }
 }
 
 #[cfg(test)]
@@ -143,7 +177,9 @@ mod tests {
                 path: PathBuf::from("/tmp/agent/AGENTS.md"),
                 content: "secret agent content".into(),
             }),
+            agent_status: AgentsMdLoadStatus::Loaded,
             workspace_source: None,
+            ..LoadedAgentsMd::default()
         };
 
         let json = serde_json::to_value(&loaded).unwrap();
@@ -179,6 +215,39 @@ mod tests {
         );
         assert!(loaded.agent_source.is_some());
         assert!(loaded.workspace_source.is_some());
+        assert_eq!(loaded.user_global_status, AgentsMdLoadStatus::Loaded);
+        assert_eq!(loaded.agent_status, AgentsMdLoadStatus::Loaded);
+        assert_eq!(loaded.workspace_status, AgentsMdLoadStatus::Loaded);
+    }
+
+    #[test]
+    fn reports_missing_and_unavailable_instruction_roots() {
+        let dir = tempdir().unwrap();
+        let agent_home = dir.path().join("agent");
+        std::fs::create_dir_all(&agent_home).unwrap();
+
+        let loaded = load_agents_md(None, &agent_home, None).unwrap();
+
+        assert_eq!(
+            loaded.user_global_status,
+            AgentsMdLoadStatus::RootUnavailable
+        );
+        assert_eq!(loaded.agent_status, AgentsMdLoadStatus::NotFound);
+        assert_eq!(loaded.workspace_status, AgentsMdLoadStatus::RootUnavailable);
+    }
+
+    #[test]
+    fn unreadable_instruction_error_includes_scope_and_path() {
+        let dir = tempdir().unwrap();
+        let user_home = dir.path().join("user");
+        let agents_md = user_home.join(".agents").join(AGENTS_MD_FILENAME);
+        std::fs::create_dir_all(&agents_md).unwrap();
+
+        let error = load_agents_md(Some(&user_home), dir.path(), None).unwrap_err();
+        let message = format!("{error:#}");
+
+        assert!(message.contains("failed to read user-global instruction file"));
+        assert!(message.contains(&agents_md.display().to_string()));
     }
 
     #[test]

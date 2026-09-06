@@ -1465,9 +1465,10 @@ impl RuntimeHost {
             .active_workspace_entry
             .as_ref()
             .map(|entry| entry.execution_root.as_path());
+        let config = self.config();
         let skill_roots = effective_skill_root_registrations(
             skill_visibility(&identity_view),
-            Some(self.config().home_dir.as_path()),
+            config.user_home_dir.as_deref(),
             agent_id,
             &agent_home,
             workspace_skill_root,
@@ -1482,7 +1483,7 @@ impl RuntimeHost {
             &state.active_skills,
         );
         skills.agent_templates_catalog =
-            discover_agent_templates_catalog(Some(self.config().home_dir.as_path()), &agent_home);
+            discover_agent_templates_catalog(config.user_home_dir.as_deref(), &agent_home);
         Ok(skills)
     }
 
@@ -2550,12 +2551,16 @@ impl RuntimeHost {
             "agent {} AGENTS.md already exists without a runtime template marker; repair refuses to overwrite user content",
             bootstrap.agent_id
         );
-        let user_home = self.config().home_dir.clone();
+        let config = self.config();
+        let template_home = config
+            .user_home_dir
+            .as_deref()
+            .unwrap_or(config.home_dir.as_path());
         if let Some(template) = bootstrap.desired.template.as_deref() {
             if let Some(catalog_agent_home) = bootstrap.desired.catalog_agent_home.as_deref() {
                 ensure_agent_home_agents_md_from_template_with_catalog(
                     &agent_home,
-                    &user_home,
+                    template_home,
                     catalog_agent_home,
                     template,
                 )
@@ -2563,13 +2568,14 @@ impl RuntimeHost {
             } else {
                 ensure_agent_home_agents_md_from_template_with_home(
                     &agent_home,
-                    &user_home,
+                    template_home,
                     template,
                 )
                 .await?;
             }
         } else {
-            ensure_agent_home_agents_md_without_template_with_home(&agent_home, &user_home).await?;
+            ensure_agent_home_agents_md_without_template_with_home(&agent_home, template_home)
+                .await?;
         }
         Ok(())
     }
@@ -3407,21 +3413,21 @@ impl RuntimeHost {
         )
         .snapshot();
         let agent_home = self.agent_data_dir(&identity.agent_id);
+        let config = self.config();
         let loaded_agents_md = load_agents_md(
-            Some(self.config().home_dir.as_path()),
+            config.user_home_dir.as_deref(),
             agent_home.as_path(),
             crate::runtime::workspace::workspace_anchor_for_state_ref(&state),
         )?;
         let loaded_agent_memory = load_agent_memory(agent_home.as_path())?;
         let skill_visibility = skill_visibility(&identity_view);
-        let user_home = self.config().home_dir.clone();
         let workspace_skill_root = state
             .active_workspace_entry
             .as_ref()
             .map(|entry| entry.execution_root.as_path());
         let skill_roots = effective_skill_root_registrations(
             skill_visibility,
-            Some(user_home.as_path()),
+            config.user_home_dir.as_deref(),
             &state.id,
             agent_home.as_path(),
             workspace_skill_root,
@@ -3433,11 +3439,8 @@ impl RuntimeHost {
             &skill_roots,
             &state.active_skills,
         );
-        skills.agent_templates_catalog = discover_agent_templates_catalog(
-            Some(self.config().home_dir.as_path()),
-            agent_home.as_path(),
-        );
-        let config = self.config();
+        skills.agent_templates_catalog =
+            discover_agent_templates_catalog(config.user_home_dir.as_deref(), agent_home.as_path());
         let model_catalog = RuntimeModelCatalog::from_config(&config);
         let model_ref = model_catalog
             .provider_chain(state.model_override.as_ref())
@@ -3613,10 +3616,14 @@ impl RuntimeHost {
     }
 
     async fn ensure_default_agent_home_initialized(&self) -> Result<()> {
-        let agent_home = self.agent_data_dir(&self.config().default_agent_id);
-        let user_home = self.config().home_dir.clone();
-        let _ =
-            ensure_agent_home_agents_md_without_template_with_home(&agent_home, &user_home).await?;
+        let config = self.config();
+        let agent_home = self.agent_data_dir(&config.default_agent_id);
+        let template_home = config
+            .user_home_dir
+            .as_deref()
+            .unwrap_or(config.home_dir.as_path());
+        let _ = ensure_agent_home_agents_md_without_template_with_home(&agent_home, template_home)
+            .await?;
         Ok(())
     }
 
@@ -3629,20 +3636,23 @@ impl RuntimeHost {
     ) -> Result<AgentIdentityRecord> {
         let child_agent_id = ids::runtime_id(TEMP_CHILD_AGENT_PREFIX.trim_end_matches('_'));
         self.validate_agent_id(&child_agent_id)?;
+        let config = self.config();
+        let template_home = config
+            .user_home_dir
+            .as_deref()
+            .unwrap_or(config.home_dir.as_path());
         if let Some(template) = template {
-            let user_home = self.config().home_dir.clone();
             initialize_agent_home_from_template_with_catalog(
                 &self.agent_data_dir(&child_agent_id),
-                &user_home,
+                template_home,
                 catalog_agent_home,
                 template,
             )
             .await?;
         } else {
-            let user_home = self.config().home_dir.clone();
             initialize_agent_home_without_template_with_home(
                 &self.agent_data_dir(&child_agent_id),
-                &user_home,
+                template_home,
             )
             .await?;
         }
@@ -4214,6 +4224,7 @@ impl RuntimeHost {
                 provider.clone(),
                 config.default_agent_id.clone(),
                 self.runtime_context_config(),
+                config.user_home_dir.clone(),
                 self.inner.runtime_db.clone(),
                 self.bridge(),
                 RuntimeModelCatalog::from_config(&config),
@@ -4668,7 +4679,8 @@ mod tests {
     fn test_host() -> (tempfile::TempDir, RuntimeHost) {
         let home = tempdir().unwrap();
         write_test_model_config(home.path());
-        let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        config.user_home_dir = Some(home.path().to_path_buf());
         let host =
             RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
         (home, host)
@@ -4677,7 +4689,8 @@ mod tests {
     fn canonical_test_host() -> (tempfile::TempDir, RuntimeHost) {
         let home = tempdir().unwrap();
         write_test_model_config(home.path());
-        let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        config.user_home_dir = Some(home.path().to_path_buf());
         let host =
             RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
         (home, host)
@@ -4735,6 +4748,181 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].message_id, message.id);
         assert_eq!(entries[0].status, QueueEntryStatus::Queued);
+    }
+
+    async fn assert_runtime_prompt_uses_configured_user_home(
+        mut config: AppConfig,
+        static_provider: bool,
+    ) {
+        let user_home = tempdir().unwrap();
+        let user_agents_dir = user_home.path().join(".agents");
+        fs::create_dir_all(&user_agents_dir).unwrap();
+        let user_agents_md = user_agents_dir.join("AGENTS.md");
+        fs::write(&user_agents_md, "configured user-global marker").unwrap();
+        assert_ne!(config.home_dir, user_home.path());
+        config.user_home_dir = Some(user_home.path().to_path_buf());
+
+        let host = if static_provider {
+            RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap()
+        } else {
+            RuntimeHost::new(config).unwrap()
+        };
+        let runtime = host.default_runtime().await.unwrap();
+        let prompt = runtime
+            .preview_prompt(
+                "inspect configured user guidance".into(),
+                AuthorityClass::OperatorInstruction,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            prompt.loaded_agents_md.user_global_status,
+            crate::types::AgentsMdLoadStatus::Loaded
+        );
+        assert_eq!(
+            prompt
+                .loaded_agents_md
+                .user_global_source
+                .as_ref()
+                .map(|source| source.path.as_path()),
+            Some(user_agents_md.as_path())
+        );
+        assert!(prompt
+            .system_sections
+            .iter()
+            .any(|section| section.name == "user_global_agents_md"
+                && section.content.contains("configured user-global marker")));
+
+        host.unload_runtime(&host.config().default_agent_id).await;
+        let recovered = host.default_runtime().await.unwrap();
+        let recovered_prompt = recovered
+            .preview_prompt(
+                "inspect recovered user guidance".into(),
+                AuthorityClass::OperatorInstruction,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            recovered_prompt
+                .loaded_agents_md
+                .user_global_source
+                .as_ref()
+                .map(|source| source.path.as_path()),
+            Some(user_agents_md.as_path())
+        );
+
+        host.create_named_agent("configured-home-named", None)
+            .await
+            .unwrap();
+        let named = host
+            .get_public_agent("configured-home-named")
+            .await
+            .unwrap();
+        let named_prompt = named
+            .preview_prompt(
+                "inspect named agent user guidance".into(),
+                AuthorityClass::OperatorInstruction,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            named_prompt
+                .loaded_agents_md
+                .user_global_source
+                .as_ref()
+                .map(|source| source.path.as_path()),
+            Some(user_agents_md.as_path())
+        );
+
+        let parent_state = recovered.agent_state().await.unwrap();
+        let child_identity = host
+            .create_child_identity(
+                &parent_state.id,
+                "configured-home-task",
+                None,
+                recovered.agent_home().as_path(),
+            )
+            .await
+            .unwrap();
+        let child = host
+            .get_or_create_agent(&child_identity.agent_id)
+            .await
+            .unwrap();
+        let child_prompt = child
+            .preview_prompt(
+                "inspect private child user guidance".into(),
+                AuthorityClass::OperatorInstruction,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            child_prompt
+                .loaded_agents_md
+                .user_global_source
+                .as_ref()
+                .map(|source| source.path.as_path()),
+            Some(user_agents_md.as_path())
+        );
+    }
+
+    #[tokio::test]
+    async fn static_runtime_prompt_uses_configured_user_home() {
+        let fixture = provider_test_config(Some("dummy-token"));
+        assert_runtime_prompt_uses_configured_user_home(fixture.config, true).await;
+    }
+
+    #[tokio::test]
+    async fn reconfigurable_runtime_prompt_uses_configured_user_home() {
+        let fixture = provider_test_config(Some("dummy-token"));
+        assert_runtime_prompt_uses_configured_user_home(fixture.config, false).await;
+    }
+
+    #[tokio::test]
+    async fn config_reload_preserves_runtime_user_home() {
+        let mut fixture = provider_test_config(Some("dummy-token"));
+        let original_user_home = tempdir().unwrap();
+        let replacement_user_home = tempdir().unwrap();
+        fs::create_dir_all(original_user_home.path().join(".agents")).unwrap();
+        fs::create_dir_all(replacement_user_home.path().join(".agents")).unwrap();
+        let original_agents_md = original_user_home.path().join(".agents/AGENTS.md");
+        fs::write(&original_agents_md, "original stable guidance").unwrap();
+        fs::write(
+            replacement_user_home.path().join(".agents/AGENTS.md"),
+            "replacement guidance",
+        )
+        .unwrap();
+        fixture.config.user_home_dir = Some(original_user_home.path().to_path_buf());
+        let host = RuntimeHost::new(fixture.config.clone()).unwrap();
+        let runtime = host.default_runtime().await.unwrap();
+
+        let mut reloaded = fixture.config;
+        reloaded.user_home_dir = Some(replacement_user_home.path().to_path_buf());
+        runtime.reload_config(&reloaded).await.unwrap();
+
+        let prompt = runtime
+            .preview_prompt(
+                "inspect stable reloaded user guidance".into(),
+                AuthorityClass::OperatorInstruction,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            prompt
+                .loaded_agents_md
+                .user_global_source
+                .as_ref()
+                .map(|source| source.path.as_path()),
+            Some(original_agents_md.as_path())
+        );
+        assert!(prompt
+            .system_sections
+            .iter()
+            .any(|section| section.content.contains("original stable guidance")));
+        assert!(!prompt
+            .system_sections
+            .iter()
+            .any(|section| section.content.contains("replacement guidance")));
     }
 
     #[tokio::test]
@@ -4808,6 +4996,7 @@ mod tests {
             default_agent_id: "default".into(),
             http_addr: "127.0.0.1:0".into(),
             callback_base_url: "http://127.0.0.1:0".into(),
+            user_home_dir: None,
             home_dir: home_path.clone(),
             data_dir: home_path.clone(),
             socket_path: home_path.join("run").join("holon.sock"),
@@ -4917,7 +5106,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn named_agent_template_resolution_uses_config_home_not_os_home() {
+    async fn named_agent_template_resolution_uses_user_home_not_config_home() {
         struct HomeGuard(Option<String>);
 
         impl Drop for HomeGuard {
@@ -4933,7 +5122,7 @@ mod tests {
         let os_home = tempdir().unwrap();
         write_test_model_config(config_home.path());
 
-        let worker = config_home
+        let worker = os_home
             .path()
             .join(".agents")
             .join("agent_templates")
@@ -4941,7 +5130,7 @@ mod tests {
         fs::create_dir_all(&worker).unwrap();
         fs::write(
             worker.join("AGENTS.md"),
-            "# Config worker\n\nfrom config home\n",
+            "# User worker\n\nfrom user home\n",
         )
         .unwrap();
 
@@ -4957,7 +5146,7 @@ mod tests {
 
         let agents_md =
             fs::read_to_string(host.agent_data_dir("worker-bot").join("AGENTS.md")).unwrap();
-        assert!(agents_md.starts_with("# Config worker\n\nfrom config home\n"));
+        assert!(agents_md.starts_with("# User worker\n\nfrom user home\n"));
     }
 
     #[tokio::test]
@@ -8032,6 +8221,18 @@ mod tests {
             .await
             .expect("local agent summary");
         assert_eq!(summary.agent.id, agent_id);
+        assert_eq!(
+            summary.loaded_agents_md.user_global_status,
+            crate::types::AgentsMdLoadStatus::NotEvaluated
+        );
+        assert_eq!(
+            summary.loaded_agents_md.agent_status,
+            crate::types::AgentsMdLoadStatus::NotEvaluated
+        );
+        assert_eq!(
+            summary.loaded_agents_md.workspace_status,
+            crate::types::AgentsMdLoadStatus::NotEvaluated
+        );
         assert!(host.inner.runtimes.read().await.agents.is_empty());
 
         let _worktree_summary = host
