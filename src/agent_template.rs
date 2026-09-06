@@ -66,19 +66,7 @@ const DEFAULT_BUILTIN_TEMPLATE: BuiltinTemplate = BuiltinTemplate {
     template_toml: include_str!("../builtin_templates/holon-default/template.toml"),
     skill_names: &[],
 };
-const GITHUB_SOLVE_BUILTIN_TEMPLATE: BuiltinTemplate = BuiltinTemplate {
-    template_id: GITHUB_SOLVE_AGENT_TEMPLATE_ID,
-    agents_md: include_str!("../agent_templates/holon-github-solve/AGENTS.md"),
-    template_toml: include_str!("../agent_templates/holon-github-solve/template.toml"),
-    skill_names: &[
-        "ghx",
-        "github-issue-solve",
-        "github-pr-fix",
-        "github-review",
-    ],
-};
-const BUILTIN_TEMPLATES: &[BuiltinTemplate] =
-    &[DEFAULT_BUILTIN_TEMPLATE, GITHUB_SOLVE_BUILTIN_TEMPLATE];
+const BUILTIN_TEMPLATES: &[BuiltinTemplate] = &[DEFAULT_BUILTIN_TEMPLATE];
 
 struct BuiltinTemplate {
     template_id: &'static str,
@@ -3459,6 +3447,13 @@ mod tests {
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         assert_eq!(builtin_ids, vec!["holon-default"]);
+        assert_eq!(
+            BUILTIN_TEMPLATES
+                .iter()
+                .map(|template| template.template_id)
+                .collect::<Vec<_>>(),
+            vec!["holon-default"]
+        );
 
         for template_id in [
             "holon-developer",
@@ -3476,6 +3471,24 @@ mod tests {
                 "{template_id} should declare template metadata"
             );
         }
+
+        let solve_template = syncable.join(GITHUB_SOLVE_AGENT_TEMPLATE_ID);
+        assert_eq!(
+            local_template_skills(&solve_template),
+            vec![
+                "holon-run/holon/skills/code-review",
+                "holon-run/holon/skills/ghx",
+                "holon-run/holon/skills/github-issue-solve",
+                "holon-run/holon/skills/github-pr-fix",
+                "holon-run/holon/skills/github-review",
+                "holon-run/sview/skills/sview",
+            ]
+        );
+        let solve_agents_md =
+            fs::read_to_string(solve_template.join(TEMPLATE_AGENTS_FILENAME)).unwrap();
+        assert!(solve_agents_md.contains("command-owned execution preset"));
+        assert!(solve_agents_md.contains("Do not merge or approve"));
+        assert!(solve_agents_md.contains("continue tracking a pull request"));
     }
 
     #[test]
@@ -3623,35 +3636,6 @@ mod tests {
         assert!(!catalog
             .iter()
             .any(|entry| entry.catalog_id == "builtin:holon-default"));
-    }
-
-    #[test]
-    fn github_solve_builtin_template_resolves_without_user_catalog() {
-        let user_home = tempdir().unwrap();
-        let agent_home = tempdir().unwrap();
-
-        let entry = resolve_template_catalog_entry(
-            GITHUB_SOLVE_AGENT_TEMPLATE_ID,
-            user_home.path(),
-            agent_home.path(),
-        )
-        .unwrap();
-        assert_eq!(entry.catalog_id, "builtin:holon-github-solve");
-        assert_eq!(entry.source, AgentTemplateSourceKind::Builtin);
-        assert_eq!(
-            entry.included_skills,
-            vec![
-                "ghx",
-                "github-issue-solve",
-                "github-pr-fix",
-                "github-review"
-            ]
-        );
-
-        let resolved =
-            resolve_builtin_template(GITHUB_SOLVE_AGENT_TEMPLATE_ID, user_home.path()).unwrap();
-        assert!(resolved.agents_md.contains("Holon GitHub Solve"));
-        assert_eq!(resolved.skill_refs.len(), 4);
     }
 
     #[tokio::test]

@@ -131,8 +131,9 @@ When you run `holon solve`, these steps happen inside the runtime:
    input metadata.
 
 3. **Create the agent** — Holon creates an agent from the configured solve
-   template, normally `holon-github-solve`, which includes the `github-issue-solve`,
-   `github-pr-fix`, `github-review`, and `ghx` skills.
+   template, normally the command-owned `holon-github-solve` preset. It includes
+   `sview`, `code-review`, `github-issue-solve`, `github-pr-fix`,
+   `github-review`, and `ghx`.
 
 4. **Run the prompt** — The runtime constructs a prompt describing the target
    and goal, then runs the agent with the configured trust level and turn
@@ -188,7 +189,8 @@ serve different purposes:
 
 Use `holon run` for general automation and scripting. Use `holon solve` when
 your task starts from a GitHub issue or pull request and you want automatic
-skill selection.
+skill selection. The solve preset is one-shot: merging, approval, or continued
+PR event tracking requires explicit instructions.
 
 ## Scripting with solve
 

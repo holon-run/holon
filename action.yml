@@ -608,6 +608,12 @@ runs:
             template="$source_template"
           fi
         fi
+        if [ -z "$template" ]; then
+          release_template="$RUNNER_TEMP/holon/bin/agent_templates/holon-github-solve"
+          if [ -f "$release_template/AGENTS.md" ]; then
+            template="$release_template"
+          fi
+        fi
 
         args=("$INPUT_REF" --home "$state_dir" --workspace "$workspace" --cwd "$cwd" --input "$input_dir" --output "$output_dir" --max-turns "$INPUT_MAX_TURNS" --json)
         if [ -n "$INPUT_REPO" ]; then

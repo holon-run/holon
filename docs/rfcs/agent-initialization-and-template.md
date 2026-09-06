@@ -327,6 +327,9 @@ available, but they should not create duplicate visible catalog entries.
 Common role templates such as developer, reviewer, release, or GitHub issue
 solver should be delivered through the official remote template source and
 materialized into `~/.agents/agent_templates` by sync/install operations.
+Commands and integrations may select one of those templates or pass an explicit
+template path, but template initialization must not add command-specific
+built-ins or resolution branches.
 
 ### `skills.toml` format
 

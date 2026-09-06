@@ -43,6 +43,9 @@ jobs:
             shasum -a 256 -c linux-amd64.checksums
           )
           tar -xzf dist/holon-linux-amd64.tar.gz -C smoke
+          test -f smoke/agent_templates/holon-github-solve/AGENTS.md
+          test -f smoke/agent_templates/holon-github-solve/template.toml
+          test -f smoke/agent_templates/holon-github-solve/skills.toml
 
       - name: Run release asset
         run: |
