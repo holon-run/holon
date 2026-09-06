@@ -511,6 +511,194 @@
       },
       "AgentDetail": {
         "properties": {
+          "bootstrap": {
+            "properties": {
+              "initial_message": {
+                "properties": {
+                  "attempts": {
+                    "default": 0,
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "last_error": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "status": {
+                    "enum": [
+                      "pending",
+                      "succeeded",
+                      "failed"
+                    ],
+                    "type": "string"
+                  },
+                  "updated_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "status",
+                  "updated_at"
+                ],
+                "type": "object"
+              },
+              "model": {
+                "properties": {
+                  "attempts": {
+                    "default": 0,
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "last_error": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "status": {
+                    "enum": [
+                      "pending",
+                      "succeeded",
+                      "failed"
+                    ],
+                    "type": "string"
+                  },
+                  "updated_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "status",
+                  "updated_at"
+                ],
+                "type": "object"
+              },
+              "runtime": {
+                "properties": {
+                  "attempts": {
+                    "default": 0,
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "last_error": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "status": {
+                    "enum": [
+                      "pending",
+                      "succeeded",
+                      "failed"
+                    ],
+                    "type": "string"
+                  },
+                  "updated_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "status",
+                  "updated_at"
+                ],
+                "type": "object"
+              },
+              "status": {
+                "enum": [
+                  "ready",
+                  "degraded"
+                ],
+                "type": "string"
+              },
+              "template": {
+                "properties": {
+                  "attempts": {
+                    "default": 0,
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "last_error": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "status": {
+                    "enum": [
+                      "pending",
+                      "succeeded",
+                      "failed"
+                    ],
+                    "type": "string"
+                  },
+                  "updated_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "status",
+                  "updated_at"
+                ],
+                "type": "object"
+              },
+              "workspace": {
+                "properties": {
+                  "attempts": {
+                    "default": 0,
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "last_error": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "status": {
+                    "enum": [
+                      "pending",
+                      "succeeded",
+                      "failed"
+                    ],
+                    "type": "string"
+                  },
+                  "updated_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "status",
+                  "updated_at"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "status",
+              "template",
+              "runtime",
+              "workspace",
+              "model",
+              "initial_message"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          },
           "created_at": {
             "format": "date-time",
             "type": "string"
@@ -12574,6 +12762,64 @@
           }
         ],
         "summary": "Submit operator prompt",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/api/control/agents/{agent_id}/repair": {
+      "post": {
+        "description": "Retry incomplete post-create bootstrap steps without recreating the agent.",
+        "operationId": "repairAgent",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentDetail"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Repair agent bootstrap",
         "tags": [
           "control"
         ]

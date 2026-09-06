@@ -12,7 +12,7 @@ use anyhow::{anyhow, bail, Result};
 use chrono::Utc;
 use serde_json::{json, Value};
 use tokio::{
-    sync::{mpsc, watch, Notify, RwLock},
+    sync::{mpsc, watch, Mutex as AsyncMutex, Notify, RwLock},
     task::{spawn_blocking, JoinHandle, JoinSet},
 };
 use tokio_util::sync::CancellationToken;
@@ -21,10 +21,12 @@ use tracing::warn;
 use crate::{
     agent_memory::load_agent_memory,
     agent_template::{
-        discover_agent_templates_catalog, ensure_agent_home_agents_md_without_template_with_home,
+        discover_agent_templates_catalog, ensure_agent_home_agents_md_from_template_with_catalog,
+        ensure_agent_home_agents_md_from_template_with_home,
+        ensure_agent_home_agents_md_without_template_with_home, ensure_agent_home_layout,
         initialize_agent_home_from_template_with_catalog,
-        initialize_agent_home_from_template_with_home,
-        initialize_agent_home_without_template_with_home,
+        initialize_agent_home_without_template_with_home, template_provenance_path,
+        TemplateProvenanceRecord, DEFAULT_AGENT_TEMPLATE_ID,
     },
     agents_md::load_agents_md,
     callbacks::hash_callback_token,
@@ -51,17 +53,20 @@ use crate::{
     },
     tool::{apply_patch::ApplyPatchSurface, ToolError, ToolRegistry},
     types::{
-        normalize_agent_name, AdmissionContext, AgentCreateReceipt, AgentCreateResult,
-        AgentCreateStage, AgentDeletionJob, AgentDetail, AgentDurability, AgentIdentityRecord,
-        AgentIdentityView, AgentKind, AgentLifecycleHint, AgentListEntry, AgentOwnership,
-        AgentProfilePreset, AgentRegistryStatus, AgentState, AgentStatus, AgentSummary,
-        AgentTokenUsageSummary, AgentVisibility, AuthorityClass, ChildAgentSummary, ClosureOutcome,
-        ExternalTriggerRecord, ExternalTriggerStatus, ExternalTriggerSummary, LoadedAgentsMdView,
-        MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin,
-        OperatorNotificationRecord, Priority, QueueEntryStatus, RuntimeFailureSummary,
-        SpawnAgentModelResolution, SpawnAgentModelResolutionStatus, TaskKind, TaskRecord,
-        TaskStatus, TimerRecord, TokenUsage, TranscriptEntry, TranscriptEntryKind,
-        WaitConditionSummary, WorkspaceEntry, WorkspaceOccupancyRecord,
+        normalize_agent_name, AdmissionContext, AgentBootstrapDesiredState,
+        AgentBootstrapInitialMessage, AgentBootstrapRecord, AgentBootstrapStatus,
+        AgentBootstrapStep, AgentBootstrapStepStatus, AgentBootstrapWorkspaceState,
+        AgentCreateReceipt, AgentCreateResult, AgentCreateStage, AgentDeletionJob, AgentDetail,
+        AgentDurability, AgentIdentityRecord, AgentIdentityView, AgentKind, AgentLifecycleHint,
+        AgentListEntry, AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentState,
+        AgentStatus, AgentSummary, AgentTokenUsageSummary, AgentVisibility, AuthorityClass,
+        ChildAgentSummary, ClosureOutcome, ExternalTriggerRecord, ExternalTriggerStatus,
+        ExternalTriggerSummary, LoadedAgentsMdView, MessageBody, MessageDeliverySurface,
+        MessageEnvelope, MessageKind, MessageOrigin, OperatorNotificationRecord, Priority,
+        QueueEntryStatus, RuntimeFailureSummary, SpawnAgentModelResolution,
+        SpawnAgentModelResolutionStatus, TaskKind, TaskRecord, TaskStatus, TimerRecord, TokenUsage,
+        TranscriptEntry, TranscriptEntryKind, WaitConditionSummary, WorkspaceEntry,
+        WorkspaceOccupancyRecord,
     },
 };
 
@@ -290,6 +295,7 @@ pub(crate) struct HostInner {
     runtime_recovery_rx: Mutex<Option<mpsc::UnboundedReceiver<RuntimeRecoveryNotice>>>,
     runtime_recovery_token: CancellationToken,
     runtime_recovery_handle: Mutex<Option<JoinHandle<()>>>,
+    bootstrap_locks: Mutex<HashMap<String, Arc<AsyncMutex<()>>>>,
 }
 
 struct AgentEntry {
@@ -412,6 +418,37 @@ pub(crate) struct ChildTaskSpawn {
 enum NamedAgentExistingBehavior {
     Reuse,
     Reject,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AgentBootstrapStepKind {
+    Template,
+    Runtime,
+    Workspace,
+    Model,
+    InitialMessage,
+}
+
+fn agent_bootstrap_step_mut(
+    bootstrap: &mut AgentBootstrapRecord,
+    kind: AgentBootstrapStepKind,
+) -> &mut AgentBootstrapStep {
+    match kind {
+        AgentBootstrapStepKind::Template => &mut bootstrap.template,
+        AgentBootstrapStepKind::Runtime => &mut bootstrap.runtime,
+        AgentBootstrapStepKind::Workspace => &mut bootstrap.workspace,
+        AgentBootstrapStepKind::Model => &mut bootstrap.model,
+        AgentBootstrapStepKind::InitialMessage => &mut bootstrap.initial_message,
+    }
+}
+
+fn bounded_bootstrap_error(error: &anyhow::Error) -> String {
+    const MAX_CHARS: usize = 512;
+    let summary = error.to_string();
+    if summary.chars().count() <= MAX_CHARS {
+        return summary;
+    }
+    summary.chars().take(MAX_CHARS).collect()
 }
 
 fn named_agent_already_exists_error(agent_id: &str) -> anyhow::Error {
@@ -580,9 +617,11 @@ impl RuntimeHost {
                 runtime_recovery_rx: Mutex::new(Some(runtime_recovery_rx)),
                 runtime_recovery_token: CancellationToken::new(),
                 runtime_recovery_handle: Mutex::new(None),
+                bootstrap_locks: Mutex::new(HashMap::new()),
             }),
         };
         host.ensure_default_agent_identity()?;
+        host.ensure_legacy_public_agent_bootstraps()?;
         host.converge_private_child_identities()?;
         host.import_legacy_external_triggers()?;
         Ok(host)
@@ -1731,6 +1770,8 @@ impl RuntimeHost {
     ) -> std::result::Result<(AgentIdentityRecord, AgentDeletionJob, bool), PublicAgentError> {
         self.validate_agent_id(agent_id)
             .map_err(PublicAgentError::Runtime)?;
+        let bootstrap_lock = self.agent_bootstrap_lock(agent_id);
+        let _bootstrap_guard = bootstrap_lock.lock().await;
         let identity = self
             .agent_identity_record(agent_id)
             .map_err(PublicAgentError::Runtime)?
@@ -1826,12 +1867,19 @@ impl RuntimeHost {
             .agent_deletions()
             .latest_for_agent(agent_id)
             .map_err(PublicAgentError::Runtime)?;
+        let bootstrap = self
+            .runtime_db()
+            .agent_bootstraps()
+            .latest(agent_id)
+            .map_err(PublicAgentError::Runtime)?
+            .map(|record| record.summary());
         Ok(AgentDetail {
             display_name: identity.display_name(),
             name: identity.name.clone(),
             created_at: identity.created_at,
             updated_at: identity.updated_at,
             identity: AgentIdentityView::from_record(&identity, &self.config().default_agent_id),
+            bootstrap,
             deletion,
         })
     }
@@ -1900,12 +1948,19 @@ impl RuntimeHost {
             .agent_deletions()
             .latest_for_agent(agent_id)
             .map_err(PublicAgentError::Runtime)?;
+        let bootstrap = self
+            .runtime_db()
+            .agent_bootstraps()
+            .latest(agent_id)
+            .map_err(PublicAgentError::Runtime)?
+            .map(|record| record.summary());
         Ok(AgentDetail {
             display_name: identity.display_name(),
             name: identity.name.clone(),
             created_at: identity.created_at,
             updated_at: identity.updated_at,
             identity: AgentIdentityView::from_record(&identity, &self.config().default_agent_id),
+            bootstrap,
             deletion,
         })
     }
@@ -2145,16 +2200,26 @@ impl RuntimeHost {
         agent_id: &str,
         template: Option<&str>,
     ) -> Result<AgentIdentityRecord> {
-        self.ensure_named_agent(
-            agent_id,
-            template,
-            None,
-            None,
-            NamedAgentExistingBehavior::Reuse,
-            None,
-        )
-        .await
-        .map(|(record, _)| record)
+        let desired = AgentBootstrapDesiredState {
+            template: template.map(ToString::to_string),
+            catalog_agent_home: None,
+            workspace: None,
+            model_resolution: None,
+            initial_message: None,
+        };
+        let (identity, created) = self
+            .ensure_named_agent(
+                agent_id,
+                None,
+                NamedAgentExistingBehavior::Reuse,
+                None,
+                desired,
+            )
+            .await?;
+        if created {
+            self.reconcile_agent_bootstrap(agent_id).await?;
+        }
+        Ok(identity)
     }
 
     pub async fn create_public_named_agent(
@@ -2182,16 +2247,40 @@ impl RuntimeHost {
         catalog_agent_home: Option<&Path>,
         requested_name: Option<&str>,
     ) -> Result<AgentCreateResult> {
+        let desired = AgentBootstrapDesiredState {
+            template: template.map(ToString::to_string),
+            catalog_agent_home: catalog_agent_home.map(Path::to_path_buf),
+            workspace: None,
+            model_resolution: None,
+            initial_message: None,
+        };
+        self.create_public_named_agent_with_bootstrap(
+            agent_id,
+            lineage_parent_agent_id,
+            requested_name,
+            desired,
+        )
+        .await
+    }
+
+    async fn create_public_named_agent_with_bootstrap(
+        &self,
+        agent_id: &str,
+        lineage_parent_agent_id: Option<&str>,
+        requested_name: Option<&str>,
+        desired: AgentBootstrapDesiredState,
+    ) -> Result<AgentCreateResult> {
         let (identity, created) = self
             .ensure_named_agent(
                 agent_id,
-                template,
                 lineage_parent_agent_id,
-                catalog_agent_home,
                 NamedAgentExistingBehavior::Reject,
                 requested_name,
+                desired,
             )
             .await?;
+        let bootstrap = self.reconcile_agent_bootstrap(agent_id).await?;
+        let bootstrap_summary = bootstrap.summary();
         Ok(AgentCreateResult {
             receipt: AgentCreateReceipt {
                 receipt_id: ids::runtime_id("agent_create"),
@@ -2199,9 +2288,14 @@ impl RuntimeHost {
                 name: identity.name.clone(),
                 display_name: identity.display_name(),
                 preset: AgentProfilePreset::PublicNamed,
-                stage: AgentCreateStage::Bootstrapped,
+                stage: if bootstrap_summary.status == AgentBootstrapStatus::Ready {
+                    AgentCreateStage::Bootstrapped
+                } else {
+                    AgentCreateStage::Degraded
+                },
                 lifecycle: identity.status,
                 created,
+                bootstrap: bootstrap_summary,
             },
             identity,
         })
@@ -2210,18 +2304,17 @@ impl RuntimeHost {
     async fn ensure_named_agent(
         &self,
         agent_id: &str,
-        template: Option<&str>,
         lineage_parent_agent_id: Option<&str>,
-        catalog_agent_home: Option<&Path>,
         existing_behavior: NamedAgentExistingBehavior,
         requested_name: Option<&str>,
+        desired: AgentBootstrapDesiredState,
     ) -> Result<(AgentIdentityRecord, bool)> {
         self.validate_agent_id(agent_id)?;
         if agent_id == self.config().default_agent_id {
             if existing_behavior == NamedAgentExistingBehavior::Reject {
                 return Err(named_agent_already_exists_error(agent_id));
             }
-            if template.is_some() {
+            if desired.template.is_some() {
                 return Err(anyhow!(
                     "default agent does not support template initialization through create_named_agent"
                 ));
@@ -2257,7 +2350,7 @@ impl RuntimeHost {
                     agent_id
                 ));
             }
-            if template.is_some() {
+            if desired.template.is_some() {
                 return Err(anyhow!(
                     "agent {} already exists; template initialization only applies when creating a new agent",
                     agent_id
@@ -2271,35 +2364,9 @@ impl RuntimeHost {
                     .map_err(|error| named_agent_invalid_name_error(agent_id, error))
             })
             .transpose()?;
-        if let Some(template) = template {
-            let agent_home = self.agent_data_dir(agent_id);
-            let user_home = self.config().home_dir.clone();
-            let initialization = if let Some(catalog_agent_home) = catalog_agent_home {
-                initialize_agent_home_from_template_with_catalog(
-                    &agent_home,
-                    &user_home,
-                    catalog_agent_home,
-                    template,
-                )
-                .await
-            } else {
-                initialize_agent_home_from_template_with_home(&agent_home, &user_home, template)
-                    .await
-            };
-            initialization.map_err(|error| {
-                named_agent_create_failed_error(agent_id, AgentCreateStage::Profiled, error)
-            })?;
-        } else {
-            let user_home = self.config().home_dir.clone();
-            initialize_agent_home_without_template_with_home(
-                &self.agent_data_dir(agent_id),
-                &user_home,
-            )
-            .await
-            .map_err(|error| {
-                named_agent_create_failed_error(agent_id, AgentCreateStage::Profiled, error)
-            })?;
-        }
+        ensure_agent_home_layout(&self.agent_data_dir(agent_id)).map_err(|error| {
+            named_agent_create_failed_error(agent_id, AgentCreateStage::Profiled, error)
+        })?;
         let mut record = AgentIdentityRecord::new(
             agent_id,
             AgentKind::Named,
@@ -2311,23 +2378,341 @@ impl RuntimeHost {
         )
         .with_lineage_parent_agent_id(lineage_parent_agent_id.map(ToString::to_string));
         record.name = normalized_name;
-        self.append_agent_identity(&record).map_err(|error| {
-            if let Some(name) = record.name.as_deref() {
-                if error
-                    .to_string()
-                    .contains("UNIQUE constraint failed: agent_identities.name_key")
-                {
-                    return named_agent_name_already_exists_error(agent_id, name);
+        let bootstrap = AgentBootstrapRecord::new(agent_id, desired);
+        self.runtime_db()
+            .agent_identities()
+            .create_with_bootstrap(&record, &bootstrap)
+            .map_err(|error| {
+                if error.to_string().contains("agent_identity_conflict") {
+                    return named_agent_already_exists_error(agent_id);
+                }
+                if let Some(name) = record.name.as_deref() {
+                    if error
+                        .to_string()
+                        .contains("UNIQUE constraint failed: agent_identities.name_key")
+                    {
+                        return named_agent_name_already_exists_error(agent_id, name);
+                    }
+                }
+                named_agent_create_failed_error(agent_id, AgentCreateStage::Reserved, error)
+            })?;
+        self.inner.registry.cache_agent_identity(&record)?;
+        Ok((record, true))
+    }
+
+    fn agent_bootstrap_lock(&self, agent_id: &str) -> Arc<AsyncMutex<()>> {
+        self.inner
+            .bootstrap_locks
+            .lock()
+            .expect("agent bootstrap locks poisoned")
+            .entry(agent_id.to_string())
+            .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+            .clone()
+    }
+
+    async fn reconcile_agent_bootstrap(&self, agent_id: &str) -> Result<AgentBootstrapRecord> {
+        let lock = self.agent_bootstrap_lock(agent_id);
+        let _guard = lock.lock().await;
+        let identity = self
+            .agent_identity_record(agent_id)?
+            .ok_or_else(|| anyhow!("agent {agent_id} not found"))?;
+        anyhow::ensure!(
+            identity.status == AgentRegistryStatus::Active,
+            "agent {agent_id} cannot be repaired while it is {:?}",
+            identity.status
+        );
+        let mut bootstrap = self
+            .runtime_db()
+            .agent_bootstraps()
+            .latest(agent_id)?
+            .ok_or_else(|| anyhow!("agent {agent_id} has no bootstrap state to repair"))?;
+
+        if bootstrap.template.status != AgentBootstrapStepStatus::Succeeded {
+            let result = self.apply_agent_template_bootstrap(&bootstrap).await;
+            self.record_agent_bootstrap_result(
+                &mut bootstrap,
+                AgentBootstrapStepKind::Template,
+                result,
+            )?;
+        }
+        if bootstrap.template.status != AgentBootstrapStepStatus::Succeeded {
+            return Ok(bootstrap);
+        }
+        if bootstrap.runtime.status != AgentBootstrapStepStatus::Succeeded {
+            let result = async {
+                let runtime = self
+                    .activate_agent(agent_id, RuntimeActivationReason::AgentLifecycle)
+                    .await?;
+                runtime.wait_for_bootstrap().await
+            }
+            .await;
+            self.record_agent_bootstrap_result(
+                &mut bootstrap,
+                AgentBootstrapStepKind::Runtime,
+                result,
+            )?;
+        }
+        if bootstrap.runtime.status != AgentBootstrapStepStatus::Succeeded {
+            return Ok(bootstrap);
+        }
+        if bootstrap.workspace.status != AgentBootstrapStepStatus::Succeeded {
+            let result = self.apply_agent_workspace_bootstrap(&bootstrap).await;
+            self.record_agent_bootstrap_result(
+                &mut bootstrap,
+                AgentBootstrapStepKind::Workspace,
+                result,
+            )?;
+        }
+        if bootstrap.workspace.status != AgentBootstrapStepStatus::Succeeded {
+            return Ok(bootstrap);
+        }
+        if bootstrap.model.status != AgentBootstrapStepStatus::Succeeded {
+            let result = self.apply_agent_model_bootstrap(&bootstrap).await;
+            self.record_agent_bootstrap_result(
+                &mut bootstrap,
+                AgentBootstrapStepKind::Model,
+                result,
+            )?;
+        }
+        if bootstrap.model.status != AgentBootstrapStepStatus::Succeeded {
+            return Ok(bootstrap);
+        }
+        if bootstrap.initial_message.status != AgentBootstrapStepStatus::Succeeded {
+            let result = self.apply_agent_initial_message_bootstrap(&bootstrap).await;
+            self.record_agent_bootstrap_result(
+                &mut bootstrap,
+                AgentBootstrapStepKind::InitialMessage,
+                result,
+            )?;
+        }
+        Ok(bootstrap)
+    }
+
+    fn record_agent_bootstrap_result(
+        &self,
+        bootstrap: &mut AgentBootstrapRecord,
+        kind: AgentBootstrapStepKind,
+        result: Result<()>,
+    ) -> Result<()> {
+        let now = Utc::now();
+        let succeeded = result.is_ok();
+        {
+            let step = agent_bootstrap_step_mut(bootstrap, kind);
+            step.attempts = step.attempts.saturating_add(1);
+            step.updated_at = now;
+            match result {
+                Ok(()) => {
+                    step.status = AgentBootstrapStepStatus::Succeeded;
+                    step.last_error = None;
+                }
+                Err(error) => {
+                    step.status = AgentBootstrapStepStatus::Failed;
+                    step.last_error = Some(bounded_bootstrap_error(&error));
                 }
             }
-            named_agent_create_failed_error(agent_id, AgentCreateStage::Reserved, error)
-        })?;
-        self.activate_agent(agent_id, RuntimeActivationReason::AgentLifecycle)
+        }
+        if succeeded && matches!(kind, AgentBootstrapStepKind::InitialMessage) {
+            bootstrap.desired.initial_message = None;
+        }
+        bootstrap.revision = bootstrap.revision.saturating_add(1);
+        bootstrap.updated_at = now;
+        self.runtime_db().agent_bootstraps().upsert(bootstrap)
+    }
+
+    async fn apply_agent_template_bootstrap(&self, bootstrap: &AgentBootstrapRecord) -> Result<()> {
+        let agent_home = self.agent_data_dir(&bootstrap.agent_id);
+        let agents_md = agent_home.join("AGENTS.md");
+        let expected_selector = bootstrap
+            .desired
+            .template
+            .as_deref()
+            .unwrap_or(DEFAULT_AGENT_TEMPLATE_ID);
+        let provenance_path = template_provenance_path(&agent_home);
+        if provenance_path.is_file() {
+            let content = fs::read_to_string(&provenance_path)?;
+            let provenance: TemplateProvenanceRecord = serde_json::from_str(&content)?;
+            anyhow::ensure!(
+                provenance.selector == expected_selector,
+                "agent {} template conflict: expected {:?}, found {:?}",
+                bootstrap.agent_id,
+                expected_selector,
+                provenance.selector
+            );
+            anyhow::ensure!(
+                agents_md.is_file(),
+                "agent {} template marker exists but AGENTS.md is missing",
+                bootstrap.agent_id
+            );
+            return Ok(());
+        }
+        anyhow::ensure!(
+            !agents_md.exists(),
+            "agent {} AGENTS.md already exists without a runtime template marker; repair refuses to overwrite user content",
+            bootstrap.agent_id
+        );
+        let user_home = self.config().home_dir.clone();
+        if let Some(template) = bootstrap.desired.template.as_deref() {
+            if let Some(catalog_agent_home) = bootstrap.desired.catalog_agent_home.as_deref() {
+                ensure_agent_home_agents_md_from_template_with_catalog(
+                    &agent_home,
+                    &user_home,
+                    catalog_agent_home,
+                    template,
+                )
+                .await?;
+            } else {
+                ensure_agent_home_agents_md_from_template_with_home(
+                    &agent_home,
+                    &user_home,
+                    template,
+                )
+                .await?;
+            }
+        } else {
+            ensure_agent_home_agents_md_without_template_with_home(&agent_home, &user_home).await?;
+        }
+        Ok(())
+    }
+
+    async fn apply_agent_workspace_bootstrap(
+        &self,
+        bootstrap: &AgentBootstrapRecord,
+    ) -> Result<()> {
+        let Some(desired) = bootstrap.desired.workspace.as_ref() else {
+            return Ok(());
+        };
+        let runtime = self.get_or_create_agent(&bootstrap.agent_id).await?;
+        let current = runtime.agent_state().await?;
+        if current.attached_workspaces == desired.attached_workspaces
+            && current.execution_profile == desired.execution_profile
+            && current.model_override == desired.inherited_model_override
+            && current.model_override_reasoning_effort
+                == desired.inherited_model_override_reasoning_effort
+        {
+            return Ok(());
+        }
+        let default_state = AgentState::new(bootstrap.agent_id.clone());
+        let initial_workspaces = vec![crate::types::agent_home_workspace_id(&bootstrap.agent_id)];
+        anyhow::ensure!(
+            (current.attached_workspaces == default_state.attached_workspaces
+                || current.attached_workspaces == initial_workspaces)
+                && current.execution_profile == default_state.execution_profile
+                && current.model_override == default_state.model_override
+                && current.model_override_reasoning_effort
+                    == default_state.model_override_reasoning_effort,
+            "agent {} workspace/profile changed after creation; repair refuses to overwrite user state",
+            bootstrap.agent_id
+        );
+        runtime
+            .apply_bootstrap_workspace_state(
+                desired.attached_workspaces.clone(),
+                desired.execution_profile.clone(),
+                desired.inherited_model_override.clone(),
+                desired.inherited_model_override_reasoning_effort.clone(),
+            )
             .await
-            .map_err(|error| {
-                named_agent_create_failed_error(agent_id, AgentCreateStage::Resolved, error)
-            })?;
-        Ok((record, true))
+    }
+
+    async fn apply_agent_model_bootstrap(&self, bootstrap: &AgentBootstrapRecord) -> Result<()> {
+        let Some(resolution) = bootstrap.desired.model_resolution.as_ref() else {
+            return Ok(());
+        };
+        let runtime = self.get_or_create_agent(&bootstrap.agent_id).await?;
+        let current = runtime.agent_state().await?;
+        if resolution.resolution_status == SpawnAgentModelResolutionStatus::Inherited {
+            return Ok(());
+        }
+        let provider = crate::config::ProviderId::parse(&resolution.resolved_provider)?;
+        let expected = crate::config::ModelRouteRef::from_legacy_model_ref(
+            &crate::config::ModelRef::new(provider, resolution.resolved_model.clone()),
+        );
+        let expected_reasoning_effort = resolution
+            .resolved_parameters
+            .as_ref()
+            .and_then(|parameters| parameters.get("reasoning_effort"))
+            .and_then(Value::as_str)
+            .map(ToString::to_string);
+        if current.model_override.as_ref() == Some(&expected)
+            && current.model_override_reasoning_effort == expected_reasoning_effort
+        {
+            return Ok(());
+        }
+        let inherited_model = bootstrap
+            .desired
+            .workspace
+            .as_ref()
+            .and_then(|workspace| workspace.inherited_model_override.as_ref());
+        let inherited_effort = bootstrap
+            .desired
+            .workspace
+            .as_ref()
+            .and_then(|workspace| workspace.inherited_model_override_reasoning_effort.as_ref());
+        anyhow::ensure!(
+            current.model_override.as_ref() == inherited_model
+                && current.model_override_reasoning_effort.as_ref() == inherited_effort,
+            "agent {} model changed after creation; repair refuses to overwrite user state",
+            bootstrap.agent_id
+        );
+        apply_spawn_model_resolution(&runtime, resolution).await
+    }
+
+    async fn apply_agent_initial_message_bootstrap(
+        &self,
+        bootstrap: &AgentBootstrapRecord,
+    ) -> Result<()> {
+        let Some(initial) = bootstrap.desired.initial_message.as_ref() else {
+            return Ok(());
+        };
+        let runtime = self.get_or_create_agent(&bootstrap.agent_id).await?;
+        let mut message = MessageEnvelope::new(
+            bootstrap.agent_id.clone(),
+            MessageKind::InternalFollowup,
+            MessageOrigin::System {
+                subsystem: "spawn_agent".into(),
+            },
+            initial.authority_class,
+            Priority::Normal,
+            MessageBody::Text {
+                text: initial.text.clone(),
+            },
+        )
+        .with_admission(
+            MessageDeliverySurface::RuntimeSystem,
+            AdmissionContext::RuntimeOwned,
+        );
+        message.id = initial.message_id.clone();
+        message.metadata = Some(json!({
+            "spawn_preset": AgentProfilePreset::PublicNamed,
+            "creator_agent_id": initial.creator_agent_id,
+            "spawned_agent_id": bootstrap.agent_id,
+            "bootstrap": true,
+        }));
+        runtime.enqueue(message).await?;
+        Ok(())
+    }
+
+    pub async fn repair_public_agent(
+        &self,
+        agent_id: &str,
+    ) -> std::result::Result<AgentDetail, PublicAgentError> {
+        let identity = self.public_agent_identity(agent_id)?;
+        match identity.status {
+            AgentRegistryStatus::Active => {}
+            AgentRegistryStatus::Deleting => {
+                return Err(PublicAgentError::Deleting {
+                    agent_id: agent_id.to_string(),
+                });
+            }
+            AgentRegistryStatus::Deleted => {
+                return Err(PublicAgentError::Deleted {
+                    agent_id: agent_id.to_string(),
+                });
+            }
+        }
+        self.reconcile_agent_bootstrap(agent_id)
+            .await
+            .map_err(PublicAgentError::Runtime)?;
+        self.public_agent_detail(agent_id)
     }
 
     pub fn get_or_create_agent<'a>(
@@ -3207,6 +3592,26 @@ impl RuntimeHost {
         self.inner.registry.ensure_default_agent_identity()
     }
 
+    fn ensure_legacy_public_agent_bootstraps(&self) -> Result<()> {
+        for identity in self.inner.registry.agent_identity_records()? {
+            if identity.kind != AgentKind::Named
+                || identity.visibility != AgentVisibility::Public
+                || identity.ownership() != AgentOwnership::SelfOwned
+                || self
+                    .runtime_db()
+                    .agent_bootstraps()
+                    .latest(&identity.agent_id)?
+                    .is_some()
+            {
+                continue;
+            }
+            self.runtime_db()
+                .agent_bootstraps()
+                .upsert(&AgentBootstrapRecord::legacy_ready(&identity.agent_id))?;
+        }
+        Ok(())
+    }
+
     async fn ensure_default_agent_home_initialized(&self) -> Result<()> {
         let agent_home = self.agent_data_dir(&self.config().default_agent_id);
         let user_home = self.config().home_dir.clone();
@@ -3523,50 +3928,37 @@ impl RuntimeHost {
     ) -> Result<AgentCreateResult> {
         let parent_state = parent_runtime.agent_state().await?;
         let parent_agent_home = self.agent_data_dir(&parent_state.id);
-        let created = self
-            .create_public_named_agent(
-                agent_id,
-                template.as_deref(),
-                Some(parent_state.id.as_str()),
-                Some(&parent_agent_home),
-            )
-            .await?;
-        let named_runtime = self.get_or_create_agent(&created.identity.agent_id).await?;
-        if created.receipt.created {
-            named_runtime
-                .inherit_attached_workspaces_from_parent_state(&parent_state)
-                .await?;
-        }
-        apply_spawn_model_resolution(&named_runtime, &model_resolution).await?;
-
-        let Some(initial_message) = initial_message else {
-            return Ok(created);
+        let lineage_parent_agent_id = parent_state.id.clone();
+        let desired = AgentBootstrapDesiredState {
+            template,
+            catalog_agent_home: Some(parent_agent_home),
+            workspace: Some(AgentBootstrapWorkspaceState {
+                attached_workspaces:
+                    crate::runtime::workspace::inherited_attached_workspaces_for_agent(
+                        &parent_state,
+                        agent_id,
+                    ),
+                execution_profile: parent_state.execution_profile.clone(),
+                inherited_model_override: parent_state.model_override.clone(),
+                inherited_model_override_reasoning_effort: parent_state
+                    .model_override_reasoning_effort
+                    .clone(),
+            }),
+            model_resolution: Some(model_resolution),
+            initial_message: initial_message.map(|text| AgentBootstrapInitialMessage {
+                message_id: format!("agent_bootstrap_message:{agent_id}"),
+                text,
+                authority_class,
+                creator_agent_id: parent_state.id,
+            }),
         };
-
-        let mut message = crate::types::MessageEnvelope::new(
-            created.identity.agent_id.clone(),
-            crate::types::MessageKind::InternalFollowup,
-            crate::types::MessageOrigin::System {
-                subsystem: "spawn_agent".into(),
-            },
-            authority_class,
-            crate::types::Priority::Normal,
-            crate::types::MessageBody::Text {
-                text: initial_message,
-            },
+        self.create_public_named_agent_with_bootstrap(
+            agent_id,
+            Some(&lineage_parent_agent_id),
+            None,
+            desired,
         )
-        .with_admission(
-            crate::types::MessageDeliverySurface::RuntimeSystem,
-            crate::types::AdmissionContext::RuntimeOwned,
-        );
-        message.metadata = Some(json!({
-            "spawn_preset": AgentProfilePreset::PublicNamed,
-            "creator_agent_id": parent_state.id,
-            "spawned_agent_id": created.identity.agent_id,
-            "bootstrap": true,
-        }));
-        named_runtime.enqueue(message).await?;
-        Ok(created)
+        .await
     }
 
     async fn await_child_terminal_result(
@@ -4569,6 +4961,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn public_named_agent_degraded_template_can_be_repaired_without_recreation() {
+        let (home, host) = test_host();
+
+        let created = host
+            .create_public_named_agent("late-template", Some("late"), None, None)
+            .await
+            .unwrap();
+        assert_eq!(created.receipt.stage, AgentCreateStage::Degraded);
+        assert_eq!(
+            created.receipt.bootstrap.template.status,
+            AgentBootstrapStepStatus::Failed
+        );
+        assert_eq!(created.identity.agent_id, "late-template");
+        assert!(host.public_agent_detail("late-template").is_ok());
+        assert!(
+            host.get_public_agent("late-template").await.is_ok(),
+            "a template failure must not make the committed Agent unusable"
+        );
+
+        let template_dir = home.path().join(".agents/agent_templates/late");
+        fs::create_dir_all(&template_dir).unwrap();
+        fs::write(
+            template_dir.join("AGENTS.md"),
+            "# Late template\n\nrepaired\n",
+        )
+        .unwrap();
+
+        let repaired = host.repair_public_agent("late-template").await.unwrap();
+        assert_eq!(
+            repaired.bootstrap.as_ref().unwrap().status,
+            AgentBootstrapStatus::Ready
+        );
+        assert_eq!(repaired.identity.agent_id, created.identity.agent_id);
+        assert!(
+            fs::read_to_string(host.agent_data_dir("late-template").join("AGENTS.md"))
+                .unwrap()
+                .starts_with("# Late template\n\nrepaired\n")
+        );
+    }
+
+    #[tokio::test]
+    async fn public_named_agent_repair_does_not_overwrite_user_agents_md() {
+        let (home, host) = test_host();
+        let created = host
+            .create_public_named_agent("dirty-template", Some("late"), None, None)
+            .await
+            .unwrap();
+        assert_eq!(created.receipt.stage, AgentCreateStage::Degraded);
+
+        let agents_md = host.agent_data_dir("dirty-template").join("AGENTS.md");
+        fs::write(&agents_md, "# User instructions\n\nkeep me\n").unwrap();
+        let template_dir = home.path().join(".agents/agent_templates/late");
+        fs::create_dir_all(&template_dir).unwrap();
+        fs::write(template_dir.join("AGENTS.md"), "# Runtime template\n").unwrap();
+
+        let repaired = host.repair_public_agent("dirty-template").await.unwrap();
+        let bootstrap = repaired.bootstrap.as_ref().unwrap();
+        assert_eq!(bootstrap.status, AgentBootstrapStatus::Degraded);
+        assert_eq!(bootstrap.template.status, AgentBootstrapStepStatus::Failed);
+        assert!(bootstrap
+            .template
+            .last_error
+            .as_deref()
+            .unwrap()
+            .contains("refuses to overwrite user content"));
+        assert_eq!(
+            fs::read_to_string(agents_md).unwrap(),
+            "# User instructions\n\nkeep me\n"
+        );
+    }
+
+    #[tokio::test]
     async fn unloaded_list_agent_entries_reads_agent_state_from_db_without_agent_json() {
         let home = tempdir().unwrap();
         write_test_model_config(home.path());
@@ -4841,6 +5305,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_public_named_create_has_one_core_commit_winner() {
+        let (_home, host) = test_host();
+        let left_host = host.clone();
+        let right_host = host.clone();
+        let (left, right) = tokio::join!(
+            left_host.create_public_named_agent("create-race", None, None, None),
+            right_host.create_public_named_agent("create-race", None, None, None)
+        );
+
+        let successes = usize::from(left.is_ok()) + usize::from(right.is_ok());
+        assert_eq!(successes, 1);
+        let error = left.err().or_else(|| right.err()).unwrap();
+        let tool_error = ToolError::from_anyhow(&error);
+        assert_eq!(tool_error.kind, "already_exists");
+        assert_eq!(
+            tool_error.domain,
+            Some(crate::runtime_error::RuntimeErrorDomain::Conflict)
+        );
+        let bootstrap = host
+            .runtime_db()
+            .agent_bootstraps()
+            .latest("create-race")
+            .unwrap()
+            .unwrap();
+        assert_eq!(bootstrap.summary().status, AgentBootstrapStatus::Ready);
+    }
+
+    #[tokio::test]
     async fn deleted_public_agent_detail_retains_name_and_rename_is_rejected() {
         let (_home, host) = test_host();
         let _created = host
@@ -4870,6 +5362,14 @@ mod tests {
             .expect_err("deleting agent must not be renamed");
         assert!(matches!(
             rename_error,
+            PublicAgentError::Deleting { ref agent_id } if agent_id == "delete-named"
+        ));
+        let repair_error = host
+            .repair_public_agent("delete-named")
+            .await
+            .expect_err("deleting agent must not accept bootstrap repair");
+        assert!(matches!(
+            repair_error,
             PublicAgentError::Deleting { ref agent_id } if agent_id == "delete-named"
         ));
 
@@ -5439,6 +5939,49 @@ mod tests {
             MessageBody::Text {
                 text: "bootstrap release lane".into()
             }
+        );
+
+        let mut bootstrap_record = host
+            .runtime_db()
+            .agent_bootstraps()
+            .latest("bootstrap-bot")
+            .unwrap()
+            .unwrap();
+        bootstrap_record.desired.initial_message = Some(AgentBootstrapInitialMessage {
+            message_id: "agent_bootstrap_message:bootstrap-bot".into(),
+            text: "bootstrap release lane".into(),
+            authority_class: AuthorityClass::OperatorInstruction,
+            creator_agent_id: host.config().default_agent_id.clone(),
+        });
+        bootstrap_record.initial_message.status = AgentBootstrapStepStatus::Failed;
+        bootstrap_record.initial_message.last_error = Some("injected retry".into());
+        bootstrap_record.revision = bootstrap_record.revision.saturating_add(1);
+        bootstrap_record.updated_at = Utc::now();
+        host.runtime_db()
+            .agent_bootstraps()
+            .upsert(&bootstrap_record)
+            .unwrap();
+
+        let (left, right) = tokio::join!(
+            host.repair_public_agent("bootstrap-bot"),
+            host.repair_public_agent("bootstrap-bot")
+        );
+        assert_eq!(
+            left.unwrap().bootstrap.unwrap().status,
+            AgentBootstrapStatus::Ready
+        );
+        assert_eq!(
+            right.unwrap().bootstrap.unwrap().status,
+            AgentBootstrapStatus::Ready
+        );
+        let messages = bootstrap_named.storage().read_recent_messages(10).unwrap();
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| message.id == "agent_bootstrap_message:bootstrap-bot")
+                .count(),
+            1,
+            "concurrent repair must not duplicate the bootstrap message"
         );
     }
 

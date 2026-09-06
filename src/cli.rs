@@ -799,6 +799,10 @@ pub enum AgentCommands {
         #[arg(long)]
         template: Option<String>,
     },
+    /// Retry incomplete post-create bootstrap steps
+    Repair {
+        agent_id: String,
+    },
     Start {
         agent_id: Option<String>,
     },

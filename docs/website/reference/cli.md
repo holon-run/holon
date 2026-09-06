@@ -140,6 +140,7 @@ holon run --trust untrusted-external "User query"      # mark trust level
 
 ```bash
 holon agent create reviewer --template holon-reviewer
+holon agent repair reviewer
 holon run --agent reviewer "Review src/runtime/turn.rs"
 ```
 
@@ -162,6 +163,10 @@ holon agent delete reviewer --yes
 Pass `--cascade-private-children` to also remove its private child agents and
 `--wait` to block until the deletion job completes. It requires `--yes` in
 non-interactive mode.
+
+`holon agent repair <AGENT_ID>` retries incomplete post-create template,
+runtime, workspace, model, and initial-message steps. It does not recreate the
+Agent or overwrite conflicting user-managed state.
 
 ### Model selection
 

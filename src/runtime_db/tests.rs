@@ -21,10 +21,11 @@ use crate::runtime_db::{
 };
 #[cfg(test)]
 use crate::types::{
-    AgentIdentityRecord, AgentState, AuditEvent, BriefRecord, CallbackDeliveryMode,
-    ExecutionRootEntry, ExternalTriggerRecord, ExternalTriggerScope, ExternalTriggerStatus,
-    MessageEnvelope, QueueEntryRecord, QueueEntryStatus, TaskRecord, TaskStatus,
-    ToolExecutionRecord, TranscriptEntry, TranscriptEntryKind, TurnOwner, TurnRecord,
+    AgentBootstrapDesiredState, AgentBootstrapRecord, AgentBootstrapStatus,
+    AgentBootstrapStepStatus, AgentIdentityRecord, AgentState, AuditEvent, BriefRecord,
+    CallbackDeliveryMode, ExecutionRootEntry, ExternalTriggerRecord, ExternalTriggerScope,
+    ExternalTriggerStatus, MessageEnvelope, QueueEntryRecord, QueueEntryStatus, TaskRecord,
+    TaskStatus, ToolExecutionRecord, TranscriptEntry, TranscriptEntryKind, TurnOwner, TurnRecord,
     WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WorkItemRecord, WorkItemState,
     WorkspaceEntry, WorkspaceOccupancyRecord,
 };
@@ -1691,6 +1692,48 @@ INSERT INTO storage_domains (
             current_schema_version(&connection)?,
             max_known_migration_version()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn agent_bootstrap_repository_round_trips_across_reopen() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        {
+            let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+            let identity = agent_identity("bootstrap-agent", 0);
+            let bootstrap = AgentBootstrapRecord::new(
+                "bootstrap-agent",
+                AgentBootstrapDesiredState {
+                    template: Some("worker".into()),
+                    catalog_agent_home: None,
+                    workspace: None,
+                    model_resolution: None,
+                    initial_message: None,
+                },
+            );
+            db.agent_identities()
+                .create_with_bootstrap(&identity, &bootstrap)?;
+        }
+
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let mut bootstrap = reopened
+            .agent_bootstraps()
+            .latest("bootstrap-agent")?
+            .expect("bootstrap state should survive reopen");
+        assert_eq!(bootstrap.summary().status, AgentBootstrapStatus::Degraded);
+        assert_eq!(bootstrap.template.status, AgentBootstrapStepStatus::Pending);
+
+        bootstrap.template.status = AgentBootstrapStepStatus::Succeeded;
+        bootstrap.runtime.status = AgentBootstrapStepStatus::Succeeded;
+        bootstrap.revision = bootstrap.revision.saturating_add(1);
+        bootstrap.updated_at = Utc::now();
+        reopened.agent_bootstraps().upsert(&bootstrap)?;
+
+        let updated = reopened
+            .agent_bootstraps()
+            .latest("bootstrap-agent")?
+            .expect("updated bootstrap state should exist");
+        assert_eq!(updated.summary().status, AgentBootstrapStatus::Ready);
         Ok(())
     }
 

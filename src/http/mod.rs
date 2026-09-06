@@ -480,6 +480,10 @@ pub fn router(state: AppState) -> Router {
             get(control::agent_detail),
         )
         .route(
+            "/control/agents/{agent_id}/repair",
+            post(control::repair_agent),
+        )
+        .route(
             "/control/agents/{agent_id}/name",
             patch(control::rename_agent),
         )

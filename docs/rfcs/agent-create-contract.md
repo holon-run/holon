@@ -1,11 +1,11 @@
 # Canonical Agent Create Contract
 
-Status: implementation baseline for Phase 0; the runtime service described here
-is introduced by Phase 1.
+Status: implemented through Phase 3. Phase 1 introduced the canonical create
+service, Phase 2 added canonical identity detail, and Phase 3 added durable
+post-commit bootstrap reconciliation.
 
-This RFC defines the contract shared by `SpawnAgent` and future operator/control
-plane creation entrypoints. It does not add a storage migration, an HTTP route,
-or a new invocation surface.
+This RFC defines the contract shared by `SpawnAgent` and operator/control plane
+creation entrypoints.
 
 ## 1. Terms and invariants
 
@@ -88,9 +88,11 @@ The canonical service executes these stages in order:
    `Active`, `Deleting`, and `Deleted` records and never reuses any of them.
 4. **Persist profile** with the selected preset and non-secret creation
    metadata.
-5. **Resolve template, workspace, and model** against the reserved identity.
-6. **Bootstrap**, if requested. Bootstrap is allowed only for the newly
-   reserved identity.
+5. **Commit bootstrap desired state** with the identity. The committed record
+   contains only the normalized inputs needed to finish template, runtime,
+   workspace, model, and initial-message steps.
+6. **Reconcile post-commit steps** in a fixed order. Bootstrap is allowed only
+   for the newly reserved identity or through explicit repair.
 7. **Publish a bounded receipt** after the committed state transition.
 
 Reservation is the idempotency boundary. A concurrent or repeated request for
@@ -99,11 +101,17 @@ an already-reserved public id returns `already_exists` or
 different create intent. It does not return the existing agent as a successful
 new result, send `initial_message`, or replace its model/profile.
 
-If a later stage fails, the receipt must identify the last committed stage and
-the resulting lifecycle state. Retry behavior is stage-specific: a caller may
-retry a failed resolution/bootstrap operation only through an explicit repair
-or retry contract added after Phase 0; it must not retry by issuing an
-unqualified create against the same identity.
+If a post-commit stage fails, the Agent remains `Active` and addressable. The
+create receipt reports `degraded` bootstrap state and a bounded per-step error;
+it does not roll the Agent back or disguise the partial result as ready. A
+caller retries only through explicit repair, never by issuing another create
+against the reserved identity.
+
+Repair is idempotent and serialized per Agent. It skips successful steps,
+uses a stable message id for the initial message, and replays the workspace and
+model targets captured at creation time rather than reading mutable parent
+state. Template, workspace/profile, and model repair refuse to overwrite
+conflicting user changes. `Deleting` and `Deleted` identities reject repair.
 
 ## 5. Typed errors
 
@@ -117,7 +125,7 @@ The service-level error taxonomy is stable even when transport mappings differ:
 | `identity_conflict` | requested id/name conflicts with a different intent | No mutation of the existing identity |
 | `lifecycle_conflict` | identity is deleting, deleted, or otherwise fenced | Identity remains reserved |
 | `unsupported_capability` | template, workspace, or model capability is unavailable | Receipt reports whether reservation committed |
-| `bootstrap_failed` | profile was created but bootstrap did not complete | Receipt reports committed identity and failure stage |
+| `bootstrap_failed` | retained compatibility error for callers that cannot receive a degraded result | Identity remains committed; repair is explicit |
 
 Transport errors may wrap these codes, but callers must not have to parse
 human-readable error strings to distinguish them.
@@ -131,8 +139,9 @@ CreateReceipt {
   receipt_id
   agent_id?: technical identity, if reserved
   preset
-  stage: validated | reserved | profiled | resolved | bootstrapped | failed
+  stage: reserved | profiled | resolved | degraded | bootstrapped
   lifecycle: active | deleting | deleted | failed
+  bootstrap: ready | degraded, with bounded per-step status/error
   task_id?: private-child supervision linkage
   work_item_id?: linkage when one exists
   model_summary?: provider/model/capability summary without credentials
@@ -180,7 +189,9 @@ transport adapters:
 | public worktree | `public_named` + `workspace_mode=worktree` | `unsupported_capability`/transport invalid input; no reservation |
 | forged provenance | request supplies `origin`, `trust`, or `authority` | Strict schema rejects or trusted context wins; no elevation |
 | lifecycle fence | id is `Active`, `Deleting`, or `Deleted` | `already_exists` or `lifecycle_conflict`; never recreate |
-| bootstrap failure | failure after reservation | `bootstrap_failed` receipt identifies reserved identity/stage and omits message |
+| bootstrap failure | failure after core commit | successful create result identifies the active Agent as `degraded`; explicit repair retries incomplete steps |
+| repair replay | repeat or concurrent repair | successful steps are skipped and initial message is enqueued at most once |
+| repair conflict | user changed managed file/workspace/model before repair | degraded conflict; user state is not overwritten |
 | name normalization | equivalent normalized names in one namespace | First succeeds, second is `identity_conflict` |
 | tombstone name | name belongs to deleted/tombstoned identity | Conflict; no silent reuse |
 

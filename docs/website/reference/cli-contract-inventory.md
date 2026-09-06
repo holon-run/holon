@@ -128,6 +128,7 @@ These commands require a reachable local control plane unless noted otherwise.
 | `holon agent list` | none | none | JSON agent entries | `stable` candidate | Public multi-agent inspection surface. |
 | `holon agent status` | optional `[AGENT_ID]` | none | JSON agent status | `stable` candidate | Positional agent id; defaults to configured default agent. |
 | `holon agent create` | `<AGENT_ID>` | `--template <TEMPLATE>` | pretty JSON control-plane response | `stable` candidate | Template identifier contract should align with agent initialization docs. |
+| `holon agent repair` | `<AGENT_ID>` | none | pretty JSON `AgentDetail` | `experimental` | Retries incomplete post-create bootstrap steps without recreating the Agent. |
 | `holon agent start` | optional `[AGENT_ID]` | none | JSON lifecycle control response | `stable` candidate | Replacement for deprecated `control start`. |
 | `holon agent stop` | optional `[AGENT_ID]` | none | JSON lifecycle control response | `stable` candidate | Replacement for deprecated `control stop`. |
 | `holon agent abort` | optional `[AGENT_ID]` | none | pretty JSON control-plane response | `stable` candidate | Replacement for deprecated `control abort`; shares the lifecycle JSON output path with start/stop. |

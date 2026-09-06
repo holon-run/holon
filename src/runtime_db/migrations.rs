@@ -3271,6 +3271,24 @@ CREATE INDEX IF NOT EXISTS idx_auth_sessions_expiry
         name: "agent_display_names",
         sql: "",
     },
+    Migration {
+        version: 58,
+        name: "agent_bootstrap_reconcile",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS agent_bootstraps (
+  agent_id TEXT PRIMARY KEY,
+  status TEXT NOT NULL CHECK (status IN ('ready', 'degraded')),
+  revision INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  FOREIGN KEY (agent_id) REFERENCES agent_identities(agent_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_bootstraps_status
+  ON agent_bootstraps(status, updated_at);
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

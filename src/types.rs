@@ -455,7 +455,187 @@ pub enum AgentCreateStage {
     Reserved,
     Profiled,
     Resolved,
+    Degraded,
     Bootstrapped,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentBootstrapStatus {
+    Ready,
+    Degraded,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentBootstrapStepStatus {
+    Pending,
+    Succeeded,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct AgentBootstrapStep {
+    pub status: AgentBootstrapStepStatus,
+    #[serde(default)]
+    pub attempts: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl AgentBootstrapStep {
+    pub fn pending(now: DateTime<Utc>) -> Self {
+        Self {
+            status: AgentBootstrapStepStatus::Pending,
+            attempts: 0,
+            last_error: None,
+            updated_at: now,
+        }
+    }
+
+    pub fn succeeded(now: DateTime<Utc>) -> Self {
+        Self {
+            status: AgentBootstrapStepStatus::Succeeded,
+            attempts: 0,
+            last_error: None,
+            updated_at: now,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentBootstrapInitialMessage {
+    pub message_id: String,
+    pub text: String,
+    pub authority_class: AuthorityClass,
+    pub creator_agent_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentBootstrapWorkspaceState {
+    pub attached_workspaces: Vec<String>,
+    pub execution_profile: ExecutionProfile,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inherited_model_override: Option<ModelRouteRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inherited_model_override_reasoning_effort: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentBootstrapDesiredState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_agent_home: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<AgentBootstrapWorkspaceState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_resolution: Option<SpawnAgentModelResolution>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_message: Option<AgentBootstrapInitialMessage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentBootstrapRecord {
+    pub agent_id: String,
+    pub desired: AgentBootstrapDesiredState,
+    pub template: AgentBootstrapStep,
+    pub runtime: AgentBootstrapStep,
+    pub workspace: AgentBootstrapStep,
+    pub model: AgentBootstrapStep,
+    pub initial_message: AgentBootstrapStep,
+    #[serde(default)]
+    pub revision: u64,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct AgentBootstrapSummary {
+    pub status: AgentBootstrapStatus,
+    pub template: AgentBootstrapStep,
+    pub runtime: AgentBootstrapStep,
+    pub workspace: AgentBootstrapStep,
+    pub model: AgentBootstrapStep,
+    pub initial_message: AgentBootstrapStep,
+}
+
+impl AgentBootstrapRecord {
+    pub fn new(agent_id: impl Into<String>, desired: AgentBootstrapDesiredState) -> Self {
+        let now = Utc::now();
+        Self {
+            agent_id: agent_id.into(),
+            template: AgentBootstrapStep::pending(now),
+            runtime: AgentBootstrapStep::pending(now),
+            workspace: if desired.workspace.is_some() {
+                AgentBootstrapStep::pending(now)
+            } else {
+                AgentBootstrapStep::succeeded(now)
+            },
+            model: if desired.model_resolution.is_some() {
+                AgentBootstrapStep::pending(now)
+            } else {
+                AgentBootstrapStep::succeeded(now)
+            },
+            initial_message: if desired.initial_message.is_some() {
+                AgentBootstrapStep::pending(now)
+            } else {
+                AgentBootstrapStep::succeeded(now)
+            },
+            desired,
+            revision: 0,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    pub fn summary(&self) -> AgentBootstrapSummary {
+        let steps = [
+            &self.template,
+            &self.runtime,
+            &self.workspace,
+            &self.model,
+            &self.initial_message,
+        ];
+        AgentBootstrapSummary {
+            status: if steps
+                .iter()
+                .all(|step| step.status == AgentBootstrapStepStatus::Succeeded)
+            {
+                AgentBootstrapStatus::Ready
+            } else {
+                AgentBootstrapStatus::Degraded
+            },
+            template: self.template.clone(),
+            runtime: self.runtime.clone(),
+            workspace: self.workspace.clone(),
+            model: self.model.clone(),
+            initial_message: self.initial_message.clone(),
+        }
+    }
+
+    pub fn legacy_ready(agent_id: impl Into<String>) -> Self {
+        let now = Utc::now();
+        Self {
+            agent_id: agent_id.into(),
+            desired: AgentBootstrapDesiredState {
+                template: None,
+                catalog_agent_home: None,
+                workspace: None,
+                model_resolution: None,
+                initial_message: None,
+            },
+            template: AgentBootstrapStep::succeeded(now),
+            runtime: AgentBootstrapStep::succeeded(now),
+            workspace: AgentBootstrapStep::succeeded(now),
+            model: AgentBootstrapStep::succeeded(now),
+            initial_message: AgentBootstrapStep::succeeded(now),
+            revision: 0,
+            created_at: now,
+            updated_at: now,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -469,6 +649,7 @@ pub struct AgentCreateReceipt {
     pub stage: AgentCreateStage,
     pub lifecycle: AgentRegistryStatus,
     pub created: bool,
+    pub bootstrap: AgentBootstrapSummary,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -485,6 +666,8 @@ pub struct AgentDetail {
     pub display_name: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bootstrap: Option<AgentBootstrapSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deletion: Option<AgentDeletionJob>,
 }

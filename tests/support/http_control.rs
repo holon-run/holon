@@ -20,10 +20,10 @@ use holon::{
     provider::{AgentProvider, StubProvider},
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
     types::{
-        AdmissionContext, AgentState, AgentStatus, AuthorityClass, BriefKind, BriefRecord,
-        CallbackDeliveryMode, CommandTaskSpec, ContinuationClass, ControlAction, MessageBody,
-        MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, Priority, TodoItem,
-        TodoItemState, WorkItemState,
+        AdmissionContext, AgentBootstrapStatus, AgentState, AgentStatus, AuthorityClass, BriefKind,
+        BriefRecord, CallbackDeliveryMode, CommandTaskSpec, ContinuationClass, ControlAction,
+        MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, Priority,
+        TodoItem, TodoItemState, WorkItemState,
     },
 };
 use reqwest::Client;
@@ -48,6 +48,43 @@ pub async fn control_prompt_is_open_on_loopback_auto() -> Result<()> {
         .send()
         .await?;
     assert!(response.status().is_success());
+    server.abort();
+    Ok(())
+}
+
+pub async fn control_agent_create_returns_degraded_receipt_and_repairs() -> Result<()> {
+    let host = RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ok")))?;
+    let (base, server) = spawn_server_for_host(host.clone()).await?;
+    let client = Client::new();
+
+    let create = client
+        .post(format!("{base}/api/control/agents/repair-me/create"))
+        .json(&serde_json::json!({ "template": "late" }))
+        .send()
+        .await?;
+    assert_eq!(create.status(), reqwest::StatusCode::OK);
+    let created: serde_json::Value = create.json().await?;
+    assert_eq!(created["receipt"]["stage"], "degraded");
+    assert_eq!(created["receipt"]["bootstrap"]["status"], "degraded");
+    assert_eq!(created["identity"]["agent_id"], "repair-me");
+
+    let template_dir = host.config().home_dir.join(".agents/agent_templates/late");
+    std::fs::create_dir_all(&template_dir)?;
+    std::fs::write(template_dir.join("AGENTS.md"), "# Repaired\n")?;
+
+    let repaired = client
+        .post(format!("{base}/api/control/agents/repair-me/repair"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await?;
+    assert_eq!(repaired.status(), reqwest::StatusCode::OK);
+    let repaired: serde_json::Value = repaired.json().await?;
+    assert_eq!(
+        repaired["bootstrap"]["status"],
+        serde_json::to_value(AgentBootstrapStatus::Ready)?
+    );
+    assert_eq!(repaired["identity"]["agent_id"], "repair-me");
+
     server.abort();
     Ok(())
 }

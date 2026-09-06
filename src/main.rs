@@ -1363,6 +1363,17 @@ mod tests {
     }
 
     #[test]
+    fn agent_repair_command_requires_positional_agent_id() {
+        let cli = Cli::parse_from(["holon", "agent", "repair", "foo"]);
+        assert!(matches!(
+            cli.command,
+            Commands::Agent {
+                command: Some(AgentCommands::Repair { agent_id })
+            } if agent_id == "foo"
+        ));
+    }
+
+    #[test]
     fn agent_model_commands_use_positional_agent_id() {
         let cli = Cli::parse_from(["holon", "agent", "model", "get", "foo"]);
         let Commands::Agent {
@@ -4423,6 +4434,12 @@ async fn handle_agent_command(config: &AppConfig, command: Option<AgentCommands>
                 },
             )
             .await
+        }
+        Some(AgentCommands::Repair { agent_id }) => {
+            let client = LocalClient::new(config.clone())?;
+            print_json(&serde_json::to_value(
+                client.repair_agent(&agent_id).await?,
+            )?)
         }
         Some(AgentCommands::Start { agent_id }) => {
             control_agent_lifecycle(config, agent_id, ControlAction::Start).await

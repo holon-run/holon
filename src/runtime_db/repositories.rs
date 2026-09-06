@@ -391,6 +391,29 @@ impl AgentIdentityRepository<'_> {
             .transaction(|tx| upsert_agent_identity_tx(tx, record))
     }
 
+    pub fn create_with_bootstrap(
+        &self,
+        identity: &AgentIdentityRecord,
+        bootstrap: &AgentBootstrapRecord,
+    ) -> Result<()> {
+        self.db.transaction(|tx| {
+            let existing = tx
+                .query_row(
+                    "SELECT agent_id FROM agent_identities WHERE agent_id = ?1",
+                    [&identity.agent_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            anyhow::ensure!(
+                existing.is_none(),
+                "agent_identity_conflict: agent {} already exists",
+                identity.agent_id
+            );
+            upsert_agent_identity_tx(tx, identity)?;
+            upsert_agent_bootstrap_tx(tx, bootstrap)
+        })
+    }
+
     pub fn latest_all(&self) -> Result<Vec<AgentIdentityRecord>> {
         let connection = self.db.connection()?;
         let mut statement = connection.prepare(
@@ -476,6 +499,28 @@ impl AgentIdentityRepository<'_> {
             append_audit_event_tx(tx, Some(agent_id), &event)?;
             Ok(identity)
         })
+    }
+}
+
+impl AgentBootstrapRepository<'_> {
+    pub fn upsert(&self, record: &AgentBootstrapRecord) -> Result<()> {
+        self.db
+            .transaction(|tx| upsert_agent_bootstrap_tx(tx, record))
+    }
+
+    pub fn latest(&self, agent_id: &str) -> Result<Option<AgentBootstrapRecord>> {
+        let connection = self.db.connection()?;
+        connection
+            .query_row(
+                "SELECT payload_json FROM agent_bootstraps WHERE agent_id = ?1",
+                [agent_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|payload| {
+                serde_json::from_str(&payload).context("decoding agent bootstrap payload")
+            })
+            .transpose()
     }
 }
 
@@ -4779,6 +4824,32 @@ pub(crate) fn decode_wait_condition_row(row: &rusqlite::Row<'_>) -> Result<WaitC
         trigger_message_id,
         triggered_at: parse_optional_timestamp(triggered_at_str.as_deref())?,
     })
+}
+
+fn upsert_agent_bootstrap_tx(tx: &Transaction<'_>, record: &AgentBootstrapRecord) -> Result<()> {
+    let payload_json = serde_json::to_string(record)?;
+    let status = enum_string(&record.summary().status)?;
+    tx.execute(
+        "INSERT INTO agent_bootstraps (
+            agent_id, status, revision, created_at, updated_at, payload_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(agent_id) DO UPDATE SET
+            status = excluded.status,
+            revision = excluded.revision,
+            created_at = excluded.created_at,
+            updated_at = excluded.updated_at,
+            payload_json = excluded.payload_json
+         WHERE excluded.revision > agent_bootstraps.revision",
+        params![
+            record.agent_id,
+            status,
+            record.revision,
+            timestamp(record.created_at),
+            timestamp(record.updated_at),
+            payload_json,
+        ],
+    )?;
+    Ok(())
 }
 
 pub(crate) fn decode_queue_entry_payload(payload: &str) -> Result<QueueEntryRecord> {

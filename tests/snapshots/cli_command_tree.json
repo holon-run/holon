@@ -158,6 +158,19 @@
     "aliases": []
   },
   {
+    "path": "agent.repair",
+    "positionals": [
+      {
+        "name": "agent_id",
+        "value_name": "AGENT_ID",
+        "index": null,
+        "required": true
+      }
+    ],
+    "flags": [],
+    "aliases": []
+  },
+  {
     "path": "agent.reset-callback",
     "positionals": [],
     "flags": [

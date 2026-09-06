@@ -479,25 +479,28 @@ pub async fn create_agent(
         )
         .await
         .map_err(error_response)?;
-    let runtime = state
+    let audit = crate::types::AuditEvent::legacy(
+        "agent_created",
+        json!({
+            "target_agent_id": agent_id,
+            "admission_context": admission_context,
+            "provided_trust": provided_trust,
+            "receipt_id": created.receipt.receipt_id,
+            "bootstrap": created.receipt.bootstrap,
+        }),
+    );
+    if let Err(error) = state
         .host
-        .get_public_agent(&agent_id)
-        .await
-        .map_err(agent_access_error)?;
-    let boundary = current_boundary_metadata(&runtime)
-        .await
-        .map_err(error_response)?;
-    runtime
-        .append_audit_event(
-            "agent_created",
-            json!({
-                "target_agent_id": agent_id,
-                "admission_context": admission_context,
-                "provided_trust": provided_trust,
-                "boundary": boundary,
-            }),
-        )
-        .map_err(error_response)?;
+        .runtime_db()
+        .audit_events()
+        .append(Some(&agent_id), &audit)
+    {
+        tracing::warn!(
+            agent_id,
+            error = %error,
+            "agent core commit succeeded but agent_created audit append failed"
+        );
+    }
     Ok(Json(created))
 }
 
@@ -510,6 +513,20 @@ pub async fn agent_detail(
     let detail = state
         .host
         .public_agent_detail(&agent_id)
+        .map_err(agent_access_error)?;
+    Ok(Json(detail))
+}
+
+pub async fn repair_agent(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let detail = state
+        .host
+        .repair_public_agent(&agent_id)
+        .await
         .map_err(agent_access_error)?;
     Ok(Json(detail))
 }

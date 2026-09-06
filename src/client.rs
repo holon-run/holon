@@ -741,6 +741,14 @@ impl LocalClient {
         .await
     }
 
+    pub async fn repair_agent(&self, agent_id: &str) -> Result<crate::types::AgentDetail> {
+        self.post_control_json(
+            &format!("/control/agents/{agent_id}/repair"),
+            &serde_json::json!({}),
+        )
+        .await
+    }
+
     pub async fn attach_workspace(
         &self,
         agent_id: &str,

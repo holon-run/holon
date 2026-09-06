@@ -110,7 +110,7 @@ use crate::{
     },
     storage::{to_json_value, AppStorage, PollActivityMarker},
     system::{
-        EffectiveExecution, ExecutionScopeKind, ExecutionSnapshot, LocalSystem,
+        EffectiveExecution, ExecutionProfile, ExecutionScopeKind, ExecutionSnapshot, LocalSystem,
         WorkspaceAccessMode, WorkspaceProjectionKind, WorkspaceView,
     },
     tool::{ToolRegistry, ToolResult},
@@ -3161,6 +3161,7 @@ impl RuntimeHandle {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) async fn inherit_attached_workspaces_from_parent_state(
         &self,
         parent_state: &AgentState,
@@ -3179,6 +3180,46 @@ impl RuntimeHandle {
             )?;
             next_state.execution_profile = parent_state.execution_profile.clone();
             next_state.model_override = parent_state.model_override.clone();
+            next_state
+        };
+        if self
+            .inner
+            .config_snapshot
+            .load()
+            .provider_reconfig
+            .is_some()
+        {
+            self.reconfigure_provider_for_state(&next_state).await?;
+        }
+        self.update_agent_state(|state| {
+            *state = next_state;
+            Ok(())
+        })
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn apply_bootstrap_workspace_state(
+        &self,
+        attached_workspaces: Vec<String>,
+        execution_profile: ExecutionProfile,
+        model_override: Option<crate::config::ModelRouteRef>,
+        model_override_reasoning_effort: Option<String>,
+    ) -> Result<()> {
+        let next_state = {
+            let guard = self.inner.agent.lock().await;
+            let mut next_state = guard.state.clone();
+            next_state.attached_workspaces = attached_workspaces;
+            next_state.active_workspace_entry = None;
+            next_state.worktree_session = None;
+            workspace::canonicalize_agent_home_bindings(
+                &mut next_state,
+                self.inner.storage.data_dir(),
+                &guard.state.id,
+            )?;
+            next_state.execution_profile = execution_profile;
+            next_state.model_override = model_override;
+            next_state.model_override_reasoning_effort = model_override_reasoning_effort;
             next_state
         };
         if self
