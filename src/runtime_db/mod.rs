@@ -10,6 +10,7 @@
 //! - [`repositories`]: domain repository implementations.
 //! - [`index_outbox`]: runtime index outbox repository.
 
+pub mod agent_relations;
 pub mod audit;
 pub mod authentication;
 pub mod connection;
@@ -56,9 +57,9 @@ pub use crate::runtime_db::retired_scheduler_cleanup::{
 };
 pub use crate::runtime_db::storage_domain::{ExpectedStorageDomain, StorageDomainSnapshot};
 pub use crate::runtime_db::types::{
-    AgentBootstrapRepository, AgentDeletionRepository, AgentIdentityRepository,
-    AgentStateRepository, AuditEventSink, ContextEpisodeRepository, EvidenceRepository,
-    ExecutionRootEntryRepository, ExternalTriggerRepository, MessageRepository,
+    AgentBootstrapRepository, AgentCanonicalRelationRepository, AgentDeletionRepository,
+    AgentIdentityRepository, AgentStateRepository, AuditEventSink, ContextEpisodeRepository,
+    EvidenceRepository, ExecutionRootEntryRepository, ExternalTriggerRepository, MessageRepository,
     OperatorDeliveryRepository, OperatorNotificationRepository, OperatorTransportBindingRepository,
     QueueEntryRepository, TaskRepository, TimerRepository, TranscriptRepository,
     TurnRecordRepository, WaitConditionRepository, WorkItemContinuationRepository,
@@ -525,6 +526,10 @@ impl RuntimeDb {
 
     pub fn agent_identities(&self) -> AgentIdentityRepository<'_> {
         AgentIdentityRepository { db: self }
+    }
+
+    pub fn agent_canonical_relations(&self) -> AgentCanonicalRelationRepository<'_> {
+        AgentCanonicalRelationRepository { db: self }
     }
 
     pub fn agent_bootstraps(&self) -> AgentBootstrapRepository<'_> {

@@ -9,7 +9,7 @@ use unicode_casefold::UnicodeCaseFold;
 
 use crate::config::ModelRouteRef;
 use crate::domain::scheduler::{ScenarioMode, SchedulerScenarioClass};
-pub use crate::domain::{agent_home_workspace_id, work_item::*, AGENT_HOME_WORKSPACE_ID};
+pub use crate::domain::{agent::*, agent_home_workspace_id, work_item::*, AGENT_HOME_WORKSPACE_ID};
 use crate::ids;
 use crate::model_catalog::ResolvedRuntimeModelPolicy;
 use crate::runtime_error::{RuntimeErrorContext, RuntimeErrorDomain};

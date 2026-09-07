@@ -120,6 +120,7 @@ pub(crate) struct AgentProjectionSnapshotData {
     pub event_head_seq: u64,
     pub oldest_retained_seq: u64,
     pub agent: AgentListEntry,
+    pub canonical_relations: crate::types::AgentCanonicalRelationsProjection,
     pub current_work_item: Option<AgentWorkItemAnchorData>,
     pub conversation: ConversationRevisionAnchorsData,
     pub latest_brief: Option<AgentRosterLatestBriefData>,
@@ -3216,6 +3217,7 @@ impl RuntimeHost {
             event_head_seq: row.event_head_seq,
             oldest_retained_seq: row.oldest_retained_seq,
             agent,
+            canonical_relations: row.canonical_relations,
             current_work_item,
             conversation: ConversationRevisionAnchorsData {
                 latest_message_id: row.latest_message_id,

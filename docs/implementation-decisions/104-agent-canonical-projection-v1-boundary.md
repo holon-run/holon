@@ -28,3 +28,17 @@ OpenAPI keeps the embedded agent entry as a conservative baseline object
 (`AgentListEntry`) until the agents/list DTO stabilizes under a named schema;
 the Rust DTO reuses the concrete `AgentListEntry` type so fixtures round-trip
 the real wire shape.
+
+## v2 additive relation projection
+
+`contract_version = 2` adds the flattened
+`AgentCanonicalRelationsProjection`. Each relation or policy axis independently
+prefers its normalized canonical record and falls back through the single
+legacy compatibility mapper only when that axis is absent. Ambiguous, missing,
+or contradictory evidence is represented in the projection rather than
+silently guessed.
+
+The v1 history boundary is unchanged: v2 still excludes timelines, transcript
+content, message content, and full Brief text. Observer roster membership also
+remains on the legacy public scope in this phase; operator tree expansion is a
+separate contract change.

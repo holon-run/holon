@@ -1,5 +1,5 @@
 {
-  "contract_version": 1,
+  "contract_version": 2,
   "runtime_id": "rt_example_installation",
   "event_log_epoch": "epoch_2026_08_18_example",
   "visibility_scope_id": "scope_public_local_example",
@@ -34,6 +34,74 @@
         "effective_model": "example-provider@default/example-model",
         "fallback_active": false
       }
+    },
+    "relations": {
+      "agent_id": "worker-a",
+      "identity_lifecycle": "active",
+      "lifecycle_fence": "open",
+      "durability": {
+        "agent_id": "worker-a",
+        "durability": "persistent",
+        "revision": 0,
+        "created_at": "2026-08-18T06:00:00Z"
+      },
+      "lifecycle_attachment": {
+        "agent_id": "worker-a",
+        "attachment": "independent",
+        "revision": 0,
+        "created_at": "2026-08-18T06:00:00Z"
+      },
+      "capability_policy": {
+        "agent_id": "worker-a",
+        "revision": 0,
+        "rules": [
+          {
+            "family": "core_agent",
+            "effect": "allow"
+          },
+          {
+            "family": "local_environment",
+            "effect": "allow"
+          },
+          {
+            "family": "web",
+            "effect": "allow"
+          },
+          {
+            "family": "agent_creation",
+            "effect": "allow"
+          },
+          {
+            "family": "authority_expanding",
+            "effect": "allow"
+          },
+          {
+            "family": "external_trigger",
+            "effect": "allow"
+          }
+        ],
+        "created_at": "2026-08-18T06:00:00Z"
+      },
+      "message_policy": {
+        "agent_id": "worker-a",
+        "revision": 0,
+        "default_effect": "deny",
+        "rules": [
+          {
+            "principal_kind": "operator",
+            "route": "operator_control",
+            "effect": "allow"
+          }
+        ],
+        "created_at": "2026-08-18T06:00:00Z"
+      },
+      "sources": {
+        "durability": "legacy",
+        "lifecycle_attachment": "legacy",
+        "capability_policy": "legacy",
+        "message_policy": "legacy"
+      },
+      "resolution": "resolved"
     },
     "current_work_item": {
       "work_item_id": "work_example_current",

@@ -33,7 +33,7 @@ pub(crate) const PROJECTION_EFFECT_CAPABILITY: &str = "events.projection-effect.
 pub(crate) const ATOMIC_BRIEF_CREATED_EVENT_CAPABILITY: &str = "briefs.atomic-created-event.v1";
 
 pub(crate) const AGENT_ROSTER_SNAPSHOT_CONTRACT_VERSION: u32 = 1;
-pub(crate) const AGENT_PROJECTION_SNAPSHOT_CONTRACT_VERSION: u32 = 1;
+pub(crate) const AGENT_PROJECTION_SNAPSHOT_CONTRACT_VERSION: u32 = 2;
 
 /// Upper bound for `AgentLatestBrief::preview`, in UTF-8 bytes.
 pub(crate) const LATEST_BRIEF_PREVIEW_MAX_UTF8_BYTES: usize = 512;
@@ -170,6 +170,9 @@ pub(crate) struct AgentProjectionSnapshot {
 pub(crate) struct AgentCanonicalProjection {
     /// Lifecycle, posture, and compact card facts.
     pub(crate) agent: AgentListEntry,
+    /// Independent canonical relation and policy axes. Missing normalized
+    /// records fall back through one explicit legacy compatibility mapper.
+    pub(crate) relations: crate::types::AgentCanonicalRelationsProjection,
     /// Current focused/open WorkItem anchor; `null` when none exists.
     pub(crate) current_work_item: Option<AgentWorkItemAnchor>,
     pub(crate) conversation: ConversationRevisionAnchors,
@@ -517,6 +520,7 @@ pub async fn agent_projection_snapshot(
                     oldest_retained_seq: snapshot.oldest_retained_seq,
                     projection: AgentCanonicalProjection {
                         agent: snapshot.agent,
+                        relations: snapshot.canonical_relations,
                         current_work_item: snapshot.current_work_item.map(|work_item| {
                             AgentWorkItemAnchor {
                                 work_item_id: work_item.work_item_id,
@@ -1111,7 +1115,10 @@ mod tests {
 
             let (status, body) = get_projection_snapshot(AppState::for_tcp(host), "web").await;
             assert_eq!(status, StatusCode::OK);
-            assert_eq!(body["contract_version"], 1);
+            assert_eq!(
+                body["contract_version"],
+                AGENT_PROJECTION_SNAPSHOT_CONTRACT_VERSION
+            );
             assert_eq!(body["agent_id"], "web");
             let head = body["event_head_seq"].as_u64().unwrap();
             assert!(head >= 2);

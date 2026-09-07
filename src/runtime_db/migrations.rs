@@ -3289,6 +3289,106 @@ CREATE INDEX IF NOT EXISTS idx_agent_bootstraps_status
   ON agent_bootstraps(status, updated_at);
 "#,
     },
+    Migration {
+        version: 59,
+        name: "agent_canonical_relations",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS agent_lineages (
+  child_agent_id TEXT PRIMARY KEY REFERENCES agent_identities(agent_id),
+  parent_agent_id TEXT NOT NULL REFERENCES agent_identities(agent_id),
+  creation_cause TEXT NOT NULL,
+  revision INTEGER NOT NULL CHECK (revision >= 0),
+  created_at TEXT NOT NULL,
+  payload_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_lineages_parent
+  ON agent_lineages(parent_agent_id, child_agent_id);
+
+CREATE TABLE IF NOT EXISTS agent_supervisions (
+  supervision_id TEXT PRIMARY KEY,
+  supervisor_agent_id TEXT NOT NULL REFERENCES agent_identities(agent_id),
+  child_agent_id TEXT NOT NULL REFERENCES agent_identities(agent_id),
+  delegated_from_work_item_id TEXT,
+  delegated_from_task_id TEXT,
+  state TEXT NOT NULL CHECK (state IN ('active', 'cleanup_required', 'closed')),
+  revision INTEGER NOT NULL CHECK (revision >= 0),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  payload_json TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_supervisions_active_child
+  ON agent_supervisions(child_agent_id)
+  WHERE state IN ('active', 'cleanup_required');
+
+CREATE INDEX IF NOT EXISTS idx_agent_supervisions_supervisor
+  ON agent_supervisions(supervisor_agent_id, state, child_agent_id);
+
+CREATE TABLE IF NOT EXISTS agent_durability_records (
+  agent_id TEXT NOT NULL REFERENCES agent_identities(agent_id),
+  revision INTEGER NOT NULL CHECK (revision >= 0),
+  durability TEXT NOT NULL CHECK (durability IN ('persistent', 'ephemeral')),
+  created_at TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  PRIMARY KEY (agent_id, revision)
+);
+
+CREATE TABLE IF NOT EXISTS agent_lifecycle_attachment_records (
+  agent_id TEXT NOT NULL REFERENCES agent_identities(agent_id),
+  revision INTEGER NOT NULL CHECK (revision >= 0),
+  attachment TEXT NOT NULL CHECK (
+    attachment IN ('independent', 'supervision_attached')
+  ),
+  created_at TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  PRIMARY KEY (agent_id, revision)
+);
+
+CREATE TABLE IF NOT EXISTS agent_capability_policy_records (
+  agent_id TEXT NOT NULL REFERENCES agent_identities(agent_id),
+  revision INTEGER NOT NULL CHECK (revision >= 0),
+  created_at TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  PRIMARY KEY (agent_id, revision)
+);
+
+CREATE TABLE IF NOT EXISTS agent_capability_policy_rules (
+  agent_id TEXT NOT NULL,
+  revision INTEGER NOT NULL CHECK (revision >= 0),
+  rule_index INTEGER NOT NULL CHECK (rule_index >= 0),
+  capability_family TEXT NOT NULL,
+  effect TEXT NOT NULL CHECK (effect IN ('allow', 'deny')),
+  PRIMARY KEY (agent_id, revision, rule_index),
+  FOREIGN KEY (agent_id, revision)
+    REFERENCES agent_capability_policy_records(agent_id, revision)
+    ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS agent_message_policy_records (
+  agent_id TEXT NOT NULL REFERENCES agent_identities(agent_id),
+  revision INTEGER NOT NULL CHECK (revision >= 0),
+  default_effect TEXT NOT NULL CHECK (default_effect IN ('allow', 'deny')),
+  created_at TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  PRIMARY KEY (agent_id, revision)
+);
+
+CREATE TABLE IF NOT EXISTS agent_message_policy_rules (
+  agent_id TEXT NOT NULL,
+  revision INTEGER NOT NULL CHECK (revision >= 0),
+  rule_index INTEGER NOT NULL CHECK (rule_index >= 0),
+  principal_kind TEXT NOT NULL,
+  principal_id TEXT,
+  route TEXT,
+  effect TEXT NOT NULL CHECK (effect IN ('allow', 'deny')),
+  PRIMARY KEY (agent_id, revision, rule_index),
+  FOREIGN KEY (agent_id, revision)
+    REFERENCES agent_message_policy_records(agent_id, revision)
+    ON DELETE CASCADE
+);
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

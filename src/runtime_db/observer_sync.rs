@@ -11,10 +11,11 @@ use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use std::collections::HashMap;
 
+use crate::runtime_db::agent_relations::canonical_relations_from_connection;
 use crate::runtime_db::evidence::upsert_agent_identity_tx;
 use crate::types::{
-    AgentIdentityRecord, AgentKind, AgentOwnership, AgentProfilePreset, AgentRegistryStatus,
-    AgentVisibility, AuditEvent,
+    AgentCanonicalRelationsProjection, AgentIdentityRecord, AgentKind, AgentOwnership,
+    AgentProfilePreset, AgentRegistryStatus, AgentVisibility, AuditEvent,
 };
 
 pub(crate) const RUNTIME_IDENTITY_STABLE: &str = "runtime_identity_stable";
@@ -102,6 +103,7 @@ pub struct AgentProjectionSnapshotRows {
 pub struct AgentProjectionSnapshotRow {
     pub agent_id: String,
     pub identity_json: String,
+    pub canonical_relations: AgentCanonicalRelationsProjection,
     /// Committed AgentState payload; `None` while the identity has no
     /// persisted state yet (stopped placeholder semantics).
     pub agent_state_json: Option<String>,
@@ -545,6 +547,8 @@ fn collect_agent_projection_anchors(
             row: None,
         });
     };
+    let canonical_relations = canonical_relations_from_connection(connection, agent_id)?
+        .context("public projection member has no canonical relation projection")?;
 
     let (oldest, head): (i64, i64) = connection.query_row(
         "SELECT
@@ -628,6 +632,7 @@ fn collect_agent_projection_anchors(
         row: Some(AgentProjectionSnapshotRow {
             agent_id: agent_id.to_string(),
             identity_json,
+            canonical_relations,
             agent_state_json,
             event_head_seq: to_seq(head)?,
             oldest_retained_seq: to_seq(oldest)?,
