@@ -4489,7 +4489,8 @@ code {
   line-height: 1;
 }
 
-.file-browser-download-btn {
+.file-browser-download-btn,
+.file-browser-link-btn {
   background: none;
   border: 1px solid var(--border, #ddd);
   border-radius: 4px;

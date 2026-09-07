@@ -1,7 +1,16 @@
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::path::Path as FsPath;
+use std::time::SystemTime;
 
 use super::*;
+use axum::http::header::{
+    ACCEPT_RANGES, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_RANGE, ETAG, IF_NONE_MATCH,
+    IF_RANGE, LAST_MODIFIED, RANGE, X_CONTENT_TYPE_OPTIONS,
+};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
+use tokio_util::io::ReaderStream;
 
 /// Maximum bytes to read for text file content before truncating.
 const READ_LIMIT_BYTES: usize = 1024 * 1024; // 1 MB
@@ -233,6 +242,299 @@ fn is_text_mime(mime: &str) -> bool {
         || mime == "application/x-toml"
 }
 
+/// Inclusive byte range resolved from a `Range` header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ByteRange {
+    start: u64,
+    end: u64,
+}
+
+/// Outcome of interpreting a `Range` header against a resource length.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RangeOutcome {
+    /// Serve the full representation (no usable range).
+    Full,
+    /// Serve the partial range with 206.
+    Partial(ByteRange),
+    /// Range cannot be satisfied; respond 416.
+    Unsatisfiable,
+}
+
+/// Parse a single-range `bytes=` header against `len`. Malformed headers and
+/// multi-range requests fall back to `Full` (the server may ignore Range).
+fn parse_range_header(value: &str, len: u64) -> RangeOutcome {
+    let Some(spec) = value.trim().strip_prefix("bytes=") else {
+        return RangeOutcome::Full;
+    };
+    if spec.contains(',') {
+        return RangeOutcome::Full;
+    }
+    let Some((start_spec, end_spec)) = spec.split_once('-') else {
+        return RangeOutcome::Full;
+    };
+    let (start, end) = if start_spec.trim().is_empty() {
+        // Suffix form: last N bytes.
+        let Ok(suffix) = end_spec.trim().parse::<u64>() else {
+            return RangeOutcome::Full;
+        };
+        if suffix == 0 {
+            return RangeOutcome::Unsatisfiable;
+        }
+        let suffix = suffix.min(len);
+        (len - suffix, len.saturating_sub(1))
+    } else {
+        let Ok(start) = start_spec.trim().parse::<u64>() else {
+            return RangeOutcome::Full;
+        };
+        let end = match end_spec.trim() {
+            "" => len.saturating_sub(1),
+            raw => {
+                let Ok(end) = raw.parse::<u64>() else {
+                    return RangeOutcome::Full;
+                };
+                end
+            }
+        };
+        (start, end)
+    };
+    if len == 0 || start >= len {
+        return RangeOutcome::Unsatisfiable;
+    }
+    RangeOutcome::Partial(ByteRange {
+        start,
+        end: end.min(len - 1),
+    })
+}
+
+/// Strip whitespace and a weak validator `W/` prefix from an entity tag.
+fn strip_weak_tag(value: &str) -> &str {
+    value.trim().strip_prefix("W/").unwrap_or(value.trim())
+}
+
+/// Whether an `If-None-Match` header matches the current entity tag.
+/// Weak comparison per RFC 9110: `W/` prefixes are ignored.
+fn if_none_match_matches(if_none_match: &str, etag: &str) -> bool {
+    let value = if_none_match.trim();
+    if value == "*" {
+        return true;
+    }
+    value
+        .split(',')
+        .any(|candidate| strip_weak_tag(candidate) == strip_weak_tag(etag))
+}
+
+/// Whether an `If-Range` header authorizes serving a range. Accepts the exact
+/// entity tag (strong form) or an exact Last-Modified date echo.
+fn if_range_matches(if_range: &str, etag: &str, last_modified: Option<&str>) -> bool {
+    let value = if_range.trim();
+    if value == etag {
+        return true;
+    }
+    strip_weak_tag(value) == strip_weak_tag(etag) || last_modified.is_some_and(|lm| value == lm)
+}
+
+/// Build a strong entity tag from identity, size, and modification time.
+fn build_etag(relative_path: &str, size: u64, modified: Option<SystemTime>) -> String {
+    let mtime_nanos = modified
+        .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let mut hasher = DefaultHasher::new();
+    relative_path.hash(&mut hasher);
+    size.hash(&mut hasher);
+    mtime_nanos.hash(&mut hasher);
+    format!("\"{:x}-{:x}\"", hasher.finish(), mtime_nanos)
+}
+
+/// Format a timestamp as an HTTP-date (IMF-fixdate).
+fn http_date(time: SystemTime) -> String {
+    chrono::DateTime::<chrono::Utc>::from(time)
+        .format("%a, %d %b %Y %H:%M:%S GMT")
+        .to_string()
+}
+
+/// MIME types that execute scripts or host active content when rendered
+/// inline. Served with a sandboxing CSP so direct same-origin navigation
+/// cannot run workspace-controlled scripts.
+fn needs_script_sandbox(mime_type: &str) -> bool {
+    matches!(
+        mime_type,
+        "text/html" | "application/xhtml+xml" | "image/svg+xml" | "application/xml" | "text/xml"
+    ) || mime_type.ends_with("+xml")
+}
+
+/// Content-Type used when serving raw bytes directly to a browser. Non-standard
+/// text subtypes used only for JSON negotiation render as plain text, and
+/// text responses get an explicit UTF-8 charset.
+fn served_content_type(mime_type: &str) -> String {
+    match mime_type {
+        "text/typescript" | "text/tsx" => "text/plain; charset=utf-8".to_string(),
+        m if m.starts_with("text/") => format!("{m}; charset=utf-8"),
+        m => m.to_string(),
+    }
+}
+
+/// Build a `Content-Disposition` value for a download. ASCII filenames use the
+/// quoted form with quoting characters replaced; other filenames use the
+/// RFC 5987/8187 extended form.
+fn attachment_disposition(filename: &str) -> String {
+    if filename.is_ascii() {
+        let safe: String = filename
+            .chars()
+            .map(|c| match c {
+                '"' | '\\' | '\r' | '\n' => '_',
+                other => other,
+            })
+            .collect();
+        format!("attachment; filename=\"{safe}\"")
+    } else {
+        let encoded: String = filename
+            .bytes()
+            .map(|b| {
+                if b.is_ascii_alphanumeric()
+                    || matches!(
+                        b,
+                        b'!' | b'#'
+                            | b'$'
+                            | b'&'
+                            | b'+'
+                            | b'-'
+                            | b'.'
+                            | b'^'
+                            | b'_'
+                            | b'`'
+                            | b'|'
+                            | b'~'
+                    )
+                {
+                    (b as char).to_string()
+                } else {
+                    format!("%{b:02X}")
+                }
+            })
+            .collect();
+        format!("attachment; filename*=UTF-8''{encoded}")
+    }
+}
+
+/// Stream a file's raw bytes with Range, ETag/Last-Modified, and safe inline
+/// disposition handling. Used for binary files, explicit downloads, and
+/// direct-link (non-JSON) access to text files.
+#[allow(clippy::too_many_arguments)]
+async fn serve_file_bytes(
+    full_path: &FsPath,
+    relative_path: &str,
+    mime_type: &str,
+    file_size: u64,
+    modified: Option<SystemTime>,
+    want_download: bool,
+    headers: &HeaderMap,
+) -> Result<AxumResponse, (StatusCode, Json<Value>)> {
+    let etag = build_etag(relative_path, file_size, modified);
+    let last_modified = modified.map(http_date);
+
+    if let Some(if_none_match) = headers
+        .get(IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+    {
+        if if_none_match_matches(if_none_match, &etag) {
+            let mut builder = Response::builder()
+                .status(StatusCode::NOT_MODIFIED)
+                .header(ETAG, etag.as_str())
+                .header(ACCEPT_RANGES, "bytes");
+            if let Some(lm) = &last_modified {
+                builder = builder.header(LAST_MODIFIED, lm.as_str());
+            }
+            return Ok(builder
+                .body(Body::empty())
+                .map_err(|err| error_response(anyhow!(err)))?);
+        }
+    }
+
+    let mut range = RangeOutcome::Full;
+    if let Some(range_header) = headers.get(RANGE).and_then(|value| value.to_str().ok()) {
+        let authorized = match headers.get(IF_RANGE).and_then(|value| value.to_str().ok()) {
+            Some(if_range) => if_range_matches(if_range, &etag, last_modified.as_deref()),
+            None => true,
+        };
+        if authorized {
+            range = parse_range_header(range_header, file_size);
+        }
+    }
+
+    let (status, start, length, content_range) = match range {
+        RangeOutcome::Full => (StatusCode::OK, 0u64, file_size, None),
+        RangeOutcome::Partial(byte_range) => {
+            let length = byte_range.end - byte_range.start + 1;
+            (
+                StatusCode::PARTIAL_CONTENT,
+                byte_range.start,
+                length,
+                Some(format!(
+                    "bytes {}-{}/{}",
+                    byte_range.start, byte_range.end, file_size
+                )),
+            )
+        }
+        RangeOutcome::Unsatisfiable => {
+            let response = Response::builder()
+                .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                .header(CONTENT_RANGE, format!("bytes */{file_size}"))
+                .header(ACCEPT_RANGES, "bytes")
+                .header(X_CONTENT_TYPE_OPTIONS, "nosniff")
+                .body(Body::empty())
+                .map_err(|err| error_response(anyhow!(err)))?;
+            return Ok(response);
+        }
+    };
+
+    let file = tokio::fs::File::open(full_path)
+        .await
+        .map_err(|err| error_response(anyhow!(err)))?;
+    let reader = if start > 0 {
+        let mut file = file;
+        file.seek(SeekFrom::Start(start))
+            .await
+            .map_err(|err| error_response(anyhow!(err)))?;
+        file.take(length)
+    } else {
+        file.take(length)
+    };
+    let stream = ReaderStream::with_capacity(reader, 64 * 1024);
+
+    let content_type = if want_download {
+        mime_type.to_string()
+    } else {
+        served_content_type(mime_type)
+    };
+    let mut builder = Response::builder()
+        .status(status)
+        .header(CONTENT_TYPE, content_type)
+        .header(CONTENT_LENGTH, length.to_string())
+        .header(ACCEPT_RANGES, "bytes")
+        .header(ETAG, etag.as_str())
+        .header(X_CONTENT_TYPE_OPTIONS, "nosniff");
+    if let Some(lm) = &last_modified {
+        builder = builder.header(LAST_MODIFIED, lm.as_str());
+    }
+    if let Some(content_range) = content_range {
+        builder = builder.header(CONTENT_RANGE, content_range);
+    }
+    if want_download {
+        let filename = full_path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| "download".to_string());
+        builder = builder.header(CONTENT_DISPOSITION, attachment_disposition(&filename));
+    } else if needs_script_sandbox(mime_type) {
+        builder = builder.header("Content-Security-Policy", "sandbox");
+    }
+
+    Ok(builder
+        .body(Body::from_stream(stream))
+        .map_err(|err| error_response(anyhow!(err)))?)
+}
+
 /// Handler for workspace root (no sub-path).
 pub(crate) async fn workspace_files_root(
     State(state): State<Arc<AppState>>,
@@ -364,33 +666,24 @@ async fn workspace_files_inner(
         .map(|v| v.contains("application/json"))
         .unwrap_or(false);
 
-    // Binary/image files: stream raw bytes
-    if !is_text_mime(&mime_type) || want_download {
-        let bytes = tokio::fs::read(&full_path)
-            .await
-            .map_err(|err| error_response(anyhow!(err)))?;
-        let content_type = HeaderValue::from_str(&mime_type)
-            .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream"));
-        let mut response = Response::builder()
-            .status(StatusCode::OK)
-            .header(CONTENT_TYPE, content_type);
-        if want_download {
-            let filename = full_path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| "download".to_string());
-            response = response.header(
-                "Content-Disposition",
-                HeaderValue::from_str(&format!("attachment; filename=\"{filename}\""))
-                    .unwrap_or_else(|_| HeaderValue::from_static("attachment")),
-            );
-        }
-        return Ok(response
-            .body(Body::from(bytes))
-            .map_err(|err| error_response(anyhow!(err)))?);
+    // Raw byte serving: binary files, explicit downloads, and direct-link
+    // access to text files (no JSON negotiation). Streams from disk with
+    // Range and conditional-request support instead of buffering the file.
+    if !is_text_mime(&mime_type) || want_download || !accept_json {
+        let modified = metadata.modified().ok();
+        return serve_file_bytes(
+            &full_path,
+            relative,
+            &mime_type,
+            file_size,
+            modified,
+            want_download,
+            &headers,
+        )
+        .await;
     }
 
-    // Text file: read with truncation
+    // Text preview via JSON negotiation: read with truncation
     let bytes = tokio::fs::read(&full_path)
         .await
         .map_err(|err| error_response(anyhow!(err)))?;
@@ -493,5 +786,99 @@ mod tests {
         let mut data = b"normal tex\n".to_vec();
         data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05]);
         assert!(!sniff_is_text(&data));
+    }
+
+    #[test]
+    fn parse_range_header_forms() {
+        assert_eq!(
+            parse_range_header("bytes=0-3", 26),
+            RangeOutcome::Partial(ByteRange { start: 0, end: 3 })
+        );
+        assert_eq!(
+            parse_range_header("bytes=20-", 26),
+            RangeOutcome::Partial(ByteRange { start: 20, end: 25 })
+        );
+        // End beyond length is clamped.
+        assert_eq!(
+            parse_range_header("bytes=20-100", 26),
+            RangeOutcome::Partial(ByteRange { start: 20, end: 25 })
+        );
+        assert_eq!(
+            parse_range_header("bytes=-4", 26),
+            RangeOutcome::Partial(ByteRange { start: 22, end: 25 })
+        );
+        // Suffix longer than the resource covers it entirely.
+        assert_eq!(
+            parse_range_header("bytes=0-", 26),
+            RangeOutcome::Partial(ByteRange { start: 0, end: 25 })
+        );
+    }
+
+    #[test]
+    fn parse_range_header_degenerate() {
+        // Out of bounds and empty-suffix ranges are unsatisfiable.
+        assert_eq!(
+            parse_range_header("bytes=26-", 26),
+            RangeOutcome::Unsatisfiable
+        );
+        assert_eq!(
+            parse_range_header("bytes=100-200", 26),
+            RangeOutcome::Unsatisfiable
+        );
+        assert_eq!(
+            parse_range_header("bytes=-0", 26),
+            RangeOutcome::Unsatisfiable
+        );
+        assert_eq!(
+            parse_range_header("bytes=0-1", 0),
+            RangeOutcome::Unsatisfiable
+        );
+        // Unknown units, multi-range, and malformed values fall back to full.
+        assert_eq!(parse_range_header("items=0-3", 26), RangeOutcome::Full);
+        assert_eq!(parse_range_header("bytes=0-1,3-4", 26), RangeOutcome::Full);
+        assert_eq!(parse_range_header("bytes=abc", 26), RangeOutcome::Full);
+        assert_eq!(parse_range_header("bytes=", 26), RangeOutcome::Full);
+    }
+
+    #[test]
+    fn entity_tag_matchers() {
+        let etag = "\"abc-123\"";
+        assert!(if_none_match_matches(etag, etag));
+        assert!(if_none_match_matches(&format!("W/{etag}"), etag));
+        assert!(if_none_match_matches("\"other\", W/\"abc-123\"", etag));
+        assert!(if_none_match_matches("*", etag));
+        assert!(!if_none_match_matches("\"stale\"", etag));
+
+        assert!(if_range_matches(etag, etag, None));
+        assert!(if_range_matches("W/\"abc-123\"", etag, None));
+        assert!(if_range_matches(
+            "Sun, 06 Nov 1994 08:49:37 GMT",
+            etag,
+            Some("Sun, 06 Nov 1994 08:49:37 GMT")
+        ));
+        assert!(!if_range_matches("\"stale\"", etag, None));
+        assert!(!if_range_matches(
+            "Sun, 06 Nov 1994 08:49:37 GMT",
+            etag,
+            Some("Mon, 07 Nov 1994 08:49:37 GMT")
+        ));
+    }
+
+    #[test]
+    fn attachment_disposition_forms() {
+        assert_eq!(
+            attachment_disposition("notes.txt"),
+            "attachment; filename=\"notes.txt\""
+        );
+        // Quote characters are replaced, never emitted raw.
+        assert_eq!(
+            attachment_disposition("bad\"name.txt"),
+            "attachment; filename=\"bad_name.txt\""
+        );
+        // Non-ASCII names use the extended form.
+        assert_eq!(
+            attachment_disposition("笔记.txt"),
+            "attachment; filename*=UTF-8''%E7%AC%94%E8%AE%B0.txt"
+        );
     }
 }

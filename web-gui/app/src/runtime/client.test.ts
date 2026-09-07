@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  buildWorkspaceFileUrl,
   createRuntimeClient,
   projectModelOptions,
   REQUIRED_OBSERVER_SYNC_CAPABILITIES,
@@ -608,6 +609,23 @@ describe("createRuntimeClient", () => {
         accept: "*/*",
       },
     ]);
+  });
+
+  it("builds direct-access URLs for workspace files", () => {
+    const client = createRuntimeClient({ mode: "remote", baseUrl: "http://example.test:7878" });
+
+    expect(client.workspaceFileUrl("ws/one", "outputs/chart 1.png", "root:ws")).toBe(
+      "http://example.test:7878/api/workspaces/ws%2Fone/files/outputs/chart%201.png?execution_root_id=root%3Aws",
+    );
+    expect(
+      client.workspaceFileUrl("ws/one", "docs/readme.md", undefined, { download: true }),
+    ).toBe("http://example.test:7878/api/workspaces/ws%2Fone/files/docs/readme.md?download=true");
+
+    // Without a configured base URL the builder returns a relative path that
+    // callers resolve against the app origin.
+    expect(buildWorkspaceFileUrl(undefined, "ws/one", "a/b.txt")).toBe(
+      "/workspaces/ws%2Fone/files/a/b.txt",
+    );
   });
 
   it("reads tool execution artifacts through the scoped artifact endpoint", async () => {

@@ -41,7 +41,7 @@ use super::{
     attach_default_workspace, connect_addr, git, init_git_repo, read_next_sse_event, spawn_server,
     spawn_server_for_host, spawn_server_with_config, spawn_server_with_runtime_config,
     spawn_unix_server, tempdir, test_config, test_config_with_paths, unix_request, ParsedSseEvent,
-    RuntimeFailureProvider,
+    RuntimeFailureProvider, TempDir,
 };
 
 pub async fn workspace_enter_control_route_is_not_exposed() -> Result<()> {
@@ -314,6 +314,198 @@ pub async fn workspace_files_unknown_workspace_404() -> Result<()> {
         .send()
         .await?;
     assert_eq!(response.status(), 404);
+
+    server.abort();
+    Ok(())
+}
+
+/// Spawn a server with an extra workspace containing the given files, and
+/// return `(host, base, server, workspace_id, temp_dir)`. The caller must keep
+/// the returned `TempDir` alive for the duration of the test.
+async fn spawn_workspace_with_files(
+    files: &[(&str, Vec<u8>)],
+) -> Result<(
+    RuntimeHost,
+    String,
+    super::TestServerHandle,
+    String,
+    TempDir,
+)> {
+    let (host, base, server) = spawn_server().await?;
+    let runtime = host.default_runtime().await?;
+    let dir = tempdir()?;
+    for (name, contents) in files {
+        std::fs::write(dir.path().join(name), contents)?;
+    }
+    let workspace = host.ensure_workspace_entry(dir.path().to_path_buf())?;
+    runtime.attach_workspace(&workspace).await?;
+    Ok((host, base, server, workspace.workspace_id, dir))
+}
+
+pub async fn workspace_files_serves_range_requests() -> Result<()> {
+    let data = b"abcdefghijklmnopqrstuvwxyz";
+    let (_host, base, server, workspace_id, _dir) =
+        spawn_workspace_with_files(&[("data.bin", data.to_vec())]).await?;
+    let client = reqwest::Client::new();
+    let url = format!("{base}/api/workspaces/{workspace_id}/files/data.bin");
+
+    // Full response advertises range support and cache validators.
+    let response = client.get(&url).send().await?;
+    assert_eq!(response.status(), 200, "{}", response.text().await?);
+    let headers = response.headers().clone();
+    assert_eq!(headers["accept-ranges"], "bytes");
+    assert!(headers.contains_key("etag"));
+    assert!(headers.contains_key("last-modified"));
+    assert_eq!(headers["x-content-type-options"], "nosniff");
+    assert_eq!(response.bytes().await?, data.as_ref());
+
+    // Single inclusive range.
+    let response = client.get(&url).header("Range", "bytes=0-3").send().await?;
+    assert_eq!(response.status(), 206);
+    assert_eq!(response.headers()["content-range"], "bytes 0-3/26");
+    assert_eq!(&response.bytes().await?[..], b"abcd");
+
+    // Open-ended range.
+    let response = client.get(&url).header("Range", "bytes=20-").send().await?;
+    assert_eq!(response.status(), 206);
+    assert_eq!(&response.bytes().await?[..], b"uvwxyz");
+
+    // Suffix range.
+    let response = client.get(&url).header("Range", "bytes=-4").send().await?;
+    assert_eq!(response.status(), 206);
+    assert_eq!(response.headers()["content-range"], "bytes 22-25/26");
+    assert_eq!(&response.bytes().await?[..], b"wxyz");
+
+    // Out-of-bounds range.
+    let response = client
+        .get(&url)
+        .header("Range", "bytes=100-200")
+        .send()
+        .await?;
+    assert_eq!(response.status(), 416);
+    assert_eq!(response.headers()["content-range"], "bytes */26");
+
+    // Multi-range requests fall back to the full representation.
+    let response = client
+        .get(&url)
+        .header("Range", "bytes=0-1,3-4")
+        .send()
+        .await?;
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.bytes().await?, data.as_ref());
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn workspace_files_conditional_requests() -> Result<()> {
+    let data = b"abcdefghijklmnopqrstuvwxyz";
+    let (_host, base, server, workspace_id, _dir) =
+        spawn_workspace_with_files(&[("data.bin", data.to_vec())]).await?;
+    let client = reqwest::Client::new();
+    let url = format!("{base}/api/workspaces/{workspace_id}/files/data.bin");
+
+    let response = client.get(&url).send().await?;
+    let etag = response.headers()["etag"]
+        .to_str()
+        .expect("etag header")
+        .to_string();
+
+    // Matching If-None-Match returns 304 without a body.
+    let response = client
+        .get(&url)
+        .header("If-None-Match", &etag)
+        .send()
+        .await?;
+    assert_eq!(response.status(), 304);
+    assert_eq!(response.headers()["etag"], etag.as_str());
+    assert!(response.bytes().await?.is_empty());
+
+    // Non-matching If-None-Match returns the full representation.
+    let response = client
+        .get(&url)
+        .header("If-None-Match", "\"stale-tag\"")
+        .send()
+        .await?;
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.bytes().await?, data.as_ref());
+
+    // If-Range mismatch serves the full representation.
+    let response = client
+        .get(&url)
+        .header("If-Range", "\"stale-tag\"")
+        .header("Range", "bytes=0-3")
+        .send()
+        .await?;
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.bytes().await?, data.as_ref());
+
+    // If-Range match authorizes the range.
+    let response = client
+        .get(&url)
+        .header("If-Range", &etag)
+        .header("Range", "bytes=0-3")
+        .send()
+        .await?;
+    assert_eq!(response.status(), 206);
+    assert_eq!(&response.bytes().await?[..], b"abcd");
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn workspace_files_download_and_inline_safety() -> Result<()> {
+    let big_text = vec![b'x'; 1024 * 1024 + 1000];
+    let (_host, base, server, workspace_id, _dir) = spawn_workspace_with_files(&[
+        (
+            "page.html",
+            b"<html><body><script>alert(1)</script></body></html>".to_vec(),
+        ),
+        ("notes.txt", b"hello notes\n".to_vec()),
+        ("big.txt", big_text),
+    ])
+    .await?;
+    let client = reqwest::Client::new();
+
+    // Explicit download requests an attachment with the file name.
+    let response = client
+        .get(format!(
+            "{base}/api/workspaces/{workspace_id}/files/notes.txt?download=true"
+        ))
+        .send()
+        .await?;
+    assert_eq!(response.status(), 200);
+    let disposition = response.headers()["content-disposition"]
+        .to_str()
+        .expect("content-disposition header");
+    assert!(disposition.starts_with("attachment"));
+    assert!(disposition.contains("filename=\"notes.txt\""));
+
+    // Direct navigation to active content is sandboxed.
+    let response = client
+        .get(format!(
+            "{base}/api/workspaces/{workspace_id}/files/page.html"
+        ))
+        .send()
+        .await?;
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()["content-security-policy"], "sandbox");
+    assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+
+    // Direct-link text access streams the full file instead of truncating.
+    let response = client
+        .get(format!(
+            "{base}/api/workspaces/{workspace_id}/files/big.txt"
+        ))
+        .send()
+        .await?;
+    assert_eq!(response.status(), 200);
+    let body = response.bytes().await?;
+    assert_eq!(
+        body.len(),
+        1024 * 1024 + 1000,
+        "direct-link text access must not truncate"
+    );
 
     server.abort();
     Ok(())

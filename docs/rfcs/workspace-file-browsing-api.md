@@ -59,7 +59,7 @@ and query parameters:
 | Text file, `Accept: application/json` | `{ content, size, mime_type, truncated }` |
 | Text file, `Accept: text/plain` or default | Raw body with correct `Content-Type` |
 | Image file | Raw bytes with image MIME type |
-| `?download=1` | `Content-Disposition: attachment` |
+| `?download=true` | `Content-Disposition: attachment` |
 | `?meta=1` | Metadata only, no content body |
 
 ### 4. Execution root selection
@@ -87,12 +87,11 @@ browser file-explorer expectations and avoids surprise hiding.
 Text file reads are capped at `READ_LIMIT_BYTES = 1 MB` (1048576 bytes). When
 the limit is exceeded:
 - JSON mode returns `truncated: true` + the first 1 MB of content + `total_size`
-- Raw body mode returns the truncated content with `X-Content-Truncated: true`
-  response header
 
-Binary and image downloads are streamed without truncation. Future support for
-range reads (`?offset` + `?limit`) can be added without breaking the current
-contract.
+Raw body mode (binary files, `?download=true`, or direct-link access without
+JSON negotiation) streams the complete file from disk without truncation and
+supports standard HTTP range and conditional requests (see "Response: Raw
+File Body").
 
 ## API Design
 
@@ -162,10 +161,26 @@ When `truncated` is `true`, the response also includes `total_size`.
 
 ### Response: Raw File Body
 
-For `Accept: text/plain` or no `Accept` header (default), text files return
-the raw body with the appropriate `Content-Type`. Image files always return
-raw bytes. Binary files with `?download=1` return raw bytes with
-`Content-Disposition: attachment`.
+Binary files, explicit downloads, and direct-link access to text files (no
+`Accept: application/json` negotiation) stream raw bytes from disk instead of
+buffering the file in memory:
+
+- `Accept-Ranges: bytes` is always advertised; a single `Range: bytes=…`
+  header returns `206 Partial Content` with `Content-Range`. Malformed or
+  multi-range requests fall back to the full `200` body; unsatisfiable
+  ranges return `416` with `Content-Range: bytes */<size>`.
+- Each response carries a strong `ETag` (path + size + mtime) and
+  `Last-Modified`. Matching `If-None-Match` returns `304 Not Modified`;
+  `Range` is only honored when `If-Range` matches the current validator.
+- `?download=true` sets `Content-Disposition: attachment` (RFC 5987 encoded
+  for non-ASCII names); otherwise the file is served inline.
+- Every raw response sends `X-Content-Type-Options: nosniff`. Inline
+  responses for active content types (`text/html`, `image/svg+xml`, XML
+  variants) add `Content-Security-Policy: sandbox` so direct same-origin
+  navigation cannot execute workspace-controlled scripts.
+- Text responses are served with `charset=utf-8`; internal-only MIME labels
+  (`text/typescript`, `text/tsx`) are normalized to `text/plain` for browser
+  rendering.
 
 ## Path Security
 

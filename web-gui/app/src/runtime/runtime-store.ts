@@ -413,6 +413,12 @@ export interface RuntimeStoreState {
     executionRootId?: string,
     options?: { download?: boolean; timeoutMs?: number },
   ) => Promise<Blob>;
+  workspaceFileUrl: (
+    workspaceId: string,
+    path: string,
+    executionRootId?: string,
+    options?: { download?: boolean },
+  ) => string;
   navigateBack: () => void;
   toggleRightPanel: () => void;
   toggleNavCollapsed: () => void;
@@ -1931,6 +1937,8 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     runtimeClient.readToolExecutionArtifact(agentId, toolExecutionId, artifactIndex),
   fetchWorkspaceFileBlob: (workspaceId, path, executionRootId, options) =>
     runtimeClient.fetchWorkspaceFileBlob(workspaceId, path, executionRootId, options),
+  workspaceFileUrl: (workspaceId, path, executionRootId, options) =>
+    runtimeClient.workspaceFileUrl(workspaceId, path, executionRootId, options),
   inspectActivity: (agentId, activity) => {
     // Use relatedStateObjectRef as fallback for task/work_item navigation,
     // since their child activities (status_updated, result_received, etc.)

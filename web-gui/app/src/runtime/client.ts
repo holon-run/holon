@@ -690,6 +690,33 @@ export interface RuntimeConfigUpdateEntry {
   unset?: boolean;
 }
 
+export interface WorkspaceFileUrlOptions {
+  download?: boolean;
+}
+
+/**
+ * Build the direct-access URL for a workspace file. The URL targets the raw
+ * byte endpoint and relies on the browser session cookie (or an attached
+ * bearer token) for authorization. `baseUrl` must be the normalized API base
+ * (origin + "/api"), matching the value used by data requests. Returns a
+ * relative path when no base URL is configured so callers can resolve it
+ * against the app origin.
+ */
+export function buildWorkspaceFileUrl(
+  baseUrl: string | undefined,
+  workspaceId: string,
+  path: string,
+  executionRootId?: string,
+  options?: WorkspaceFileUrlOptions,
+): string {
+  const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+  const params = new URLSearchParams();
+  if (options?.download) params.set("download", "true");
+  if (executionRootId) params.set("execution_root_id", executionRootId);
+  const query = params.toString();
+  return `${baseUrl ?? ""}/workspaces/${encodeURIComponent(workspaceId)}/files/${encodedPath}${query ? `?${query}` : ""}`;
+}
+
 export function createRuntimeClient(options: RuntimeClientOptions = {}) {
   const connectionMode = options.mode ?? (options.baseUrl ? "remote" : "local");
   const defaultBaseUrl = connectionMode === "local" ? DEFAULT_DEV_API_BASE : undefined;
@@ -1351,6 +1378,14 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         `/workspaces/${encodeURIComponent(workspaceId)}/files/${encodedPath}${query ? `?${query}` : ""}`,
         { headers: requestHeaders, timeoutMs: options?.timeoutMs },
       );
+    },
+    workspaceFileUrl(
+      workspaceId: string,
+      path: string,
+      executionRootId?: string,
+      urlOptions?: WorkspaceFileUrlOptions,
+    ): string {
+      return buildWorkspaceFileUrl(baseUrl, workspaceId, path, executionRootId, urlOptions);
     },
   };
 }
