@@ -1105,7 +1105,7 @@ async fn assert_run_once_prefers_parent_final_result_over_delegated_task_briefs(
     assert_eq!(response.final_status, RunFinalStatus::Completed);
     assert_eq!(response.final_text, "parent final result");
     assert_eq!(response.tasks.len(), 1);
-    assert_eq!(response.tasks[0].task.kind, "child_agent_task");
+    assert_eq!(response.tasks[0].task.kind, "actor_invocation");
     assert_eq!(response.tasks[0].task.status, TaskStatus::Completed);
     assert!(
         !response.final_text.contains("child delegated result"),
