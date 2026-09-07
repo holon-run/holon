@@ -4340,7 +4340,7 @@ def run_scheduler_worktree_isolation_case(
 def run_scheduler_spawn_agent_supervision_case(
     harness: CaseHarness, case: dict[str, Any]
 ) -> None:
-    """SCHED-E2E-014: agent spawns a private_child and completes parent WorkItem."""
+    """SCHED-E2E-014: agent invokes a new subagent and completes parent WorkItem."""
     harness.initialize_workspace()
     harness.start()
     marker = secrets.token_hex(4)
@@ -4348,7 +4348,7 @@ def run_scheduler_spawn_agent_supervision_case(
     completion_marker = f"SCHEDULER-SPAWN-COMPLETE-{marker}"
     child_marker = f"SCHEDULER-SPAWN-CHILD-{marker}"
     objective = (
-        f"{objective_marker}. Spawn a private_child agent, inspect its task "
+        f"{objective_marker}. Invoke a new supervised subagent, inspect its task "
         "status, and complete this WorkItem."
     )
     phase = case["phases"][0]
@@ -4387,22 +4387,22 @@ def run_scheduler_spawn_agent_supervision_case(
         and completion_marker in (result_brief.get("text") or ""),
         f"spawn completion brief mismatch: {result_brief}",
     )
-    spawn_event = next(
+    invoke_event = next(
         event
         for event in create_events
-        if event["payload"].get("tool_name") == "SpawnAgent"
+        if event["payload"].get("tool_name") == "InvokeAgent"
     )
-    spawn_detail = harness.tool_detail(spawn_event, "scheduler-spawn")
-    spawn_result = result_value(spawn_detail)
+    invoke_detail = harness.tool_detail(invoke_event, "scheduler-spawn")
+    invoke_result = result_value(invoke_detail)
     require(
-        isinstance(spawn_result.get("agent_id"), str) and spawn_result["agent_id"],
-        f"SpawnAgent result missing agent_id: {spawn_result}",
+        isinstance(invoke_result.get("agent_id"), str) and invoke_result["agent_id"],
+        f"InvokeAgent result missing agent_id: {invoke_result}",
     )
-    task_handle = spawn_result.get("task_handle") or {}
+    task_handle = invoke_result.get("task_handle") or {}
     task_id = task_handle.get("task_id")
     require(
         isinstance(task_id, str) and task_id,
-        f"SpawnAgent result missing task_id: {spawn_result}",
+        f"InvokeAgent result missing task_id: {invoke_result}",
     )
     snapshot = harness.runtime_db_snapshot("scheduler-spawn")
     require_scheduler_engine_activation_chain(
