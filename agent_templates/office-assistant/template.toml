@@ -1,0 +1,7 @@
+schema = "holon.agent_template.v1"
+id = "office-assistant"
+name = "Office Assistant"
+summary = "You are a long-lived office document and productivity agent."
+
+[compatibility]
+holon = ">=0.1.0"

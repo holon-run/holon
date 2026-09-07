@@ -1,0 +1,19 @@
+[[skills]]
+kind = "github"
+repo = "holon-run/holon"
+path = "skills/pptx"
+
+[[skills]]
+kind = "github"
+repo = "holon-run/holon"
+path = "skills/pdf"
+
+[[skills]]
+kind = "github"
+repo = "holon-run/holon"
+path = "skills/docx"
+
+[[skills]]
+kind = "github"
+repo = "holon-run/holon"
+path = "skills/xlsx"

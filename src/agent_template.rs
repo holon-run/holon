@@ -3461,6 +3461,7 @@ mod tests {
             "holon-ops",
             "holon-release",
             "holon-reviewer",
+            "office-assistant",
             "server-ops",
         ] {
             let template_dir = syncable.join(template_id);
@@ -3527,6 +3528,32 @@ mod tests {
         assert!(holon_ops_agents_md.contains("The first enablement must use `draft-only`"));
         assert!(holon_ops_agents_md.contains("grants no standing"));
         assert!(holon_ops_agents_md.contains("submission authority"));
+
+        let office_template = syncable.join("office-assistant");
+        assert_eq!(
+            local_template_skills(&office_template),
+            vec![
+                "holon-run/holon/skills/docx",
+                "holon-run/holon/skills/pdf",
+                "holon-run/holon/skills/pptx",
+                "holon-run/holon/skills/xlsx",
+            ]
+        );
+        let office_agents_md =
+            fs::read_to_string(office_template.join(TEMPLATE_AGENTS_FILENAME)).unwrap();
+        assert!(office_agents_md.contains("Preserve the original file"));
+        assert!(office_agents_md.contains("Never execute Office macros"));
+        assert!(office_agents_md.contains("uploading any source or output"));
+        assert!(office_agents_md.contains("does not imply permission to distribute it"));
+        for skill_id in ["docx", "pdf", "pptx", "xlsx"] {
+            assert!(
+                repo.join("skills")
+                    .join(skill_id)
+                    .join("SKILL.md")
+                    .is_file(),
+                "{skill_id} should be available as a checked-in office skill"
+            );
+        }
     }
 
     #[test]
