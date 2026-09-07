@@ -1,6 +1,9 @@
 use anyhow::Result;
 use chrono::Utc;
-use reqwest::{header::LOCATION, Client, StatusCode};
+use reqwest::{
+    header::{HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, LOCATION, USER_AGENT},
+    Client, StatusCode,
+};
 use serde::Serialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -13,6 +16,11 @@ use crate::{
         WebFetchConfig,
     },
 };
+
+const WEB_FETCH_USER_AGENT: &str =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
+const WEB_FETCH_ACCEPT: &str = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
+const WEB_FETCH_ACCEPT_LANGUAGE: &str = "en-US,en;q=0.9";
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -130,7 +138,15 @@ fn pinned_client(
     addrs: &[std::net::SocketAddr],
     config: &WebFetchConfig,
 ) -> Result<Client> {
+    let mut default_headers = HeaderMap::new();
+    default_headers.insert(USER_AGENT, HeaderValue::from_static(WEB_FETCH_USER_AGENT));
+    default_headers.insert(ACCEPT, HeaderValue::from_static(WEB_FETCH_ACCEPT));
+    default_headers.insert(
+        ACCEPT_LANGUAGE,
+        HeaderValue::from_static(WEB_FETCH_ACCEPT_LANGUAGE),
+    );
     Ok(Client::builder()
+        .default_headers(default_headers)
         .timeout(timeout(config))
         .redirect(reqwest::redirect::Policy::none())
         .resolve_to_addrs(host, addrs)
@@ -256,8 +272,12 @@ mod tests {
     use super::*;
     use axum::{
         body::Body,
+        extract::Request,
         http::{
-            header::{CONTENT_ENCODING, CONTENT_TYPE},
+            header::{
+                ACCEPT as AXUM_ACCEPT, ACCEPT_ENCODING, ACCEPT_LANGUAGE as AXUM_ACCEPT_LANGUAGE,
+                CONTENT_ENCODING, CONTENT_TYPE, USER_AGENT as AXUM_USER_AGENT,
+            },
             HeaderValue,
         },
         response::Response,
@@ -279,6 +299,44 @@ mod tests {
         let wrapped = external_content_wrapper(&url, "hello");
         assert!(wrapped.contains("external_content"));
         assert!(wrapped.contains("untrusted"));
+    }
+
+    #[tokio::test]
+    async fn fetch_sends_browser_request_headers() {
+        let router = axum::Router::new().route(
+            "/headers",
+            axum::routing::get(|request: Request| async move {
+                let headers = request.headers();
+                assert_eq!(headers.get(AXUM_USER_AGENT).unwrap(), WEB_FETCH_USER_AGENT);
+                assert_eq!(headers.get(AXUM_ACCEPT).unwrap(), WEB_FETCH_ACCEPT);
+                assert_eq!(
+                    headers.get(AXUM_ACCEPT_LANGUAGE).unwrap(),
+                    WEB_FETCH_ACCEPT_LANGUAGE
+                );
+                assert_eq!(headers.get(ACCEPT_ENCODING).unwrap(), "gzip");
+                "headers received"
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+
+        let mut config = WebFetchConfig::default();
+        config.allowed_hosts = vec![format!("127.0.0.1:{}", addr.port())];
+        let response = fetch(
+            WebFetchRequest {
+                url: format!("http://{addr}/headers"),
+                max_chars: None,
+                extract_mode: ExtractMode::Auto,
+            },
+            &config,
+        )
+        .await
+        .unwrap();
+
+        assert!(response.text.contains("headers received"));
     }
 
     #[tokio::test]
