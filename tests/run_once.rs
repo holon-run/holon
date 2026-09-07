@@ -1163,10 +1163,13 @@ impl AgentProvider for DelegatedRunOnceProvider {
             1 => Ok(ProviderTurnResponse {
                 blocks: vec![ModelBlock::ToolUse {
                     id: "task-1".into(),
-                    name: "SpawnAgent".into(),
+                    name: "InvokeAgent".into(),
                     input: json!({
-                        "initial_message": "delegated-child",
-                        "workspace_mode": "inherit"
+                        "target": {
+                            "kind": "new_subagent",
+                            "workspace_mode": "inherit"
+                        },
+                        "initial_message": "delegated-child"
                     }),
                     kind: holon::provider::ModelToolCallKind::Function,
                 }],
@@ -1503,10 +1506,13 @@ impl AgentProvider for WorktreeTaskProvider {
             return Ok(ProviderTurnResponse {
                 blocks: vec![ModelBlock::ToolUse {
                     id: "task-1".into(),
-                    name: "SpawnAgent".into(),
+                    name: "InvokeAgent".into(),
                     input: json!({
-                        "initial_message": "inspect this worktree",
-                        "workspace_mode": "worktree"
+                        "target": {
+                            "kind": "new_subagent",
+                            "workspace_mode": "worktree"
+                        },
+                        "initial_message": "inspect this worktree"
                     }),
                     kind: holon::provider::ModelToolCallKind::Function,
                 }],

@@ -633,67 +633,14 @@
       "stability": "stable"
     },
     {
-      "description": "Spawn a delegated agent from a small preset surface. Use `initial_message` as the single caller text field: it is required for the default `private_child` preset and optional for `public_named`. Legacy caller text fields such as `summary`, `prompt`, `task_summary`, and `work_item` are not accepted. The default `private_child` preset returns `agent_id` plus a supervising `task_handle`; `public_named` requires `agent_id` and returns only `agent_id`.\n",
+      "description": "Create an independent, persistent, self-owned agent identity. `agent_id` is required and must be stable. `name`, `template`, `initial_message`, and `model` are optional. The initial message is bootstrap input only: it is delivered only when a new identity is created, does not create a result-bearing task, and is never sent by a duplicate create. Caller provenance, authority, lineage, supervision, durability, and lifecycle attachment are bound by the runtime and are not request fields.\n",
       "family": "agent_creation",
       "freeform_grammar": null,
       "input_schema": {
         "additionalProperties": false,
-        "allOf": [
-          {
-            "if": {
-              "properties": {
-                "preset": {
-                  "const": "public_named"
-                }
-              },
-              "required": [
-                "preset"
-              ]
-            },
-            "then": {
-              "properties": {
-                "workspace_mode": {
-                  "enum": [
-                    "inherit"
-                  ]
-                }
-              },
-              "required": [
-                "agent_id"
-              ]
-            }
-          },
-          {
-            "if": {
-              "not": {
-                "properties": {
-                  "preset": {
-                    "const": "public_named"
-                  }
-                },
-                "required": [
-                  "preset"
-                ]
-              }
-            },
-            "then": {
-              "not": {
-                "required": [
-                  "agent_id"
-                ]
-              },
-              "required": [
-                "initial_message"
-              ]
-            }
-          }
-        ],
         "properties": {
           "agent_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           },
           "initial_message": {
             "type": [
@@ -747,12 +694,7 @@
               "null"
             ]
           },
-          "preset": {
-            "enum": [
-              "private_child",
-              "public_named",
-              null
-            ],
+          "name": {
             "type": [
               "string",
               "null"
@@ -763,23 +705,14 @@
               "string",
               "null"
             ]
-          },
-          "workspace_mode": {
-            "enum": [
-              "inherit",
-              "worktree",
-              null
-            ],
-            "type": [
-              "string",
-              "null"
-            ]
           }
         },
-        "required": [],
+        "required": [
+          "agent_id"
+        ],
         "type": "object"
       },
-      "name": "SpawnAgent",
+      "name": "CreateAgent",
       "related_surfaces": [
         "runtime agent lifecycle APIs"
       ],
@@ -787,8 +720,549 @@
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "canonical_json_envelope",
-        "success_result": "SpawnAgentResult",
-        "success_result_schema": null
+        "success_result": "AgentCreateResult",
+        "success_result_schema": {
+          "properties": {
+            "identity": {
+              "properties": {
+                "agent_id": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "delegated_from_task_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "deleted_at": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "durability": {
+                  "enum": [
+                    "persistent",
+                    "ephemeral",
+                    null
+                  ],
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "kind": {
+                  "enum": [
+                    "default",
+                    "named",
+                    "child"
+                  ],
+                  "type": "string"
+                },
+                "lineage_parent_agent_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "ownership": {
+                  "enum": [
+                    "parent_supervised",
+                    "self_owned",
+                    null
+                  ],
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "parent_agent_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "profile_preset": {
+                  "enum": [
+                    "private_child",
+                    "public_named",
+                    null
+                  ],
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "revision": {
+                  "default": 0,
+                  "format": "uint64",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "status": {
+                  "enum": [
+                    "active",
+                    "deleting",
+                    "deleted"
+                  ],
+                  "type": "string"
+                },
+                "updated_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "visibility": {
+                  "enum": [
+                    "public",
+                    "private"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "agent_id",
+                "kind",
+                "visibility",
+                "status",
+                "created_at",
+                "updated_at"
+              ],
+              "type": "object"
+            },
+            "receipt": {
+              "properties": {
+                "agent_id": {
+                  "type": "string"
+                },
+                "bootstrap": {
+                  "properties": {
+                    "initial_message": {
+                      "properties": {
+                        "attempts": {
+                          "default": 0,
+                          "format": "uint32",
+                          "minimum": 0.0,
+                          "type": "integer"
+                        },
+                        "last_error": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "enum": [
+                            "pending",
+                            "succeeded",
+                            "failed"
+                          ],
+                          "type": "string"
+                        },
+                        "updated_at": {
+                          "format": "date-time",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "updated_at"
+                      ],
+                      "type": "object"
+                    },
+                    "model": {
+                      "properties": {
+                        "attempts": {
+                          "default": 0,
+                          "format": "uint32",
+                          "minimum": 0.0,
+                          "type": "integer"
+                        },
+                        "last_error": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "enum": [
+                            "pending",
+                            "succeeded",
+                            "failed"
+                          ],
+                          "type": "string"
+                        },
+                        "updated_at": {
+                          "format": "date-time",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "updated_at"
+                      ],
+                      "type": "object"
+                    },
+                    "runtime": {
+                      "properties": {
+                        "attempts": {
+                          "default": 0,
+                          "format": "uint32",
+                          "minimum": 0.0,
+                          "type": "integer"
+                        },
+                        "last_error": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "enum": [
+                            "pending",
+                            "succeeded",
+                            "failed"
+                          ],
+                          "type": "string"
+                        },
+                        "updated_at": {
+                          "format": "date-time",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "updated_at"
+                      ],
+                      "type": "object"
+                    },
+                    "status": {
+                      "enum": [
+                        "ready",
+                        "degraded"
+                      ],
+                      "type": "string"
+                    },
+                    "template": {
+                      "properties": {
+                        "attempts": {
+                          "default": 0,
+                          "format": "uint32",
+                          "minimum": 0.0,
+                          "type": "integer"
+                        },
+                        "last_error": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "enum": [
+                            "pending",
+                            "succeeded",
+                            "failed"
+                          ],
+                          "type": "string"
+                        },
+                        "updated_at": {
+                          "format": "date-time",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "updated_at"
+                      ],
+                      "type": "object"
+                    },
+                    "workspace": {
+                      "properties": {
+                        "attempts": {
+                          "default": 0,
+                          "format": "uint32",
+                          "minimum": 0.0,
+                          "type": "integer"
+                        },
+                        "last_error": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "enum": [
+                            "pending",
+                            "succeeded",
+                            "failed"
+                          ],
+                          "type": "string"
+                        },
+                        "updated_at": {
+                          "format": "date-time",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "updated_at"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "template",
+                    "runtime",
+                    "workspace",
+                    "model",
+                    "initial_message"
+                  ],
+                  "type": "object"
+                },
+                "created": {
+                  "type": "boolean"
+                },
+                "display_name": {
+                  "type": "string"
+                },
+                "lifecycle": {
+                  "enum": [
+                    "active",
+                    "deleting",
+                    "deleted"
+                  ],
+                  "type": "string"
+                },
+                "name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "preset": {
+                  "enum": [
+                    "private_child",
+                    "public_named"
+                  ],
+                  "type": "string"
+                },
+                "receipt_id": {
+                  "type": "string"
+                },
+                "stage": {
+                  "enum": [
+                    "reserved",
+                    "profiled",
+                    "resolved",
+                    "degraded",
+                    "bootstrapped"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "receipt_id",
+                "agent_id",
+                "display_name",
+                "preset",
+                "stage",
+                "lifecycle",
+                "created",
+                "bootstrap"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "identity",
+            "receipt"
+          ],
+          "type": "object"
+        }
+      },
+      "stability": "stable"
+    },
+    {
+      "description": "Invoke an agent asynchronously and return its `agent_id`, whether this request created it, and a result-bearing `TaskHandle`. `target` is a strict discriminated union: use `kind=existing_agent` with only `agent_id`, or `kind=new_subagent` with optional `template`, `workspace_mode`, and `model`. `initial_message` is required. Existing-agent invocation never reconfigures or reparents the target; new-subagent invocation creates a private supervised child. Caller provenance and authority are bound by the current runtime context and cannot be supplied in the request.\n",
+      "family": "agent_creation",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "initial_message": {
+            "type": "string"
+          },
+          "target": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "agent_id": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "const": "existing_agent",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "agent_id"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "const": "new_subagent",
+                    "type": "string"
+                  },
+                  "model": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "allow_fallback": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "max_output_tokens": {
+                        "format": "uint32",
+                        "minimum": 0.0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "model": {
+                        "type": "string"
+                      },
+                      "provider": {
+                        "type": "string"
+                      },
+                      "reasoning_effort": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "temperature": {
+                        "format": "double",
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "provider",
+                      "model"
+                    ],
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "template": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "workspace_mode": {
+                    "default": "inherit",
+                    "enum": [
+                      "inherit",
+                      "worktree"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "required": [
+          "target",
+          "initial_message"
+        ],
+        "type": "object"
+      },
+      "name": "InvokeAgent",
+      "related_surfaces": [
+        "runtime agent lifecycle APIs"
+      ],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "canonical_json_envelope",
+        "success_result": "AgentInvocationReceipt",
+        "success_result_schema": {
+          "properties": {
+            "agent_id": {
+              "type": "string"
+            },
+            "created": {
+              "type": "boolean"
+            },
+            "task_handle": {
+              "properties": {
+                "initial_output": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "status": {
+                  "enum": [
+                    "queued",
+                    "running",
+                    "cancelling",
+                    "completed",
+                    "failed",
+                    "cancelled",
+                    "interrupted"
+                  ],
+                  "type": "string"
+                },
+                "task_id": {
+                  "type": "string"
+                },
+                "task_kind": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "task_id",
+                "task_kind",
+                "status"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "agent_id",
+            "created",
+            "task_handle"
+          ],
+          "type": "object"
+        }
       },
       "stability": "stable"
     },

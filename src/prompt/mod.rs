@@ -256,8 +256,8 @@ impl EffectivePrompt {
             self.identity.contract_summary()
         ));
         output.push(format!(
-            "Spawn surface: {}",
-            self.identity.profile_preset.spawn_surface_summary()
+            "Agent tool surface: {}",
+            self.identity.profile_preset.agent_tool_surface_summary()
         ));
         output.push(format!(
             "Cleanup ownership: {}",
@@ -1055,10 +1055,10 @@ fn agent_contract_section(identity: &AgentIdentityView) -> PromptSection {
         "agent_contract",
         PromptStability::Stable,
         format!(
-            "Current agent contract: {}. Identity badge: {}. Spawn surface: {}. Cleanup ownership: {}.",
+            "Current agent contract: {}. Identity badge: {}. Agent tool surface: {}. Cleanup ownership: {}.",
             identity.contract_summary(),
             identity.contract_badge(),
-            identity.profile_preset.spawn_surface_summary(),
+            identity.profile_preset.agent_tool_surface_summary(),
             identity.ownership.cleanup_summary()
         ),
     )
@@ -2299,7 +2299,7 @@ mod tests {
         assert!(section.content.contains("public/self_owned (public_named)"));
         assert!(section
             .content
-            .contains("SpawnAgent returns `agent_id` only"));
+            .contains("CreateAgent creates independent identities"));
     }
 
     #[test]

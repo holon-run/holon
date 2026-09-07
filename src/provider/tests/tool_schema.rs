@@ -31,23 +31,26 @@ fn relaxed_emitted_schema_disables_additional_properties_recursively() {
 }
 
 #[test]
-fn emitted_spawn_agent_schema_strips_openai_incompatible_top_level_composition() {
+fn emitted_invoke_agent_schema_keeps_union_nested_under_target() {
     let tools = trusted_tool_specs();
-    let spawn_agent = tools
+    let invoke_agent = tools
         .into_iter()
-        .find(|spec| spec.name == "SpawnAgent")
-        .expect("SpawnAgent should be present");
+        .find(|spec| spec.name == "InvokeAgent")
+        .expect("InvokeAgent should be present");
 
     let relaxed =
-        emitted_tool_json_schema(&spawn_agent.input_schema, ToolSchemaContract::Relaxed).unwrap();
+        emitted_tool_json_schema(&invoke_agent.input_schema, ToolSchemaContract::Relaxed).unwrap();
 
     assert_eq!(relaxed["type"], "object");
     for forbidden in ["allOf", "anyOf", "oneOf", "enum", "not"] {
         assert!(
             relaxed.get(forbidden).is_none(),
-            "SpawnAgent emitted schema should not contain top-level {forbidden}: {relaxed}"
+            "InvokeAgent emitted schema should not contain top-level {forbidden}: {relaxed}"
         );
     }
+    let target = &relaxed["properties"]["target"];
+    assert!(target.to_string().contains("existing_agent"));
+    assert!(target.to_string().contains("new_subagent"));
     validate_emitted_tool_schema(&relaxed, ToolSchemaContract::Relaxed).unwrap();
 }
 

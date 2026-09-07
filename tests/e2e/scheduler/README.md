@@ -31,7 +31,7 @@ implicitly.
 | SCHED-E2E-011 | `scheduler-operator-interject-during-wait` | Operator interject during operator wait creates new WorkItem | both complete; 2 settlements; wait resolved; restart persistence |
 | SCHED-E2E-012 | `scheduler-compaction-continuity` | WorkItem survives compaction and restart | compaction triggered; WorkItem completes; brief intact; restart persistence |
 | SCHED-E2E-013 | `scheduler-worktree-isolation` | Agent creates and removes a worktree through model tools | worktree lifecycle; execution binding; clean git state; restart persistence |
-| SCHED-E2E-014 | `scheduler-spawn-agent-supervision` | Agent spawns private_child and completes parent WorkItem | SpawnAgent returns agent_id + task_id; brief intact; restart persistence |
+| SCHED-E2E-014 | `scheduler-spawn-agent-supervision` | Agent invokes a new supervised subagent and completes parent WorkItem | InvokeAgent returns agent_id + task_id; brief intact; restart persistence |
 | SCHED-E2E-015 | `scheduler-checkpoint-replay` | Multiple WorkItems survive restart and converge | B completes; A waits; restart preserves states; both converge; exactly-once |
 
 ### Tier-3 (Release)

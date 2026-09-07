@@ -16,6 +16,7 @@ pub(crate) mod apply_patch_tool;
 pub(crate) mod attach_workspace;
 pub(crate) mod cancel_external_trigger;
 pub(crate) mod complete_work_item;
+pub(crate) mod create_agent;
 pub(crate) mod create_external_trigger;
 pub(crate) mod create_work_item;
 pub(crate) mod create_worktree;
@@ -26,6 +27,7 @@ pub(crate) mod exec_command_batch;
 pub(crate) mod generate_image;
 pub(crate) mod get_work_item;
 pub(crate) mod get_workspace_state;
+pub(crate) mod invoke_agent;
 pub(crate) mod list_model_providers;
 pub(crate) mod list_provider_models;
 pub(crate) mod list_work_items;
@@ -34,7 +36,6 @@ pub(crate) mod memory_search;
 pub(crate) mod pick_work_item;
 pub(crate) mod remove_worktree;
 pub(crate) mod sleep;
-pub(crate) mod spawn_agent;
 pub(crate) mod switch_workspace;
 pub(crate) mod task_input;
 pub(crate) mod task_list;
@@ -72,7 +73,8 @@ pub(crate) fn builtin_tool_definitions() -> Result<Vec<BuiltinToolDefinition>> {
         timer::cancel_definition()?,
         agent_get::definition()?,
         enqueue::definition()?,
-        spawn_agent::definition()?,
+        create_agent::definition()?,
+        invoke_agent::definition()?,
         task_list::definition()?,
         task_list::legacy_definition()?,
         task_status::definition()?,
@@ -181,7 +183,13 @@ fn execute_builtin_tool_inner<'a>(
             authority_class,
             &call.input,
         )),
-        spawn_agent::NAME => Box::pin(spawn_agent::execute(
+        create_agent::NAME => Box::pin(create_agent::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+        )),
+        invoke_agent::NAME => Box::pin(invoke_agent::execute(
             runtime,
             agent_id,
             authority_class,
@@ -517,7 +525,8 @@ mod tests {
             "PickWorkItem" => "src/tool/tool_descriptions/pick_work_item.md",
             "RemoveWorktree" => "src/tool/tool_descriptions/remove_worktree.md",
             "Sleep" => "src/tool/tool_descriptions/sleep.md",
-            "SpawnAgent" => "src/tool/tool_descriptions/spawn_agent.md",
+            "CreateAgent" => "src/tool/tool_descriptions/create_agent.md",
+            "InvokeAgent" => "src/tool/tool_descriptions/invoke_agent.md",
             "TaskInput" => "src/tool/tool_descriptions/task_input.md",
             "TaskList" => "src/tool/tool_descriptions/task_list_legacy.md",
             "TaskOutput" => "src/tool/tool_descriptions/task_output.md",

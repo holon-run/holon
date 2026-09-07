@@ -931,8 +931,8 @@ pub(super) fn render_summary(agent: &AgentSummary) -> String {
         format!("Identity contract: {}", agent.identity.contract_badge()),
         format!("Contract summary: {}", agent.identity.contract_summary()),
         format!(
-            "Spawn surface: {}",
-            agent.identity.profile_preset.spawn_surface_summary()
+            "Agent tool surface: {}",
+            agent.identity.profile_preset.agent_tool_surface_summary()
         ),
         format!(
             "Cleanup ownership: {}",
@@ -1256,7 +1256,7 @@ mod tests {
         let rendered = render_summary(&sample_agent_summary());
         assert!(rendered.contains("Identity contract: public/self_owned (public_named)"));
         assert!(rendered.contains("public self-owned agent addressed directly by `agent_id`"));
-        assert!(rendered.contains("SpawnAgent returns `agent_id` only"));
+        assert!(rendered.contains("CreateAgent creates independent identities"));
         assert!(
             rendered.contains("child_1:AwakeRunning[private/parent_supervised (private_child)]")
         );

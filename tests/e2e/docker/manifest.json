@@ -476,7 +476,7 @@
       "tier": "extended",
       "tags": ["scheduler", "workitem", "spawn", "agent", "supervision", "e2e-tier-2"],
       "timeout_seconds": 120,
-      "description": "Verify agent spawns a private_child agent, inspects task status, and completes the parent WorkItem.",
+      "description": "Verify agent invokes a new supervised subagent, inspects task status, and completes the parent WorkItem.",
       "scheduler_protocol_commands_enabled": true,
       "phases": [
         {
@@ -484,7 +484,7 @@
           "required_tools": [
             "CreateWorkItem",
             "PickWorkItem",
-            "SpawnAgent",
+            "InvokeAgent",
             "TaskStatus",
             "UpdateWorkItem",
             "CompleteWorkItem"
@@ -493,7 +493,7 @@
             "ApplyPatch",
             "ExecCommand"
           ],
-          "prompt": "Scheduler Docker E2E case {case_id}. Create exactly one WorkItem whose objective is {objective}, with plan_status ready and exactly these todos: spawn-child pending, verify-child pending. Pick that WorkItem, then call SpawnAgent with preset private_child and the initial_message: 'Respond with one sentence containing the marker {child_marker} and then stop.' Do not specify a model. After SpawnAgent returns, call TaskStatus with the returned task_id to inspect the child status. Then update both todos to completed and emit a concise completion result containing {completion_marker} immediately followed by CompleteWorkItem for the exact current item. Do not modify files."
+          "prompt": "Scheduler Docker E2E case {case_id}. Create exactly one WorkItem whose objective is {objective}, with plan_status ready and exactly these todos: spawn-child pending, verify-child pending. Pick that WorkItem, then call InvokeAgent with target kind new_subagent and the initial_message: 'Respond with one sentence containing the marker {child_marker} and then stop.' Do not specify a model. After InvokeAgent returns, call TaskStatus with the returned task_id to inspect the child status. Then update both todos to completed and emit a concise completion result containing {completion_marker} immediately followed by CompleteWorkItem for the exact current item. Do not modify files."
         }
       ]
     },

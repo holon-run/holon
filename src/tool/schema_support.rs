@@ -1,16 +1,9 @@
 use anyhow::{anyhow, Result};
 use schemars::{generate::SchemaSettings, JsonSchema, Schema};
 use serde_json::Value;
-use std::any::TypeId;
 
-use crate::tool::tools::spawn_agent::SpawnAgentArgs;
-
-pub(crate) fn tool_input_schema<T: JsonSchema + 'static>() -> Result<Value> {
-    let mut schema = normalized_schema::<T>()?;
-    if TypeId::of::<T>() == TypeId::of::<SpawnAgentArgs>() {
-        enforce_public_named_spawn_contract(&mut schema);
-    }
-    Ok(schema)
+pub(crate) fn tool_input_schema<T: JsonSchema>() -> Result<Value> {
+    normalized_schema::<T>()
 }
 
 pub(crate) fn tool_result_schema<T: JsonSchema>() -> Result<Value> {
@@ -24,62 +17,6 @@ fn normalized_schema<T: JsonSchema>() -> Result<Value> {
     normalize_numeric_bound_literals(&mut schema);
     prune_schema_metadata(&mut schema);
     Ok(schema)
-}
-
-fn enforce_public_named_spawn_contract(schema: &mut Value) {
-    let Some(schema_object) = schema.as_object_mut() else {
-        return;
-    };
-
-    let contract = serde_json::json!({
-        "allOf": [
-            {
-                "if": {
-                    "properties": {
-                        "preset": {
-                            "const": "public_named"
-                        }
-                    },
-                    "required": ["preset"]
-                },
-                "then": {
-                    "required": ["agent_id"],
-                    "properties": {
-                        "workspace_mode": {
-                            "enum": ["inherit"]
-                        }
-                    }
-                }
-            },
-            {
-                "if": {
-                    "not": {
-                        "properties": {
-                            "preset": {
-                                "const": "public_named"
-                            }
-                        },
-                        "required": ["preset"]
-                    }
-                },
-                "then": {
-                    "required": ["initial_message"],
-                    "not": {
-                        "required": ["agent_id"]
-                    }
-                }
-            }
-        ]
-    });
-
-    if let Some(existing_all_of) = schema_object.get_mut("allOf").and_then(Value::as_array_mut) {
-        if let Some(contract_variants) = contract.get("allOf").and_then(Value::as_array) {
-            existing_all_of.extend(contract_variants.iter().cloned());
-        }
-        return;
-    }
-
-    schema_object.insert("allOf".to_string(), contract["allOf"].clone());
 }
 
 #[cfg(test)]

@@ -465,7 +465,7 @@ async fn filtered_tool_specs_hide_notify_operator_for_normal_agents() {
 }
 
 #[tokio::test]
-async fn filtered_tool_specs_keep_spawn_agent_visible_without_host_bridge() {
+async fn filtered_tool_specs_keep_agent_tools_visible_without_host_bridge() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -482,7 +482,9 @@ async fn filtered_tool_specs_keep_spawn_agent_visible_without_host_bridge() {
 
     let tools = runtime.filtered_tool_specs(&identity).unwrap();
 
-    assert!(tools.iter().any(|tool| tool.name == "SpawnAgent"));
+    assert!(tools.iter().any(|tool| tool.name == "CreateAgent"));
+    assert!(tools.iter().any(|tool| tool.name == "InvokeAgent"));
+    assert!(!tools.iter().any(|tool| tool.name == "SpawnAgent"));
 }
 
 #[tokio::test]
@@ -492,6 +494,8 @@ async fn filtered_tool_specs_hide_agent_creation_family_for_private_child() {
         .filtered_tool_specs(&private_child_identity("tmp_child_demo"))
         .unwrap();
 
+    assert!(!tools.iter().any(|tool| tool.name == "CreateAgent"));
+    assert!(!tools.iter().any(|tool| tool.name == "InvokeAgent"));
     assert!(!tools.iter().any(|tool| tool.name == "SpawnAgent"));
 }
 
@@ -528,12 +532,62 @@ async fn filtered_tool_specs_keep_agent_creation_family_for_public_named_agent()
     let identity = runtime.agent_identity_view().await.unwrap();
     let tools = runtime.filtered_tool_specs(&identity).unwrap();
 
-    assert!(tools.iter().any(|tool| tool.name == "SpawnAgent"));
+    assert!(tools.iter().any(|tool| tool.name == "CreateAgent"));
+    assert!(tools.iter().any(|tool| tool.name == "InvokeAgent"));
+    assert!(!tools.iter().any(|tool| tool.name == "SpawnAgent"));
     assert!(tools.iter().any(|tool| tool.name == "SwitchWorkspace"));
     assert!(tools.iter().any(|tool| tool.name == "AttachWorkspace"));
     assert!(!tools.iter().any(|tool| tool.name == "UseWorkspace"));
     assert!(!tools.iter().any(|tool| tool.name == "EnterWorkspace"));
     assert!(!tools.iter().any(|tool| tool.name == "ExitWorkspace"));
+}
+
+#[tokio::test]
+async fn invoke_agent_hides_unknown_and_unauthorized_targets() {
+    let (_home, host, runtime) = host_backed_test_runtime().await;
+    host.create_named_agent("unauthorized-target", None)
+        .await
+        .unwrap();
+
+    let mut descriptors = Vec::new();
+    for target_agent_id in ["missing-target", "unauthorized-target"] {
+        let error = crate::tool::tools::execute_builtin_tool(
+            &runtime,
+            "default",
+            &AuthorityClass::OperatorInstruction,
+            &crate::tool::ToolCall {
+                id: format!("invoke-{target_agent_id}"),
+                name: "InvokeAgent".into(),
+                input: serde_json::json!({
+                    "target": {
+                        "kind": "existing_agent",
+                        "agent_id": target_agent_id
+                    },
+                    "initial_message": "inspect target"
+                }),
+            },
+        )
+        .await
+        .expect_err("unknown and unauthorized targets must reject");
+        descriptors.push(crate::runtime_error::describe_runtime_error(&error));
+    }
+
+    for descriptor in &descriptors {
+        assert_eq!(descriptor.code, "not_found");
+        assert_eq!(
+            descriptor.operator_message,
+            "agent target was not found or is not available to this caller"
+        );
+        assert!(!descriptor.source_chain.join(" ").contains("missing-target"));
+        assert!(!descriptor
+            .source_chain
+            .join(" ")
+            .contains("unauthorized-target"));
+    }
+    assert_eq!(
+        descriptors[0].operator_message,
+        descriptors[1].operator_message
+    );
 }
 
 #[tokio::test]

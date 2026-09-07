@@ -19,4 +19,4 @@ results and stderr for diagnostics. Use exit code `0` for success, `1` for an
 operational/control failure, and `2` for CLI usage failure. Use
 `holon task list` and `holon work-item` lifecycle commands for inspection and
 bounded mutations; do not use recursive `holon run` or `holon prompt` as a
-replacement for `Enqueue`, `SpawnAgent`, or the current WorkItem lifecycle.
+replacement for `Enqueue`, `CreateAgent`, `InvokeAgent`, or the current WorkItem lifecycle.

@@ -985,7 +985,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
             "scheduler-spawn": [
                 "CreateWorkItem",
                 "PickWorkItem",
-                "SpawnAgent",
+                "InvokeAgent",
                 "TaskStatus",
                 "UpdateWorkItem",
                 "CompleteWorkItem",

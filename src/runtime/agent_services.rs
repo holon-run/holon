@@ -3,7 +3,9 @@ use std::future::Future;
 use std::pin::Pin;
 
 use super::RuntimeHandle;
-use crate::runtime_error::{collect_runtime_error_source_chain, RuntimeError, RuntimeErrorDomain};
+use crate::runtime_error::{
+    collect_runtime_error_source_chain, describe_runtime_error, RuntimeError, RuntimeErrorDomain,
+};
 use crate::types::{
     AgentCreateResult, AgentInvocationReceipt, ChildAgentWorkspaceMode, CreateAgentRequest,
     InvokeAgentRequest, InvokeAgentTarget, SpawnAgentModelResolution, TaskHandle, TaskRecord,
@@ -120,6 +122,9 @@ impl AgentInvocationService<'_> {
                     self.runtime
                         .fail_agent_invocation_task(&task, &error)
                         .await?;
+                    if describe_runtime_error(&error).code == "agent_target_unavailable" {
+                        return Err(error);
+                    }
                     let direct_cause = collect_runtime_error_source_chain(&error)
                         .last()
                         .cloned()

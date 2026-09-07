@@ -431,8 +431,8 @@ mod tests {
                 freeform_grammar: None,
             },
             ToolSpec {
-                name: "SpawnAgent".to_string(),
-                description: "Spawn an agent".to_string(),
+                name: "InvokeAgent".to_string(),
+                description: "Invoke an agent".to_string(),
                 input_schema: serde_json::json!({}),
                 freeform_grammar: None,
             },

@@ -14,6 +14,7 @@ pub mod tool_names {
     pub const CANCEL_EXTERNAL_TRIGGER: &str = "CancelExternalTrigger";
     pub const CANCEL_TIMER: &str = "CancelTimer";
     pub const COMPLETE_WORK_ITEM: &str = "CompleteWorkItem";
+    pub const CREATE_AGENT: &str = "CreateAgent";
     pub const CREATE_EXTERNAL_TRIGGER: &str = "CreateExternalTrigger";
     pub const CREATE_TIMER: &str = "CreateTimer";
     pub const CREATE_WORK_ITEM: &str = "CreateWorkItem";
@@ -26,6 +27,7 @@ pub mod tool_names {
     pub const GET_WORKSPACE_STATE: &str = "GetWorkspaceState";
     pub const GET_TIMER: &str = "GetTimer";
     pub const GENERATE_IMAGE: &str = "GenerateImage";
+    pub const INVOKE_AGENT: &str = "InvokeAgent";
     pub const LIST_MODEL_PROVIDERS: &str = "ListModelProviders";
     pub const LIST_PROVIDER_MODELS: &str = "ListProviderModels";
     pub const LIST_TASKS: &str = "ListTasks";
@@ -36,7 +38,7 @@ pub mod tool_names {
     pub const PICK_WORK_ITEM: &str = "PickWorkItem";
     pub const REMOVE_WORKTREE: &str = "RemoveWorktree";
     pub const SLEEP: &str = "Sleep";
-    pub const SPAWN_AGENT: &str = "SpawnAgent";
+    pub(crate) const SPAWN_AGENT: &str = "SpawnAgent";
     pub const TASK_INPUT: &str = "TaskInput";
     /// Legacy alias kept for backward-compatible dispatch.
     pub const TASK_LIST: &str = "TaskList";
@@ -64,6 +66,7 @@ pub const STABLE_TOOL_NAMES: &[&str] = &[
     ATTACH_WORKSPACE,
     CANCEL_TIMER,
     COMPLETE_WORK_ITEM,
+    CREATE_AGENT,
     CREATE_TIMER,
     CREATE_WORK_ITEM,
     CREATE_WORKTREE,
@@ -75,6 +78,7 @@ pub const STABLE_TOOL_NAMES: &[&str] = &[
     GET_WORK_ITEM,
     GET_WORKSPACE_STATE,
     GENERATE_IMAGE,
+    INVOKE_AGENT,
     LIST_MODEL_PROVIDERS,
     LIST_PROVIDER_MODELS,
     LIST_TASKS,
@@ -85,7 +89,6 @@ pub const STABLE_TOOL_NAMES: &[&str] = &[
     PICK_WORK_ITEM,
     REMOVE_WORKTREE,
     SLEEP,
-    SPAWN_AGENT,
     SWITCH_WORKSPACE,
     TASK_INPUT,
     TASK_OUTPUT,
@@ -130,6 +133,7 @@ pub const ALL_TOOL_NAMES: &[&str] = &[
     CANCEL_EXTERNAL_TRIGGER,
     CANCEL_TIMER,
     COMPLETE_WORK_ITEM,
+    CREATE_AGENT,
     CREATE_EXTERNAL_TRIGGER,
     CREATE_TIMER,
     CREATE_WORK_ITEM,
@@ -142,6 +146,7 @@ pub const ALL_TOOL_NAMES: &[&str] = &[
     GET_WORK_ITEM,
     GET_WORKSPACE_STATE,
     GENERATE_IMAGE,
+    INVOKE_AGENT,
     LIST_MODEL_PROVIDERS,
     LIST_PROVIDER_MODELS,
     LIST_TASKS,
@@ -152,7 +157,6 @@ pub const ALL_TOOL_NAMES: &[&str] = &[
     PICK_WORK_ITEM,
     REMOVE_WORKTREE,
     SLEEP,
-    SPAWN_AGENT,
     SWITCH_WORKSPACE,
     TASK_INPUT,
     TASK_LIST,

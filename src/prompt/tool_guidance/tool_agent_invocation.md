@@ -1,0 +1,5 @@
+Use CreateAgent for an independently managed persistent agent identity. It does not create a result-bearing task, and a duplicate create never delivers the optional bootstrap message.
+
+Use InvokeAgent when work must produce a task result. Select exactly one target variant: `existing_agent` addresses an already authorized agent without changing its identity or lifecycle, while `new_subagent` creates a private supervised child and may request an inherited or worktree workspace. InvokeAgent returns immediately with an `agent_id` and `task_handle`; use TaskStatus, TaskOutput, TaskInput, TaskStop, or WaitFor with `wake=task_result` as appropriate. Do not poll merely to wait for ordinary completion.
+
+Caller identity, origin, authority, parentage, supervision, durability, and lifecycle attachment are runtime-bound context. Never try to supply them as tool fields. CreateAgent and InvokeAgent are the complete first-release agent-facing creation/invocation surface; there is no SendAgentMessage tool.

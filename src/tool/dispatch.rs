@@ -341,7 +341,8 @@ mod tests {
         for expected in [
             "AgentGet",
             "WaitFor",
-            "SpawnAgent",
+            "CreateAgent",
+            "InvokeAgent",
             "ListTasks",
             "TaskInput",
             "TaskOutput",
@@ -368,6 +369,8 @@ mod tests {
             assert!(names.iter().any(|name| name == expected));
         }
         assert!(!names.iter().any(|name| name == "Sleep"));
+        assert!(!names.iter().any(|name| name == "SpawnAgent"));
+        assert!(!names.iter().any(|name| name == "SendAgentMessage"));
 
         for removed in [
             "Glob",
@@ -439,134 +442,57 @@ mod tests {
             .get("provider")
             .is_some());
 
-        let spawn_agent = specs
+        let create_agent = specs
             .iter()
-            .find(|spec| spec.name == "SpawnAgent")
-            .expect("SpawnAgent should be present");
-        assert!(spawn_agent.input_schema["properties"]
-            .get("initial_message")
-            .is_some());
-        assert!(spawn_agent.input_schema["properties"]
-            .get("preset")
-            .is_some());
-        assert!(spawn_agent.input_schema["properties"]
+            .find(|spec| spec.name == "CreateAgent")
+            .expect("CreateAgent should be present");
+        assert!(create_agent.input_schema["properties"]
             .get("agent_id")
             .is_some());
-        assert!(spawn_agent.input_schema["properties"]
+        assert!(create_agent.input_schema["properties"]
+            .get("initial_message")
+            .is_some());
+        assert!(create_agent.input_schema["properties"]
             .get("template")
             .is_some());
-        assert!(spawn_agent.input_schema["properties"]
+        assert!(create_agent.input_schema["properties"]
             .get("model")
             .is_some());
-        assert!(spawn_agent.input_schema["properties"]["model"]
+        assert!(create_agent.input_schema["properties"]["model"]
             .to_string()
             .contains("allow_fallback"));
-        assert!(spawn_agent.input_schema["properties"]["preset"]
-            .to_string()
-            .contains("public_named"));
-        assert!(spawn_agent.input_schema["properties"]
-            .get("summary")
-            .is_none());
-        assert!(spawn_agent.input_schema["properties"]
-            .get("task_summary")
-            .is_none());
-        assert!(spawn_agent.input_schema["properties"]
-            .get("prompt")
-            .is_none());
-        assert!(spawn_agent.input_schema["properties"]
-            .get("work_item")
-            .is_none());
+        for forbidden in [
+            "authority_class",
+            "origin",
+            "lineage_parent_agent_id",
+            "supervision",
+            "durability",
+            "lifecycle_attachment",
+        ] {
+            assert!(create_agent.input_schema["properties"]
+                .get(forbidden)
+                .is_none());
+        }
 
-        let all_of = spawn_agent
-            .input_schema
-            .get("allOf")
-            .and_then(Value::as_array)
-            .expect("SpawnAgent schema should define allOf rules");
-        let contract_rules = all_of
+        let invoke_agent = specs
             .iter()
-            .filter(|rule| rule.get("if").is_some() && rule.get("then").is_some())
-            .collect::<Vec<_>>();
-        assert!(
-            contract_rules.len() >= 2,
-            "SpawnAgent schema should include preset contract if/then rules"
-        );
-
-        let requires_agent_id_for_public_named = contract_rules.iter().any(|variant| {
-            variant
-                .get("if")
-                .and_then(|value| value.get("properties"))
-                .and_then(|value| value.get("preset"))
-                .and_then(|value| value.get("const"))
-                .and_then(Value::as_str)
-                .is_some_and(|preset| preset == "public_named")
-                && variant
-                    .get("then")
-                    .and_then(|value| value.get("required"))
-                    .and_then(Value::as_array)
-                    .and_then(|required| {
-                        required
-                            .iter()
-                            .find(|item| item.as_str() == Some("agent_id"))
-                    })
-                    .is_some()
-        });
-        assert!(requires_agent_id_for_public_named);
-
-        let rejects_agent_id_for_default_or_private = contract_rules.iter().any(|variant| {
-            variant
-                .get("if")
-                .and_then(|value| value.get("not"))
-                .is_some()
-                && variant
-                    .get("then")
-                    .and_then(|value| value.get("not"))
-                    .and_then(|value| value.get("required"))
-                    .and_then(Value::as_array)
-                    .and_then(|required| {
-                        required
-                            .iter()
-                            .find(|item| item.as_str() == Some("agent_id"))
-                    })
-                    .is_some()
-        });
-        assert!(rejects_agent_id_for_default_or_private);
-
-        let requires_initial_message_for_default_or_private =
-            contract_rules.iter().any(|variant| {
-                variant
-                    .get("if")
-                    .and_then(|value| value.get("not"))
-                    .is_some()
-                    && variant
-                        .get("then")
-                        .and_then(|value| value.get("required"))
-                        .and_then(Value::as_array)
-                        .and_then(|required| {
-                            required
-                                .iter()
-                                .find(|item| item.as_str() == Some("initial_message"))
-                        })
-                        .is_some()
-            });
-        assert!(requires_initial_message_for_default_or_private);
-
-        let constrains_workspace_mode_for_public_named = contract_rules.iter().any(|variant| {
-            variant
-                .get("if")
-                .and_then(|value| value.get("properties"))
-                .and_then(|value| value.get("preset"))
-                .and_then(|value| value.get("const"))
-                .and_then(Value::as_str)
-                .is_some_and(|preset| preset == "public_named")
-                && variant
-                    .get("then")
-                    .and_then(|value| value.get("properties"))
-                    .and_then(|value| value.get("workspace_mode"))
-                    .and_then(|value| value.get("enum"))
-                    .and_then(Value::as_array)
-                    .is_some_and(|modes| modes.iter().any(|mode| mode.as_str() == Some("inherit")))
-        });
-        assert!(constrains_workspace_mode_for_public_named);
+            .find(|spec| spec.name == "InvokeAgent")
+            .expect("InvokeAgent should be present");
+        assert!(invoke_agent.input_schema["properties"]
+            .get("initial_message")
+            .is_some());
+        let target_schema = &invoke_agent.input_schema["properties"]["target"];
+        let target_schema_text = target_schema.to_string();
+        assert!(target_schema_text.contains("existing_agent"));
+        assert!(target_schema_text.contains("new_subagent"));
+        assert!(target_schema_text.contains("agent_id"));
+        assert!(target_schema_text.contains("workspace_mode"));
+        assert!(target_schema_text.contains("allow_fallback"));
+        for forbidden in ["authority_class", "origin", "caller_agent_id", "trust"] {
+            assert!(invoke_agent.input_schema["properties"]
+                .get(forbidden)
+                .is_none());
+        }
     }
 
     #[test]
@@ -640,7 +566,11 @@ mod tests {
             ToolCapabilityFamily::CoreAgent
         );
         assert_eq!(
-            family_for("SpawnAgent"),
+            family_for("CreateAgent"),
+            ToolCapabilityFamily::AgentCreation
+        );
+        assert_eq!(
+            family_for("InvokeAgent"),
             ToolCapabilityFamily::AgentCreation
         );
         assert_eq!(

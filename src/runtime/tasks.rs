@@ -651,7 +651,7 @@ impl RuntimeHandle {
             ));
         }
         let model_resolution = self
-            .resolve_spawn_agent_model_request(model_request)
+            .resolve_agent_model_request(crate::tool::names::SPAWN_AGENT, model_request)
             .await?;
         match preset {
             AgentProfilePreset::PrivateChild => {
@@ -797,8 +797,9 @@ impl RuntimeHandle {
         }
     }
 
-    async fn resolve_spawn_agent_model_request(
+    pub(crate) async fn resolve_agent_model_request(
         &self,
+        tool_name: &str,
         request: Option<SpawnAgentModelRequest>,
     ) -> Result<SpawnAgentModelResolution> {
         let Some(request) = request else {
@@ -809,7 +810,7 @@ impl RuntimeHandle {
         let provider = ProviderId::parse(&request.provider).map_err(|error| {
             ToolError::new(
                 "invalid_tool_input",
-                format!("SpawnAgent model.provider is invalid: {error}"),
+                format!("{tool_name} model.provider is invalid: {error}"),
             )
             .with_details(serde_json::json!({
                 "field": "model.provider",
@@ -822,7 +823,7 @@ impl RuntimeHandle {
             return Err(anyhow::Error::from(
                 ToolError::new(
                     "invalid_tool_input",
-                    "SpawnAgent model.model must not be empty",
+                    format!("{tool_name} model.model must not be empty"),
                 )
                 .with_details(serde_json::json!({
                     "field": "model.model",
@@ -860,7 +861,7 @@ impl RuntimeHandle {
                 .clone()
                 .unwrap_or_else(|| "model_unavailable".to_string());
             let recovery_hint = if allow_fallback {
-                "request an available/selectable model; fallback for explicit unavailable SpawnAgent requests is not used before child creation"
+                "request an available/selectable model; fallback for explicit unavailable agent model requests is not used before agent creation"
             } else {
                 "request an available/selectable model, or omit model to inherit the parent model"
             };

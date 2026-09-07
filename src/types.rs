@@ -370,12 +370,12 @@ impl AgentProfilePreset {
         }
     }
 
-    pub fn spawn_surface_summary(self) -> &'static str {
+    pub fn agent_tool_surface_summary(self) -> &'static str {
         match self {
-            Self::PrivateChild => {
-                "SpawnAgent returns both `agent_id` and a supervising `task_handle`"
+            Self::PrivateChild => "this profile cannot create or invoke other agents",
+            Self::PublicNamed => {
+                "CreateAgent creates independent identities; InvokeAgent returns result-bearing task handles"
             }
-            Self::PublicNamed => "SpawnAgent returns `agent_id` only",
         }
     }
 

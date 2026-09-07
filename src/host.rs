@@ -41,7 +41,7 @@ use crate::{
         SchedulerRepairInspection,
     },
     runtime_db::RuntimeDb,
-    runtime_error::describe_runtime_error,
+    runtime_error::{describe_runtime_error, RuntimeError},
     skills::{
         effective_skill_root_registrations, skills_runtime_view_from_catalog, SkillVisibility,
         SkillsRegistry,
@@ -59,16 +59,16 @@ use crate::{
         AgentCreateReceipt, AgentCreateResult, AgentCreateStage, AgentDeletionJob, AgentDetail,
         AgentDurability, AgentIdentityRecord, AgentIdentityView, AgentKind, AgentLifecycleHint,
         AgentListEntry, AgentMessageCallerContext, AgentMessageDeliveryOutcome,
-        AgentMessagePrincipalKind, AgentMessageSendRequest, AgentOwnership, AgentProfilePreset,
-        AgentRegistryStatus, AgentState, AgentStatus, AgentSummary, AgentTokenUsageSummary,
-        AgentTreeNode, AgentTreeProjection, AgentVisibility, AuthorityClass, ChildAgentSummary,
-        ClosureOutcome, CreateAgentRequest, ExternalTriggerRecord, ExternalTriggerStatus,
-        ExternalTriggerSummary, LoadedAgentsMdView, MessageBody, MessageDeliverySurface,
-        MessageEnvelope, MessageKind, MessageOrigin, OperatorNotificationRecord, Priority,
-        QueueEntryStatus, RuntimeFailureSummary, SpawnAgentModelResolution,
-        SpawnAgentModelResolutionStatus, TaskKind, TaskRecord, TaskStatus, TimerRecord, TokenUsage,
-        TranscriptEntry, TranscriptEntryKind, WaitConditionSummary, WorkspaceEntry,
-        WorkspaceOccupancyRecord,
+        AgentMessageDeliveryRejectionCode, AgentMessagePrincipalKind, AgentMessageSendRequest,
+        AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentState, AgentStatus,
+        AgentSummary, AgentSupervisionState, AgentTokenUsageSummary, AgentTreeNode,
+        AgentTreeProjection, AgentVisibility, AuthorityClass, ChildAgentSummary, ClosureOutcome,
+        CreateAgentRequest, ExternalTriggerRecord, ExternalTriggerStatus, ExternalTriggerSummary,
+        LoadedAgentsMdView, MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind,
+        MessageOrigin, OperatorNotificationRecord, Priority, QueueEntryStatus,
+        RuntimeFailureSummary, SpawnAgentModelResolution, SpawnAgentModelResolutionStatus,
+        TaskKind, TaskRecord, TaskStatus, TimerRecord, TokenUsage, TranscriptEntry,
+        TranscriptEntryKind, WaitConditionSummary, WorkspaceEntry, WorkspaceOccupancyRecord,
     },
 };
 
@@ -4141,11 +4141,33 @@ impl RuntimeHost {
         message_text: String,
         authority_class: AuthorityClass,
     ) -> Result<ChildTaskSpawn> {
+        let canonical_relations = self
+            .runtime_db()
+            .agent_canonical_relations()
+            .latest(target_agent_id)?;
+        let active_supervision = canonical_relations
+            .as_ref()
+            .and_then(|relations| relations.supervision.as_ref())
+            .filter(|supervision| {
+                supervision.supervisor_agent_id == task.agent_id
+                    && matches!(
+                        supervision.state,
+                        AgentSupervisionState::Active | AgentSupervisionState::CleanupRequired
+                    )
+            });
+        let (principal_kind, route) = if active_supervision.is_some() {
+            (
+                AgentMessagePrincipalKind::SupervisingParent,
+                "supervision_follow_up",
+            )
+        } else {
+            (AgentMessagePrincipalKind::PeerAgent, "agent_invocation")
+        };
         let caller = AgentMessageCallerContext {
-            caller_principal: "runtime:agent-invocation".into(),
+            caller_principal: format!("agent:{}", task.agent_id),
             caller_agent_id: Some(task.agent_id.clone()),
-            principal_kind: AgentMessagePrincipalKind::RuntimeCapability,
-            route: "agent_invocation".into(),
+            principal_kind,
+            route: route.into(),
             origin: MessageOrigin::Task {
                 task_id: task.id.clone(),
             },
@@ -4181,7 +4203,7 @@ impl RuntimeHost {
                             .agent_message_delivery_service()
                             .deliver(&prepared)
                             .await?;
-                        (identity, Some(runtime), receipt)
+                        (Some(identity), Some(runtime), receipt)
                     }
                     Err(activation_error) => {
                         let latest_identity = self.agent_identity_record(target_agent_id)?;
@@ -4193,7 +4215,7 @@ impl RuntimeHost {
                                 .runtime_db()
                                 .agent_message_deliveries()
                                 .admit_without_queue(&prepared.record)?;
-                            (latest_identity.unwrap_or(identity), None, receipt)
+                            (Some(latest_identity.unwrap_or(identity)), None, receipt)
                         } else {
                             return Err(activation_error);
                         }
@@ -4205,19 +4227,42 @@ impl RuntimeHost {
                     .runtime_db()
                     .agent_message_deliveries()
                     .admit_without_queue(&prepared.record)?;
-                let identity = identity.ok_or_else(|| {
-                    anyhow!("agent message delivery target {target_agent_id} was not found")
-                })?;
                 (identity, None, receipt)
             }
         };
         if receipt.outcome != AgentMessageDeliveryOutcome::Accepted {
+            if matches!(
+                receipt.rejection_code,
+                Some(
+                    AgentMessageDeliveryRejectionCode::TargetNotFound
+                        | AgentMessageDeliveryRejectionCode::MessageNotAuthorized
+                )
+            ) {
+                return Err(anyhow!(RuntimeError::not_found(
+                    "agent_target_unavailable",
+                    "agent target was not found or is not available to this caller",
+                )
+                .with_safe_context("task_id", &task.id)
+                .with_recovery_hint(
+                    "use an agent id already available through the caller's authorized agent context",
+                )));
+            }
             return Err(anyhow!(
                 "agent message delivery {} was rejected: {:?}",
                 receipt.delivery_id,
                 receipt.rejection_code
             ));
         }
+        let identity = identity.ok_or_else(|| {
+            anyhow!(RuntimeError::not_found(
+                "agent_target_unavailable",
+                "agent target was not found or is not available to this caller",
+            )
+            .with_safe_context("task_id", &task.id)
+            .with_recovery_hint(
+                "use an agent id already available through the caller's authorized agent context",
+            ))
+        })?;
         let runtime = runtime.ok_or_else(|| {
             anyhow!(
                 "accepted delivery {} targets an inactive agent",
@@ -5025,9 +5070,10 @@ mod tests {
         storage::AppStorage,
         system::WorkspaceProjectionKind,
         types::{
-            AgentDeletionPhase, AgentDeletionStatus, AgentKind, AgentOwnership, AgentProfilePreset,
-            AgentRegistryStatus, AgentStatus, AgentVisibility, AuthorityClass, BriefKind,
-            BriefRecord, ChildAgentWorkspaceMode, ControlAction, DeliverySummaryRecord,
+            AgentDeletionPhase, AgentDeletionStatus, AgentKind, AgentMessagePolicyRecord,
+            AgentMessagePolicyRule, AgentMessagePrincipalKind, AgentOwnership, AgentPolicyEffect,
+            AgentProfilePreset, AgentRegistryStatus, AgentStatus, AgentVisibility, AuthorityClass,
+            BriefKind, BriefRecord, ChildAgentWorkspaceMode, ControlAction, DeliverySummaryRecord,
             InvokeAgentRequest, InvokeAgentTarget, MessageBody, MessageEnvelope, MessageKind,
             MessageOrigin, Priority, QueueEntryRecord, QueueEntryStatus, TaskRecord,
             TaskRecoverySpec, TaskStatus, TurnTerminalKind, WaitConditionKind, WaitConditionRecord,
@@ -6184,6 +6230,7 @@ mod tests {
     async fn canonical_existing_invocation_preserves_target_configuration_and_relations() {
         let (_home, host) = test_host();
         let parent = host.default_runtime().await.unwrap();
+        let parent_agent_id = parent.agent_summary().await.unwrap().identity.agent_id;
         parent
             .agent_creation_service()
             .create(CreateAgentRequest {
@@ -6196,12 +6243,29 @@ mod tests {
                     "anthropic",
                     "claude-sonnet-4-6",
                 )),
-                lineage_parent_agent_id: Some(
-                    parent.agent_summary().await.unwrap().identity.agent_id,
-                ),
+                lineage_parent_agent_id: Some(parent_agent_id.clone()),
                 inherit_parent_runtime: true,
             })
             .await
+            .unwrap();
+        let identity = host
+            .agent_identity_record("canonical-existing")
+            .unwrap()
+            .unwrap();
+        host.runtime_db()
+            .agent_canonical_relations()
+            .upsert_message_policy(&AgentMessagePolicyRecord {
+                agent_id: identity.agent_id.clone(),
+                revision: 1,
+                default_effect: AgentPolicyEffect::Deny,
+                rules: vec![AgentMessagePolicyRule {
+                    principal_kind: AgentMessagePrincipalKind::PeerAgent,
+                    principal_id: Some(parent_agent_id),
+                    route: Some("agent_invocation".into()),
+                    effect: AgentPolicyEffect::Allow,
+                }],
+                created_at: identity.created_at,
+            })
             .unwrap();
 
         let target = host.get_public_agent("canonical-existing").await.unwrap();
@@ -6809,6 +6873,9 @@ mod tests {
     async fn public_named_initial_message_is_optional_and_inherits_only_attached_workspaces() {
         let (_home, host) = test_host();
         let parent = host.default_runtime().await.unwrap();
+        let named_agent_id = format!("{}-no-bootstrap", host.config().default_agent_id);
+        let bootstrap_agent_id = format!("{}-bootstrap", host.config().default_agent_id);
+        let bootstrap_message_id = format!("agent_bootstrap_message:{bootstrap_agent_id}");
         let workspace_home = tempdir().unwrap();
         let workspace_path = workspace_home.path().to_path_buf();
         let workspace = host.ensure_workspace_entry(workspace_path.clone()).unwrap();
@@ -6844,7 +6911,7 @@ mod tests {
 
         host.spawn_public_named_agent(
             parent.clone(),
-            "release-bot",
+            &named_agent_id,
             None,
             AuthorityClass::OperatorInstruction,
             None,
@@ -6853,9 +6920,9 @@ mod tests {
         .await
         .unwrap();
 
-        let named = host.get_public_agent("release-bot").await.unwrap();
+        let named = host.get_public_agent(&named_agent_id).await.unwrap();
         let named_state = named.agent_state().await.unwrap();
-        let named_home_id = crate::types::agent_home_workspace_id("release-bot");
+        let named_home_id = crate::types::agent_home_workspace_id(&named_agent_id);
         assert_eq!(
             named_state.attached_workspaces,
             vec![named_home_id, workspace.workspace_id.clone()]
@@ -6879,7 +6946,7 @@ mod tests {
 
         host.spawn_public_named_agent(
             parent,
-            "bootstrap-bot",
+            &bootstrap_agent_id,
             Some("bootstrap release lane".into()),
             AuthorityClass::OperatorInstruction,
             None,
@@ -6887,7 +6954,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let bootstrap_named = host.get_public_agent("bootstrap-bot").await.unwrap();
+        let bootstrap_named = host.get_public_agent(&bootstrap_agent_id).await.unwrap();
         let messages = bootstrap_named.storage().read_recent_messages(10).unwrap();
         let bootstrap = messages
             .iter()
@@ -6926,11 +6993,11 @@ mod tests {
         let mut bootstrap_record = host
             .runtime_db()
             .agent_bootstraps()
-            .latest("bootstrap-bot")
+            .latest(&bootstrap_agent_id)
             .unwrap()
             .unwrap();
         bootstrap_record.desired.initial_message = Some(AgentBootstrapInitialMessage {
-            message_id: "agent_bootstrap_message:bootstrap-bot".into(),
+            message_id: bootstrap_message_id.clone(),
             text: "bootstrap release lane".into(),
             authority_class: AuthorityClass::OperatorInstruction,
             creator_agent_id: host.config().default_agent_id.clone(),
@@ -6945,8 +7012,8 @@ mod tests {
             .unwrap();
 
         let (left, right) = tokio::join!(
-            host.repair_public_agent("bootstrap-bot"),
-            host.repair_public_agent("bootstrap-bot")
+            host.repair_public_agent(&bootstrap_agent_id),
+            host.repair_public_agent(&bootstrap_agent_id)
         );
         assert_eq!(
             left.unwrap().bootstrap.unwrap().status,
@@ -6960,7 +7027,7 @@ mod tests {
         assert_eq!(
             messages
                 .iter()
-                .filter(|message| message.id == "agent_bootstrap_message:bootstrap-bot")
+                .filter(|message| message.id == bootstrap_message_id)
                 .count(),
             1,
             "concurrent repair must not duplicate the bootstrap message"

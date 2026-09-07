@@ -552,7 +552,7 @@ async fn openai_provider_sends_sleep_schema_in_request_payload() {
 }
 
 #[tokio::test]
-async fn openai_provider_sends_spawn_agent_schema_without_top_level_composition() {
+async fn openai_provider_sends_invoke_agent_union_nested_under_target() {
     async fn handler(
         State(capture): State<JsonRequestCapture>,
         Json(body): Json<Value>,
@@ -584,26 +584,29 @@ async fn openai_provider_sends_spawn_agent_schema_without_top_level_composition(
         .unwrap()
         .base_url = server;
     let provider = OpenAiProvider::from_config(&fixture.config, "gpt-5.4").unwrap();
-    let spawn_agent = trusted_tool_specs()
+    let invoke_agent = trusted_tool_specs()
         .into_iter()
-        .find(|spec| spec.name == "SpawnAgent")
-        .expect("SpawnAgent tool should be present");
+        .find(|spec| spec.name == "InvokeAgent")
+        .expect("InvokeAgent tool should be present");
 
     provider
-        .complete_turn(provider_turn_request_with_tools(vec![spawn_agent]))
+        .complete_turn(provider_turn_request_with_tools(vec![invoke_agent]))
         .await
         .unwrap();
 
     let request_body = capture.request_body.lock().unwrap().clone().unwrap();
     let parameters = &request_body["tools"][0]["parameters"];
-    assert_eq!(request_body["tools"][0]["name"], "SpawnAgent");
+    assert_eq!(request_body["tools"][0]["name"], "InvokeAgent");
     assert_eq!(parameters["type"], "object");
     for forbidden in ["allOf", "anyOf", "oneOf", "enum", "not"] {
         assert!(
             parameters.get(forbidden).is_none(),
-            "OpenAI SpawnAgent schema should not contain top-level {forbidden}: {parameters}"
+            "OpenAI InvokeAgent schema should not contain top-level {forbidden}: {parameters}"
         );
     }
+    let target = &parameters["properties"]["target"];
+    assert!(target.to_string().contains("existing_agent"));
+    assert!(target.to_string().contains("new_subagent"));
     validate_emitted_tool_schema(parameters, ToolSchemaContract::Relaxed).unwrap();
 }
 

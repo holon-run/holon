@@ -970,7 +970,7 @@ async fn max_output_mutation_tool_call_is_rejected_without_side_effects() {
 }
 
 #[tokio::test]
-async fn detached_runtime_provider_request_still_exposes_spawn_agent() {
+async fn detached_runtime_provider_request_still_exposes_agent_tools() {
     let dir = tempdir().unwrap();
     let provider = Arc::new(ToolCaptureProvider {
         requests: Mutex::new(Vec::new()),
@@ -1002,9 +1002,11 @@ async fn detached_runtime_provider_request_still_exposes_spawn_agent() {
     let requests = provider.requests.lock().await;
     let tool_names = requests.last().expect("provider request should exist");
     assert!(
-        tool_names.iter().any(|name| name == "SpawnAgent"),
-        "detached runtime should still expose SpawnAgent to provider requests: {tool_names:?}"
+        tool_names.iter().any(|name| name == "CreateAgent")
+            && tool_names.iter().any(|name| name == "InvokeAgent"),
+        "detached runtime should still expose agent tools to provider requests: {tool_names:?}"
     );
+    assert!(!tool_names.iter().any(|name| name == "SpawnAgent"));
 }
 
 #[tokio::test]

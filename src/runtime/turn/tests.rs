@@ -2926,7 +2926,8 @@ fn does_not_invalidate_checkpoint_for_non_state_tools() {
         "WebFetch",
         "ListTasks",
         "WaitFor",
-        "SpawnAgent",
+        "CreateAgent",
+        "InvokeAgent",
     ] {
         let envelope = ToolResultEnvelope {
             tool_name: tool_name.to_string(),

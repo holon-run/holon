@@ -28,7 +28,7 @@ pub(crate) fn tool_result_summary(envelope: &ToolResultEnvelope) -> String {
             .and_then(|result| match envelope.tool_name.as_str() {
                 tn::EXEC_COMMAND => Some(summarize_exec_command_result(result)),
                 tn::TASK_OUTPUT => Some(summarize_task_output_result(result)),
-                tn::SPAWN_AGENT => summarize_spawn_agent_result(result),
+                tn::CREATE_AGENT | tn::INVOKE_AGENT => summarize_agent_result(result),
                 tn::VIEW_IMAGE => summarize_view_image_result(result),
                 _ => None,
             })
@@ -134,8 +134,15 @@ fn summarize_task_output_result(result: &Value) -> String {
     )
 }
 
-fn summarize_spawn_agent_result(result: &Value) -> Option<String> {
-    let agent_id = result.get("agent_id").and_then(Value::as_str)?;
+fn summarize_agent_result(result: &Value) -> Option<String> {
+    let agent_id = result
+        .get("agent_id")
+        .or_else(|| {
+            result
+                .get("identity")
+                .and_then(|identity| identity.get("agent_id"))
+        })
+        .and_then(Value::as_str)?;
     let task_id = result
         .get("task_handle")
         .and_then(|handle| handle.get("task_id"))

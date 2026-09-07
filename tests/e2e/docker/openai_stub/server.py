@@ -874,9 +874,12 @@ class Scenario:
                 "spawn_child", "SCHEDULER-SPAWN-CHILD-deterministic"
             )
             return self.call(
-                "SpawnAgent",
+                "InvokeAgent",
                 {
-                    "preset": "private_child",
+                    "target": {
+                        "kind": "new_subagent",
+                        "workspace_mode": "inherit",
+                    },
                     "initial_message": (
                         f"Respond with one sentence containing the marker {marker} "
                         "and then stop."

@@ -610,7 +610,7 @@ pub async fn sleep_only_completion_keeps_last_assistant_message_from_previous_ro
     let message = admitted_operator_prompt("default", "write a file and then sleep");
     runtime.enqueue(message.clone()).await?;
 
-    wait_until(|| {
+    eventually_for(Duration::from_secs(30), || {
         let briefs = runtime.storage().read_recent_briefs(10)?;
         Ok(briefs.iter().any(|brief| {
             brief.related_message_id.as_deref() == Some(message.id.as_str())

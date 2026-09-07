@@ -67,11 +67,11 @@ pub fn tool_sections_with_context(
             guidance(include_str!("tool_guidance/tool_timer.md")),
         ));
     }
-    if names.contains(&tn::SPAWN_AGENT) {
+    if names.contains(&tn::CREATE_AGENT) || names.contains(&tn::INVOKE_AGENT) {
         sections.push(section(
-            "tool_spawn_agent",
+            "tool_agent_invocation",
             PromptStability::Stable,
-            guidance(include_str!("tool_guidance/tool_spawn_agent.md")),
+            guidance(include_str!("tool_guidance/tool_agent_invocation.md")),
         ));
     }
     if names.contains(&tn::AGENT_GET) {
@@ -253,9 +253,9 @@ mod tests {
     }
 
     #[test]
-    fn test_spawn_agent_section_emitted_when_available() {
+    fn test_agent_invocation_section_emitted_when_available() {
         let tools = vec![ToolSpec {
-            name: "SpawnAgent".into(),
+            name: "InvokeAgent".into(),
             description: String::new(),
             input_schema: json!({}),
             freeform_grammar: None,
@@ -263,16 +263,18 @@ mod tests {
         let sections = tool_sections(&tools);
         let section = sections
             .iter()
-            .find(|s| s.name == "tool_spawn_agent")
-            .expect("spawn agent section");
+            .find(|s| s.name == "tool_agent_invocation")
+            .expect("agent invocation section");
         assert!(section
             .content
-            .contains("You may pass `task_handle.task_id`"));
-        assert!(section.content.contains("active supervision"));
+            .contains("Select exactly one target variant"));
+        assert!(section.content.contains("private supervised child"));
         assert!(section
             .content
-            .contains("you do not need to poll the handle just to wait for completion"));
-        assert!(section.content.contains("runtime event loop"));
+            .contains("Do not poll merely to wait for ordinary completion"));
+        assert!(section
+            .content
+            .contains("there is no SendAgentMessage tool"));
     }
 
     #[test]
@@ -888,7 +890,13 @@ mod tests {
                 freeform_grammar: None,
             },
             ToolSpec {
-                name: "SpawnAgent".into(),
+                name: "CreateAgent".into(),
+                description: String::new(),
+                input_schema: json!({}),
+                freeform_grammar: None,
+            },
+            ToolSpec {
+                name: "InvokeAgent".into(),
                 description: String::new(),
                 input_schema: json!({}),
                 freeform_grammar: None,
@@ -957,7 +965,7 @@ mod tests {
         let sections = tool_sections(&tools);
         for name in [
             "tool_wait_for",
-            "tool_spawn_agent",
+            "tool_agent_invocation",
             "tool_agent_get",
             "tool_enqueue",
             "tool_external_trigger",

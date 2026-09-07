@@ -118,7 +118,7 @@ pub async fn task_output_returns_subagent_result_text() -> Result<()> {
     Ok(())
 }
 
-pub async fn spawn_agent_receipt_projects_child_supervision_boundary() -> Result<()> {
+pub async fn invoke_agent_receipt_projects_child_supervision_boundary() -> Result<()> {
     let host = RuntimeHost::new_with_provider(
         test_config(),
         Arc::new(StubProvider::new("child completed")),
@@ -132,37 +132,36 @@ pub async fn spawn_agent_receipt_projects_child_supervision_boundary() -> Result
             "default",
             &AuthorityClass::OperatorInstruction,
             &ToolCall {
-                id: "tool-spawn-agent-supervision".into(),
-                name: "SpawnAgent".into(),
+                id: "tool-invoke-agent-supervision".into(),
+                name: "InvokeAgent".into(),
                 input: json!({
-                    "initial_message": "finish delegated work",
-                    "preset": "private_child"
+                    "target": {
+                        "kind": "new_subagent",
+                        "workspace_mode": "inherit"
+                    },
+                    "initial_message": "finish delegated work"
                 }),
             },
         )
         .await?;
 
     let value = parse_tool_result_payload(&result)?;
-    assert_eq!(value["child_agent_id"], value["agent_id"]);
-    assert_eq!(
-        value["supervision_task_id"],
-        value["task_handle"]["task_id"]
-    );
-    assert_eq!(value["task_handle"]["task_kind"], "child_agent_task");
-
-    let supervision = &value["child_supervision"];
-    assert_eq!(supervision["parent_agent_id"], "default");
-    assert_eq!(supervision["child_agent_id"], value["child_agent_id"]);
-    assert_eq!(
-        supervision["supervision_task_id"],
-        value["supervision_task_id"]
-    );
-    assert_eq!(supervision["workspace_mode"], "inherit");
-    assert_eq!(supervision["cleanup_owner"], "supervision_task");
-    assert_eq!(supervision["followup_target"], "parent_supervisor");
+    assert_eq!(value["created"], true);
+    assert_eq!(value["task_handle"]["task_kind"], "actor_invocation");
+    let task_id = value["task_handle"]["task_id"]
+        .as_str()
+        .expect("invocation receipt should include task id");
+    let task = runtime
+        .task_record(task_id)
+        .await?
+        .expect("invocation task should exist");
+    let detail = task.detail.expect("invocation task should have detail");
+    assert_eq!(detail["child_agent_id"], value["agent_id"]);
+    assert_eq!(detail["workspace_mode"], "inherit");
+    assert_eq!(detail["created_new_subagent"], true);
     assert!(result
         .summary_text()
-        .is_some_and(|text| text.contains("supervision task")));
+        .is_some_and(|text| text.contains("task_id=")));
     Ok(())
 }
 
