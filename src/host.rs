@@ -60,9 +60,9 @@ use crate::{
         AgentDurability, AgentIdentityRecord, AgentIdentityView, AgentKind, AgentLifecycleHint,
         AgentListEntry, AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentState,
         AgentStatus, AgentSummary, AgentTokenUsageSummary, AgentTreeNode, AgentTreeProjection,
-        AgentVisibility, AuthorityClass, ChildAgentSummary, ClosureOutcome, ExternalTriggerRecord,
-        ExternalTriggerStatus, ExternalTriggerSummary, LoadedAgentsMdView, MessageBody,
-        MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin,
+        AgentVisibility, AuthorityClass, ChildAgentSummary, ClosureOutcome, CreateAgentRequest,
+        ExternalTriggerRecord, ExternalTriggerStatus, ExternalTriggerSummary, LoadedAgentsMdView,
+        MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin,
         OperatorNotificationRecord, Priority, QueueEntryStatus, RuntimeFailureSummary,
         SpawnAgentModelResolution, SpawnAgentModelResolutionStatus, TaskKind, TaskRecord,
         TaskStatus, TimerRecord, TokenUsage, TranscriptEntry, TranscriptEntryKind,
@@ -2331,6 +2331,84 @@ impl RuntimeHost {
         })
     }
 
+    async fn create_agent(
+        &self,
+        parent_runtime: RuntimeHandle,
+        request: CreateAgentRequest,
+    ) -> Result<AgentCreateResult> {
+        if let Some(identity) = self.agent_identity_record(&request.agent_id)? {
+            anyhow::ensure!(
+                identity.status == AgentRegistryStatus::Active
+                    && identity.kind == AgentKind::Named
+                    && identity.visibility == AgentVisibility::Public
+                    && identity.ownership() == AgentOwnership::SelfOwned,
+                "agent {} already exists with an incompatible identity or lifecycle",
+                request.agent_id
+            );
+            let bootstrap = self.reconcile_agent_bootstrap(&request.agent_id).await?;
+            let bootstrap_summary = bootstrap.summary();
+            return Ok(AgentCreateResult {
+                receipt: AgentCreateReceipt {
+                    receipt_id: ids::runtime_id("agent_create"),
+                    agent_id: identity.agent_id.clone(),
+                    name: identity.name.clone(),
+                    display_name: identity.display_name(),
+                    preset: AgentProfilePreset::PublicNamed,
+                    stage: if bootstrap_summary.status == AgentBootstrapStatus::Ready {
+                        AgentCreateStage::Bootstrapped
+                    } else {
+                        AgentCreateStage::Degraded
+                    },
+                    lifecycle: identity.status,
+                    created: false,
+                    bootstrap: bootstrap_summary,
+                },
+                identity,
+            });
+        }
+
+        let parent_state = parent_runtime.agent_state().await?;
+        let catalog_agent_home = request
+            .inherit_parent_runtime
+            .then(|| self.agent_data_dir(&parent_state.id));
+        let workspace = request
+            .inherit_parent_runtime
+            .then(|| AgentBootstrapWorkspaceState {
+                attached_workspaces:
+                    crate::runtime::workspace::inherited_attached_workspaces_for_agent(
+                        &parent_state,
+                        &request.agent_id,
+                    ),
+                execution_profile: parent_state.execution_profile.clone(),
+                inherited_model_override: parent_state.model_override.clone(),
+                inherited_model_override_reasoning_effort: parent_state
+                    .model_override_reasoning_effort
+                    .clone(),
+            });
+        let initial_message = request
+            .initial_message
+            .map(|text| AgentBootstrapInitialMessage {
+                message_id: format!("agent_bootstrap_message:{}", request.agent_id),
+                text,
+                authority_class: request.authority_class,
+                creator_agent_id: parent_state.id,
+            });
+        let desired = AgentBootstrapDesiredState {
+            template: request.template,
+            catalog_agent_home,
+            workspace,
+            model_resolution: request.model_resolution,
+            initial_message,
+        };
+        self.create_public_named_agent_with_bootstrap(
+            &request.agent_id,
+            request.lineage_parent_agent_id.as_deref(),
+            request.name.as_deref(),
+            desired,
+        )
+        .await
+    }
+
     async fn ensure_named_agent(
         &self,
         agent_id: &str,
@@ -3778,7 +3856,7 @@ impl RuntimeHost {
             )
             .await?;
         }
-        let record = AgentIdentityRecord::new(
+        let mut record = AgentIdentityRecord::new(
             child_agent_id,
             AgentKind::Child,
             AgentVisibility::Private,
@@ -3788,6 +3866,7 @@ impl RuntimeHost {
             Some(task_id.to_string()),
         )
         .with_lineage_parent_agent_id(Some(parent_agent_id.to_string()));
+        record.durability = Some(AgentDurability::Ephemeral);
         self.append_agent_identity(&record)?;
         Ok(record)
     }
@@ -3912,6 +3991,10 @@ impl RuntimeHost {
         let Some(task) = parent_storage.latest_task_record(task_id)? else {
             return Ok(true);
         };
+
+        if task.kind == TaskKind::ActorInvocation {
+            return Ok(false);
+        }
 
         Ok(matches!(
             task.status,
@@ -4049,6 +4132,59 @@ impl RuntimeHost {
         })
     }
 
+    async fn invoke_existing_agent(
+        &self,
+        task: &TaskRecord,
+        target_agent_id: &str,
+        message_text: String,
+        authority_class: AuthorityClass,
+    ) -> Result<ChildTaskSpawn> {
+        let identity = self
+            .active_agent_identity(target_agent_id)
+            .map_err(anyhow::Error::from)?;
+        let runtime = self.get_or_create_agent(target_agent_id).await?;
+        let child_turn_baseline = runtime.agent_state().await?.turn_index;
+        let mut message = crate::types::MessageEnvelope::new(
+            target_agent_id.to_string(),
+            crate::types::MessageKind::InternalFollowup,
+            crate::types::MessageOrigin::Task {
+                task_id: task.id.clone(),
+            },
+            authority_class.clone(),
+            crate::types::Priority::Normal,
+            crate::types::MessageBody::Text { text: message_text },
+        )
+        .with_admission(
+            crate::types::MessageDeliverySurface::RuntimeSystem,
+            crate::types::AdmissionContext::RuntimeOwned,
+        );
+        message.metadata = Some(json!({
+            "invocation_task_id": task.id,
+            "target_agent_id": target_agent_id,
+            "delegated_authority_class": authority_class,
+        }));
+        runtime.enqueue(message).await?;
+
+        let mut task_detail = json!({
+            "target_agent_id": target_agent_id,
+            "target_agent_kind": identity.kind,
+            "target_agent_visibility": identity.visibility,
+            "target_agent_ownership": identity.ownership(),
+            "target_agent_profile_preset": identity.profile_preset(),
+            "child_turn_baseline": child_turn_baseline,
+            "created_new_subagent": false,
+        });
+        if identity.kind == AgentKind::Child {
+            task_detail["child_agent_id"] = json!(target_agent_id);
+        }
+        Ok(ChildTaskSpawn {
+            child_agent_id: target_agent_id.to_string(),
+            child_turn_baseline,
+            task_detail,
+        })
+    }
+
+    #[cfg(test)]
     async fn spawn_public_named_agent(
         &self,
         parent_runtime: RuntimeHandle,
@@ -4098,13 +4234,19 @@ impl RuntimeHost {
         child_agent_id: &str,
         child_turn_baseline: u64,
         worktree: bool,
+        cleanup_agent_on_terminal: bool,
     ) -> Result<ChildTaskTerminalResult> {
         let storage = self.agent_storage(child_agent_id)?;
+        let identity = self
+            .active_agent_identity(child_agent_id)
+            .map_err(anyhow::Error::from)?;
         if let Some(result) = self
-            .completed_child_terminal_from_storage(&storage, child_agent_id, child_turn_baseline)
+            .completed_child_terminal_from_storage(&storage, &identity, child_turn_baseline)
             .await?
         {
-            self.archive_private_agent(child_agent_id).await?;
+            if cleanup_agent_on_terminal {
+                self.archive_private_agent(child_agent_id).await?;
+            }
             return Ok(result);
         }
         let runtime = self.get_or_create_agent(child_agent_id).await?;
@@ -4187,18 +4329,25 @@ impl RuntimeHost {
             };
 
             let mut metadata = json!({
-                "child_agent_id": child_agent_id,
-                "child_kind": AgentKind::Child,
-                "child_visibility": AgentVisibility::Private,
-                "child_ownership": AgentOwnership::ParentSupervised,
-                "child_profile_preset": AgentProfilePreset::PrivateChild,
-                "child_observability": runtime.child_agent_observability().await?,
+                "target_agent_id": child_agent_id,
+                "target_agent_kind": identity.kind,
+                "target_agent_visibility": identity.visibility,
+                "target_agent_ownership": identity.ownership(),
+                "target_agent_profile_preset": identity.profile_preset(),
                 "token_usage": json!({
                     "total": crate::types::TokenUsage::new(state.total_input_tokens, state.total_output_tokens),
                     "last_turn": state.last_turn_token_usage.clone(),
                     "total_model_rounds": state.total_model_rounds,
                 }),
             });
+            if identity.kind == AgentKind::Child {
+                metadata["child_agent_id"] = json!(child_agent_id);
+                metadata["child_kind"] = json!(identity.kind);
+                metadata["child_visibility"] = json!(identity.visibility);
+                metadata["child_ownership"] = json!(identity.ownership());
+                metadata["child_profile_preset"] = json!(identity.profile_preset());
+                metadata["child_observability"] = json!(runtime.child_agent_observability().await?);
+            }
             if worktree {
                 if let Some(worktree) = state.worktree_session.as_ref() {
                     let changed_files =
@@ -4214,7 +4363,9 @@ impl RuntimeHost {
             }
             let task_detail = Some(metadata);
 
-            self.archive_private_agent(child_agent_id).await?;
+            if cleanup_agent_on_terminal {
+                self.archive_private_agent(child_agent_id).await?;
+            }
             return Ok(ChildTaskTerminalResult {
                 status,
                 text,
@@ -4226,7 +4377,7 @@ impl RuntimeHost {
     async fn completed_child_terminal_from_storage(
         &self,
         storage: &AppStorage,
-        child_agent_id: &str,
+        identity: &AgentIdentityRecord,
         child_turn_baseline: u64,
     ) -> Result<Option<ChildTaskTerminalResult>> {
         let Some(state) = storage.read_agent()? else {
@@ -4243,7 +4394,7 @@ impl RuntimeHost {
         };
         if state.current_run_id.is_some()
             || state.pending > 0
-            || child_has_active_lifecycle_blockers(storage, child_agent_id)?
+            || child_has_active_lifecycle_blockers(storage, &identity.agent_id)?
         {
             return Ok(None);
         }
@@ -4282,12 +4433,19 @@ impl RuntimeHost {
             text,
             task_detail: {
                 let mut detail = json!( {
-                    "child_agent_id": child_agent_id,
-                    "child_kind": AgentKind::Child,
-                    "child_visibility": AgentVisibility::Private,
-                    "child_ownership": AgentOwnership::ParentSupervised,
-                    "child_profile_preset": AgentProfilePreset::PrivateChild,
+                    "target_agent_id": identity.agent_id,
+                    "target_agent_kind": identity.kind,
+                    "target_agent_visibility": identity.visibility,
+                    "target_agent_ownership": identity.ownership(),
+                    "target_agent_profile_preset": identity.profile_preset(),
                 });
+                if identity.kind == AgentKind::Child {
+                    detail["child_agent_id"] = json!(identity.agent_id);
+                    detail["child_kind"] = json!(identity.kind);
+                    detail["child_visibility"] = json!(identity.visibility);
+                    detail["child_ownership"] = json!(identity.ownership());
+                    detail["child_profile_preset"] = json!(identity.profile_preset());
+                }
                 detail["token_usage"] = json!({
                     "total": crate::types::TokenUsage::new(state.total_input_tokens, state.total_output_tokens),
                     "last_turn": state.last_turn_token_usage.clone(),
@@ -4571,25 +4729,24 @@ impl RuntimeHostBridge {
             .await
     }
 
-    pub(crate) async fn spawn_public_named_agent(
+    pub(crate) async fn invoke_existing_agent(
+        &self,
+        task: &TaskRecord,
+        target_agent_id: &str,
+        message_text: String,
+        authority_class: AuthorityClass,
+    ) -> Result<ChildTaskSpawn> {
+        self.host()?
+            .invoke_existing_agent(task, target_agent_id, message_text, authority_class)
+            .await
+    }
+
+    pub(crate) async fn create_agent(
         &self,
         parent_runtime: RuntimeHandle,
-        agent_id: &str,
-        initial_message: Option<String>,
-        authority_class: AuthorityClass,
-        template: Option<String>,
-        model_resolution: SpawnAgentModelResolution,
+        request: CreateAgentRequest,
     ) -> Result<AgentCreateResult> {
-        self.host()?
-            .spawn_public_named_agent(
-                parent_runtime,
-                agent_id,
-                initial_message,
-                authority_class,
-                template,
-                model_resolution,
-            )
-            .await
+        self.host()?.create_agent(parent_runtime, request).await
     }
 
     pub(crate) async fn child_turn_index(&self, agent_id: &str) -> Result<u64> {
@@ -4623,9 +4780,15 @@ impl RuntimeHostBridge {
         child_agent_id: &str,
         child_turn_baseline: u64,
         worktree: bool,
+        cleanup_agent_on_terminal: bool,
     ) -> Result<ChildTaskTerminalResult> {
         self.host()?
-            .await_child_terminal_result(child_agent_id, child_turn_baseline, worktree)
+            .await_child_terminal_result(
+                child_agent_id,
+                child_turn_baseline,
+                worktree,
+                cleanup_agent_on_terminal,
+            )
             .await
     }
 
@@ -4798,10 +4961,12 @@ mod tests {
         types::{
             AgentDeletionPhase, AgentDeletionStatus, AgentKind, AgentOwnership, AgentProfilePreset,
             AgentRegistryStatus, AgentStatus, AgentVisibility, AuthorityClass, BriefKind,
-            BriefRecord, ControlAction, DeliverySummaryRecord, MessageBody, MessageEnvelope,
-            MessageKind, MessageOrigin, Priority, QueueEntryRecord, QueueEntryStatus, TaskRecord,
+            BriefRecord, ChildAgentWorkspaceMode, ControlAction, DeliverySummaryRecord,
+            InvokeAgentRequest, InvokeAgentTarget, MessageBody, MessageEnvelope, MessageKind,
+            MessageOrigin, Priority, QueueEntryRecord, QueueEntryStatus, TaskRecord,
             TaskRecoverySpec, TaskStatus, TurnTerminalKind, WaitConditionKind, WaitConditionRecord,
             WaitConditionStatus, WakeSource, WorkItemRecord, WorkItemState,
+            ACTOR_INVOCATION_TASK_KIND,
         },
     };
 
@@ -5107,6 +5272,24 @@ mod tests {
             resolution_status: SpawnAgentModelResolutionStatus::Inherited,
             policy_notes: Vec::new(),
         }
+    }
+
+    async fn wait_for_terminal_task(runtime: &RuntimeHandle, task_id: &str) -> TaskRecord {
+        for _ in 0..100 {
+            let task = runtime
+                .storage()
+                .latest_task_record(task_id)
+                .unwrap()
+                .expect("task should remain persisted");
+            if matches!(
+                task.status,
+                TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled
+            ) {
+                return task;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("timed out waiting for task {task_id} to become terminal");
     }
 
     struct BlockingProvider {
@@ -5814,6 +5997,230 @@ mod tests {
                 .is_empty(),
             "duplicate creation must not inject a follow-up message into the default agent"
         );
+    }
+
+    #[tokio::test]
+    async fn canonical_create_reuses_committed_agent_without_supervision_or_reconfiguration() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        let parent_agent_id = parent.agent_summary().await.unwrap().identity.agent_id;
+
+        let created = parent
+            .agent_creation_service()
+            .create(CreateAgentRequest {
+                agent_id: "canonical-create".into(),
+                name: Some("Canonical Create".into()),
+                template: None,
+                initial_message: Some("initial work".into()),
+                authority_class: AuthorityClass::OperatorInstruction,
+                model_resolution: Some(inherited_model_resolution(
+                    "anthropic",
+                    "claude-sonnet-4-6",
+                )),
+                lineage_parent_agent_id: Some(parent_agent_id),
+                inherit_parent_runtime: true,
+            })
+            .await
+            .unwrap();
+        assert!(created.receipt.created);
+        assert!(
+            parent.storage().latest_task_records().unwrap().is_empty(),
+            "independent create must not create a supervision task"
+        );
+
+        let target = host.get_public_agent("canonical-create").await.unwrap();
+        let before = target.agent_summary().await.unwrap();
+        let before_bootstrap = host
+            .runtime_db()
+            .agent_bootstraps()
+            .latest("canonical-create")
+            .unwrap()
+            .unwrap();
+        let before_messages = target.storage().read_recent_messages(100).unwrap().len();
+
+        let duplicate = parent
+            .agent_creation_service()
+            .create(CreateAgentRequest {
+                agent_id: "canonical-create".into(),
+                name: Some("Ignored Rename".into()),
+                template: Some("ignored-template".into()),
+                initial_message: Some("must not be delivered".into()),
+                authority_class: AuthorityClass::ExternalEvidence,
+                model_resolution: Some(inherited_model_resolution("openai", "gpt-5.4")),
+                lineage_parent_agent_id: None,
+                inherit_parent_runtime: false,
+            })
+            .await
+            .unwrap();
+        assert!(!duplicate.receipt.created);
+
+        let after = target.agent_summary().await.unwrap();
+        let after_bootstrap = host
+            .runtime_db()
+            .agent_bootstraps()
+            .latest("canonical-create")
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.identity, before.identity);
+        assert_eq!(after.agent.model_override, before.agent.model_override);
+        assert_eq!(
+            after.agent.model_override_reasoning_effort,
+            before.agent.model_override_reasoning_effort
+        );
+        assert_eq!(
+            after.agent.attached_workspaces,
+            before.agent.attached_workspaces
+        );
+        assert_eq!(after_bootstrap.desired, before_bootstrap.desired);
+        assert_eq!(
+            target.storage().read_recent_messages(100).unwrap().len(),
+            before_messages,
+            "duplicate create must not deliver its initial message"
+        );
+        assert!(
+            parent.storage().latest_task_records().unwrap().is_empty(),
+            "duplicate create must not create an invocation task"
+        );
+    }
+
+    #[tokio::test]
+    async fn canonical_existing_invocation_preserves_target_configuration_and_relations() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        parent
+            .agent_creation_service()
+            .create(CreateAgentRequest {
+                agent_id: "canonical-existing".into(),
+                name: None,
+                template: None,
+                initial_message: None,
+                authority_class: AuthorityClass::OperatorInstruction,
+                model_resolution: Some(inherited_model_resolution(
+                    "anthropic",
+                    "claude-sonnet-4-6",
+                )),
+                lineage_parent_agent_id: Some(
+                    parent.agent_summary().await.unwrap().identity.agent_id,
+                ),
+                inherit_parent_runtime: true,
+            })
+            .await
+            .unwrap();
+
+        let target = host.get_public_agent("canonical-existing").await.unwrap();
+        let before_summary = target.agent_summary().await.unwrap();
+        let before_relations = host
+            .operator_agent_detail("canonical-existing")
+            .unwrap()
+            .canonical_relations;
+        let receipt = parent
+            .agent_invocation_service()
+            .invoke(InvokeAgentRequest {
+                target: InvokeAgentTarget::ExistingAgent {
+                    agent_id: "canonical-existing".into(),
+                },
+                message: "continue existing work".into(),
+                authority_class: AuthorityClass::ExternalEvidence,
+            })
+            .await
+            .unwrap();
+
+        assert!(!receipt.created);
+        assert_eq!(receipt.agent_id, "canonical-existing");
+        assert_eq!(receipt.task_handle.task_kind, ACTOR_INVOCATION_TASK_KIND);
+        let task = parent
+            .storage()
+            .latest_task_record(&receipt.task_handle.task_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(task.kind, TaskKind::ActorInvocation);
+
+        let after_summary = target.agent_summary().await.unwrap();
+        let after_relations = host
+            .operator_agent_detail("canonical-existing")
+            .unwrap()
+            .canonical_relations;
+        assert_eq!(after_summary.identity, before_summary.identity);
+        assert_eq!(
+            after_summary.agent.model_override,
+            before_summary.agent.model_override
+        );
+        assert_eq!(
+            after_summary.agent.model_override_reasoning_effort,
+            before_summary.agent.model_override_reasoning_effort
+        );
+        assert_eq!(
+            after_summary.agent.attached_workspaces,
+            before_summary.agent.attached_workspaces
+        );
+        assert_eq!(
+            after_summary.agent.worktree_session,
+            before_summary.agent.worktree_session
+        );
+        assert_eq!(after_relations, before_relations);
+
+        let terminal = wait_for_terminal_task(&parent, &receipt.task_handle.task_id).await;
+        assert_eq!(terminal.status, TaskStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn canonical_new_subagent_remains_reusable_after_invocation_and_restart() {
+        let (_home, host) = test_host();
+        let config = host.config().as_ref().clone();
+        let parent = host.default_runtime().await.unwrap();
+
+        let created = parent
+            .agent_invocation_service()
+            .invoke(InvokeAgentRequest {
+                target: InvokeAgentTarget::NewSubagent {
+                    template: None,
+                    workspace_mode: ChildAgentWorkspaceMode::Inherit,
+                    model_resolution: Some(inherited_model_resolution("openai", "gpt-5.4")),
+                },
+                message: "first invocation".into(),
+                authority_class: AuthorityClass::OperatorInstruction,
+            })
+            .await
+            .unwrap();
+        assert!(created.created);
+        assert_eq!(created.task_handle.task_kind, ACTOR_INVOCATION_TASK_KIND);
+        let first_terminal = wait_for_terminal_task(&parent, &created.task_handle.task_id).await;
+        assert_eq!(first_terminal.status, TaskStatus::Completed);
+
+        let child_identity = host
+            .agent_identity_record(&created.agent_id)
+            .unwrap()
+            .expect("new subagent identity should remain recorded");
+        assert_eq!(child_identity.status, AgentRegistryStatus::Active);
+        assert_eq!(child_identity.durability, Some(AgentDurability::Ephemeral));
+        assert!(host.agent_data_dir(&created.agent_id).exists());
+
+        let reused = parent
+            .agent_invocation_service()
+            .invoke(InvokeAgentRequest {
+                target: InvokeAgentTarget::ExistingAgent {
+                    agent_id: created.agent_id.clone(),
+                },
+                message: "second invocation".into(),
+                authority_class: AuthorityClass::OperatorInstruction,
+            })
+            .await
+            .unwrap();
+        assert!(!reused.created);
+        assert_eq!(reused.agent_id, created.agent_id);
+        let second_terminal = wait_for_terminal_task(&parent, &reused.task_handle.task_id).await;
+        assert_eq!(second_terminal.status, TaskStatus::Completed);
+
+        host.shutdown().await.unwrap();
+        drop(host);
+        let restarted =
+            RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
+        let restarted_identity = restarted
+            .agent_identity_record(&created.agent_id)
+            .unwrap()
+            .expect("terminal invocation must not delete its target during restart convergence");
+        assert_eq!(restarted_identity.status, AgentRegistryStatus::Active);
+        assert!(restarted.agent_data_dir(&created.agent_id).exists());
     }
 
     #[tokio::test]

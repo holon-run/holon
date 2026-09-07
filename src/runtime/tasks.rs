@@ -3,21 +3,21 @@ use super::waiting::WorkItemBlockerClearance;
 use super::{task_state_reducer, *};
 use crate::config::{ModelRef, ProviderId};
 use crate::runtime_error::{
-    collect_runtime_error_source_chain, sanitize_runtime_error_text, RuntimeError,
-    RuntimeErrorContext, RuntimeErrorDomain,
+    sanitize_runtime_error_text, RuntimeError, RuntimeErrorContext, RuntimeErrorDomain,
 };
 use crate::tool::helpers::truncate_output_to_char_budget;
 use crate::tool::ToolError;
 use crate::types::{
     brief_created_event_for, AgentProfilePreset, BriefKind, BriefRecord, ChildAgentWorkspaceMode,
-    CommandTaskStatusSnapshot, CompletionReportRequirement, CompletionReportState, FailureArtifact,
-    FailureArtifactCategory, SpawnAgentModelRequest, SpawnAgentModelResolution,
-    SpawnAgentModelResolutionStatus, SpawnAgentResult, TaskHandle, TaskInputResult, TaskKind,
-    TaskListEntry, TaskOutputResult, TaskOutputRetrievalStatus, TaskOutputSnapshot,
-    TaskStatusSnapshot, TodoItem, ToolArtifactRef, WaitConditionRecord, WaitConditionStatus,
-    WorkItemCompletionIntent, WorkItemContinuationFrame, WorkItemContinuationReturnPolicy,
-    WorkItemContinuationState, WorkItemDelegationRecord, WorkItemDelegationState,
-    WorkItemPlanStatus, WorkItemReadiness, WorkItemRecord, WorkItemState, CHILD_AGENT_TASK_KIND,
+    CommandTaskStatusSnapshot, CompletionReportRequirement, CompletionReportState,
+    CreateAgentRequest, FailureArtifact, FailureArtifactCategory, InvokeAgentRequest,
+    InvokeAgentTarget, SpawnAgentModelRequest, SpawnAgentModelResolution,
+    SpawnAgentModelResolutionStatus, SpawnAgentResult, TaskInputResult, TaskKind, TaskListEntry,
+    TaskOutputResult, TaskOutputRetrievalStatus, TaskOutputSnapshot, TaskStatusSnapshot, TodoItem,
+    ToolArtifactRef, WaitConditionRecord, WaitConditionStatus, WorkItemCompletionIntent,
+    WorkItemContinuationFrame, WorkItemContinuationReturnPolicy, WorkItemContinuationState,
+    WorkItemDelegationRecord, WorkItemDelegationState, WorkItemPlanStatus, WorkItemReadiness,
+    WorkItemRecord, WorkItemState, CHILD_AGENT_TASK_KIND,
 };
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -122,7 +122,7 @@ pub(super) fn task_rejoin_fence(
     task.rejoin_fence().map_err(anyhow::Error::msg)
 }
 
-fn spawn_agent_task_label(initial_message: &str) -> String {
+pub(super) fn spawn_agent_task_label(initial_message: &str) -> String {
     let collapsed = initial_message
         .split_whitespace()
         .collect::<Vec<_>>()
@@ -318,6 +318,114 @@ impl RuntimeHandle {
             .current_turn_work_item_id
             .clone()
             .or_else(|| guard.state.current_work_item_id.clone())
+    }
+
+    pub(super) async fn create_agent_invocation_task(
+        &self,
+        summary: String,
+        prompt: String,
+        authority_class: AuthorityClass,
+        target_agent_id: Option<String>,
+        created_new_subagent: bool,
+        workspace_mode: ChildAgentWorkspaceMode,
+    ) -> Result<TaskRecord> {
+        self.ensure_background_tasks_allowed(crate::types::ACTOR_INVOCATION_TASK_KIND)
+            .await?;
+        let agent_id = self.agent_id().await?;
+        let work_item_id = self.task_work_item_binding().await;
+        let recovery = TaskRecoverySpec::AgentInvocation {
+            summary: summary.clone(),
+            prompt,
+            authority_class,
+            target_agent_id,
+            created_new_subagent,
+            workspace_mode,
+        };
+        let task_id = crate::ids::task_id();
+        let detail = self
+            .task_creation_detail(
+                &task_id,
+                serde_json::json!({
+                    "wait_policy": crate::types::TaskWaitPolicy::Background,
+                    "workspace_mode": workspace_mode,
+                    "created_new_subagent": created_new_subagent,
+                }),
+            )
+            .await?;
+        let task = TaskRecord {
+            id: task_id,
+            agent_id,
+            kind: TaskKind::ActorInvocation,
+            status: TaskStatus::Queued,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_message_id: None,
+            work_item_id,
+            summary: Some(summary),
+            detail: Some(detail),
+            recovery: Some(recovery),
+        };
+        self.apply_task_transition(task_state_reducer::TaskTransition::new(
+            &task,
+            "task_created",
+        ))
+        .await?;
+        Ok(task)
+    }
+
+    pub(super) async fn start_agent_invocation_monitor(
+        &self,
+        task: TaskRecord,
+        authority_class: AuthorityClass,
+        worktree: bool,
+        child_agent_id: String,
+        child_turn_baseline: u64,
+        task_detail: serde_json::Value,
+    ) -> Result<TaskRecord> {
+        let queued_task = TaskRecord {
+            updated_at: Utc::now(),
+            detail: Some(self.task_detail_preserving_rejoin_contract(&task, task_detail.clone())),
+            ..task
+        };
+        self.apply_task_transition(task_state_reducer::TaskTransition::new(
+            &queued_task,
+            "task_agent_invocation_admitted",
+        ))
+        .await?;
+
+        let runtime = self.clone();
+        let task_record = queued_task.clone();
+        let task_id = queued_task.id.clone();
+        let handle = tokio::spawn(async move {
+            let _ = runtime
+                .monitor_spawned_child_agent_task(
+                    task_record,
+                    authority_class,
+                    worktree,
+                    false,
+                    false,
+                    child_agent_id,
+                    child_turn_baseline,
+                    task_detail,
+                )
+                .await;
+            runtime.inner.task_handles.lock().await.remove(&task_id);
+        });
+        self.inner.task_handles.lock().await.insert(
+            queued_task.id.clone(),
+            command_task::ManagedTaskHandle::Async(handle),
+        );
+        Ok(queued_task)
+    }
+
+    pub(super) async fn fail_agent_invocation_task(
+        &self,
+        task: &TaskRecord,
+        error: &anyhow::Error,
+    ) -> Result<()> {
+        let failed = super::agent_services::failed_invocation_task(task, error);
+        self.persist_task_status_direct(&failed, "task_agent_invocation_failed")
+            .await
     }
 
     pub(crate) fn supports_child_agent_spawning(&self) -> bool {
@@ -544,12 +652,6 @@ impl RuntimeHandle {
         let model_resolution = self
             .resolve_spawn_agent_model_request(model_request)
             .await?;
-        let bridge = self
-            .inner
-            .host_bridge
-            .clone()
-            .expect("spawn agent support should imply host bridge");
-
         match preset {
             AgentProfilePreset::PrivateChild => {
                 let initial_message = initial_message
@@ -559,117 +661,41 @@ impl RuntimeHandle {
                         "private_child spawn requires non-empty initial_message"
                     ));
                 }
-                let task_label = spawn_agent_task_label(&initial_message);
-                let task = self
-                    .create_child_supervision_task(
-                        task_label,
-                        initial_message.clone(),
-                        authority_class.clone(),
-                        worktree,
-                    )
+                let receipt = self
+                    .agent_invocation_service()
+                    .invoke(InvokeAgentRequest {
+                        target: InvokeAgentTarget::NewSubagent {
+                            template,
+                            workspace_mode: if worktree {
+                                ChildAgentWorkspaceMode::Worktree
+                            } else {
+                                ChildAgentWorkspaceMode::Inherit
+                            },
+                            model_resolution: Some(model_resolution.clone()),
+                        },
+                        message: initial_message,
+                        authority_class,
+                    })
                     .await?;
-
-                let spawned = match bridge
-                    .spawn_child_task(
-                        self.clone(),
-                        &task,
-                        initial_message,
-                        authority_class.clone(),
-                        worktree,
-                        template.clone(),
-                        model_resolution.clone(),
-                    )
-                    .await
-                {
-                    Ok(spawned) => spawned,
-                    Err(err) => {
-                        let source_chain = collect_runtime_error_source_chain(&err);
-                        let direct_cause = source_chain
-                            .last()
-                            .cloned()
-                            .unwrap_or_else(|| "child agent initialization failed".to_string());
-                        let mut detail =
-                            task.detail.clone().unwrap_or_else(|| serde_json::json!({}));
-                        detail["error"] = serde_json::json!(direct_cause);
-                        let failed_task = TaskRecord {
-                            status: TaskStatus::Failed,
-                            updated_at: Utc::now(),
-                            detail: Some(detail),
-                            ..task.clone()
-                        };
-                        self.persist_task_status_direct(&failed_task, "task_spawn_failed")
-                            .await?;
-                        return Err(anyhow::Error::from(
-                            ToolError::new(
-                                "spawn_agent_failed",
-                                format!("failed to spawn child agent: {direct_cause}"),
-                            )
-                            .with_domain(RuntimeErrorDomain::Task)
-                            .with_details(serde_json::json!({
-                                "task_id": task.id,
-                                "preset": AgentProfilePreset::PrivateChild,
-                                "workspace_mode": if worktree { "worktree" } else { "inherit" },
-                            }))
-                            .with_recovery_hint(
-                                "correct the child template, model, or workspace configuration and retry SpawnAgent",
-                            )
-                            .with_source_chain(source_chain),
-                        ));
-                    }
-                };
-
-                let queued_task = TaskRecord {
-                    updated_at: Utc::now(),
-                    detail: Some(self.task_detail_preserving_rejoin_contract(
-                        &task,
-                        spawned.task_detail.clone(),
-                    )),
-                    ..task.clone()
-                };
-                self.apply_task_transition(task_state_reducer::TaskTransition::new(
-                    &queued_task,
-                    "task_child_spawned",
-                ))
-                .await?;
-
-                let runtime = self.clone();
-                let task_record = queued_task.clone();
-                let task_id = queued_task.id.clone();
-                let child_agent_id = spawned.child_agent_id.clone();
-                let child_turn_baseline = spawned.child_turn_baseline;
-                let task_detail = spawned.task_detail.clone();
-                let handle = tokio::spawn(async move {
-                    let _ = runtime
-                        .monitor_spawned_child_agent_task(
-                            task_record.clone(),
-                            authority_class,
-                            worktree,
-                            false,
-                            child_agent_id,
-                            child_turn_baseline,
-                            task_detail,
-                        )
-                        .await;
-                    runtime.inner.task_handles.lock().await.remove(&task_id);
-                });
-                self.inner.task_handles.lock().await.insert(
-                    queued_task.id.clone(),
-                    command_task::ManagedTaskHandle::Async(handle),
-                );
-
+                let task = self
+                    .task_record(&receipt.task_handle.task_id)
+                    .await?
+                    .ok_or_else(|| anyhow!("invocation task disappeared after admission"))?;
                 let child_supervision =
-                    crate::types::ChildSupervisionProjection::from_task_record(&queued_task);
+                    crate::types::ChildSupervisionProjection::from_task_record(&task);
+                let mut task_handle = receipt.task_handle.clone();
+                task_handle.task_kind = CHILD_AGENT_TASK_KIND.to_string();
 
                 Ok(SpawnAgentResult {
-                    agent_id: spawned.child_agent_id.clone(),
+                    agent_id: receipt.agent_id.clone(),
                     create_receipt: None,
-                    child_agent_id: Some(spawned.child_agent_id.clone()),
-                    task_handle: Some(TaskHandle::from_task_record(&queued_task, None)),
-                    supervision_task_id: Some(queued_task.id.clone()),
+                    child_agent_id: Some(receipt.agent_id.clone()),
+                    task_handle: Some(task_handle),
+                    supervision_task_id: Some(receipt.task_handle.task_id.clone()),
                     child_supervision,
                     summary_text: Some(format!(
                         "delegated child {} started under supervision task {}",
-                        spawned.child_agent_id, queued_task.id
+                        receipt.agent_id, receipt.task_handle.task_id
                     )),
                     delegation_id: None,
                     parent_work_item_id: None,
@@ -686,16 +712,36 @@ impl RuntimeHandle {
                     ));
                 }
 
-                let spawned_agent_id = bridge
-                    .spawn_public_named_agent(
-                        self.clone(),
-                        &agent_id,
+                let parent_agent_id = self.agent_id().await?;
+                let spawned_agent_id = self
+                    .agent_creation_service()
+                    .create(CreateAgentRequest {
+                        agent_id: agent_id.clone(),
+                        name: None,
+                        template,
                         initial_message,
                         authority_class,
-                        template,
-                        model_resolution.clone(),
-                    )
+                        model_resolution: Some(model_resolution.clone()),
+                        lineage_parent_agent_id: Some(parent_agent_id),
+                        inherit_parent_runtime: true,
+                    })
                     .await?;
+                if !spawned_agent_id.receipt.created {
+                    return Err(anyhow::Error::from(
+                        ToolError::new(
+                            "already_exists",
+                            format!("public named agent {agent_id} already exists"),
+                        )
+                        .with_domain(RuntimeErrorDomain::Conflict)
+                        .with_details(serde_json::json!({
+                            "agent_id": agent_id,
+                            "preset": AgentProfilePreset::PublicNamed,
+                        }))
+                        .with_recovery_hint(
+                            "use an explicit agent invocation or enqueue operation to deliver work to an existing agent",
+                        ),
+                    ));
+                }
 
                 Ok(SpawnAgentResult {
                     agent_id: spawned_agent_id.identity.agent_id.clone(),
@@ -1170,6 +1216,7 @@ impl RuntimeHandle {
                     authority_class,
                     worktree,
                     recovered,
+                    true,
                     child_agent_id,
                     child_turn_baseline,
                     task_detail,
@@ -1190,82 +1237,13 @@ impl RuntimeHandle {
         Ok(())
     }
 
-    async fn create_child_supervision_task(
-        &self,
-        summary: String,
-        prompt: String,
-        authority_class: AuthorityClass,
-        worktree: bool,
-    ) -> Result<TaskRecord> {
-        let workspace_mode = if worktree {
-            ChildAgentWorkspaceMode::Worktree
-        } else {
-            ChildAgentWorkspaceMode::Inherit
-        };
-        self.ensure_background_tasks_allowed(CHILD_AGENT_TASK_KIND)
-            .await?;
-        if worktree {
-            let state = self.agent_state().await?;
-            crate::system::ensure_workspace_projection_allowed(
-                &crate::system::HostLocalBoundary::from_parts(
-                    &state.execution_profile,
-                    state
-                        .active_workspace_entry
-                        .as_ref()
-                        .map(|entry| entry.projection_kind),
-                    state
-                        .active_workspace_entry
-                        .as_ref()
-                        .map(|entry| entry.access_mode),
-                    state
-                        .active_workspace_entry
-                        .as_ref()
-                        .map(|entry| entry.execution_root_id.clone()),
-                ),
-                WorkspaceProjectionKind::GitWorktreeRoot,
-                CHILD_AGENT_TASK_KIND,
-            )?;
-        }
-
-        let agent_id = self.agent_id().await?;
-        let work_item_id = self.task_work_item_binding().await;
-        let recovery = TaskRecoverySpec::ChildAgentTask {
-            summary: summary.clone(),
-            prompt,
-            authority_class: authority_class.clone(),
-            workspace_mode,
-        };
-        let task_id = crate::ids::task_id();
-        let detail = self
-            .task_creation_detail(&task_id, child_agent_task_detail(workspace_mode))
-            .await?;
-        let task = TaskRecord {
-            id: task_id,
-            agent_id,
-            kind: TaskKind::ChildAgentTask,
-            status: TaskStatus::Queued,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            parent_message_id: None,
-            work_item_id,
-            summary: Some(summary),
-            detail: Some(detail),
-            recovery: Some(recovery),
-        };
-        self.apply_task_transition(task_state_reducer::TaskTransition::new(
-            &task,
-            "task_created",
-        ))
-        .await?;
-        Ok(task)
-    }
-
-    async fn monitor_spawned_child_agent_task(
+    pub(super) async fn monitor_spawned_child_agent_task(
         &self,
         task_record: TaskRecord,
         authority_class: AuthorityClass,
         worktree: bool,
         recovered: bool,
+        cleanup_agent_on_terminal: bool,
         child_agent_id: String,
         child_turn_baseline: u64,
         task_detail: serde_json::Value,
@@ -1326,14 +1304,27 @@ impl RuntimeHandle {
 
         let task_detail_for_result = task_detail.clone();
         let result = bridge
-            .await_child_terminal_result(&child_agent_id, child_turn_baseline, worktree)
+            .await_child_terminal_result(
+                &child_agent_id,
+                child_turn_baseline,
+                worktree,
+                cleanup_agent_on_terminal,
+            )
             .await;
         let (mut text, status, mut task_detail) = match result {
-            Ok(result) => (
-                result.text,
-                result.status,
-                result.task_detail.unwrap_or(task_detail_for_result.clone()),
-            ),
+            Ok(result) => {
+                let mut detail = task_detail_for_result.clone();
+                if let Some(result_detail) = result.task_detail {
+                    if let (Some(detail), Some(result_detail)) =
+                        (detail.as_object_mut(), result_detail.as_object())
+                    {
+                        detail.extend(result_detail.clone());
+                    } else {
+                        detail = result_detail;
+                    }
+                }
+                (result.text, result.status, detail)
+            }
             Err(err) => (
                 format!("child agent failed: {err:#}"),
                 TaskStatus::Failed,
@@ -1490,55 +1481,96 @@ impl RuntimeHandle {
         let mut remaining = Vec::new();
 
         for task in tasks {
-            let (prompt, authority_class, worktree) = match task.recovery.as_ref() {
-                Some(TaskRecoverySpec::ChildAgentTask {
-                    prompt,
-                    authority_class,
-                    workspace_mode,
-                    ..
-                }) => (
-                    prompt.clone(),
-                    authority_class.clone(),
-                    workspace_mode.is_worktree(),
-                ),
-                Some(TaskRecoverySpec::SubagentTask {
-                    prompt,
-                    authority_class,
-                    ..
-                }) => (prompt.clone(), authority_class.clone(), false),
-                Some(TaskRecoverySpec::WorktreeSubagentTask {
-                    prompt,
-                    authority_class,
-                    ..
-                }) => (prompt.clone(), authority_class.clone(), true),
-                _ => {
-                    remaining.push(task);
-                    continue;
-                }
-            };
+            let (prompt, authority_class, worktree, invocation_target) =
+                match task.recovery.as_ref() {
+                    Some(TaskRecoverySpec::AgentInvocation {
+                        prompt,
+                        authority_class,
+                        target_agent_id,
+                        workspace_mode,
+                        ..
+                    }) => {
+                        let target_agent_id = target_agent_id
+                            .clone()
+                            .or_else(|| detail_string(&task.detail, "target_agent_id"))
+                            .or_else(|| detail_string(&task.detail, "child_agent_id"));
+                        (
+                            prompt.clone(),
+                            authority_class.clone(),
+                            workspace_mode.is_worktree(),
+                            target_agent_id,
+                        )
+                    }
+                    Some(TaskRecoverySpec::ChildAgentTask {
+                        prompt,
+                        authority_class,
+                        workspace_mode,
+                        ..
+                    }) => (
+                        prompt.clone(),
+                        authority_class.clone(),
+                        workspace_mode.is_worktree(),
+                        None,
+                    ),
+                    Some(TaskRecoverySpec::SubagentTask {
+                        prompt,
+                        authority_class,
+                        ..
+                    }) => (prompt.clone(), authority_class.clone(), false, None),
+                    Some(TaskRecoverySpec::WorktreeSubagentTask {
+                        prompt,
+                        authority_class,
+                        ..
+                    }) => (prompt.clone(), authority_class.clone(), true, None),
+                    _ => {
+                        remaining.push(task);
+                        continue;
+                    }
+                };
 
-            let child_agent_id = detail_string(&task.detail, "child_agent_id");
-            let Some(child_agent_id) = child_agent_id else {
+            let target_agent_id = invocation_target
+                .clone()
+                .or_else(|| detail_string(&task.detail, "child_agent_id"));
+            let Some(target_agent_id) = target_agent_id else {
                 remaining.push(task);
                 continue;
             };
 
-            if !bridge.reusable_agent_exists(&child_agent_id).await? {
+            if !bridge.reusable_agent_exists(&target_agent_id).await? {
                 remaining.push(task);
                 continue;
             }
 
-            match self
-                .spawn_child_agent_task(task.clone(), prompt, authority_class, worktree, true)
+            let recovery_result = if invocation_target.is_some() {
+                let child_turn_baseline = task
+                    .detail
+                    .as_ref()
+                    .and_then(|detail| detail.get("child_turn_baseline"))
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(bridge.child_turn_index(&target_agent_id).await?);
+                let task_detail = task.detail.clone().unwrap_or_else(|| serde_json::json!({}));
+                self.start_agent_invocation_monitor(
+                    task.clone(),
+                    authority_class,
+                    worktree,
+                    target_agent_id.clone(),
+                    child_turn_baseline,
+                    task_detail,
+                )
                 .await
-            {
+                .map(|_| ())
+            } else {
+                self.spawn_child_agent_task(task.clone(), prompt, authority_class, worktree, true)
+                    .await
+            };
+            match recovery_result {
                 Ok(()) => reattached.push(task),
                 Err(error) => {
                     self.inner.storage.append_event(&AuditEvent::legacy(
                         "supervised_child_task_recovery_failed",
                         serde_json::json!({
                             "task_id": task.id,
-                            "child_agent_id": child_agent_id,
+                            "target_agent_id": target_agent_id,
                             "error": error.to_string(),
                         }),
                     ))?;

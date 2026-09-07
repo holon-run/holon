@@ -1,3 +1,4 @@
+mod agent_services;
 mod bootstrap;
 mod callback;
 mod clock;

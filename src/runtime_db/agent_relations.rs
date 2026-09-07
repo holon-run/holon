@@ -658,8 +658,16 @@ fn legacy_task_evidence(
                 Ok(LegacySupervisionTaskEvidence {
                     task_id: task_id.to_string(),
                     owner_agent_id,
+                    is_child_agent_task: kind.is_child_agent()
+                        || (kind == TaskKind::ActorInvocation
+                            && child_agent_id.is_some()
+                            && task
+                                .detail
+                                .as_ref()
+                                .and_then(|detail| detail.get("created_new_subagent"))
+                                .and_then(serde_json::Value::as_bool)
+                                .unwrap_or(false)),
                     child_agent_id,
-                    is_child_agent_task: kind.is_child_agent(),
                     delegated_from_work_item_id: task.effective_work_item_id().map(str::to_string),
                 })
             },

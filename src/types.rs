@@ -658,6 +658,54 @@ pub struct AgentCreateResult {
     pub receipt: AgentCreateReceipt,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct CreateAgentRequest {
+    pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_message: Option<String>,
+    pub authority_class: AuthorityClass,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_resolution: Option<SpawnAgentModelResolution>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lineage_parent_agent_id: Option<String>,
+    #[serde(default)]
+    pub inherit_parent_runtime: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum InvokeAgentTarget {
+    ExistingAgent {
+        agent_id: String,
+    },
+    NewSubagent {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        template: Option<String>,
+        #[serde(default)]
+        workspace_mode: ChildAgentWorkspaceMode,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model_resolution: Option<SpawnAgentModelResolution>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct InvokeAgentRequest {
+    pub target: InvokeAgentTarget,
+    pub message: String,
+    pub authority_class: AuthorityClass,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct AgentInvocationReceipt {
+    pub agent_id: String,
+    pub created: bool,
+    pub task_handle: TaskHandle,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct AgentDetail {
     pub identity: AgentIdentityView,
@@ -1395,12 +1443,14 @@ pub enum TaskWaitPolicy {
 }
 
 pub const CHILD_AGENT_TASK_KIND: &str = "child_agent_task";
+pub const ACTOR_INVOCATION_TASK_KIND: &str = "actor_invocation";
 pub const LEGACY_SUBAGENT_TASK_KIND: &str = "subagent_task";
 pub const LEGACY_WORKTREE_SUBAGENT_TASK_KIND: &str = "worktree_subagent_task";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskKind {
+    ActorInvocation,
     CommandTask,
     ChildAgentTask,
     SleepJob,
@@ -1411,6 +1461,7 @@ pub enum TaskKind {
 impl TaskKind {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::ActorInvocation => ACTOR_INVOCATION_TASK_KIND,
             Self::CommandTask => "command_task",
             Self::ChildAgentTask => CHILD_AGENT_TASK_KIND,
             Self::SleepJob => "sleep_job",
@@ -1442,6 +1493,12 @@ impl std::fmt::Display for TaskKind {
 pub enum ChildAgentWorkspaceMode {
     Inherit,
     Worktree,
+}
+
+impl Default for ChildAgentWorkspaceMode {
+    fn default() -> Self {
+        Self::Inherit
+    }
 }
 
 impl ChildAgentWorkspaceMode {
@@ -3432,6 +3489,9 @@ impl TaskRecord {
 
     pub fn is_child_agent_task(&self) -> bool {
         self.kind.is_child_agent()
+            || (self.kind == TaskKind::ActorInvocation
+                && task_detail_bool(&self.detail, "created_new_subagent").unwrap_or(false)
+                && task_detail_string(&self.detail, "child_agent_id").is_some())
     }
 
     pub fn effective_work_item_id(&self) -> Option<&str> {
@@ -4345,6 +4405,16 @@ fn is_false(value: &bool) -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TaskRecoverySpec {
+    AgentInvocation {
+        summary: String,
+        prompt: String,
+        #[serde(alias = "trust")]
+        authority_class: AuthorityClass,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target_agent_id: Option<String>,
+        created_new_subagent: bool,
+        workspace_mode: ChildAgentWorkspaceMode,
+    },
     ChildAgentTask {
         summary: String,
         prompt: String,
@@ -4417,6 +4487,7 @@ impl TaskRecoverySpec {
 
     pub fn child_agent_workspace_mode(&self) -> Option<ChildAgentWorkspaceMode> {
         match self {
+            TaskRecoverySpec::AgentInvocation { workspace_mode, .. } => Some(*workspace_mode),
             TaskRecoverySpec::ChildAgentTask { workspace_mode, .. } => Some(*workspace_mode),
             TaskRecoverySpec::SubagentTask { .. } => Some(ChildAgentWorkspaceMode::Inherit),
             TaskRecoverySpec::WorktreeSubagentTask { .. } => {
@@ -4428,6 +4499,7 @@ impl TaskRecoverySpec {
 
     pub fn wait_policy(&self) -> TaskWaitPolicy {
         match self {
+            TaskRecoverySpec::AgentInvocation { .. } => TaskWaitPolicy::Background,
             TaskRecoverySpec::ChildAgentTask { .. } => TaskWaitPolicy::Background,
             TaskRecoverySpec::SubagentTask { .. } => TaskWaitPolicy::Background,
             TaskRecoverySpec::WorktreeSubagentTask { .. } => TaskWaitPolicy::Background,
@@ -4438,7 +4510,8 @@ impl TaskRecoverySpec {
     pub fn terminal_reentry(&self) -> bool {
         match self {
             TaskRecoverySpec::CommandTask { spec, .. } => spec.terminal_reentry,
-            TaskRecoverySpec::ChildAgentTask { .. }
+            TaskRecoverySpec::AgentInvocation { .. }
+            | TaskRecoverySpec::ChildAgentTask { .. }
             | TaskRecoverySpec::SubagentTask { .. }
             | TaskRecoverySpec::WorktreeSubagentTask { .. } => false,
         }
