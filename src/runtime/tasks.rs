@@ -3,7 +3,8 @@ use super::waiting::WorkItemBlockerClearance;
 use super::{task_state_reducer, *};
 use crate::config::{ModelRef, ProviderId};
 use crate::runtime_error::{
-    sanitize_runtime_error_text, RuntimeError, RuntimeErrorContext, RuntimeErrorDomain,
+    describe_runtime_error, sanitize_runtime_error_text, RuntimeError, RuntimeErrorContext,
+    RuntimeErrorDomain,
 };
 use crate::tool::helpers::truncate_output_to_char_budget;
 use crate::tool::ToolError;
@@ -661,7 +662,7 @@ impl RuntimeHandle {
                         "private_child spawn requires non-empty initial_message"
                     ));
                 }
-                let receipt = self
+                let receipt = match self
                     .agent_invocation_service()
                     .invoke(InvokeAgentRequest {
                         target: InvokeAgentTarget::NewSubagent {
@@ -676,7 +677,40 @@ impl RuntimeHandle {
                         message: initial_message,
                         authority_class,
                     })
-                    .await?;
+                    .await
+                {
+                    Ok(receipt) => receipt,
+                    Err(error) => {
+                        let descriptor = describe_runtime_error(&error);
+                        let Some(task_id) = descriptor.safe_context.get("task_id") else {
+                            return Err(error);
+                        };
+                        if descriptor.code != "agent_invocation_failed" {
+                            return Err(error);
+                        }
+                        let direct_cause = descriptor
+                            .source_chain
+                            .last()
+                            .cloned()
+                            .unwrap_or_else(|| descriptor.operator_message.clone());
+                        return Err(anyhow::Error::from(
+                            ToolError::new(
+                                "spawn_agent_failed",
+                                format!("failed to spawn child agent: {direct_cause}"),
+                            )
+                            .with_domain(RuntimeErrorDomain::Task)
+                            .with_details(serde_json::json!({
+                                "task_id": task_id,
+                                "preset": AgentProfilePreset::PrivateChild,
+                                "workspace_mode": if worktree { "worktree" } else { "inherit" },
+                            }))
+                            .with_recovery_hint(
+                                "correct the child template, model, or workspace configuration and retry SpawnAgent",
+                            )
+                            .with_source_chain(descriptor.source_chain),
+                        ));
+                    }
+                };
                 let task = self
                     .task_record(&receipt.task_handle.task_id)
                     .await?

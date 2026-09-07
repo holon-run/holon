@@ -6084,6 +6084,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn canonical_new_subagent_rejects_missing_model_before_task_creation() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        let tasks_before = parent.storage().latest_task_records().unwrap();
+
+        let error = parent
+            .agent_invocation_service()
+            .invoke(InvokeAgentRequest {
+                target: InvokeAgentTarget::NewSubagent {
+                    template: None,
+                    workspace_mode: ChildAgentWorkspaceMode::Inherit,
+                    model_resolution: None,
+                },
+                message: "invalid invocation".into(),
+                authority_class: AuthorityClass::OperatorInstruction,
+            })
+            .await
+            .expect_err("missing model resolution must reject the invocation");
+
+        assert_eq!(
+            error.to_string(),
+            "new subagent invocation requires model resolution"
+        );
+        assert_eq!(
+            parent.storage().latest_task_records().unwrap(),
+            tasks_before,
+            "invalid invocation must not persist an orphaned queued task"
+        );
+    }
+
+    #[tokio::test]
     async fn canonical_existing_invocation_preserves_target_configuration_and_relations() {
         let (_home, host) = test_host();
         let parent = host.default_runtime().await.unwrap();

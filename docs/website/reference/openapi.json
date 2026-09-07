@@ -2780,6 +2780,7 @@
                 },
                 "kind": {
                   "enum": [
+                    "actor_invocation",
                     "command_task",
                     "child_agent_task",
                     "sleep_job",
@@ -8676,6 +8677,7 @@
           },
           "kind": {
             "enum": [
+              "actor_invocation",
               "command_task",
               "child_agent_task",
               "sleep_job",

@@ -146,19 +146,21 @@ impl std::error::Error for RuntimeError {}
 pub fn describe_runtime_error(error: &AnyhowError) -> RuntimeErrorDescriptor {
     let source_chain = collect_runtime_error_source_chain(error);
 
-    if let Some(runtime_error) = error
-        .chain()
-        .find_map(|source| source.downcast_ref::<RuntimeError>())
-    {
+    if let Some(runtime_error) = error.downcast_ref::<RuntimeError>().or_else(|| {
+        error
+            .chain()
+            .find_map(|source| source.downcast_ref::<RuntimeError>())
+    }) {
         let mut descriptor = runtime_error.descriptor().clone();
         descriptor.source_chain = merge_source_chains(descriptor.source_chain, source_chain);
         return descriptor;
     }
 
-    if let Some(tool_error) = error
-        .chain()
-        .find_map(|source| source.downcast_ref::<ToolError>())
-    {
+    if let Some(tool_error) = error.downcast_ref::<ToolError>().or_else(|| {
+        error
+            .chain()
+            .find_map(|source| source.downcast_ref::<ToolError>())
+    }) {
         return descriptor_from_tool_error(tool_error, source_chain);
     }
 
@@ -551,6 +553,28 @@ mod tests {
             .source_chain
             .iter()
             .any(|message| message == "failed to read task status"));
+    }
+
+    #[test]
+    fn typed_runtime_error_is_detected_when_used_as_anyhow_context() {
+        let error = AnyhowError::msg("template selector is invalid").context(
+            RuntimeError::new(
+                RuntimeErrorDomain::Task,
+                "agent_invocation_failed",
+                "failed to invoke agent",
+            )
+            .with_safe_context("task_id", "task_123"),
+        );
+
+        let descriptor = describe_runtime_error(&error);
+
+        assert_eq!(descriptor.domain, RuntimeErrorDomain::Task);
+        assert_eq!(descriptor.code, "agent_invocation_failed");
+        assert_eq!(descriptor.safe_context["task_id"], "task_123");
+        assert!(descriptor
+            .source_chain
+            .iter()
+            .any(|message| message == "template selector is invalid"));
     }
 
     #[test]

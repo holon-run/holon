@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 
 use super::RuntimeHandle;
+use crate::runtime_error::{collect_runtime_error_source_chain, RuntimeError, RuntimeErrorDomain};
 use crate::types::{
     AgentCreateResult, AgentInvocationReceipt, ChildAgentWorkspaceMode, CreateAgentRequest,
     InvokeAgentRequest, InvokeAgentTarget, SpawnAgentModelResolution, TaskHandle, TaskRecord,
@@ -42,8 +43,8 @@ impl AgentInvocationService<'_> {
         &self,
         request: InvokeAgentRequest,
     ) -> Result<AgentInvocationReceipt> {
-        let message = request.message.trim().to_string();
-        if message.is_empty() {
+        let message = request.message;
+        if message.trim().is_empty() {
             return Err(anyhow!("agent invocation requires a non-empty message"));
         }
         let bridge = self
@@ -52,14 +53,25 @@ impl AgentInvocationService<'_> {
             .host_bridge
             .clone()
             .ok_or_else(|| anyhow!("agent invocation requires a host bridge"))?;
-        let (target_agent_id, created_new_subagent, workspace_mode) = match &request.target {
-            InvokeAgentTarget::ExistingAgent { agent_id } => (
-                Some(agent_id.clone()),
-                false,
-                ChildAgentWorkspaceMode::Inherit,
-            ),
-            InvokeAgentTarget::NewSubagent { workspace_mode, .. } => (None, true, *workspace_mode),
-        };
+        let (target_agent_id, created_new_subagent, workspace_mode, model_resolution) =
+            match &request.target {
+                InvokeAgentTarget::ExistingAgent { agent_id } => (
+                    Some(agent_id.clone()),
+                    false,
+                    ChildAgentWorkspaceMode::Inherit,
+                    None,
+                ),
+                InvokeAgentTarget::NewSubagent {
+                    workspace_mode,
+                    model_resolution,
+                    ..
+                } => (
+                    None,
+                    true,
+                    *workspace_mode,
+                    Some(required_model_resolution(model_resolution.clone())?),
+                ),
+            };
         let summary = super::tasks::spawn_agent_task_label(&message);
         let task = self
             .runtime
@@ -87,7 +99,7 @@ impl AgentInvocationService<'_> {
             InvokeAgentTarget::NewSubagent {
                 template,
                 workspace_mode,
-                model_resolution,
+                ..
             } => {
                 bridge
                     .spawn_child_task(
@@ -97,7 +109,9 @@ impl AgentInvocationService<'_> {
                         request.authority_class.clone(),
                         workspace_mode.is_worktree(),
                         template,
-                        required_model_resolution(model_resolution)?,
+                        model_resolution.expect(
+                            "new subagent model resolution was validated before task creation",
+                        ),
                     )
                     .await
             }
@@ -108,7 +122,21 @@ impl AgentInvocationService<'_> {
                 self.runtime
                     .fail_agent_invocation_task(&task, &error)
                     .await?;
-                return Err(error);
+                let direct_cause = collect_runtime_error_source_chain(&error)
+                    .last()
+                    .cloned()
+                    .unwrap_or_else(|| "agent invocation admission failed".to_string());
+                return Err(error.context(
+                    RuntimeError::new(
+                        RuntimeErrorDomain::Task,
+                        "agent_invocation_failed",
+                        format!("failed to invoke agent: {direct_cause}"),
+                    )
+                    .with_safe_context("task_id", &task.id)
+                    .with_recovery_hint(
+                        "correct the target agent, template, model, or workspace configuration and retry",
+                    ),
+                ));
             }
         };
         admitted.task_detail["created_new_subagent"] = serde_json::json!(created_new_subagent);
