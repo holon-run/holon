@@ -841,6 +841,50 @@
     "aliases": []
   },
   {
+    "path": "debug.runtime-db.agent-relations",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "apply",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
+        "long": "diagnostic-sample-limit",
+        "short": null,
+        "default_value": "20",
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "json",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
+        "long": "no-backup",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
     "path": "debug.runtime-db.audit",
     "positionals": [],
     "flags": [
