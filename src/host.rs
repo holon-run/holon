@@ -40,7 +40,10 @@ use crate::{
         InitialWorkspaceBinding, LightweightAgentStateProjection, RuntimeHandle,
         SchedulerRepairInspection,
     },
-    runtime_db::RuntimeDb,
+    runtime_db::{
+        agent_relations::{independent_creation_records, supervised_creation_records},
+        RuntimeDb,
+    },
     runtime_error::{describe_runtime_error, RuntimeError},
     skills::{
         effective_skill_root_registrations, skills_runtime_view_from_catalog, SkillVisibility,
@@ -56,19 +59,20 @@ use crate::{
         normalize_agent_name, AdmissionContext, AgentBootstrapDesiredState,
         AgentBootstrapInitialMessage, AgentBootstrapRecord, AgentBootstrapStatus,
         AgentBootstrapStep, AgentBootstrapStepStatus, AgentBootstrapWorkspaceState,
-        AgentCreateReceipt, AgentCreateResult, AgentCreateStage, AgentDeletionJob, AgentDetail,
-        AgentDurability, AgentIdentityRecord, AgentIdentityView, AgentKind, AgentLifecycleHint,
-        AgentListEntry, AgentMessageCallerContext, AgentMessageDeliveryOutcome,
-        AgentMessageDeliveryRejectionCode, AgentMessagePrincipalKind, AgentMessageSendRequest,
-        AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentState, AgentStatus,
-        AgentSummary, AgentSupervisionState, AgentTokenUsageSummary, AgentTreeNode,
-        AgentTreeProjection, AgentVisibility, AuthorityClass, ChildAgentSummary, ClosureOutcome,
-        CreateAgentRequest, ExternalTriggerRecord, ExternalTriggerStatus, ExternalTriggerSummary,
-        LoadedAgentsMdView, MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind,
-        MessageOrigin, OperatorNotificationRecord, Priority, QueueEntryStatus,
-        RuntimeFailureSummary, SpawnAgentModelResolution, SpawnAgentModelResolutionStatus,
-        TaskKind, TaskRecord, TaskStatus, TimerRecord, TokenUsage, TranscriptEntry,
-        TranscriptEntryKind, WaitConditionSummary, WorkspaceEntry, WorkspaceOccupancyRecord,
+        AgentCanonicalDurability, AgentCreateReceipt, AgentCreateResult, AgentCreateStage,
+        AgentDeletionJob, AgentDetail, AgentDurability, AgentIdentityRecord, AgentIdentityView,
+        AgentKind, AgentLifecycleHint, AgentListEntry, AgentMessageCallerContext,
+        AgentMessageDeliveryOutcome, AgentMessageDeliveryRejectionCode, AgentMessagePrincipalKind,
+        AgentMessageSendRequest, AgentOwnership, AgentProfilePreset, AgentRegistryStatus,
+        AgentState, AgentStatus, AgentSummary, AgentSupervisionState, AgentTokenUsageSummary,
+        AgentTreeNode, AgentTreeProjection, AgentVisibility, AuthorityClass, ChildAgentSummary,
+        ClosureOutcome, CreateAgentRequest, ExternalTriggerRecord, ExternalTriggerStatus,
+        ExternalTriggerSummary, LoadedAgentsMdView, MessageBody, MessageDeliverySurface,
+        MessageEnvelope, MessageKind, MessageOrigin, OperatorNotificationRecord, Priority,
+        QueueEntryStatus, RuntimeFailureSummary, SpawnAgentModelResolution,
+        SpawnAgentModelResolutionStatus, TaskKind, TaskRecord, TaskStatus, TimerRecord, TokenUsage,
+        TranscriptEntry, TranscriptEntryKind, WaitConditionSummary, WorkspaceEntry,
+        WorkspaceOccupancyRecord,
     },
 };
 
@@ -1822,7 +1826,9 @@ impl RuntimeHost {
                 cascade_private_children,
             )
             .map_err(PublicAgentError::Runtime)?;
-        self.append_agent_identity(&updated_identity)
+        self.inner
+            .registry
+            .cache_agent_identity(&updated_identity)
             .map_err(PublicAgentError::Runtime)?;
         self.unload_runtime(agent_id).await;
         // Trigger the deletion coordinator inline for immediate progress.
@@ -2489,9 +2495,14 @@ impl RuntimeHost {
         .with_lineage_parent_agent_id(lineage_parent_agent_id.map(ToString::to_string));
         record.name = normalized_name;
         let bootstrap = AgentBootstrapRecord::new(agent_id, desired);
+        let relations = independent_creation_records(
+            &record,
+            lineage_parent_agent_id,
+            AgentCanonicalDurability::Persistent,
+        );
         self.runtime_db()
             .agent_identities()
-            .create_with_bootstrap(&record, &bootstrap)
+            .create_with_bootstrap_and_relations(&record, &bootstrap, &relations)
             .map_err(|error| {
                 if error.to_string().contains("agent_identity_conflict") {
                     return named_agent_already_exists_error(agent_id);
@@ -2930,7 +2941,12 @@ impl RuntimeHost {
             None,
         );
         identity.durability = Some(AgentDurability::Ephemeral);
-        self.append_agent_identity(&identity)?;
+        let relations =
+            independent_creation_records(&identity, None, AgentCanonicalDurability::Ephemeral);
+        self.runtime_db()
+            .agent_identities()
+            .create_with_relations(&identity, &relations)?;
+        self.cache_agent_identity(&identity)?;
         let (runtime, runtime_task, _phase) = match self.spawn_runtime(&agent_id, None) {
             Ok(spawned) => spawned,
             Err(error) => {
@@ -2945,15 +2961,15 @@ impl RuntimeHost {
         if !Self::is_temporary_agent_id(agent_id) {
             bail!("agent {agent_id} is not a temporary runtime");
         }
-        let Some(mut identity) = self.agent_identity_record(agent_id)? else {
+        let Some(identity) = self.agent_identity_record(agent_id)? else {
             bail!("temporary runtime {agent_id} is missing its host identity");
         };
         if identity.status != AgentRegistryStatus::Deleted {
-            identity.status = AgentRegistryStatus::Deleted;
-            identity.revision = identity.revision.saturating_add(1);
-            identity.deleted_at = Some(Utc::now());
-            identity.updated_at = Utc::now();
-            self.append_agent_identity(&identity)?;
+            let identity = self
+                .runtime_db()
+                .agent_identities()
+                .tombstone_with_closed_supervision(agent_id)?;
+            self.cache_agent_identity(&identity)?;
         }
         Ok(())
     }
@@ -2998,8 +3014,13 @@ impl RuntimeHost {
             .import_legacy(records)
     }
 
+    #[cfg(test)]
     pub(crate) fn append_agent_identity(&self, record: &AgentIdentityRecord) -> Result<()> {
         self.inner.registry.append_agent_identity(record)
+    }
+
+    pub(crate) fn cache_agent_identity(&self, record: &AgentIdentityRecord) -> Result<()> {
+        self.inner.registry.cache_agent_identity(record)
     }
 
     fn workspace_occupancy_by_id(
@@ -3832,7 +3853,7 @@ impl RuntimeHost {
     async fn create_child_identity(
         &self,
         parent_agent_id: &str,
-        task_id: &str,
+        task: &TaskRecord,
         template: Option<&str>,
         catalog_agent_home: &Path,
     ) -> Result<AgentIdentityRecord> {
@@ -3865,21 +3886,31 @@ impl RuntimeHost {
             AgentOwnership::ParentSupervised,
             AgentProfilePreset::PrivateChild,
             Some(parent_agent_id.to_string()),
-            Some(task_id.to_string()),
+            Some(task.id.clone()),
         )
         .with_lineage_parent_agent_id(Some(parent_agent_id.to_string()));
         record.durability = Some(AgentDurability::Ephemeral);
-        self.append_agent_identity(&record)?;
+        let relations = supervised_creation_records(
+            &record,
+            parent_agent_id,
+            &task.id,
+            task.effective_work_item_id(),
+        );
+        self.runtime_db()
+            .agent_identities()
+            .create_with_relations(&record, &relations)?;
+        self.inner.registry.cache_agent_identity(&record)?;
         Ok(record)
     }
 
     async fn archive_private_agent(&self, agent_id: &str) -> Result<()> {
-        if let Some(mut identity) = self.agent_identity_record(agent_id)? {
+        if let Some(identity) = self.agent_identity_record(agent_id)? {
             if identity.status != AgentRegistryStatus::Deleted {
-                identity.status = AgentRegistryStatus::Deleted;
-                identity.deleted_at = Some(chrono::Utc::now());
-                identity.updated_at = chrono::Utc::now();
-                self.append_agent_identity(&identity)?;
+                let identity = self
+                    .runtime_db()
+                    .agent_identities()
+                    .tombstone_with_closed_supervision(agent_id)?;
+                self.cache_agent_identity(&identity)?;
             }
         }
 
@@ -4005,12 +4036,13 @@ impl RuntimeHost {
     }
 
     fn archive_private_agent_identity_record(&self, agent_id: &str) -> Result<()> {
-        if let Some(mut identity) = self.agent_identity_record(agent_id)? {
+        if let Some(identity) = self.agent_identity_record(agent_id)? {
             if identity.status != AgentRegistryStatus::Deleted {
-                identity.status = AgentRegistryStatus::Deleted;
-                identity.deleted_at = Some(chrono::Utc::now());
-                identity.updated_at = chrono::Utc::now();
-                self.append_agent_identity(&identity)?;
+                let identity = self
+                    .runtime_db()
+                    .agent_identities()
+                    .tombstone_with_closed_supervision(agent_id)?;
+                self.cache_agent_identity(&identity)?;
             }
         }
         // Abort pending queue entries as a safety net for agents that were
@@ -4046,7 +4078,7 @@ impl RuntimeHost {
         let child_identity = self
             .create_child_identity(
                 &parent_state.id,
-                &task.id,
+                task,
                 template.as_deref(),
                 &parent_agent_home,
             )
@@ -5258,10 +5290,11 @@ mod tests {
         );
 
         let parent_state = recovered.agent_state().await.unwrap();
+        let task = test_child_supervision_task(&parent_state.id, "configured-home-task");
         let child_identity = host
             .create_child_identity(
                 &parent_state.id,
-                "configured-home-task",
+                &task,
                 None,
                 recovered.agent_home().as_path(),
             )
@@ -5383,6 +5416,23 @@ mod tests {
             resolved_parameters: None,
             resolution_status: SpawnAgentModelResolutionStatus::Inherited,
             policy_notes: Vec::new(),
+        }
+    }
+
+    fn test_child_supervision_task(agent_id: &str, task_id: &str) -> TaskRecord {
+        let now = chrono::Utc::now();
+        TaskRecord {
+            id: task_id.to_string(),
+            agent_id: agent_id.to_string(),
+            kind: crate::types::TaskKind::ChildAgentTask,
+            status: TaskStatus::Running,
+            created_at: now,
+            updated_at: now,
+            parent_message_id: None,
+            work_item_id: None,
+            summary: None,
+            detail: None,
+            recovery: None,
         }
     }
 
@@ -5513,6 +5563,28 @@ mod tests {
         assert_eq!(created.visibility, AgentVisibility::Public);
         assert_eq!(created.ownership(), AgentOwnership::SelfOwned);
         assert_eq!(created.profile_preset(), AgentProfilePreset::PublicNamed);
+        let relations = host
+            .runtime_db()
+            .agent_canonical_relations()
+            .latest("release-bot")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            relations.sources.durability,
+            Some(crate::types::AgentCanonicalValueSource::Canonical)
+        );
+        assert_eq!(
+            relations.sources.lifecycle_attachment,
+            Some(crate::types::AgentCanonicalValueSource::Canonical)
+        );
+        assert_eq!(
+            relations.sources.capability_policy,
+            Some(crate::types::AgentCanonicalValueSource::Canonical)
+        );
+        assert_eq!(
+            relations.sources.message_policy,
+            Some(crate::types::AgentCanonicalValueSource::Canonical)
+        );
         let agent_home = host.agent_data_dir("release-bot");
         assert!(agent_home.join("AGENTS.md").is_file());
         assert!(std::fs::read_to_string(agent_home.join("AGENTS.md"))
@@ -7201,10 +7273,41 @@ mod tests {
             .unwrap();
         let parent_state = parent.agent_state().await.unwrap();
         let parent_agent_home = host.agent_data_dir(&parent_state.id);
+        let task = test_child_supervision_task(&parent_state.id, "task-1");
         let child_identity = host
-            .create_child_identity(&parent_state.id, "task-1", None, &parent_agent_home)
+            .create_child_identity(&parent_state.id, &task, None, &parent_agent_home)
             .await
             .unwrap();
+        let relations = host
+            .runtime_db()
+            .agent_canonical_relations()
+            .latest(&child_identity.agent_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            relations.sources.lineage,
+            Some(crate::types::AgentCanonicalValueSource::Canonical)
+        );
+        assert_eq!(
+            relations.sources.supervision,
+            Some(crate::types::AgentCanonicalValueSource::Canonical)
+        );
+        assert_eq!(
+            relations.sources.durability,
+            Some(crate::types::AgentCanonicalValueSource::Canonical)
+        );
+        assert_eq!(
+            relations.sources.lifecycle_attachment,
+            Some(crate::types::AgentCanonicalValueSource::Canonical)
+        );
+        assert_eq!(
+            relations.sources.capability_policy,
+            Some(crate::types::AgentCanonicalValueSource::Canonical)
+        );
+        assert_eq!(
+            relations.sources.message_policy,
+            Some(crate::types::AgentCanonicalValueSource::Canonical)
+        );
         let child_home = host.agent_data_dir(&child_identity.agent_id);
         assert!(child_home.join("AGENTS.md").is_file());
         assert!(std::fs::read_to_string(child_home.join("AGENTS.md"))
@@ -7249,13 +7352,9 @@ mod tests {
         fs::create_dir_all(&template_dir).unwrap();
         fs::write(template_dir.join("AGENTS.md"), "parent catalog worker").unwrap();
 
+        let task = test_child_supervision_task(&parent_state.id, "task-1");
         let child_identity = host
-            .create_child_identity(
-                &parent_state.id,
-                "task-1",
-                Some("worker"),
-                &parent_agent_home,
-            )
+            .create_child_identity(&parent_state.id, &task, Some("worker"), &parent_agent_home)
             .await
             .unwrap();
         let child_home = host.agent_data_dir(&child_identity.agent_id);
@@ -8964,6 +9063,14 @@ mod tests {
         );
         host.append_agent_identity(&child).unwrap();
         host.runtime_db().agent_identities().upsert(&child).unwrap();
+        host.runtime_db()
+            .agent_canonical_relations()
+            .upsert_supervision(
+                &supervised_creation_records(&child, parent_id, "task-queue-1", None)
+                    .supervision
+                    .unwrap(),
+            )
+            .unwrap();
 
         let now = Utc::now();
         host.runtime_db()
@@ -9010,6 +9117,17 @@ mod tests {
                 .unwrap()
                 .status,
             QueueEntryStatus::Aborted
+        );
+        assert_eq!(
+            host.runtime_db()
+                .agent_canonical_relations()
+                .latest(child_id)
+                .unwrap()
+                .unwrap()
+                .supervision
+                .unwrap()
+                .state,
+            AgentSupervisionState::Closed
         );
     }
 

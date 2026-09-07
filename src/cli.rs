@@ -759,6 +759,19 @@ pub enum ModelsDevCommands {
 
 #[derive(Debug, Subcommand)]
 pub enum RuntimeDbDebugCommands {
+    #[command(
+        about = "Report or backfill canonical agent relation and policy records from durable legacy evidence"
+    )]
+    AgentRelations {
+        #[arg(long)]
+        apply: bool,
+        #[arg(long, requires = "apply")]
+        no_backup: bool,
+        #[arg(long, default_value_t = 20, value_parser = parse_positive_usize)]
+        diagnostic_sample_limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
     Audit {
         #[arg(long, value_enum, default_value_t = RuntimeDbAuditCheckArg::All)]
         check: RuntimeDbAuditCheckArg,

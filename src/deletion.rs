@@ -123,9 +123,18 @@ impl RuntimeHost {
                 continue;
             }
 
-            let result = self.execute_deletion_phase(&agent_id, *phase, &job).await;
+            let result = if *phase == AgentDeletionPhase::Finalize {
+                self.deletion_phase_finalize(&job).await.map(Some)
+            } else {
+                self.execute_deletion_phase(&agent_id, *phase, &job)
+                    .await
+                    .map(|_| None)
+            };
             match result {
-                Ok(()) => {
+                Ok(finalized_job) => {
+                    if let Some(finalized_job) = finalized_job {
+                        job = finalized_job;
+                    }
                     // Advance to next phase.
                     if let Some(next) = phase.next() {
                         job.phase = next;
@@ -153,10 +162,12 @@ impl RuntimeHost {
         }
 
         // All phases completed.
-        job.status = AgentDeletionStatus::Completed;
-        job.completed_at = Some(Utc::now());
-        job.updated_at = Utc::now();
-        self.runtime_db().agent_deletions().update(&job)?;
+        if job.status != AgentDeletionStatus::Completed {
+            job.status = AgentDeletionStatus::Completed;
+            job.completed_at = Some(Utc::now());
+            job.updated_at = Utc::now();
+            self.runtime_db().agent_deletions().update(&job)?;
+        }
 
         info!(
             agent_id = %agent_id,
@@ -180,7 +191,9 @@ impl RuntimeHost {
             AgentDeletionPhase::Workspace => self.deletion_phase_workspace(agent_id).await,
             AgentDeletionPhase::Index => self.deletion_phase_index(agent_id).await,
             AgentDeletionPhase::Home => self.deletion_phase_home(agent_id).await,
-            AgentDeletionPhase::Finalize => self.deletion_phase_finalize(agent_id).await,
+            AgentDeletionPhase::Finalize => {
+                unreachable!("finalize uses the atomic repository path")
+            }
         }
     }
 
@@ -604,19 +617,11 @@ impl RuntimeHost {
     }
 
     /// Finalize: set identity to Deleted and emit audit event.
-    async fn deletion_phase_finalize(&self, agent_id: &str) -> Result<()> {
-        let mut identity = self
-            .agent_identity_record(agent_id)?
-            .ok_or_else(|| anyhow!("agent {agent_id} identity not found during finalize"))?;
-        if identity.status != AgentRegistryStatus::Deleted {
-            identity.status = AgentRegistryStatus::Deleted;
-            identity.deleted_at = Some(Utc::now());
-            identity.updated_at = Utc::now();
-            identity.revision = identity.revision.saturating_add(1);
-            self.append_agent_identity(&identity)?;
-        }
-        info!(agent_id, "agent identity finalized as Deleted");
-        Ok(())
+    async fn deletion_phase_finalize(&self, job: &AgentDeletionJob) -> Result<AgentDeletionJob> {
+        let (identity, completed_job) = self.runtime_db().agent_deletions().finalize(job)?;
+        self.cache_agent_identity(&identity)?;
+        info!(agent_id = %job.agent_id, "agent identity finalized as Deleted");
+        Ok(completed_job)
     }
 
     /// Cascade deletion to private children of the given agent.
@@ -653,7 +658,7 @@ impl RuntimeHost {
                         &parent_job.requested_by,
                         false, // Don't recurse further
                     )?;
-                    self.append_agent_identity(&updated_identity)?;
+                    self.cache_agent_identity(&updated_identity)?;
                     job
                 }
             };

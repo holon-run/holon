@@ -7,6 +7,9 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, OptionalExtension, ToSql, Transaction};
 use sha2::{Digest, Sha256};
 
+use crate::runtime_db::agent_relations::{
+    transition_supervision_state_tx, upsert_canonical_record_set_tx,
+};
 use crate::runtime_db::evidence::*;
 use crate::runtime_db::index_outbox::RuntimeIndexChange;
 use crate::runtime_db::types::*;
@@ -396,6 +399,19 @@ impl AgentIdentityRepository<'_> {
         identity: &AgentIdentityRecord,
         bootstrap: &AgentBootstrapRecord,
     ) -> Result<()> {
+        self.create_with_bootstrap_and_relations(
+            identity,
+            bootstrap,
+            &AgentCanonicalRecordSet::default(),
+        )
+    }
+
+    pub fn create_with_bootstrap_and_relations(
+        &self,
+        identity: &AgentIdentityRecord,
+        bootstrap: &AgentBootstrapRecord,
+        relations: &AgentCanonicalRecordSet,
+    ) -> Result<()> {
         self.db.transaction(|tx| {
             let existing = tx
                 .query_row(
@@ -410,7 +426,64 @@ impl AgentIdentityRepository<'_> {
                 identity.agent_id
             );
             upsert_agent_identity_tx(tx, identity)?;
-            upsert_agent_bootstrap_tx(tx, bootstrap)
+            upsert_agent_bootstrap_tx(tx, bootstrap)?;
+            upsert_canonical_record_set_tx(tx, relations)
+        })
+    }
+
+    pub fn create_with_relations(
+        &self,
+        identity: &AgentIdentityRecord,
+        relations: &AgentCanonicalRecordSet,
+    ) -> Result<()> {
+        self.db.transaction(|tx| {
+            let existing = tx
+                .query_row(
+                    "SELECT agent_id FROM agent_identities WHERE agent_id = ?1",
+                    [&identity.agent_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            anyhow::ensure!(
+                existing.is_none(),
+                "agent_identity_conflict: agent {} already exists",
+                identity.agent_id
+            );
+            upsert_agent_identity_tx(tx, identity)?;
+            upsert_canonical_record_set_tx(tx, relations)
+        })
+    }
+
+    pub fn tombstone_with_closed_supervision(&self, agent_id: &str) -> Result<AgentIdentityRecord> {
+        self.db.transaction(|tx| {
+            let payload = tx
+                .query_row(
+                    "SELECT payload_json FROM agent_identities WHERE agent_id = ?1",
+                    [agent_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .ok_or_else(|| anyhow!("agent {agent_id} not found"))?;
+            let mut identity = decode_agent_identity_payload(&payload)?;
+            if identity.status != AgentRegistryStatus::Deleted {
+                let now = std::cmp::max(
+                    Utc::now(),
+                    identity.updated_at + chrono::Duration::nanoseconds(1),
+                );
+                identity.status = AgentRegistryStatus::Deleted;
+                identity.deleted_at = Some(now);
+                identity.updated_at = now;
+                identity.revision = identity.revision.saturating_add(1);
+                upsert_agent_identity_tx(tx, &identity)?;
+            }
+            transition_supervision_state_tx(
+                tx,
+                agent_id,
+                AgentSupervisionState::Closed,
+                identity.revision,
+                identity.updated_at,
+            )?;
+            Ok(identity)
         })
     }
 
@@ -559,6 +632,19 @@ impl AgentDeletionRepository<'_> {
             let mut identity = decode_agent_identity_payload(&payload)?;
 
             if identity.status != AgentRegistryStatus::Active {
+                transition_supervision_state_tx(
+                    tx,
+                    agent_id,
+                    match identity.status {
+                        AgentRegistryStatus::Active => unreachable!(),
+                        AgentRegistryStatus::Deleting => {
+                            AgentSupervisionState::CleanupRequired
+                        }
+                        AgentRegistryStatus::Deleted => AgentSupervisionState::Closed,
+                    },
+                    identity.revision,
+                    identity.updated_at,
+                )?;
                 let job = tx
                     .query_row(
                         "SELECT payload_json FROM agent_deletion_jobs WHERE agent_id = ?1",
@@ -607,11 +693,101 @@ impl AgentDeletionRepository<'_> {
             identity.revision = identity.revision.saturating_add(1);
             identity.updated_at = now;
             upsert_agent_identity_tx(tx, &identity)?;
+            transition_supervision_state_tx(
+                tx,
+                agent_id,
+                AgentSupervisionState::CleanupRequired,
+                identity.revision,
+                now,
+            )?;
             insert_agent_deletion_job_tx(tx, &job)?;
             crate::runtime_db::agent_message_delivery::cancel_active_deliveries_for_target_tx(
                 tx, agent_id,
             )?;
             Ok((identity, job, true))
+        })
+    }
+
+    pub fn finalize(
+        &self,
+        job: &AgentDeletionJob,
+    ) -> Result<(AgentIdentityRecord, AgentDeletionJob)> {
+        self.db.transaction(|tx| {
+            let job_payload = tx
+                .query_row(
+                    "SELECT payload_json FROM agent_deletion_jobs WHERE deletion_id = ?1",
+                    [&job.deletion_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .ok_or_else(|| anyhow!("deletion job {} not found", job.deletion_id))?;
+            let mut completed_job: AgentDeletionJob = serde_json::from_str(&job_payload)
+                .context("decoding deletion job for finalization")?;
+            let payload = tx
+                .query_row(
+                    "SELECT payload_json FROM agent_identities WHERE agent_id = ?1",
+                    [&completed_job.agent_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .ok_or_else(|| anyhow!("agent {} not found", completed_job.agent_id))?;
+            let mut identity = decode_agent_identity_payload(&payload)?;
+            if completed_job.status == AgentDeletionStatus::Completed {
+                transition_supervision_state_tx(
+                    tx,
+                    &completed_job.agent_id,
+                    AgentSupervisionState::Closed,
+                    identity.revision,
+                    identity.updated_at,
+                )?;
+                return Ok((identity, completed_job));
+            }
+            let now = std::cmp::max(
+                Utc::now(),
+                std::cmp::max(identity.updated_at, completed_job.updated_at)
+                    + chrono::Duration::nanoseconds(1),
+            );
+            if identity.status != AgentRegistryStatus::Deleted {
+                identity.status = AgentRegistryStatus::Deleted;
+                identity.deleted_at = Some(now);
+                identity.updated_at = now;
+                identity.revision = identity.revision.saturating_add(1);
+                upsert_agent_identity_tx(tx, &identity)?;
+            }
+            transition_supervision_state_tx(
+                tx,
+                &completed_job.agent_id,
+                AgentSupervisionState::Closed,
+                identity.revision,
+                identity.updated_at,
+            )?;
+            completed_job.status = AgentDeletionStatus::Completed;
+            completed_job.phase = AgentDeletionPhase::Finalize;
+            completed_job.last_error = None;
+            completed_job.updated_at = now;
+            completed_job.completed_at = Some(now);
+            let payload_json = serde_json::to_string(&completed_job)?;
+            let updated = tx.execute(
+                "UPDATE agent_deletion_jobs
+                 SET status = ?1, phase = ?2, updated_at = ?3,
+                     completed_at = ?4, payload_json = ?5
+                 WHERE deletion_id = ?6 AND agent_id = ?7",
+                params![
+                    enum_string(&completed_job.status)?,
+                    enum_string(&completed_job.phase)?,
+                    timestamp(completed_job.updated_at),
+                    completed_job.completed_at.map(timestamp),
+                    payload_json,
+                    completed_job.deletion_id,
+                    completed_job.agent_id,
+                ],
+            )?;
+            anyhow::ensure!(
+                updated == 1,
+                "deletion job {} not found for finalization",
+                completed_job.deletion_id
+            );
+            Ok((identity, completed_job))
         })
     }
 

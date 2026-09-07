@@ -89,8 +89,8 @@ use crate::runtime_db::connection::{
 use crate::runtime_db::migrations::{
     apply_migration, apply_release_baseline, backfill_wait_condition_payload_columns,
     backfill_work_item_recheck_columns, current_schema_version, ensure_migration_table,
-    max_known_migration_version, MIGRATIONS, PUBLISHED_MIGRATION_FLOOR, RELEASE_BASELINE_TARGET,
-    RETIRED_SCHEDULER_SCHEMA_PREDECESSOR,
+    max_known_migration_version, AGENT_CANONICAL_RELATIONS_SCHEMA_VERSION, MIGRATIONS,
+    PUBLISHED_MIGRATION_FLOOR, RELEASE_BASELINE_TARGET, RETIRED_SCHEDULER_SCHEMA_PREDECESSOR,
 };
 use crate::runtime_db::storage_domain::{
     read_storage_domain_connection, upsert_storage_domain, upsert_storage_domain_checkpoint_json,
@@ -344,6 +344,40 @@ impl RuntimeDb {
         Ok(db)
     }
 
+    /// Opens an existing database for an explicit Agent relation report or
+    /// pre-migration backup without applying schema migrations.
+    pub fn open_for_agent_relation_backfill(
+        path: impl Into<PathBuf>,
+        lock_path: impl Into<PathBuf>,
+    ) -> Result<Self> {
+        let path = path.into();
+        if !path.is_file() {
+            bail!(
+                "agent relation backfill requires an existing runtime database: {}",
+                path.display()
+            );
+        }
+        let writer = RuntimeDbWriter::open(path.clone(), open_connection(&path)?)?;
+        let db = Self {
+            writer,
+            path,
+            lock_path: lock_path.into(),
+        };
+        let current_version = db.current_schema_version()?;
+        let max_known_version = max_known_migration_version();
+        if !(AGENT_CANONICAL_RELATIONS_SCHEMA_VERSION..=max_known_version)
+            .contains(&current_version)
+        {
+            bail!(
+                "agent relation backfill supports runtime db schemas {} through {}, found {}",
+                AGENT_CANONICAL_RELATIONS_SCHEMA_VERSION,
+                max_known_version,
+                current_version
+            );
+        }
+        Ok(db)
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -393,6 +427,10 @@ impl RuntimeDb {
 
     pub fn create_scheduler_recovery_backup(&self) -> Result<PathBuf> {
         self.create_verified_backup("scheduler-recovery")
+    }
+
+    pub fn create_agent_relation_backfill_backup(&self) -> Result<PathBuf> {
+        self.create_verified_backup("agent-relation-backfill")
     }
 
     pub fn transaction<T>(&self, f: impl FnMut(&Transaction<'_>) -> Result<T>) -> Result<T> {

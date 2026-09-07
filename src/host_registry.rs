@@ -8,11 +8,12 @@ use arc_swap::ArcSwap;
 use crate::{
     config::AppConfig,
     ids,
-    runtime_db::RuntimeDb,
+    runtime_db::{agent_relations::independent_creation_records, RuntimeDb},
     storage::AppStorage,
     system::WorkspaceAccessMode,
     types::{
-        agent_home_workspace_id, AgentIdentityRecord, WorkspaceEntry, WorkspaceOccupancyRecord,
+        agent_home_workspace_id, AgentCanonicalDurability, AgentIdentityRecord, WorkspaceEntry,
+        WorkspaceOccupancyRecord,
     },
 };
 
@@ -94,6 +95,7 @@ impl RuntimeRegistry {
         Ok(records)
     }
 
+    #[cfg(test)]
     pub(crate) fn append_agent_identity(&self, record: &AgentIdentityRecord) -> Result<()> {
         self.inner.host_storage.append_agent_identity(record)?;
         self.cache_agent_identity(record)
@@ -346,7 +348,15 @@ impl RuntimeRegistry {
             None,
             None,
         );
-        self.append_agent_identity(&record)?;
+        let relations =
+            independent_creation_records(&record, None, AgentCanonicalDurability::Persistent);
+        self.inner
+            .host_storage
+            .runtime_db()?
+            .expect("host storage always has a runtime database")
+            .agent_identities()
+            .create_with_relations(&record, &relations)?;
+        self.cache_agent_identity(&record)?;
         Ok(record)
     }
 
@@ -769,7 +779,33 @@ mod tests {
     #[test]
     fn ensure_workspace_entry_recognizes_agent_home_path() {
         let (_home, registry) = test_registry();
-        registry.ensure_default_agent_identity().unwrap();
+        let identity = registry.ensure_default_agent_identity().unwrap();
+        let projection = registry
+            .inner
+            .host_storage
+            .runtime_db()
+            .unwrap()
+            .unwrap()
+            .agent_canonical_relations()
+            .latest(&identity.agent_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            projection.sources.durability,
+            Some(crate::types::AgentCanonicalValueSource::Canonical)
+        );
+        assert_eq!(
+            projection.sources.lifecycle_attachment,
+            Some(crate::types::AgentCanonicalValueSource::Canonical)
+        );
+        assert_eq!(
+            projection.sources.capability_policy,
+            Some(crate::types::AgentCanonicalValueSource::Canonical)
+        );
+        assert_eq!(
+            projection.sources.message_policy,
+            Some(crate::types::AgentCanonicalValueSource::Canonical)
+        );
         let agent_id = registry.config().default_agent_id.clone();
         let agent_home = registry.config().agent_root_dir().join(&agent_id);
         std::fs::create_dir_all(&agent_home).unwrap();

@@ -1118,6 +1118,7 @@ async fn dump_prompt(
 mod tests {
     use super::*;
     use holon::{
+        cli::RuntimeDbDebugCommands,
         config::{provider_registry_for_tests, AltScreenMode, ModelRouteRef},
         runtime_db::RuntimeDb,
     };
@@ -1661,6 +1662,71 @@ mod tests {
         };
         assert_eq!(agent.as_deref(), Some("pm"));
         assert_eq!(output, PathBuf::from("/tmp/scheduler-case"));
+    }
+
+    #[test]
+    fn debug_runtime_db_agent_relations_defaults_to_report_mode() {
+        let cli = Cli::parse_from(["holon", "debug", "runtime-db", "agent-relations", "--json"]);
+        let Commands::Debug {
+            command:
+                DebugCommands::RuntimeDb {
+                    command:
+                        RuntimeDbDebugCommands::AgentRelations {
+                            apply,
+                            no_backup,
+                            diagnostic_sample_limit,
+                            json,
+                        },
+                },
+        } = cli.command
+        else {
+            panic!("expected debug runtime-db agent-relations command");
+        };
+        assert!(!apply);
+        assert!(!no_backup);
+        assert_eq!(diagnostic_sample_limit, 20);
+        assert!(json);
+        assert!(Cli::try_parse_from([
+            "holon",
+            "debug",
+            "runtime-db",
+            "agent-relations",
+            "--no-backup",
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn debug_runtime_db_agent_relations_parses_apply_options() {
+        let cli = Cli::parse_from([
+            "holon",
+            "debug",
+            "runtime-db",
+            "agent-relations",
+            "--apply",
+            "--no-backup",
+            "--diagnostic-sample-limit",
+            "7",
+        ]);
+        let Commands::Debug {
+            command:
+                DebugCommands::RuntimeDb {
+                    command:
+                        RuntimeDbDebugCommands::AgentRelations {
+                            apply,
+                            no_backup,
+                            diagnostic_sample_limit,
+                            json,
+                        },
+                },
+        } = cli.command
+        else {
+            panic!("expected debug runtime-db agent-relations command");
+        };
+        assert!(apply);
+        assert!(no_backup);
+        assert_eq!(diagnostic_sample_limit, 7);
+        assert!(!json);
     }
 
     #[test]
@@ -3316,6 +3382,71 @@ fn handle_runtime_db_debug_command(
     command: holon::cli::RuntimeDbDebugCommands,
 ) -> Result<()> {
     match command {
+        holon::cli::RuntimeDbDebugCommands::AgentRelations {
+            apply,
+            no_backup,
+            diagnostic_sample_limit,
+            json,
+        } => {
+            let _maintenance_lock = apply
+                .then(|| {
+                    RuntimeDbLock::try_lock(config.runtime_db_maintenance_lock_path())
+                        .context("runtime database maintenance is already running")
+                })
+                .transpose()?;
+            let inspection_db = RuntimeDb::open_for_agent_relation_backfill(
+                config.runtime_db_path(),
+                config.runtime_db_lock_path(),
+            )?;
+            let backup_path = if apply && !no_backup {
+                Some(inspection_db.create_agent_relation_backfill_backup()?)
+            } else {
+                None
+            };
+            let db = if apply {
+                drop(inspection_db);
+                RuntimeDb::open_and_migrate(
+                    config.runtime_db_path(),
+                    config.runtime_db_lock_path(),
+                )?
+            } else {
+                inspection_db
+            };
+            let report = db.agent_canonical_relations().backfill_with_backup(
+                apply,
+                diagnostic_sample_limit,
+                backup_path.map(|path| path.display().to_string()),
+            )?;
+            if json {
+                print_json(&serde_json::to_value(report)?)
+            } else {
+                println!(
+                    "agent relation backfill: mode={} scanned={} changed={} unchanged={} diagnostics={} migrated_axes={}",
+                    if report.apply { "apply" } else { "report" },
+                    report.scanned_agents,
+                    report.changed_agents,
+                    report.unchanged_agents,
+                    report.diagnostic_agents,
+                    report.migrated_axes
+                );
+                if let Some(backup_path) = &report.backup_path {
+                    println!("  backup: {backup_path}");
+                }
+                for diagnostic in &report.diagnostics {
+                    println!(
+                        "  agent={} migrated_axes={:?}",
+                        diagnostic.agent_id, diagnostic.migrated_axes
+                    );
+                    for issue in &diagnostic.issues {
+                        println!(
+                            "    axis={:?} resolution={:?} detail={}",
+                            issue.axis, issue.resolution, issue.detail
+                        );
+                    }
+                }
+                Ok(())
+            }
+        }
         holon::cli::RuntimeDbDebugCommands::Audit {
             check,
             baseline_through,

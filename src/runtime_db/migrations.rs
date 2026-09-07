@@ -34,6 +34,7 @@ pub struct Migration {
 pub(crate) const PUBLISHED_MIGRATION_FLOOR: i64 = 25;
 pub(crate) const RELEASE_BASELINE_TARGET: i64 = 45;
 pub(crate) const RETIRED_SCHEDULER_SCHEMA_PREDECESSOR: i64 = 46;
+pub(crate) const AGENT_CANONICAL_RELATIONS_SCHEMA_VERSION: i64 = 59;
 const RELEASE_BASELINE_SCHEMA_TARGET: i64 = 42;
 const RELEASE_BASELINE_ID: &str = "v0.30.0-schema-25-to-schema-45";
 
@@ -3424,6 +3425,34 @@ CREATE INDEX IF NOT EXISTS idx_agent_message_deliveries_target_state
 CREATE INDEX IF NOT EXISTS idx_agent_message_deliveries_message
   ON agent_message_deliveries(message_id)
   WHERE message_id IS NOT NULL;
+"#,
+    },
+    Migration {
+        version: 61,
+        name: "agent_relation_backfill_audit",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS agent_relation_backfill_runs (
+  run_id TEXT PRIMARY KEY,
+  status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
+  started_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT,
+  report_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS agent_relation_backfill_outcomes (
+  run_id TEXT NOT NULL REFERENCES agent_relation_backfill_runs(run_id),
+  agent_id TEXT NOT NULL REFERENCES agent_identities(agent_id),
+  identity_revision INTEGER NOT NULL CHECK (identity_revision >= 0),
+  outcome TEXT NOT NULL CHECK (outcome IN ('applied', 'unchanged', 'diagnostic')),
+  migrated_axes_json TEXT NOT NULL,
+  issues_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (run_id, agent_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_relation_backfill_outcomes_agent
+  ON agent_relation_backfill_outcomes(agent_id, updated_at);
 "#,
     },
 ];

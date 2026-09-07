@@ -410,3 +410,36 @@ pub struct AgentCanonicalRecordSet {
     pub capability_policy: Option<AgentCapabilityPolicyRecord>,
     pub message_policy: Option<AgentMessagePolicyRecord>,
 }
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRelationBackfillOutcome {
+    Applied,
+    Unchanged,
+    Diagnostic,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct AgentRelationBackfillDiagnostic {
+    pub agent_id: String,
+    pub migrated_axes: Vec<AgentCanonicalRelationAxis>,
+    pub issues: Vec<AgentCanonicalProjectionIssue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct AgentRelationBackfillReport {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup_path: Option<String>,
+    pub apply: bool,
+    pub scanned_agents: usize,
+    pub changed_agents: usize,
+    pub unchanged_agents: usize,
+    pub diagnostic_agents: usize,
+    pub migrated_axes: usize,
+    pub diagnostic_sample_limit: usize,
+    pub diagnostics: Vec<AgentRelationBackfillDiagnostic>,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: DateTime<Utc>,
+}

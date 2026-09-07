@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::{Context, Result};
+use chrono::Utc;
 use rusqlite::{params, OptionalExtension, Transaction};
 
 use crate::runtime_db::types::AgentCanonicalRelationRepository;
@@ -13,7 +14,9 @@ use crate::types::{
     AgentLifecycleAttachmentRecord, AgentLifecycleFenceState, AgentLineageCreationCause,
     AgentLineageRecord, AgentMessagePolicyRecord, AgentMessagePolicyRule,
     AgentMessagePrincipalKind, AgentOwnership, AgentPolicyEffect, AgentProfilePreset,
-    AgentRegistryStatus, AgentSupervisionRecord, AgentSupervisionState, TaskKind, TaskRecord,
+    AgentRegistryStatus, AgentRelationBackfillDiagnostic, AgentRelationBackfillOutcome,
+    AgentRelationBackfillReport, AgentSupervisionRecord, AgentSupervisionState, TaskKind,
+    TaskRecord,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,6 +123,424 @@ impl AgentCanonicalRelationRepository<'_> {
         records.sort_by(|left, right| left.child_agent_id.cmp(&right.child_agent_id));
         Ok(records)
     }
+
+    pub fn backfill(
+        &self,
+        apply: bool,
+        diagnostic_sample_limit: usize,
+    ) -> Result<AgentRelationBackfillReport> {
+        self.backfill_with_backup(apply, diagnostic_sample_limit, None)
+    }
+
+    pub fn backfill_with_backup(
+        &self,
+        apply: bool,
+        diagnostic_sample_limit: usize,
+        backup_path: Option<String>,
+    ) -> Result<AgentRelationBackfillReport> {
+        let requested_at = Utc::now();
+        let run = if apply {
+            Some(self.db.transaction(|tx| {
+                let existing = tx
+                    .query_row(
+                        "SELECT run_id, started_at FROM agent_relation_backfill_runs
+                         WHERE status = 'running'
+                         ORDER BY started_at DESC LIMIT 1",
+                        [],
+                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                    )
+                    .optional()?;
+                if let Some((run_id, started_at)) = existing {
+                    return Ok((
+                        run_id,
+                        parse_timestamp(&started_at, "relation backfill run")?,
+                    ));
+                }
+                let run_id = format!("agent-relations-{}", uuid::Uuid::new_v4().simple());
+                tx.execute(
+                    "INSERT INTO agent_relation_backfill_runs (
+                       run_id, status, started_at, updated_at
+                     ) VALUES (?1, 'running', ?2, ?2)",
+                    params![run_id, timestamp(requested_at)],
+                )?;
+                Ok((run_id, requested_at))
+            })?)
+        } else {
+            None
+        };
+        let run_id = run.as_ref().map(|(run_id, _)| run_id.clone());
+        let started_at = run
+            .as_ref()
+            .map(|(_, started_at)| *started_at)
+            .unwrap_or(requested_at);
+
+        let agent_ids = {
+            let connection = self.db.connection()?;
+            let mut statement = connection
+                .prepare("SELECT agent_id FROM agent_identities ORDER BY agent_id ASC")?;
+            let agent_ids = statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            agent_ids
+        };
+        let mut report = AgentRelationBackfillReport {
+            run_id: run_id.clone(),
+            backup_path,
+            apply,
+            scanned_agents: 0,
+            changed_agents: 0,
+            unchanged_agents: 0,
+            diagnostic_agents: 0,
+            migrated_axes: 0,
+            diagnostic_sample_limit,
+            diagnostics: Vec::new(),
+            started_at,
+            completed_at: started_at,
+        };
+
+        for agent_id in agent_ids {
+            let result = self.db.transaction(|tx| {
+                backfill_agent_relations_tx(tx, &agent_id, apply, run_id.as_deref())
+            });
+            let (migrated_axes, issues) = match result {
+                Ok(result) => result,
+                Err(error) => {
+                    if let Some(run_id) = run_id.as_deref() {
+                        let failed_at = Utc::now();
+                        report.completed_at = failed_at;
+                        self.db.transaction(|tx| {
+                            tx.execute(
+                                "UPDATE agent_relation_backfill_runs
+                                 SET status = 'failed', updated_at = ?1, completed_at = ?1,
+                                     report_json = ?2
+                                 WHERE run_id = ?3",
+                                params![
+                                    timestamp(failed_at),
+                                    serde_json::to_string(&report)?,
+                                    run_id
+                                ],
+                            )?;
+                            Ok(())
+                        })?;
+                    }
+                    return Err(error).with_context(|| {
+                        format!("backfilling canonical relations for agent {agent_id}")
+                    });
+                }
+            };
+            report.scanned_agents += 1;
+            report.migrated_axes += migrated_axes.len();
+            if migrated_axes.is_empty() {
+                report.unchanged_agents += 1;
+            } else {
+                report.changed_agents += 1;
+            }
+            if !issues.is_empty() {
+                report.diagnostic_agents += 1;
+                if report.diagnostics.len() < diagnostic_sample_limit {
+                    report.diagnostics.push(AgentRelationBackfillDiagnostic {
+                        agent_id,
+                        migrated_axes,
+                        issues,
+                    });
+                }
+            }
+        }
+
+        report.completed_at = Utc::now();
+        if let Some(run_id) = run_id.as_deref() {
+            self.db.transaction(|tx| {
+                tx.execute(
+                    "UPDATE agent_relation_backfill_runs
+                     SET status = 'completed', updated_at = ?1, completed_at = ?1,
+                         report_json = ?2
+                     WHERE run_id = ?3",
+                    params![
+                        timestamp(report.completed_at),
+                        serde_json::to_string(&report)?,
+                        run_id
+                    ],
+                )?;
+                Ok(())
+            })?;
+        }
+        Ok(report)
+    }
+}
+
+fn backfill_agent_relations_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    apply: bool,
+    run_id: Option<&str>,
+) -> Result<(
+    Vec<AgentCanonicalRelationAxis>,
+    Vec<AgentCanonicalProjectionIssue>,
+)> {
+    if let Some(run_id) = run_id.filter(|_| apply) {
+        let checkpoint = tx
+            .query_row(
+                "SELECT migrated_axes_json, issues_json
+                 FROM agent_relation_backfill_outcomes
+                 WHERE run_id = ?1 AND agent_id = ?2",
+                params![run_id, agent_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?;
+        if let Some((migrated_axes, issues)) = checkpoint {
+            return Ok((
+                serde_json::from_str(&migrated_axes)
+                    .context("decoding relation backfill checkpoint axes")?,
+                serde_json::from_str(&issues)
+                    .context("decoding relation backfill checkpoint issues")?,
+            ));
+        }
+    }
+    let payload = tx.query_row(
+        "SELECT payload_json FROM agent_identities WHERE agent_id = ?1",
+        [agent_id],
+        |row| row.get::<_, String>(0),
+    )?;
+    let identity: AgentIdentityRecord =
+        serde_json::from_str(&payload).context("decoding agent identity for relation backfill")?;
+    let canonical = AgentCanonicalRecordSet {
+        lineage: latest_lineage(tx, agent_id)?,
+        supervision: latest_supervision(tx, agent_id)?,
+        durability: latest_durability(tx, agent_id)?,
+        lifecycle_attachment: latest_lifecycle_attachment(tx, agent_id)?,
+        capability_policy: latest_capability_policy(tx, agent_id)?,
+        message_policy: latest_message_policy(tx, agent_id)?,
+    };
+    let task = identity
+        .delegated_from_task_id
+        .as_deref()
+        .map(|task_id| legacy_task_evidence(tx, task_id))
+        .transpose()?
+        .flatten();
+    let projection = project_agent_canonical_relations(&identity, canonical, task.as_ref());
+    let (records, migrated_axes) = legacy_axes_without_issues(&projection);
+    if apply {
+        upsert_canonical_record_set_tx(tx, &records)?;
+        let outcome = if projection.issues.is_empty() {
+            if migrated_axes.is_empty() {
+                AgentRelationBackfillOutcome::Unchanged
+            } else {
+                AgentRelationBackfillOutcome::Applied
+            }
+        } else {
+            AgentRelationBackfillOutcome::Diagnostic
+        };
+        tx.execute(
+            "INSERT INTO agent_relation_backfill_outcomes (
+               run_id, agent_id, identity_revision, outcome, migrated_axes_json,
+               issues_json, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(run_id, agent_id) DO UPDATE SET
+               identity_revision = excluded.identity_revision,
+               outcome = excluded.outcome,
+               migrated_axes_json = excluded.migrated_axes_json,
+               issues_json = excluded.issues_json,
+               updated_at = excluded.updated_at",
+            params![
+                run_id.context("apply backfill requires a run id")?,
+                agent_id,
+                sqlite_revision(identity.revision)?,
+                enum_string(&outcome)?,
+                serde_json::to_string(&migrated_axes)?,
+                serde_json::to_string(&projection.issues)?,
+                timestamp(Utc::now()),
+            ],
+        )?;
+    }
+    Ok((migrated_axes, projection.issues))
+}
+
+fn legacy_axes_without_issues(
+    projection: &AgentCanonicalRelationsProjection,
+) -> (AgentCanonicalRecordSet, Vec<AgentCanonicalRelationAxis>) {
+    let can_migrate = |axis| !projection.issues.iter().any(|issue| issue.axis == axis);
+    let mut records = AgentCanonicalRecordSet::default();
+    let mut axes = Vec::new();
+    if projection.sources.lineage == Some(AgentCanonicalValueSource::Legacy)
+        && can_migrate(AgentCanonicalRelationAxis::Lineage)
+    {
+        records.lineage = projection.lineage.clone();
+        axes.push(AgentCanonicalRelationAxis::Lineage);
+    }
+    if projection.sources.supervision == Some(AgentCanonicalValueSource::Legacy)
+        && can_migrate(AgentCanonicalRelationAxis::Supervision)
+    {
+        records.supervision = projection.supervision.clone();
+        axes.push(AgentCanonicalRelationAxis::Supervision);
+    }
+    if projection.sources.durability == Some(AgentCanonicalValueSource::Legacy)
+        && can_migrate(AgentCanonicalRelationAxis::Durability)
+    {
+        records.durability = projection.durability.clone();
+        axes.push(AgentCanonicalRelationAxis::Durability);
+    }
+    if projection.sources.lifecycle_attachment == Some(AgentCanonicalValueSource::Legacy)
+        && can_migrate(AgentCanonicalRelationAxis::LifecycleAttachment)
+    {
+        records.lifecycle_attachment = projection.lifecycle_attachment.clone();
+        axes.push(AgentCanonicalRelationAxis::LifecycleAttachment);
+    }
+    if projection.sources.capability_policy == Some(AgentCanonicalValueSource::Legacy)
+        && can_migrate(AgentCanonicalRelationAxis::CapabilityPolicy)
+    {
+        records.capability_policy = projection.capability_policy.clone();
+        axes.push(AgentCanonicalRelationAxis::CapabilityPolicy);
+    }
+    if projection.sources.message_policy == Some(AgentCanonicalValueSource::Legacy)
+        && can_migrate(AgentCanonicalRelationAxis::MessagePolicy)
+        && can_migrate(AgentCanonicalRelationAxis::Supervision)
+    {
+        records.message_policy = projection.message_policy.clone();
+        axes.push(AgentCanonicalRelationAxis::MessagePolicy);
+    }
+    (records, axes)
+}
+
+pub(crate) fn independent_creation_records(
+    identity: &AgentIdentityRecord,
+    lineage_parent_agent_id: Option<&str>,
+    durability: AgentCanonicalDurability,
+) -> AgentCanonicalRecordSet {
+    AgentCanonicalRecordSet {
+        lineage: lineage_parent_agent_id.map(|parent_agent_id| AgentLineageRecord {
+            child_agent_id: identity.agent_id.clone(),
+            parent_agent_id: parent_agent_id.to_string(),
+            creation_cause: AgentLineageCreationCause::CreateAgent,
+            revision: identity.revision,
+            created_at: identity.created_at,
+        }),
+        supervision: None,
+        durability: Some(AgentDurabilityRecord {
+            agent_id: identity.agent_id.clone(),
+            durability,
+            revision: identity.revision,
+            created_at: identity.created_at,
+        }),
+        lifecycle_attachment: Some(AgentLifecycleAttachmentRecord {
+            agent_id: identity.agent_id.clone(),
+            attachment: AgentLifecycleAttachment::Independent,
+            revision: identity.revision,
+            created_at: identity.created_at,
+        }),
+        capability_policy: Some(capability_policy_for_preset(
+            identity,
+            AgentProfilePreset::PublicNamed,
+        )),
+        message_policy: Some(message_policy_for_supervisor(identity, None)),
+    }
+}
+
+pub(crate) fn supervised_creation_records(
+    identity: &AgentIdentityRecord,
+    supervisor_agent_id: &str,
+    delegated_from_task_id: &str,
+    delegated_from_work_item_id: Option<&str>,
+) -> AgentCanonicalRecordSet {
+    AgentCanonicalRecordSet {
+        lineage: Some(AgentLineageRecord {
+            child_agent_id: identity.agent_id.clone(),
+            parent_agent_id: supervisor_agent_id.to_string(),
+            creation_cause: AgentLineageCreationCause::CreateAgent,
+            revision: identity.revision,
+            created_at: identity.created_at,
+        }),
+        supervision: Some(AgentSupervisionRecord {
+            supervision_id: format!("supervision:{delegated_from_task_id}"),
+            supervisor_agent_id: supervisor_agent_id.to_string(),
+            child_agent_id: identity.agent_id.clone(),
+            delegated_from_work_item_id: delegated_from_work_item_id.map(ToString::to_string),
+            delegated_from_task_id: Some(delegated_from_task_id.to_string()),
+            state: AgentSupervisionState::Active,
+            revision: identity.revision,
+            created_at: identity.created_at,
+            updated_at: identity.updated_at,
+        }),
+        durability: Some(AgentDurabilityRecord {
+            agent_id: identity.agent_id.clone(),
+            durability: AgentCanonicalDurability::Ephemeral,
+            revision: identity.revision,
+            created_at: identity.created_at,
+        }),
+        lifecycle_attachment: Some(AgentLifecycleAttachmentRecord {
+            agent_id: identity.agent_id.clone(),
+            attachment: AgentLifecycleAttachment::SupervisionAttached,
+            revision: identity.revision,
+            created_at: identity.created_at,
+        }),
+        capability_policy: Some(capability_policy_for_preset(
+            identity,
+            AgentProfilePreset::PrivateChild,
+        )),
+        message_policy: Some(message_policy_for_supervisor(
+            identity,
+            Some(supervisor_agent_id),
+        )),
+    }
+}
+
+pub(crate) fn upsert_canonical_record_set_tx(
+    tx: &Transaction<'_>,
+    records: &AgentCanonicalRecordSet,
+) -> Result<()> {
+    if let Some(record) = records.lineage.as_ref() {
+        upsert_lineage_tx(tx, record)?;
+    }
+    if let Some(record) = records.supervision.as_ref() {
+        upsert_supervision_tx(tx, record)?;
+    }
+    if let Some(record) = records.durability.as_ref() {
+        insert_versioned_record_tx(
+            tx,
+            "agent_durability_records",
+            &record.agent_id,
+            record.revision,
+            record.created_at,
+            record,
+            Some(("durability", enum_string(&record.durability)?)),
+        )?;
+    }
+    if let Some(record) = records.lifecycle_attachment.as_ref() {
+        insert_versioned_record_tx(
+            tx,
+            "agent_lifecycle_attachment_records",
+            &record.agent_id,
+            record.revision,
+            record.created_at,
+            record,
+            Some(("attachment", enum_string(&record.attachment)?)),
+        )?;
+    }
+    if let Some(record) = records.capability_policy.as_ref() {
+        upsert_capability_policy_tx(tx, record)?;
+    }
+    if let Some(record) = records.message_policy.as_ref() {
+        upsert_message_policy_tx(tx, record)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn transition_supervision_state_tx(
+    tx: &Transaction<'_>,
+    child_agent_id: &str,
+    state: AgentSupervisionState,
+    revision: u64,
+    updated_at: chrono::DateTime<chrono::Utc>,
+) -> Result<()> {
+    let Some(mut supervision) = latest_supervision(tx, child_agent_id)? else {
+        return Ok(());
+    };
+    if supervision.state == state && supervision.revision >= revision {
+        return Ok(());
+    }
+    supervision.state = state;
+    supervision.revision = std::cmp::max(revision, supervision.revision.saturating_add(1));
+    supervision.updated_at = updated_at;
+    upsert_supervision_tx(tx, &supervision)
 }
 
 pub(crate) fn canonical_relations_from_connection(
@@ -795,6 +1216,7 @@ pub(crate) fn project_agent_canonical_relations(
         &mut issues,
     );
     validate_effective_relations(
+        identity,
         supervision.as_ref(),
         durability.as_ref(),
         lifecycle_attachment.as_ref(),
@@ -920,7 +1342,11 @@ fn legacy_supervision(
         child_agent_id: identity.agent_id.clone(),
         delegated_from_work_item_id: task.delegated_from_work_item_id.clone(),
         delegated_from_task_id: Some(task_id.to_string()),
-        state: AgentSupervisionState::Active,
+        state: match identity.status {
+            AgentRegistryStatus::Active => AgentSupervisionState::Active,
+            AgentRegistryStatus::Deleting => AgentSupervisionState::CleanupRequired,
+            AgentRegistryStatus::Deleted => AgentSupervisionState::Closed,
+        },
         revision: 0,
         created_at: identity.created_at,
         updated_at: identity.updated_at,
@@ -1087,6 +1513,82 @@ fn legacy_message_policy(
     }
 }
 
+fn capability_policy_for_preset(
+    identity: &AgentIdentityRecord,
+    preset: AgentProfilePreset,
+) -> AgentCapabilityPolicyRecord {
+    let families = [
+        AgentCapabilityFamily::CoreAgent,
+        AgentCapabilityFamily::LocalEnvironment,
+        AgentCapabilityFamily::Web,
+        AgentCapabilityFamily::AgentCreation,
+        AgentCapabilityFamily::AuthorityExpanding,
+        AgentCapabilityFamily::ExternalTrigger,
+    ];
+    let rules = families
+        .into_iter()
+        .map(|family| {
+            let allowed = match preset {
+                AgentProfilePreset::PublicNamed => true,
+                AgentProfilePreset::PrivateChild => !matches!(
+                    family,
+                    AgentCapabilityFamily::AgentCreation
+                        | AgentCapabilityFamily::AuthorityExpanding
+                ),
+            };
+            AgentCapabilityPolicyRule {
+                family,
+                effect: if allowed {
+                    AgentPolicyEffect::Allow
+                } else {
+                    AgentPolicyEffect::Deny
+                },
+            }
+        })
+        .collect();
+    AgentCapabilityPolicyRecord {
+        agent_id: identity.agent_id.clone(),
+        revision: identity.revision,
+        rules,
+        created_at: identity.created_at,
+    }
+}
+
+fn message_policy_for_supervisor(
+    identity: &AgentIdentityRecord,
+    supervisor_agent_id: Option<&str>,
+) -> AgentMessagePolicyRecord {
+    let mut rules = vec![
+        AgentMessagePolicyRule {
+            principal_kind: AgentMessagePrincipalKind::Operator,
+            principal_id: None,
+            route: Some("operator_control".into()),
+            effect: AgentPolicyEffect::Allow,
+        },
+        AgentMessagePolicyRule {
+            principal_kind: AgentMessagePrincipalKind::RuntimeCapability,
+            principal_id: Some("runtime:agent-invocation".into()),
+            route: Some("agent_invocation".into()),
+            effect: AgentPolicyEffect::Allow,
+        },
+    ];
+    if let Some(supervisor_agent_id) = supervisor_agent_id {
+        rules.push(AgentMessagePolicyRule {
+            principal_kind: AgentMessagePrincipalKind::SupervisingParent,
+            principal_id: Some(supervisor_agent_id.to_string()),
+            route: Some("supervision_follow_up".into()),
+            effect: AgentPolicyEffect::Allow,
+        });
+    }
+    AgentMessagePolicyRecord {
+        agent_id: identity.agent_id.clone(),
+        revision: identity.revision,
+        default_effect: AgentPolicyEffect::Deny,
+        rules,
+        created_at: identity.created_at,
+    }
+}
+
 fn validate_legacy_profile(
     identity: &AgentIdentityRecord,
     issues: &mut Vec<AgentCanonicalProjectionIssue>,
@@ -1198,11 +1700,30 @@ fn validate_canonical_legacy_drift(
 }
 
 fn validate_effective_relations(
+    identity: &AgentIdentityRecord,
     supervision: Option<&AgentSupervisionRecord>,
     durability: Option<&AgentDurabilityRecord>,
     attachment: Option<&AgentLifecycleAttachmentRecord>,
     issues: &mut Vec<AgentCanonicalProjectionIssue>,
 ) {
+    if let Some(supervision) = supervision {
+        let expected_state = match identity.status {
+            AgentRegistryStatus::Active => AgentSupervisionState::Active,
+            AgentRegistryStatus::Deleting => AgentSupervisionState::CleanupRequired,
+            AgentRegistryStatus::Deleted => AgentSupervisionState::Closed,
+        };
+        if supervision.state != expected_state {
+            issue(
+                issues,
+                AgentCanonicalRelationAxis::Supervision,
+                AgentCanonicalResolution::Contradictory,
+                format!(
+                    "supervision state {:?} conflicts with identity lifecycle {:?}",
+                    supervision.state, identity.status
+                ),
+            );
+        }
+    }
     let supervision_active = supervision.is_some_and(|record| {
         matches!(
             record.state,
@@ -1216,11 +1737,11 @@ fn validate_effective_relations(
             AgentCanonicalResolution::Contradictory,
             "independent lifecycle conflicts with active supervision",
         ),
-        Some(AgentLifecycleAttachment::SupervisionAttached) if !supervision_active => issue(
+        Some(AgentLifecycleAttachment::SupervisionAttached) if supervision.is_none() => issue(
             issues,
             AgentCanonicalRelationAxis::Supervision,
             AgentCanonicalResolution::MissingEvidence,
-            "supervision-attached lifecycle has no active supervision record",
+            "supervision-attached lifecycle has no supervision record",
         ),
         _ => {}
     }
