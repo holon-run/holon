@@ -1111,21 +1111,47 @@ function TaskOutputRenderer({ record }: { record: RuntimeToolExecutionRecord }) 
   const { t } = useTranslation();
   const input = isRecord(record.input) ? record.input : {};
   const output = unwrapToolOutput(record.output ?? record.result);
-  const taskId = nestedText(input, ["task_id"]);
-  const status = nestedText(output, ["status"]);
-  const disposition = nestedText(output, ["disposition"]);
-  const stdout = nestedText(output, ["stdout", "text"]);
-  const stderr = nestedText(output, ["stderr"]);
-  const truncated = nestedValue(output, ["truncated"]) === true;
+  // TaskOutput results are shaped {retrieval_status, task: TaskOutputSnapshot}
+  // where task.output_preview holds the actual output text; older records only
+  // exposed top-level stdout/stderr.
+  const result = asResultRecord(output, "task_output_result");
+  const taskValue = nestedValue(result, ["task", "task_record"]);
+  const task = isRecord(taskValue) ? taskValue : undefined;
+  const taskId = nestedText(input, ["task_id"]) || nestedText(task, ["task_id", "id"]);
+  const retrievalStatus = nestedText(result, ["retrieval_status"]);
+  const status = nestedText(task, ["status"]) || nestedText(result, ["status"]);
+  const summary = nestedText(task, ["summary"]);
+  const resultSummary = nestedText(task, ["result_summary"]) || nestedText(result, ["summary"]);
+  const exitStatus = nestedValue(task, ["exit_status"]) ?? nestedValue(result, ["exit_status"]);
+  const combinedOutput = nestedText(task, ["output_preview"]) || nestedText(result, ["output"]);
+  const stdout = combinedOutput ? "" : nestedText(task, ["stdout"]) || nestedText(result, ["stdout"]);
+  const stderr = combinedOutput ? "" : nestedText(task, ["stderr"]) || nestedText(result, ["stderr"]);
+  const truncated =
+    nestedValue(task, ["output_truncated"]) === true ||
+    nestedValue(result, ["output_truncated"]) === true ||
+    nestedValue(result, ["truncated"]) === true;
 
   return (
     <>
       <SimpleField label={t("inspector.taskId")} value={taskId} />
-      {status ? <SimpleField label={t("common.status")} value={status} /> : null}
-      {disposition ? <SimpleField label="Disposition" value={disposition} /> : null}
+      {status ? <SimpleField label={t("inspector.status")} value={status} /> : null}
+      {retrievalStatus && retrievalStatus !== "success" ? (
+        <SimpleField label={t("inspector.retrieval")} value={retrievalStatus} />
+      ) : null}
+      {exitStatus != null ? <SimpleField label={t("inspector.exit")} value={exitStatus} /> : null}
+      {summary ? <OutputField label={t("inspector.summary")} value={summary} /> : null}
+      {resultSummary && resultSummary.trim() !== "" && resultSummary !== summary ? (
+        <OutputField label={t("inspector.result")} value={resultSummary} />
+      ) : null}
+      {combinedOutput ? (
+        <OutputField
+          label={truncated ? t("inspector.outputTruncated") : t("inspector.output")}
+          value={truncatedText(combinedOutput, 8000)}
+        />
+      ) : null}
       {stdout ? <OutputField label={t("inspector.stdout")} value={truncatedText(stdout, 3000)} /> : null}
       {stderr ? <OutputField label={t("inspector.stderr")} value={truncatedText(stderr, 1000)} variant="error" /> : null}
-      {truncated ? <SimpleField label={t("inspector.truncated")} value={t("inspector.yes")} /> : null}
+      {truncated && !combinedOutput ? <SimpleField label={t("inspector.truncated")} value={t("inspector.yes")} /> : null}
       {record.error ? <OutputField label={t("inspector.error")} value={textField(record.error)} variant="error" /> : null}
     </>
   );

@@ -305,4 +305,61 @@ describe("ToolExecutionContent", () => {
     expect(html).toContain("Hint:");
     expect(html).toContain("MemorySearch");
   });
+
+  it("renders TaskOutput snapshot content from the envelope result", () => {
+    const html = renderTool({
+      tool_name: "TaskOutput",
+      input: { task_id: "task_abc123", block: true },
+      output: {
+        envelope: {
+          status: "success",
+          result: {
+            retrieval_status: "success",
+            task: {
+              task_id: "task_abc123",
+              kind: "command_task",
+              status: "completed",
+              summary: "Run command: echo done",
+              output_preview: "done\n",
+              output_truncated: false,
+              exit_status: 0,
+            },
+          },
+        },
+      },
+    });
+
+    expect(html).toContain("task_abc123");
+    expect(html).toContain("completed");
+    expect(html).toContain("Run command: echo done");
+    expect(html).toContain("done");
+  });
+
+  it("renders TaskOutput retrieval timeout without swallowing task state", () => {
+    const html = renderTool({
+      tool_name: "TaskOutput",
+      input: { task_id: "task_slow456", block: true, timeout_ms: 1000 },
+      output: {
+        envelope: {
+          status: "success",
+          result: {
+            retrieval_status: "timeout",
+            task: {
+              task_id: "task_slow456",
+              kind: "command_task",
+              status: "running",
+              summary: "Run command: sleep 5",
+              output_preview: "",
+              output_truncated: false,
+            },
+          },
+        },
+      },
+    });
+
+    expect(html).toContain("task_slow456");
+    expect(html).toContain("running");
+    expect(html).toContain("timeout");
+    expect(html).toContain("Run command: sleep 5");
+  });
 });
