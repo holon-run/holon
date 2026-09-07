@@ -1,13 +1,12 @@
 # models.dev refresh summary
 
-- Supplement models: 26 (drafted this run: 2, retained: 24, removed: 0)
-- Deferred candidates: 172 (not auto-drafted; see below)
+- Supplement models: 26 (drafted this run: 0, retained: 26, removed: 0)
+- Deferred candidates: 167 (not auto-drafted; see below)
 - Mapped providers without auto-supplement (aggregators etc.): 9
 
 ## Auto-drafted supplement models
 
-- `gemini/gemini-3.8-flash` — Gemini 3.8 Flash (context 1048576, reasoning true, image input true)
-- `openai/gpt-6-astra` — GPT-6 Astra (context 1050000, reasoning true, image input true)
+(none this run)
 
 ## Deferred (needs human decision or outside policy)
 
@@ -51,4 +50,4 @@
 - `dashscope/qwen3-livetranslate-flash-realtime` — ReleaseOutsideWindow (release 2025-09-22)
 - `dashscope/qwen3-max` — ReleaseOutsideWindow (release 2025-09-23)
 - `dashscope/qwen3-next-80b-a3b-instruct` — ReleaseOutsideWindow (release 2025-09)
-- … and 132 more (see `holon models-dev audit`)
+- … and 127 more (see `holon models-dev audit`)
