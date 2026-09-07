@@ -329,7 +329,7 @@ fn classify_reqwest_transport_failure(
 }
 
 fn is_retryable_request_send_transport_failure(stage: &str, source_chain: &[String]) -> bool {
-    if !matches!(stage, "streaming_request_send") {
+    if !matches!(stage, "request_send" | "streaming_request_send") {
         return false;
     }
 
@@ -859,6 +859,19 @@ mod tests {
     }
 
     #[test]
+    fn request_send_connection_closed_source_chain_is_retryable() {
+        let source_chain = vec![
+            "client error (SendRequest)".to_string(),
+            "connection closed before message completed".to_string(),
+        ];
+
+        assert!(super::is_retryable_request_send_transport_failure(
+            "request_send",
+            &source_chain
+        ));
+    }
+
+    #[test]
     fn request_send_connection_source_chain_is_stage_limited() {
         let source_chain = vec!["connection error".to_string()];
 
@@ -869,14 +882,14 @@ mod tests {
     }
 
     #[test]
-    fn streaming_request_send_non_transport_source_chain_is_not_retryable() {
+    fn request_send_non_transport_source_chain_is_not_retryable() {
         let source_chain = vec![
             "builder error".to_string(),
             "invalid header value".to_string(),
         ];
 
         assert!(!super::is_retryable_request_send_transport_failure(
-            "streaming_request_send",
+            "request_send",
             &source_chain
         ));
     }
