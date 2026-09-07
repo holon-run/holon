@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     future::Future,
     path::{Path, PathBuf},
@@ -59,14 +59,14 @@ use crate::{
         AgentCreateReceipt, AgentCreateResult, AgentCreateStage, AgentDeletionJob, AgentDetail,
         AgentDurability, AgentIdentityRecord, AgentIdentityView, AgentKind, AgentLifecycleHint,
         AgentListEntry, AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentState,
-        AgentStatus, AgentSummary, AgentTokenUsageSummary, AgentVisibility, AuthorityClass,
-        ChildAgentSummary, ClosureOutcome, ExternalTriggerRecord, ExternalTriggerStatus,
-        ExternalTriggerSummary, LoadedAgentsMdView, MessageBody, MessageDeliverySurface,
-        MessageEnvelope, MessageKind, MessageOrigin, OperatorNotificationRecord, Priority,
-        QueueEntryStatus, RuntimeFailureSummary, SpawnAgentModelResolution,
-        SpawnAgentModelResolutionStatus, TaskKind, TaskRecord, TaskStatus, TimerRecord, TokenUsage,
-        TranscriptEntry, TranscriptEntryKind, WaitConditionSummary, WorkspaceEntry,
-        WorkspaceOccupancyRecord,
+        AgentStatus, AgentSummary, AgentTokenUsageSummary, AgentTreeNode, AgentTreeProjection,
+        AgentVisibility, AuthorityClass, ChildAgentSummary, ClosureOutcome, ExternalTriggerRecord,
+        ExternalTriggerStatus, ExternalTriggerSummary, LoadedAgentsMdView, MessageBody,
+        MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin,
+        OperatorNotificationRecord, Priority, QueueEntryStatus, RuntimeFailureSummary,
+        SpawnAgentModelResolution, SpawnAgentModelResolutionStatus, TaskKind, TaskRecord,
+        TaskStatus, TimerRecord, TokenUsage, TranscriptEntry, TranscriptEntryKind,
+        WaitConditionSummary, WorkspaceEntry, WorkspaceOccupancyRecord,
     },
 };
 
@@ -1421,11 +1421,11 @@ impl RuntimeHost {
         }
     }
 
-    pub(crate) fn public_agent_read_storage(
+    pub(crate) fn operator_agent_read_storage(
         &self,
         agent_id: &str,
     ) -> std::result::Result<AppStorage, PublicAgentError> {
-        self.public_agent_identity(agent_id)?;
+        self.active_agent_identity(agent_id)?;
         self.agent_storage_read_only(agent_id)
             .map_err(PublicAgentError::Runtime)
     }
@@ -1439,19 +1439,19 @@ impl RuntimeHost {
             .map(|entry| entry.runtime.clone())
     }
 
-    pub(crate) async fn try_get_public_loaded_runtime(
+    pub(crate) async fn try_get_operator_loaded_runtime(
         &self,
         agent_id: &str,
     ) -> std::result::Result<Option<RuntimeHandle>, PublicAgentError> {
-        self.public_agent_identity(agent_id)?;
+        self.active_agent_identity(agent_id)?;
         Ok(self.try_get_loaded_runtime(agent_id).await)
     }
 
-    pub(crate) async fn public_agent_skills_view(
+    pub(crate) async fn operator_agent_skills_view(
         &self,
         agent_id: &str,
     ) -> std::result::Result<crate::types::SkillsRuntimeView, PublicAgentError> {
-        let identity = self.public_agent_identity(agent_id)?;
+        let identity = self.active_agent_identity(agent_id)?;
         let identity_view =
             AgentIdentityView::from_record(&identity, &self.config().default_agent_id);
         let storage = self
@@ -1713,7 +1713,7 @@ impl RuntimeHost {
                 last_delivered_at: record.last_delivered_at,
             })
             .collect();
-        let skills = self.public_agent_skills_view(agent_id).await?;
+        let skills = self.operator_agent_skills_view(agent_id).await?;
         let loaded_agents_md = LoadedAgentsMdView::default();
         let summary = AgentSummary {
             identity: identity_view,
@@ -1753,6 +1753,22 @@ impl RuntimeHost {
         agent_id: &str,
     ) -> std::result::Result<RuntimeHandle, PublicAgentError> {
         self.public_agent_identity(agent_id)?;
+        let runtime = self
+            .activate_agent(agent_id, RuntimeActivationReason::OperatorControl)
+            .await
+            .map_err(Self::public_activation_error)?;
+        runtime
+            .wait_for_bootstrap()
+            .await
+            .map_err(PublicAgentError::Runtime)?;
+        Ok(runtime)
+    }
+
+    pub async fn get_operator_agent(
+        &self,
+        agent_id: &str,
+    ) -> std::result::Result<RuntimeHandle, PublicAgentError> {
+        self.active_agent_identity(agent_id)?;
         let runtime = self
             .activate_agent(agent_id, RuntimeActivationReason::OperatorControl)
             .await
@@ -1864,23 +1880,53 @@ impl RuntimeHost {
                 agent_id: agent_id.to_string(),
             });
         }
+        self.agent_detail_from_identity(identity)
+            .map_err(PublicAgentError::Runtime)
+    }
+
+    pub fn operator_agent_detail(
+        &self,
+        agent_id: &str,
+    ) -> std::result::Result<AgentDetail, PublicAgentError> {
+        self.validate_agent_id(agent_id)
+            .map_err(PublicAgentError::Runtime)?;
+        let identity = self
+            .agent_identity_record(agent_id)
+            .map_err(PublicAgentError::Runtime)?
+            .ok_or_else(|| PublicAgentError::NotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        self.agent_detail_from_identity(identity)
+            .map_err(PublicAgentError::Runtime)
+    }
+
+    fn agent_detail_from_identity(&self, identity: AgentIdentityRecord) -> Result<AgentDetail> {
         let deletion = self
             .runtime_db()
             .agent_deletions()
-            .latest_for_agent(agent_id)
-            .map_err(PublicAgentError::Runtime)?;
+            .latest_for_agent(&identity.agent_id)?;
         let bootstrap = self
             .runtime_db()
             .agent_bootstraps()
-            .latest(agent_id)
-            .map_err(PublicAgentError::Runtime)?
+            .latest(&identity.agent_id)?
             .map(|record| record.summary());
+        let canonical_relations = self
+            .runtime_db()
+            .agent_canonical_relations()
+            .latest(&identity.agent_id)?
+            .ok_or_else(|| anyhow!("missing canonical relations for {}", identity.agent_id))?;
+        let lineage_children = self
+            .runtime_db()
+            .agent_canonical_relations()
+            .lineage_children(&identity.agent_id)?;
         Ok(AgentDetail {
             display_name: identity.display_name(),
             name: identity.name.clone(),
             created_at: identity.created_at,
             updated_at: identity.updated_at,
             identity: AgentIdentityView::from_record(&identity, &self.config().default_agent_id),
+            canonical_relations,
+            lineage_children,
             bootstrap,
             deletion,
         })
@@ -1945,35 +1991,17 @@ impl RuntimeHost {
             .registry
             .cache_agent_identity(&identity)
             .map_err(PublicAgentError::Runtime)?;
-        let deletion = self
-            .runtime_db()
-            .agent_deletions()
-            .latest_for_agent(agent_id)
-            .map_err(PublicAgentError::Runtime)?;
-        let bootstrap = self
-            .runtime_db()
-            .agent_bootstraps()
-            .latest(agent_id)
-            .map_err(PublicAgentError::Runtime)?
-            .map(|record| record.summary());
-        Ok(AgentDetail {
-            display_name: identity.display_name(),
-            name: identity.name.clone(),
-            created_at: identity.created_at,
-            updated_at: identity.updated_at,
-            identity: AgentIdentityView::from_record(&identity, &self.config().default_agent_id),
-            bootstrap,
-            deletion,
-        })
+        self.agent_detail_from_identity(identity)
+            .map_err(PublicAgentError::Runtime)
     }
 
-    pub(crate) async fn public_agent_state_projection(
+    pub(crate) async fn operator_agent_state_projection(
         &self,
         agent_id: &str,
         task_limit: usize,
         timer_limit: usize,
     ) -> std::result::Result<AgentStateReadProjection, PublicAgentError> {
-        let identity = self.public_agent_identity(agent_id)?;
+        let identity = self.active_agent_identity(agent_id)?;
         let runtime = {
             let registry = self.inner.runtimes.read().await;
             registry
@@ -2976,6 +3004,98 @@ impl RuntimeHost {
         }
         entries.sort_by(|left, right| left.identity.agent_id.cmp(&right.identity.agent_id));
         Ok(entries)
+    }
+
+    pub async fn operator_agent_tree(&self) -> Result<AgentTreeProjection> {
+        self.ensure_default_agent_identity()?;
+        let identities = self
+            .agent_identity_records()?
+            .into_iter()
+            .filter(|identity| identity.status == AgentRegistryStatus::Active)
+            .collect::<Vec<_>>();
+        let active_agent_ids = identities
+            .iter()
+            .map(|identity| identity.agent_id.clone())
+            .collect::<HashSet<_>>();
+        let mut nodes = HashMap::new();
+        let mut children_by_parent = HashMap::<String, Vec<String>>::new();
+        let mut root_ids = Vec::new();
+
+        for identity in identities {
+            let runtime = {
+                let registry = self.inner.runtimes.read().await;
+                registry
+                    .agents
+                    .get(&identity.agent_id)
+                    .filter(|entry| !entry.task.is_finished())
+                    .map(|entry| entry.runtime.clone())
+            };
+            let agent = if let Some(runtime) = runtime {
+                runtime.agent_list_entry().await?
+            } else {
+                self.agent_list_entry_from_storage(&identity)?
+            };
+            let canonical_relations = self
+                .runtime_db()
+                .agent_canonical_relations()
+                .latest(&identity.agent_id)?
+                .ok_or_else(|| {
+                    anyhow!(
+                        "missing canonical relations for active agent {}",
+                        identity.agent_id
+                    )
+                })?;
+            let parent_agent_id = canonical_relations
+                .lineage
+                .as_ref()
+                .map(|lineage| lineage.parent_agent_id.clone())
+                .filter(|parent_agent_id| active_agent_ids.contains(parent_agent_id));
+            if let Some(parent_agent_id) = parent_agent_id {
+                children_by_parent
+                    .entry(parent_agent_id)
+                    .or_default()
+                    .push(identity.agent_id.clone());
+            } else {
+                root_ids.push(identity.agent_id.clone());
+            }
+            nodes.insert(
+                identity.agent_id,
+                AgentTreeNode {
+                    agent,
+                    canonical_relations,
+                    children: Vec::new(),
+                },
+            );
+        }
+
+        root_ids.sort();
+        for child_ids in children_by_parent.values_mut() {
+            child_ids.sort();
+        }
+        let mut roots = Vec::new();
+        for root_id in root_ids {
+            if let Some(root) = build_agent_tree_node(
+                &root_id,
+                &mut nodes,
+                &children_by_parent,
+                &mut HashSet::new(),
+            ) {
+                roots.push(root);
+            }
+        }
+        let mut remaining_ids = nodes.keys().cloned().collect::<Vec<_>>();
+        remaining_ids.sort();
+        for agent_id in remaining_ids {
+            if let Some(root) = build_agent_tree_node(
+                &agent_id,
+                &mut nodes,
+                &children_by_parent,
+                &mut HashSet::new(),
+            ) {
+                roots.push(root);
+            }
+        }
+        Ok(AgentTreeProjection { roots })
     }
 
     fn agent_list_entry_from_storage(
@@ -4330,6 +4450,29 @@ impl RuntimeHost {
     }
 }
 
+fn build_agent_tree_node(
+    agent_id: &str,
+    nodes: &mut HashMap<String, AgentTreeNode>,
+    children_by_parent: &HashMap<String, Vec<String>>,
+    visiting: &mut HashSet<String>,
+) -> Option<AgentTreeNode> {
+    if !visiting.insert(agent_id.to_string()) {
+        return None;
+    }
+    let mut node = nodes.remove(agent_id)?;
+    if let Some(child_ids) = children_by_parent.get(agent_id) {
+        for child_id in child_ids {
+            if let Some(child) =
+                build_agent_tree_node(child_id, nodes, children_by_parent, visiting)
+            {
+                node.children.push(child);
+            }
+        }
+    }
+    visiting.remove(agent_id);
+    Some(node)
+}
+
 impl RuntimeHostBridge {
     fn host(&self) -> Result<RuntimeHost> {
         let inner = self
@@ -5263,7 +5406,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unloaded_public_agent_state_projection_reads_storage_without_starting_runtime() {
+    async fn unloaded_operator_agent_state_projection_reads_storage_without_starting_runtime() {
         let (_home, host) = test_host();
         let agent_id = host.config().default_agent_id.clone();
         let mut state = AgentState::new(&agent_id);
@@ -5277,7 +5420,7 @@ mod tests {
             .exists());
 
         let projection = host
-            .public_agent_state_projection(&agent_id, 10, 10)
+            .operator_agent_state_projection(&agent_id, 10, 10)
             .await
             .unwrap();
 
@@ -5291,13 +5434,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn loaded_public_agent_state_projection_prefers_runtime() {
+    async fn loaded_operator_agent_state_projection_prefers_runtime() {
         let (_home, host) = test_host();
         let agent_id = host.config().default_agent_id.clone();
         host.default_runtime().await.unwrap();
 
         let projection = host
-            .public_agent_state_projection(&agent_id, 10, 10)
+            .operator_agent_state_projection(&agent_id, 10, 10)
             .await
             .unwrap();
 
@@ -5715,6 +5858,150 @@ mod tests {
         assert_eq!(
             summary.identity.lineage_parent_agent_id.as_deref(),
             Some(host.config().default_agent_id.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn operator_agent_tree_nests_supervised_child_and_allows_detail_navigation() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        let parent_agent_id = host.config().default_agent_id.clone();
+
+        let spawned = parent
+            .spawn_agent(
+                Some("tree navigation work".into()),
+                AuthorityClass::OperatorInstruction,
+                AgentProfilePreset::PrivateChild,
+                None,
+                false,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let child_agent_id = spawned.agent_id.clone();
+        assert!(spawned.supervision_task_id.is_some());
+
+        let tree = host.operator_agent_tree().await.unwrap();
+        assert_eq!(
+            tree.roots.len(),
+            1,
+            "only the default agent should root the operator tree"
+        );
+        let root = &tree.roots[0];
+        assert_eq!(root.agent.identity.agent_id, parent_agent_id);
+        assert_eq!(root.children.len(), 1);
+        let child = &root.children[0];
+        assert_eq!(child.agent.identity.agent_id, child_agent_id);
+        assert_eq!(
+            child
+                .canonical_relations
+                .lineage
+                .as_ref()
+                .expect("child lineage")
+                .parent_agent_id,
+            parent_agent_id
+        );
+        assert!(
+            child.canonical_relations.supervision.is_some(),
+            "private child keeps its supervision attachment in the tree"
+        );
+        assert!(child.children.is_empty());
+        assert_eq!(
+            tree.into_agent_entries()
+                .iter()
+                .filter(|entry| entry.identity.agent_id == child_agent_id)
+                .count(),
+            1,
+            "each active child appears exactly once in the operator tree"
+        );
+
+        // The operator can open the private child directly even though peers cannot enumerate it.
+        let child_detail = host.operator_agent_detail(&child_agent_id).unwrap();
+        assert_eq!(
+            child_detail
+                .canonical_relations
+                .lineage
+                .as_ref()
+                .unwrap()
+                .parent_agent_id,
+            parent_agent_id
+        );
+        let parent_detail = host.operator_agent_detail(&parent_agent_id).unwrap();
+        assert!(parent_detail
+            .lineage_children
+            .iter()
+            .any(|record| record.child_agent_id == child_agent_id));
+    }
+
+    #[tokio::test]
+    async fn operator_agent_tree_keeps_unsupervised_public_named_lineage() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        let parent_agent_id = host.config().default_agent_id.clone();
+
+        host.spawn_public_named_agent(
+            parent,
+            "release-bot",
+            Some("coordinate release work".into()),
+            AuthorityClass::OperatorInstruction,
+            None,
+            inherited_model_resolution("anthropic", "claude-sonnet-4-6"),
+        )
+        .await
+        .unwrap();
+
+        let tree = host.operator_agent_tree().await.unwrap();
+        assert_eq!(tree.roots.len(), 1);
+        let root = &tree.roots[0];
+        assert_eq!(root.agent.identity.agent_id, parent_agent_id);
+        let child = root
+            .children
+            .iter()
+            .find(|node| node.agent.identity.agent_id == "release-bot")
+            .expect("detached public named agent should stay nested under its lineage parent");
+        assert!(
+            child.canonical_relations.supervision.is_none(),
+            "public named agents keep lineage without a supervision attachment"
+        );
+    }
+
+    #[tokio::test]
+    async fn operator_agent_tree_hides_deleted_agent_but_keeps_history() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        host.spawn_public_named_agent(
+            parent,
+            "gone-bot",
+            Some("temporary work".into()),
+            AuthorityClass::OperatorInstruction,
+            None,
+            inherited_model_resolution("anthropic", "claude-sonnet-4-6"),
+        )
+        .await
+        .unwrap();
+
+        let (_, job, _) = host
+            .begin_public_agent_deletion("gone-bot", false, "operator")
+            .await
+            .unwrap();
+        host.execute_deletion_job(job).await.unwrap();
+
+        let tree = host.operator_agent_tree().await.unwrap();
+        assert!(
+            !tree
+                .into_agent_entries()
+                .iter()
+                .any(|entry| entry.identity.agent_id == "gone-bot"),
+            "deleted identities must be hidden from the operator tree"
+        );
+        assert!(
+            host.runtime_db()
+                .agent_canonical_relations()
+                .latest("gone-bot")
+                .unwrap()
+                .is_some(),
+            "canonical relation history must remain queryable after deletion"
         );
     }
 
@@ -8210,7 +8497,7 @@ mod tests {
         let agent_id = host.config().default_agent_id.clone();
 
         let _storage = host
-            .public_agent_read_storage(&agent_id)
+            .operator_agent_read_storage(&agent_id)
             .expect("read storage");
         assert!(host.inner.runtimes.read().await.agents.is_empty());
 

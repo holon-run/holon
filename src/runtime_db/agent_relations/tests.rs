@@ -335,6 +335,72 @@ fn repository_round_trips_mixed_canonical_and_legacy_axes() -> Result<()> {
 }
 
 #[test]
+fn lineage_children_merges_canonical_and_legacy_records() -> Result<()> {
+    let temp_dir = tempdir()?;
+    let db_path = temp_dir.path().join("state/runtime.sqlite");
+    let lock_path = temp_dir.path().join("state/runtime.lock");
+    let db = crate::runtime_db::RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+    let parent = identity(
+        "parent",
+        AgentKind::Named,
+        AgentVisibility::Public,
+        AgentOwnership::SelfOwned,
+        AgentProfilePreset::PublicNamed,
+        None,
+        None,
+    );
+    let canonical_child = identity(
+        "canonical-child",
+        AgentKind::Named,
+        AgentVisibility::Public,
+        AgentOwnership::SelfOwned,
+        AgentProfilePreset::PublicNamed,
+        None,
+        None,
+    );
+    let legacy_child = identity(
+        "legacy-child",
+        AgentKind::Child,
+        AgentVisibility::Private,
+        AgentOwnership::ParentSupervised,
+        AgentProfilePreset::PrivateChild,
+        Some("parent"),
+        Some("task-legacy"),
+    );
+    for record in [&parent, &canonical_child, &legacy_child] {
+        db.agent_identities().upsert(record)?;
+    }
+    let repository = db.agent_canonical_relations();
+    repository.upsert_lineage(&AgentLineageRecord {
+        child_agent_id: "canonical-child".into(),
+        parent_agent_id: "parent".into(),
+        creation_cause: AgentLineageCreationCause::Migration,
+        revision: 1,
+        created_at: canonical_child.created_at,
+    })?;
+
+    let children = repository.lineage_children("parent")?;
+    assert_eq!(
+        children
+            .iter()
+            .map(|record| record.child_agent_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["canonical-child", "legacy-child"],
+        "canonical rows win over the legacy identity fallback and results stay sorted"
+    );
+    assert_eq!(children[1].parent_agent_id, "parent");
+    assert_eq!(
+        children[1].creation_cause,
+        AgentLineageCreationCause::LegacySpawn
+    );
+    assert!(
+        repository.lineage_children("other")?.is_empty(),
+        "children of an unrelated parent must not be returned"
+    );
+    Ok(())
+}
+
+#[test]
 fn repository_rejects_two_active_supervisors_for_one_child() -> Result<()> {
     let temp_dir = tempdir()?;
     let db_path = temp_dir.path().join("state/runtime.sqlite");

@@ -11,7 +11,7 @@ pub async fn list_skills(
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let skills = state
         .host
-        .public_agent_skills_view(&agent_id)
+        .operator_agent_skills_view(&agent_id)
         .await
         .map_err(agent_access_error)?;
     Ok(Json(json!({
@@ -30,7 +30,7 @@ pub async fn install_skill(
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
         .host
-        .get_public_agent(&agent_id)
+        .get_operator_agent(&agent_id)
         .await
         .map_err(agent_access_error)?;
     let agent_home = runtime.agent_home();
@@ -178,7 +178,7 @@ pub async fn enable_skill(
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
         .host
-        .get_public_agent(&agent_id)
+        .get_operator_agent(&agent_id)
         .await
         .map_err(agent_access_error)?;
     let agent_home = runtime.agent_home();
@@ -216,7 +216,7 @@ pub async fn uninstall_skill(
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
         .host
-        .get_public_agent(&agent_id)
+        .get_operator_agent(&agent_id)
         .await
         .map_err(agent_access_error)?;
     let agent_home = runtime.agent_home();
@@ -247,7 +247,7 @@ pub async fn disable_skill(
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
         .host
-        .get_public_agent(&agent_id)
+        .get_operator_agent(&agent_id)
         .await
         .map_err(agent_access_error)?;
     let agent_home = runtime.agent_home();
@@ -390,7 +390,7 @@ async fn agent_scoped_skill_detail(
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let skills = state
         .host
-        .public_agent_skills_view(agent_id)
+        .operator_agent_skills_view(agent_id)
         .await
         .map_err(agent_access_error)?;
     let Some(skill) = skills

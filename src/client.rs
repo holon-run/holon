@@ -25,10 +25,11 @@ use crate::{
     runtime_error::{RuntimeErrorContext, RuntimeErrorDomain},
     system::ExecutionSnapshot,
     types::{
-        AgentListEntry, AgentSummary, AuthorityClass, BriefRecord, ExternalTriggerStateSnapshot,
-        MessageEnvelope, OperatorNotificationRecord, ResolvedModelAvailability, TaskInputResult,
-        TaskOutputResult, TaskRecord, TaskStatusSnapshot, TaskStopResult, TimerRecord,
-        ToolExecutionRecord, TranscriptEntry, TurnTerminalRecord, WorkItemRecord,
+        AgentDetail, AgentListEntry, AgentSummary, AgentTreeProjection, AuthorityClass,
+        BriefRecord, ExternalTriggerStateSnapshot, MessageEnvelope, OperatorNotificationRecord,
+        ResolvedModelAvailability, TaskInputResult, TaskOutputResult, TaskRecord,
+        TaskStatusSnapshot, TaskStopResult, TimerRecord, ToolExecutionRecord, TranscriptEntry,
+        TurnTerminalRecord, WorkItemRecord,
     },
     work_item_scheduling::WorkItemSchedulingProjection,
 };
@@ -405,6 +406,15 @@ impl LocalClient {
         self.get_json("/agents/list").await
     }
 
+    pub async fn operator_agent_tree(&self) -> Result<AgentTreeProjection> {
+        self.get_json("/control/agents/tree").await
+    }
+
+    pub async fn agent_detail(&self, agent_id: &str) -> Result<AgentDetail> {
+        self.get_json(&format!("/control/agents/{agent_id}/detail"))
+            .await
+    }
+
     pub async fn fetch_models(&self) -> Result<ModelsResponse> {
         self.get_json("/models").await
     }
@@ -741,7 +751,7 @@ impl LocalClient {
         .await
     }
 
-    pub async fn repair_agent(&self, agent_id: &str) -> Result<crate::types::AgentDetail> {
+    pub async fn repair_agent(&self, agent_id: &str) -> Result<AgentDetail> {
         self.post_control_json(
             &format!("/control/agents/{agent_id}/repair"),
             &serde_json::json!({}),

@@ -187,8 +187,9 @@ impl TuiApp {
         let tx = self.runtime_tx.clone();
         tokio::spawn(async move {
             let result = client
-                .list_agent_entries()
+                .operator_agent_tree()
                 .await
+                .map(crate::types::AgentTreeProjection::into_agent_entries)
                 .map_err(|err| err.to_string());
             let _ = tx.send(TuiRuntimeMessage::AgentListLoaded(result));
         });

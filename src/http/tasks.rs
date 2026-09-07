@@ -17,7 +17,7 @@ pub async fn tasks(
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let storage = state
         .host
-        .public_agent_read_storage(&agent_id)
+        .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
     Ok(Json(
         storage
@@ -34,7 +34,7 @@ pub async fn task_status(
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let storage = state
         .host
-        .public_agent_read_storage(&agent_id)
+        .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
     let Some(task) = storage
         .latest_task_record(&task_id)
@@ -45,7 +45,7 @@ pub async fn task_status(
     };
     let snapshot = match state
         .host
-        .try_get_public_loaded_runtime(&agent_id)
+        .try_get_operator_loaded_runtime(&agent_id)
         .await
         .map_err(agent_access_error)?
     {
@@ -68,7 +68,7 @@ pub async fn task_output(
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let storage = state
         .host
-        .public_agent_read_storage(&agent_id)
+        .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
     if !storage
         .latest_task_record(&task_id)
@@ -79,7 +79,7 @@ pub async fn task_output(
     }
     let runtime = state
         .host
-        .try_get_public_loaded_runtime(&agent_id)
+        .try_get_operator_loaded_runtime(&agent_id)
         .await
         .map_err(agent_access_error)?
         .ok_or_else(|| {
@@ -113,7 +113,7 @@ pub async fn tool_execution(
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let storage = state
         .host
-        .public_agent_read_storage(&agent_id)
+        .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
     let Some(record) = storage
         .read_tool_execution_by_id(&tool_execution_id)
@@ -135,7 +135,7 @@ pub async fn tool_execution_artifact(
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let storage = state
         .host
-        .public_agent_read_storage(&agent_id)
+        .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
     let Some(record) = storage
         .read_tool_execution_by_id(&tool_execution_id)
@@ -207,7 +207,7 @@ pub async fn task_input(
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
         .host
-        .get_public_agent(&agent_id)
+        .get_operator_agent(&agent_id)
         .await
         .map_err(agent_access_error)?;
     if !runtime
@@ -239,7 +239,7 @@ pub async fn task_stop(
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
         .host
-        .get_public_agent(&agent_id)
+        .get_operator_agent(&agent_id)
         .await
         .map_err(agent_access_error)?;
     if !runtime
@@ -294,7 +294,7 @@ pub async fn create_command_task(
         .unwrap_or(AuthorityClass::OperatorInstruction);
     let runtime = state
         .host
-        .get_public_agent(&agent_id)
+        .get_operator_agent(&agent_id)
         .await
         .map_err(agent_access_error)?;
     let boundary = current_boundary_metadata(&runtime)
@@ -384,7 +384,7 @@ pub async fn pick_work_item(
     validate_invocation_context(request.invocation_context.as_ref(), provided_trust)?;
     let runtime = state
         .host
-        .get_public_agent(&agent_id)
+        .get_operator_agent(&agent_id)
         .await
         .map_err(agent_access_error)?;
     let boundary = current_boundary_metadata(&runtime)
@@ -465,7 +465,7 @@ pub async fn update_work_item(
     }
     let runtime = state
         .host
-        .get_public_agent(&agent_id)
+        .get_operator_agent(&agent_id)
         .await
         .map_err(agent_access_error)?;
     let boundary = current_boundary_metadata(&runtime)
@@ -514,7 +514,7 @@ pub async fn complete_work_item(
     validate_invocation_context(request.invocation_context.as_ref(), provided_trust)?;
     let runtime = state
         .host
-        .get_public_agent(&agent_id)
+        .get_operator_agent(&agent_id)
         .await
         .map_err(agent_access_error)?;
     let boundary = current_boundary_metadata(&runtime)
@@ -587,7 +587,7 @@ pub async fn work_items(
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let storage = state
         .host
-        .public_agent_read_storage(&agent_id)
+        .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
     let work_items = storage
         .work_queue_read_model()
@@ -607,7 +607,7 @@ pub async fn work_item(
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let storage = state
         .host
-        .public_agent_read_storage(&agent_id)
+        .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
     let Some(work_item) = storage
         .work_queue_read_model()
@@ -637,7 +637,7 @@ pub async fn timers(
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let storage = state
         .host
-        .public_agent_read_storage(&agent_id)
+        .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
     Ok(Json(
         storage
@@ -654,7 +654,7 @@ pub async fn timer(
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let storage = state
         .host
-        .public_agent_read_storage(&agent_id)
+        .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
     let Some(timer) = storage
         .latest_timer_record(&timer_id)
@@ -681,7 +681,7 @@ pub async fn create_timer(
     let provided_trust = request.authority_class;
     let runtime = state
         .host
-        .get_public_agent(&agent_id)
+        .get_operator_agent(&agent_id)
         .await
         .map_err(agent_access_error)?;
     let boundary = current_boundary_metadata(&runtime)
@@ -717,7 +717,7 @@ pub async fn cancel_timer(
     let provided_trust = request.authority_class;
     let runtime = state
         .host
-        .get_public_agent(&agent_id)
+        .get_operator_agent(&agent_id)
         .await
         .map_err(agent_access_error)?;
     let boundary = current_boundary_metadata(&runtime)

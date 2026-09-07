@@ -11,13 +11,11 @@ pub async fn events(
         .unwrap_or(DEFAULT_EVENT_STREAM_WINDOW)
         .clamp(1, MAX_EVENT_STREAM_WINDOW);
     let order = query.order.unwrap_or(EventPageOrder::Desc);
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let storage = state
         .host
-        .public_agent_read_storage(&agent_id)
+        .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
-    if state.require_control_token {
-        authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    }
     let emit_projection_effect = projection_effect_emission_enabled(&state);
     let cursor_seq = storage.latest_event_seq().map_err(error_response)?;
     let event_log_epoch = storage.event_log_epoch().map_err(error_response)?;
@@ -71,13 +69,11 @@ pub async fn message(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let storage = state
         .host
-        .public_agent_read_storage(&agent_id)
+        .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
-    if state.require_control_token {
-        authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    }
     let Some(message) = storage
         .read_message_by_id(&message_id)
         .map_err(error_response)?
@@ -96,13 +92,11 @@ pub async fn messages_batch_get(
     headers: HeaderMap,
     Json(request): Json<BatchGetMessagesRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let storage = state
         .host
-        .public_agent_read_storage(&agent_id)
+        .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
-    if state.require_control_token {
-        authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    }
     let mut messages = Vec::new();
     let mut missing_message_ids = Vec::new();
     for message_id in request.message_ids {
@@ -131,13 +125,11 @@ pub async fn events_stream(
         .unwrap_or(DEFAULT_EVENT_STREAM_WINDOW)
         .clamp(1, MAX_EVENT_STREAM_WINDOW);
     let after_seq = query.after_seq;
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let storage = state
         .host
-        .public_agent_read_storage(&agent_id)
+        .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
-    if state.require_control_token {
-        authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    }
     let mut live_rx = state.host.subscribe_events();
     let event_log_epoch = storage.event_log_epoch().map_err(error_response)?;
     // Capability advertisement is captured once at stream open and applies

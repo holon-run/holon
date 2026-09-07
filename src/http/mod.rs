@@ -475,6 +475,7 @@ pub fn router(state: AppState) -> Router {
             "/control/agents/{agent_id}/create",
             post(control::create_agent),
         )
+        .route("/control/agents/tree", get(control::agent_tree))
         .route(
             "/control/agents/{agent_id}/detail",
             get(control::agent_detail),
@@ -1513,10 +1514,11 @@ mod tests {
         session_credential, AppState, ProjectionGate, ProjectionGateError,
     };
     use crate::{
-        config::AppConfig,
+        config::{AppConfig, ControlAuthMode},
         host::RuntimeHost,
         provider::StubProvider,
         runtime_error::{RuntimeError, RuntimeErrorDomain},
+        types::{AgentListEntry, AgentProfilePreset, AgentTreeProjection, AuthorityClass},
     };
     use axum::{
         body::{to_bytes, Body},
@@ -1557,6 +1559,21 @@ mod tests {
         )
         .unwrap();
         let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        let host =
+            RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
+        (home, host)
+    }
+
+    fn control_token_test_host() -> (tempfile::TempDir, RuntimeHost) {
+        let home = tempdir().unwrap();
+        fs::write(
+            home.path().join("config.json"),
+            r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+        )
+        .unwrap();
+        let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        config.control_token = Some("secret".into());
+        config.control_auth_mode = ControlAuthMode::Required;
         let host =
             RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
         (home, host)
@@ -1806,6 +1823,148 @@ mod tests {
                     .unwrap();
             assert_eq!(body["code"], "auth_required", "{uri}");
         }
+    }
+
+    #[tokio::test]
+    async fn operator_agent_tree_requires_auth_and_does_not_expand_public_roster() {
+        let (_home, host) = control_token_test_host();
+        let parent = host.default_runtime().await.unwrap();
+        let spawned = parent
+            .spawn_agent(
+                Some("private tree navigation".into()),
+                AuthorityClass::OperatorInstruction,
+                AgentProfilePreset::PrivateChild,
+                None,
+                false,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let child_agent_id = spawned.agent_id;
+        let app = router(AppState::for_tcp(host));
+
+        for uri in [
+            format!("/api/control/agents/{child_agent_id}/detail"),
+            "/api/control/agents/unknown-agent/detail".to_string(),
+            format!("/api/agents/{child_agent_id}/events"),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri(uri)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            let body: serde_json::Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                    .unwrap();
+            assert_eq!(body["code"], "auth_required");
+        }
+
+        let authorized = |uri: &str| {
+            Request::builder()
+                .method("GET")
+                .uri(uri)
+                .header(header::AUTHORIZATION, "Bearer secret")
+                .body(Body::empty())
+                .unwrap()
+        };
+        let detail_response = app
+            .clone()
+            .oneshot(authorized(&format!(
+                "/api/control/agents/{child_agent_id}/detail"
+            )))
+            .await
+            .unwrap();
+        assert_eq!(detail_response.status(), StatusCode::OK);
+
+        let tree_response = app
+            .clone()
+            .oneshot(authorized("/api/control/agents/tree"))
+            .await
+            .unwrap();
+        assert_eq!(tree_response.status(), StatusCode::OK);
+        let tree: AgentTreeProjection = serde_json::from_slice(
+            &to_bytes(tree_response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            tree.into_agent_entries()
+                .iter()
+                .filter(|entry| entry.identity.agent_id == child_agent_id)
+                .count(),
+            1
+        );
+
+        let roster_response = app.oneshot(authorized("/api/agents/list")).await.unwrap();
+        assert_eq!(roster_response.status(), StatusCode::OK);
+        let roster: Vec<AgentListEntry> = serde_json::from_slice(
+            &to_bytes(roster_response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            roster
+                .iter()
+                .all(|entry| entry.identity.agent_id != child_agent_id),
+            "operator tree visibility must not expand the public roster"
+        );
+    }
+
+    #[tokio::test]
+    async fn oidc_event_reads_require_session_before_private_child_lookup() {
+        let (_home, host, session_secret) = oidc_test_host_with_session();
+        let parent = host.default_runtime().await.unwrap();
+        let child_agent_id = parent
+            .spawn_agent(
+                Some("private event navigation".into()),
+                AuthorityClass::OperatorInstruction,
+                AgentProfilePreset::PrivateChild,
+                None,
+                false,
+                None,
+                None,
+            )
+            .await
+            .unwrap()
+            .agent_id;
+        let app = router(AppState::for_tcp(host));
+        let uri = format!("/api/agents/{child_agent_id}/events");
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(&uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(uri)
+                    .header(header::COOKIE, format!("holon_session={session_secret}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[test]

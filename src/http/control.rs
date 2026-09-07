@@ -78,7 +78,7 @@ pub async fn scheduler_repair_apply(
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
         .host
-        .get_public_agent(&agent_id)
+        .get_operator_agent(&agent_id)
         .await
         .map_err(agent_access_error)?;
     Ok(Json(
@@ -513,9 +513,23 @@ pub async fn agent_detail(
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let detail = state
         .host
-        .public_agent_detail(&agent_id)
+        .operator_agent_detail(&agent_id)
         .map_err(agent_access_error)?;
     Ok(Json(detail))
+}
+
+pub async fn agent_tree(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    Ok(Json(
+        state
+            .host
+            .operator_agent_tree()
+            .await
+            .map_err(error_response)?,
+    ))
 }
 
 pub async fn repair_agent(
@@ -645,7 +659,7 @@ pub async fn abort_current_run(
     let provided_trust = request.authority_class.clone();
     let runtime = state
         .host
-        .get_public_agent(&agent_id)
+        .get_operator_agent(&agent_id)
         .await
         .map_err(agent_access_error)?;
     let outcome = runtime
@@ -681,7 +695,7 @@ pub async fn attach_workspace(
         .map_err(error_response)?;
     let runtime = state
         .host
-        .get_public_agent(&agent_id)
+        .get_operator_agent(&agent_id)
         .await
         .map_err(agent_access_error)?;
     let boundary = current_boundary_metadata(&runtime)
@@ -722,7 +736,7 @@ pub async fn exit_workspace(
     let provided_trust = request.authority_class;
     let runtime = state
         .host
-        .get_public_agent(&agent_id)
+        .get_operator_agent(&agent_id)
         .await
         .map_err(agent_access_error)?;
     let boundary = current_boundary_metadata(&runtime)
@@ -758,7 +772,7 @@ pub async fn detach_workspace(
     let workspace_id = request.workspace_id.trim().to_string();
     let runtime = state
         .host
-        .get_public_agent(&agent_id)
+        .get_operator_agent(&agent_id)
         .await
         .map_err(agent_access_error)?;
     let boundary = current_boundary_metadata(&runtime)
@@ -798,7 +812,7 @@ pub async fn set_agent_model(
         .map_err(|error| bad_request(error.to_string()))?;
     let runtime = state
         .host
-        .get_public_agent(&agent_id)
+        .get_operator_agent(&agent_id)
         .await
         .map_err(agent_access_error)?;
     let model_state = runtime
@@ -821,7 +835,7 @@ pub async fn clear_agent_model(
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
         .host
-        .get_public_agent(&agent_id)
+        .get_operator_agent(&agent_id)
         .await
         .map_err(agent_access_error)?;
     let model_state = runtime
@@ -843,7 +857,7 @@ pub async fn reset_callback(
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
         .host
-        .get_public_agent(&agent_id)
+        .get_operator_agent(&agent_id)
         .await
         .map_err(agent_access_error)?;
     let capability = runtime
@@ -1272,7 +1286,7 @@ pub async fn create_operator_transport_binding(
     }
     let runtime = state
         .host
-        .get_public_agent(&agent_id)
+        .get_operator_agent(&agent_id)
         .await
         .map_err(agent_access_error)?;
     let delivery_auth = validate_operator_transport_delivery_auth(request.delivery_auth)?;

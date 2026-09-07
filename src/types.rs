@@ -129,7 +129,7 @@ impl WorkspaceEntry {
 
 /// Typed metadata for workspace projections, replacing untyped `serde_json::Value`.
 /// Uses `untagged` serde for backward compatibility with previously serialized JSON.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum WorkspaceProjectionMetadata {
     ManagedWorktree {
@@ -183,7 +183,7 @@ pub struct WorktreeInfo {
     pub original_cwd: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct ActiveWorkspaceEntry {
     pub workspace_id: String,
     pub workspace_anchor: PathBuf,
@@ -666,10 +666,44 @@ pub struct AgentDetail {
     pub display_name: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub canonical_relations: AgentCanonicalRelationsProjection,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lineage_children: Vec<AgentLineageRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bootstrap: Option<AgentBootstrapSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deletion: Option<AgentDeletionJob>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct AgentTreeNode {
+    pub agent: AgentListEntry,
+    pub canonical_relations: AgentCanonicalRelationsProjection,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<AgentTreeNode>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct AgentTreeProjection {
+    #[serde(default)]
+    pub roots: Vec<AgentTreeNode>,
+}
+
+impl AgentTreeProjection {
+    pub fn into_agent_entries(self) -> Vec<AgentListEntry> {
+        fn append(node: AgentTreeNode, entries: &mut Vec<AgentListEntry>) {
+            entries.push(node.agent);
+            for child in node.children {
+                append(child, entries);
+            }
+        }
+
+        let mut entries = Vec::new();
+        for root in self.roots {
+            append(root, &mut entries);
+        }
+        entries
+    }
 }
 
 pub fn normalize_agent_name(value: &str) -> anyhow::Result<String> {
@@ -5559,20 +5593,26 @@ pub struct AgentSummary {
     pub recent_event_count: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct AgentListModelSummary {
     pub source: AgentModelSource,
+    #[schemars(with = "String")]
     pub runtime_default_model: ModelRouteRef,
+    #[schemars(with = "String")]
     pub effective_model: ModelRouteRef,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<String>")]
     pub requested_model: Option<ModelRouteRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<String>")]
     pub active_model: Option<ModelRouteRef>,
     #[serde(default)]
     pub fallback_active: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(with = "Vec<String>")]
     pub effective_fallback_models: Vec<ModelRouteRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<String>")]
     pub override_model: Option<ModelRouteRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub override_reasoning_effort: Option<String>,
@@ -5611,7 +5651,7 @@ impl AgentListModelSummary {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct AgentListEntry {
     pub identity: AgentIdentityView,
     pub status: AgentStatus,

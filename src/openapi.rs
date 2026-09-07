@@ -134,6 +134,7 @@ const ROUTES: &[RouteSpec] = &[
     route_with_response("post", "/control/agents/{agent_id}/timers", "createTimer", "control", "Create timer", "Schedule a timer for an agent.", Some("CreateTimerRequest"), "TimerRecord", AuthKind::Control),
     route_with_response("post", "/control/agents/{agent_id}/timers/{timer_id}/cancel", "cancelTimer", "control", "Cancel timer", "Cancel an active timer. Cancellation is idempotent for already-cancelled timers; completed or missing timers return a shared error envelope.", Some("CancelTimerRequest"), "TimerRecord", AuthKind::Control),
     route("post", "/control/agents/{agent_id}/create", "createAgent", "control", "Create named agent", "Create a public named agent, optionally from a template.", Some("CreateAgentRequest"), AuthKind::Control),
+    route_with_response("get", "/control/agents/tree", "agentTree", "control", "Agent tree", "Return the authenticated operator Agent tree built from canonical lineage.", None, "AgentTreeProjection", AuthKind::Control),
     route_with_response("get", "/control/agents/{agent_id}/detail", "agentDetail", "control", "Agent detail", "Return the canonical Agent identity, lifecycle, profile, and deletion detail.", None, "AgentDetail", AuthKind::Control),
     route_with_response("post", "/control/agents/{agent_id}/repair", "repairAgent", "control", "Repair agent bootstrap", "Retry incomplete post-create bootstrap steps without recreating the agent.", None, "AgentDetail", AuthKind::Control),
     route_with_response("patch", "/control/agents/{agent_id}/name", "renameAgent", "control", "Rename agent", "Update the public display name without changing the technical agent identity or lifecycle target.", Some("RenameAgentRequest"), "AgentDetail", AuthKind::Control),
@@ -699,6 +700,10 @@ fn component_schemas() -> Value {
     schemas.insert(
         "AgentDetail".into(),
         component_schema::<crate::types::AgentDetail>(),
+    );
+    schemas.insert(
+        "AgentTreeProjection".into(),
+        component_schema::<crate::types::AgentTreeProjection>(),
     );
     schemas.insert(
         "PickWorkItemRequest".into(),

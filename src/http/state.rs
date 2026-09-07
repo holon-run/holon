@@ -248,7 +248,7 @@ async fn build_agent_state_projection(
 ) -> Result<Bytes, ProjectionFailure> {
     let projection = state
         .host
-        .public_agent_state_projection(agent_id, STATE_BOOTSTRAP_TASK_LIMIT, 50)
+        .operator_agent_state_projection(agent_id, STATE_BOOTSTRAP_TASK_LIMIT, 50)
         .await
         .map_err(agent_access_error)
         .map_err(ProjectionFailure::from)?;
@@ -1040,7 +1040,7 @@ pub async fn briefs(
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let storage = state
         .host
-        .public_agent_read_storage(&agent_id)
+        .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
     let briefs = storage
         .read_recent_briefs(query.limit.unwrap_or(20))
@@ -1056,7 +1056,7 @@ pub async fn brief(
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let storage = state
         .host
-        .public_agent_read_storage(&agent_id)
+        .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
     let Some(brief) = storage
         .read_brief_by_id(&brief_id)
@@ -1077,7 +1077,7 @@ pub async fn briefs_batch_get(
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let storage = state
         .host
-        .public_agent_read_storage(&agent_id)
+        .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
     let brief_ids = request
         .brief_ids
@@ -1145,7 +1145,7 @@ pub async fn transcript(
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let storage = state
         .host
-        .public_agent_read_storage(&agent_id)
+        .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
     let transcript = storage
         .read_recent_transcript(query.limit.unwrap_or(50))
@@ -1161,7 +1161,7 @@ pub async fn transcript_entry(
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let storage = state
         .host
-        .public_agent_read_storage(&agent_id)
+        .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
     let Some(entry) = storage
         .read_transcript_entry_by_id(&entry_id)
@@ -1182,7 +1182,7 @@ pub async fn transcript_batch_get(
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let storage = state
         .host
-        .public_agent_read_storage(&agent_id)
+        .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
     let mut entries = Vec::new();
     let mut missing_entry_ids = Vec::new();

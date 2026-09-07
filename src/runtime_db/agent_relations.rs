@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use anyhow::{Context, Result};
 use rusqlite::{params, OptionalExtension, Transaction};
 
@@ -76,6 +78,47 @@ impl AgentCanonicalRelationRepository<'_> {
     pub fn latest(&self, agent_id: &str) -> Result<Option<AgentCanonicalRelationsProjection>> {
         let connection = self.db.connection()?;
         canonical_relations_from_connection(&connection, agent_id)
+    }
+
+    pub fn lineage_children(&self, parent_agent_id: &str) -> Result<Vec<AgentLineageRecord>> {
+        let connection = self.db.connection()?;
+        let mut records = HashMap::new();
+        let mut statement = connection.prepare(
+            "SELECT child_agent_id, payload_json
+             FROM agent_lineages
+             WHERE parent_agent_id = ?1
+             ORDER BY child_agent_id ASC",
+        )?;
+        let rows = statement.query_map([parent_agent_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (child_agent_id, payload_json) = row?;
+            records.insert(
+                child_agent_id,
+                serde_json::from_str(&payload_json)
+                    .context("decoding canonical lineage child record")?,
+            );
+        }
+        let mut identity_statement = connection.prepare(
+            "SELECT payload_json
+             FROM agent_identities
+             ORDER BY agent_id ASC",
+        )?;
+        let identities = identity_statement.query_map([], |row| row.get::<_, String>(0))?;
+        for payload_json in identities {
+            let identity: AgentIdentityRecord = serde_json::from_str(&payload_json?)
+                .context("decoding agent identity for legacy lineage children")?;
+            let Some(lineage) = legacy_lineage(&identity, &mut Vec::new()) else {
+                continue;
+            };
+            if lineage.parent_agent_id == parent_agent_id {
+                records.entry(identity.agent_id).or_insert(lineage);
+            }
+        }
+        let mut records = records.into_values().collect::<Vec<_>>();
+        records.sort_by(|left, right| left.child_agent_id.cmp(&right.child_agent_id));
+        Ok(records)
     }
 }
 
