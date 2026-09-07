@@ -410,31 +410,33 @@ async fn refresh_ollama_models(
 
     let show_url = ollama_show_url(&provider.base_url)?;
     let mut models = Vec::new();
+    let mut show_failure_count = 0_usize;
+    let mut first_show_failure = None;
     for tagged in tags.models {
         let name = tagged.name.trim();
         if name.is_empty() {
             continue;
         }
-        let request = client
-            .post(&show_url)
-            .json(&OllamaShowRequest { model: name });
-        let request = if let Some(credential) = provider.credential.as_deref() {
-            request.bearer_auth(credential)
-        } else {
-            request
-        };
-        let raw = request
-            .send()
-            .await
-            .with_context(|| format!("Ollama show request failed for model {name:?}"))?
-            .error_for_status()
-            .with_context(|| format!("Ollama show returned an error status for model {name:?}"))?
-            .bytes()
-            .await
-            .with_context(|| format!("failed to read Ollama show response for model {name:?}"))?;
-        let show = serde_json::from_slice::<OllamaShowResponse>(&raw)
-            .with_context(|| format!("failed to parse Ollama show response for model {name:?}"))?;
-        models.push(show.into_model_metadata(&provider.id, name));
+        match fetch_ollama_model(&client, provider, &show_url, name).await {
+            Ok(model) => models.push(model),
+            Err(error) => {
+                show_failure_count += 1;
+                first_show_failure.get_or_insert_with(|| format!("{error:#}"));
+                tracing::warn!(
+                    provider = provider.id.as_str(),
+                    model = name,
+                    error = ?error,
+                    "skipping Ollama model whose show request failed"
+                );
+            }
+        }
+    }
+    if models.is_empty() && show_failure_count > 0 {
+        return Err(anyhow!(
+            "all {show_failure_count} Ollama model show requests failed for provider {}; first failure: {}",
+            provider.id.as_str(),
+            first_show_failure.as_deref().unwrap_or("unknown error")
+        ));
     }
     models.sort_by(|left, right| left.model_ref.model.cmp(&right.model_ref.model));
 
@@ -465,6 +467,34 @@ async fn refresh_ollama_models(
         model_count: models.len(),
         cache_path: cache_path.to_path_buf(),
     })
+}
+
+async fn fetch_ollama_model(
+    client: &reqwest::Client,
+    provider: &ProviderRuntimeConfig,
+    show_url: &str,
+    name: &str,
+) -> Result<BuiltInModelMetadata> {
+    let request = client
+        .post(show_url)
+        .json(&OllamaShowRequest { model: name });
+    let request = if let Some(credential) = provider.credential.as_deref() {
+        request.bearer_auth(credential)
+    } else {
+        request
+    };
+    let raw = request
+        .send()
+        .await
+        .with_context(|| format!("Ollama show request failed for model {name:?}"))?
+        .error_for_status()
+        .with_context(|| format!("Ollama show returned an error status for model {name:?}"))?
+        .bytes()
+        .await
+        .with_context(|| format!("failed to read Ollama show response for model {name:?}"))?;
+    let show = serde_json::from_slice::<OllamaShowResponse>(&raw)
+        .with_context(|| format!("failed to parse Ollama show response for model {name:?}"))?;
+    Ok(show.into_model_metadata(&provider.id, name))
 }
 
 #[derive(Debug, Deserialize)]
@@ -2783,5 +2813,139 @@ mod tests {
         assert!(model.capabilities.image_input);
         assert!(model.capabilities.supports_reasoning);
         assert!(!model.capabilities.parallel_tool_calls);
+    }
+
+    #[tokio::test]
+    async fn ollama_discovery_skips_failed_show_requests_and_caches_healthy_models() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let (mut tags_stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 2048];
+            let read = tags_stream.read(&mut request).unwrap();
+            assert!(String::from_utf8_lossy(&request[..read]).starts_with("GET /api/tags HTTP/1.1"));
+            let body = r#"{"models":[
+                {"name":"healthy:latest"},
+                {"name":"bad-status:latest"},
+                {"name":"bad-json:latest"}
+            ]}"#;
+            write!(
+                tags_stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+
+            for (expected_model, status, body) in [
+                ("bad-json:latest", "200 OK", "{"),
+                (
+                    "bad-status:latest",
+                    "500 Internal Server Error",
+                    r#"{"error":"invalid file magic"}"#,
+                ),
+                (
+                    "healthy:latest",
+                    "200 OK",
+                    r#"{"capabilities":["tools"],"model_info":{"test.context_length":32768}}"#,
+                ),
+            ] {
+                let (mut show_stream, _) = listener.accept().unwrap();
+                let mut request = [0_u8; 4096];
+                let read = show_stream.read(&mut request).unwrap();
+                let request = String::from_utf8_lossy(&request[..read]);
+                assert!(request.starts_with("POST /api/show HTTP/1.1"));
+                assert!(request.contains(&format!(r#""model":"{expected_model}""#)));
+                write!(
+                    show_stream,
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .unwrap();
+            }
+        });
+
+        let provider = ollama_provider(base_url);
+        let cache_dir = tempfile::tempdir().unwrap();
+        let cache_path = cache_dir.path().join("model-discovery-cache.json");
+        let report = refresh_provider_models(&provider, &cache_path)
+            .await
+            .unwrap();
+        server.join().unwrap();
+
+        assert_eq!(report.model_count, 1);
+        let cache = load_discovery_cache_at(&cache_path).unwrap();
+        let entry = cache.providers.get(&provider.id).unwrap();
+        assert_eq!(entry.models.len(), 1);
+        assert_eq!(entry.models[0].model_ref.model, "healthy:latest");
+    }
+
+    #[tokio::test]
+    async fn ollama_discovery_preserves_cache_when_all_show_requests_fail() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let (mut tags_stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 2048];
+            let read = tags_stream.read(&mut request).unwrap();
+            assert!(String::from_utf8_lossy(&request[..read]).starts_with("GET /api/tags HTTP/1.1"));
+            let body = r#"{"models":[{"name":"broken:latest"}]}"#;
+            write!(
+                tags_stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+
+            let (mut show_stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            let read = show_stream.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..read]);
+            assert!(request.starts_with("POST /api/show HTTP/1.1"));
+            assert!(request.contains(r#""model":"broken:latest""#));
+            let body = r#"{"error":"invalid file magic"}"#;
+            write!(
+                show_stream,
+                "HTTP/1.1 500 Internal Server Error\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        });
+
+        let provider = ollama_provider(base_url);
+        let cache_dir = tempfile::tempdir().unwrap();
+        let cache_path = cache_dir.path().join("model-discovery-cache.json");
+        let old_model = serde_json::from_str::<OllamaShowResponse>("{}")
+            .unwrap()
+            .into_model_metadata(&provider.id, "cached:latest");
+        let mut cache = ModelDiscoveryCacheFile::default();
+        cache.providers.insert(
+            provider.id.clone(),
+            ProviderModelDiscoveryCache {
+                provider: provider.id.clone(),
+                fetched_at: Utc::now() - chrono::TimeDelta::hours(1),
+                source_url: Some("http://cached.example/api/tags".into()),
+                response_hash: Some("sha256:cached".into()),
+                models: vec![old_model],
+            },
+        );
+        save_discovery_cache_at(&cache_path, &cache).unwrap();
+        let old_cache = fs::read(&cache_path).unwrap();
+
+        let error = refresh_provider_models(&provider, &cache_path)
+            .await
+            .unwrap_err();
+        server.join().unwrap();
+
+        assert!(
+            error
+                .to_string()
+                .contains("all 1 Ollama model show requests failed"),
+            "unexpected error: {error:#}"
+        );
+        assert_eq!(fs::read(&cache_path).unwrap(), old_cache);
     }
 }

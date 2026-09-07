@@ -196,7 +196,7 @@ pub async fn explicit_model_refresh_discovers_credential_free_ollama_models() ->
         let mut request = [0_u8; 2048];
         let read = tags_stream.read(&mut request).unwrap();
         assert!(String::from_utf8_lossy(&request[..read]).starts_with("GET /api/tags HTTP/1.1"));
-        let body = r#"{"models":[{"name":"qwen3:latest"}]}"#;
+        let body = r#"{"models":[{"name":"qwen3:latest"},{"name":"broken-model:latest"}]}"#;
         write!(
             tags_stream,
             "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
@@ -205,10 +205,27 @@ pub async fn explicit_model_refresh_discovers_credential_free_ollama_models() ->
         )
         .unwrap();
 
+        let (mut broken_show_stream, _) = listener.accept().unwrap();
+        let mut request = [0_u8; 4096];
+        let read = broken_show_stream.read(&mut request).unwrap();
+        let request = String::from_utf8_lossy(&request[..read]);
+        assert!(request.starts_with("POST /api/show HTTP/1.1"));
+        assert!(request.contains(r#""model":"broken-model:latest""#));
+        let body = r#"{"error":"invalid file magic"}"#;
+        write!(
+            broken_show_stream,
+            "HTTP/1.1 500 Internal Server Error\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+
         let (mut show_stream, _) = listener.accept().unwrap();
         let mut request = [0_u8; 4096];
         let read = show_stream.read(&mut request).unwrap();
-        assert!(String::from_utf8_lossy(&request[..read]).starts_with("POST /api/show HTTP/1.1"));
+        let request = String::from_utf8_lossy(&request[..read]);
+        assert!(request.starts_with("POST /api/show HTTP/1.1"));
+        assert!(request.contains(r#""model":"qwen3:latest""#));
         let body = r#"{"capabilities":["tools"],"model_info":{"qwen3.context_length":32768}}"#;
         write!(
             show_stream,
@@ -265,6 +282,14 @@ pub async fn explicit_model_refresh_discovers_credential_free_ollama_models() ->
                 model["model"] == "ollama/qwen3:latest" && model["route_provider"] == "ollama"
             })),
         "unexpected refreshed model catalog: {response}"
+    );
+    assert!(
+        response["model_availability"]
+            .as_array()
+            .is_some_and(|models| models
+                .iter()
+                .all(|model| model["model"] != "ollama/broken-model:latest")),
+        "failed Ollama model unexpectedly entered refreshed model catalog: {response}"
     );
 
     server.abort();
