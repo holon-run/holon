@@ -721,6 +721,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/control/agents/tree": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Agent tree
+         * @description Return the authenticated operator Agent tree built from canonical lineage.
+         */
+        get: operations["agentTree"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/control/agents/{agent_id}": {
         parameters: {
             query?: never;
@@ -841,6 +861,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/control/agents/{agent_id}/detail": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Agent detail
+         * @description Return the canonical Agent identity, lifecycle, profile, and deletion detail.
+         */
+        get: operations["agentDetail"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/control/agents/{agent_id}/model": {
         parameters: {
             query?: never;
@@ -879,6 +919,26 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/control/agents/{agent_id}/name": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Rename agent
+         * @description Update the public display name without changing the technical agent identity or lifecycle target.
+         */
+        patch: operations["renameAgent"];
         trace?: never;
     };
     "/api/control/agents/{agent_id}/operator-bindings": {
@@ -935,6 +995,26 @@ export interface paths {
          * @description Submit a trusted operator prompt through the control plane.
          */
         post: operations["controlPrompt"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/control/agents/{agent_id}/repair": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Repair agent bootstrap
+         * @description Retry incomplete post-create bootstrap steps without recreating the agent.
+         */
+        post: operations["repairAgent"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2155,6 +2235,7 @@ export interface components {
                 /** @enum {string} */
                 kind: "default" | "named" | "child";
                 lineage_parent_agent_id?: string | null;
+                name?: string | null;
                 /** @enum {string} */
                 ownership: "parent_supervised" | "self_owned";
                 parent_agent_id?: string | null;
@@ -2197,6 +2278,7 @@ export interface components {
                 /** @enum {string} */
                 kind: "default" | "named" | "child";
                 lineage_parent_agent_id?: string | null;
+                name?: string | null;
                 /** @enum {string} */
                 ownership: "parent_supervised" | "self_owned";
                 parent_agent_id?: string | null;
@@ -2228,6 +2310,231 @@ export interface components {
                 /** Format: date-time */
                 updated_at: string;
             } | null;
+        };
+        /** AgentDetail */
+        AgentDetail: {
+            bootstrap?: {
+                initial_message: {
+                    /**
+                     * Format: uint32
+                     * @default 0
+                     */
+                    attempts: number;
+                    last_error?: string | null;
+                    /** @enum {string} */
+                    status: "pending" | "succeeded" | "failed";
+                    /** Format: date-time */
+                    updated_at: string;
+                };
+                model: {
+                    /**
+                     * Format: uint32
+                     * @default 0
+                     */
+                    attempts: number;
+                    last_error?: string | null;
+                    /** @enum {string} */
+                    status: "pending" | "succeeded" | "failed";
+                    /** Format: date-time */
+                    updated_at: string;
+                };
+                runtime: {
+                    /**
+                     * Format: uint32
+                     * @default 0
+                     */
+                    attempts: number;
+                    last_error?: string | null;
+                    /** @enum {string} */
+                    status: "pending" | "succeeded" | "failed";
+                    /** Format: date-time */
+                    updated_at: string;
+                };
+                /** @enum {string} */
+                status: "ready" | "degraded";
+                template: {
+                    /**
+                     * Format: uint32
+                     * @default 0
+                     */
+                    attempts: number;
+                    last_error?: string | null;
+                    /** @enum {string} */
+                    status: "pending" | "succeeded" | "failed";
+                    /** Format: date-time */
+                    updated_at: string;
+                };
+                workspace: {
+                    /**
+                     * Format: uint32
+                     * @default 0
+                     */
+                    attempts: number;
+                    last_error?: string | null;
+                    /** @enum {string} */
+                    status: "pending" | "succeeded" | "failed";
+                    /** Format: date-time */
+                    updated_at: string;
+                };
+            } | null;
+            canonical_relations: {
+                agent_id: string;
+                capability_policy?: {
+                    agent_id: string;
+                    /** Format: date-time */
+                    created_at: string;
+                    /** Format: uint64 */
+                    revision: number;
+                    rules: {
+                        /** @enum {string} */
+                        effect: "allow" | "deny";
+                        /** @enum {string} */
+                        family: "core_agent" | "local_environment" | "web" | "agent_creation" | "authority_expanding" | "external_trigger";
+                    }[];
+                } | null;
+                durability?: {
+                    agent_id: string;
+                    /** Format: date-time */
+                    created_at: string;
+                    /** @enum {string} */
+                    durability: "persistent" | "ephemeral";
+                    /** Format: uint64 */
+                    revision: number;
+                } | null;
+                /** @enum {string} */
+                identity_lifecycle: "active" | "deleting" | "deleted";
+                issues?: {
+                    /** @enum {string} */
+                    axis: "lineage" | "supervision" | "durability" | "lifecycle_attachment" | "capability_policy" | "message_policy";
+                    detail: string;
+                    /** @enum {string} */
+                    resolution: "resolved" | "ambiguous" | "contradictory" | "missing_evidence";
+                }[];
+                lifecycle_attachment?: {
+                    agent_id: string;
+                    /** @enum {string} */
+                    attachment: "independent" | "supervision_attached";
+                    /** Format: date-time */
+                    created_at: string;
+                    /** Format: uint64 */
+                    revision: number;
+                } | null;
+                /** @enum {string} */
+                lifecycle_fence: "open" | "deletion_fenced" | "tombstoned";
+                lineage?: {
+                    child_agent_id: string;
+                    /** Format: date-time */
+                    created_at: string;
+                    /** @enum {string} */
+                    creation_cause: "legacy_spawn" | "create_agent" | "migration";
+                    parent_agent_id: string;
+                    /** Format: uint64 */
+                    revision: number;
+                } | null;
+                message_policy?: {
+                    agent_id: string;
+                    /** Format: date-time */
+                    created_at: string;
+                    /** @enum {string} */
+                    default_effect: "allow" | "deny";
+                    /** Format: uint64 */
+                    revision: number;
+                    rules: {
+                        /** @enum {string} */
+                        effect: "allow" | "deny";
+                        principal_id?: string | null;
+                        /** @enum {string} */
+                        principal_kind: "operator" | "supervising_parent" | "peer_agent" | "external_ingress" | "runtime_capability";
+                        route?: string | null;
+                    }[];
+                } | null;
+                /** @enum {string} */
+                resolution: "resolved" | "ambiguous" | "contradictory" | "missing_evidence";
+                sources: {
+                    /** @enum {string|null} */
+                    capability_policy?: "canonical" | "legacy" | null;
+                    /** @enum {string|null} */
+                    durability?: "canonical" | "legacy" | null;
+                    /** @enum {string|null} */
+                    lifecycle_attachment?: "canonical" | "legacy" | null;
+                    /** @enum {string|null} */
+                    lineage?: "canonical" | "legacy" | null;
+                    /** @enum {string|null} */
+                    message_policy?: "canonical" | "legacy" | null;
+                    /** @enum {string|null} */
+                    supervision?: "canonical" | "legacy" | null;
+                };
+                supervision?: {
+                    child_agent_id: string;
+                    /** Format: date-time */
+                    created_at: string;
+                    delegated_from_task_id?: string | null;
+                    delegated_from_work_item_id?: string | null;
+                    /** Format: uint64 */
+                    revision: number;
+                    /** @enum {string} */
+                    state: "active" | "cleanup_required" | "closed";
+                    supervision_id: string;
+                    supervisor_agent_id: string;
+                    /** Format: date-time */
+                    updated_at: string;
+                } | null;
+            };
+            /** Format: date-time */
+            created_at: string;
+            deletion?: {
+                agent_id: string;
+                /** Format: uint32 */
+                attempts: number;
+                cascade_private_children: boolean;
+                /** Format: date-time */
+                completed_at?: string | null;
+                /** Format: date-time */
+                created_at: string;
+                deletion_id: string;
+                /** Format: uint64 */
+                expected_identity_revision: number;
+                last_error?: string | null;
+                /** @enum {string} */
+                phase: "fence" | "quiesce" | "ingress" | "scheduler" | "workspace" | "index" | "home" | "finalize";
+                requested_by: string;
+                /** @enum {string} */
+                status: "pending" | "running" | "retryable_failed" | "completed";
+                /** Format: date-time */
+                updated_at: string;
+            } | null;
+            display_name: string;
+            identity: {
+                agent_id: string;
+                delegated_from_task_id?: string | null;
+                is_default_agent: boolean;
+                /** @enum {string} */
+                kind: "default" | "named" | "child";
+                lineage_parent_agent_id?: string | null;
+                name?: string | null;
+                /** @enum {string} */
+                ownership: "parent_supervised" | "self_owned";
+                parent_agent_id?: string | null;
+                /** @enum {string} */
+                profile_preset: "private_child" | "public_named";
+                /** @enum {string} */
+                status: "active" | "deleting" | "deleted";
+                /** @enum {string} */
+                visibility: "public" | "private";
+            };
+            lineage_children?: {
+                child_agent_id: string;
+                /** Format: date-time */
+                created_at: string;
+                /** @enum {string} */
+                creation_cause: "legacy_spawn" | "create_agent" | "migration";
+                parent_agent_id: string;
+                /** Format: uint64 */
+                revision: number;
+            }[];
+            name?: string | null;
+            /** Format: date-time */
+            updated_at: string;
         };
         /** @description Committed event window for one Agent inside one snapshot read view. Values come from a committed database view, never from an in-memory watcher or a sequence allocator. */
         AgentEventWindow: {
@@ -2305,6 +2612,7 @@ export interface components {
                         /** @enum {string} */
                         kind: "default" | "named" | "child";
                         lineage_parent_agent_id?: string | null;
+                        name?: string | null;
                         /** @enum {string} */
                         ownership: "parent_supervised" | "self_owned";
                         parent_agent_id?: string | null;
@@ -2465,6 +2773,7 @@ export interface components {
                     /** @enum {string} */
                     kind: "default" | "named" | "child";
                     lineage_parent_agent_id?: string | null;
+                    name?: string | null;
                     /** @enum {string} */
                     ownership: "parent_supervised" | "self_owned";
                     parent_agent_id?: string | null;
@@ -2580,7 +2889,7 @@ export interface components {
                 created_at: string;
                 id: string;
                 /** @enum {string} */
-                kind: "command_task" | "child_agent_task" | "sleep_job" | "subagent_task" | "worktree_subagent_task";
+                kind: "actor_invocation" | "command_task" | "child_agent_task" | "sleep_job" | "subagent_task" | "worktree_subagent_task";
                 parent_message_id?: string | null;
                 /** @enum {string} */
                 status: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
@@ -2690,6 +2999,394 @@ export interface components {
                     } | null;
                 }[];
             };
+        };
+        AgentTreeNode: {
+            agent: {
+                active_workspace_entry?: {
+                    /** @enum {string} */
+                    access_mode: "shared_read" | "exclusive_write";
+                    cwd: string;
+                    execution_root: string;
+                    execution_root_id: string;
+                    occupancy_id?: string | null;
+                    /** @enum {string} */
+                    projection_kind: "canonical_root" | "git_worktree_root";
+                    projection_metadata?: ({
+                        original_branch: string;
+                        original_cwd: string;
+                        worktree_branch: string;
+                        worktree_path: string;
+                    } | {
+                        worktree_root: string;
+                    }) | null;
+                    workspace_anchor: string;
+                    workspace_id: string;
+                } | null;
+                current_run_id?: string | null;
+                identity: {
+                    agent_id: string;
+                    delegated_from_task_id?: string | null;
+                    is_default_agent: boolean;
+                    /** @enum {string} */
+                    kind: "default" | "named" | "child";
+                    lineage_parent_agent_id?: string | null;
+                    name?: string | null;
+                    /** @enum {string} */
+                    ownership: "parent_supervised" | "self_owned";
+                    parent_agent_id?: string | null;
+                    /** @enum {string} */
+                    profile_preset: "private_child" | "public_named";
+                    /** @enum {string} */
+                    status: "active" | "deleting" | "deleted";
+                    /** @enum {string} */
+                    visibility: "public" | "private";
+                };
+                /**
+                 * @default {
+                 *       "accepts_external_messages": true
+                 *     }
+                 */
+                lifecycle: {
+                    accepts_external_messages: boolean;
+                    operator_hint?: string | null;
+                };
+                model: {
+                    active_model?: string | null;
+                    effective_fallback_models?: string[];
+                    effective_model: string;
+                    /** @default false */
+                    fallback_active: boolean;
+                    override_model?: string | null;
+                    override_reasoning_effort?: string | null;
+                    requested_model?: string | null;
+                    runtime_default_model: string;
+                    /** @enum {string} */
+                    source: "runtime_default" | "agent_override";
+                };
+                /**
+                 * Format: uint
+                 * @default 0
+                 */
+                pending: number;
+                /**
+                 * @default {
+                 *       "posture": "unknown",
+                 *       "reason": "posture projection unavailable"
+                 *     }
+                 */
+                scheduling_posture: {
+                    /** @enum {string} */
+                    posture: "unknown" | "stopped" | "active_turn" | "has_queued_input" | "has_runnable_work" | "waiting_for_task" | "waiting_for_external" | "waiting_for_operator" | "blocked" | "idle";
+                    reason: string;
+                    run_id?: string | null;
+                    task_id?: string | null;
+                    work_item_id?: string | null;
+                };
+                /** @enum {string} */
+                status: "booting" | "awake_idle" | "awake_running" | "awaiting_task" | "asleep" | "stopped";
+                /** @enum {string|null} */
+                waiting_reason?: "awaiting_operator_input" | "awaiting_external_change" | "awaiting_task_result" | "awaiting_timer" | null;
+            };
+            canonical_relations: {
+                agent_id: string;
+                capability_policy?: {
+                    agent_id: string;
+                    /** Format: date-time */
+                    created_at: string;
+                    /** Format: uint64 */
+                    revision: number;
+                    rules: {
+                        /** @enum {string} */
+                        effect: "allow" | "deny";
+                        /** @enum {string} */
+                        family: "core_agent" | "local_environment" | "web" | "agent_creation" | "authority_expanding" | "external_trigger";
+                    }[];
+                } | null;
+                durability?: {
+                    agent_id: string;
+                    /** Format: date-time */
+                    created_at: string;
+                    /** @enum {string} */
+                    durability: "persistent" | "ephemeral";
+                    /** Format: uint64 */
+                    revision: number;
+                } | null;
+                /** @enum {string} */
+                identity_lifecycle: "active" | "deleting" | "deleted";
+                issues?: {
+                    /** @enum {string} */
+                    axis: "lineage" | "supervision" | "durability" | "lifecycle_attachment" | "capability_policy" | "message_policy";
+                    detail: string;
+                    /** @enum {string} */
+                    resolution: "resolved" | "ambiguous" | "contradictory" | "missing_evidence";
+                }[];
+                lifecycle_attachment?: {
+                    agent_id: string;
+                    /** @enum {string} */
+                    attachment: "independent" | "supervision_attached";
+                    /** Format: date-time */
+                    created_at: string;
+                    /** Format: uint64 */
+                    revision: number;
+                } | null;
+                /** @enum {string} */
+                lifecycle_fence: "open" | "deletion_fenced" | "tombstoned";
+                lineage?: {
+                    child_agent_id: string;
+                    /** Format: date-time */
+                    created_at: string;
+                    /** @enum {string} */
+                    creation_cause: "legacy_spawn" | "create_agent" | "migration";
+                    parent_agent_id: string;
+                    /** Format: uint64 */
+                    revision: number;
+                } | null;
+                message_policy?: {
+                    agent_id: string;
+                    /** Format: date-time */
+                    created_at: string;
+                    /** @enum {string} */
+                    default_effect: "allow" | "deny";
+                    /** Format: uint64 */
+                    revision: number;
+                    rules: {
+                        /** @enum {string} */
+                        effect: "allow" | "deny";
+                        principal_id?: string | null;
+                        /** @enum {string} */
+                        principal_kind: "operator" | "supervising_parent" | "peer_agent" | "external_ingress" | "runtime_capability";
+                        route?: string | null;
+                    }[];
+                } | null;
+                /** @enum {string} */
+                resolution: "resolved" | "ambiguous" | "contradictory" | "missing_evidence";
+                sources: {
+                    /** @enum {string|null} */
+                    capability_policy?: "canonical" | "legacy" | null;
+                    /** @enum {string|null} */
+                    durability?: "canonical" | "legacy" | null;
+                    /** @enum {string|null} */
+                    lifecycle_attachment?: "canonical" | "legacy" | null;
+                    /** @enum {string|null} */
+                    lineage?: "canonical" | "legacy" | null;
+                    /** @enum {string|null} */
+                    message_policy?: "canonical" | "legacy" | null;
+                    /** @enum {string|null} */
+                    supervision?: "canonical" | "legacy" | null;
+                };
+                supervision?: {
+                    child_agent_id: string;
+                    /** Format: date-time */
+                    created_at: string;
+                    delegated_from_task_id?: string | null;
+                    delegated_from_work_item_id?: string | null;
+                    /** Format: uint64 */
+                    revision: number;
+                    /** @enum {string} */
+                    state: "active" | "cleanup_required" | "closed";
+                    supervision_id: string;
+                    supervisor_agent_id: string;
+                    /** Format: date-time */
+                    updated_at: string;
+                } | null;
+            };
+            children?: components["schemas"]["AgentTreeNode"][];
+        };
+        /** AgentTreeProjection */
+        AgentTreeProjection: {
+            /** @default [] */
+            roots: {
+                agent: {
+                    active_workspace_entry?: {
+                        /** @enum {string} */
+                        access_mode: "shared_read" | "exclusive_write";
+                        cwd: string;
+                        execution_root: string;
+                        execution_root_id: string;
+                        occupancy_id?: string | null;
+                        /** @enum {string} */
+                        projection_kind: "canonical_root" | "git_worktree_root";
+                        projection_metadata?: ({
+                            original_branch: string;
+                            original_cwd: string;
+                            worktree_branch: string;
+                            worktree_path: string;
+                        } | {
+                            worktree_root: string;
+                        }) | null;
+                        workspace_anchor: string;
+                        workspace_id: string;
+                    } | null;
+                    current_run_id?: string | null;
+                    identity: {
+                        agent_id: string;
+                        delegated_from_task_id?: string | null;
+                        is_default_agent: boolean;
+                        /** @enum {string} */
+                        kind: "default" | "named" | "child";
+                        lineage_parent_agent_id?: string | null;
+                        name?: string | null;
+                        /** @enum {string} */
+                        ownership: "parent_supervised" | "self_owned";
+                        parent_agent_id?: string | null;
+                        /** @enum {string} */
+                        profile_preset: "private_child" | "public_named";
+                        /** @enum {string} */
+                        status: "active" | "deleting" | "deleted";
+                        /** @enum {string} */
+                        visibility: "public" | "private";
+                    };
+                    /**
+                     * @default {
+                     *       "accepts_external_messages": true
+                     *     }
+                     */
+                    lifecycle: {
+                        accepts_external_messages: boolean;
+                        operator_hint?: string | null;
+                    };
+                    model: {
+                        active_model?: string | null;
+                        effective_fallback_models?: string[];
+                        effective_model: string;
+                        /** @default false */
+                        fallback_active: boolean;
+                        override_model?: string | null;
+                        override_reasoning_effort?: string | null;
+                        requested_model?: string | null;
+                        runtime_default_model: string;
+                        /** @enum {string} */
+                        source: "runtime_default" | "agent_override";
+                    };
+                    /**
+                     * Format: uint
+                     * @default 0
+                     */
+                    pending: number;
+                    /**
+                     * @default {
+                     *       "posture": "unknown",
+                     *       "reason": "posture projection unavailable"
+                     *     }
+                     */
+                    scheduling_posture: {
+                        /** @enum {string} */
+                        posture: "unknown" | "stopped" | "active_turn" | "has_queued_input" | "has_runnable_work" | "waiting_for_task" | "waiting_for_external" | "waiting_for_operator" | "blocked" | "idle";
+                        reason: string;
+                        run_id?: string | null;
+                        task_id?: string | null;
+                        work_item_id?: string | null;
+                    };
+                    /** @enum {string} */
+                    status: "booting" | "awake_idle" | "awake_running" | "awaiting_task" | "asleep" | "stopped";
+                    /** @enum {string|null} */
+                    waiting_reason?: "awaiting_operator_input" | "awaiting_external_change" | "awaiting_task_result" | "awaiting_timer" | null;
+                };
+                canonical_relations: {
+                    agent_id: string;
+                    capability_policy?: {
+                        agent_id: string;
+                        /** Format: date-time */
+                        created_at: string;
+                        /** Format: uint64 */
+                        revision: number;
+                        rules: {
+                            /** @enum {string} */
+                            effect: "allow" | "deny";
+                            /** @enum {string} */
+                            family: "core_agent" | "local_environment" | "web" | "agent_creation" | "authority_expanding" | "external_trigger";
+                        }[];
+                    } | null;
+                    durability?: {
+                        agent_id: string;
+                        /** Format: date-time */
+                        created_at: string;
+                        /** @enum {string} */
+                        durability: "persistent" | "ephemeral";
+                        /** Format: uint64 */
+                        revision: number;
+                    } | null;
+                    /** @enum {string} */
+                    identity_lifecycle: "active" | "deleting" | "deleted";
+                    issues?: {
+                        /** @enum {string} */
+                        axis: "lineage" | "supervision" | "durability" | "lifecycle_attachment" | "capability_policy" | "message_policy";
+                        detail: string;
+                        /** @enum {string} */
+                        resolution: "resolved" | "ambiguous" | "contradictory" | "missing_evidence";
+                    }[];
+                    lifecycle_attachment?: {
+                        agent_id: string;
+                        /** @enum {string} */
+                        attachment: "independent" | "supervision_attached";
+                        /** Format: date-time */
+                        created_at: string;
+                        /** Format: uint64 */
+                        revision: number;
+                    } | null;
+                    /** @enum {string} */
+                    lifecycle_fence: "open" | "deletion_fenced" | "tombstoned";
+                    lineage?: {
+                        child_agent_id: string;
+                        /** Format: date-time */
+                        created_at: string;
+                        /** @enum {string} */
+                        creation_cause: "legacy_spawn" | "create_agent" | "migration";
+                        parent_agent_id: string;
+                        /** Format: uint64 */
+                        revision: number;
+                    } | null;
+                    message_policy?: {
+                        agent_id: string;
+                        /** Format: date-time */
+                        created_at: string;
+                        /** @enum {string} */
+                        default_effect: "allow" | "deny";
+                        /** Format: uint64 */
+                        revision: number;
+                        rules: {
+                            /** @enum {string} */
+                            effect: "allow" | "deny";
+                            principal_id?: string | null;
+                            /** @enum {string} */
+                            principal_kind: "operator" | "supervising_parent" | "peer_agent" | "external_ingress" | "runtime_capability";
+                            route?: string | null;
+                        }[];
+                    } | null;
+                    /** @enum {string} */
+                    resolution: "resolved" | "ambiguous" | "contradictory" | "missing_evidence";
+                    sources: {
+                        /** @enum {string|null} */
+                        capability_policy?: "canonical" | "legacy" | null;
+                        /** @enum {string|null} */
+                        durability?: "canonical" | "legacy" | null;
+                        /** @enum {string|null} */
+                        lifecycle_attachment?: "canonical" | "legacy" | null;
+                        /** @enum {string|null} */
+                        lineage?: "canonical" | "legacy" | null;
+                        /** @enum {string|null} */
+                        message_policy?: "canonical" | "legacy" | null;
+                        /** @enum {string|null} */
+                        supervision?: "canonical" | "legacy" | null;
+                    };
+                    supervision?: {
+                        child_agent_id: string;
+                        /** Format: date-time */
+                        created_at: string;
+                        delegated_from_task_id?: string | null;
+                        delegated_from_work_item_id?: string | null;
+                        /** Format: uint64 */
+                        revision: number;
+                        /** @enum {string} */
+                        state: "active" | "cleanup_required" | "closed";
+                        supervision_id: string;
+                        supervisor_agent_id: string;
+                        /** Format: date-time */
+                        updated_at: string;
+                    } | null;
+                };
+                children?: components["schemas"]["AgentTreeNode"][];
+            }[];
         };
         AgentWorkItemAnchor: {
             plan_status: string;
@@ -3429,6 +4126,10 @@ export interface components {
         RemoveTemplateRequest: {
             [key: string]: unknown;
         };
+        /** @description Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize. */
+        RenameAgentRequest: {
+            [key: string]: unknown;
+        };
         /** RuntimeConfigReadResponse */
         RuntimeConfigReadResponse: {
             config_file_path: string;
@@ -3787,7 +4488,7 @@ export interface components {
             created_at: string;
             id: string;
             /** @enum {string} */
-            kind: "command_task" | "child_agent_task" | "sleep_job" | "subagent_task" | "worktree_subagent_task";
+            kind: "actor_invocation" | "command_task" | "child_agent_task" | "sleep_job" | "subagent_task" | "worktree_subagent_task";
             parent_message_id?: string | null;
             /** @enum {string} */
             status: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
@@ -6040,6 +6741,44 @@ export interface operations {
             };
         };
     };
+    agentTree: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentTreeProjection"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     deleteAgent: {
         parameters: {
             query?: never;
@@ -6306,6 +7045,47 @@ export interface operations {
             };
         };
     };
+    agentDetail: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Agent id. */
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentDetail"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     setAgentModel: {
         parameters: {
             query?: never;
@@ -6374,6 +7154,51 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["JsonValue"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    renameAgent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Agent id. */
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RenameAgentRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentDetail"];
                 };
             };
             /** @description Client error JSON response. */
@@ -6509,6 +7334,47 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["JsonValue"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    repairAgent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Agent id. */
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentDetail"];
                 };
             };
             /** @description Client error JSON response. */

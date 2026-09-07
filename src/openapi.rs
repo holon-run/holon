@@ -1081,7 +1081,60 @@ fn component_schemas() -> Value {
     ] {
         schemas.insert(name.into(), request_schema.clone());
     }
+    lift_recursive_definitions(&mut schemas);
     Value::Object(schemas)
+}
+
+/// schemars emits subschemas it cannot inline (recursive types such as
+/// `AgentTreeProjection`) under a root-level `definitions` object with
+/// draft-style `#/definitions/...` refs. OpenAPI resolves refs from the
+/// document root, where those paths do not exist, so lift each definition into
+/// a top-level component schema and rewrite refs to component paths.
+fn lift_recursive_definitions(schemas: &mut serde_json::Map<String, Value>) {
+    let mut lifted: Vec<(String, Value)> = Vec::new();
+    for schema in schemas.values_mut() {
+        let Some(object) = schema.as_object_mut() else {
+            continue;
+        };
+        let Some(Value::Object(definitions)) = object.remove("definitions") else {
+            continue;
+        };
+        lifted.extend(definitions);
+    }
+    for (name, definition) in lifted {
+        assert!(
+            !schemas.contains_key(&name),
+            "OpenAPI component name collision while lifting definition: {name}"
+        );
+        schemas.insert(name, definition);
+    }
+    for schema in schemas.values_mut() {
+        rewrite_definition_refs(schema);
+    }
+}
+
+fn rewrite_definition_refs(value: &mut Value) {
+    match value {
+        Value::Object(fields) => {
+            for (key, field) in fields.iter_mut() {
+                if key == "$ref" {
+                    if let Value::String(reference) = field {
+                        if let Some(name) = reference.strip_prefix("#/definitions/") {
+                            *reference = format!("#/components/schemas/{name}");
+                        }
+                    }
+                } else {
+                    rewrite_definition_refs(field);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items.iter_mut() {
+                rewrite_definition_refs(item);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn component_schema<T: JsonSchema>() -> Value {
@@ -1101,6 +1154,28 @@ fn component_schema<T: JsonSchema>() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recursive_component_definitions_lift_to_openapi_components() {
+        let api = generate_openapi_json();
+        let schemas = api["components"]["schemas"]
+            .as_object()
+            .expect("components schemas object");
+        let tree = &schemas["AgentTreeProjection"];
+        assert!(
+            tree.get("definitions").is_none(),
+            "recursive subschemas must not stay nested under their parent component"
+        );
+        assert!(
+            schemas.contains_key("AgentTreeNode"),
+            "AgentTreeNode should be lifted to a top-level component"
+        );
+        let raw = serde_json::to_string(&schemas).expect("serialize schemas");
+        assert!(
+            !raw.contains("#/definitions/"),
+            "draft-style definitions refs must be rewritten to component refs"
+        );
+    }
 
     #[test]
     fn generated_openapi_includes_current_http_surface() {
