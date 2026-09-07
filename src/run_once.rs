@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    future::Future,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -215,7 +216,14 @@ pub async fn run_once(config: AppConfig, request: RunOnceRequest) -> Result<RunO
     run_once_with_host(host, request).await
 }
 
-pub async fn run_once_with_host(
+pub fn run_once_with_host(
+    host: RuntimeHost,
+    request: RunOnceRequest,
+) -> impl Future<Output = Result<RunOnceResponse>> + Send {
+    Box::pin(run_once_with_host_inner(host, request))
+}
+
+async fn run_once_with_host_inner(
     host: RuntimeHost,
     request: RunOnceRequest,
 ) -> Result<RunOnceResponse> {

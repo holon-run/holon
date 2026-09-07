@@ -7,13 +7,18 @@ mod execution_protocol_fixture_repository;
 pub(crate) mod execution_protocol_repository;
 pub(crate) use execution_protocol_repository::{authority_fences_tx, persist_state_tx};
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
 use rusqlite::{OptionalExtension, Transaction};
 use std::collections::BTreeMap;
 
 use crate::{
     runtime_db::{
+        agent_message_delivery::{
+            advance_delivery_state_for_message_tx, delivery_by_message_id_tx,
+            persist_completed_admission_tx, persist_queued_admission_tx,
+            prepare_delivery_admission_tx, AgentMessageDeliveryAdmissionDecision,
+        },
         evidence::{
             append_audit_event_tx, append_message_tx, append_transcript_entry_tx,
             insert_brief_evidence_tx, insert_runtime_index_changes_tx, insert_tool_evidence_tx,
@@ -30,6 +35,7 @@ use crate::{
     },
     runtime_error::RuntimeError,
     types::{
+        AgentMessageDeliveryReceipt, AgentMessageDeliveryRecord, AgentMessageDeliveryState,
         AgentState, AuditEvent, BriefRecord, MessageEnvelope, QueueEntryRecord, QueueEntryStatus,
         TaskRecord, ToolExecutionRecord, TranscriptEntry, TurnRecord, WaitConditionRecord,
         WorkItemContinuationFrame, WorkItemRecord, WorkItemSchedulingState, WorkItemState,
@@ -126,6 +132,7 @@ pub(crate) struct AgentStateMutation {
 pub(crate) struct TransitionCommit {
     pub applied: bool,
     pub effects: PostCommitEffects,
+    pub delivery_receipt: Option<AgentMessageDeliveryReceipt>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1076,6 +1083,24 @@ impl RuntimeTransitionRepository<'_> {
         )
     }
 
+    pub fn commit_delivery_admission(
+        &self,
+        command: &QueueTransitionCommand,
+        wait_trigger: Option<&QueueWaitTransition>,
+        delivery: &AgentMessageDeliveryRecord,
+    ) -> Result<TransitionCommit> {
+        self.commit_queue_transaction_with_delivery(
+            command,
+            &ExecutionProtocolTransition::default(),
+            wait_trigger,
+            None,
+            None,
+            &[],
+            &[],
+            Some(delivery),
+        )
+    }
+
     fn commit_queue_transaction(
         &self,
         command: &QueueTransitionCommand,
@@ -1086,7 +1111,49 @@ impl RuntimeTransitionRepository<'_> {
         terminal_tool_executions: &[ToolExecutionRecord],
         extra_wait_conditions: &[crate::types::WaitConditionRecord],
     ) -> Result<TransitionCommit> {
+        self.commit_queue_transaction_with_delivery(
+            command,
+            execution_protocol,
+            wait_transition,
+            task_expectation,
+            completion,
+            terminal_tool_executions,
+            extra_wait_conditions,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_queue_transaction_with_delivery(
+        &self,
+        command: &QueueTransitionCommand,
+        execution_protocol: &ExecutionProtocolTransition,
+        wait_transition: Option<&QueueWaitTransition>,
+        task_expectation: Option<&TaskExpectation>,
+        completion: Option<&CompletionTransition>,
+        terminal_tool_executions: &[ToolExecutionRecord],
+        extra_wait_conditions: &[crate::types::WaitConditionRecord],
+        delivery: Option<&AgentMessageDeliveryRecord>,
+    ) -> Result<TransitionCommit> {
         self.db.transaction(|tx| {
+            let delivery = delivery
+                .map(|delivery| prepare_delivery_admission_tx(tx, delivery))
+                .transpose()?;
+            if let Some(decision @ AgentMessageDeliveryAdmissionDecision::Complete { .. }) =
+                delivery.as_ref()
+            {
+                persist_completed_admission_tx(tx, decision)?;
+                return Ok(TransitionCommit {
+                    applied: true,
+                    effects: PostCommitEffects::default(),
+                    delivery_receipt: Some(decision.receipt()),
+                });
+            }
+            if let Some(AgentMessageDeliveryAdmissionDecision::Queue { record, .. }) =
+                delivery.as_ref()
+            {
+                validate_delivery_queue_admission(command, record)?;
+            }
             validate_queue_operation(command)?;
             validate_queue_mutation_tx(tx, &command.mutation)?;
             if let Some(wait_transition) = wait_transition {
@@ -1125,6 +1192,15 @@ impl RuntimeTransitionRepository<'_> {
                 &command.agent_id,
                 terminal_tool_executions,
             )?;
+            let queue_record = queue_mutation_record(&command.mutation);
+            if delivery_by_message_id_tx(tx, &queue_record.message_id)?.is_some_and(|delivery| {
+                !matches!(
+                    delivery.state,
+                    AgentMessageDeliveryState::Queued | AgentMessageDeliveryState::Dispatched
+                )
+            }) {
+                return Ok(TransitionCommit::default());
+            }
             if let QueueMutation::Consume(record) = &command.mutation {
                 let include_interrupted = match command.operation {
                     QueueOperation::Claim => true,
@@ -1211,6 +1287,7 @@ impl RuntimeTransitionRepository<'_> {
             if !matches!(&command.mutation, QueueMutation::Upsert(_)) && !mutation_applied {
                 return Ok(TransitionCommit::default());
             }
+            advance_delivery_for_queue_transition_tx(tx, command)?;
             let agent_state_applied =
                 apply_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
             let execution_protocol_applied = execution_protocol
@@ -1312,6 +1389,10 @@ impl RuntimeTransitionRepository<'_> {
                 || wait_work_item_applied
                 || completion_applied
                 || terminal_tool_execution_applied;
+            if let Some(decision) = delivery.as_ref() {
+                persist_queued_admission_tx(tx, decision)?;
+                applied = true;
+            }
             let mut message_index_changes = Vec::new();
             for message in &command.message_evidence {
                 let (message, inserted) = append_message_tx(tx, message)?;
@@ -1363,7 +1444,10 @@ impl RuntimeTransitionRepository<'_> {
                 &command.brief_evidence,
                 &commit.effects.audit_events,
             )?;
-            Ok(commit)
+            Ok(TransitionCommit {
+                delivery_receipt: delivery.as_ref().map(|decision| decision.receipt()),
+                ..commit
+            })
         })
     }
 
@@ -1577,6 +1661,7 @@ fn finish_transition_tx(
     Ok(TransitionCommit {
         applied: true,
         effects,
+        delivery_receipt: None,
     })
 }
 
@@ -2130,10 +2215,7 @@ fn validate_wait_condition_tx(tx: &Transaction<'_>, incoming: &WaitConditionReco
 }
 
 fn validate_queue_mutation_tx(tx: &Transaction<'_>, mutation: &QueueMutation) -> Result<()> {
-    let incoming = match mutation {
-        QueueMutation::Consume(record) | QueueMutation::Upsert(record) => record,
-        QueueMutation::CompareAndSet { record, .. } => record,
-    };
+    let incoming = queue_mutation_record(mutation);
     let existing = tx
         .query_row(
             "SELECT payload_json FROM queue_entries WHERE message_id = ?1",
@@ -2152,6 +2234,70 @@ fn validate_queue_mutation_tx(tx: &Transaction<'_>, mutation: &QueueMutation) ->
         }
         _ => {}
     }
+    Ok(())
+}
+
+fn queue_mutation_record(mutation: &QueueMutation) -> &QueueEntryRecord {
+    match mutation {
+        QueueMutation::Consume(record) | QueueMutation::Upsert(record) => record,
+        QueueMutation::CompareAndSet { record, .. } => record,
+    }
+}
+
+fn advance_delivery_for_queue_transition_tx(
+    tx: &Transaction<'_>,
+    command: &QueueTransitionCommand,
+) -> Result<bool> {
+    let record = queue_mutation_record(&command.mutation);
+    let next = match (command.operation, &record.status) {
+        (QueueOperation::Claim, QueueEntryStatus::Dequeued) => {
+            Some(AgentMessageDeliveryState::Dispatched)
+        }
+        (QueueOperation::Interject, QueueEntryStatus::Interjected)
+        | (QueueOperation::Settle, QueueEntryStatus::Processed) => {
+            Some(AgentMessageDeliveryState::Consumed)
+        }
+        (
+            QueueOperation::Settle | QueueOperation::RepairDrop,
+            QueueEntryStatus::Aborted | QueueEntryStatus::Dropped | QueueEntryStatus::Quarantined,
+        ) => Some(AgentMessageDeliveryState::Failed),
+        _ => None,
+    };
+    next.map(|next| {
+        advance_delivery_state_for_message_tx(
+            tx,
+            &record.message_id,
+            next,
+            (next == AgentMessageDeliveryState::Failed)
+                .then_some("message queue processing terminated before consumption"),
+        )
+    })
+    .transpose()
+    .map(Option::unwrap_or_default)
+}
+
+fn validate_delivery_queue_admission(
+    command: &QueueTransitionCommand,
+    delivery: &AgentMessageDeliveryRecord,
+) -> Result<()> {
+    let queue_record = match &command.mutation {
+        QueueMutation::Consume(record) | QueueMutation::Upsert(record) => record,
+        QueueMutation::CompareAndSet { record, .. } => record,
+    };
+    let message_id = delivery
+        .message_id
+        .as_deref()
+        .context("accepted delivery is missing message identity")?;
+    anyhow::ensure!(
+        message_id == queue_record.message_id,
+        "delivery message identity does not match queue admission"
+    );
+    anyhow::ensure!(
+        command.message_evidence.iter().any(|message| {
+            message.id == message_id && message.agent_id == delivery.target_agent_id
+        }),
+        "delivery message identity does not match message evidence"
+    );
     Ok(())
 }
 

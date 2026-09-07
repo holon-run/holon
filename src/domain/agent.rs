@@ -2,6 +2,10 @@ use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::types::{
+    AdmissionContext, AuthorityClass, MessageBody, MessageDeliverySurface, MessageOrigin, Priority,
+};
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentIdentityLifecycle {
@@ -147,6 +151,181 @@ pub struct AgentMessagePolicyRecord {
     pub default_effect: AgentPolicyEffect,
     pub rules: Vec<AgentMessagePolicyRule>,
     pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentMessageDeliveryOutcome {
+    Accepted,
+    Rejected,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentMessageDeliveryState {
+    Queued,
+    Dispatched,
+    Consumed,
+    Failed,
+    CancelledByDeletion,
+    Rejected,
+}
+
+impl AgentMessageDeliveryState {
+    pub fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::Consumed | Self::Failed | Self::CancelledByDeletion | Self::Rejected
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentMessageDeliveryRejectionCode {
+    TargetNotFound,
+    MessageNotAuthorized,
+    InvalidMessage,
+    InvalidCorrelation,
+    InvalidPriority,
+    IdempotencyConflict,
+    AgentStopped,
+    AgentDeleting,
+    AgentDeleted,
+    QueueUnavailable,
+}
+
+impl AgentMessageDeliveryRejectionCode {
+    pub fn retryable(self) -> bool {
+        matches!(self, Self::AgentStopped | Self::QueueUnavailable)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct AgentMessageSendRequest {
+    pub target_agent_id: String,
+    pub content: MessageBody,
+    pub client_idempotency_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub causation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_priority: Option<Priority>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct AgentMessageCallerContext {
+    pub caller_principal: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_agent_id: Option<String>,
+    pub principal_kind: AgentMessagePrincipalKind,
+    pub route: String,
+    pub origin: MessageOrigin,
+    pub authority_class: AuthorityClass,
+    pub delivery_surface: MessageDeliverySurface,
+    pub admission_context: AdmissionContext,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_work_item_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct AgentMessageAdmissionEvidence {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_status: Option<AgentIdentityLifecycle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_policy_revision: Option<u64>,
+    pub principal_kind: AgentMessagePrincipalKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub principal_id: Option<String>,
+    pub route: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched_rule_index: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct AgentMessageDeliveryRecord {
+    pub delivery_id: String,
+    pub target_agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub causation_id: Option<String>,
+    pub idempotency_scope: String,
+    pub idempotency_key_digest: String,
+    pub request_digest: String,
+    pub caller: AgentMessageCallerContext,
+    pub outcome: AgentMessageDeliveryOutcome,
+    pub state: AgentMessageDeliveryState,
+    pub state_version: u64,
+    pub admission_evidence: AgentMessageAdmissionEvidence,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejection_code: Option<AgentMessageDeliveryRejectionCode>,
+    pub retryable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepted_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct AgentMessageDeliveryReceipt {
+    pub delivery_id: String,
+    pub target_agent_id: String,
+    pub outcome: AgentMessageDeliveryOutcome,
+    pub state: AgentMessageDeliveryState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepted_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_at: Option<DateTime<Utc>>,
+    pub idempotent_replay: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejection_code: Option<AgentMessageDeliveryRejectionCode>,
+    pub retryable: bool,
+    pub lifecycle_snapshot: AgentMessageAdmissionEvidence,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
+}
+
+impl AgentMessageDeliveryRecord {
+    pub fn receipt(&self, idempotent_replay: bool) -> AgentMessageDeliveryReceipt {
+        AgentMessageDeliveryReceipt {
+            delivery_id: self.delivery_id.clone(),
+            target_agent_id: self.target_agent_id.clone(),
+            outcome: self.outcome,
+            state: self.state,
+            accepted_at: self.accepted_at,
+            terminal_at: self.terminal_at,
+            idempotent_replay,
+            rejection_code: self.rejection_code,
+            retryable: self.retryable,
+            lifecycle_snapshot: self.admission_evidence.clone(),
+            correlation_id: self.correlation_id.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
+pub enum AgentMessageDeliveryError {
+    #[error("agent message idempotency key was reused with different request semantics")]
+    IdempotencyConflict {
+        idempotency_scope: String,
+        idempotency_key_digest: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

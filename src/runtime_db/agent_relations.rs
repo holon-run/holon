@@ -1051,12 +1051,20 @@ fn legacy_message_policy(
     identity: &AgentIdentityRecord,
     supervision: Option<&AgentSupervisionRecord>,
 ) -> AgentMessagePolicyRecord {
-    let mut rules = vec![AgentMessagePolicyRule {
-        principal_kind: AgentMessagePrincipalKind::Operator,
-        principal_id: None,
-        route: Some("operator_control".into()),
-        effect: AgentPolicyEffect::Allow,
-    }];
+    let mut rules = vec![
+        AgentMessagePolicyRule {
+            principal_kind: AgentMessagePrincipalKind::Operator,
+            principal_id: None,
+            route: Some("operator_control".into()),
+            effect: AgentPolicyEffect::Allow,
+        },
+        AgentMessagePolicyRule {
+            principal_kind: AgentMessagePrincipalKind::RuntimeCapability,
+            principal_id: Some("runtime:agent-invocation".into()),
+            route: Some("agent_invocation".into()),
+            effect: AgentPolicyEffect::Allow,
+        },
+    ];
     if let Some(supervision) = supervision.filter(|record| {
         matches!(
             record.state,

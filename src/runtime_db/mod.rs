@@ -10,6 +10,7 @@
 //! - [`repositories`]: domain repository implementations.
 //! - [`index_outbox`]: runtime index outbox repository.
 
+pub mod agent_message_delivery;
 pub mod agent_relations;
 pub mod audit;
 pub mod authentication;
@@ -58,13 +59,13 @@ pub use crate::runtime_db::retired_scheduler_cleanup::{
 pub use crate::runtime_db::storage_domain::{ExpectedStorageDomain, StorageDomainSnapshot};
 pub use crate::runtime_db::types::{
     AgentBootstrapRepository, AgentCanonicalRelationRepository, AgentDeletionRepository,
-    AgentIdentityRepository, AgentStateRepository, AuditEventSink, ContextEpisodeRepository,
-    EvidenceRepository, ExecutionRootEntryRepository, ExternalTriggerRepository, MessageRepository,
-    OperatorDeliveryRepository, OperatorNotificationRepository, OperatorTransportBindingRepository,
-    QueueEntryRepository, TaskRepository, TimerRepository, TranscriptRepository,
-    TurnRecordRepository, WaitConditionRepository, WorkItemContinuationRepository,
-    WorkItemDelegationRepository, WorkItemRepository, WorkspaceEntryRepository,
-    WorkspaceOccupancyRepository,
+    AgentIdentityRepository, AgentMessageDeliveryRepository, AgentStateRepository, AuditEventSink,
+    ContextEpisodeRepository, EvidenceRepository, ExecutionRootEntryRepository,
+    ExternalTriggerRepository, MessageRepository, OperatorDeliveryRepository,
+    OperatorNotificationRepository, OperatorTransportBindingRepository, QueueEntryRepository,
+    TaskRepository, TimerRepository, TranscriptRepository, TurnRecordRepository,
+    WaitConditionRepository, WorkItemContinuationRepository, WorkItemDelegationRepository,
+    WorkItemRepository, WorkspaceEntryRepository, WorkspaceOccupancyRepository,
 };
 #[cfg(test)]
 mod tests;
@@ -538,6 +539,10 @@ impl RuntimeDb {
 
     pub fn agent_deletions(&self) -> AgentDeletionRepository<'_> {
         AgentDeletionRepository { db: self }
+    }
+
+    pub fn agent_message_deliveries(&self) -> AgentMessageDeliveryRepository<'_> {
+        AgentMessageDeliveryRepository { db: self }
     }
 
     pub fn work_item_delegations(&self) -> WorkItemDelegationRepository<'_> {

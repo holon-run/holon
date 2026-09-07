@@ -78,6 +78,10 @@ pub struct AgentDeletionRepository<'a> {
     pub(crate) db: &'a RuntimeDb,
 }
 
+pub struct AgentMessageDeliveryRepository<'a> {
+    pub(crate) db: &'a RuntimeDb,
+}
+
 pub struct WorkItemDelegationRepository<'a> {
     pub(crate) db: &'a RuntimeDb,
 }

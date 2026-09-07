@@ -1704,7 +1704,7 @@ pub enum Priority {
     Background,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MessageOrigin {
     Operator {
@@ -1735,7 +1735,7 @@ pub enum MessageOrigin {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum MessageBody {
     Text {
@@ -2102,7 +2102,7 @@ fn collect_source_ref(metadata: &Value, refs: &mut BTreeMap<String, String>, key
     refs.entry(key.to_string()).or_insert(value);
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageDeliverySurface {
     CliPrompt,
@@ -2118,7 +2118,7 @@ pub enum MessageDeliverySurface {
     TaskRejoin,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AdmissionContext {
     PublicUnauthenticated,

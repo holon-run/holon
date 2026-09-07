@@ -3389,6 +3389,43 @@ CREATE TABLE IF NOT EXISTS agent_message_policy_rules (
 );
 "#,
     },
+    Migration {
+        version: 60,
+        name: "agent_message_delivery_ledger",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS agent_message_deliveries (
+  delivery_id TEXT PRIMARY KEY,
+  target_agent_id TEXT NOT NULL,
+  message_id TEXT UNIQUE,
+  idempotency_scope TEXT NOT NULL,
+  idempotency_key_digest TEXT NOT NULL,
+  request_digest TEXT NOT NULL,
+  outcome TEXT NOT NULL CHECK (outcome IN ('accepted', 'rejected')),
+  state TEXT NOT NULL CHECK (
+    state IN (
+      'queued', 'dispatched', 'consumed', 'failed',
+      'cancelled_by_deletion', 'rejected'
+    )
+  ),
+  state_version INTEGER NOT NULL CHECK (state_version >= 0),
+  rejection_code TEXT,
+  retryable INTEGER NOT NULL CHECK (retryable IN (0, 1)),
+  accepted_at TEXT,
+  terminal_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  UNIQUE (idempotency_scope, idempotency_key_digest)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_message_deliveries_target_state
+  ON agent_message_deliveries(target_agent_id, state, updated_at);
+
+CREATE INDEX IF NOT EXISTS idx_agent_message_deliveries_message
+  ON agent_message_deliveries(message_id)
+  WHERE message_id IS NOT NULL;
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

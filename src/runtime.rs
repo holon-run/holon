@@ -1,3 +1,4 @@
+mod agent_message_delivery;
 mod agent_services;
 mod bootstrap;
 mod callback;
@@ -32,6 +33,9 @@ pub(crate) mod workspace;
 pub(crate) mod workspace_control;
 mod worktree;
 
+pub(crate) use agent_message_delivery::AgentMessageDeliveryService;
+#[cfg(test)]
+pub(crate) use agent_message_delivery::PreparedAgentMessageDelivery;
 pub use first_run_intro::maybe_enqueue_first_run_intro;
 pub(crate) use lifecycle::LightweightAgentStateProjection;
 pub(crate) use repair::is_wake_only_message;
@@ -118,14 +122,15 @@ use crate::{
     types::LoadedAgentMemory,
     types::{
         brief_created_event_for, ActiveWorkspaceEntry, AdmissionContext, AgentIdentityView,
-        AgentKind, AgentModelOverrideAuditEvent, AgentModelSource, AgentModelState, AgentState,
-        AgentStateChangedEvent, AgentStatus, AgentSummary, AuditEvent, AuthorityClass,
-        BriefCreatedAuditEvent, BriefRecord, CallbackDeliveryMode, CallbackDeliveryPayload,
-        CallbackDeliveryResult, CallbackIngressDisposition, ClosureDecision,
-        ContinuationResolution, ControlAction, ExecCommandBatchItemStatus, ExecCommandBatchResult,
-        ExecutionAdmissionProvenance, ExternalTriggerCapability, ExternalTriggerRecord,
-        ExternalTriggerScope, ExternalTriggerStatus, ExternalTriggerSummary, LoadedAgentsMd,
-        MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind,
+        AgentKind, AgentMessageDeliveryOutcome, AgentMessageDeliveryReceipt,
+        AgentMessageDeliveryRecord, AgentModelOverrideAuditEvent, AgentModelSource,
+        AgentModelState, AgentState, AgentStateChangedEvent, AgentStatus, AgentSummary, AuditEvent,
+        AuthorityClass, BriefCreatedAuditEvent, BriefRecord, CallbackDeliveryMode,
+        CallbackDeliveryPayload, CallbackDeliveryResult, CallbackIngressDisposition,
+        ClosureDecision, ContinuationResolution, ControlAction, ExecCommandBatchItemStatus,
+        ExecCommandBatchResult, ExecutionAdmissionProvenance, ExternalTriggerCapability,
+        ExternalTriggerRecord, ExternalTriggerScope, ExternalTriggerStatus, ExternalTriggerSummary,
+        LoadedAgentsMd, MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind,
         MessageLifecycleAuditEvent, MessageOrigin, PendingWakeHint, Priority, QueueEntryRecord,
         QueueEntryStatus, RuntimeFailurePhase, RuntimeFailureSummary, RuntimePosture,
         SkillActivationSource, SkillActivationState, SkillCatalogEntry, SkillLoadReason,
@@ -3884,18 +3889,41 @@ impl RuntimeHandle {
         Ok(())
     }
 
-    pub async fn enqueue(&self, mut message: MessageEnvelope) -> Result<MessageEnvelope> {
+    pub async fn enqueue(&self, message: MessageEnvelope) -> Result<MessageEnvelope> {
+        let (message, _) = self.enqueue_internal(message, None).await?;
+        Ok(message)
+    }
+
+    pub(crate) async fn enqueue_delivery(
+        &self,
+        message: MessageEnvelope,
+        delivery: &AgentMessageDeliveryRecord,
+    ) -> Result<AgentMessageDeliveryReceipt> {
+        let (_, receipt) = self.enqueue_internal(message, Some(delivery)).await?;
+        receipt.context("delivery admission completed without a receipt")
+    }
+
+    async fn enqueue_internal(
+        &self,
+        mut message: MessageEnvelope,
+        delivery: Option<&AgentMessageDeliveryRecord>,
+    ) -> Result<(MessageEnvelope, Option<AgentMessageDeliveryReceipt>)> {
         message.normalize_admission_fields();
         message.turn_id = normalized_turn_id(message.turn_id.as_deref());
         if message.turn_id.is_none() {
             message.turn_id = Some(crate::ids::turn_id());
         }
         for attempt in 0..ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
-            match self.enqueue_attempt(&message).await {
+            match self.enqueue_attempt(&message, delivery).await {
                 Ok(mut commit) => {
-                    commit.effects.notify_scheduler = true;
+                    commit.effects.notify_scheduler =
+                        commit.delivery_receipt.as_ref().is_none_or(|receipt| {
+                            receipt.outcome == AgentMessageDeliveryOutcome::Accepted
+                                && !receipt.idempotent_replay
+                        });
+                    let receipt = commit.delivery_receipt.clone();
                     self.apply_transition_commit(commit).await;
-                    return Ok(message);
+                    return Ok((message, receipt));
                 }
                 Err(error) => {
                     let can_retry = attempt + 1 < ENQUEUE_AGENT_STATE_MAX_ATTEMPTS
@@ -3913,7 +3941,11 @@ impl RuntimeHandle {
         unreachable!("enqueue attempts always return or retry")
     }
 
-    async fn enqueue_attempt(&self, message: &MessageEnvelope) -> Result<TransitionCommit> {
+    async fn enqueue_attempt(
+        &self,
+        message: &MessageEnvelope,
+        delivery: Option<&AgentMessageDeliveryRecord>,
+    ) -> Result<TransitionCommit> {
         let wait_trigger = self.wait_trigger_transition_for_message(message)?;
         let message_is_new = self
             .inner
@@ -4005,47 +4037,55 @@ impl RuntimeHandle {
                     }),
                 ));
             }
-            let mut commit = self
-                .inner
-                .runtime_db
-                .transitions()
-                .commit_queue_with_wait_trigger(
-                    &crate::runtime_db::transitions::QueueTransitionCommand {
-                        agent_id: message.agent_id.clone(),
-                        operation: crate::runtime_db::transitions::QueueOperation::Admit,
-                        mutation: crate::runtime_db::transitions::QueueMutation::Upsert(
-                            QueueEntryRecord {
-                                message_id: message.id.clone(),
-                                agent_id: message.agent_id.clone(),
-                                priority: message.priority.clone(),
-                                status: QueueEntryStatus::Queued,
-                                created_at: existing_queue_entry
-                                    .as_ref()
-                                    .map_or(message.created_at, |entry| entry.created_at),
-                                updated_at: Utc::now(),
-                            },
-                        ),
-                        scheduler_claim_work_item: None,
-                        agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
-                            expected: Some(Box::new(expected_persisted_state)),
-                            record: Box::new(committed_state.clone()),
-                        }),
-                        message_evidence: vec![message.clone()],
-                        transcript_entries: Vec::new(),
-                        turn_record: None,
-                        audit_events,
-                        notify_scheduler: true,
-                        fault: self.take_transition_fault(),
-                        brief_evidence: Vec::new(),
-                    },
-                    wait_trigger.as_ref(),
-                )?;
-            if queue_needs_push {
+            let command = crate::runtime_db::transitions::QueueTransitionCommand {
+                agent_id: message.agent_id.clone(),
+                operation: crate::runtime_db::transitions::QueueOperation::Admit,
+                mutation: crate::runtime_db::transitions::QueueMutation::Upsert(QueueEntryRecord {
+                    message_id: message.id.clone(),
+                    agent_id: message.agent_id.clone(),
+                    priority: message.priority.clone(),
+                    status: QueueEntryStatus::Queued,
+                    created_at: existing_queue_entry
+                        .as_ref()
+                        .map_or(message.created_at, |entry| entry.created_at),
+                    updated_at: Utc::now(),
+                }),
+                scheduler_claim_work_item: None,
+                agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
+                    expected: Some(Box::new(expected_persisted_state)),
+                    record: Box::new(committed_state.clone()),
+                }),
+                message_evidence: vec![message.clone()],
+                transcript_entries: Vec::new(),
+                turn_record: None,
+                audit_events,
+                notify_scheduler: true,
+                fault: self.take_transition_fault(),
+                brief_evidence: Vec::new(),
+            };
+            let mut commit = if let Some(delivery) = delivery {
+                self.inner
+                    .runtime_db
+                    .transitions()
+                    .commit_delivery_admission(&command, wait_trigger.as_ref(), delivery)?
+            } else {
+                self.inner
+                    .runtime_db
+                    .transitions()
+                    .commit_queue_with_wait_trigger(&command, wait_trigger.as_ref())?
+            };
+            let queue_admitted = commit.delivery_receipt.as_ref().is_none_or(|receipt| {
+                receipt.outcome == AgentMessageDeliveryOutcome::Accepted
+                    && !receipt.idempotent_replay
+            });
+            if queue_admitted && queue_needs_push {
                 guard.queue.push(message.clone());
             }
-            guard.state = committed_state.clone();
-            guard.last_persisted_state = committed_state;
-            commit.effects.agent_state = None;
+            if queue_admitted {
+                guard.state = committed_state.clone();
+                guard.last_persisted_state = committed_state;
+                commit.effects.agent_state = None;
+            }
             commit
         };
         Ok(commit)

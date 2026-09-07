@@ -24,6 +24,16 @@ pub fn message_id() -> String {
     runtime_id("msg")
 }
 
+pub fn agent_message_delivery_id(idempotency_scope: &str, idempotency_key_digest: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"holon.agent-message-delivery.v1\x00");
+    hasher.update(idempotency_scope.as_bytes());
+    hasher.update(b"\x00");
+    hasher.update(idempotency_key_digest.as_bytes());
+    let digest = hasher.finalize();
+    format!("delivery1_{}", hex(&digest[..16]))
+}
+
 pub fn task_id() -> String {
     runtime_id("task")
 }

@@ -142,135 +142,251 @@ pub(crate) fn execute_builtin_tool_with_context<'a>(
     call: &'a ToolCall,
     context: &'a ToolExecutionContext,
 ) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + 'a>> {
-    Box::pin(execute_builtin_tool_inner(
-        runtime,
-        agent_id,
-        authority_class,
-        call,
-        context,
-    ))
+    execute_builtin_tool_inner(runtime, agent_id, authority_class, call, context)
 }
 
-async fn execute_builtin_tool_inner(
-    runtime: &RuntimeHandle,
-    agent_id: &str,
-    authority_class: &AuthorityClass,
-    call: &ToolCall,
-    context: &ToolExecutionContext,
-) -> Result<ToolResult> {
+fn execute_builtin_tool_inner<'a>(
+    runtime: &'a RuntimeHandle,
+    agent_id: &'a str,
+    authority_class: &'a AuthorityClass,
+    call: &'a ToolCall,
+    context: &'a ToolExecutionContext,
+) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + 'a>> {
     match call.name.as_str() {
-        sleep::NAME => sleep::execute(runtime, agent_id, authority_class, &call.input).await,
-        wait_for::NAME => wait_for::execute(runtime, agent_id, authority_class, &call.input).await,
-        timer::CREATE_NAME => timer::create(runtime, &call.input).await,
-        timer::LIST_NAME => timer::list(runtime, &call.input).await,
-        timer::GET_NAME => timer::get(runtime, &call.input).await,
-        timer::CANCEL_NAME => timer::cancel(runtime, &call.input).await,
-        agent_get::NAME => {
-            agent_get::execute(runtime, agent_id, authority_class, &call.input).await
-        }
-        enqueue::NAME => enqueue::execute(runtime, agent_id, authority_class, &call.input).await,
-        spawn_agent::NAME => {
-            spawn_agent::execute(runtime, agent_id, authority_class, &call.input).await
-        }
-        task_list::NAME => {
-            task_list::execute(runtime, agent_id, authority_class, &call.input).await
-        }
-        task_list::LEGACY_NAME => {
-            task_list::execute_legacy(runtime, agent_id, authority_class, &call.input).await
-        }
-        task_status::NAME => {
-            task_status::execute(runtime, agent_id, authority_class, &call.input).await
-        }
-        task_input::NAME => {
-            task_input::execute(runtime, agent_id, authority_class, &call.input).await
-        }
-        task_output::NAME => {
-            task_output::execute(runtime, agent_id, authority_class, &call.input).await
-        }
-        task_stop::NAME => {
-            task_stop::execute(runtime, agent_id, authority_class, &call.input).await
-        }
-        list_model_providers::NAME => {
-            list_model_providers::execute(runtime, agent_id, authority_class, &call.input).await
-        }
-        list_provider_models::NAME => {
-            list_provider_models::execute(runtime, agent_id, authority_class, &call.input).await
-        }
-        create_work_item::NAME => {
-            create_work_item::execute(runtime, agent_id, authority_class, &call.input).await
-        }
-        pick_work_item::NAME => {
-            pick_work_item::execute(runtime, agent_id, authority_class, &call.input).await
-        }
-        get_work_item::NAME => {
-            get_work_item::execute(runtime, agent_id, authority_class, &call.input).await
-        }
-        generate_image::NAME => {
-            generate_image::execute(runtime, agent_id, authority_class, &call.input).await
-        }
-        list_work_items::NAME => {
-            list_work_items::execute(runtime, agent_id, authority_class, &call.input).await
-        }
-        update_work_item::NAME => {
-            update_work_item::execute(runtime, agent_id, authority_class, &call.input).await
-        }
-        complete_work_item::NAME => {
-            complete_work_item::execute(runtime, agent_id, authority_class, &call.input, context)
-                .await
-        }
-        memory_search::NAME => {
-            memory_search::execute(runtime, agent_id, authority_class, &call.input).await
-        }
-        memory_get::NAME => {
-            memory_get::execute(runtime, agent_id, authority_class, &call.input).await
-        }
-        get_workspace_state::NAME => {
-            get_workspace_state::execute(runtime, agent_id, authority_class, &call.input).await
-        }
-        attach_workspace::NAME => {
-            attach_workspace::execute(runtime, agent_id, authority_class, &call.input).await
-        }
-        detach_workspace::NAME => {
-            detach_workspace::execute(runtime, agent_id, authority_class, &call.input).await
-        }
-        switch_workspace::NAME => {
-            switch_workspace::execute(runtime, agent_id, authority_class, &call.input).await
-        }
-        create_worktree::NAME => {
-            create_worktree::execute(runtime, agent_id, authority_class, &call.input).await
-        }
-        remove_worktree::NAME => {
-            remove_worktree::execute(runtime, agent_id, authority_class, &call.input).await
-        }
-        create_external_trigger::NAME => {
-            create_external_trigger::execute(runtime, agent_id, authority_class, &call.input).await
-        }
-        cancel_external_trigger::NAME => {
-            cancel_external_trigger::execute(runtime, agent_id, authority_class, &call.input).await
-        }
-        apply_patch_tool::NAME => {
-            apply_patch_tool::execute(runtime, agent_id, authority_class, &call.input).await
-        }
-        exec_command::NAME => {
-            exec_command::execute(runtime, agent_id, authority_class, &call.input).await
-        }
-        exec_command_batch::NAME => {
-            exec_command_batch::execute(runtime, agent_id, authority_class, &call.input).await
-        }
-        use_workspace::NAME => {
-            use_workspace::execute(runtime, agent_id, authority_class, &call.input).await
-        }
-        view_image::NAME => {
-            view_image::execute(runtime, agent_id, authority_class, &call.input).await
-        }
-        web_fetch::NAME => {
-            web_fetch::execute(runtime, agent_id, authority_class, &call.input).await
-        }
-        web_search::NAME => {
-            web_search::execute(runtime, agent_id, authority_class, &call.input).await
-        }
-        x_search::NAME => x_search::execute(runtime, agent_id, authority_class, &call.input).await,
-        _ => Err(anyhow!("unknown builtin tool {}", call.name)),
+        sleep::NAME => Box::pin(sleep::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+        )),
+        wait_for::NAME => Box::pin(wait_for::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+        )),
+        timer::CREATE_NAME => Box::pin(timer::create(runtime, &call.input)),
+        timer::LIST_NAME => Box::pin(timer::list(runtime, &call.input)),
+        timer::GET_NAME => Box::pin(timer::get(runtime, &call.input)),
+        timer::CANCEL_NAME => Box::pin(timer::cancel(runtime, &call.input)),
+        agent_get::NAME => Box::pin(agent_get::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+        )),
+        enqueue::NAME => Box::pin(enqueue::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+        )),
+        spawn_agent::NAME => Box::pin(spawn_agent::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+        )),
+        task_list::NAME => Box::pin(task_list::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+        )),
+        task_list::LEGACY_NAME => Box::pin(task_list::execute_legacy(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+        )),
+        task_status::NAME => Box::pin(task_status::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+        )),
+        task_input::NAME => Box::pin(task_input::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+        )),
+        task_output::NAME => Box::pin(task_output::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+        )),
+        task_stop::NAME => Box::pin(task_stop::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+        )),
+        list_model_providers::NAME => Box::pin(list_model_providers::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+        )),
+        list_provider_models::NAME => Box::pin(list_provider_models::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+        )),
+        create_work_item::NAME => Box::pin(create_work_item::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+        )),
+        pick_work_item::NAME => Box::pin(pick_work_item::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+        )),
+        get_work_item::NAME => Box::pin(get_work_item::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+        )),
+        generate_image::NAME => Box::pin(generate_image::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+        )),
+        list_work_items::NAME => Box::pin(list_work_items::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+        )),
+        update_work_item::NAME => Box::pin(update_work_item::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+        )),
+        complete_work_item::NAME => Box::pin(complete_work_item::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+            context,
+        )),
+        memory_search::NAME => Box::pin(memory_search::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+        )),
+        memory_get::NAME => Box::pin(memory_get::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+        )),
+        get_workspace_state::NAME => Box::pin(get_workspace_state::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+        )),
+        attach_workspace::NAME => Box::pin(attach_workspace::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+        )),
+        detach_workspace::NAME => Box::pin(detach_workspace::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+        )),
+        switch_workspace::NAME => Box::pin(switch_workspace::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+        )),
+        create_worktree::NAME => Box::pin(create_worktree::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+        )),
+        remove_worktree::NAME => Box::pin(remove_worktree::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+        )),
+        create_external_trigger::NAME => Box::pin(create_external_trigger::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+        )),
+        cancel_external_trigger::NAME => Box::pin(cancel_external_trigger::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+        )),
+        apply_patch_tool::NAME => Box::pin(apply_patch_tool::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+        )),
+        exec_command::NAME => Box::pin(exec_command::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+        )),
+        exec_command_batch::NAME => Box::pin(exec_command_batch::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+        )),
+        use_workspace::NAME => Box::pin(use_workspace::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+        )),
+        view_image::NAME => Box::pin(view_image::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+        )),
+        web_fetch::NAME => Box::pin(web_fetch::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+        )),
+        web_search::NAME => Box::pin(web_search::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+        )),
+        x_search::NAME => Box::pin(x_search::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+        )),
+        _ => Box::pin(async move { Err(anyhow!("unknown builtin tool {}", call.name)) }),
     }
 }
 

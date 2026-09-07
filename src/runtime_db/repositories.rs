@@ -608,6 +608,9 @@ impl AgentDeletionRepository<'_> {
             identity.updated_at = now;
             upsert_agent_identity_tx(tx, &identity)?;
             insert_agent_deletion_job_tx(tx, &job)?;
+            crate::runtime_db::agent_message_delivery::cancel_active_deliveries_for_target_tx(
+                tx, agent_id,
+            )?;
             Ok((identity, job, true))
         })
     }

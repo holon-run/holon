@@ -58,15 +58,17 @@ use crate::{
         AgentBootstrapStep, AgentBootstrapStepStatus, AgentBootstrapWorkspaceState,
         AgentCreateReceipt, AgentCreateResult, AgentCreateStage, AgentDeletionJob, AgentDetail,
         AgentDurability, AgentIdentityRecord, AgentIdentityView, AgentKind, AgentLifecycleHint,
-        AgentListEntry, AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentState,
-        AgentStatus, AgentSummary, AgentTokenUsageSummary, AgentTreeNode, AgentTreeProjection,
-        AgentVisibility, AuthorityClass, ChildAgentSummary, ClosureOutcome, CreateAgentRequest,
-        ExternalTriggerRecord, ExternalTriggerStatus, ExternalTriggerSummary, LoadedAgentsMdView,
-        MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin,
-        OperatorNotificationRecord, Priority, QueueEntryStatus, RuntimeFailureSummary,
-        SpawnAgentModelResolution, SpawnAgentModelResolutionStatus, TaskKind, TaskRecord,
-        TaskStatus, TimerRecord, TokenUsage, TranscriptEntry, TranscriptEntryKind,
-        WaitConditionSummary, WorkspaceEntry, WorkspaceOccupancyRecord,
+        AgentListEntry, AgentMessageCallerContext, AgentMessageDeliveryOutcome,
+        AgentMessagePrincipalKind, AgentMessageSendRequest, AgentOwnership, AgentProfilePreset,
+        AgentRegistryStatus, AgentState, AgentStatus, AgentSummary, AgentTokenUsageSummary,
+        AgentTreeNode, AgentTreeProjection, AgentVisibility, AuthorityClass, ChildAgentSummary,
+        ClosureOutcome, CreateAgentRequest, ExternalTriggerRecord, ExternalTriggerStatus,
+        ExternalTriggerSummary, LoadedAgentsMdView, MessageBody, MessageDeliverySurface,
+        MessageEnvelope, MessageKind, MessageOrigin, OperatorNotificationRecord, Priority,
+        QueueEntryStatus, RuntimeFailureSummary, SpawnAgentModelResolution,
+        SpawnAgentModelResolutionStatus, TaskKind, TaskRecord, TaskStatus, TimerRecord, TokenUsage,
+        TranscriptEntry, TranscriptEntryKind, WaitConditionSummary, WorkspaceEntry,
+        WorkspaceOccupancyRecord,
     },
 };
 
@@ -4139,31 +4141,90 @@ impl RuntimeHost {
         message_text: String,
         authority_class: AuthorityClass,
     ) -> Result<ChildTaskSpawn> {
-        let identity = self
-            .active_agent_identity(target_agent_id)
-            .map_err(anyhow::Error::from)?;
-        let runtime = self.get_or_create_agent(target_agent_id).await?;
-        let child_turn_baseline = runtime.agent_state().await?.turn_index;
-        let mut message = crate::types::MessageEnvelope::new(
-            target_agent_id.to_string(),
-            crate::types::MessageKind::InternalFollowup,
-            crate::types::MessageOrigin::Task {
+        let caller = AgentMessageCallerContext {
+            caller_principal: "runtime:agent-invocation".into(),
+            caller_agent_id: Some(task.agent_id.clone()),
+            principal_kind: AgentMessagePrincipalKind::RuntimeCapability,
+            route: "agent_invocation".into(),
+            origin: MessageOrigin::Task {
                 task_id: task.id.clone(),
             },
-            authority_class.clone(),
-            crate::types::Priority::Normal,
-            crate::types::MessageBody::Text { text: message_text },
-        )
-        .with_admission(
-            crate::types::MessageDeliverySurface::RuntimeSystem,
-            crate::types::AdmissionContext::RuntimeOwned,
-        );
-        message.metadata = Some(json!({
-            "invocation_task_id": task.id,
-            "target_agent_id": target_agent_id,
-            "delegated_authority_class": authority_class,
-        }));
-        runtime.enqueue(message).await?;
+            authority_class,
+            delivery_surface: MessageDeliverySurface::RuntimeSystem,
+            admission_context: AdmissionContext::RuntimeOwned,
+            current_turn_id: task
+                .detail
+                .as_ref()
+                .and_then(|detail| detail.get("parent_turn_id"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            current_task_id: Some(task.id.clone()),
+            current_work_item_id: task.work_item_id.clone(),
+        };
+        let prepared = crate::runtime::AgentMessageDeliveryService::prepare(
+            AgentMessageSendRequest {
+                target_agent_id: target_agent_id.to_string(),
+                content: MessageBody::Text { text: message_text },
+                client_idempotency_key: task.id.clone(),
+                correlation_id: Some(task.id.clone()),
+                causation_id: task.parent_message_id.clone(),
+                requested_priority: Some(Priority::Normal),
+            },
+            caller,
+        )?;
+        let identity = self.agent_identity_record(target_agent_id)?;
+        let (identity, runtime, receipt) = match identity {
+            Some(identity) if identity.status == AgentRegistryStatus::Active => {
+                match self.get_or_create_agent(target_agent_id).await {
+                    Ok(runtime) => {
+                        let receipt = runtime
+                            .agent_message_delivery_service()
+                            .deliver(&prepared)
+                            .await?;
+                        (identity, Some(runtime), receipt)
+                    }
+                    Err(activation_error) => {
+                        let latest_identity = self.agent_identity_record(target_agent_id)?;
+                        if latest_identity
+                            .as_ref()
+                            .is_none_or(|latest| latest.status != AgentRegistryStatus::Active)
+                        {
+                            let receipt = self
+                                .runtime_db()
+                                .agent_message_deliveries()
+                                .admit_without_queue(&prepared.record)?;
+                            (latest_identity.unwrap_or(identity), None, receipt)
+                        } else {
+                            return Err(activation_error);
+                        }
+                    }
+                }
+            }
+            _ => {
+                let receipt = self
+                    .runtime_db()
+                    .agent_message_deliveries()
+                    .admit_without_queue(&prepared.record)?;
+                let identity = identity.ok_or_else(|| {
+                    anyhow!("agent message delivery target {target_agent_id} was not found")
+                })?;
+                (identity, None, receipt)
+            }
+        };
+        if receipt.outcome != AgentMessageDeliveryOutcome::Accepted {
+            return Err(anyhow!(
+                "agent message delivery {} was rejected: {:?}",
+                receipt.delivery_id,
+                receipt.rejection_code
+            ));
+        }
+        let runtime = runtime.ok_or_else(|| {
+            anyhow!(
+                "accepted delivery {} targets an inactive agent",
+                receipt.delivery_id
+            )
+        })?;
+        let child_turn_baseline = runtime.agent_state().await?.turn_index;
 
         let mut task_detail = json!({
             "target_agent_id": target_agent_id,
@@ -4173,6 +4234,8 @@ impl RuntimeHost {
             "target_agent_profile_preset": identity.profile_preset(),
             "child_turn_baseline": child_turn_baseline,
             "created_new_subagent": false,
+            "delivery_id": receipt.delivery_id,
+            "delivery_state": receipt.state,
         });
         if identity.kind == AgentKind::Child {
             task_detail["child_agent_id"] = json!(target_agent_id);
@@ -4531,8 +4594,7 @@ impl RuntimeHost {
             let runtime = runtime.clone();
             let agent_id = agent_id.to_string();
             async move {
-                let run = runtime.clone().run();
-                tokio::pin!(run);
+                let mut run = Box::pin(runtime.clone().run());
                 let result = tokio::select! {
                     result = &mut run => result,
                     bootstrap = runtime.wait_for_bootstrap() => {
@@ -4736,9 +4798,13 @@ impl RuntimeHostBridge {
         message_text: String,
         authority_class: AuthorityClass,
     ) -> Result<ChildTaskSpawn> {
-        self.host()?
-            .invoke_existing_agent(task, target_agent_id, message_text, authority_class)
-            .await
+        Box::pin(self.host()?.invoke_existing_agent(
+            task,
+            target_agent_id,
+            message_text,
+            authority_class,
+        ))
+        .await
     }
 
     pub(crate) async fn create_agent(
