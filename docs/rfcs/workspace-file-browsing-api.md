@@ -167,11 +167,13 @@ buffering the file in memory:
 
 - `Accept-Ranges: bytes` is always advertised; a single `Range: bytes=…`
   header returns `206 Partial Content` with `Content-Range`. Malformed or
-  multi-range requests fall back to the full `200` body; unsatisfiable
+  multi-range requests fall back to the full `200` body; reversed ranges
+  (`last < first`) are invalid specs and are likewise ignored; unsatisfiable
   ranges return `416` with `Content-Range: bytes */<size>`.
 - Each response carries a strong `ETag` (path + size + mtime) and
   `Last-Modified`. Matching `If-None-Match` returns `304 Not Modified`;
-  `Range` is only honored when `If-Range` matches the current validator.
+  `Range` is only honored when `If-Range` matches the current validator
+  (strong comparison; weak tags never match).
 - `?download=true` sets `Content-Disposition: attachment` (RFC 5987 encoded
   for non-ASCII names); otherwise the file is served inline.
 - Every raw response sends `X-Content-Type-Options: nosniff`. Inline

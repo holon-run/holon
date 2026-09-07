@@ -1,5 +1,3 @@
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::path::Path as FsPath;
 use std::time::SystemTime;
@@ -300,6 +298,12 @@ fn parse_range_header(value: &str, len: u64) -> RangeOutcome {
     if len == 0 || start >= len {
         return RangeOutcome::Unsatisfiable;
     }
+    if end < start {
+        // Invalid byte-range-spec (RFC 9110 §14.1.2): last-byte-pos must not
+        // be less than first-byte-pos. The spec is ignored so the full 200
+        // body is served instead of underflowing the partial length.
+        return RangeOutcome::Full;
+    }
     RangeOutcome::Partial(ByteRange {
         start,
         end: end.min(len - 1),
@@ -324,26 +328,35 @@ fn if_none_match_matches(if_none_match: &str, etag: &str) -> bool {
 }
 
 /// Whether an `If-Range` header authorizes serving a range. Accepts the exact
-/// entity tag (strong form) or an exact Last-Modified date echo.
+/// entity tag or an exact Last-Modified date echo. RFC 9110 §13.1.5 requires
+/// strong comparison, so client-sent weak tags never match.
 fn if_range_matches(if_range: &str, etag: &str, last_modified: Option<&str>) -> bool {
     let value = if_range.trim();
-    if value == etag {
-        return true;
-    }
-    strip_weak_tag(value) == strip_weak_tag(etag) || last_modified.is_some_and(|lm| value == lm)
+    value == etag || last_modified.is_some_and(|lm| value == lm)
 }
 
 /// Build a strong entity tag from identity, size, and modification time.
+/// Uses FNV-1a rather than `DefaultHasher`: the std hash algorithm is
+/// unspecified and may change across Rust releases, which would silently
+/// invalidate cached validators after a runtime upgrade.
 fn build_etag(relative_path: &str, size: u64, modified: Option<SystemTime>) -> String {
     let mtime_nanos = modified
         .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let mut hasher = DefaultHasher::new();
-    relative_path.hash(&mut hasher);
-    size.hash(&mut hasher);
-    mtime_nanos.hash(&mut hasher);
-    format!("\"{:x}-{:x}\"", hasher.finish(), mtime_nanos)
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = FNV_OFFSET;
+    for byte in relative_path
+        .as_bytes()
+        .iter()
+        .chain(&size.to_le_bytes())
+        .chain(&mtime_nanos.to_le_bytes())
+    {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    format!("\"{hash:x}-{mtime_nanos:x}\"")
 }
 
 /// Format a timestamp as an HTTP-date (IMF-fixdate).
@@ -445,9 +458,9 @@ async fn serve_file_bytes(
             if let Some(lm) = &last_modified {
                 builder = builder.header(LAST_MODIFIED, lm.as_str());
             }
-            return Ok(builder
+            return builder
                 .body(Body::empty())
-                .map_err(|err| error_response(anyhow!(err)))?);
+                .map_err(|err| error_response(anyhow!(err)));
         }
     }
 
@@ -530,9 +543,9 @@ async fn serve_file_bytes(
         builder = builder.header("Content-Security-Policy", "sandbox");
     }
 
-    Ok(builder
+    builder
         .body(Body::from_stream(stream))
-        .map_err(|err| error_response(anyhow!(err)))?)
+        .map_err(|err| error_response(anyhow!(err)))
 }
 
 /// Handler for workspace root (no sub-path).
@@ -715,35 +728,25 @@ async fn workspace_files_inner(
         String::from_utf8_lossy(read_bytes).to_string()
     };
 
-    if accept_json {
-        let file_content = FileContent {
-            metadata: FileMetadata {
-                entry_type: "file",
-                path: relative.to_string(),
-                workspace_id,
-                size: content.len() as u64,
-                mime_type: mime_type.clone(),
-                truncated,
-                total_size: if truncated {
-                    Some(total_size as u64)
-                } else {
-                    None
-                },
+    // Reaching here implies accept_json: non-JSON text access is routed to
+    // serve_file_bytes above.
+    let file_content = FileContent {
+        metadata: FileMetadata {
+            entry_type: "file",
+            path: relative.to_string(),
+            workspace_id,
+            size: content.len() as u64,
+            mime_type: mime_type.clone(),
+            truncated,
+            total_size: if truncated {
+                Some(total_size as u64)
+            } else {
+                None
             },
-            content: Some(content),
-        };
-        Ok(Json(json!(file_content)).into_response())
-    } else {
-        let mut response = Response::builder()
-            .status(StatusCode::OK)
-            .header(CONTENT_TYPE, mime_type.as_str());
-        if truncated {
-            response = response.header("X-Content-Truncated", "true");
-        }
-        Ok(response
-            .body(Body::from(content))
-            .map_err(|err| error_response(anyhow!(err)))?)
-    }
+        },
+        content: Some(content),
+    };
+    Ok(Json(json!(file_content)).into_response())
 }
 
 #[cfg(test)]
@@ -836,6 +839,9 @@ mod tests {
         // Unknown units, multi-range, and malformed values fall back to full.
         assert_eq!(parse_range_header("items=0-3", 26), RangeOutcome::Full);
         assert_eq!(parse_range_header("bytes=0-1,3-4", 26), RangeOutcome::Full);
+        // Reversed ranges are invalid specs, ignored per RFC 9110 §14.1.2.
+        assert_eq!(parse_range_header("bytes=5-3", 26), RangeOutcome::Full);
+        assert_eq!(parse_range_header("bytes=25-24", 26), RangeOutcome::Full);
         assert_eq!(parse_range_header("bytes=abc", 26), RangeOutcome::Full);
         assert_eq!(parse_range_header("bytes=", 26), RangeOutcome::Full);
     }
@@ -850,7 +856,9 @@ mod tests {
         assert!(!if_none_match_matches("\"stale\"", etag));
 
         assert!(if_range_matches(etag, etag, None));
-        assert!(if_range_matches("W/\"abc-123\"", etag, None));
+        // If-Range uses strong comparison: weak tags never match.
+        assert!(!if_range_matches("W/\"abc-123\"", etag, None));
+        assert!(!if_range_matches(&format!("W/{etag}"), etag, None));
         assert!(if_range_matches(
             "Sun, 06 Nov 1994 08:49:37 GMT",
             etag,
@@ -880,5 +888,16 @@ mod tests {
             attachment_disposition("笔记.txt"),
             "attachment; filename*=UTF-8''%E7%AC%94%E8%AE%B0.txt"
         );
+    }
+
+    #[test]
+    fn build_etag_is_deterministic() {
+        let modified = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+        let etag = build_etag("src/lib.rs", 1024, Some(modified));
+        assert_eq!(etag, build_etag("src/lib.rs", 1024, Some(modified)));
+        assert!(etag.starts_with('"') && etag.ends_with('"'));
+        assert_ne!(etag, build_etag("src/other.rs", 1024, Some(modified)));
+        assert_ne!(etag, build_etag("src/lib.rs", 2048, Some(modified)));
+        assert_ne!(etag, build_etag("src/lib.rs", 1024, None));
     }
 }

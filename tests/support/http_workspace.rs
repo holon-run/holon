@@ -394,6 +394,12 @@ pub async fn workspace_files_serves_range_requests() -> Result<()> {
     assert_eq!(response.status(), 200);
     assert_eq!(response.bytes().await?, data.as_ref());
 
+    // Reversed ranges are invalid specs (RFC 9110 §14.1.2); the full
+    // representation is served instead of underflowing the length.
+    let response = client.get(&url).header("Range", "bytes=5-3").send().await?;
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.bytes().await?, data.as_ref());
+
     server.abort();
     Ok(())
 }
@@ -449,6 +455,17 @@ pub async fn workspace_files_conditional_requests() -> Result<()> {
         .await?;
     assert_eq!(response.status(), 206);
     assert_eq!(&response.bytes().await?[..], b"abcd");
+
+    // Weak tags never authorize a range: If-Range requires strong
+    // comparison (RFC 9110 §13.1.5), so the full body is served.
+    let response = client
+        .get(&url)
+        .header("If-Range", format!("W/{etag}"))
+        .header("Range", "bytes=0-3")
+        .send()
+        .await?;
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.bytes().await?, data.as_ref());
 
     server.abort();
     Ok(())
