@@ -699,6 +699,447 @@
               "null"
             ]
           },
+          "canonical_relations": {
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "capability_policy": {
+                "properties": {
+                  "agent_id": {
+                    "type": "string"
+                  },
+                  "created_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "revision": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "rules": {
+                    "items": {
+                      "properties": {
+                        "effect": {
+                          "enum": [
+                            "allow",
+                            "deny"
+                          ],
+                          "type": "string"
+                        },
+                        "family": {
+                          "enum": [
+                            "core_agent",
+                            "local_environment",
+                            "web",
+                            "agent_creation",
+                            "authority_expanding",
+                            "external_trigger"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "family",
+                        "effect"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "agent_id",
+                  "revision",
+                  "rules",
+                  "created_at"
+                ],
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "durability": {
+                "properties": {
+                  "agent_id": {
+                    "type": "string"
+                  },
+                  "created_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "durability": {
+                    "enum": [
+                      "persistent",
+                      "ephemeral"
+                    ],
+                    "type": "string"
+                  },
+                  "revision": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "agent_id",
+                  "durability",
+                  "revision",
+                  "created_at"
+                ],
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "identity_lifecycle": {
+                "enum": [
+                  "active",
+                  "deleting",
+                  "deleted"
+                ],
+                "type": "string"
+              },
+              "issues": {
+                "items": {
+                  "properties": {
+                    "axis": {
+                      "enum": [
+                        "lineage",
+                        "supervision",
+                        "durability",
+                        "lifecycle_attachment",
+                        "capability_policy",
+                        "message_policy"
+                      ],
+                      "type": "string"
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "resolution": {
+                      "enum": [
+                        "resolved",
+                        "ambiguous",
+                        "contradictory",
+                        "missing_evidence"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "axis",
+                    "resolution",
+                    "detail"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "lifecycle_attachment": {
+                "properties": {
+                  "agent_id": {
+                    "type": "string"
+                  },
+                  "attachment": {
+                    "enum": [
+                      "independent",
+                      "supervision_attached"
+                    ],
+                    "type": "string"
+                  },
+                  "created_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "revision": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "agent_id",
+                  "attachment",
+                  "revision",
+                  "created_at"
+                ],
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "lifecycle_fence": {
+                "enum": [
+                  "open",
+                  "deletion_fenced",
+                  "tombstoned"
+                ],
+                "type": "string"
+              },
+              "lineage": {
+                "properties": {
+                  "child_agent_id": {
+                    "type": "string"
+                  },
+                  "created_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "creation_cause": {
+                    "enum": [
+                      "legacy_spawn",
+                      "create_agent",
+                      "migration"
+                    ],
+                    "type": "string"
+                  },
+                  "parent_agent_id": {
+                    "type": "string"
+                  },
+                  "revision": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "child_agent_id",
+                  "parent_agent_id",
+                  "creation_cause",
+                  "revision",
+                  "created_at"
+                ],
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "message_policy": {
+                "properties": {
+                  "agent_id": {
+                    "type": "string"
+                  },
+                  "created_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "default_effect": {
+                    "enum": [
+                      "allow",
+                      "deny"
+                    ],
+                    "type": "string"
+                  },
+                  "revision": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "rules": {
+                    "items": {
+                      "properties": {
+                        "effect": {
+                          "enum": [
+                            "allow",
+                            "deny"
+                          ],
+                          "type": "string"
+                        },
+                        "principal_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "principal_kind": {
+                          "enum": [
+                            "operator",
+                            "supervising_parent",
+                            "peer_agent",
+                            "external_ingress",
+                            "runtime_capability"
+                          ],
+                          "type": "string"
+                        },
+                        "route": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "principal_kind",
+                        "effect"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "agent_id",
+                  "revision",
+                  "default_effect",
+                  "rules",
+                  "created_at"
+                ],
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "resolution": {
+                "enum": [
+                  "resolved",
+                  "ambiguous",
+                  "contradictory",
+                  "missing_evidence"
+                ],
+                "type": "string"
+              },
+              "sources": {
+                "properties": {
+                  "capability_policy": {
+                    "enum": [
+                      "canonical",
+                      "legacy",
+                      null
+                    ],
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "durability": {
+                    "enum": [
+                      "canonical",
+                      "legacy",
+                      null
+                    ],
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "lifecycle_attachment": {
+                    "enum": [
+                      "canonical",
+                      "legacy",
+                      null
+                    ],
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "lineage": {
+                    "enum": [
+                      "canonical",
+                      "legacy",
+                      null
+                    ],
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "message_policy": {
+                    "enum": [
+                      "canonical",
+                      "legacy",
+                      null
+                    ],
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "supervision": {
+                    "enum": [
+                      "canonical",
+                      "legacy",
+                      null
+                    ],
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "type": "object"
+              },
+              "supervision": {
+                "properties": {
+                  "child_agent_id": {
+                    "type": "string"
+                  },
+                  "created_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "delegated_from_task_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "delegated_from_work_item_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "revision": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "state": {
+                    "enum": [
+                      "active",
+                      "cleanup_required",
+                      "closed"
+                    ],
+                    "type": "string"
+                  },
+                  "supervision_id": {
+                    "type": "string"
+                  },
+                  "supervisor_agent_id": {
+                    "type": "string"
+                  },
+                  "updated_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "supervision_id",
+                  "supervisor_agent_id",
+                  "child_agent_id",
+                  "state",
+                  "revision",
+                  "created_at",
+                  "updated_at"
+                ],
+                "type": [
+                  "object",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "agent_id",
+              "identity_lifecycle",
+              "lifecycle_fence",
+              "sources",
+              "resolution"
+            ],
+            "type": "object"
+          },
           "created_at": {
             "format": "date-time",
             "type": "string"
@@ -872,6 +1313,44 @@
             ],
             "type": "object"
           },
+          "lineage_children": {
+            "items": {
+              "properties": {
+                "child_agent_id": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "creation_cause": {
+                  "enum": [
+                    "legacy_spawn",
+                    "create_agent",
+                    "migration"
+                  ],
+                  "type": "string"
+                },
+                "parent_agent_id": {
+                  "type": "string"
+                },
+                "revision": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "child_agent_id",
+                "parent_agent_id",
+                "creation_cause",
+                "revision",
+                "created_at"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
           "name": {
             "type": [
               "string",
@@ -887,7 +1366,8 @@
           "identity",
           "display_name",
           "created_at",
-          "updated_at"
+          "updated_at",
+          "canonical_relations"
         ],
         "title": "AgentDetail",
         "type": "object"
@@ -2752,6 +3232,1632 @@
           "tasks"
         ],
         "title": "AgentStateSnapshotDto",
+        "type": "object"
+      },
+      "AgentTreeProjection": {
+        "definitions": {
+          "AgentTreeNode": {
+            "properties": {
+              "agent": {
+                "properties": {
+                  "active_workspace_entry": {
+                    "properties": {
+                      "access_mode": {
+                        "enum": [
+                          "shared_read",
+                          "exclusive_write"
+                        ],
+                        "type": "string"
+                      },
+                      "cwd": {
+                        "type": "string"
+                      },
+                      "execution_root": {
+                        "type": "string"
+                      },
+                      "execution_root_id": {
+                        "type": "string"
+                      },
+                      "occupancy_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "projection_kind": {
+                        "enum": [
+                          "canonical_root",
+                          "git_worktree_root"
+                        ],
+                        "type": "string"
+                      },
+                      "projection_metadata": {
+                        "anyOf": [
+                          {
+                            "anyOf": [
+                              {
+                                "properties": {
+                                  "original_branch": {
+                                    "type": "string"
+                                  },
+                                  "original_cwd": {
+                                    "type": "string"
+                                  },
+                                  "worktree_branch": {
+                                    "type": "string"
+                                  },
+                                  "worktree_path": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "original_cwd",
+                                  "original_branch",
+                                  "worktree_path",
+                                  "worktree_branch"
+                                ],
+                                "type": "object"
+                              },
+                              {
+                                "properties": {
+                                  "worktree_root": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "worktree_root"
+                                ],
+                                "type": "object"
+                              }
+                            ],
+                            "description": "Typed metadata for workspace projections, replacing untyped `serde_json::Value`.\n Uses `untagged` serde for backward compatibility with previously serialized JSON."
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "workspace_anchor": {
+                        "type": "string"
+                      },
+                      "workspace_id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "workspace_id",
+                      "workspace_anchor",
+                      "execution_root_id",
+                      "execution_root",
+                      "projection_kind",
+                      "access_mode",
+                      "cwd"
+                    ],
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "current_run_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "identity": {
+                    "properties": {
+                      "agent_id": {
+                        "type": "string"
+                      },
+                      "delegated_from_task_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "is_default_agent": {
+                        "type": "boolean"
+                      },
+                      "kind": {
+                        "enum": [
+                          "default",
+                          "named",
+                          "child"
+                        ],
+                        "type": "string"
+                      },
+                      "lineage_parent_agent_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "name": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "ownership": {
+                        "enum": [
+                          "parent_supervised",
+                          "self_owned"
+                        ],
+                        "type": "string"
+                      },
+                      "parent_agent_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "profile_preset": {
+                        "enum": [
+                          "private_child",
+                          "public_named"
+                        ],
+                        "type": "string"
+                      },
+                      "status": {
+                        "enum": [
+                          "active",
+                          "deleting",
+                          "deleted"
+                        ],
+                        "type": "string"
+                      },
+                      "visibility": {
+                        "enum": [
+                          "public",
+                          "private"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "agent_id",
+                      "kind",
+                      "visibility",
+                      "ownership",
+                      "profile_preset",
+                      "status",
+                      "is_default_agent"
+                    ],
+                    "type": "object"
+                  },
+                  "lifecycle": {
+                    "default": {
+                      "accepts_external_messages": true
+                    },
+                    "properties": {
+                      "accepts_external_messages": {
+                        "type": "boolean"
+                      },
+                      "operator_hint": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "accepts_external_messages"
+                    ],
+                    "type": "object"
+                  },
+                  "model": {
+                    "properties": {
+                      "active_model": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "effective_fallback_models": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "effective_model": {
+                        "type": "string"
+                      },
+                      "fallback_active": {
+                        "default": false,
+                        "type": "boolean"
+                      },
+                      "override_model": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "override_reasoning_effort": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "requested_model": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "runtime_default_model": {
+                        "type": "string"
+                      },
+                      "source": {
+                        "enum": [
+                          "runtime_default",
+                          "agent_override"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "source",
+                      "runtime_default_model",
+                      "effective_model"
+                    ],
+                    "type": "object"
+                  },
+                  "pending": {
+                    "default": 0,
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "scheduling_posture": {
+                    "default": {
+                      "posture": "unknown",
+                      "reason": "posture projection unavailable"
+                    },
+                    "properties": {
+                      "posture": {
+                        "enum": [
+                          "unknown",
+                          "stopped",
+                          "active_turn",
+                          "has_queued_input",
+                          "has_runnable_work",
+                          "waiting_for_task",
+                          "waiting_for_external",
+                          "waiting_for_operator",
+                          "blocked",
+                          "idle"
+                        ],
+                        "type": "string"
+                      },
+                      "reason": {
+                        "type": "string"
+                      },
+                      "run_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "task_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "work_item_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "posture",
+                      "reason"
+                    ],
+                    "type": "object"
+                  },
+                  "status": {
+                    "enum": [
+                      "booting",
+                      "awake_idle",
+                      "awake_running",
+                      "awaiting_task",
+                      "asleep",
+                      "stopped"
+                    ],
+                    "type": "string"
+                  },
+                  "waiting_reason": {
+                    "enum": [
+                      "awaiting_operator_input",
+                      "awaiting_external_change",
+                      "awaiting_task_result",
+                      "awaiting_timer",
+                      null
+                    ],
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "identity",
+                  "status",
+                  "model"
+                ],
+                "type": "object"
+              },
+              "canonical_relations": {
+                "properties": {
+                  "agent_id": {
+                    "type": "string"
+                  },
+                  "capability_policy": {
+                    "properties": {
+                      "agent_id": {
+                        "type": "string"
+                      },
+                      "created_at": {
+                        "format": "date-time",
+                        "type": "string"
+                      },
+                      "revision": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "rules": {
+                        "items": {
+                          "properties": {
+                            "effect": {
+                              "enum": [
+                                "allow",
+                                "deny"
+                              ],
+                              "type": "string"
+                            },
+                            "family": {
+                              "enum": [
+                                "core_agent",
+                                "local_environment",
+                                "web",
+                                "agent_creation",
+                                "authority_expanding",
+                                "external_trigger"
+                              ],
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "family",
+                            "effect"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      }
+                    },
+                    "required": [
+                      "agent_id",
+                      "revision",
+                      "rules",
+                      "created_at"
+                    ],
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "durability": {
+                    "properties": {
+                      "agent_id": {
+                        "type": "string"
+                      },
+                      "created_at": {
+                        "format": "date-time",
+                        "type": "string"
+                      },
+                      "durability": {
+                        "enum": [
+                          "persistent",
+                          "ephemeral"
+                        ],
+                        "type": "string"
+                      },
+                      "revision": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "agent_id",
+                      "durability",
+                      "revision",
+                      "created_at"
+                    ],
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "identity_lifecycle": {
+                    "enum": [
+                      "active",
+                      "deleting",
+                      "deleted"
+                    ],
+                    "type": "string"
+                  },
+                  "issues": {
+                    "items": {
+                      "properties": {
+                        "axis": {
+                          "enum": [
+                            "lineage",
+                            "supervision",
+                            "durability",
+                            "lifecycle_attachment",
+                            "capability_policy",
+                            "message_policy"
+                          ],
+                          "type": "string"
+                        },
+                        "detail": {
+                          "type": "string"
+                        },
+                        "resolution": {
+                          "enum": [
+                            "resolved",
+                            "ambiguous",
+                            "contradictory",
+                            "missing_evidence"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "axis",
+                        "resolution",
+                        "detail"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "lifecycle_attachment": {
+                    "properties": {
+                      "agent_id": {
+                        "type": "string"
+                      },
+                      "attachment": {
+                        "enum": [
+                          "independent",
+                          "supervision_attached"
+                        ],
+                        "type": "string"
+                      },
+                      "created_at": {
+                        "format": "date-time",
+                        "type": "string"
+                      },
+                      "revision": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "agent_id",
+                      "attachment",
+                      "revision",
+                      "created_at"
+                    ],
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "lifecycle_fence": {
+                    "enum": [
+                      "open",
+                      "deletion_fenced",
+                      "tombstoned"
+                    ],
+                    "type": "string"
+                  },
+                  "lineage": {
+                    "properties": {
+                      "child_agent_id": {
+                        "type": "string"
+                      },
+                      "created_at": {
+                        "format": "date-time",
+                        "type": "string"
+                      },
+                      "creation_cause": {
+                        "enum": [
+                          "legacy_spawn",
+                          "create_agent",
+                          "migration"
+                        ],
+                        "type": "string"
+                      },
+                      "parent_agent_id": {
+                        "type": "string"
+                      },
+                      "revision": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "child_agent_id",
+                      "parent_agent_id",
+                      "creation_cause",
+                      "revision",
+                      "created_at"
+                    ],
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "message_policy": {
+                    "properties": {
+                      "agent_id": {
+                        "type": "string"
+                      },
+                      "created_at": {
+                        "format": "date-time",
+                        "type": "string"
+                      },
+                      "default_effect": {
+                        "enum": [
+                          "allow",
+                          "deny"
+                        ],
+                        "type": "string"
+                      },
+                      "revision": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "rules": {
+                        "items": {
+                          "properties": {
+                            "effect": {
+                              "enum": [
+                                "allow",
+                                "deny"
+                              ],
+                              "type": "string"
+                            },
+                            "principal_id": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "principal_kind": {
+                              "enum": [
+                                "operator",
+                                "supervising_parent",
+                                "peer_agent",
+                                "external_ingress",
+                                "runtime_capability"
+                              ],
+                              "type": "string"
+                            },
+                            "route": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "principal_kind",
+                            "effect"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      }
+                    },
+                    "required": [
+                      "agent_id",
+                      "revision",
+                      "default_effect",
+                      "rules",
+                      "created_at"
+                    ],
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "resolution": {
+                    "enum": [
+                      "resolved",
+                      "ambiguous",
+                      "contradictory",
+                      "missing_evidence"
+                    ],
+                    "type": "string"
+                  },
+                  "sources": {
+                    "properties": {
+                      "capability_policy": {
+                        "enum": [
+                          "canonical",
+                          "legacy",
+                          null
+                        ],
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "durability": {
+                        "enum": [
+                          "canonical",
+                          "legacy",
+                          null
+                        ],
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "lifecycle_attachment": {
+                        "enum": [
+                          "canonical",
+                          "legacy",
+                          null
+                        ],
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "lineage": {
+                        "enum": [
+                          "canonical",
+                          "legacy",
+                          null
+                        ],
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "message_policy": {
+                        "enum": [
+                          "canonical",
+                          "legacy",
+                          null
+                        ],
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "supervision": {
+                        "enum": [
+                          "canonical",
+                          "legacy",
+                          null
+                        ],
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "supervision": {
+                    "properties": {
+                      "child_agent_id": {
+                        "type": "string"
+                      },
+                      "created_at": {
+                        "format": "date-time",
+                        "type": "string"
+                      },
+                      "delegated_from_task_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "delegated_from_work_item_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "revision": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "state": {
+                        "enum": [
+                          "active",
+                          "cleanup_required",
+                          "closed"
+                        ],
+                        "type": "string"
+                      },
+                      "supervision_id": {
+                        "type": "string"
+                      },
+                      "supervisor_agent_id": {
+                        "type": "string"
+                      },
+                      "updated_at": {
+                        "format": "date-time",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "supervision_id",
+                      "supervisor_agent_id",
+                      "child_agent_id",
+                      "state",
+                      "revision",
+                      "created_at",
+                      "updated_at"
+                    ],
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "agent_id",
+                  "identity_lifecycle",
+                  "lifecycle_fence",
+                  "sources",
+                  "resolution"
+                ],
+                "type": "object"
+              },
+              "children": {
+                "items": {
+                  "$ref": "#/definitions/AgentTreeNode"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "agent",
+              "canonical_relations"
+            ],
+            "type": "object"
+          }
+        },
+        "properties": {
+          "roots": {
+            "default": [],
+            "items": {
+              "properties": {
+                "agent": {
+                  "properties": {
+                    "active_workspace_entry": {
+                      "properties": {
+                        "access_mode": {
+                          "enum": [
+                            "shared_read",
+                            "exclusive_write"
+                          ],
+                          "type": "string"
+                        },
+                        "cwd": {
+                          "type": "string"
+                        },
+                        "execution_root": {
+                          "type": "string"
+                        },
+                        "execution_root_id": {
+                          "type": "string"
+                        },
+                        "occupancy_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "projection_kind": {
+                          "enum": [
+                            "canonical_root",
+                            "git_worktree_root"
+                          ],
+                          "type": "string"
+                        },
+                        "projection_metadata": {
+                          "anyOf": [
+                            {
+                              "anyOf": [
+                                {
+                                  "properties": {
+                                    "original_branch": {
+                                      "type": "string"
+                                    },
+                                    "original_cwd": {
+                                      "type": "string"
+                                    },
+                                    "worktree_branch": {
+                                      "type": "string"
+                                    },
+                                    "worktree_path": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "original_cwd",
+                                    "original_branch",
+                                    "worktree_path",
+                                    "worktree_branch"
+                                  ],
+                                  "type": "object"
+                                },
+                                {
+                                  "properties": {
+                                    "worktree_root": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "worktree_root"
+                                  ],
+                                  "type": "object"
+                                }
+                              ],
+                              "description": "Typed metadata for workspace projections, replacing untyped `serde_json::Value`.\n Uses `untagged` serde for backward compatibility with previously serialized JSON."
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "workspace_anchor": {
+                          "type": "string"
+                        },
+                        "workspace_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "workspace_id",
+                        "workspace_anchor",
+                        "execution_root_id",
+                        "execution_root",
+                        "projection_kind",
+                        "access_mode",
+                        "cwd"
+                      ],
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    },
+                    "current_run_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "identity": {
+                      "properties": {
+                        "agent_id": {
+                          "type": "string"
+                        },
+                        "delegated_from_task_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "is_default_agent": {
+                          "type": "boolean"
+                        },
+                        "kind": {
+                          "enum": [
+                            "default",
+                            "named",
+                            "child"
+                          ],
+                          "type": "string"
+                        },
+                        "lineage_parent_agent_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "name": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "ownership": {
+                          "enum": [
+                            "parent_supervised",
+                            "self_owned"
+                          ],
+                          "type": "string"
+                        },
+                        "parent_agent_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "profile_preset": {
+                          "enum": [
+                            "private_child",
+                            "public_named"
+                          ],
+                          "type": "string"
+                        },
+                        "status": {
+                          "enum": [
+                            "active",
+                            "deleting",
+                            "deleted"
+                          ],
+                          "type": "string"
+                        },
+                        "visibility": {
+                          "enum": [
+                            "public",
+                            "private"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "agent_id",
+                        "kind",
+                        "visibility",
+                        "ownership",
+                        "profile_preset",
+                        "status",
+                        "is_default_agent"
+                      ],
+                      "type": "object"
+                    },
+                    "lifecycle": {
+                      "default": {
+                        "accepts_external_messages": true
+                      },
+                      "properties": {
+                        "accepts_external_messages": {
+                          "type": "boolean"
+                        },
+                        "operator_hint": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "accepts_external_messages"
+                      ],
+                      "type": "object"
+                    },
+                    "model": {
+                      "properties": {
+                        "active_model": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "effective_fallback_models": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "effective_model": {
+                          "type": "string"
+                        },
+                        "fallback_active": {
+                          "default": false,
+                          "type": "boolean"
+                        },
+                        "override_model": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "override_reasoning_effort": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "requested_model": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "runtime_default_model": {
+                          "type": "string"
+                        },
+                        "source": {
+                          "enum": [
+                            "runtime_default",
+                            "agent_override"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "source",
+                        "runtime_default_model",
+                        "effective_model"
+                      ],
+                      "type": "object"
+                    },
+                    "pending": {
+                      "default": 0,
+                      "format": "uint",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "scheduling_posture": {
+                      "default": {
+                        "posture": "unknown",
+                        "reason": "posture projection unavailable"
+                      },
+                      "properties": {
+                        "posture": {
+                          "enum": [
+                            "unknown",
+                            "stopped",
+                            "active_turn",
+                            "has_queued_input",
+                            "has_runnable_work",
+                            "waiting_for_task",
+                            "waiting_for_external",
+                            "waiting_for_operator",
+                            "blocked",
+                            "idle"
+                          ],
+                          "type": "string"
+                        },
+                        "reason": {
+                          "type": "string"
+                        },
+                        "run_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "task_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "work_item_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "posture",
+                        "reason"
+                      ],
+                      "type": "object"
+                    },
+                    "status": {
+                      "enum": [
+                        "booting",
+                        "awake_idle",
+                        "awake_running",
+                        "awaiting_task",
+                        "asleep",
+                        "stopped"
+                      ],
+                      "type": "string"
+                    },
+                    "waiting_reason": {
+                      "enum": [
+                        "awaiting_operator_input",
+                        "awaiting_external_change",
+                        "awaiting_task_result",
+                        "awaiting_timer",
+                        null
+                      ],
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "identity",
+                    "status",
+                    "model"
+                  ],
+                  "type": "object"
+                },
+                "canonical_relations": {
+                  "properties": {
+                    "agent_id": {
+                      "type": "string"
+                    },
+                    "capability_policy": {
+                      "properties": {
+                        "agent_id": {
+                          "type": "string"
+                        },
+                        "created_at": {
+                          "format": "date-time",
+                          "type": "string"
+                        },
+                        "revision": {
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "rules": {
+                          "items": {
+                            "properties": {
+                              "effect": {
+                                "enum": [
+                                  "allow",
+                                  "deny"
+                                ],
+                                "type": "string"
+                              },
+                              "family": {
+                                "enum": [
+                                  "core_agent",
+                                  "local_environment",
+                                  "web",
+                                  "agent_creation",
+                                  "authority_expanding",
+                                  "external_trigger"
+                                ],
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "family",
+                              "effect"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "agent_id",
+                        "revision",
+                        "rules",
+                        "created_at"
+                      ],
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    },
+                    "durability": {
+                      "properties": {
+                        "agent_id": {
+                          "type": "string"
+                        },
+                        "created_at": {
+                          "format": "date-time",
+                          "type": "string"
+                        },
+                        "durability": {
+                          "enum": [
+                            "persistent",
+                            "ephemeral"
+                          ],
+                          "type": "string"
+                        },
+                        "revision": {
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "agent_id",
+                        "durability",
+                        "revision",
+                        "created_at"
+                      ],
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    },
+                    "identity_lifecycle": {
+                      "enum": [
+                        "active",
+                        "deleting",
+                        "deleted"
+                      ],
+                      "type": "string"
+                    },
+                    "issues": {
+                      "items": {
+                        "properties": {
+                          "axis": {
+                            "enum": [
+                              "lineage",
+                              "supervision",
+                              "durability",
+                              "lifecycle_attachment",
+                              "capability_policy",
+                              "message_policy"
+                            ],
+                            "type": "string"
+                          },
+                          "detail": {
+                            "type": "string"
+                          },
+                          "resolution": {
+                            "enum": [
+                              "resolved",
+                              "ambiguous",
+                              "contradictory",
+                              "missing_evidence"
+                            ],
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "axis",
+                          "resolution",
+                          "detail"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "lifecycle_attachment": {
+                      "properties": {
+                        "agent_id": {
+                          "type": "string"
+                        },
+                        "attachment": {
+                          "enum": [
+                            "independent",
+                            "supervision_attached"
+                          ],
+                          "type": "string"
+                        },
+                        "created_at": {
+                          "format": "date-time",
+                          "type": "string"
+                        },
+                        "revision": {
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "agent_id",
+                        "attachment",
+                        "revision",
+                        "created_at"
+                      ],
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    },
+                    "lifecycle_fence": {
+                      "enum": [
+                        "open",
+                        "deletion_fenced",
+                        "tombstoned"
+                      ],
+                      "type": "string"
+                    },
+                    "lineage": {
+                      "properties": {
+                        "child_agent_id": {
+                          "type": "string"
+                        },
+                        "created_at": {
+                          "format": "date-time",
+                          "type": "string"
+                        },
+                        "creation_cause": {
+                          "enum": [
+                            "legacy_spawn",
+                            "create_agent",
+                            "migration"
+                          ],
+                          "type": "string"
+                        },
+                        "parent_agent_id": {
+                          "type": "string"
+                        },
+                        "revision": {
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "child_agent_id",
+                        "parent_agent_id",
+                        "creation_cause",
+                        "revision",
+                        "created_at"
+                      ],
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    },
+                    "message_policy": {
+                      "properties": {
+                        "agent_id": {
+                          "type": "string"
+                        },
+                        "created_at": {
+                          "format": "date-time",
+                          "type": "string"
+                        },
+                        "default_effect": {
+                          "enum": [
+                            "allow",
+                            "deny"
+                          ],
+                          "type": "string"
+                        },
+                        "revision": {
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "rules": {
+                          "items": {
+                            "properties": {
+                              "effect": {
+                                "enum": [
+                                  "allow",
+                                  "deny"
+                                ],
+                                "type": "string"
+                              },
+                              "principal_id": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "principal_kind": {
+                                "enum": [
+                                  "operator",
+                                  "supervising_parent",
+                                  "peer_agent",
+                                  "external_ingress",
+                                  "runtime_capability"
+                                ],
+                                "type": "string"
+                              },
+                              "route": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "principal_kind",
+                              "effect"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "agent_id",
+                        "revision",
+                        "default_effect",
+                        "rules",
+                        "created_at"
+                      ],
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    },
+                    "resolution": {
+                      "enum": [
+                        "resolved",
+                        "ambiguous",
+                        "contradictory",
+                        "missing_evidence"
+                      ],
+                      "type": "string"
+                    },
+                    "sources": {
+                      "properties": {
+                        "capability_policy": {
+                          "enum": [
+                            "canonical",
+                            "legacy",
+                            null
+                          ],
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "durability": {
+                          "enum": [
+                            "canonical",
+                            "legacy",
+                            null
+                          ],
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "lifecycle_attachment": {
+                          "enum": [
+                            "canonical",
+                            "legacy",
+                            null
+                          ],
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "lineage": {
+                          "enum": [
+                            "canonical",
+                            "legacy",
+                            null
+                          ],
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "message_policy": {
+                          "enum": [
+                            "canonical",
+                            "legacy",
+                            null
+                          ],
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "supervision": {
+                          "enum": [
+                            "canonical",
+                            "legacy",
+                            null
+                          ],
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "supervision": {
+                      "properties": {
+                        "child_agent_id": {
+                          "type": "string"
+                        },
+                        "created_at": {
+                          "format": "date-time",
+                          "type": "string"
+                        },
+                        "delegated_from_task_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "delegated_from_work_item_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "revision": {
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "state": {
+                          "enum": [
+                            "active",
+                            "cleanup_required",
+                            "closed"
+                          ],
+                          "type": "string"
+                        },
+                        "supervision_id": {
+                          "type": "string"
+                        },
+                        "supervisor_agent_id": {
+                          "type": "string"
+                        },
+                        "updated_at": {
+                          "format": "date-time",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "supervision_id",
+                        "supervisor_agent_id",
+                        "child_agent_id",
+                        "state",
+                        "revision",
+                        "created_at",
+                        "updated_at"
+                      ],
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "agent_id",
+                    "identity_lifecycle",
+                    "lifecycle_fence",
+                    "sources",
+                    "resolution"
+                  ],
+                  "type": "object"
+                },
+                "children": {
+                  "items": {
+                    "$ref": "#/definitions/AgentTreeNode"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "agent",
+                "canonical_relations"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "title": "AgentTreeProjection",
         "type": "object"
       },
       "AgentWorkItemAnchor": {
@@ -11900,6 +14006,54 @@
         "summary": "Callback wake ingress",
         "tags": [
           "callbacks"
+        ]
+      }
+    },
+    "/api/control/agents/tree": {
+      "get": {
+        "description": "Return the authenticated operator Agent tree built from canonical lineage.",
+        "operationId": "agentTree",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentTreeProjection"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Agent tree",
+        "tags": [
+          "control"
         ]
       }
     },

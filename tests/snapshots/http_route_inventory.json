@@ -666,6 +666,22 @@
   },
   {
     "method": "get",
+    "path": "/api/control/agents/tree",
+    "handler": "agent_tree",
+    "operation_id": "agentTree",
+    "tag": "control",
+    "parameters": [],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
     "path": "/api/control/agents/{agent_id}/delete-status",
     "handler": "agent_deletion_status",
     "operation_id": "agentDeleteStatus",
