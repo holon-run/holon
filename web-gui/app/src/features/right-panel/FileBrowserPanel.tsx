@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowUp,
@@ -25,6 +25,7 @@ import { useRuntimeStore } from "../../runtime/runtime-store";
 import { useTranslation } from "react-i18next";
 import { parseWorkspaceImageRef, resolveWorkspaceRelativePath, WorkspaceImage } from "../../components/MarkdownContent";
 import { triggerBlobDownload } from "./download";
+import { buildPlainCodeHtml, normalizeShikiLineBreaks } from "./source-view";
 
 interface FileBrowserPanelProps {
   workspaceId: string;
@@ -129,34 +130,35 @@ function langForFile(name: string): string | undefined {
   return LANG_MAP[ext];
 }
 
-/** Async syntax highlighting via shiki. Returns highlighted HTML or null. */
+/**
+ * Async syntax highlighting via shiki. Returns highlighted HTML that matches
+ * the current content/path, or null while pending/stale so the caller renders
+ * a layout-compatible plain fallback instead of previously highlighted HTML.
+ */
 function useShikiHighlight(content: string | undefined, filePath: string | undefined): string | null {
-  const [highlighted, setHighlighted] = useState<string | null>(null);
+  const [state, setState] = useState<{ content: string; path: string; html: string | null } | null>(null);
 
   useEffect(() => {
-    if (!content || !filePath) {
-      setHighlighted(null);
-      return;
-    }
-    const lang = langForFile(filePath);
-    if (!lang) {
-      setHighlighted(null);
+    const lang = content && filePath ? langForFile(filePath) : undefined;
+    if (!content || !filePath || !lang) {
+      setState(null);
       return;
     }
     let cancelled = false;
     void getHighlighter().then((hl) => {
       if (cancelled) return;
       try {
-        const html = hl.codeToHtml(content, { lang, theme: "github-light" });
-        setHighlighted(html);
+        const html = normalizeShikiLineBreaks(hl.codeToHtml(content, { lang, theme: "github-light" }));
+        setState({ content, path: filePath, html });
       } catch {
-        setHighlighted(null);
+        setState(null);
       }
     });
     return () => { cancelled = true; };
   }, [content, filePath]);
 
-  return highlighted;
+  if (!state || state.content !== content || state.path !== filePath) return null;
+  return state.html;
 }
 
 export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, initialFilePath, workspaceLabel, onClose }: FileBrowserPanelProps) {
@@ -195,6 +197,12 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
   }, [selectedFile?.path]);
 
   const highlightedHtml = useShikiHighlight(selectedFile?.content, selectedFile?.path);
+  // Plain fallback shares the shiki DOM skeleton so the async highlight swap
+  // never changes layout metrics; only token colors appear.
+  const plainCodeHtml = useMemo(
+    () => (selectedFile?.content != null ? buildPlainCodeHtml(selectedFile.content) : ""),
+    [selectedFile?.content],
+  );
 
   const loadDir = useCallback(
     async (path: string) => {
@@ -590,12 +598,12 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
                     {selectedFile.content}
                   </Markdown>
                 </div>
-              ) : highlightedHtml ? (
-                <div className="file-browser-code" ref={contentScrollRef} dangerouslySetInnerHTML={{ __html: highlightedHtml }} />
               ) : (
-                <pre className="file-browser-text" ref={contentScrollRef as React.Ref<HTMLPreElement>}>
-                  <code>{selectedFile.content}</code>
-                </pre>
+                <div
+                  className="file-browser-code"
+                  ref={contentScrollRef}
+                  dangerouslySetInnerHTML={{ __html: highlightedHtml ?? plainCodeHtml }}
+                />
               )}
             </>
           ) : (
