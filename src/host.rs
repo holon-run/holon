@@ -5594,6 +5594,7 @@ mod tests {
         assert!(agent_home.join("memory/operator.md").is_file());
         assert!(agent_home.join("notes").is_dir());
         assert!(agent_home.join("work").is_dir());
+        assert!(agent_home.join("tmp").is_dir());
         assert!(agent_home.join("skills").is_dir());
         assert!(agent_home.join(".holon/state").is_dir());
         assert!(agent_home.join(".holon/ledger").is_dir());
@@ -5870,6 +5871,7 @@ mod tests {
         assert!(agent_home.join("memory/operator.md").is_file());
         assert!(agent_home.join("notes").is_dir());
         assert!(agent_home.join("work").is_dir());
+        assert!(agent_home.join("tmp").is_dir());
         assert!(agent_home.join("skills").is_dir());
         assert!(!agent_home.join(".holon/state/agent.json").exists());
         assert!(agent_home.join(".holon/ledger").is_dir());
