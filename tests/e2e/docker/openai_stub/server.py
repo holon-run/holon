@@ -10,6 +10,7 @@ CALLBACK_CAPABILITY_PATTERN = re.compile(
     r"(/api/callbacks/(?:wake|enqueue)/)[A-Za-z0-9_-]+"
 )
 SCENARIOS = (
+    "runtime-agent-lifecycle",
     "runtime-upgrade-v030",
     "runtime-upgrade-interrupted-schema47",
     "scheduler-task-wait",
@@ -207,6 +208,17 @@ class Scenario:
                     return 200, response(
                         [text_item(markers[-1])],
                         f"resp_runtime_upgrade_v030_{self.phase}",
+                    )
+            if self.name == "runtime-agent-lifecycle":
+                markers = re.findall(
+                    r"AGENT-LIFECYCLE-(?:BEFORE|AFTER)-[0-9a-f]+",
+                    raw,
+                )
+                if markers and self.phase < self.expected_phase():
+                    self.phase += 1
+                    return 200, response(
+                        [text_item(markers[-1])],
+                        f"resp_runtime_agent_lifecycle_{self.phase}",
                     )
             if self.phase >= self.expected_phase():
                 self.extra_requests += 1
@@ -1014,6 +1026,7 @@ class Scenario:
 
     def expected_phase(self) -> int:
         return {
+            "runtime-agent-lifecycle": 2,
             "runtime-upgrade-v030": 2,
             "runtime-upgrade-interrupted-schema47": 0,
             "scheduler-task-wait": 9,

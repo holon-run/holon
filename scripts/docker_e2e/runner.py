@@ -69,6 +69,40 @@ def run(
     )
 
 
+def remove_evidence_tree(path: Path, image: str) -> None:
+    try:
+        shutil.rmtree(path)
+        return
+    except PermissionError as error:
+        repair = run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--user",
+                "0:0",
+                "--volume",
+                f"{path.parent.resolve()}:/evidence",
+                "--entrypoint",
+                "sh",
+                image,
+                "-c",
+                'chmod -R a+rwX -- "/evidence/$1"',
+                "sh",
+                path.name,
+            ],
+            check=False,
+            timeout=DOCKER_CONTROL_TIMEOUT_SECONDS,
+        )
+        if repair.returncode != 0:
+            detail = (repair.stdout + repair.stderr).strip()
+            raise RuntimeError(
+                f"failed to repair Docker-owned evidence permissions for {path}"
+                + (f": {detail}" if detail else "")
+            ) from error
+    shutil.rmtree(path)
+
+
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
@@ -313,6 +347,8 @@ class CaseHarness:
                 OFFLINE_MODEL_CREDENTIAL,
             )
         self.evidence = evidence_root / case_id
+        if self.evidence.exists():
+            remove_evidence_tree(self.evidence, self.image)
         self.timeout_seconds = timeout_seconds
         self.keep = keep
         self.provider_mode = provider_mode
@@ -1734,6 +1770,94 @@ class CaseHarness:
                     if "schema_migration_baselines" in tables
                     else []
                 ),
+                "agent_identities": (
+                    sqlite_rows(
+                        connection,
+                        "SELECT agent_id, status, payload_json "
+                        "FROM agent_identities ORDER BY agent_id",
+                    )
+                    if "agent_identities" in tables
+                    else []
+                ),
+                "agent_lineages": (
+                    sqlite_rows(
+                        connection,
+                        "SELECT child_agent_id, parent_agent_id, creation_cause, "
+                        "revision, payload_json FROM agent_lineages "
+                        "ORDER BY child_agent_id, revision",
+                    )
+                    if "agent_lineages" in tables
+                    else []
+                ),
+                "agent_supervisions": (
+                    sqlite_rows(
+                        connection,
+                        "SELECT child_agent_id, supervisor_agent_id, state, revision, "
+                        "payload_json FROM agent_supervisions "
+                        "ORDER BY child_agent_id, revision",
+                    )
+                    if "agent_supervisions" in tables
+                    else []
+                ),
+                "agent_durability_records": (
+                    sqlite_rows(
+                        connection,
+                        "SELECT agent_id, durability, revision, payload_json "
+                        "FROM agent_durability_records ORDER BY agent_id, revision",
+                    )
+                    if "agent_durability_records" in tables
+                    else []
+                ),
+                "agent_lifecycle_attachment_records": (
+                    sqlite_rows(
+                        connection,
+                        "SELECT agent_id, attachment, revision, payload_json "
+                        "FROM agent_lifecycle_attachment_records "
+                        "ORDER BY agent_id, revision",
+                    )
+                    if "agent_lifecycle_attachment_records" in tables
+                    else []
+                ),
+                "agent_capability_policy_records": (
+                    sqlite_rows(
+                        connection,
+                        "SELECT agent_id, revision, payload_json "
+                        "FROM agent_capability_policy_records "
+                        "ORDER BY agent_id, revision",
+                    )
+                    if "agent_capability_policy_records" in tables
+                    else []
+                ),
+                "agent_message_policy_records": (
+                    sqlite_rows(
+                        connection,
+                        "SELECT agent_id, revision, default_effect, payload_json "
+                        "FROM agent_message_policy_records "
+                        "ORDER BY agent_id, revision",
+                    )
+                    if "agent_message_policy_records" in tables
+                    else []
+                ),
+                "agent_relation_backfill_runs": (
+                    sqlite_rows(
+                        connection,
+                        "SELECT run_id, status, started_at, updated_at, completed_at, "
+                        "report_json FROM agent_relation_backfill_runs "
+                        "ORDER BY started_at, run_id",
+                    )
+                    if "agent_relation_backfill_runs" in tables
+                    else []
+                ),
+                "agent_relation_backfill_outcomes": (
+                    sqlite_rows(
+                        connection,
+                        "SELECT run_id, agent_id, outcome, migrated_axes_json, "
+                        "issues_json FROM agent_relation_backfill_outcomes "
+                        "ORDER BY run_id, agent_id",
+                    )
+                    if "agent_relation_backfill_outcomes" in tables
+                    else []
+                ),
             }
         finally:
             connection.close()
@@ -2327,6 +2451,165 @@ def require_previous_schema_revision(snapshot: dict[str, Any]) -> int:
     return revision
 
 
+def run_runtime_agent_lifecycle_case(
+    harness: CaseHarness, case: dict[str, Any]
+) -> None:
+    harness.initialize_workspace()
+    harness.start()
+    default_agent_id = harness.agent_id
+    agent_id = f"release-agent-{secrets.token_hex(4)}"
+    before_marker = f"AGENT-LIFECYCLE-BEFORE-{secrets.token_hex(6)}"
+    after_marker = f"AGENT-LIFECYCLE-AFTER-{secrets.token_hex(6)}"
+
+    created = harness.request(
+        "POST",
+        f"/api/control/agents/{urllib.parse.quote(agent_id, safe='')}/create",
+        {
+            "authority_class": "operator_instruction",
+            "template": None,
+        },
+    )
+    write_json(harness.evidence / "runtime-agent-created.json", created)
+    require(
+        created["identity"]["agent_id"] == agent_id
+        and created["identity"]["status"] == "active"
+        and created["receipt"]["created"] is True,
+        f"candidate did not create a runnable named agent: {created}",
+    )
+
+    harness.agent_id = agent_id
+    before_turn, before_state = harness.prompt(
+        "runtime-agent-before-restart",
+        case["phases"][0]["prompt"].format(marker=before_marker),
+    )
+    require(
+        int(before_state["agent"]["agent"]["turn_index"]) > before_turn,
+        f"new named agent did not complete its first turn: {before_state}",
+    )
+
+    harness.stop()
+    relation_report = harness.offline_debug(
+        "runtime-agent-relations-report",
+        "runtime-db",
+        "agent-relations",
+        "--diagnostic-sample-limit",
+        "100",
+    )
+    require(
+        relation_report["apply"] is False
+        and relation_report["changed_agents"] == 0
+        and agent_id
+        not in {
+            diagnostic["agent_id"]
+            for diagnostic in relation_report["diagnostics"]
+        },
+        f"new agent produced legacy-only or ambiguous relation state: {relation_report}",
+    )
+    relation_snapshot = harness.offline_runtime_db_snapshot(
+        "runtime-agent-canonical-relations"
+    )
+    require(
+        relation_snapshot["integrity_check"] == "ok",
+        f"new agent runtime database is invalid: {relation_snapshot}",
+    )
+    for table in (
+        "agent_durability_records",
+        "agent_lifecycle_attachment_records",
+        "agent_capability_policy_records",
+        "agent_message_policy_records",
+    ):
+        require(
+            agent_id in {row["agent_id"] for row in relation_snapshot[table]},
+            f"new agent is missing canonical {table}: {relation_snapshot}",
+        )
+    require(
+        not relation_snapshot["agent_relation_backfill_runs"],
+        "report-only validation unexpectedly created a backfill run",
+    )
+
+    harness.start()
+    harness.agent_id = agent_id
+    restarted_before = int(
+        harness.state("runtime-agent-restarted-before")["agent"]["agent"]["turn_index"]
+    )
+    harness.prompt(
+        "runtime-agent-after-restart",
+        case["phases"][1]["prompt"].format(marker=after_marker),
+    )
+    restarted_after = int(
+        harness.state("runtime-agent-restarted-after")["agent"]["agent"]["turn_index"]
+    )
+    require(
+        restarted_after > restarted_before,
+        "named agent did not complete a turn after restart",
+    )
+    transcript = harness.request("GET", harness.agent_path("transcript?limit=200"))
+    write_json(harness.evidence / "runtime-agent-transcript.json", transcript)
+    serialized_transcript = json.dumps(transcript)
+    require(
+        before_marker in serialized_transcript and after_marker in serialized_transcript,
+        f"named agent transcript did not survive restart: {transcript}",
+    )
+
+    deleted = harness.request(
+        "DELETE",
+        f"/api/control/agents/{urllib.parse.quote(agent_id, safe='')}",
+        {"cascade_private_children": False},
+    )
+    write_json(harness.evidence / "runtime-agent-delete.json", deleted)
+    require(
+        deleted["identity"]["status"] == "deleting",
+        f"named agent was not fenced for deletion: {deleted}",
+    )
+    deletion_status: dict[str, Any] | None = None
+    deadline = time.monotonic() + harness.timeout_seconds
+    while time.monotonic() < deadline:
+        deletion_status = harness.request(
+            "GET",
+            f"/api/control/agents/{urllib.parse.quote(agent_id, safe='')}/delete-status",
+        )
+        if (
+            deletion_status["identity"]["status"] == "deleted"
+            and (deletion_status.get("job") or {}).get("status") == "completed"
+        ):
+            break
+        time.sleep(1)
+    require(
+        deletion_status is not None
+        and deletion_status["identity"]["status"] == "deleted"
+        and (deletion_status.get("job") or {}).get("status") == "completed",
+        f"named agent deletion did not complete: {deletion_status}",
+    )
+    write_json(
+        harness.evidence / "runtime-agent-delete-completed.json",
+        deletion_status,
+    )
+
+    harness.restart()
+    tombstone = harness.request(
+        "GET",
+        f"/api/control/agents/{urllib.parse.quote(agent_id, safe='')}/delete-status",
+    )
+    write_json(harness.evidence / "runtime-agent-tombstone-after-restart.json", tombstone)
+    require(
+        tombstone["identity"]["status"] == "deleted"
+        and (tombstone.get("job") or {}).get("status") == "completed",
+        f"named agent tombstone did not survive restart: {tombstone}",
+    )
+    rejected = harness.request(
+        "POST",
+        f"/api/control/agents/{urllib.parse.quote(agent_id, safe='')}/prompt",
+        {"text": "This deleted agent must not run."},
+        expected_status=410,
+    )
+    write_json(harness.evidence / "runtime-agent-deleted-prompt.json", rejected)
+    require(
+        rejected.get("code") == "agent_deleted",
+        f"deleted agent prompt returned the wrong stable error: {rejected}",
+    )
+    harness.agent_id = default_agent_id
+
+
 def run_runtime_upgrade_previous_release_case(
     harness: CaseHarness, case: dict[str, Any]
 ) -> None:
@@ -2337,10 +2620,25 @@ def run_runtime_upgrade_previous_release_case(
     candidate_image = harness.image
     old_marker = f"UPGRADE-V030-OLD-{secrets.token_hex(6)}"
     new_marker = f"UPGRADE-V030-NEW-{secrets.token_hex(6)}"
+    legacy_agent_id = f"upgrade-agent-{secrets.token_hex(4)}"
 
     harness.image = str(harness.previous_image)
     harness.initialize_workspace()
     harness.start()
+    default_agent_id = harness.agent_id
+    created_legacy_agent = harness.request(
+        "POST",
+        f"/api/control/agents/{urllib.parse.quote(legacy_agent_id, safe='')}/create",
+        {
+            "authority_class": "operator_instruction",
+            "template": None,
+        },
+    )
+    write_json(
+        harness.evidence / "upgrade-v030-legacy-agent-created.json",
+        created_legacy_agent,
+    )
+    harness.agent_id = legacy_agent_id
     harness.prompt(
         "upgrade-v030-old",
         case["phases"][0]["prompt"].format(marker=old_marker),
@@ -2382,6 +2680,83 @@ def run_runtime_upgrade_previous_release_case(
         f"release data was not preserved: old={old_snapshot}, migrated={migrated}",
     )
 
+    harness.stop()
+    relation_report = harness.offline_debug(
+        "upgrade-v030-agent-relations-report",
+        "runtime-db",
+        "agent-relations",
+        "--diagnostic-sample-limit",
+        "100",
+    )
+    require(
+        relation_report["apply"] is False
+        and relation_report["scanned_agents"] >= len(old_agent_ids)
+        and relation_report["changed_agents"] > 0,
+        f"legacy agent relation report did not find migration work: {relation_report}",
+    )
+    require(
+        legacy_agent_id
+        not in {
+            diagnostic["agent_id"]
+            for diagnostic in relation_report["diagnostics"]
+        },
+        f"known public legacy agent was unexpectedly ambiguous: {relation_report}",
+    )
+    relation_apply = harness.offline_debug(
+        "upgrade-v030-agent-relations-apply",
+        "runtime-db",
+        "agent-relations",
+        "--apply",
+        "--diagnostic-sample-limit",
+        "100",
+    )
+    require(
+        relation_apply["apply"] is True
+        and relation_apply["run_id"]
+        and relation_apply["backup_path"]
+        and relation_apply["changed_agents"] > 0,
+        f"legacy agent relation backfill did not apply: {relation_apply}",
+    )
+    relation_retry = harness.offline_debug(
+        "upgrade-v030-agent-relations-retry",
+        "runtime-db",
+        "agent-relations",
+        "--apply",
+        "--diagnostic-sample-limit",
+        "100",
+    )
+    require(
+        relation_retry["changed_agents"] == 0
+        and relation_retry["unchanged_agents"] >= len(old_agent_ids),
+        f"legacy agent relation backfill retry was not idempotent: {relation_retry}",
+    )
+    relation_snapshot = harness.offline_runtime_db_snapshot(
+        "upgrade-v030-agent-relations"
+    )
+    require(
+        relation_snapshot["integrity_check"] == "ok",
+        f"agent relation backfill damaged the runtime database: {relation_snapshot}",
+    )
+    for table in (
+        "agent_durability_records",
+        "agent_lifecycle_attachment_records",
+        "agent_capability_policy_records",
+        "agent_message_policy_records",
+    ):
+        require(
+            legacy_agent_id in {row["agent_id"] for row in relation_snapshot[table]},
+            f"legacy agent is missing canonical {table}: {relation_snapshot}",
+        )
+    require(
+        any(
+            row["agent_id"] == legacy_agent_id
+            for row in relation_snapshot["agent_relation_backfill_outcomes"]
+        ),
+        f"legacy agent backfill outcome is missing: {relation_snapshot}",
+    )
+
+    harness.start()
+    harness.agent_id = legacy_agent_id
     before_turn = int(
         harness.state("upgrade-v030-before-new")["agent"]["agent"]["turn_index"]
     )
@@ -2398,6 +2773,11 @@ def run_runtime_upgrade_previous_release_case(
         final_snapshot["messages"] and final_snapshot["briefs"],
         f"upgraded agent did not persist the new marker: {final_snapshot}",
     )
+    require(
+        legacy_agent_id in final_snapshot["agent_ids"],
+        f"legacy agent disappeared after upgraded execution: {final_snapshot}",
+    )
+    harness.agent_id = default_agent_id
 
 
 def run_runtime_upgrade_interrupted_schema47_case(
@@ -4584,6 +4964,7 @@ def run_scheduler_checkpoint_replay_case(
 
 CASE_RUNNERS = {
     "runtime-auth-model-delivery": run_runtime_case,
+    "runtime-agent-lifecycle": run_runtime_agent_lifecycle_case,
     "runtime-upgrade-v030": run_runtime_upgrade_previous_release_case,
     "runtime-upgrade-interrupted-schema47": (
         run_runtime_upgrade_interrupted_schema47_case

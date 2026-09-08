@@ -31,6 +31,50 @@ STUB_SPEC.loader.exec_module(stub)
 
 
 class DockerE2ERunnerTests(unittest.TestCase):
+    def test_remove_evidence_tree_repairs_docker_owned_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            evidence = Path(temp_dir) / "runtime-upgrade-v030"
+            evidence.mkdir()
+            repaired = subprocess.CompletedProcess([], 0, "", "")
+            with (
+                patch.object(
+                    runner.shutil,
+                    "rmtree",
+                    side_effect=[PermissionError("docker-owned"), None],
+                ) as remove,
+                patch.object(runner, "run", return_value=repaired) as run_command,
+            ):
+                runner.remove_evidence_tree(evidence, "holon:dev")
+
+            self.assertEqual(remove.call_count, 2)
+            command = run_command.call_args.args[0]
+            self.assertEqual(command[:6], ["docker", "run", "--rm", "--user", "0:0", "--volume"])
+            self.assertEqual(command[-2:], ["sh", evidence.name])
+            self.assertEqual(run_command.call_args.kwargs["check"], False)
+            self.assertEqual(
+                run_command.call_args.kwargs["timeout"],
+                runner.DOCKER_CONTROL_TIMEOUT_SECONDS,
+            )
+
+    def test_remove_evidence_tree_reports_permission_repair_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            evidence = Path(temp_dir) / "runtime-upgrade-v030"
+            evidence.mkdir()
+            failed = subprocess.CompletedProcess([], 1, "", "permission repair failed")
+            with (
+                patch.object(
+                    runner.shutil,
+                    "rmtree",
+                    side_effect=PermissionError("docker-owned"),
+                ),
+                patch.object(runner, "run", return_value=failed),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "permission repair failed",
+                ):
+                    runner.remove_evidence_tree(evidence, "holon:dev")
+
     def test_skip_build_only_covers_candidate_image(self) -> None:
         source = inspect.getsource(runner.main)
         self.assertIn("if not args.skip_build:", source)
@@ -58,6 +102,30 @@ class DockerE2ERunnerTests(unittest.TestCase):
             ):
                 runner.require_previous_schema_revision(snapshot)
 
+    def test_case_harness_clears_previous_case_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            evidence_root = Path(directory)
+            stale_evidence = evidence_root / "rerun-case"
+            stale_evidence.mkdir()
+            (stale_evidence / "failure.txt").write_text("stale failure\n")
+
+            harness = runner.CaseHarness(
+                case_id="rerun-case",
+                image="holon:test",
+                model="test/model",
+                requires_model=False,
+                credential_envs=[],
+                env_file=None,
+                runtime_env={},
+                evidence_root=evidence_root,
+                timeout_seconds=1,
+                keep=False,
+            )
+
+            self.assertEqual(harness.evidence, stale_evidence)
+            self.assertTrue(stale_evidence.is_dir())
+            self.assertFalse((stale_evidence / "failure.txt").exists())
+
     def setUp(self) -> None:
         self.manifest = json.loads(runner.DEFAULT_MANIFEST.read_text())
         runner.validate_manifest(self.manifest)
@@ -70,6 +138,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
             [case["id"] for case in selected],
             [
                 "runtime-auth-model-delivery",
+                "runtime-agent-lifecycle",
                 "runtime-upgrade-v030",
                 "runtime-upgrade-interrupted-schema47",
                 "memory-agent-home-persistence",
@@ -1928,6 +1997,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
             [(case["id"], engine) for case, engine in expanded],
             [
                 ("runtime-auth-model-delivery", None),
+                ("runtime-agent-lifecycle", None),
                 ("runtime-upgrade-v030", None),
                 ("runtime-upgrade-interrupted-schema47", None),
                 ("memory-agent-home-persistence", None),

@@ -328,17 +328,18 @@ jobs:
         run: |
           set -euo pipefail
           cat > release-notes.md <<EOF
-          This release extends context-aware runtime behavior with opt-in work item context projection and context history selector evaluation, improves authenticated control-plane attribution, isolates remote template sync failures, and makes browser session fallback robust when a stale bearer token is present.
+          This release introduces the canonical Agent identity and invocation model, including named Agent creation, Agent tree and detail APIs, native CreateAgent and InvokeAgent tools, reliable Agent messaging, and a restart-safe migration bridge that backfills legacy Agent metadata without rebuilding Agent state.
 
           Supported binary assets for this release are Linux amd64, macOS amd64, and macOS arm64. The macOS app DMG is a universal binary supporting both x86_64 and arm64. The Linux amd64 binary supports Ubuntu 22.04 or newer (glibc 2.35 or newer).
 
           ## Changes
 
-          - Add opt-in work item context projection for model turns ([#2783](https://github.com/holon-run/holon/pull/2783)).
-          - Add context history selector evaluation for explicit history boundaries ([#2782](https://github.com/holon-run/holon/pull/2782)).
-          - Attribute authenticated user identity to control-plane messages ([#2781](https://github.com/holon-run/holon/pull/2781)).
-          - Isolate remote template sync failures so one dirty managed template does not abort other entries ([#2780](https://github.com/holon-run/holon/pull/2780)).
-          - Fall back to the session cookie when a stale bearer credential masks a valid browser session ([#2785](https://github.com/holon-run/holon/pull/2785)).
+          - Add canonical Agent names, detail and tree APIs, duplicate-name protection, and typed name errors ([#2796](https://github.com/holon-run/holon/pull/2796), [#2801](https://github.com/holon-run/holon/pull/2801), [#2802](https://github.com/holon-run/holon/pull/2802), [#2813](https://github.com/holon-run/holon/pull/2813)).
+          - Centralize Agent creation and invocation, add reconciliation, and expose native CreateAgent and InvokeAgent tools ([#2799](https://github.com/holon-run/holon/pull/2799), [#2804](https://github.com/holon-run/holon/pull/2804), [#2815](https://github.com/holon-run/holon/pull/2815), [#2824](https://github.com/holon-run/holon/pull/2824)).
+          - Persist canonical Agent relations and policies, switch new writes to the canonical model, and add restart-safe dry-run/apply/retry backfill for legacy Agent metadata ([#2812](https://github.com/holon-run/holon/pull/2812), [#2825](https://github.com/holon-run/holon/pull/2825)).
+          - Add reliable Agent message delivery with durable ledger-backed retry and recovery behavior ([#2822](https://github.com/holon-run/holon/pull/2822)).
+          - Improve provider and transport reliability, including request-send disconnect retries, partial Ollama discovery tolerance, browser-compatible WebFetch headers, and raw workspace file streaming ([#2816](https://github.com/holon-run/holon/pull/2816), [#2818](https://github.com/holon-run/holon/pull/2818), [#2821](https://github.com/holon-run/holon/pull/2821), [#2823](https://github.com/holon-run/holon/pull/2823)).
+          - Add Holon operations, server operations, and office assistant templates, plus multilingual documentation and web file-browser improvements ([#2805](https://github.com/holon-run/holon/pull/2805), [#2807](https://github.com/holon-run/holon/pull/2807), [#2808](https://github.com/holon-run/holon/pull/2808), [#2814](https://github.com/holon-run/holon/pull/2814), [#2817](https://github.com/holon-run/holon/pull/2817), [#2820](https://github.com/holon-run/holon/pull/2820)).
 
           ## Install
 

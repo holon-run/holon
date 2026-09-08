@@ -70,6 +70,30 @@
       ]
     },
     {
+      "id": "runtime-agent-lifecycle",
+      "tier": "core",
+      "tags": ["runtime", "agent", "lifecycle", "restart", "deletion"],
+      "timeout_seconds": 300,
+      "requires_model": false,
+      "provider_mode": "stub",
+      "stub_scenario": "runtime-agent-lifecycle",
+      "description": "Create a named agent on the candidate, verify canonical relation writes, run it across a restart, then delete it and verify the tombstone survives another restart.",
+      "phases": [
+        {
+          "id": "before-restart",
+          "prompt": "Reply with the exact marker {marker}.",
+          "required_tools": [],
+          "forbidden_tools": []
+        },
+        {
+          "id": "after-restart",
+          "prompt": "Reply with the exact marker {marker}.",
+          "required_tools": [],
+          "forbidden_tools": []
+        }
+      ]
+    },
+    {
       "id": "runtime-upgrade-v030",
       "tier": "core",
       "tags": ["runtime", "upgrade", "migration", "persistence"],
