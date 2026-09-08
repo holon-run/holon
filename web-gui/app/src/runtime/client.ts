@@ -195,6 +195,8 @@ async function fetchAgentState(
 interface AgentListEntryDto {
   identity?: {
     agent_id?: string;
+    name?: string | null;
+    is_default_agent?: boolean;
     visibility?: string;
     ownership?: string;
     profile_preset?: string;
@@ -231,6 +233,7 @@ interface AgentListEntryDto {
 }
 
 type AgentStateDto = components["schemas"]["AgentStateSnapshotDto"];
+type AgentDetailDto = components["schemas"]["AgentDetail"];
 type SlimWorkItemDto = components["schemas"]["SlimWorkItemDto"];
 type WorkItemDto = components["schemas"]["WorkItemRecord"];
 type WorkItemTransportDto = SlimWorkItemDto | WorkItemDto;
@@ -1318,6 +1321,18 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         requestHeaders,
       );
     },
+    async renameAgent(agentId: string, name: string): Promise<AgentDetailDto> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      return patchJson<AgentDetailDto>(
+        fetchImpl,
+        baseUrl,
+        `/control/agents/${encodeURIComponent(agentId)}/name`,
+        { name },
+        requestHeaders,
+      );
+    },
     async deleteAgent(agentId: string, cascadePrivateChildren = false): Promise<AgentDeletionResult> {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
@@ -2192,6 +2207,10 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
   const id = entry.identity?.agent_id ?? state?.agent?.agent?.id ?? "unknown-agent";
   const status = state?.agent?.agent?.status ?? entry.status ?? "unknown";
   const profile = compactJoin([entry.identity?.visibility ?? "public", entry.identity?.ownership, entry.identity?.profile_preset]);
+  const name = entry.identity?.name ?? undefined;
+  const visibility = entry.identity?.visibility;
+  const ownership = entry.identity?.ownership;
+  const isDefaultAgent = entry.identity?.is_default_agent ?? undefined;
   const wsList = state?.workspace?.workspaces ?? [];
   const activeWs = wsList.find((w) => w.is_active);
   // Fallback to list entry's active_workspace_entry when state hasn't loaded yet.
@@ -2228,6 +2247,10 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
 
   return {
     id,
+    name,
+    visibility,
+    ownership,
+    isDefaultAgent,
     badge: badgeFor(id),
     badgeHue: hueFor(id),
     profile,

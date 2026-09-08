@@ -5617,6 +5617,91 @@ code {
   font-size: 11px;
 }
 
+.agent-overview-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.agent-overview-title h2 {
+  overflow-wrap: anywhere;
+}
+
+.agent-rename-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: 4px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.agent-rename-toggle:hover {
+  color: var(--text);
+  border-color: var(--line);
+  background: var(--surface);
+}
+
+.agent-rename-row {
+  display: grid;
+  gap: 8px;
+}
+
+.agent-rename-row input[type="text"] {
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 12px;
+  background: var(--page);
+  color: var(--text);
+}
+
+.agent-rename-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.agent-rename-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.agent-rename-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.agent-id-line {
+  display: block;
+  margin-top: -6px;
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--muted);
+}
+
+.agent-rename-error {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--danger, #e53e3e);
+}
+
 .inspector-list,
 .inspector-nested-stack {
   display: grid;

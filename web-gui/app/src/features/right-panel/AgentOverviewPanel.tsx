@@ -1,9 +1,10 @@
 import { useMemo, useState } from "react";
-import { Inbox, Loader2, Trash2, Play, Square } from "lucide-react";
+import { Check, Inbox, Loader2, Pencil, Play, Square, Trash2, X } from "lucide-react";
 import type React from "react";
 
 import { EmptyState } from "../../components/ui/EmptyState";
 import { StatusBadge } from "../../components/ui/StatusChip";
+import { agentRenameErrorKey, isAgentRenameable, validateAgentDisplayName } from "./agent-rename";
 import { compactModelRouteDisplay } from "../../lib/model-route-ref";
 import { ToolExecutionContent } from "./ToolExecutionRenderers";
 import type { AgentSummary, AgentControlAction, AgentDeletionStatus, SkillCatalogEntry, SkillCatalogState, TaskSummary, ToolExecutionDetailState, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
@@ -27,6 +28,7 @@ interface AgentOverviewPanelProps {
   onBrowseFiles: (workspaceId: string, executionRootId?: string) => void;
   onControlAgent?: (action: AgentControlAction) => Promise<void>;
   onDeleteAgent?: (cascadePrivateChildren: boolean) => Promise<void>;
+  onRenameAgent?: (name: string) => Promise<void>;
 }
 
 function AgentSkillItem({
@@ -105,6 +107,7 @@ export function AgentOverviewPanel({
   onBrowseFiles,
   onControlAgent,
   onDeleteAgent,
+  onRenameAgent,
 }: AgentOverviewPanelProps) {
   const { t } = useTranslation();
   const workspace = agent.workspaceSummary;
@@ -112,6 +115,10 @@ export function AgentOverviewPanel({
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const [cascadeChildren, setCascadeChildren] = useState(false);
   const [pendingAction, setPendingAction] = useState<AgentControlAction | "delete" | null>(null);
+  const [renaming, setRenaming] = useState(false);
+  const [renameText, setRenameText] = useState("");
+  const [renameError, setRenameError] = useState<string | undefined>(undefined);
+  const [renameSaving, setRenameSaving] = useState(false);
   const workItems = agent.workItems ?? (agent.currentWork ? [agent.currentWork] : []);
   const currentWorkItems = workItems.filter((item) => item.current);
   // Stop and Start are inverse lifecycle transitions: only show the one that
@@ -152,6 +159,46 @@ export function AgentOverviewPanel({
       setCascadeChildren(false);
     }
   }
+  // The backend stays authoritative; this gating only hides the entry point.
+  const canRename = Boolean(onRenameAgent) && isAgentRenameable(agent);
+  function startRename() {
+    setRenameText(agent.name ?? "");
+    setRenameError(undefined);
+    setRenaming(true);
+  }
+  function cancelRename() {
+    setRenaming(false);
+    setRenameText("");
+    setRenameError(undefined);
+  }
+  async function handleRename() {
+    if (!onRenameAgent || renameSaving) return;
+    const issue = validateAgentDisplayName(renameText);
+    if (issue) {
+      setRenameError(
+        issue === "required"
+          ? t("agent.renameNameRequired")
+          : issue === "tooLong"
+            ? t("agent.renameNameTooLong")
+            : t("agent.renameNameInvalidChars"),
+      );
+      return;
+    }
+    setRenameSaving(true);
+    setRenameError(undefined);
+    try {
+      await onRenameAgent(renameText.trim());
+      setRenaming(false);
+      setRenameText("");
+    } catch (error) {
+      const message = agentRenameErrorKey(error)
+        ? t("agent.renameNameConflict")
+        : t("agent.renameFailed", { message: error instanceof Error ? error.message : String(error) });
+      setRenameError(message);
+    } finally {
+      setRenameSaving(false);
+    }
+  }
 
   return (
     <div className="inspector-stack">
@@ -160,7 +207,61 @@ export function AgentOverviewPanel({
         summary={t("rightPanel.lifecycle", { value: agent.lifecycle })}
         badge={<StatusBadge className="state-chip" kind="agent" value={agent.posture || agent.lifecycle} />}
       >
-        <h2>{agent.id}</h2>
+        {renaming ? (
+          <div className="agent-rename-row">
+            <input
+              type="text"
+              value={renameText}
+              placeholder={t("agent.renamePlaceholder")}
+              aria-label={t("agent.nameLabel")}
+              autoFocus
+              disabled={renameSaving}
+              onChange={(event) => {
+                setRenameText(event.target.value);
+                setRenameError(undefined);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  void handleRename();
+                } else if (event.key === "Escape") {
+                  cancelRename();
+                }
+              }}
+            />
+            <div className="agent-rename-actions">
+              <button type="button" disabled={renameSaving} onClick={() => void handleRename()}>
+                {renameSaving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+                {t("common.save")}
+              </button>
+              <button type="button" disabled={renameSaving} onClick={cancelRename}>
+                <X size={14} />
+                {t("common.cancel")}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="agent-overview-title">
+            <h2>{agent.name ?? agent.id}</h2>
+            {canRename ? (
+              <button
+                type="button"
+                className="agent-rename-toggle"
+                aria-label={t("agent.renameAria")}
+                title={t("agent.rename")}
+                onClick={startRename}
+              >
+                <Pencil size={13} />
+              </button>
+            ) : null}
+          </div>
+        )}
+        {!renaming && agent.name ? <small className="agent-id-line">{agent.id}</small> : null}
+        {renameError ? (
+          <small className="agent-rename-error" role="alert">
+            {renameError}
+          </small>
+        ) : null}
         <dl className="inspector-facts">
           <div>
             <dt>{t("agent.model")}</dt>

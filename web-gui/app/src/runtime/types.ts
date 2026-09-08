@@ -325,6 +325,12 @@ export interface DashboardMetric {
 
 export interface AgentSummary {
   id: string;
+  /** Operator-facing display name; the technical identity stays `id`. */
+  name?: string;
+  visibility?: string;
+  ownership?: string;
+  /** True for the runtime default agent, which cannot be renamed. */
+  isDefaultAgent?: boolean;
   badge: string;
   badgeTone?: "muted";
   badgeHue?: number;

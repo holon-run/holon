@@ -1332,3 +1332,109 @@ describe("createRuntimeClient", () => {
     expect(seen).toContain("http://example.test:7878/api/agents/agent-one/briefs:batchGet");
   });
 });
+
+describe("createRuntimeClient agent naming", () => {
+  it("sends PATCH /control/agents/{id}/name with the requested name", async () => {
+    const seen: Array<{ url: string; method: string; body: unknown }> = [];
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: (async (input: RequestInfo | URL, init?: RequestInit) => {
+        seen.push({
+          url: String(input),
+          method: init?.method ?? "GET",
+          body: JSON.parse(String(init?.body ?? "null")),
+        });
+        return Response.json({
+          agent_id: "agent-one",
+          name: "Alpha One",
+          display_name: "Alpha One (agent-one)",
+        });
+      }) as typeof fetch,
+    });
+
+    await expect(client.renameAgent("agent-one", "Alpha One")).resolves.toEqual(
+      expect.objectContaining({ name: "Alpha One" }),
+    );
+    expect(seen).toEqual([
+      {
+        url: "http://example.test:7878/api/control/agents/agent-one/name",
+        method: "PATCH",
+        body: { name: "Alpha One" },
+      },
+    ]);
+  });
+
+  it("exposes the server error code when a rename conflicts", async () => {
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: (async () =>
+        new Response(JSON.stringify({ code: "agent_name_conflict", error: "name in use" }), {
+          status: 409,
+          headers: { "Content-Type": "application/json" },
+        })) as typeof fetch,
+    });
+
+    const error = await client.renameAgent("agent-one", "taken").catch((reason: unknown) => reason);
+    expect((error as { code?: string }).code).toBe("agent_name_conflict");
+    expect((error as { status?: number }).status).toBe(409);
+  });
+
+  it("projects the identity name and default marker from roster entries", async () => {
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: (async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/handshake")) {
+          return Response.json({
+            auth: { mode: "local" },
+            capabilities: REQUIRED_OBSERVER_SYNC_CAPABILITIES,
+          });
+        }
+        if (url.endsWith("/agents/list")) {
+          return Response.json([
+            {
+              identity: {
+                agent_id: "alpha",
+                name: "Alpha One",
+                is_default_agent: false,
+                visibility: "public",
+                ownership: "self_owned",
+                profile_preset: "public_named",
+              },
+              status: "awake_idle",
+            },
+            {
+              identity: {
+                agent_id: "main",
+                name: null,
+                is_default_agent: true,
+                visibility: "public",
+                ownership: "self_owned",
+              },
+              status: "awake_idle",
+            },
+          ]);
+        }
+        return new Response("not found", { status: 404 });
+      }) as typeof fetch,
+    });
+
+    const bootstrap = await client.getBootstrap();
+    expect(bootstrap.agents[0]).toEqual(
+      expect.objectContaining({
+        id: "alpha",
+        name: "Alpha One",
+        visibility: "public",
+        ownership: "self_owned",
+        isDefaultAgent: false,
+      }),
+    );
+    expect(bootstrap.agents[1]).toEqual(
+      expect.objectContaining({ id: "main", isDefaultAgent: true }),
+    );
+    expect(bootstrap.agents[1].name).toBeUndefined();
+  });
+});
