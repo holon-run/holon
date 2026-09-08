@@ -804,6 +804,9 @@ pub enum RuntimeDbAuditCheckArg {
 #[derive(Debug, Subcommand)]
 pub enum AgentCommands {
     List,
+    Get {
+        agent_id: Option<String>,
+    },
     Status {
         agent_id: Option<String>,
     },

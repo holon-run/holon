@@ -203,6 +203,23 @@ pub async fn status(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    agent_summary(agent_id, state, headers, "/agents/{agent_id}/status").await
+}
+
+pub async fn get_agent(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    agent_summary(agent_id, state, headers, "/agents/{agent_id}").await
+}
+
+async fn agent_summary(
+    agent_id: String,
+    state: Arc<AppState>,
+    headers: HeaderMap,
+    route: &'static str,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     let started_at = std::time::Instant::now();
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let agent = state
@@ -210,7 +227,7 @@ pub async fn status(
         .local_agent_summary(&agent_id)
         .await
         .map_err(agent_access_error)?;
-    traced_json("/agents/{agent_id}/status", started_at, agent)
+    traced_json(route, started_at, agent)
 }
 
 pub async fn state_default(State(state): State<Arc<AppState>>, headers: HeaderMap) -> AxumResponse {

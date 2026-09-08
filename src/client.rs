@@ -477,6 +477,10 @@ impl LocalClient {
         self.get_json(&format!("/agents/{agent_id}/status")).await
     }
 
+    pub async fn get_agent(&self, agent_id: &str) -> Result<AgentSummary> {
+        self.get_json(&format!("/agents/{agent_id}")).await
+    }
+
     pub async fn agent_state_snapshot(&self, agent_id: &str) -> Result<AgentStateSnapshotDto> {
         self.get_json(&format!("/agents/{agent_id}/state")).await
     }

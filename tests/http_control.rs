@@ -16,6 +16,7 @@ http_async_tests!(
     control_agent_create_returns_degraded_receipt_and_repairs,
     agent_state_route_returns_aggregated_snapshot,
     unloaded_agent_state_route_uses_storage_without_starting_runtime,
+    unloaded_agent_detail_route_uses_storage_without_starting_runtime,
     runtime_search_route_returns_memory_search_results,
     runtime_search_route_filters_memory_results_by_agent_ids,
     agent_brief_route_returns_full_brief_by_id,

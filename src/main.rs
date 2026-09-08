@@ -1336,6 +1336,15 @@ mod tests {
 
     #[test]
     fn agent_lifecycle_commands_parse_with_optional_agent_id() {
+        let cli = Cli::parse_from(["holon", "agent", "get", "foo"]);
+        let Commands::Agent {
+            command: Some(AgentCommands::Get { agent_id }),
+        } = cli.command
+        else {
+            panic!("expected agent get command");
+        };
+        assert_eq!(agent_id.as_deref(), Some("foo"));
+
         let cli = Cli::parse_from(["holon", "agent", "start"]);
         let Commands::Agent {
             command: Some(AgentCommands::Start { agent_id }),
@@ -4517,6 +4526,11 @@ async fn handle_agent_command(config: &AppConfig, command: Option<AgentCommands>
         None | Some(AgentCommands::List) => {
             let client = LocalClient::new(config.clone())?;
             print_json(&serde_json::to_value(client.list_agent_entries().await?)?)
+        }
+        Some(AgentCommands::Get { agent_id }) => {
+            let agent = cli_target_agent(config, agent_id)?;
+            let client = LocalClient::new(config.clone())?;
+            print_json(&serde_json::to_value(client.get_agent(&agent).await?)?)
         }
         Some(AgentCommands::Status { agent_id }) => {
             let agent = agent_id.unwrap_or_else(|| config.default_agent_id.clone());

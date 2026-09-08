@@ -374,6 +374,7 @@ pub fn router(state: AppState) -> Router {
             get(observer_sync::agent_projection_snapshot),
         )
         .route("/agents/{agent_id}/enqueue", post(state::enqueue))
+        .route("/agents/{agent_id}", get(state::get_agent))
         .route("/agents/{agent_id}/status", get(state::status))
         .route("/agents/{agent_id}/briefs", get(state::briefs))
         .route(
