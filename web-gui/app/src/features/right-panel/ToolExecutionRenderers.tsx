@@ -192,7 +192,12 @@ export function ImagePreview({ uri, alt }: { uri: string; alt?: string }) {
     <section className="tool-detail-field">
       <h3 className="tool-detail-field-label">Image preview</h3>
       <div className="tool-detail-image-preview">
-        <WorkspaceImage workspaceId={ref.workspaceId} path={ref.path} alt={alt ?? ref.path} />
+        <WorkspaceImage
+          workspaceId={ref.workspaceId}
+          path={ref.path}
+          executionRootId={ref.executionRootId}
+          alt={alt ?? ref.path}
+        />
       </div>
     </section>
   );
@@ -462,10 +467,6 @@ function ApplyPatchRenderer({ record }: { record: RuntimeToolExecutionRecord }) 
 
 function ViewImageRenderer({ record }: { record: RuntimeToolExecutionRecord }) {
   const { t } = useTranslation();
-  const agentId = typeof record.agent_id === "string" ? record.agent_id : undefined;
-  const workspaceId = useRuntimeStore((s) =>
-    agentId ? s.sessionsByAgentId[agentId]?.detail?.agent?.workspaceSummary?.id : undefined,
-  );
 
   const output = unwrapToolOutput(record.output ?? record.result);
   const result = asResultRecord(output, "view_image_result");
@@ -476,6 +477,7 @@ function ViewImageRenderer({ record }: { record: RuntimeToolExecutionRecord }) {
   const inputPath = nestedText(record.input, ["path", "image_path"]);
   const resultPath = nestedText(visualRef, ["path"]);
   const displayPath = inputPath || resultPath;
+  const workspaceUri = nestedText(visualRef, ["workspace_uri"]);
   const mime = nestedText(visualRef, ["mime"]);
   const byteCount = nestedValue(visualRef, ["byte_count"]);
   const sha256 = nestedText(visualRef, ["sha256"]);
@@ -499,12 +501,11 @@ function ViewImageRenderer({ record }: { record: RuntimeToolExecutionRecord }) {
     : [];
   const summary = textField(result?.summary_text) || record.summary;
 
-  // Construct workspace URI for relative/absolute paths that aren't already workspace://
-  const imageUri = displayPath?.startsWith("workspace://")
-    ? displayPath
-    : displayPath && workspaceId
-      ? `workspace://${workspaceId}/${displayPath.replace(/^\/+/, "")}`
-      : displayPath;
+  // Consume the canonical reference recorded when the tool ran. Never
+  // reconstruct one from the render-time active workspace: the agent may
+  // have switched workspaces since, and absolute local paths (e.g. /tmp
+  // screenshots) are not workspace-relative anyway.
+  const imageUri = workspaceUri ?? (displayPath?.startsWith("workspace://") ? displayPath : undefined);
 
   return (
     <>
@@ -531,7 +532,11 @@ function ViewImageRenderer({ record }: { record: RuntimeToolExecutionRecord }) {
         <OutputField label="Uncertainties" value={uncertainties.join("; ")} />
       ) : null}
       {summary ? <OutputField label={t("inspector.result")} value={summary} /> : null}
-      {imageUri ? <ImagePreview uri={imageUri} alt={observationSummary ?? displayPath} /> : null}
+      {imageUri ? (
+        <ImagePreview uri={imageUri} alt={observationSummary ?? displayPath} />
+      ) : displayPath ? (
+        <SimpleField label="Image preview" value={`${displayPath} (no workspace reference recorded)`} />
+      ) : null}
       {record.error ? <OutputField label={t("inspector.error")} value={textField(record.error)} variant="error" /> : null}
     </>
   );

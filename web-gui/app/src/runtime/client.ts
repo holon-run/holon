@@ -2699,6 +2699,11 @@ export function isProjectionBusyError(error: unknown): boolean {
   return error instanceof RuntimeHttpError && error.status === 429 && error.code === "projection_busy";
 }
 
+/** True when the request failed with HTTP 404 (resource missing or removed). */
+export function isHttpNotFoundError(error: unknown): boolean {
+  return error instanceof RuntimeHttpError && error.status === 404;
+}
+
 /** True when the snapshot target agent is unknown or not a member. */
 export function isSnapshotAgentMissingError(error: unknown): boolean {
   return error instanceof RuntimeHttpError && error.status === 404;

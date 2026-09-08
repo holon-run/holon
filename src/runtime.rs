@@ -3250,6 +3250,29 @@ impl RuntimeHandle {
         workspace::workspace_view_for_root(&self.inner.storage, execution_root, cwd, worktree_root)
     }
 
+    /// Registered execution roots for the given workspaces. Used to populate
+    /// execution snapshots and to reverse-map resolved paths (for example
+    /// ViewImage results) into `workspace://` URIs with `?root=` parameters.
+    pub(crate) fn execution_root_refs_for_workspaces(
+        &self,
+        workspace_ids: &[String],
+    ) -> Vec<crate::system::ExecutionRootRef> {
+        let repo = self.inner.runtime_db.execution_root_entries();
+        let mut roots = Vec::new();
+        for ws_id in workspace_ids {
+            if let Ok(entries) = repo.active_for_workspace(ws_id) {
+                for entry in entries {
+                    roots.push(crate::system::ExecutionRootRef {
+                        execution_root_id: entry.execution_root_id,
+                        workspace_id: entry.workspace_id,
+                        filesystem_path: entry.filesystem_path,
+                    });
+                }
+            }
+        }
+        roots
+    }
+
     fn workspace_view_from_state(&self, state: &AgentState) -> Result<WorkspaceView> {
         workspace::workspace_view_from_state(state, self.inner.storage.data_dir().to_path_buf())
     }
@@ -3269,20 +3292,7 @@ impl RuntimeHandle {
         // Populate execution_roots from the runtime DB registry for all
         // attached workspaces, so the provider turn resolver can resolve
         // `?root=` parameters in workspace:// URIs.
-        let repo = self.inner.runtime_db.execution_root_entries();
-        let mut roots = Vec::new();
-        for ws_id in attached_workspace_ids {
-            if let Ok(entries) = repo.active_for_workspace(ws_id) {
-                for entry in entries {
-                    roots.push(crate::system::ExecutionRootRef {
-                        execution_root_id: entry.execution_root_id,
-                        workspace_id: entry.workspace_id,
-                        filesystem_path: entry.filesystem_path,
-                    });
-                }
-            }
-        }
-        snapshot.execution_roots = roots;
+        snapshot.execution_roots = self.execution_root_refs_for_workspaces(attached_workspace_ids);
         snapshot
     }
 
