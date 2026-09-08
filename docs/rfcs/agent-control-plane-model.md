@@ -233,7 +233,7 @@ This should be the only public way to create another reasoning context.
 The central inspection primitive should be:
 
 - `GetAgent`
-  - Returns an `GetAgentResult` envelope carrying the current `AgentSummary`.
+  - Returns a `GetAgentResult` envelope carrying the current `AgentSummary`.
 
 `GetAgent` should read agent-plane state for the context-owning agent:
 

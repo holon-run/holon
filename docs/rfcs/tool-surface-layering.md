@@ -336,7 +336,7 @@ just another task kind.
 The same plane should also own the stable inspection primitive for the current
 agent, rather than overloading task metadata surfaces for agent identity and
 work-focus questions. That inspection primitive should be `GetAgent`, returned
-through an `GetAgentResult` envelope, while task-backed handles remain the
+through a `GetAgentResult` envelope, while task-backed handles remain the
 responsibility of `TaskStatus`.
 
 ## 4. Waiting Plane
