@@ -117,9 +117,24 @@ pub(crate) struct RecentTurnsReprojection {
     initial_budget: usize,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) enum WorkItemScopedReprojection {
+    NoCurrentWorkItem,
+    NoOwnedTurnRecords,
+    Rendered {
+        section: PromptSection,
+        evidence: Vec<ProjectionEvidenceRef>,
+        turns_loaded: usize,
+    },
+}
+
 impl RecentTurnsReprojection {
     pub(crate) fn initial_budget(&self) -> usize {
         self.initial_budget
+    }
+
+    pub(crate) fn turn_count(&self) -> usize {
+        self.turn_records.len()
     }
 }
 
@@ -142,33 +157,64 @@ pub(crate) fn reproject_recent_turns(
     .map(|content| turn_section("recent_turns", content))
 }
 
-pub(crate) fn reproject_work_item_scoped(
+pub(crate) fn reproject_work_item_scoped_with_limit(
     storage: &AppStorage,
     reprojection: &RecentTurnsReprojection,
     budget: usize,
-) -> Option<PromptSection> {
-    let work_item_id = reprojection.current_work_item.as_ref()?.id.as_str();
-    let turn_records = reprojection
-        .turn_records
-        .iter()
-        .filter(|record| record.effective_owner().work_item_id() == Some(work_item_id))
-        .cloned()
-        .collect::<Vec<_>>();
+    window_limit: usize,
+) -> Result<WorkItemScopedReprojection> {
+    let Some(work_item) = reprojection.current_work_item.as_ref() else {
+        return Ok(WorkItemScopedReprojection::NoCurrentWorkItem);
+    };
+    let owner = crate::types::TurnOwner::WorkItem {
+        work_item_id: work_item.id.clone(),
+    };
+    let turn_records = storage.read_recent_turns_for_owner(&owner, window_limit)?;
     if turn_records.is_empty() {
-        return None;
+        return Ok(WorkItemScopedReprojection::NoOwnedTurnRecords);
     }
-    render_turn_records_with_budget(
+    let mut messages = Vec::new();
+    let mut briefs = Vec::new();
+    let mut tools = Vec::new();
+    hydrate_recent_turn_references(
         storage,
         &turn_records,
-        &reprojection.messages,
-        &reprojection.briefs,
-        &reprojection.tools,
-        &reprojection.transcript,
+        &mut messages,
+        &mut briefs,
+        &mut tools,
+    )?;
+    let turn_ids = turn_records
+        .iter()
+        .map(|record| record.turn_id.clone())
+        .collect::<Vec<_>>();
+    let transcript = storage.read_transcript_for_turns(&turn_ids)?;
+    let Some(content) = render_turn_records_with_budget(
+        storage,
+        &turn_records,
+        &messages,
+        &briefs,
+        &tools,
+        &transcript,
         &reprojection.current_message,
-        reprojection.current_work_item.as_ref(),
+        Some(work_item),
         budget,
-    )
-    .map(|content| turn_section("recent_turns", content))
+    ) else {
+        return Ok(WorkItemScopedReprojection::NoOwnedTurnRecords);
+    };
+    let evidence = build_recent_turn_projection_evidence(
+        &turn_records,
+        &messages,
+        &briefs,
+        &tools,
+        ProjectionOwner::WorkItem {
+            work_item_id: work_item.id.clone(),
+        },
+    );
+    Ok(WorkItemScopedReprojection::Rendered {
+        section: turn_section("recent_turns", content),
+        evidence,
+        turns_loaded: turn_records.len(),
+    })
 }
 
 pub fn build_context(
@@ -685,10 +731,6 @@ fn build_projection_evidence(
         .and_then(|binding| binding.owner.as_ref())
         .map(ProjectionOwner::from)
         .unwrap_or_else(|| projection_owner(current_message.work_item_id.as_deref(), &agent.id));
-    let turn_owners = turn_records
-        .iter()
-        .map(|turn| (turn.turn_id.as_str(), turn.effective_owner()))
-        .collect::<std::collections::BTreeMap<_, _>>();
     evidence.insert(
         "current_input".into(),
         vec![ProjectionEvidenceRef::new(
@@ -723,14 +765,20 @@ fn build_projection_evidence(
         }
     }
 
-    let mut recent_turn_refs = Vec::new();
-    for turn in turn_records {
-        recent_turn_refs.push(ProjectionEvidenceRef::new(
-            format!("turn:{}", turn.turn_id),
-            ProjectionEvidenceRole::Turn,
-            ProjectionOwner::from(&turn.effective_owner()),
-        ));
-    }
+    let turn_owners = turn_records
+        .iter()
+        .map(|turn| (turn.turn_id.as_str(), turn.effective_owner()))
+        .collect::<BTreeMap<_, _>>();
+    let mut recent_turn_refs = turn_records
+        .iter()
+        .map(|turn| {
+            ProjectionEvidenceRef::new(
+                format!("turn:{}", turn.turn_id),
+                ProjectionEvidenceRole::Turn,
+                ProjectionOwner::from(&turn.effective_owner()),
+            )
+        })
+        .collect::<Vec<_>>();
     let direct_predecessor_id = messages
         .iter()
         .max_by(|left, right| compare_message_recency(left, right))
@@ -782,6 +830,67 @@ fn build_projection_evidence(
     if !recent_turn_refs.is_empty() {
         evidence.insert("recent_turns".into(), recent_turn_refs);
     }
+    evidence
+}
+
+fn build_recent_turn_projection_evidence(
+    turn_records: &[TurnRecord],
+    messages: &[MessageEnvelope],
+    briefs: &[BriefRecord],
+    tools: &[ToolExecutionRecord],
+    fallback_owner: ProjectionOwner,
+) -> Vec<ProjectionEvidenceRef> {
+    let turn_owners = turn_records
+        .iter()
+        .map(|turn| (turn.turn_id.as_str(), turn.effective_owner()))
+        .collect::<BTreeMap<_, _>>();
+    let owner_for_turn = |turn_id: Option<&str>| {
+        turn_id
+            .and_then(|turn_id| turn_owners.get(turn_id))
+            .map(ProjectionOwner::from)
+            .unwrap_or_else(|| fallback_owner.clone())
+    };
+    let mut evidence = turn_records
+        .iter()
+        .map(|turn| {
+            ProjectionEvidenceRef::new(
+                format!("turn:{}", turn.turn_id),
+                ProjectionEvidenceRole::Turn,
+                ProjectionOwner::from(&turn.effective_owner()),
+            )
+        })
+        .collect::<Vec<_>>();
+    let direct_predecessor_id = messages
+        .iter()
+        .max_by(|left, right| compare_message_recency(left, right))
+        .map(|message| message.id.as_str());
+    evidence.extend(messages.iter().map(|message| {
+        ProjectionEvidenceRef::new(
+            format!("message:{}", message.id),
+            if direct_predecessor_id == Some(message.id.as_str()) {
+                ProjectionEvidenceRole::DirectPredecessor
+            } else {
+                ProjectionEvidenceRole::Input
+            },
+            owner_for_turn(message.turn_id.as_deref()),
+        )
+    }));
+    evidence.extend(briefs.iter().map(|brief| {
+        ProjectionEvidenceRef::new(
+            format!("brief:{}", brief.id),
+            ProjectionEvidenceRole::Result,
+            owner_for_turn(brief.turn_id.as_deref()),
+        )
+    }));
+    evidence.extend(tools.iter().map(|tool| {
+        ProjectionEvidenceRef::new(
+            format!("tool_execution:{}", tool.id),
+            ProjectionEvidenceRole::ToolResult,
+            owner_for_turn(tool.turn_id.as_deref()),
+        )
+    }));
+    evidence.sort();
+    evidence.dedup();
     evidence
 }
 
@@ -3448,6 +3557,139 @@ mod tests {
             storage.data_dir(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn work_item_scoped_reprojection_reads_deeper_owner_history_and_hydrates_evidence() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
+        let mut work_item =
+            WorkItemRecord::new("default", "deep scoped history", WorkItemState::Open);
+        work_item.id = "work-current".into();
+        let owner = crate::types::TurnOwner::WorkItem {
+            work_item_id: work_item.id.clone(),
+        };
+
+        for index in 1..=20u64 {
+            let turn_id = format!("turn-owned-{index:02}");
+            let mut message = MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: format!("owned request {index:02}"),
+                },
+            );
+            message.turn_id = Some(turn_id.clone());
+            message.work_item_id = Some(work_item.id.clone());
+            storage.append_message(&message).unwrap();
+
+            let mut turn = TurnRecord::new("default", &turn_id, index * 2);
+            turn.owner = Some(owner.clone());
+            turn.current_work_item_id = Some(work_item.id.clone());
+            turn.input_message_ids = vec![message.id.clone()];
+            turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&message));
+
+            if index == 1 {
+                let tool = ToolExecutionRecord {
+                    id: "tool-owned-oldest".into(),
+                    agent_id: "default".into(),
+                    work_item_id: Some(work_item.id.clone()),
+                    turn_index: turn.turn_index,
+                    turn_id: Some(turn_id.clone()),
+                    tool_name: "ExecCommand".into(),
+                    created_at: chrono::Utc::now(),
+                    completed_at: Some(chrono::Utc::now()),
+                    duration_ms: 1,
+                    authority_class: AuthorityClass::OperatorInstruction,
+                    status: ToolExecutionStatus::Success,
+                    input: json!({"cmd": "verify"}),
+                    output: json!({"exit_code": 0}),
+                    summary: "oldest owner tool evidence".into(),
+                    invocation_surface: None,
+                };
+                storage.append_tool_execution(&tool).unwrap();
+                turn.tool_execution_ids.push(tool.id.clone());
+
+                let transcript = TranscriptEntry::new(
+                    "default",
+                    TranscriptEntryKind::AssistantRound,
+                    Some(1),
+                    None,
+                    json!({
+                        "turn_id": turn_id,
+                        "work_item_id": work_item.id,
+                        "blocks": [{
+                            "type": "text",
+                            "text": "oldest owner assistant evidence"
+                        }]
+                    }),
+                );
+                storage.append_transcript_entry(&transcript).unwrap();
+            }
+            storage.append_turn(&turn).unwrap();
+
+            let other_turn_id = format!("turn-other-{index:02}");
+            let mut other = TurnRecord::new("default", other_turn_id, index * 2 + 1);
+            other.owner = Some(crate::types::TurnOwner::WorkItem {
+                work_item_id: "work-other".into(),
+            });
+            other.current_work_item_id = Some("work-other".into());
+            storage.append_turn(&other).unwrap();
+        }
+
+        let current_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "continue current work item".into(),
+            },
+        );
+        let reprojection = RecentTurnsReprojection {
+            turn_records: storage.read_recent_turns(12).unwrap(),
+            messages: Vec::new(),
+            briefs: Vec::new(),
+            tools: Vec::new(),
+            transcript: Vec::new(),
+            current_message,
+            current_work_item: Some(work_item),
+            initial_budget: 64_000,
+        };
+
+        let WorkItemScopedReprojection::Rendered {
+            section,
+            evidence,
+            turns_loaded,
+        } = reproject_work_item_scoped_with_limit(&storage, &reprojection, 64_000, 64).unwrap()
+        else {
+            panic!("owner-scoped projection should render");
+        };
+
+        assert_eq!(turns_loaded, 20);
+        assert!(section.content.contains("owned request 01"));
+        assert!(section.content.contains("oldest owner assistant evidence"));
+        assert!(section.content.contains("oldest owner tool evidence"));
+        assert!(!section.content.contains("turn-other"));
+        assert!(evidence
+            .iter()
+            .any(|reference| reference.reference == "turn:turn-owned-01"));
+        assert!(evidence.iter().all(|reference| {
+            reference.owner
+                == ProjectionOwner::WorkItem {
+                    work_item_id: "work-current".into(),
+                }
+        }));
     }
 
     fn active_task(

@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{params, OptionalExtension, ToSql, Transaction};
+use rusqlite::{params, params_from_iter, OptionalExtension, ToSql, Transaction};
 use sha2::{Digest, Sha256};
 
 use crate::runtime_db::agent_relations::{
@@ -2502,6 +2502,35 @@ impl TranscriptRepository<'_> {
             rows.map(|row| decode_transcript_entry_payload(&row?))
                 .collect()
         }
+    }
+
+    pub fn for_turn_ids(
+        &self,
+        agent_id: &str,
+        turn_ids: &[String],
+    ) -> Result<Vec<TranscriptEntry>> {
+        if turn_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = std::iter::repeat_n("?", turn_ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(&format!(
+            "SELECT payload_json
+             FROM transcript_entries
+             WHERE agent_id = ?
+               AND turn_id IN ({placeholders})
+             ORDER BY COALESCE(transcript_seq, 9223372036854775807) ASC,
+                      created_at ASC,
+                      evidence_id ASC"
+        ))?;
+        let rows = statement.query_map(
+            params_from_iter(std::iter::once(agent_id).chain(turn_ids.iter().map(String::as_str))),
+            |row| row.get::<_, String>(0),
+        )?;
+        rows.map(|row| decode_transcript_entry_payload(&row?))
+            .collect()
     }
 
     pub fn by_id(&self, agent_id: Option<&str>, entry_id: &str) -> Result<Option<TranscriptEntry>> {

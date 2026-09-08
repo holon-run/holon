@@ -18,8 +18,8 @@ use sha2::{Digest, Sha256};
 use crate::{
     context::{
         build_context_with_default_external_ingress, reproject_recent_turns,
-        reproject_work_item_scoped, BuiltContext, ContextConfig, ContextPlanEvidence,
-        RecentTurnsReprojection,
+        reproject_work_item_scoped_with_limit, BuiltContext, ContextConfig, ContextPlanEvidence,
+        RecentTurnsReprojection, WorkItemScopedReprojection,
     },
     projection_eval::{
         compare_prompt_history_selectors, manifest_from_effective_prompt,
@@ -96,6 +96,20 @@ pub struct EffectivePrompt {
     pub(crate) recent_turns_reprojection: Option<RecentTurnsReprojection>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) enum HistoryReprojectionOutcome {
+    Adopted {
+        prompt: EffectivePrompt,
+        turns_loaded: usize,
+    },
+    NoCurrentWorkItem,
+    NoOwnedTurnRecords,
+    IdenticalRenderNoop {
+        prompt: EffectivePrompt,
+        turns_loaded: usize,
+    },
+}
+
 impl EffectivePrompt {
     pub fn projection_manifest(&self) -> ProjectionManifest {
         manifest_from_effective_prompt(self)
@@ -120,17 +134,45 @@ impl EffectivePrompt {
         budget: usize,
         available_tools: &[ToolSpec],
         selector: HistorySelector,
-    ) -> Option<Self> {
-        let reprojection = self.recent_turns_reprojection.as_ref()?;
-        let replacement = match selector {
-            HistorySelector::RecentTurns => reproject_recent_turns(storage, reprojection, budget),
+        work_item_scoped_window: usize,
+    ) -> Result<HistoryReprojectionOutcome> {
+        if selector == HistorySelector::WorkItemScoped
+            && !matches!(self.projection_owner, ProjectionOwner::WorkItem { .. })
+        {
+            return Ok(HistoryReprojectionOutcome::NoCurrentWorkItem);
+        }
+        let Some(reprojection) = self.recent_turns_reprojection.as_ref() else {
+            return Ok(HistoryReprojectionOutcome::NoOwnedTurnRecords);
+        };
+        let (replacement, replacement_evidence, turns_loaded) = match selector {
+            HistorySelector::RecentTurns => {
+                let Some(replacement) = reproject_recent_turns(storage, reprojection, budget)
+                else {
+                    return Ok(HistoryReprojectionOutcome::NoOwnedTurnRecords);
+                };
+                (replacement, None, reprojection.turn_count())
+            }
             HistorySelector::WorkItemScoped => {
-                reproject_work_item_scoped(storage, reprojection, budget)
+                match reproject_work_item_scoped_with_limit(
+                    storage,
+                    reprojection,
+                    budget,
+                    work_item_scoped_window,
+                )? {
+                    WorkItemScopedReprojection::NoCurrentWorkItem => {
+                        return Ok(HistoryReprojectionOutcome::NoCurrentWorkItem);
+                    }
+                    WorkItemScopedReprojection::NoOwnedTurnRecords => {
+                        return Ok(HistoryReprojectionOutcome::NoOwnedTurnRecords);
+                    }
+                    WorkItemScopedReprojection::Rendered {
+                        section,
+                        evidence,
+                        turns_loaded,
+                    } => (section, Some(evidence), turns_loaded),
+                }
             }
         };
-        // An unavailable scoped projection must fall back at the request
-        // boundary; it must never become an empty history section.
-        let replacement = replacement?;
         let replacement_for_evidence = replacement.clone();
         let mut context_sections = self
             .context_sections
@@ -146,8 +188,20 @@ impl EffectivePrompt {
             .min(context_sections.len());
         context_sections.insert(insertion_index, replacement);
         let rendered_context_attachment = render_sections(&context_sections);
+        let mut prompt = self.clone();
+        if let Some(evidence) = replacement_evidence {
+            prompt
+                .projection_evidence
+                .insert("recent_turns".to_string(), evidence);
+        }
+        prompt
+            .context_plan_evidence
+            .record_reprojection("recent_turns", Some(&replacement_for_evidence));
         if rendered_context_attachment == self.rendered_context_attachment {
-            return None;
+            return Ok(HistoryReprojectionOutcome::IdenticalRenderNoop {
+                prompt,
+                turns_loaded,
+            });
         }
         let context_fingerprint = reprojected_context_fingerprint(
             &self.cache_identity,
@@ -156,20 +210,42 @@ impl EffectivePrompt {
             &context_sections,
             available_tools,
         );
-        let mut prompt = self.clone();
         prompt.context_sections = context_sections;
         prompt.rendered_context_attachment = rendered_context_attachment;
         prompt.cache_identity.context_fingerprint = context_fingerprint;
-        prompt
-            .context_plan_evidence
-            .record_reprojection("recent_turns", Some(&replacement_for_evidence));
-        Some(prompt)
+        Ok(HistoryReprojectionOutcome::Adopted {
+            prompt,
+            turns_loaded,
+        })
     }
 
     pub(crate) fn recent_turns_initial_budget(&self) -> Option<usize> {
         self.recent_turns_reprojection
             .as_ref()
             .map(RecentTurnsReprojection::initial_budget)
+    }
+
+    pub(crate) fn recent_turn_count(&self) -> usize {
+        self.recent_turns_reprojection
+            .as_ref()
+            .map_or(0, RecentTurnsReprojection::turn_count)
+    }
+
+    pub(crate) fn history_reprojection_budget(&self, maximum: usize) -> usize {
+        let recent_turns_allocated = self
+            .context_plan_evidence
+            .decisions
+            .iter()
+            .find(|decision| decision.candidate_id == "recent_turns")
+            .map_or(0, |decision| decision.allocated_estimated_tokens);
+        let other_allocated = self
+            .context_plan_evidence
+            .allocated_estimated_tokens
+            .saturating_sub(recent_turns_allocated);
+        self.context_plan_evidence
+            .total_budget_estimated_tokens
+            .saturating_sub(other_allocated)
+            .min(maximum)
     }
 
     pub(crate) fn reproject_recent_turns(
@@ -2520,6 +2596,57 @@ mod tests {
         ));
         assert!(dump.contains("[test_section][id: test-stable-id-123][Stable]"));
         assert!(dump.contains("[context_section][id: ctx-id-456][AgentScoped]"));
+    }
+
+    #[test]
+    fn history_reprojection_budget_uses_only_remaining_context_budget() {
+        let mut prompt = EffectivePrompt {
+            identity: sample_identity(),
+            agent_home: PathBuf::from("/tmp/agent-home"),
+            execution: sample_execution_snapshot(),
+            loaded_agents_md: LoadedAgentsMd::default(),
+            loaded_agent_memory: LoadedAgentMemory::default(),
+            cache_identity: sample_cache_identity(),
+            system_sections: Vec::new(),
+            context_sections: Vec::new(),
+            rendered_system_prompt: String::new(),
+            rendered_context_attachment: String::new(),
+            projection_owner: ProjectionOwner::AgentLifecycle {
+                agent_id: "default".into(),
+            },
+            projection_binding: None,
+            projection_turn_id: None,
+            projection_evidence: ProjectionEvidenceIndex::new(),
+            context_plan_evidence: ContextPlanEvidence {
+                total_budget_estimated_tokens: 100,
+                allocated_estimated_tokens: 90,
+                decisions: vec![
+                    crate::context::ContextPlanDecision {
+                        candidate_id: "current_input".into(),
+                        section_name: "current_input".into(),
+                        requested_estimated_tokens: 70,
+                        minimum_estimated_tokens: 70,
+                        allocated_estimated_tokens: 70,
+                        outcome: crate::context::ContextPlanOutcome::Full,
+                        reason: crate::context::ContextPlanReason::SelectedFull,
+                    },
+                    crate::context::ContextPlanDecision {
+                        candidate_id: "recent_turns".into(),
+                        section_name: "recent_turns".into(),
+                        requested_estimated_tokens: 20,
+                        minimum_estimated_tokens: 0,
+                        allocated_estimated_tokens: 20,
+                        outcome: crate::context::ContextPlanOutcome::Full,
+                        reason: crate::context::ContextPlanReason::SelectedFull,
+                    },
+                ],
+            },
+            recent_turns_reprojection: None,
+        };
+
+        assert_eq!(prompt.history_reprojection_budget(64), 30);
+        prompt.context_plan_evidence.total_budget_estimated_tokens = 20;
+        assert_eq!(prompt.history_reprojection_budget(64), 0);
     }
 
     #[test]

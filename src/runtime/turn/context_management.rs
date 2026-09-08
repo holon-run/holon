@@ -1,12 +1,41 @@
 //! Context management eligibility diagnostics for tool results.
 
 use crate::config::ModelRouteRef;
-use crate::projection_eval::{HistorySelector, ProjectionDiagnostics};
+use crate::projection_eval::{HistorySelector, ProjectionDiagnostics, ProjectionOutcome};
 use crate::provider::{
     AgentProvider, ConversationMessage, ModelBlock, ProviderPromptCapability, ProviderTurnRequest,
     ToolResultBlock,
 };
 use serde_json::Value;
+
+const DEFAULT_WORK_ITEM_SCOPED_WINDOW_MESSAGES: usize = 64;
+const MAX_WORK_ITEM_SCOPED_WINDOW_MESSAGES: usize = 512;
+const WORK_ITEM_SCOPED_WINDOW_MESSAGES_ENV: &str = "HOLON_CONTEXT_WORK_ITEM_SCOPED_WINDOW_MESSAGES";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum HistoryWindowPolicySource {
+    Environment,
+    Default,
+}
+
+impl HistoryWindowPolicySource {
+    pub(super) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Environment => "env",
+            Self::Default => "default",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct HistoryWindowMessages {
+    pub(super) limit: usize,
+    pub(super) source: HistoryWindowPolicySource,
+}
+
+pub(super) fn configured_work_item_scoped_window_messages() -> HistoryWindowMessages {
+    configured_work_item_scoped_window_messages_with_lookup(|key| std::env::var(key).ok())
+}
 
 pub(super) fn configured_history_selector(
     agent_id: &str,
@@ -61,7 +90,25 @@ fn configured_history_selector_with_lookup(
     ];
     keys.iter()
         .find_map(|key| lookup(key).and_then(|value| parse_configured_history_selector(&value)))
-        .unwrap_or(HistorySelector::RecentTurns)
+        .unwrap_or(HistorySelector::WorkItemScoped)
+}
+
+fn configured_work_item_scoped_window_messages_with_lookup(
+    mut lookup: impl FnMut(&str) -> Option<String>,
+) -> HistoryWindowMessages {
+    let parsed = lookup(WORK_ITEM_SCOPED_WINDOW_MESSAGES_ENV)
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0);
+    match parsed {
+        Some(messages) => HistoryWindowMessages {
+            limit: messages.min(MAX_WORK_ITEM_SCOPED_WINDOW_MESSAGES),
+            source: HistoryWindowPolicySource::Environment,
+        },
+        None => HistoryWindowMessages {
+            limit: DEFAULT_WORK_ITEM_SCOPED_WINDOW_MESSAGES,
+            source: HistoryWindowPolicySource::Default,
+        },
+    }
 }
 
 fn selector_env_component(value: &str) -> String {
@@ -89,15 +136,33 @@ pub(super) fn projection_diagnostic(
     prompt: &crate::prompt::EffectivePrompt,
     selector: HistorySelector,
     fallback_reason: Option<&str>,
+    history_window_scope: &str,
+    history_window_limit: usize,
+    history_window_turns_loaded: usize,
+    history_window_source: &str,
+    history_window_budget_tokens: usize,
+    outcome: ProjectionOutcome,
 ) -> Value {
-    let mut diagnostic = prompt
-        .projection_manifest_for_selector(selector)
+    let manifest = prompt.projection_manifest_for_selector(selector);
+    let mut diagnostic = manifest
         .diagnostics
+        .clone()
         .unwrap_or_else(|| {
             ProjectionDiagnostics::new(selector, "request_scoped_projection", None, 0, 0, 0)
-        });
+        })
+        .with_history_window(
+            history_window_scope,
+            history_window_limit,
+            history_window_turns_loaded,
+            history_window_source,
+            history_window_budget_tokens,
+        )
+        .with_manifest_invariants(&manifest)
+        .with_projection_outcome(outcome);
     if let Some(reason) = fallback_reason {
-        diagnostic = diagnostic.with_fallback_reason(reason);
+        diagnostic = diagnostic
+            .with_fallback_reason(reason)
+            .with_projection_outcome(outcome);
     }
     serde_json::to_value(diagnostic).unwrap_or_else(|_| {
         serde_json::json!({
@@ -214,16 +279,44 @@ mod tests {
     use async_trait::async_trait;
 
     use super::{
-        configured_history_selector_with_lookup, parse_configured_history_selector, HistorySelector,
+        configured_history_selector_with_lookup,
+        configured_work_item_scoped_window_messages_with_lookup, parse_configured_history_selector,
+        HistorySelector, HistoryWindowPolicySource,
     };
 
     #[test]
-    fn history_selector_defaults_to_recent_turns() {
+    fn history_selector_defaults_to_work_item_scoped() {
         assert_eq!(parse_configured_history_selector("unknown"), None);
         assert_eq!(
             parse_configured_history_selector(" work_item_scoped "),
             Some(HistorySelector::WorkItemScoped)
         );
+        let model = ModelRouteRef::parse("openai@default/gpt-5").unwrap();
+        assert_eq!(
+            configured_history_selector_with_lookup("agent-1", &model, |_| None),
+            HistorySelector::WorkItemScoped
+        );
+    }
+
+    #[test]
+    fn work_item_scoped_window_policy_parses_caps_and_falls_back() {
+        let policy =
+            configured_work_item_scoped_window_messages_with_lookup(|_| Some("128".to_string()));
+        assert_eq!(policy.limit, 128);
+        assert_eq!(policy.source, HistoryWindowPolicySource::Environment);
+
+        let capped =
+            configured_work_item_scoped_window_messages_with_lookup(|_| Some("999".to_string()));
+        assert_eq!(capped.limit, 512);
+        assert_eq!(capped.source, HistoryWindowPolicySource::Environment);
+
+        for invalid in ["0", "invalid"] {
+            let fallback = configured_work_item_scoped_window_messages_with_lookup(|_| {
+                Some(invalid.to_string())
+            });
+            assert_eq!(fallback.limit, 64);
+            assert_eq!(fallback.source, HistoryWindowPolicySource::Default);
+        }
     }
 
     #[test]

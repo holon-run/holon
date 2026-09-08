@@ -7492,6 +7492,48 @@ CREATE TABLE working_memory_deltas (
     }
 
     #[test]
+    fn transcript_entries_for_turn_ids_are_scoped_and_stably_ordered() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        assert!(db
+            .transcript_entries()
+            .for_turn_ids("agent-a", &[])?
+            .is_empty());
+
+        let created_at = Utc::now();
+        for (agent_id, turn_id, entry_id, sequence, offset_millis) in [
+            ("agent-a", "turn-1", "entry-c", Some(2), 0),
+            ("agent-a", "turn-2", "entry-b", None, 1),
+            ("agent-a", "turn-1", "entry-a", None, 1),
+            ("agent-a", "turn-3", "entry-other-turn", Some(1), 0),
+            ("agent-b", "turn-1", "entry-other-agent", Some(0), 0),
+        ] {
+            let mut entry = TranscriptEntry::new(
+                agent_id,
+                TranscriptEntryKind::AssistantRound,
+                None,
+                None,
+                serde_json::json!({ "turn_id": turn_id }),
+            );
+            entry.id = entry_id.into();
+            entry.transcript_seq = sequence;
+            entry.created_at = created_at + chrono::Duration::milliseconds(offset_millis);
+            db.transcript_entries().upsert(&entry)?;
+        }
+
+        let turn_ids = vec!["turn-2".to_owned(), "turn-1".to_owned()];
+        let entries = db.transcript_entries().for_turn_ids("agent-a", &turn_ids)?;
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["entry-c", "entry-a", "entry-b"]
+        );
+        Ok(())
+    }
+
+    #[test]
     fn legacy_turn_owner_fallback_is_conservative() {
         let mut work_item_turn = TurnRecord::new("agent-owner", "turn-work", 1);
         work_item_turn.current_work_item_id = Some("work-1".into());

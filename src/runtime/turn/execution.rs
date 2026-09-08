@@ -42,7 +42,8 @@ use super::completion::{
     rejects_truncated_mutation_tool_call, result_work_item_id, truncated_mutation_recovery_hint,
 };
 use super::context_management::{
-    configured_history_selector, context_management_diagnostic, projection_diagnostic,
+    configured_history_selector, configured_work_item_scoped_window_messages,
+    context_management_diagnostic, projection_diagnostic,
     projection_fallback_reason as provider_projection_fallback_reason,
 };
 use super::projection::{
@@ -1149,27 +1150,73 @@ impl TurnExecution<'_> {
             .await?;
         let configured_selector =
             configured_history_selector(agent_id, &turn_model_state.effective_model);
+        let scoped_window = configured_work_item_scoped_window_messages();
+        let context_config = runtime.current_context_config().await;
+        let projection_budget =
+            effective_prompt.history_reprojection_budget(context_config.turn_projection_budget());
         let mut projection_selector = configured_selector;
         let mut projection_fallback_reason =
             provider_projection_fallback_reason(provider.as_ref(), configured_selector);
+        let mut projection_outcome = crate::projection_eval::ProjectionOutcome::Projected;
+        let mut history_window_scope =
+            if configured_selector == crate::projection_eval::HistorySelector::WorkItemScoped {
+                "work_item_owner"
+            } else {
+                "agent_recent"
+            };
+        let mut history_window_limit =
+            if configured_selector == crate::projection_eval::HistorySelector::WorkItemScoped {
+                scoped_window.limit
+            } else {
+                context_config.recent_messages
+            };
+        let mut history_window_source =
+            if configured_selector == crate::projection_eval::HistorySelector::WorkItemScoped {
+                scoped_window.source.as_str()
+            } else {
+                "context_config"
+            };
+        let mut history_window_turns_loaded = effective_prompt.recent_turn_count();
         if configured_selector == crate::projection_eval::HistorySelector::WorkItemScoped {
             if projection_fallback_reason.is_none() {
-                let context_config = runtime.current_context_config().await;
-                if effective_prompt
-                    .reproject_for_history_selector(
-                        &runtime.inner.storage,
-                        context_config.turn_projection_budget(),
-                        &available_tools,
-                        configured_selector,
-                    )
-                    .map(|projected| effective_prompt = projected)
-                    .is_none()
-                {
-                    projection_fallback_reason = Some("work_item_scoped_projection_unavailable");
+                match effective_prompt.reproject_for_history_selector(
+                    &runtime.inner.storage,
+                    projection_budget,
+                    &available_tools,
+                    configured_selector,
+                    scoped_window.limit,
+                )? {
+                    crate::prompt::HistoryReprojectionOutcome::Adopted {
+                        prompt,
+                        turns_loaded,
+                    } => {
+                        effective_prompt = prompt;
+                        history_window_turns_loaded = turns_loaded;
+                    }
+                    crate::prompt::HistoryReprojectionOutcome::IdenticalRenderNoop {
+                        prompt,
+                        turns_loaded,
+                    } => {
+                        effective_prompt = prompt;
+                        history_window_turns_loaded = turns_loaded;
+                        projection_outcome =
+                            crate::projection_eval::ProjectionOutcome::IdenticalRenderNoop;
+                    }
+                    crate::prompt::HistoryReprojectionOutcome::NoCurrentWorkItem => {
+                        projection_fallback_reason = Some("no_current_work_item");
+                    }
+                    crate::prompt::HistoryReprojectionOutcome::NoOwnedTurnRecords => {
+                        projection_fallback_reason = Some("no_owned_turn_records");
+                    }
                 }
             }
             if projection_fallback_reason.is_some() {
                 projection_selector = crate::projection_eval::HistorySelector::RecentTurns;
+                projection_outcome = crate::projection_eval::ProjectionOutcome::Fallback;
+                history_window_scope = "agent_recent";
+                history_window_limit = context_config.recent_messages;
+                history_window_source = "context_config";
+                history_window_turns_loaded = effective_prompt.recent_turn_count();
             }
         }
         let allowed_tool_names = available_tools
@@ -1289,6 +1336,12 @@ impl TurnExecution<'_> {
                     &effective_prompt,
                     projection_selector,
                     projection_fallback_reason,
+                    history_window_scope,
+                    history_window_limit,
+                    history_window_turns_loaded,
+                    history_window_source,
+                    projection_budget,
+                    projection_outcome,
                 );
                 let context_build_ms = context_build_started.elapsed().as_millis() as u64;
                 let (result, provider_started_at, provider_completed_at, provider_round_ms) =
@@ -1684,6 +1737,12 @@ impl TurnExecution<'_> {
                     &effective_prompt,
                     projection_selector,
                     projection_fallback_reason,
+                    history_window_scope,
+                    history_window_limit,
+                    history_window_turns_loaded,
+                    history_window_source,
+                    projection_budget,
+                    projection_outcome,
                 );
                 let context_build_ms = context_build_started.elapsed().as_millis() as u64;
                 let (result, provider_started_at, provider_completed_at, provider_round_ms) =
