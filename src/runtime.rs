@@ -2024,44 +2024,42 @@ fn apply_scheduler_recovery_plan_with_options(
         if &current_entry == proposed_entry && candidate.proposed_commands.is_empty() {
             continue;
         }
-        let commit = runtime_db
-            .transitions()
-            .commit_queue_with_execution_protocol(
-                &crate::runtime_db::transitions::QueueTransitionCommand {
-                    agent_id: agent_id.to_string(),
-                    operation: if proposed_entry.status == QueueEntryStatus::Queued {
-                        crate::runtime_db::transitions::QueueOperation::Requeue
-                    } else {
-                        crate::runtime_db::transitions::QueueOperation::Settle
-                    },
-                    mutation: crate::runtime_db::transitions::QueueMutation::CompareAndSet {
-                        expected: current_entry,
-                        record: proposed_entry.clone(),
-                    },
-                    scheduler_claim_work_item: None,
-                    agent_state: None,
-                    message_evidence: Vec::new(),
-                    transcript_entries: Vec::new(),
-                    turn_record: None,
-                    audit_events: vec![AuditEvent::legacy(
-                        "scheduler_execution_recovered",
-                        serde_json::json!({
-                            "agent_id": agent_id,
-                            "message_id": candidate.message_id,
-                            "activation_id": candidate.activation_id,
-                            "work_item_id": candidate.work_item_id,
-                            "reason": candidate.reason,
-                        }),
-                    )],
-                    notify_scheduler: true,
-                    fault: None,
-                    brief_evidence: Vec::new(),
+        let commit = runtime_db.transitions().commit_scheduler_recovery(
+            &crate::runtime_db::transitions::QueueTransitionCommand {
+                agent_id: agent_id.to_string(),
+                operation: if proposed_entry.status == QueueEntryStatus::Queued {
+                    crate::runtime_db::transitions::QueueOperation::Requeue
+                } else {
+                    crate::runtime_db::transitions::QueueOperation::Settle
                 },
-                &crate::runtime_db::transitions::ExecutionProtocolTransition {
-                    bootstrap: None,
-                    commands: candidate.proposed_commands.clone(),
+                mutation: crate::runtime_db::transitions::QueueMutation::CompareAndSet {
+                    expected: current_entry,
+                    record: proposed_entry.clone(),
                 },
-            )?;
+                scheduler_claim_work_item: None,
+                agent_state: None,
+                message_evidence: Vec::new(),
+                transcript_entries: Vec::new(),
+                turn_record: None,
+                audit_events: vec![AuditEvent::legacy(
+                    "scheduler_execution_recovered",
+                    serde_json::json!({
+                        "agent_id": agent_id,
+                        "message_id": candidate.message_id,
+                        "activation_id": candidate.activation_id,
+                        "work_item_id": candidate.work_item_id,
+                        "reason": candidate.reason,
+                    }),
+                )],
+                notify_scheduler: true,
+                fault: None,
+                brief_evidence: Vec::new(),
+            },
+            &crate::runtime_db::transitions::ExecutionProtocolTransition {
+                bootstrap: None,
+                commands: candidate.proposed_commands.clone(),
+            },
+        )?;
         applied |= commit.applied;
     }
     for (candidate, expected_entry, proposed_entry, command) in task_result_claim_recovery {
@@ -2085,44 +2083,42 @@ fn apply_scheduler_recovery_plan_with_options(
                 candidate.message_id
             ));
         }
-        let commit = runtime_db
-            .transitions()
-            .commit_queue_with_execution_protocol(
-                &crate::runtime_db::transitions::QueueTransitionCommand {
-                    agent_id: agent_id.to_string(),
-                    operation: if proposed_entry.status == QueueEntryStatus::Queued {
-                        crate::runtime_db::transitions::QueueOperation::Requeue
-                    } else {
-                        crate::runtime_db::transitions::QueueOperation::Settle
-                    },
-                    mutation: crate::runtime_db::transitions::QueueMutation::CompareAndSet {
-                        expected: expected_entry.clone(),
-                        record: proposed_entry.clone(),
-                    },
-                    scheduler_claim_work_item: None,
-                    agent_state: None,
-                    message_evidence: Vec::new(),
-                    transcript_entries: Vec::new(),
-                    turn_record: None,
-                    audit_events: vec![AuditEvent::legacy(
-                        "scheduler_task_result_claim_recovered",
-                        serde_json::json!({
-                            "agent_id": agent_id,
-                            "message_id": candidate.message_id,
-                            "activation_id": candidate.activation_id,
-                            "work_item_id": candidate.work_item_id,
-                            "reason": candidate.reason,
-                        }),
-                    )],
-                    notify_scheduler: true,
-                    fault: task_result_fault,
-                    brief_evidence: Vec::new(),
+        let commit = runtime_db.transitions().commit_scheduler_recovery(
+            &crate::runtime_db::transitions::QueueTransitionCommand {
+                agent_id: agent_id.to_string(),
+                operation: if proposed_entry.status == QueueEntryStatus::Queued {
+                    crate::runtime_db::transitions::QueueOperation::Requeue
+                } else {
+                    crate::runtime_db::transitions::QueueOperation::Settle
                 },
-                &crate::runtime_db::transitions::ExecutionProtocolTransition {
-                    bootstrap: None,
-                    commands: vec![command.clone()],
+                mutation: crate::runtime_db::transitions::QueueMutation::CompareAndSet {
+                    expected: expected_entry.clone(),
+                    record: proposed_entry.clone(),
                 },
-            )?;
+                scheduler_claim_work_item: None,
+                agent_state: None,
+                message_evidence: Vec::new(),
+                transcript_entries: Vec::new(),
+                turn_record: None,
+                audit_events: vec![AuditEvent::legacy(
+                    "scheduler_task_result_claim_recovered",
+                    serde_json::json!({
+                        "agent_id": agent_id,
+                        "message_id": candidate.message_id,
+                        "activation_id": candidate.activation_id,
+                        "work_item_id": candidate.work_item_id,
+                        "reason": candidate.reason,
+                    }),
+                )],
+                notify_scheduler: true,
+                fault: task_result_fault,
+                brief_evidence: Vec::new(),
+            },
+            &crate::runtime_db::transitions::ExecutionProtocolTransition {
+                bootstrap: None,
+                commands: vec![command.clone()],
+            },
+        )?;
         applied |= commit.applied;
         if commit.applied {
             crate::diagnostics::record_unsettled_claim_recovery();

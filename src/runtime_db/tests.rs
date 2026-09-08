@@ -1772,6 +1772,61 @@ INSERT INTO storage_domains (
     }
 
     #[test]
+    fn scheduler_recovery_commit_supports_schema_46_without_delivery_projection() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        {
+            let mut connection = open_connection(&db_path)?;
+            migrate_through(&mut connection, 46)?;
+        }
+
+        let recovery_db = RuntimeDb::open_for_scheduler_recovery(&db_path, &lock_path)?;
+        let now = Utc::now();
+        let dequeued = QueueEntryRecord {
+            message_id: "message-schema-46-recovery".into(),
+            agent_id: "agent-schema-46-recovery".into(),
+            priority: crate::types::Priority::Normal,
+            status: QueueEntryStatus::Dequeued,
+            created_at: now,
+            updated_at: now,
+        };
+        recovery_db.queue_entries().upsert(&dequeued)?;
+        let mut interrupted = dequeued.clone();
+        interrupted.status = QueueEntryStatus::Interrupted;
+        interrupted.updated_at = now + chrono::Duration::seconds(1);
+
+        let commit = recovery_db.transitions().commit_scheduler_recovery(
+            &crate::runtime_db::transitions::QueueTransitionCommand {
+                agent_id: dequeued.agent_id.clone(),
+                operation: crate::runtime_db::transitions::QueueOperation::Settle,
+                mutation: crate::runtime_db::transitions::QueueMutation::CompareAndSet {
+                    expected: dequeued.clone(),
+                    record: interrupted.clone(),
+                },
+                scheduler_claim_work_item: None,
+                agent_state: None,
+                message_evidence: Vec::new(),
+                transcript_entries: Vec::new(),
+                turn_record: None,
+                audit_events: Vec::new(),
+                notify_scheduler: false,
+                fault: None,
+                brief_evidence: Vec::new(),
+            },
+            &crate::runtime_db::transitions::ExecutionProtocolTransition::default(),
+        )?;
+
+        assert!(commit.applied);
+        assert_eq!(
+            recovery_db
+                .queue_entries()
+                .latest(&dequeued.message_id)?
+                .expect("recovered queue entry"),
+            interrupted
+        );
+        Ok(())
+    }
+
+    #[test]
     fn scheduler_recovery_open_rejects_older_schemas() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         {
