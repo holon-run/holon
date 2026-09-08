@@ -1,13 +1,15 @@
 use anyhow::Result;
 use chrono::Utc;
-use reqwest::{
-    header::{HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, LOCATION, USER_AGENT},
-    Client, StatusCode,
-};
 use serde::Serialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use tokio_stream::StreamExt;
 use url::Url;
+use wreq::{
+    header::{HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, LOCATION, USER_AGENT},
+    Client, StatusCode,
+};
+use wreq_util::Emulation;
 
 use crate::{
     tool::{helpers::truncate_text, ToolError},
@@ -80,7 +82,7 @@ pub async fn fetch(request: WebFetchRequest, config: &WebFetchConfig) -> Result<
     for redirect_count in 0..=config.max_redirects {
         let access = validate_fetch_url(&current_url, config).await?;
         let client = pinned_client(&access.host, &access.pinned_socket_addrs(), config)?;
-        let response = client.get(current_url.clone()).send().await?;
+        let response = client.get(current_url.as_str()).send().await?;
         if response.status().is_redirection() {
             if redirect_count == config.max_redirects {
                 return Err(policy_error(
@@ -96,7 +98,7 @@ pub async fn fetch(request: WebFetchRequest, config: &WebFetchConfig) -> Result<
         let status = response.status();
         let content_type = response
             .headers()
-            .get(reqwest::header::CONTENT_TYPE)
+            .get(wreq::header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .map(ToString::to_string);
         let (bytes, response_truncated) = read_limited(response, config.max_response_bytes).await?;
@@ -146,17 +148,18 @@ fn pinned_client(
         HeaderValue::from_static(WEB_FETCH_ACCEPT_LANGUAGE),
     );
     Ok(Client::builder()
+        .emulation(Emulation::Chrome140)
         .default_headers(default_headers)
         .timeout(timeout(config))
-        .redirect(reqwest::redirect::Policy::none())
-        .resolve_to_addrs(host, addrs)
+        .redirect(wreq::redirect::Policy::none())
+        .resolve_to_addrs(host.to_owned(), addrs.iter().copied())
         .build()?)
 }
 
 fn redirect_target(
     current_url: &Url,
     status: StatusCode,
-    response: &reqwest::Response,
+    response: &wreq::Response,
 ) -> Result<Url> {
     let location = response.headers().get(LOCATION).ok_or_else(|| {
         policy_error(
@@ -184,13 +187,12 @@ fn redirect_target(
     })
 }
 
-async fn read_limited(
-    mut response: reqwest::Response,
-    max_bytes: usize,
-) -> Result<(Vec<u8>, bool)> {
+async fn read_limited(response: wreq::Response, max_bytes: usize) -> Result<(Vec<u8>, bool)> {
     let mut bytes = Vec::new();
     let mut truncated = false;
-    while let Some(chunk) = response.chunk().await? {
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
         if bytes.len() + chunk.len() > max_bytes {
             let remaining = max_bytes.saturating_sub(bytes.len());
             bytes.extend_from_slice(&chunk[..remaining]);
@@ -371,6 +373,74 @@ mod tests {
         assert!(response.text.contains("compressed fetch body"));
         assert_eq!(response.bytes_read, "compressed fetch body".len());
         assert!(!response.truncated);
+    }
+
+    #[tokio::test]
+    async fn fetch_revalidates_redirect_targets_before_connecting() {
+        let router = axum::Router::new().route(
+            "/redirect",
+            axum::routing::get(|| async {
+                axum::response::Redirect::temporary("http://169.254.169.254/latest/meta-data")
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+
+        let mut config = WebFetchConfig::default();
+        config.allowed_hosts = vec![format!("127.0.0.1:{}", addr.port())];
+        let error = fetch(
+            WebFetchRequest {
+                url: format!("http://{addr}/redirect"),
+                max_chars: None,
+                extract_mode: ExtractMode::Auto,
+            },
+            &config,
+        )
+        .await
+        .unwrap_err();
+
+        let tool_error = ToolError::from_anyhow(&error);
+        assert_eq!(tool_error.kind, "network_denied");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires public network access"]
+    async fn fetches_akamai_protected_pdf_with_browser_fingerprint() {
+        let response = fetch(
+            WebFetchRequest {
+                url: "https://www.cn.emb-japan.go.jp/files/100706925.pdf".into(),
+                max_chars: Some(100),
+                extract_mode: ExtractMode::Raw,
+            },
+            &WebFetchConfig::default(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.status, 200);
+        assert_eq!(response.content_type.as_deref(), Some("application/pdf"));
+        assert!(response.bytes_read > 0);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires public network access"]
+    async fn fetches_ordinary_https_site_with_browser_fingerprint() {
+        let response = fetch(
+            WebFetchRequest {
+                url: "https://example.com/".into(),
+                max_chars: Some(200),
+                extract_mode: ExtractMode::Auto,
+            },
+            &WebFetchConfig::default(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.status, 200);
+        assert!(response.text.contains("Example Domain"));
     }
 
     fn gzip_bytes(text: &str) -> Vec<u8> {

@@ -155,6 +155,10 @@ Holon 正在积极开发中。当前推荐版本为
 
 Rust 二进制在编译时通过 `rust-embed` 嵌入 Web GUI 资源。先构建前端再编译二进制：
 
+构建 Rust 二进制需要 Rust 1.85 或更高版本。WebFetch 的浏览器 TLS 指纹支持使用
+Apache-2.0 许可的 `wreq` 和 `wreq-util`，它们会从源码构建 BoringSSL，因此构建环境
+需要安装 CMake、Perl 和 Clang/libclang。
+
 ```bash
 make all
 holon --help

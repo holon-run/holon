@@ -53,6 +53,8 @@ url = "2.5"
 uuid = { version = "1.11", features = ["serde", "v4"] }
 twox-hash = { version = "2.1.2", features = ["std"] }
 aide = { version = "0.15.1", features = ["axum"] }
+wreq = { version = "=6.0.0-rc.31", features = ["gzip", "stream"] }
+wreq-util = { version = "=3.0.0-rc.14" }
 
 [dev-dependencies]
 flate2 = "1.0"

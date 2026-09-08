@@ -173,6 +173,11 @@ structured delivery.
 The Rust binary embeds web GUI assets at compile time via `rust-embed`. Build
 the frontend first, then compile the binary:
 
+Building the Rust binary requires Rust 1.85 or newer. WebFetch's browser TLS
+fingerprint support uses the Apache-2.0-licensed `wreq` and `wreq-util` crates,
+which build BoringSSL from source and require CMake, Perl, and Clang/libclang
+on the build host.
+
 ```bash
 make all
 holon --help
