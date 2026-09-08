@@ -17,8 +17,9 @@ use crate::{
         BatchGetTranscriptEntriesResponse, CancelTimerRequest, ClearAgentModelRequest,
         ControlPromptRequest, CreateAgentRequest, CreateTimerRequest, DebugPromptRequest,
         DeleteAgentRequest, DetachWorkspaceRequest, ExitWorkspaceRequest,
-        ModelConfigMigrationRequest, RuntimeConfigReadResponse, RuntimeConfigUpdateRequest,
-        RuntimeConfigUpdateResponse, SetAgentModelRequest, TaskInputRequest, TaskStopRequest,
+        ModelConfigMigrationRequest, RenameAgentRequest, RuntimeConfigReadResponse,
+        RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse, SetAgentModelRequest,
+        TaskInputRequest, TaskStopRequest,
     },
     http_dto::AgentStateSnapshotDto,
     model_catalog::BuiltInModelMetadata,
@@ -759,6 +760,18 @@ impl LocalClient {
         .await
     }
 
+    /// Rename a public self-owned agent. Only the display name changes; the
+    /// agent id stays permanent. Typed errors flow through `decode_or_error`.
+    pub async fn rename_agent(&self, agent_id: &str, name: &str) -> Result<AgentDetail> {
+        self.patch_control_json(
+            &format!("/control/agents/{agent_id}/name"),
+            &RenameAgentRequest {
+                name: name.to_string(),
+            },
+        )
+        .await
+    }
+
     pub async fn attach_workspace(
         &self,
         agent_id: &str,
@@ -1057,7 +1070,7 @@ impl LocalClient {
             .with_context(|| format!("failed to decode response body for DELETE {}", path))
     }
 
-    async fn patch_control_json<B: Serialize, T: DeserializeOwned>(
+    pub async fn patch_control_json<B: Serialize, T: DeserializeOwned>(
         &self,
         path: &str,
         payload: &B,

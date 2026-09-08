@@ -4573,6 +4573,11 @@ async fn handle_agent_command(config: &AppConfig, command: Option<AgentCommands>
                 client.repair_agent(&agent_id).await?,
             )?)
         }
+        Some(AgentCommands::Rename { agent_id, name }) => {
+            let client = LocalClient::new(config.clone())?;
+            let detail = client.rename_agent(&agent_id, &name).await?;
+            print_json(&serde_json::to_value(detail)?)
+        }
         Some(AgentCommands::Start { agent_id }) => {
             control_agent_lifecycle(config, agent_id, ControlAction::Start).await
         }

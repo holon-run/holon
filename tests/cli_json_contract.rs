@@ -569,3 +569,53 @@ fn onboard_defaults_to_scriptable_json_when_not_a_tty() {
         "non-TTY onboard output should remain scriptable JSON: {value}"
     );
 }
+
+#[test]
+fn agent_rename_reports_detail_json_and_readable_errors() {
+    let home = tempfile::tempdir().expect("create isolated HOLON_HOME");
+    let (_serve, addr) = spawn_local_serve(&home);
+    let envs = [("HOLON_HTTP_ADDR", addr.as_str())];
+
+    let created = run_json_with_env(&home, &["agent", "create", "rename-one"], &envs);
+    assert_eq!(created["identity"]["agent_id"], json!("rename-one"));
+
+    let renamed = run_json_with_env(
+        &home,
+        &["agent", "rename", "rename-one", "--name", "First Name"],
+        &envs,
+    );
+    assert_eq!(renamed["identity"]["agent_id"], json!("rename-one"));
+    assert_eq!(renamed["name"], json!("First Name"));
+    assert_eq!(renamed["identity"]["name"], json!("First Name"));
+    assert!(
+        renamed["display_name"]
+            .as_str()
+            .is_some_and(|value| value.contains("First Name")),
+        "rename should echo the updated agent detail: {renamed}"
+    );
+
+    // Duplicate names are rejected with the server's typed conflict message.
+    run_json_with_env(&home, &["agent", "create", "rename-two"], &envs);
+    let (conflict_stdout, conflict_stderr) = run_failure_with_env(
+        &home,
+        &["agent", "rename", "rename-two", "--name", "First Name"],
+        &envs,
+    );
+    assert!(
+        conflict_stdout.is_empty(),
+        "failed rename should not emit JSON stdout: {conflict_stdout}"
+    );
+    assert!(
+        conflict_stderr.contains("already in use"),
+        "conflict stderr should stay readable: {conflict_stderr}"
+    );
+
+    // The configured default agent keeps its identity.
+    let (default_stdout, default_stderr) =
+        run_failure_with_env(&home, &["agent", "rename", "main", "--name", "Nope"], &envs);
+    assert!(default_stdout.is_empty());
+    assert!(
+        default_stderr.contains("default agent cannot be renamed"),
+        "default-agent stderr should stay readable: {default_stderr}"
+    );
+}
