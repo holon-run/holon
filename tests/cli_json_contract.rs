@@ -9,7 +9,7 @@ use std::{
     io::{BufRead, BufReader},
     path::PathBuf,
     process::{Child, Command, Output, Stdio},
-    sync::mpsc,
+    sync::{mpsc, Mutex, OnceLock},
     thread,
     time::{Duration, Instant},
 };
@@ -51,6 +51,14 @@ impl Drop for ServeChild {
     }
 }
 
+/// Serialize tests that spawn `holon serve`: concurrent instrumented servers
+/// (for example under llvm-cov) compete for CPU on CI runners and can exceed
+/// the startup deadline even though a single server starts well within it.
+fn serve_test_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
 fn spawn_local_serve(home: &tempfile::TempDir) -> (ServeChild, String) {
     let mut child = isolated_holon_command(home)
         .args(["serve", "--listen", "127.0.0.1:0"])
@@ -89,7 +97,7 @@ fn spawn_local_serve(home: &tempfile::TempDir) -> (ServeChild, String) {
         }
         let _ = stderr_tx.send(captured);
     });
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(30);
     let mut addr = None;
     while Instant::now() < deadline {
         if let Some(status) = child.try_wait().expect("poll holon serve") {
@@ -396,6 +404,9 @@ fn config_set_unset_reports_offline_application_path_on_stderr() {
 
 #[test]
 fn config_set_prefers_running_daemon_runtime_config_api() {
+    let _serve_guard = serve_test_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let home = tempfile::tempdir().expect("create isolated HOLON_HOME");
     let (_serve, addr) = spawn_local_serve(&home);
 
@@ -465,6 +476,9 @@ fn config_set_prefers_running_daemon_runtime_config_api() {
 
 #[test]
 fn config_set_surfaces_daemon_rejection_reason() {
+    let _serve_guard = serve_test_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let home = tempfile::tempdir().expect("create isolated HOLON_HOME");
     let (_serve, addr) = spawn_local_serve(&home);
 
@@ -490,6 +504,9 @@ fn config_set_surfaces_daemon_rejection_reason() {
 
 #[test]
 fn config_set_rejects_runtime_scheduler_while_daemon_is_running() {
+    let _serve_guard = serve_test_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let home = tempfile::tempdir().expect("create isolated HOLON_HOME");
     let (_serve, addr) = spawn_local_serve(&home);
 
@@ -572,6 +589,9 @@ fn onboard_defaults_to_scriptable_json_when_not_a_tty() {
 
 #[test]
 fn agent_rename_reports_detail_json_and_readable_errors() {
+    let _serve_guard = serve_test_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let home = tempfile::tempdir().expect("create isolated HOLON_HOME");
     let (_serve, addr) = spawn_local_serve(&home);
     let envs = [("HOLON_HTTP_ADDR", addr.as_str())];
