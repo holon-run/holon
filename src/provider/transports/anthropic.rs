@@ -294,7 +294,10 @@ impl AgentProvider for AnthropicProvider {
         let wire_conversation = build_anthropic_wire_conversation(&request, cache_strategy);
         let rolling_cache_marker =
             rolling_conversation_cache_marker(&wire_conversation, cache_strategy);
-        let messages = build_anthropic_messages(&wire_conversation, rolling_cache_marker);
+        let mut messages = build_anthropic_messages(&wire_conversation, rolling_cache_marker);
+        if needs_placeholder_user_text(&self.route_provider) {
+            ensure_placeholder_user_text(&mut messages);
+        }
         let response_format_tool_choice = anthropic_response_format_tool_choice(&request);
         let (thinking, output_config) = anthropic_reasoning_controls(
             &self.route_provider,
@@ -1502,6 +1505,57 @@ fn build_anthropic_messages(
         .collect()
 }
 
+/// Ollama's Anthropic-compatible `/v1/messages` endpoint rejects message
+/// lists without any user text (e.g. pure tool-result rounds) with
+/// `500 no user query found in messages`; see ollama/ollama#18303. Until
+/// upstream ships a fix, append a non-empty placeholder user text block so
+/// tool-only rounds stay usable against ollama deployments.
+fn needs_placeholder_user_text(route_provider: &str) -> bool {
+    route_provider == "ollama"
+}
+
+fn ensure_placeholder_user_text(messages: &mut Vec<ApiMessage>) {
+    const PLACEHOLDER_USER_TEXT: &str = "(continue)";
+    if messages
+        .iter()
+        .any(|message| api_message_has_nonempty_user_text(message))
+    {
+        return;
+    }
+    let placeholder_block = || json!({ "type": "text", "text": PLACEHOLDER_USER_TEXT });
+    if let Some(message) = messages
+        .iter_mut()
+        .rev()
+        .find(|message| message.role == "user")
+    {
+        if let Some(blocks) = message.content.as_array_mut() {
+            blocks.push(placeholder_block());
+            return;
+        }
+    }
+    messages.push(ApiMessage {
+        role: "user",
+        content: Value::Array(vec![placeholder_block()]),
+    });
+}
+
+fn api_message_has_nonempty_user_text(message: &ApiMessage) -> bool {
+    if message.role != "user" {
+        return false;
+    }
+    match &message.content {
+        Value::String(text) => !text.trim().is_empty(),
+        Value::Array(blocks) => blocks.iter().any(|block| {
+            block.get("type").and_then(Value::as_str) == Some("text")
+                && block
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| !text.trim().is_empty())
+        }),
+        _ => false,
+    }
+}
+
 fn conversation_message_has_content(message: &ConversationMessage) -> bool {
     match message {
         ConversationMessage::UserText(text) => !text.trim().is_empty(),
@@ -2616,6 +2670,35 @@ mod tests {
         ProviderPromptFrame, ToolResultBlock,
     };
     use serde_json::json;
+
+    #[test]
+    fn ensure_placeholder_user_text_appends_to_tool_only_user_turn() {
+        let mut messages = vec![ApiMessage {
+            role: "user",
+            content: json!([{ "type": "tool_result", "tool_use_id": "toolu_1" }]),
+        }];
+        ensure_placeholder_user_text(&mut messages);
+        let blocks = messages[0].content.as_array().unwrap();
+        let placeholder = blocks.last().unwrap();
+        assert_eq!(placeholder["type"], json!("text"));
+        assert!(!placeholder["text"].as_str().unwrap().trim().is_empty());
+    }
+
+    #[test]
+    fn ensure_placeholder_user_text_pushes_user_message_when_no_user_turn() {
+        let mut messages = vec![ApiMessage {
+            role: "assistant",
+            content: json!([{ "type": "text", "text": "working" }]),
+        }];
+        ensure_placeholder_user_text(&mut messages);
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1].role, "user");
+        assert!(!messages[1].content[0]["text"]
+            .as_str()
+            .unwrap()
+            .trim()
+            .is_empty());
+    }
 
     #[test]
     fn build_anthropic_messages_marks_latest_tool_result_as_rolling_cache_tail() {

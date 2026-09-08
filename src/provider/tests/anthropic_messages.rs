@@ -941,3 +941,149 @@ async fn anthropic_claude_code_prompt_cache_strategy_does_not_cache_mark_tool_re
         json!("tool_result")
     );
 }
+
+#[tokio::test]
+async fn ollama_tool_only_round_appends_placeholder_user_text() {
+    let captured_body = Arc::new(Mutex::new(None::<serde_json::Value>));
+    let captured_body_for_server = captured_body.clone();
+    let base_url = spawn_test_server(Router::new().route(
+        "/v1/messages",
+        post(move |Json(body): Json<serde_json::Value>| {
+            let captured_body = captured_body_for_server.clone();
+            async move {
+                *captured_body.lock().unwrap() = Some(body);
+                Json(json!({
+                    "content": [{ "type": "text", "text": "ok" }],
+                    "stop_reason": "end_turn",
+                    "usage": { "input_tokens": 4, "output_tokens": 2 }
+                }))
+            }
+        }),
+    ))
+    .await;
+    let provider_config = ProviderRuntimeConfig {
+        id: ProviderId::parse("ollama").unwrap(),
+        route_provider: ProviderId::parse("ollama").unwrap(),
+        route_endpoint: ProviderEndpointId::default_endpoint(),
+        transport: ProviderTransportKind::AnthropicMessages,
+        base_url,
+        auth: Default::default(),
+        credential: None,
+        credential_store_path: None,
+        codex_home: None,
+        originator: None,
+        reasoning_effort: None,
+        context_management: Default::default(),
+        builtin_web_search: None,
+    };
+    let provider = AnthropicProvider::from_runtime_config(
+        &provider_config,
+        "qwen3.8:latest",
+        1024,
+        Path::new("."),
+        true,
+    )
+    .unwrap();
+
+    let request = ProviderTurnRequest::plain(
+        "system",
+        vec![
+            ConversationMessage::AssistantBlocks(vec![ModelBlock::ToolUse {
+                id: "exec-1".into(),
+                name: "ExecCommand".into(),
+                input: json!({ "cmd": "ls /tmp" }),
+                kind: crate::provider::ModelToolCallKind::Function,
+            }]),
+            ConversationMessage::UserToolResults(vec![ToolResultBlock {
+                tool_use_id: "exec-1".into(),
+                content: "stdout:\na.txt\nb.txt".into(),
+                is_error: false,
+                error: None,
+            }]),
+        ],
+        Vec::new(),
+    );
+    provider.complete_turn(request).await.unwrap();
+
+    let body = captured_body
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("server should capture request body");
+    let messages = body["messages"].as_array().unwrap();
+    let last = messages.last().unwrap();
+    assert_eq!(last["role"], json!("user"));
+    let blocks = last["content"].as_array().unwrap();
+    let placeholder = blocks.last().unwrap();
+    assert_eq!(placeholder["type"], json!("text"));
+    assert!(!placeholder["text"].as_str().unwrap().trim().is_empty());
+}
+
+#[tokio::test]
+async fn anthropic_tool_only_round_does_not_append_placeholder_user_text() {
+    let captured_body = Arc::new(Mutex::new(None::<serde_json::Value>));
+    let captured_body_for_server = captured_body.clone();
+    let base_url = spawn_test_server(Router::new().route(
+        "/v1/messages",
+        post(move |Json(body): Json<serde_json::Value>| {
+            let captured_body = captured_body_for_server.clone();
+            async move {
+                *captured_body.lock().unwrap() = Some(body);
+                Json(json!({
+                    "content": [{ "type": "text", "text": "ok" }],
+                    "stop_reason": "end_turn",
+                    "usage": { "input_tokens": 4, "output_tokens": 2 }
+                }))
+            }
+        }),
+    ))
+    .await;
+    let mut fixture = test_config(
+        "anthropic/claude-sonnet-4-6",
+        &[],
+        None,
+        Some("anthropic-token"),
+        false,
+    );
+    fixture
+        .config
+        .providers
+        .get_mut(&ProviderId::anthropic())
+        .unwrap()
+        .base_url = base_url;
+    let provider = AnthropicProvider::from_config(&fixture.config).unwrap();
+
+    let request = ProviderTurnRequest::plain(
+        "system",
+        vec![
+            ConversationMessage::AssistantBlocks(vec![ModelBlock::ToolUse {
+                id: "exec-1".into(),
+                name: "ExecCommand".into(),
+                input: json!({ "cmd": "ls /tmp" }),
+                kind: crate::provider::ModelToolCallKind::Function,
+            }]),
+            ConversationMessage::UserToolResults(vec![ToolResultBlock {
+                tool_use_id: "exec-1".into(),
+                content: "stdout:\na.txt\nb.txt".into(),
+                is_error: false,
+                error: None,
+            }]),
+        ],
+        Vec::new(),
+    );
+    provider.complete_turn(request).await.unwrap();
+
+    let body = captured_body
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("server should capture request body");
+    let messages = body["messages"].as_array().unwrap();
+    for message in messages {
+        if message["role"] == json!("user") {
+            for block in message["content"].as_array().unwrap() {
+                assert_ne!(block["type"], json!("text"));
+            }
+        }
+    }
+}
