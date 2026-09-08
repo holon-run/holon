@@ -57,7 +57,7 @@ pub(crate) use worktree::format_worktree_task_summary;
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
 use std::{
-    collections::{hash_map::Entry, HashMap, HashSet},
+    collections::{hash_map::Entry, BTreeSet, HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -211,6 +211,54 @@ fn rebase_prepared_completion_agent_state(
     state.current_turn_work_item_id = committed.current_turn_work_item_id.clone();
     state.current_execution_binding = committed.current_execution_binding.clone();
     Ok(state)
+}
+
+fn rebase_committed_agent_state(
+    expected: &AgentState,
+    committed: &AgentState,
+    current: &AgentState,
+) -> Result<(AgentState, Vec<String>)> {
+    let expected = serde_json::to_value(expected)?;
+    let committed = serde_json::to_value(committed)?;
+    let mut current = serde_json::to_value(current)?;
+    let expected = expected
+        .as_object()
+        .context("expected agent state did not serialize as an object")?;
+    let committed = committed
+        .as_object()
+        .context("committed agent state did not serialize as an object")?;
+    let current_fields = current
+        .as_object_mut()
+        .context("current agent state did not serialize as an object")?;
+    let fields = expected
+        .keys()
+        .chain(committed.keys())
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let mut conflicts = Vec::new();
+
+    for field in fields {
+        let expected_value = expected.get(&field);
+        let committed_value = committed.get(&field);
+        if committed_value == expected_value {
+            continue;
+        }
+        let current_value = current_fields.get(&field);
+        if current_value == expected_value {
+            match committed_value {
+                Some(value) => {
+                    current_fields.insert(field, value.clone());
+                }
+                None => {
+                    current_fields.remove(&field);
+                }
+            }
+        } else if current_value != committed_value {
+            conflicts.push(field);
+        }
+    }
+
+    Ok((serde_json::from_value(current)?, conflicts))
 }
 
 #[derive(Debug, Clone)]
@@ -2791,6 +2839,34 @@ impl RuntimeHandle {
             {
                 guard.state = mutation.record.as_ref().clone();
                 guard.last_persisted_state = mutation.record.as_ref().clone();
+            } else if let Some(expected) = mutation.expected.as_deref() {
+                match rebase_committed_agent_state(expected, &mutation.record, &guard.state) {
+                    Ok((merged, conflicts)) => {
+                        guard.state = merged;
+                        if let Err(error) = guard.persist_state(&self.inner.storage) {
+                            warnings.push(PostCommitWarning {
+                                effect: "agent_state_projection_update",
+                                message: format!(
+                                    "failed to persist rebased post-commit agent state: {error}"
+                                ),
+                            });
+                        } else if !conflicts.is_empty() {
+                            warnings.push(PostCommitWarning {
+                                effect: "agent_state_projection_update",
+                                message: format!(
+                                    "retained newer in-memory agent state fields after transition commit: {}",
+                                    conflicts.join(",")
+                                ),
+                            });
+                        }
+                    }
+                    Err(error) => warnings.push(PostCommitWarning {
+                        effect: "agent_state_projection_update",
+                        message: format!(
+                            "failed to rebase post-commit agent state; retained newer in-memory state: {error}"
+                        ),
+                    }),
+                }
             } else {
                 warnings.push(PostCommitWarning {
                     effect: "agent_state_projection_update",

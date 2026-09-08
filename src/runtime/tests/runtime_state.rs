@@ -15536,7 +15536,7 @@ async fn post_commit_cache_fault_preserves_durable_transition_and_returns_warnin
 }
 
 #[tokio::test]
-async fn post_commit_agent_state_projection_does_not_overwrite_newer_memory() {
+async fn post_commit_agent_state_projection_rebases_onto_newer_memory() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -15549,9 +15549,14 @@ async fn post_commit_agent_state_projection_does_not_overwrite_newer_memory() {
         context_config(),
     )
     .unwrap();
+    let work_item = runtime
+        .create_work_item("agent state projection race".into(), None, None, Vec::new())
+        .await
+        .unwrap();
     let expected = runtime.agent_state().await.unwrap();
     let mut committed = expected.clone();
     committed.pending = 1;
+    committed.current_work_item_id = Some(work_item.id.clone());
     let commit = runtime
         .inner
         .runtime_db
@@ -15589,10 +15594,7 @@ async fn post_commit_agent_state_projection_does_not_overwrite_newer_memory() {
 
     let result = runtime.apply_transition_commit(commit).await;
 
-    assert!(result
-        .warnings
-        .iter()
-        .any(|warning| warning.effect == "agent_state_projection_update"));
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
     assert_eq!(
         runtime
             .agent_state()
@@ -15601,6 +15603,16 @@ async fn post_commit_agent_state_projection_does_not_overwrite_newer_memory() {
             .last_wake_reason
             .as_deref(),
         Some("newer-memory-state")
+    );
+    assert_eq!(runtime.agent_state().await.unwrap().pending, 1);
+    assert_eq!(
+        runtime
+            .agent_state()
+            .await
+            .unwrap()
+            .current_work_item_id
+            .as_deref(),
+        Some(work_item.id.as_str())
     );
     assert_eq!(
         runtime
