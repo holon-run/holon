@@ -148,7 +148,7 @@ interface WorkspaceFileLinkProps {
   children?: ReactNode;
 }
 
-function WorkspaceFileLink({ href, children }: WorkspaceFileLinkProps) {
+export function WorkspaceFileLink({ href, children }: WorkspaceFileLinkProps) {
   const showFileBrowser = useRuntimeStore((s) => s.showFileBrowser);
   const selectedAgentId = useRuntimeStore((s) => s.selectedAgentId);
   const workspaceRef = parseWorkspaceImageRef(href);

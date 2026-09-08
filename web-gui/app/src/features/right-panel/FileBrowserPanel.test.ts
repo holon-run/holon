@@ -7,6 +7,7 @@ import {
   isLargePreview,
   isPdfFile,
   isVideoFile,
+  markdownLinkTarget,
   type FileSortKey,
 } from "./FileBrowserPanel";
 import type { WorkspaceFileEntry } from "../../runtime/types";
@@ -79,5 +80,41 @@ describe("compareFileEntries", () => {
     const b = entry({ name: "b.txt", size: 10, modified: 100 });
     expect(compareFileEntries(a, b, "size", true)).toBeLessThan(0);
     expect(compareFileEntries(a, b, "size", false)).toBeLessThan(0);
+  });
+});
+
+describe("markdownLinkTarget", () => {
+  it("keeps page-internal anchors", () => {
+    expect(markdownLinkTarget("#section", "docs/readme.md")).toEqual({ kind: "anchor" });
+  });
+
+  it("routes workspace URIs to the workspace link flow", () => {
+    expect(markdownLinkTarget("workspace://ws_1/docs/a.md", "docs/readme.md")).toEqual({
+      kind: "workspace-uri",
+      workspaceId: "ws_1",
+      path: "docs/a.md",
+    });
+  });
+
+  it("resolves relative links against the directory of the rendered file", () => {
+    expect(markdownLinkTarget("sibling.md", "docs/readme.md")).toEqual({
+      kind: "workspace-relative",
+      path: "docs/sibling.md",
+    });
+    expect(markdownLinkTarget("../images/chart%201.png", "docs/nested/report.md")).toEqual({
+      kind: "workspace-relative",
+      path: "docs/images/chart 1.png",
+    });
+    expect(markdownLinkTarget("other.md", "readme.md")).toEqual({
+      kind: "workspace-relative",
+      path: "other.md",
+    });
+  });
+
+  it("leaves external and unresolvable links external", () => {
+    expect(markdownLinkTarget("https://example.com", "docs/readme.md")).toEqual({ kind: "external" });
+    expect(markdownLinkTarget("mailto:a@b.c", "docs/readme.md")).toEqual({ kind: "external" });
+    expect(markdownLinkTarget("../../../escape.md", "docs/readme.md")).toEqual({ kind: "external" });
+    expect(markdownLinkTarget(undefined, "docs/readme.md")).toEqual({ kind: "external" });
   });
 });

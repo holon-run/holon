@@ -628,6 +628,107 @@ describe("createRuntimeClient", () => {
     );
   });
 
+  it("stats workspace file paths through the meta endpoint", async () => {
+    const seen: string[] = [];
+    const fetchImpl = async (input: RequestInfo | URL) => {
+      seen.push(String(input));
+      return Response.json({
+        type: "file",
+        path: "docs/readme.md",
+        workspace_id: "ws/one",
+        size: 128,
+        mime_type: "text/markdown",
+        truncated: false,
+        modified: 1757000000,
+        line_count: 12,
+      });
+    };
+
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    await expect(client.fetchWorkspacePath("ws/one", "docs/readme.md", "root:ws")).resolves.toEqual({
+      type: "file",
+      path: "docs/readme.md",
+      workspaceId: "ws/one",
+      size: 128,
+      mimeType: "text/markdown",
+      truncated: false,
+      modified: 1757000000,
+      lineCount: 12,
+    });
+    expect(seen).toEqual([
+      "http://example.test:7878/api/workspaces/ws%2Fone/files/docs/readme.md?meta=true&execution_root_id=root%3Aws",
+    ]);
+  });
+
+  it("stats workspace directories through their listing", async () => {
+    const fetchImpl = async () =>
+      Response.json({
+        type: "directory",
+        path: "docs",
+        workspace_id: "ws/one",
+        entries: [
+          { name: "readme.md", type: "file", size: 10, modified: 1757000000, mime_type: "text/markdown" },
+          { name: "nested", type: "directory", size: 0 },
+        ],
+      });
+
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    await expect(client.fetchWorkspacePath("ws/one", "docs")).resolves.toEqual({
+      type: "directory",
+      path: "docs",
+      workspaceId: "ws/one",
+      entries: [
+        { name: "readme.md", type: "file", size: 10, modified: 1757000000, mimeType: "text/markdown" },
+        { name: "nested", type: "directory", size: 0 },
+      ],
+    });
+  });
+
+  it("reads workspace file text content with metadata mapping", async () => {
+    const fetchImpl = async () =>
+      Response.json({
+        type: "file",
+        path: "docs/readme.md",
+        workspace_id: "ws/one",
+        size: 8,
+        mime_type: "text/markdown",
+        truncated: true,
+        total_size: 2000,
+        content: "# Hello\n",
+        modified: 1757000000,
+        line_count: 120,
+      });
+
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    await expect(client.readWorkspaceFile("ws/one", "docs/readme.md")).resolves.toEqual({
+      type: "file",
+      path: "docs/readme.md",
+      workspaceId: "ws/one",
+      size: 8,
+      mimeType: "text/markdown",
+      truncated: true,
+      modified: 1757000000,
+      lineCount: 120,
+      totalSize: 2000,
+      content: "# Hello\n",
+    });
+  });
+
   it("reads tool execution artifacts through the scoped artifact endpoint", async () => {
     const seen: Array<{ url: string; authorization: string | null }> = [];
     const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {

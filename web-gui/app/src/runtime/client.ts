@@ -44,7 +44,9 @@ import type {
   DisplayLevel,
   WorkspaceDirectoryListing,
   WorkspaceFileContent,
+  WorkspaceFileMeta,
   WorkspaceFileEntry,
+  WorkspacePathInfo,
 } from "./types";
 
 export interface RuntimeClientOptions {
@@ -657,6 +659,7 @@ interface WorkspaceDirectoryEntryDto {
   name: string;
   type: string;
   size: number;
+  modified?: number;
   mime_type?: string;
 }
 
@@ -674,8 +677,26 @@ interface WorkspaceFileContentDto {
   size: number;
   mime_type: string;
   truncated: boolean;
+  modified?: number;
+  line_count?: number;
   total_size?: number;
   content?: string;
+}
+
+/**
+ * `?meta=true` metadata response. Directory paths respond with a listing
+ * regardless, so both DTO shapes arrive from the same endpoint.
+ */
+interface WorkspaceFileMetaDto {
+  type: string;
+  path: string;
+  workspace_id: string;
+  size: number;
+  mime_type: string;
+  truncated: boolean;
+  modified?: number;
+  line_count?: number;
+  total_size?: number;
 }
 
 interface ToolExecutionArtifactContentDto {
@@ -715,6 +736,39 @@ export function buildWorkspaceFileUrl(
   if (executionRootId) params.set("execution_root_id", executionRootId);
   const query = params.toString();
   return `${baseUrl ?? ""}/workspaces/${encodeURIComponent(workspaceId)}/files/${encodedPath}${query ? `?${query}` : ""}`;
+}
+
+function projectDirectoryEntry(entry: WorkspaceDirectoryEntryDto): WorkspaceFileEntry {
+  return {
+    name: entry.name,
+    type: entry.type as WorkspaceFileEntry["type"],
+    size: entry.size,
+    modified: entry.modified,
+    mimeType: entry.mime_type,
+  };
+}
+
+function projectDirectoryListing(response: WorkspaceDirectoryListingDto): WorkspaceDirectoryListing {
+  return {
+    type: "directory",
+    path: response.path,
+    workspaceId: response.workspace_id,
+    entries: (response.entries ?? []).map(projectDirectoryEntry),
+  };
+}
+
+function projectFileMeta(response: WorkspaceFileMetaDto): WorkspaceFileMeta {
+  return {
+    type: "file",
+    path: response.path,
+    workspaceId: response.workspace_id,
+    size: response.size,
+    mimeType: response.mime_type,
+    truncated: response.truncated,
+    modified: response.modified,
+    lineCount: response.line_count,
+    totalSize: response.total_size,
+  };
 }
 
 export function createRuntimeClient(options: RuntimeClientOptions = {}) {
@@ -1303,17 +1357,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         : `/workspaces/${encodeURIComponent(workspaceId)}/files`;
       const query = executionRootId ? `?execution_root_id=${encodeURIComponent(executionRootId)}` : "";
       const response = await getJson<WorkspaceDirectoryListingDto>(fetchImpl, baseUrl, `${urlPath}${query}`, { headers: requestHeaders });
-      return {
-        type: "directory",
-        path: response.path,
-        workspaceId: response.workspace_id,
-        entries: (response.entries ?? []).map((e) => ({
-          name: e.name,
-          type: e.type as WorkspaceFileEntry["type"],
-          size: e.size,
-          mimeType: e.mime_type,
-        })),
-      };
+      return projectDirectoryListing(response);
     },
     async readWorkspaceFile(workspaceId: string, path: string, executionRootId?: string): Promise<WorkspaceFileContent> {
       if (!baseUrl) {
@@ -1334,9 +1378,33 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         size: response.size,
         mimeType: response.mime_type,
         truncated: response.truncated,
+        modified: response.modified,
+        lineCount: response.line_count,
         totalSize: response.total_size,
         content: response.content,
       };
+    },
+    /**
+     * Stat an arbitrary workspace path without reading file content.
+     * Files answer with metadata (`?meta=true`); directories answer with
+     * their listing regardless of the meta flag.
+     */
+    async fetchWorkspacePath(workspaceId: string, path: string, executionRootId?: string): Promise<WorkspacePathInfo> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+      const params = new URLSearchParams({ meta: "true" });
+      if (executionRootId) params.set("execution_root_id", executionRootId);
+      const response = await getJson<WorkspaceDirectoryListingDto | WorkspaceFileMetaDto>(
+        fetchImpl,
+        baseUrl,
+        `/workspaces/${encodeURIComponent(workspaceId)}/files/${encodedPath}?${params.toString()}`,
+        { headers: requestHeaders },
+      );
+      return response.type === "directory"
+        ? projectDirectoryListing(response as WorkspaceDirectoryListingDto)
+        : projectFileMeta(response as WorkspaceFileMetaDto);
     },
     async readToolExecutionArtifact(
       agentId: string,

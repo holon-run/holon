@@ -23,9 +23,32 @@ import remarkGfm from "remark-gfm";
 import type { WorkspaceDirectoryListing, WorkspaceFileEntry } from "../../runtime/types";
 import { useRuntimeStore } from "../../runtime/runtime-store";
 import { useTranslation } from "react-i18next";
-import { parseWorkspaceImageRef, resolveWorkspaceRelativePath, WorkspaceImage } from "../../components/MarkdownContent";
+import { parseWorkspaceImageRef, resolveWorkspaceRelativePath, WorkspaceFileLink, WorkspaceImage } from "../../components/MarkdownContent";
 import { triggerHrefDownload } from "./download";
 import { buildPlainCodeHtml, normalizeShikiLineBreaks } from "./source-view";
+
+/** How a rendered markdown link should be opened. */
+export type MarkdownLinkTarget =
+  | { kind: "workspace-uri"; workspaceId: string; path: string }
+  | { kind: "workspace-relative"; path: string }
+  | { kind: "anchor" }
+  | { kind: "external" };
+
+/**
+ * Classify a markdown link href for the file browser preview: page-internal
+ * anchors stay anchors, `workspace://` URIs reuse the workspace link flow,
+ * workspace-relative paths resolve against the directory of the rendered
+ * file, and everything else (http(s), mailto, data, invalid workspace URIs)
+ * stays an external link.
+ */
+export function markdownLinkTarget(href: string | undefined, baseFilePath: string | undefined): MarkdownLinkTarget {
+  if (href?.startsWith("#")) return { kind: "anchor" };
+  const workspaceRef = href ? parseWorkspaceImageRef(href) : undefined;
+  if (workspaceRef) return { kind: "workspace-uri", workspaceId: workspaceRef.workspaceId, path: workspaceRef.path };
+  const relativePath = resolveWorkspaceRelativePath(baseFilePath ?? "", href);
+  if (relativePath) return { kind: "workspace-relative", path: relativePath };
+  return { kind: "external" };
+}
 
 interface FileBrowserPanelProps {
   workspaceId: string;
@@ -230,6 +253,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
   const { t } = useTranslation();
   const browseWorkspaceDir = useRuntimeStore((s) => s.browseWorkspaceDir);
   const readWorkspaceFile = useRuntimeStore((s) => s.readWorkspaceFile);
+  const fetchWorkspacePath = useRuntimeStore((s) => s.fetchWorkspacePath);
   const workspaceFileUrl = useRuntimeStore((s) => s.workspaceFileUrl);
 
   const effectiveInitialPath =
@@ -398,6 +422,57 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
     }
   };
 
+  /**
+   * Open an arbitrary workspace path, used by rendered markdown links:
+   * directories navigate the listing, and files preview exactly like a
+   * tree-clicked entry. Metadata is resolved first because no directory
+   * entry exists for the target.
+   */
+  const openWorkspacePath = useCallback(async (filePath: string) => {
+    setViewMode("preview");
+    setSelectedFile({ path: filePath, loading: true });
+    setError(undefined);
+    try {
+      const info = await fetchWorkspacePath(workspaceId, filePath, executionRootId);
+      if (info.type === "directory") {
+        setListing(info);
+        setCurrentPath(info.path);
+        setSelectedFile(null);
+        setViewMode("files");
+        setFilterText("");
+        return;
+      }
+      if (!isTextFile(info.mimeType, filePath)) {
+        setSelectedFile({
+          path: info.path,
+          loading: false,
+          mimeType: info.mimeType,
+          size: info.totalSize ?? info.size,
+          modified: info.modified,
+        });
+        return;
+      }
+      const content = await readWorkspaceFile(workspaceId, filePath, executionRootId);
+      setSelectedFile({
+        path: content.path,
+        content: content.content,
+        mimeType: content.mimeType,
+        truncated: content.truncated,
+        totalSize: content.totalSize ?? content.size,
+        modified: content.modified,
+        lineCount: content.lineCount,
+        size: content.totalSize ?? content.size,
+        loading: false,
+      });
+    } catch (err) {
+      setSelectedFile({
+        path: filePath,
+        loading: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }, [workspaceId, executionRootId, fetchWorkspacePath, readWorkspaceFile]);
+
   const downloadSelectedFile = () => {
     if (!selectedFile?.path) return;
     // Browser-native navigation: the raw byte endpoint responds with
@@ -434,7 +509,35 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
   const atRoot = !currentPath;
 
   const markdownComponents: Components = {
-    a: ({ href, children }) => <a href={href} target="_blank" rel="noreferrer">{children}</a>,
+    a: ({ href, children }) => {
+      const target = markdownLinkTarget(href, selectedFile?.path);
+      if (href && target.kind === "workspace-uri") {
+        return <WorkspaceFileLink href={href}>{children}</WorkspaceFileLink>;
+      }
+      if (target.kind === "anchor") {
+        return <a href={href}>{children}</a>;
+      }
+      if (target.kind === "workspace-relative") {
+        return (
+          <a
+            href={workspaceFileUrl(workspaceId, target.path, executionRootId)}
+            onClick={(e) => {
+              // Plain left clicks open the file inside the browser; modified
+              // and middle clicks keep browser semantics via the direct-link
+              // href, which is servable standalone.
+              if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+              e.preventDefault();
+              void openWorkspacePath(target.path);
+            }}
+            rel="noreferrer"
+            target="_blank"
+          >
+            {children}
+          </a>
+        );
+      }
+      return <a href={href} target="_blank" rel="noreferrer">{children}</a>;
+    },
     img: ({ src, alt, ...props }) => {
       const workspaceRef = parseWorkspaceImageRef(src);
       if (workspaceRef) {

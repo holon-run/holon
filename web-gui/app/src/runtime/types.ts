@@ -748,6 +748,22 @@ export interface WorkspaceFileContent {
   content?: string;
 }
 
+/** Metadata-only view of a workspace file (`?meta=true` responses). */
+export interface WorkspaceFileMeta {
+  type: "file";
+  path: string;
+  workspaceId: string;
+  size: number;
+  mimeType: string;
+  truncated: boolean;
+  modified?: number;
+  lineCount?: number;
+  totalSize?: number;
+}
+
+/** A workspace path stat: a directory listing for directories, file metadata otherwise. */
+export type WorkspacePathInfo = WorkspaceDirectoryListing | WorkspaceFileMeta;
+
 export type RightPanelView =
   | {
       kind: "agent_overview";

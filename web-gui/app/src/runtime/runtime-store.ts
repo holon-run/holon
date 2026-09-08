@@ -115,6 +115,7 @@ import type {
   SearchResponse,
   WorkspaceDirectoryListing,
   WorkspaceFileContent,
+  WorkspacePathInfo,
   ToolExecutionArtifactContent,
 } from "./types";
 
@@ -402,6 +403,7 @@ export interface RuntimeStoreState {
   showFileBrowser: (agentId: string, workspaceId: string, initialPath?: string, executionRootId?: string, initialFilePath?: string) => void;
   browseWorkspaceDir: (workspaceId: string, path?: string, executionRootId?: string) => Promise<WorkspaceDirectoryListing>;
   readWorkspaceFile: (workspaceId: string, path: string, executionRootId?: string) => Promise<WorkspaceFileContent>;
+  fetchWorkspacePath: (workspaceId: string, path: string, executionRootId?: string) => Promise<WorkspacePathInfo>;
   readToolExecutionArtifact: (
     agentId: string,
     toolExecutionId: string,
@@ -1933,6 +1935,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     }),
   browseWorkspaceDir: (workspaceId, path, executionRootId) => runtimeClient.browseWorkspaceDir(workspaceId, path, executionRootId),
   readWorkspaceFile: (workspaceId, path, executionRootId) => runtimeClient.readWorkspaceFile(workspaceId, path, executionRootId),
+  fetchWorkspacePath: (workspaceId, path, executionRootId) => runtimeClient.fetchWorkspacePath(workspaceId, path, executionRootId),
   readToolExecutionArtifact: (agentId, toolExecutionId, artifactIndex) =>
     runtimeClient.readToolExecutionArtifact(agentId, toolExecutionId, artifactIndex),
   fetchWorkspaceFileBlob: (workspaceId, path, executionRootId, options) =>
