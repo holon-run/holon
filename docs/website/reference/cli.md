@@ -64,6 +64,7 @@ holon (v0.35.0)
 ├── control      [deprecated] use `holon agent start|stop|abort`
 ├── agent        Agent management
 │   ├── list     List all agents
+│   ├── get      Show canonical agent detail
 │   ├── status   Show agent status
 │   ├── create   Create a new agent
 │   ├── start    Start an agent

@@ -87,6 +87,28 @@
   },
   {
     "method": "get",
+    "path": "/api/agents/{agent_id}",
+    "handler": "get_agent",
+    "operation_id": "getAgent",
+    "tag": "agents",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
     "path": "/api/agents/{agent_id}/briefs",
     "handler": "briefs",
     "operation_id": "agentBriefs",

@@ -101,6 +101,19 @@
     "aliases": []
   },
   {
+    "path": "agent.get",
+    "positionals": [
+      {
+        "name": "agent_id",
+        "value_name": "AGENT_ID",
+        "index": null,
+        "required": false
+      }
+    ],
+    "flags": [],
+    "aliases": []
+  },
+  {
     "path": "agent.list",
     "positionals": [],
     "flags": [],
