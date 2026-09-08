@@ -769,6 +769,13 @@ const zh: Record<string, any> = {
     openInFileBrowser: "在文件浏览器中打开",
     markdownView: "Markdown 查看模式",
     pathBreadcrumb: "路径面包屑导航",
+    columnName: "名称",
+    columnSize: "大小",
+    columnModified: "修改时间",
+    modifiedAt: "修改于 {{time}}",
+    lineCount: "{{count}} 行",
+    imageDimensions: "{{width}}×{{height}} 像素",
+    largeFileHint: "大文件（{{size}}），建议下载后本地查看。",
   },
   inspector: {
     fullDetail: "完整详情",

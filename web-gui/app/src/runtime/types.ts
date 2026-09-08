@@ -724,6 +724,7 @@ export interface WorkspaceFileEntry {
   name: string;
   type: "directory" | "file" | "symlink";
   size: number;
+  modified?: number;
   mimeType?: string;
 }
 
@@ -741,6 +742,8 @@ export interface WorkspaceFileContent {
   size: number;
   mimeType: string;
   truncated: boolean;
+  modified?: number;
+  lineCount?: number;
   totalSize?: number;
   content?: string;
 }

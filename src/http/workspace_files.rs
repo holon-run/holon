@@ -34,6 +34,8 @@ struct DirectoryEntry {
     entry_type: &'static str,
     size: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
+    modified: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     mime_type: Option<String>,
 }
 
@@ -55,6 +57,10 @@ struct FileMetadata {
     size: u64,
     mime_type: String,
     truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    modified: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    line_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     total_size: Option<u64>,
 }
@@ -366,6 +372,17 @@ fn http_date(time: SystemTime) -> String {
         .to_string()
 }
 
+/// Convert a filesystem modification time to whole Unix-epoch seconds for
+/// JSON metadata responses. None when the platform does not report mtime.
+fn modified_unix_seconds(metadata: &std::fs::Metadata) -> Option<u64> {
+    metadata
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
+}
+
 /// MIME types that execute scripts or host active content when rendered
 /// inline. Served with a sandboxing CSP so direct same-origin navigation
 /// cannot run workspace-controlled scripts.
@@ -618,6 +635,10 @@ async fn workspace_files_inner(
                 let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
                 ("file", size)
             };
+            let modified = entry
+                .metadata()
+                .ok()
+                .and_then(|m| modified_unix_seconds(&m));
             let mime_type = if file_type.is_file() {
                 Some(guess_mime(&entry.path()))
             } else {
@@ -627,6 +648,7 @@ async fn workspace_files_inner(
                 name,
                 entry_type,
                 size,
+                modified,
                 mime_type,
             });
         }
@@ -668,6 +690,8 @@ async fn workspace_files_inner(
             size: file_size,
             mime_type: mime_type.clone(),
             truncated: false,
+            modified: modified_unix_seconds(&metadata),
+            line_count: None,
             total_size: None,
         };
         return Ok(Json(json!(meta)).into_response());
@@ -702,6 +726,7 @@ async fn workspace_files_inner(
         .map_err(|err| error_response(anyhow!(err)))?;
     let total_size = bytes.len();
     let truncated = total_size > READ_LIMIT_BYTES;
+    let line_count = bytes.iter().filter(|&&b| b == b'\n').count() as u64;
     let read_bytes = if truncated {
         &bytes[..READ_LIMIT_BYTES]
     } else {
@@ -738,6 +763,8 @@ async fn workspace_files_inner(
             size: content.len() as u64,
             mime_type: mime_type.clone(),
             truncated,
+            modified: modified_unix_seconds(&metadata),
+            line_count: Some(line_count),
             total_size: if truncated {
                 Some(total_size as u64)
             } else {

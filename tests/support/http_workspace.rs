@@ -189,6 +189,10 @@ pub async fn workspace_files_lists_directory() -> Result<()> {
     for entry in entries {
         assert!(entry["name"].is_string(), "entry has name");
         assert!(entry["type"].is_string(), "entry has type");
+        assert!(
+            entry["modified"].is_u64(),
+            "entry has unix-seconds modified timestamp"
+        );
     }
 
     server.abort();
@@ -227,6 +231,11 @@ pub async fn workspace_files_reads_text_file() -> Result<()> {
     assert!(body["content"].is_string(), "content field present");
     assert!(body["mime_type"].is_string(), "mime_type field present");
     assert_eq!(body["truncated"], false);
+    assert!(body["modified"].is_u64(), "modified present for text file");
+    assert!(
+        body["line_count"].is_u64(),
+        "line_count present for text file"
+    );
 
     server.abort();
     Ok(())
@@ -296,6 +305,7 @@ pub async fn workspace_files_metadata_only() -> Result<()> {
     assert_eq!(body["type"], "file");
     assert!(body["size"].is_number(), "size present");
     assert!(body["mime_type"].is_string(), "mime_type present");
+    assert!(body["modified"].is_u64(), "modified present in meta mode");
     assert!(
         body.get("content").is_none(),
         "content must be absent in meta mode"

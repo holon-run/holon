@@ -42,6 +42,9 @@ interface SelectedFile {
   mimeType?: string;
   truncated?: boolean;
   totalSize?: number;
+  modified?: number;
+  lineCount?: number;
+  size?: number;
   loading: boolean;
   error?: string;
 }
@@ -90,10 +93,74 @@ function isImageFile(mimeType?: string): boolean {
   return Boolean(mimeType?.startsWith("image/"));
 }
 
-function formatSize(bytes: number): string {
+const VIDEO_EXTENSIONS = ["mp4", "webm", "ogv", "mov", "mkv", "m4v"];
+const AUDIO_EXTENSIONS = ["mp3", "wav", "ogg", "oga", "flac", "m4a", "aac", "opus"];
+
+function fileExtension(name: string): string {
+  return name.split(".").pop()?.toLowerCase() ?? "";
+}
+
+export function isVideoFile(mimeType?: string, name?: string): boolean {
+  if (mimeType?.startsWith("video/")) return true;
+  return Boolean(name && VIDEO_EXTENSIONS.includes(fileExtension(name)));
+}
+
+export function isAudioFile(mimeType?: string, name?: string): boolean {
+  if (mimeType?.startsWith("audio/")) return true;
+  return Boolean(name && AUDIO_EXTENSIONS.includes(fileExtension(name)));
+}
+
+export function isPdfFile(mimeType?: string, name?: string): boolean {
+  if (mimeType === "application/pdf") return true;
+  return Boolean(name && fileExtension(name) === "pdf");
+}
+
+function formatDateTime(unixSeconds?: number): string | undefined {
+  if (!unixSeconds) return undefined;
+  return new Date(unixSeconds * 1000).toLocaleString(undefined, {
+    dateStyle: "short",
+    timeStyle: "short",
+  });
+}
+
+function formatDate(unixSeconds?: number): string | undefined {
+  if (!unixSeconds) return undefined;
+  return new Date(unixSeconds * 1000).toLocaleDateString();
+}
+
+const GIGABYTE = 1024 * 1024 * 1024;
+
+export function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes < GIGABYTE) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / GIGABYTE).toFixed(2)} GB`;
+}
+
+export function isLargePreview(totalBytes?: number): boolean {
+  return Boolean(totalBytes && totalBytes > GIGABYTE);
+}
+
+export type FileSortKey = "name" | "size" | "modified";
+
+// Containers (directories and symlinks) always sort before plain files;
+// equal keys fall back to name order.
+export function compareFileEntries(
+  a: WorkspaceFileEntry,
+  b: WorkspaceFileEntry,
+  key: FileSortKey,
+  ascending: boolean,
+): number {
+  const aContainer = a.type === "directory" || a.type === "symlink";
+  const bContainer = b.type === "directory" || b.type === "symlink";
+  if (aContainer !== bContainer) return aContainer ? -1 : 1;
+  let cmp: number;
+  if (key === "size") cmp = a.size - b.size;
+  else if (key === "modified") cmp = (a.modified ?? 0) - (b.modified ?? 0);
+  else cmp = a.name.localeCompare(b.name);
+  if (cmp !== 0) return ascending ? cmp : -cmp;
+  // Ties fall back to name order so descending sorts stay stable.
+  return a.name.localeCompare(b.name);
 }
 
 // --- Shiki syntax highlighting ---
@@ -179,6 +246,9 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
   const [showRendered, setShowRendered] = useState(true);
   const [viewMode, setViewMode] = useState<"files" | "preview">("files");
   const [filterText, setFilterText] = useState("");
+  const [sortKey, setSortKey] = useState<"name" | "size" | "modified">("name");
+  const [sortAsc, setSortAsc] = useState(true);
+  const [imageDims, setImageDims] = useState<{ width: number; height: number }>();
 
   // Determine whether the selected file is markdown.
   const isMarkdownFile = selectedFile?.path?.toLowerCase().endsWith(".md") ?? false;
@@ -189,6 +259,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
       contentScrollRef.current.scrollTop = 0;
     }
     setShowRendered(true);
+    setImageDims(undefined);
   }, [selectedFile?.path]);
 
   const highlightedHtml = useShikiHighlight(selectedFile?.content, selectedFile?.path);
@@ -222,9 +293,14 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
   const reloadFile = useCallback(async () => {
     if (!selectedFile?.path) return;
     const filePath = selectedFile.path;
-    if (isImageFile(selectedFile.mimeType)) {
-      // Image files are served via URL, force re-render by re-setting state
-      setSelectedFile({ path: filePath, loading: false, mimeType: selectedFile.mimeType });
+    if (
+      isImageFile(selectedFile.mimeType) ||
+      isVideoFile(selectedFile.mimeType, selectedFile.path) ||
+      isAudioFile(selectedFile.mimeType, selectedFile.path) ||
+      isPdfFile(selectedFile.mimeType, selectedFile.path)
+    ) {
+      // URL-backed previews: force re-render by re-setting state.
+      setSelectedFile({ ...selectedFile, path: filePath, loading: false });
       return;
     }
     setSelectedFile({ path: filePath, loading: true });
@@ -236,6 +312,9 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
         mimeType: content.mimeType,
         truncated: content.truncated,
         totalSize: content.totalSize ?? content.size,
+        modified: content.modified,
+        lineCount: content.lineCount,
+        size: content.totalSize ?? content.size,
         loading: false,
       });
     } catch (err) {
@@ -283,13 +362,16 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
     const filePath = currentPath ? `${currentPath}/${entry.name}` : entry.name;
     setViewMode("preview");
 
-    if (isImageFile(entry.mimeType)) {
-      setSelectedFile({ path: filePath, loading: false, mimeType: entry.mimeType });
-      return;
-    }
-
     if (!isTextFile(entry.mimeType, entry.name)) {
-      setSelectedFile({ path: filePath, loading: false, mimeType: entry.mimeType });
+      // URL-backed previews (image, video, audio, PDF) and other binary
+      // files render from entry metadata without reading content.
+      setSelectedFile({
+        path: filePath,
+        loading: false,
+        mimeType: entry.mimeType,
+        size: entry.size,
+        modified: entry.modified,
+      });
       return;
     }
 
@@ -302,6 +384,9 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
         mimeType: content.mimeType,
         truncated: content.truncated,
         totalSize: content.totalSize ?? content.size,
+        modified: content.modified,
+        lineCount: content.lineCount,
+        size: content.totalSize ?? content.size,
         loading: false,
       });
     } catch (err) {
@@ -383,12 +468,30 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
   const visibleEntries = showHidden
     ? entries
     : entries.filter((e) => !e.name.startsWith("."));
-  const dirs = visibleEntries.filter((e) => e.type === "directory" || e.type === "symlink");
-  const files = visibleEntries.filter((e) => e.type === "file");
-  const sortedEntries = [...dirs, ...files];
+  const toggleSort = (key: "name" | "size" | "modified") => {
+    if (sortKey === key) {
+      setSortAsc((v) => !v);
+    } else {
+      setSortKey(key);
+      setSortAsc(true);
+    }
+  };
+  const sortedEntries = [...visibleEntries].sort((a, b) =>
+    compareFileEntries(a, b, sortKey, sortAsc),
+  );
   const filteredEntries = filterText
     ? sortedEntries.filter((e) => e.name.toLowerCase().includes(filterText.toLowerCase()))
     : sortedEntries;
+
+  const selectedFileUrl = selectedFile
+    ? workspaceFileUrl(workspaceId, selectedFile.path, executionRootId)
+    : undefined;
+  const selectedFileTotalBytes =
+    selectedFile?.totalSize ?? selectedFile?.size;
+  const largePreviewHint =
+    selectedFileTotalBytes != null && isLargePreview(selectedFileTotalBytes)
+      ? t("fileBrowser.largeFileHint", { size: formatSize(selectedFileTotalBytes) })
+      : undefined;
 
   return (
     <div className="file-browser">
@@ -510,8 +613,35 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
               {filterText ? t("fileBrowser.noMatch") : t("fileBrowser.emptyDir")}
             </p>
       ) : (
-        <ul className="file-browser-list">
-          {filteredEntries.map((entry) => (
+        <div className="file-browser-listing">
+          <div className="file-browser-columns">
+            <button
+              type="button"
+              className={`file-browser-column file-browser-column-name${sortKey === "name" ? " active" : ""}`}
+              onClick={() => toggleSort("name")}
+            >
+              {t("fileBrowser.columnName")}
+              {sortKey === "name" ? (sortAsc ? " ▲" : " ▼") : ""}
+            </button>
+            <button
+              type="button"
+              className={`file-browser-column file-browser-column-size${sortKey === "size" ? " active" : ""}`}
+              onClick={() => toggleSort("size")}
+            >
+              {t("fileBrowser.columnSize")}
+              {sortKey === "size" ? (sortAsc ? " ▲" : " ▼") : ""}
+            </button>
+            <button
+              type="button"
+              className={`file-browser-column file-browser-column-time${sortKey === "modified" ? " active" : ""}`}
+              onClick={() => toggleSort("modified")}
+            >
+              {t("fileBrowser.columnModified")}
+              {sortKey === "modified" ? (sortAsc ? " ▲" : " ▼") : ""}
+            </button>
+          </div>
+          <ul className="file-browser-list">
+            {filteredEntries.map((entry) => (
             <li key={entry.name}>
               <button
                 type="button"
@@ -524,10 +654,12 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
                 {entry.type === "file" ? (
                   <small className="file-browser-entry-size">{formatSize(entry.size)}</small>
                 ) : null}
+                <small className="file-browser-entry-time">{formatDate(entry.modified)}</small>
               </button>
             </li>
-          ))}
-        </ul>
+            ))}
+          </ul>
+        </div>
       )}
 
         </>
@@ -578,6 +710,27 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
               <button type="button" className="file-browser-close-btn" aria-label={t("fileBrowser.closeFile")} onClick={() => { setSelectedFile(null); setViewMode("files"); }}>{t("fileBrowser.closeFile")}</button>
             </div>
           </div>
+          <div className="file-browser-meta-bar">
+            {selectedFile.mimeType ? <span className="file-browser-meta-item">{selectedFile.mimeType}</span> : null}
+            {selectedFileTotalBytes != null ? (
+              <span className="file-browser-meta-item">{formatSize(selectedFileTotalBytes)}</span>
+            ) : null}
+            {selectedFile.modified ? (
+              <span className="file-browser-meta-item">
+                {t("fileBrowser.modifiedAt", { time: formatDateTime(selectedFile.modified) })}
+              </span>
+            ) : null}
+            {selectedFile.lineCount != null ? (
+              <span className="file-browser-meta-item">
+                {t("fileBrowser.lineCount", { count: selectedFile.lineCount })}
+              </span>
+            ) : null}
+            {imageDims ? (
+              <span className="file-browser-meta-item">
+                {t("fileBrowser.imageDimensions", { width: imageDims.width, height: imageDims.height })}
+              </span>
+            ) : null}
+          </div>
           {selectedFile.loading ? (
             <p className="inspector-muted">{t("fileBrowser.loadingFile")}</p>
           ) : selectedFile.error ? (
@@ -589,14 +742,42 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
               path={selectedFile.path}
               executionRootId={executionRootId}
               alt={selectedFile.path}
+              onLoad={(e) => {
+                const img = e.currentTarget;
+                if (img.naturalWidth && img.naturalHeight) {
+                  setImageDims({ width: img.naturalWidth, height: img.naturalHeight });
+                }
+              }}
             />
+          ) : isVideoFile(selectedFile.mimeType, selectedFile.path) ? (
+            <div className="file-browser-media">
+              {largePreviewHint ? <p className="inspector-muted">{largePreviewHint}</p> : null}
+              <video className="file-browser-video" controls preload="metadata" src={selectedFileUrl} />
+            </div>
+          ) : isAudioFile(selectedFile.mimeType, selectedFile.path) ? (
+            <div className="file-browser-media">
+              {largePreviewHint ? <p className="inspector-muted">{largePreviewHint}</p> : null}
+              <audio className="file-browser-audio" controls preload="metadata" src={selectedFileUrl} />
+            </div>
+          ) : isPdfFile(selectedFile.mimeType, selectedFile.path) ? (
+            <div className="file-browser-media">
+              {largePreviewHint ? <p className="inspector-muted">{largePreviewHint}</p> : null}
+              <iframe className="file-browser-pdf" src={selectedFileUrl} title={selectedFile.path} />
+            </div>
           ) : selectedFile.content != null ? (
             <>
               {selectedFile.truncated ? (
-                <p className="inspector-muted">
+                <p className="inspector-muted file-browser-truncated">
                   {selectedFile.totalSize
                     ? t("fileBrowser.fileTruncated", { size: formatSize(selectedFile.totalSize) })
                     : t("fileBrowser.fileTruncatedNoSize")}
+                  {" "}
+                  <button type="button" className="file-browser-truncated-action" onClick={openSelectedFileInNewTab}>
+                    {t("fileBrowser.openInNewTab")}
+                  </button>
+                  <button type="button" className="file-browser-truncated-action" onClick={downloadSelectedFile}>
+                    {t("fileBrowser.download")}
+                  </button>
                 </p>
               ) : null}
               {isMarkdownFile && showRendered ? (

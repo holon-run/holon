@@ -768,6 +768,13 @@ const en = {
     openInFileBrowser: "Open in file browser",
     markdownView: "Markdown view mode",
     pathBreadcrumb: "Path breadcrumb",
+    columnName: "Name",
+    columnSize: "Size",
+    columnModified: "Modified",
+    modifiedAt: "Modified {{time}}",
+    lineCount: "{{count}} lines",
+    imageDimensions: "{{width}}×{{height}} px",
+    largeFileHint: "Large file ({{size}}). Consider downloading it to view locally.",
   },
   inspector: {
     fullDetail: "Full detail",
