@@ -55,6 +55,12 @@ pub(crate) enum TransitionFaultPoint {
     BeforeSchedulerNotification,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeliverySynchronization {
+    Required,
+    IfAvailable,
+}
+
 impl TransitionFaultPoint {
     fn is_post_commit(self) -> bool {
         matches!(
@@ -1012,7 +1018,7 @@ impl RuntimeTransitionRepository<'_> {
             &[],
             &[],
             None,
-            false,
+            DeliverySynchronization::IfAvailable,
         )
     }
 
@@ -1116,7 +1122,7 @@ impl RuntimeTransitionRepository<'_> {
             &[],
             &[],
             Some(delivery),
-            true,
+            DeliverySynchronization::Required,
         )
     }
 
@@ -1139,7 +1145,7 @@ impl RuntimeTransitionRepository<'_> {
             terminal_tool_executions,
             extra_wait_conditions,
             None,
-            true,
+            DeliverySynchronization::Required,
         )
     }
 
@@ -1154,9 +1160,20 @@ impl RuntimeTransitionRepository<'_> {
         terminal_tool_executions: &[ToolExecutionRecord],
         extra_wait_conditions: &[crate::types::WaitConditionRecord],
         delivery: Option<&AgentMessageDeliveryRecord>,
-        synchronize_delivery: bool,
+        delivery_synchronization: DeliverySynchronization,
     ) -> Result<TransitionCommit> {
         self.db.transaction(|tx| {
+            let synchronize_delivery = match delivery_synchronization {
+                DeliverySynchronization::Required => true,
+                DeliverySynchronization::IfAvailable => tx.query_row(
+                    "SELECT EXISTS(
+                        SELECT 1 FROM sqlite_master
+                        WHERE type = 'table' AND name = 'agent_message_deliveries'
+                    )",
+                    [],
+                    |row| row.get::<_, bool>(0),
+                )?,
+            };
             let delivery = delivery
                 .map(|delivery| prepare_delivery_admission_tx(tx, delivery))
                 .transpose()?;

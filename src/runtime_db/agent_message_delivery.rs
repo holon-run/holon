@@ -668,6 +668,34 @@ mod tests {
         Ok(())
     }
 
+    fn recovery_transition(
+        db: &RuntimeDb,
+        current: &QueueEntryRecord,
+        status: QueueEntryStatus,
+    ) -> Result<()> {
+        let mut next = current.clone();
+        next.status = status;
+        next.updated_at = Utc::now();
+        db.transitions().commit_scheduler_recovery(
+            &QueueTransitionCommand {
+                agent_id: current.agent_id.clone(),
+                operation: QueueOperation::Settle,
+                mutation: QueueMutation::Upsert(next),
+                scheduler_claim_work_item: None,
+                agent_state: None,
+                message_evidence: Vec::new(),
+                transcript_entries: Vec::new(),
+                turn_record: None,
+                audit_events: Vec::new(),
+                notify_scheduler: false,
+                fault: None,
+                brief_evidence: Vec::new(),
+            },
+            &crate::runtime_db::transitions::ExecutionProtocolTransition::default(),
+        )?;
+        Ok(())
+    }
+
     #[test]
     fn accepted_delivery_is_idempotent_and_survives_restart() -> Result<()> {
         let (dir, db) = runtime_db()?;
@@ -857,6 +885,47 @@ mod tests {
                 .context("missing terminal delivery")?
                 .state,
             AgentMessageDeliveryState::CancelledByDeletion
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn scheduler_recovery_advances_delivery_projection_when_available() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        seed_target(&db, AgentStatus::AwakeIdle)?;
+        let prepared = prepare("recovery-delivery", "recover")?;
+        let accepted = db.transitions().commit_delivery_admission(
+            &admission_command(&prepared),
+            None,
+            &prepared.record,
+        )?;
+        let delivery_id = accepted
+            .delivery_receipt
+            .context("missing delivery receipt")?
+            .delivery_id;
+        let queued = db
+            .queue_entries()
+            .latest(&prepared.message.id)?
+            .context("missing queue entry")?;
+        queue_transition(
+            &db,
+            &queued,
+            QueueOperation::Claim,
+            QueueEntryStatus::Dequeued,
+        )?;
+        let dequeued = db
+            .queue_entries()
+            .latest(&prepared.message.id)?
+            .context("missing dequeued entry")?;
+
+        recovery_transition(&db, &dequeued, QueueEntryStatus::Processed)?;
+
+        assert_eq!(
+            db.agent_message_deliveries()
+                .latest(&delivery_id)?
+                .context("missing recovered delivery")?
+                .state,
+            AgentMessageDeliveryState::Consumed
         );
         Ok(())
     }
