@@ -7,6 +7,8 @@ import { useRuntimeStore } from "../runtime/runtime-store";
 import type { RuntimeCitation } from "../runtime/types";
 
 const WORKSPACE_URL_RE = /workspace:\/\/[^\s<>"')\]]+/g;
+// Inline code spans only become links when the whole span is exactly one URL.
+const CODE_SPAN_URL_RE = /^(?:https?:\/\/|mailto:)\S+$/i;
 
 interface MarkdownContentProps {
   text: string;
@@ -209,6 +211,24 @@ export function remarkWorkspaceAutolink() {
   };
 }
 
+/**
+ * Markdown renders inline code spans (`` `…` ``) as plain text, so agents
+ * that wrap URLs in backticks lose clickable links. This plugin converts
+ * inline code spans whose entire content is exactly one allowlisted URL
+ * (http/https/mailto, or a valid `workspace://` ref) into links that keep
+ * their code styling. Code spans mixed with other text stay untouched.
+ */
+export function remarkCodeSpanAutolink() {
+  return (tree: import("unist").Node) => {
+    visit(tree, "inlineCode", (node: any, index: number | null, parent: any) => {
+      if (index === null || !parent || parent.type === "link") return;
+      const url: string = node.value;
+      if (!parseWorkspaceImageRef(url) && !CODE_SPAN_URL_RE.test(url)) return;
+      parent.children[index] = { type: "link", url, children: [node] };
+    });
+  };
+}
+
 export function stripOpenAiCitationSentinels(text: string): string {
   const start = "\uE200cite\uE202";
   let visible = "";
@@ -252,7 +272,7 @@ function MarkdownContentView({ text, citations, compact = false }: MarkdownConte
   return (
     <div className={`markdown-content${compact ? " compact" : ""}`}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkWorkspaceAutolink]}
+        remarkPlugins={[remarkGfm, remarkWorkspaceAutolink, remarkCodeSpanAutolink]}
         urlTransform={markdownUrlTransform}
         components={{
           a: ({ children, href, ...props }) => {

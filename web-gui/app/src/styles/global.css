@@ -1381,6 +1381,10 @@ code {
   text-decoration: none;
 }
 
+.markdown-content a code {
+  color: inherit;
+}
+
 .markdown-content a:hover {
   text-decoration: underline;
 }

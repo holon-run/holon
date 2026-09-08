@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   markdownUrlTransform,
   parseWorkspaceImageRef,
+  remarkCodeSpanAutolink,
   remarkWorkspaceAutolink,
   resolveWorkspaceRelativePath,
   safeCitation,
@@ -104,6 +105,51 @@ describe("remarkWorkspaceAutolink", () => {
   it("does not modify text without workspace:// URLs", () => {
     const nodes = runPlugin("Just a regular http://example.com link");
     expect(nodes).toEqual([{ type: "text", value: "Just a regular http://example.com link" }]);
+  });
+});
+
+describe("remarkCodeSpanAutolink", () => {
+  function runPlugin(value: string) {
+    const tree = {
+      type: "root",
+      children: [
+        { type: "paragraph", children: [{ type: "inlineCode", value }] },
+      ],
+    } as any;
+    remarkCodeSpanAutolink()(tree);
+    return tree.children[0].children;
+  }
+
+  it("converts code spans whose entire content is one URL", () => {
+    for (const url of [
+      "workspace://agent_home:holon-test/notes/demo.pdf",
+      "https://example.com/page?x=1",
+      "mailto:user@example.com",
+    ]) {
+      expect(runPlugin(url)).toEqual([{ type: "link", url, children: [{ type: "inlineCode", value: url }] }]);
+    }
+  });
+
+  it("leaves code spans containing anything else untouched", () => {
+    for (const value of ["npm run build", "https://example.com and text", "workspace://invalid", "workspace://"]) {
+      expect(runPlugin(value)).toEqual([{ type: "inlineCode", value }]);
+    }
+  });
+
+  it("does not convert code spans inside existing link nodes", () => {
+    const tree = {
+      type: "root",
+      children: [
+        { type: "paragraph", children: [
+          { type: "link", url: "https://example.com", children: [
+            { type: "inlineCode", value: "https://other.example.com" },
+          ] },
+        ] },
+      ],
+    } as any;
+    remarkCodeSpanAutolink()(tree);
+    const linkNode = tree.children[0].children[0];
+    expect(linkNode.children[0]).toEqual({ type: "inlineCode", value: "https://other.example.com" });
   });
 });
 
