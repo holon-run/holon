@@ -3989,7 +3989,7 @@ pub struct TaskInputResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct AgentGetResult {
+pub struct GetAgentResult {
     pub agent: AgentSummary,
 }
 

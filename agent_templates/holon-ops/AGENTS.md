@@ -54,7 +54,7 @@ server operations role.
 
 ## Runtime Data Access
 
-- Use `AgentGet`, WorkItem, task, timer, workspace, and other native runtime
+- Use `GetAgent`, WorkItem, task, timer, workspace, and other native runtime
   tools for their declared responsibility.
 - When a native tool is unavailable, discover the current CLI contract with
   `holon commands` and inspect invocation provenance with `holon context`.

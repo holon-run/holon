@@ -15,7 +15,7 @@ as of the last review date noted below.
 > `AgentPostureProjection`, `ClosureDecision`, `ContinuationResolution`,
 > `RuntimePosture`, and `AgentSummary`; `src/storage/mod.rs`
 > `agent_posture_projection`; `src/runtime/lifecycle.rs` `agent_summary`;
-> `src/runtime/closure.rs` closure derivation; and `src/tool/tools/agent_get.rs`.
+> `src/runtime/closure.rs` closure derivation; and `src/tool/tools/get_agent.rs`.
 
 ## Source RFCs
 
@@ -39,7 +39,7 @@ single opaque status field. The key distinction is:
 | **Scheduling posture** | `AgentSchedulingPosture` — derived from queue, WorkItems, tasks, wait state | Scheduler `derive_posture` projection |
 | **Runtime posture** | `RuntimePosture` — Awake or Sleeping | Closure decision at turn end |
 | **Continuation** | `ContinuationResolution` — how the agent was reactivated | Ingress/dispatch at turn start |
-| **User-facing summary** | `AgentSummary` — stable projection for API/UI/model display | `AgentGet` tool + HTTP `/agents` |
+| **User-facing summary** | `AgentSummary` — stable projection for API/UI/model display | `GetAgent` tool + HTTP `/agents` |
 
 `AgentSummary` is a **display projection**, not the source of truth for
 scheduling decisions. The scheduler must derive posture from queue, WorkItem,
@@ -50,7 +50,7 @@ Current implementation anchors:
 - `RuntimeHandle::agent_summary` assembles `AgentSummary` on read from the
   current `AgentState`, identity view, model state, execution snapshot, active
   waits, children, external triggers, and `AppStorage::agent_posture_projection`.
-- `AgentGet` returns that assembled `AgentSummary` directly; it does not write
+- `GetAgent` returns that assembled `AgentSummary` directly; it does not write
   lifecycle, scheduling, or wait state.
 - `/agents` and `/agents/{id}` use the same runtime summary/list projection
   path. `AgentListEntry` is a compact list projection and is not a scheduler
@@ -188,7 +188,7 @@ projection facts and current turn facts to choose a `ClosureOutcome`,
 
 ## User-facing projection (`AgentSummary`)
 
-`AgentSummary` is the stable projection returned by `AgentGet` and
+`AgentSummary` is the stable projection returned by `GetAgent` and
 `GET /api/agents`. It includes:
 
 - `identity` — agent identity badge (visibility/ownership/profile)
@@ -207,7 +207,7 @@ projection facts and current turn facts to choose a `ClosureOutcome`,
 - `AgentSummary` is assembled on read from authoritative records.
 - Fields are added conservatively; do not use `AgentSummary` as a dumping
   ground for internal state.
-- The model receives `AgentSummary` (via `AgentGet`) as display information,
+- The model receives `AgentSummary` (via `GetAgent`) as display information,
   not as a scheduling instruction.
 - API consumers must not depend on summary field ordering or presence of
   default/empty fields.
@@ -231,7 +231,7 @@ issue #1367.
 
 | Area | Finding | Classification | Current handling |
 |------|---------|----------------|------------------|
-| `AgentSummary` / `AgentGet` derivation | Summary is assembled on read; `AgentGet` is read-only and does not mutate state. | Contract matches implementation | Documented above. |
+| `AgentSummary` / `GetAgent` derivation | Summary is assembled on read; `GetAgent` is read-only and does not mutate state. | Contract matches implementation | Documented above. |
 | Projection as scheduler input | The user-facing `AgentSummary.scheduling_posture` is derived from storage/runtime facts. Scheduler-sensitive closure and run-loop paths derive from queue, WorkItems, waits, tasks, and turn state rather than reading the summary back. | Contract matches implementation | Covered by storage and runtime tests. |
 | Lifecycle labels | Current implementation preserves `Booting`, `AwakeIdle`, `AwakeRunning`, `AwaitingTask`, `Asleep`, and `Stopped`; `Paused` only deserializes as legacy alias for `Stopped`. | Contract matches implementation with transitional label | Documented as current contract and known migration gap. |
 | Agent-level timer/system waits | WorkItem scheduling keeps `WaitingTimer` and `WaitingSystem` distinct, while reduced `AgentSchedulingPosture` reports them as `Blocked`. | Intentional reduced projection | Documented; tests cover the projection. |

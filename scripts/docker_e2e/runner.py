@@ -3748,7 +3748,7 @@ def run_scheduler_multi_workitem_case(
     completion_b = f"SCHEDULER-MULTI-COMPLETE-B-{marker}"
     objective_a = (
         f"{objective_a_marker}. Inspect the current agent identity by calling "
-        "AgentGet, then call ListWorkItems with filter current to confirm "
+        "GetAgent, then call ListWorkItems with filter current to confirm "
         "this WorkItem is the active focus. Complete this WorkItem only after "
         "the Runtime resumes it through an autonomous work_queue SystemTick. "
         "On that autonomous turn, perform the inspection steps, update both "
@@ -3795,7 +3795,7 @@ def run_scheduler_multi_workitem_case(
         ["CreateWorkItem"],
         forbidden
         + [
-            "AgentGet",
+            "GetAgent",
             "GetWorkspaceState",
             "ListWorkItems",
             "UpdateWorkItem",
@@ -3845,7 +3845,7 @@ def run_scheduler_multi_workitem_case(
     harness.assert_tools(
         "scheduler-multi-a",
         baseline,
-        ["AgentGet", "ListWorkItems", "UpdateWorkItem", "CompleteWorkItem"],
+        ["GetAgent", "ListWorkItems", "UpdateWorkItem", "CompleteWorkItem"],
         forbidden + ["CreateWorkItem", "GetWorkspaceState"],
         turn_ids={terminal_turn_ids_by_work_item[work_item_a_id]},
     )
@@ -3858,7 +3858,7 @@ def run_scheduler_multi_workitem_case(
             "UpdateWorkItem",
             "CompleteWorkItem",
         ],
-        forbidden + ["CreateWorkItem", "AgentGet"],
+        forbidden + ["CreateWorkItem", "GetAgent"],
         turn_ids={terminal_turn_ids_by_work_item[work_item_b_id]},
     )
     for wid in (work_item_a_id, work_item_b_id):

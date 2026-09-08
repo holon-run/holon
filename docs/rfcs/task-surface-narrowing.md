@@ -201,7 +201,7 @@ This keeps the task plane readable across both:
 
 Agent-specific detail should not be forced into a task-detail object.
 
-That should live under `AgentGet` instead.
+That should live under `GetAgent` instead.
 
 ## `TaskInput` As A Generic Supervision Input Surface
 

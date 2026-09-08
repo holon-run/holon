@@ -247,11 +247,11 @@ impl AgentProvider for StaleTextThenCompleteProvider {
         let blocks = if *calls == 1 {
             vec![
                 ModelBlock::Text {
-                    text: "This text belongs to the AgentGet tool call.".into(),
+                    text: "This text belongs to the GetAgent tool call.".into(),
                 },
                 ModelBlock::ToolUse {
                     id: "inspect".into(),
-                    name: "AgentGet".into(),
+                    name: "GetAgent".into(),
                     input: serde_json::json!({}),
                     kind: crate::provider::ModelToolCallKind::Function,
                 },
@@ -884,7 +884,7 @@ async fn work_item_query_tools_return_current_open_done_views() {
             &AuthorityClass::OperatorInstruction,
             &crate::tool::ToolCall {
                 id: "agent-get".into(),
-                name: "AgentGet".into(),
+                name: "GetAgent".into(),
                 input: serde_json::json!({}),
             },
         )
@@ -3616,7 +3616,7 @@ async fn complete_work_item_uses_followup_report_after_text_before_other_tool() 
     }));
     assert!(briefs
         .iter()
-        .all(|brief| brief.text != "This text belongs to the AgentGet tool call."));
+        .all(|brief| brief.text != "This text belongs to the GetAgent tool call."));
     let transcript = runtime.storage().read_recent_transcript(10).unwrap();
     let tool_results = transcript
         .iter()

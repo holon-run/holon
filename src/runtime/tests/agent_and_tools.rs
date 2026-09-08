@@ -1426,7 +1426,7 @@ fn current_input_summary_extracts_body_from_context_section() {
 }
 
 #[tokio::test]
-async fn agent_get_default_returns_current_agent_summary() {
+async fn get_agent_default_returns_current_agent_summary() {
     let (_home, _host, runtime) = host_backed_test_runtime().await;
 
     let result = crate::tool::tools::execute_builtin_tool(
@@ -1435,21 +1435,21 @@ async fn agent_get_default_returns_current_agent_summary() {
         &AuthorityClass::OperatorInstruction,
         &crate::tool::ToolCall {
             id: "agent-get-default".into(),
-            name: "AgentGet".into(),
+            name: "GetAgent".into(),
             input: serde_json::json!({}),
         },
     )
     .await
-    .expect("AgentGet with no args should succeed");
+    .expect("GetAgent with no args should succeed");
     assert!(
         !result.is_error(),
-        "AgentGet default should not be an error"
+        "GetAgent default should not be an error"
     );
     let envelope = result.envelope;
     let envelope_str = serde_json::to_string(&envelope).unwrap();
     assert!(
         envelope_str.contains("default"),
-        "AgentGet default should contain 'default' agent id"
+        "GetAgent default should contain 'default' agent id"
     );
 }
 
@@ -1607,10 +1607,32 @@ async fn timer_tools_manage_only_the_current_agent_lifecycle() {
 }
 
 #[tokio::test]
-async fn agent_get_with_agent_id_returns_requested_agent() {
+async fn get_agent_with_agent_id_returns_requested_agent() {
+    use crate::types::{
+        AgentIdentityRecord, AgentKind, AgentOwnership, AgentProfilePreset, AgentVisibility,
+    };
+
     let (_home, host, runtime) = host_backed_test_runtime().await;
 
-    host.create_named_agent("observer-bot", None).await.unwrap();
+    let observer = AgentIdentityRecord::new(
+        "observer-bot",
+        AgentKind::Named,
+        AgentVisibility::Public,
+        AgentOwnership::SelfOwned,
+        AgentProfilePreset::PublicNamed,
+        None,
+        None,
+    );
+    host.append_agent_identity(&observer).unwrap();
+    host.runtime_db()
+        .agent_identities()
+        .upsert(&observer)
+        .unwrap();
+    let observer_storage = host.agent_storage("observer-bot").unwrap();
+    observer_storage
+        .write_agent(&crate::types::AgentState::new("observer-bot"))
+        .unwrap();
+    assert!(host.try_get_loaded_runtime("observer-bot").await.is_none());
 
     let result = crate::tool::tools::execute_builtin_tool(
         &runtime,
@@ -1618,25 +1640,29 @@ async fn agent_get_with_agent_id_returns_requested_agent() {
         &AuthorityClass::OperatorInstruction,
         &crate::tool::ToolCall {
             id: "agent-get-target".into(),
-            name: "AgentGet".into(),
+            name: "GetAgent".into(),
             input: serde_json::json!({ "agent_id": "observer-bot" }),
         },
     )
     .await
-    .expect("AgentGet with agent_id should succeed");
+    .expect("GetAgent with agent_id should succeed");
     assert!(
         !result.is_error(),
-        "AgentGet with agent_id should not be an error"
+        "GetAgent with agent_id should not be an error"
     );
     let envelope_str = serde_json::to_string(&result.envelope).unwrap();
     assert!(
         envelope_str.contains("observer-bot"),
-        "AgentGet result should contain requested agent id"
+        "GetAgent result should contain requested agent id"
+    );
+    assert!(
+        host.try_get_loaded_runtime("observer-bot").await.is_none(),
+        "GetAgent must not start an unloaded target runtime"
     );
 }
 
 #[tokio::test]
-async fn agent_get_with_agent_id_can_access_private_child() {
+async fn get_agent_with_agent_id_can_access_child() {
     use crate::types::{AgentKind, AgentOwnership, AgentProfilePreset, AgentVisibility};
 
     let (_home, host, runtime) = host_backed_test_runtime().await;
@@ -1663,19 +1689,19 @@ async fn agent_get_with_agent_id_can_access_private_child() {
         &AuthorityClass::OperatorInstruction,
         &crate::tool::ToolCall {
             id: "agent-get-child".into(),
-            name: "AgentGet".into(),
+            name: "GetAgent".into(),
             input: serde_json::json!({ "agent_id": "child_agentget_test" }),
         },
     )
     .await
-    .expect("AgentGet with private child agent_id should succeed");
+    .expect("GetAgent with child agent_id should succeed");
     assert!(
         !result.is_error(),
-        "AgentGet with private child should not be an error"
+        "GetAgent with child should not be an error"
     );
     let envelope_str = serde_json::to_string(&result.envelope).unwrap();
     assert!(
         envelope_str.contains("child_agentget_test"),
-        "AgentGet result should contain child agent id"
+        "GetAgent result should contain child agent id"
     );
 }

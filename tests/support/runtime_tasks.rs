@@ -615,8 +615,8 @@ pub async fn tool_use_round_trip_executes_and_returns_result() -> Result<()> {
     let tool_records = runtime.storage().read_recent_tool_executions(10)?;
     let state_record = tool_records
         .iter()
-        .find(|record| record.tool_name == "AgentGet")
-        .expect("AgentGet record should exist");
+        .find(|record| record.tool_name == "GetAgent")
+        .expect("GetAgent record should exist");
     assert!(state_record.completed_at.is_some());
     assert!(state_record.duration_ms <= 5_000);
     let payload = state_record
@@ -624,8 +624,8 @@ pub async fn tool_use_round_trip_executes_and_returns_result() -> Result<()> {
         .get("envelope")
         .and_then(|value| value.get("result"))
         .cloned()
-        .expect("AgentGet output should contain envelope.result");
-    let captured_summary: holon::types::AgentGetResult = serde_json::from_value(payload)?;
+        .expect("GetAgent output should contain envelope.result");
+    let captured_summary: holon::types::GetAgentResult = serde_json::from_value(payload)?;
     assert_eq!(
         captured_summary
             .agent
@@ -634,7 +634,7 @@ pub async fn tool_use_round_trip_executes_and_returns_result() -> Result<()> {
             .current_working_memory
             .current_work_item_id,
         None,
-        "AgentGet should not invent WorkItem focus mid-tool-loop"
+        "GetAgent should not invent WorkItem focus mid-tool-loop"
     );
 
     let state = runtime.agent_state().await?;

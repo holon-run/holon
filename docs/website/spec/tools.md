@@ -35,7 +35,7 @@ Tools are grouped by capability family for authority gating:
 
 | Family | Tools | Authority |
 |--------|-------|-----------|
-| `CoreAgent` | `WaitFor`, `AgentGet`, `Enqueue`, WorkItem tools, `MemorySearch`, `MemoryGet` | All agent profiles |
+| `CoreAgent` | `WaitFor`, `GetAgent`, `Enqueue`, WorkItem tools, `MemorySearch`, `MemoryGet` | All agent profiles |
 | `LocalEnvironment` | `ExecCommand`, `ExecCommandBatch`, `ApplyPatch`, `GetWorkspaceState`, `SwitchWorkspace`, `CreateWorktree` | All profiles |
 | `AuthorityExpanding` | `AttachWorkspace`, `DetachWorkspace`, `RemoveWorktree` | Public named agents |
 | `Web` | `WebFetch`, `WebSearch` | All profiles |
@@ -76,7 +76,7 @@ registry and machine-readable schema inventory.
 
 | Tool | Purpose |
 |------|---------|
-| `AgentGet` | Read current agent-plane summary |
+| `GetAgent` | Read current agent-plane summary |
 | `WaitFor` | Signal turn-end after recording explicit wait state |
 | `Enqueue` | Schedule self-follow-up message |
 | `SpawnAgent` | Delegate work to a child agent |

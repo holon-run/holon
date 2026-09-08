@@ -51,7 +51,7 @@ impl AgentProvider for ToolUsingProvider {
             return Ok(ProviderTurnResponse {
                 blocks: vec![ModelBlock::ToolUse {
                     id: "tool-1".into(),
-                    name: "AgentGet".into(),
+                    name: "GetAgent".into(),
                     input: json!({}),
                     kind: holon::provider::ModelToolCallKind::Function,
                 }],

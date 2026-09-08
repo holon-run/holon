@@ -339,7 +339,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         for expected in [
-            "AgentGet",
+            "GetAgent",
             "WaitFor",
             "CreateAgent",
             "InvokeAgent",

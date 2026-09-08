@@ -1427,7 +1427,7 @@ impl AgentProvider for StagnatingAfterVerificationProvider {
             }],
             _ => vec![ModelBlock::ToolUse {
                 id: "agent".into(),
-                name: "AgentGet".into(),
+                name: "GetAgent".into(),
                 input: serde_json::json!({}),
                 kind: crate::provider::ModelToolCallKind::Function,
             }],

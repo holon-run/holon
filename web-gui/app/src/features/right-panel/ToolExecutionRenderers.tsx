@@ -887,9 +887,9 @@ function ListProviderModelsRenderer({ record }: { record: RuntimeToolExecutionRe
   );
 }
 
-// AgentGet renderer
+// GetAgent renderer
 
-function AgentGetRenderer({ record }: { record: RuntimeToolExecutionRecord }) {
+function GetAgentRenderer({ record }: { record: RuntimeToolExecutionRecord }) {
   const { t } = useTranslation();
   const output = unwrapToolOutput(record.output ?? record.result);
   const rawAgent = nestedValue(output, ["agent"]);
@@ -1220,8 +1220,8 @@ export function ToolExecutionContent({
       return wrapFailed(<ListModelProvidersRenderer record={record} />, record, error, failed, t);
     case "ListProviderModels":
       return wrapFailed(<ListProviderModelsRenderer record={record} />, record, error, failed, t);
-    case "AgentGet":
-      return wrapFailed(<AgentGetRenderer record={record} />, record, error, failed, t);
+    case "GetAgent":
+      return wrapFailed(<GetAgentRenderer record={record} />, record, error, failed, t);
     case "SpawnAgent":
       return wrapFailed(<SpawnAgentRenderer record={record} />, record, error, failed, t);
     case "WaitFor":

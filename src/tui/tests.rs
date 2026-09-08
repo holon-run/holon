@@ -3981,7 +3981,7 @@ fn chat_deduplicates_replayed_projected_tool_events() {
         client,
         crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
     );
-    let event = tool_executed_event_envelope("evt-tool", 43, "default", "AgentGet");
+    let event = tool_executed_event_envelope("evt-tool", 43, "default", "GetAgent");
     let mut projection = TuiProjection::from_snapshot(sample_snapshot("default", "evt-0"));
     for _ in 0..2 {
         projection.apply_event(
@@ -4003,7 +4003,7 @@ fn chat_deduplicates_replayed_projected_tool_events() {
             matches!(
                 item,
                 ConversationCell::SystemNotice { body, .. }
-                    if body.contains("AgentGet")
+                    if body.contains("GetAgent")
             )
         })
         .count();
@@ -4019,7 +4019,7 @@ fn chat_keeps_distinct_projected_tool_events_with_same_body() {
     );
     let mut projection = TuiProjection::from_snapshot(sample_snapshot("default", "evt-0"));
     for (id, event_seq) in [("evt-tool-1", 43), ("evt-tool-2", 44)] {
-        let event = tool_executed_event_envelope(id, event_seq, "default", "AgentGet");
+        let event = tool_executed_event_envelope(id, event_seq, "default", "GetAgent");
         projection.apply_event(
             AgentStreamEvent {
                 id: event.id.clone(),
@@ -4038,7 +4038,7 @@ fn chat_keeps_distinct_projected_tool_events_with_same_body() {
             matches!(
                 item,
                 ConversationCell::SystemNotice { body, .. }
-                    if body.contains("AgentGet")
+                    if body.contains("GetAgent")
             )
         })
         .count();

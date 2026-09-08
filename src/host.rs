@@ -4801,14 +4801,16 @@ impl RuntimeHostBridge {
         self.host()?.child_agent_summaries(parent_agent_id).await
     }
 
-    /// Get a full AgentSummary for a given agent_id through the local trusted
-    /// control boundary. This allows private child agent observation.
+    /// Get a full AgentSummary for a given agent_id without starting an
+    /// unloaded target runtime.
     pub(crate) async fn agent_summary_for(
         &self,
         agent_id: &str,
     ) -> Result<crate::types::AgentSummary> {
-        let runtime = self.host()?.get_agent_for_local_status(agent_id).await?;
-        runtime.agent_summary().await
+        self.host()?
+            .local_agent_summary(agent_id)
+            .await
+            .map_err(Into::into)
     }
 
     pub(crate) async fn child_observability(

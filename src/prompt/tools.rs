@@ -74,11 +74,11 @@ pub fn tool_sections_with_context(
             guidance(include_str!("tool_guidance/tool_agent_invocation.md")),
         ));
     }
-    if names.contains(&tn::AGENT_GET) {
+    if names.contains(&tn::GET_AGENT) {
         sections.push(section(
-            "tool_agent_get",
+            "tool_get_agent",
             PromptStability::Stable,
-            guidance(include_str!("tool_guidance/tool_agent_get.md")),
+            guidance(include_str!("tool_guidance/tool_get_agent.md")),
         ));
     }
     if names.contains(&tn::ENQUEUE) {
@@ -278,23 +278,22 @@ mod tests {
     }
 
     #[test]
-    fn test_agent_get_section_emitted_when_available() {
+    fn test_get_agent_section_emitted_when_available() {
         let tools = vec![ToolSpec {
-            name: "AgentGet".into(),
+            name: "GetAgent".into(),
             description: String::new(),
             input_schema: json!({}),
             freeform_grammar: None,
         }];
         let sections = tool_sections(&tools);
-        assert!(sections.iter().any(|s| s.name == "tool_agent_get"));
+        assert!(sections.iter().any(|s| s.name == "tool_get_agent"));
         let section = sections
             .iter()
-            .find(|s| s.name == "tool_agent_get")
+            .find(|s| s.name == "tool_get_agent")
             .expect("agent get section");
-        assert!(section.content.contains("identity.ownership"));
-        assert!(section.content.contains("identity.profile_preset"));
-        assert!(section.content.contains("public_named"));
-        assert!(section.content.contains("private_child"));
+        assert!(section.content.contains("requested agent"));
+        assert!(section.content.contains("read-only query"));
+        assert!(section.content.contains("does not start"));
     }
 
     #[test]
@@ -902,7 +901,7 @@ mod tests {
                 freeform_grammar: None,
             },
             ToolSpec {
-                name: "AgentGet".into(),
+                name: "GetAgent".into(),
                 description: String::new(),
                 input_schema: json!({}),
                 freeform_grammar: None,
@@ -966,7 +965,7 @@ mod tests {
         for name in [
             "tool_wait_for",
             "tool_agent_invocation",
-            "tool_agent_get",
+            "tool_get_agent",
             "tool_enqueue",
             "tool_external_trigger",
             "tool_work_item_scheduling",

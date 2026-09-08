@@ -531,7 +531,7 @@
       "stability": "stable"
     },
     {
-      "description": "Read the current agent-plane summary, including identity visibility, ownership, profile preset, lifecycle, active work focus, waiting state, and visible child-agent lineage.\n\nWhen called without arguments, returns the current agent's summary (unchanged behavior).\nWhen called with `agent_id`, returns the summary of the requested agent through the local trusted control boundary. This allows inspecting private child agents without exposing them to remote/multi-user access.\n\nRemote/multi-user authorization is deferred to future work; the current behavior relies on the local trusted control API boundary.\n",
+      "description": "Read an agent-plane summary, including identity, lifecycle, active work focus,\nwaiting state, and child-agent lineage.\n\nWhen called without arguments, returns the current agent's summary. When called\nwith `agent_id`, returns the requested agent's canonical detail projection.\nRead-only inspection does not start an unloaded target runtime.\n",
       "family": "core_agent",
       "freeform_grammar": null,
       "input_schema": {
@@ -547,7 +547,7 @@
         "required": [],
         "type": "object"
       },
-      "name": "AgentGet",
+      "name": "GetAgent",
       "related_surfaces": [
         "runtime agent lifecycle APIs"
       ],
@@ -555,7 +555,7 @@
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "canonical_json_envelope",
-        "success_result": "AgentGetResult",
+        "success_result": "GetAgentResult",
         "success_result_schema": null
       },
       "stability": "stable"

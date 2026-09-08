@@ -305,7 +305,7 @@ class Scenario:
                 "resp_multi_first_complete",
             )
         steps = {
-            3: ("AgentGet", {}),
+            3: ("GetAgent", {}),
             4: ("ListWorkItems", {"filter": "current", "include_todo_list": True}),
             5: (
                 "UpdateWorkItem",

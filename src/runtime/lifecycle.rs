@@ -539,9 +539,8 @@ impl RuntimeHandle {
         })
     }
 
-    /// Get a full AgentSummary for a different agent through the host bridge.
-    /// This allows observing private child agents through the local trusted
-    /// control boundary.
+    /// Get a full AgentSummary for a different agent through the host bridge
+    /// without starting an unloaded target runtime.
     pub async fn agent_summary_for(&self, agent_id: &str) -> Result<AgentSummary> {
         let bridge = self
             .inner

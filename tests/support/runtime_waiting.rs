@@ -1283,7 +1283,7 @@ pub async fn default_external_ingress_register_and_revoke_state() -> Result<()> 
             &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-get-state".into(),
-                name: "AgentGet".into(),
+                name: "GetAgent".into(),
                 input: json!({}),
             },
         )

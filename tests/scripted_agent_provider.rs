@@ -100,7 +100,7 @@ where
 #[tokio::test]
 async fn scripted_agent_provider_drives_tool_loop_and_captures_requests() -> Result<()> {
     let provider = ScriptedAgentProvider::new([
-        ScriptedProviderStep::tool_use("agent-get-1", "AgentGet", json!({}))
+        ScriptedProviderStep::tool_use("agent-get-1", "GetAgent", json!({}))
             .with_token_usage(10, 5),
         ScriptedProviderStep::text("finished after scripted tool result").with_token_usage(7, 3),
     ]);
@@ -143,10 +143,10 @@ async fn scripted_agent_provider_drives_tool_loop_and_captures_requests() -> Res
         .iter()
         .map(|tool| tool.name.as_str())
         .collect::<Vec<_>>();
-    assert!(first_tool_names.contains(&"AgentGet"));
+    assert!(first_tool_names.contains(&"GetAgent"));
     assert!(
-        first.prompt_frame.system_prompt.contains("Use AgentGet"),
-        "prompt should include AgentGet guidance when AgentGet is exposed"
+        first.prompt_frame.system_prompt.contains("Use GetAgent"),
+        "prompt should include GetAgent guidance when GetAgent is exposed"
     );
 
     let second = &requests[1];
@@ -158,24 +158,24 @@ async fn scripted_agent_provider_drives_tool_loop_and_captures_requests() -> Res
             _ => None,
         });
     let tool_results = tool_results.expect("second request should include tool results");
-    let agent_get_result = tool_results
+    let get_agent_result = tool_results
         .iter()
         .find(|result| result.tool_use_id == "agent-get-1")
-        .expect("AgentGet result should be returned to the provider");
-    assert!(!agent_get_result.is_error);
-    let agent_get_content: serde_json::Value = serde_json::from_str(&agent_get_result.content)?;
+        .expect("GetAgent result should be returned to the provider");
+    assert!(!get_agent_result.is_error);
+    let get_agent_content: serde_json::Value = serde_json::from_str(&get_agent_result.content)?;
     assert!(
-        agent_get_content
+        get_agent_content
             .pointer("/result/agent")
             .is_some_and(|value| value.is_object())
-            || (agent_get_content
+            || (get_agent_content
                 .get("provider_projection_truncated")
                 .and_then(serde_json::Value::as_bool)
                 == Some(true)
-                && agent_get_content
+                && get_agent_content
                     .get("output_ref")
                     .is_some_and(|value| value.is_string())),
-        "AgentGet tool result should preserve either the full result or its canonical truncation receipt"
+        "GetAgent tool result should preserve either the full result or its canonical truncation receipt"
     );
 
     let state = runtime.agent_state().await?;
