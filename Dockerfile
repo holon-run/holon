@@ -11,6 +11,12 @@ RUN npm run build
 
 FROM rust:bookworm AS rust-builder
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        cmake \
+        libclang-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /src
 COPY . .
 COPY --from=web-builder /src/web-gui/app/dist ./web-gui/app/dist
