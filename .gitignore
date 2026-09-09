@@ -1,6 +1,12 @@
 # Generated
 dist/
 web-gui/app/dist-e2e/
+# web-gui/app/dist stays tracked via .gitkeep: rust-embed requires the
+# directory to exist, and `cargo publish` verification rejects build.rs
+# creating it inside the packaged source tree.
+!web-gui/app/dist/
+web-gui/app/dist/*
+!web-gui/app/dist/.gitkeep
 build/
 coverage/
 .DS_Store
