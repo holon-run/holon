@@ -429,7 +429,7 @@ pub(crate) fn release_agent_identity_reservation_tx(
     agent_id: &str,
 ) -> Result<()> {
     let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    tx.execute(
+    let released = tx.execute(
         "UPDATE agent_identity_reservations
          SET reservation_state = 'active',
              reserved_at = ?2,
@@ -438,6 +438,10 @@ pub(crate) fn release_agent_identity_reservation_tx(
          WHERE agent_id = ?1 AND reservation_state = 'retired'",
         params![agent_id, now],
     )?;
+    anyhow::ensure!(
+        released == 1,
+        "agent_reincarnation_rejected: agent {agent_id} identity reservation is not retired"
+    );
     Ok(())
 }
 

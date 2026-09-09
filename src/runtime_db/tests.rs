@@ -5049,6 +5049,105 @@ CREATE TABLE working_memory_deltas (
         Ok(())
     }
 
+    fn fresh_incarnation(
+        tombstone: &AgentIdentityRecord,
+    ) -> (
+        AgentIdentityRecord,
+        AgentBootstrapRecord,
+        crate::types::AgentCanonicalRecordSet,
+    ) {
+        let mut record = agent_identity(&tombstone.agent_id, 0);
+        record.incarnation = tombstone.incarnation.saturating_add(1);
+        record.revision = tombstone.revision.saturating_add(1);
+        record.updated_at = tombstone.updated_at + chrono::Duration::nanoseconds(1);
+        let bootstrap = AgentBootstrapRecord::new(
+            &tombstone.agent_id,
+            AgentBootstrapDesiredState {
+                template: None,
+                catalog_agent_home: None,
+                workspace: None,
+                model_resolution: None,
+                initial_message: None,
+            },
+        );
+        let relations = crate::runtime_db::agent_relations::independent_creation_records(
+            &record,
+            None,
+            crate::types::AgentCanonicalDurability::Persistent,
+        );
+        (record, bootstrap, relations)
+    }
+
+    #[test]
+    fn agent_reincarnation_allows_second_deletion_and_keeps_observer_sync_capability() -> Result<()>
+    {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let (tombstone, first_job) = fully_delete_agent(&db, "reborn-twice")?;
+        assert_eq!(first_job.status, AgentDeletionStatus::Completed);
+
+        let identity = db
+            .agent_identities()
+            .reincarnate_with_bootstrap_and_relations(
+                "reborn-twice",
+                "operator:test",
+                fresh_incarnation,
+            )?;
+        assert_eq!(identity.incarnation, tombstone.incarnation + 1);
+
+        // Reopening while the id is re-created must keep the observer-sync
+        // identity capability: the sanctioned reincarnation no longer trips
+        // the completed-deletion reuse invariant.
+        drop(db);
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        assert!(db.observer_sync_foundations()?.agent_identity_reserved);
+
+        // The re-created incarnation can be deleted again: begin() replaces
+        // the stale Completed job row instead of tripping the agent_id
+        // UNIQUE constraint.
+        let recreated = db
+            .agent_identities()
+            .latest("reborn-twice")?
+            .expect("recreated identity");
+        let (_, second_job, created) = db.agent_deletions().begin(
+            "reborn-twice",
+            recreated.revision,
+            "operator:test",
+            false,
+        )?;
+        assert!(created);
+        assert_ne!(second_job.deletion_id, first_job.deletion_id);
+        assert_eq!(
+            db.agent_deletions()
+                .latest_for_agent("reborn-twice")?
+                .as_ref(),
+            Some(&second_job)
+        );
+        let (tombstone_two, second_completed) = db.agent_deletions().finalize(&second_job)?;
+        assert_eq!(tombstone_two.status, AgentRegistryStatus::Deleted);
+        assert_eq!(second_completed.status, AgentDeletionStatus::Completed);
+
+        // The id can be re-created a third time from the fresh Completed job.
+        let third = db
+            .agent_identities()
+            .reincarnate_with_bootstrap_and_relations(
+                "reborn-twice",
+                "operator:test",
+                fresh_incarnation,
+            )?;
+        assert_eq!(third.incarnation, tombstone_two.incarnation + 1);
+        assert_eq!(third.incarnation, 3);
+
+        drop(db);
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        assert!(
+            reopened
+                .observer_sync_foundations()?
+                .agent_identity_reserved
+        );
+        Ok(())
+    }
+
     #[test]
     fn agent_reincarnation_fails_closed_without_completed_deletion() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;

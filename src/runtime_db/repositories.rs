@@ -818,6 +818,23 @@ impl AgentDeletionRepository<'_> {
                 identity.revision,
                 now,
             )?;
+            // A reincarnated id keeps the previous incarnation's Completed
+            // job row; `agent_id` is UNIQUE so the stale row must be replaced
+            // before the new job insert. Any non-completed leftover while the
+            // identity is Active is an integrity violation and fails closed.
+            tx.execute(
+                "DELETE FROM agent_deletion_jobs WHERE agent_id = ?1 AND status = 'completed'",
+                params![agent_id],
+            )?;
+            let stale_jobs: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM agent_deletion_jobs WHERE agent_id = ?1",
+                [agent_id],
+                |row| row.get(0),
+            )?;
+            anyhow::ensure!(
+                stale_jobs == 0,
+                "agent {agent_id} has a non-completed deletion job while its identity is active"
+            );
             insert_agent_deletion_job_tx(tx, &job)?;
             crate::runtime_db::agent_message_delivery::cancel_active_deliveries_for_target_tx(
                 tx, agent_id,

@@ -264,6 +264,39 @@ pub async fn control_agent_recreate_after_completed_deletion_reincarnates() -> R
     )?;
     assert_eq!(recreated_events, 1);
 
+    // The re-created incarnation can be deleted again: the stale Completed
+    // job row from the first deletion must be replaced instead of tripping
+    // the agent_id UNIQUE constraint with a 500.
+    let deleted_again: serde_json::Value = client
+        .delete(format!("{base}/api/control/agents/reborn-http"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(deleted_again["identity"]["status"], "deleting");
+
+    wait_until_async_for(Duration::from_secs(15), || {
+        let client = client.clone();
+        let url = format!("{base}/api/control/agents/reborn-http/delete-status");
+        async move {
+            let status: serde_json::Value = client.get(url).send().await?.json().await?;
+            Ok(status["job"]["status"] == serde_json::json!("completed"))
+        }
+    })
+    .await?;
+
+    // The id can be re-created a third time from the fresh Completed job.
+    let third: serde_json::Value = client
+        .post(format!("{base}/api/control/agents/reborn-http/create"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(third["identity"]["status"], "active");
+    assert_eq!(third["identity"]["incarnation"], 3);
+
     server.abort();
     Ok(())
 }
