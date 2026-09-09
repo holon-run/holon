@@ -913,6 +913,10 @@ const en = {
     deleteConfirmPrompt: "Type {{id}} to confirm deletion. This cannot be undone.",
     deleteConfirmLabel: "Type agent ID to confirm",
     cascadePrivateChildren: "Also delete private child agents",
+    // Incarnation
+    incarnationBadge: "Incarnation {{value}}",
+    incarnationTitle:
+      "This id was explicitly recreated after a completed deletion; incarnation {{value}} is a fresh identity and does not inherit the previous agent's state.",
     // Rename
     rename: "Rename",
     renameAria: "Rename agent",

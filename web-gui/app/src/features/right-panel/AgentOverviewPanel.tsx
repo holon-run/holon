@@ -257,6 +257,14 @@ export function AgentOverviewPanel({
           </div>
         )}
         {!renaming && agent.name ? <small className="agent-id-line">{agent.id}</small> : null}
+        {!renaming && agent.incarnation != null && agent.incarnation > 1 ? (
+          <small
+            className="agent-incarnation-line"
+            title={t("agent.incarnationTitle", { value: agent.incarnation })}
+          >
+            {t("agent.incarnationBadge", { value: agent.incarnation })}
+          </small>
+        ) : null}
         {renameError ? (
           <small className="agent-rename-error" role="alert">
             {renameError}

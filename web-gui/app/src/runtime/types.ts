@@ -331,6 +331,8 @@ export interface AgentSummary {
   ownership?: string;
   /** True for the runtime default agent, which cannot be renamed. */
   isDefaultAgent?: boolean;
+  /** Monotonic incarnation counter; 1 unless the id was recreated after a completed deletion. */
+  incarnation?: number;
   badge: string;
   badgeTone?: "muted";
   badgeHue?: number;

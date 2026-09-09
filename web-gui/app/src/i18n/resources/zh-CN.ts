@@ -914,6 +914,10 @@ const zh: Record<string, any> = {
     deleteConfirmPrompt: "输入 {{id}} 以确认删除。此操作不可撤销。",
     deleteConfirmLabel: "输入智能体 ID 以确认",
     cascadePrivateChildren: "同时删除私有子智能体",
+    // 转世（删除后重建）
+    incarnationBadge: "第 {{value}} 代身份",
+    incarnationTitle:
+      "该 ID 在删除清理完成后被显式重建；第 {{value}} 代是全新身份，不继承原智能体的任何状态。",
     // Rename
     rename: "重命名",
     renameAria: "重命名 agent",

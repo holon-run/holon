@@ -5695,6 +5695,17 @@ code {
   color: var(--muted);
 }
 
+.agent-incarnation-line {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-radius: 999px;
+  padding: 1px 8px;
+  width: fit-content;
+  margin-top: 4px;
+}
+
 .agent-rename-error {
   display: block;
   margin-top: 4px;

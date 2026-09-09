@@ -2251,6 +2251,14 @@ export interface components {
             identity: {
                 agent_id: string;
                 delegated_from_task_id?: string | null;
+                /**
+                 * Format: uint64
+                 * @description Monotonic incarnation counter; 1 for the original identity and +1
+                 *      for every explicit recreation of the same agent id after a fully
+                 *      completed deletion.
+                 * @default 1
+                 */
+                incarnation: number;
                 is_default_agent: boolean;
                 /** @enum {string} */
                 kind: "default" | "named" | "child";
@@ -2294,6 +2302,14 @@ export interface components {
             identity: {
                 agent_id: string;
                 delegated_from_task_id?: string | null;
+                /**
+                 * Format: uint64
+                 * @description Monotonic incarnation counter; 1 for the original identity and +1
+                 *      for every explicit recreation of the same agent id after a fully
+                 *      completed deletion.
+                 * @default 1
+                 */
+                incarnation: number;
                 is_default_agent: boolean;
                 /** @enum {string} */
                 kind: "default" | "named" | "child";
@@ -2527,6 +2543,14 @@ export interface components {
             identity: {
                 agent_id: string;
                 delegated_from_task_id?: string | null;
+                /**
+                 * Format: uint64
+                 * @description Monotonic incarnation counter; 1 for the original identity and +1
+                 *      for every explicit recreation of the same agent id after a fully
+                 *      completed deletion.
+                 * @default 1
+                 */
+                incarnation: number;
                 is_default_agent: boolean;
                 /** @enum {string} */
                 kind: "default" | "named" | "child";
@@ -2628,6 +2652,14 @@ export interface components {
                     identity: {
                         agent_id: string;
                         delegated_from_task_id?: string | null;
+                        /**
+                         * Format: uint64
+                         * @description Monotonic incarnation counter; 1 for the original identity and +1
+                         *      for every explicit recreation of the same agent id after a fully
+                         *      completed deletion.
+                         * @default 1
+                         */
+                        incarnation: number;
                         is_default_agent: boolean;
                         /** @enum {string} */
                         kind: "default" | "named" | "child";
@@ -2789,6 +2821,14 @@ export interface components {
                 identity: {
                     agent_id: string;
                     delegated_from_task_id?: string | null;
+                    /**
+                     * Format: uint64
+                     * @description Monotonic incarnation counter; 1 for the original identity and +1
+                     *      for every explicit recreation of the same agent id after a fully
+                     *      completed deletion.
+                     * @default 1
+                     */
+                    incarnation: number;
                     is_default_agent: boolean;
                     /** @enum {string} */
                     kind: "default" | "named" | "child";
@@ -3046,6 +3086,14 @@ export interface components {
                 identity: {
                     agent_id: string;
                     delegated_from_task_id?: string | null;
+                    /**
+                     * Format: uint64
+                     * @description Monotonic incarnation counter; 1 for the original identity and +1
+                     *      for every explicit recreation of the same agent id after a fully
+                     *      completed deletion.
+                     * @default 1
+                     */
+                    incarnation: number;
                     is_default_agent: boolean;
                     /** @enum {string} */
                     kind: "default" | "named" | "child";
@@ -3241,6 +3289,14 @@ export interface components {
                     identity: {
                         agent_id: string;
                         delegated_from_task_id?: string | null;
+                        /**
+                         * Format: uint64
+                         * @description Monotonic incarnation counter; 1 for the original identity and +1
+                         *      for every explicit recreation of the same agent id after a fully
+                         *      completed deletion.
+                         * @default 1
+                         */
+                        incarnation: number;
                         is_default_agent: boolean;
                         /** @enum {string} */
                         kind: "default" | "named" | "child";
