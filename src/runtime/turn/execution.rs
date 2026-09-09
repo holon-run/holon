@@ -81,6 +81,7 @@ struct PendingCompletionReport {
     work_item_id: String,
     expected_work_revision: u64,
     execution_binding: WorkItemExecutionBinding,
+    effective_work_item_id: Option<String>,
     request_turn_index: u64,
     request_round: usize,
     request_assistant_round_id: String,
@@ -2260,9 +2261,10 @@ impl TurnExecution<'_> {
                     crate::tool::tools::complete_work_item::complete_with_report_candidate(
                         runtime,
                         pending.work_item_id.clone(),
-                        crate::runtime::WorkItemCompletionAuthority::AgentExecution(
-                            pending.execution_binding.clone(),
-                        ),
+                        crate::runtime::WorkItemCompletionAuthority::AgentExecution {
+                            binding: pending.execution_binding.clone(),
+                            effective_work_item_id: pending.effective_work_item_id.clone(),
+                        },
                         Some(&candidate),
                         warnings,
                         "followup_final_text",
@@ -2853,6 +2855,7 @@ impl TurnExecution<'_> {
                                 source_tool_call_id: tool_call_id.clone(),
                             },
                         ),
+                    effective_work_item_id: pre_tool_work_item_id.clone(),
                 };
                 let tool_exec_started = std::time::Instant::now();
                 let tool_execution = if let Some(snapshot) = runtime.current_run_abort_token().await
@@ -3014,6 +3017,7 @@ impl TurnExecution<'_> {
                                 work_item_id: directive.work_item_id,
                                 expected_work_revision: directive.expected_work_revision,
                                 execution_binding,
+                                effective_work_item_id: pre_tool_work_item_id.clone(),
                                 request_turn_index: turn_index,
                                 request_round: round,
                                 request_assistant_round_id: assistant_round_id.clone(),

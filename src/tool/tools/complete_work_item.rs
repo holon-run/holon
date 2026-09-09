@@ -79,7 +79,10 @@ pub(crate) async fn execute(
                 "CompleteWorkItem requires an active agent execution binding",
             )
         })?;
-    let authority = WorkItemCompletionAuthority::AgentExecution(execution_binding);
+    let authority = WorkItemCompletionAuthority::AgentExecution {
+        binding: execution_binding,
+        effective_work_item_id: context.effective_work_item_id.clone(),
+    };
     if candidate.is_none()
         && before
             .as_ref()

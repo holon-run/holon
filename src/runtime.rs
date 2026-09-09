@@ -289,7 +289,10 @@ pub(super) enum WorkItemCompletionReportPromotionOutcome {
 
 #[derive(Debug, Clone)]
 pub(crate) enum WorkItemCompletionAuthority {
-    AgentExecution(WorkItemExecutionBinding),
+    AgentExecution {
+        binding: WorkItemExecutionBinding,
+        effective_work_item_id: Option<String>,
+    },
     Control,
 }
 

@@ -3847,7 +3847,7 @@ impl RuntimeHandle {
         let settlement = self
             .work_item_completion_settlement(&existing, authority)
             .await?;
-        let WorkItemCompletionAuthority::AgentExecution(binding) = authority else {
+        let WorkItemCompletionAuthority::AgentExecution { binding, .. } = authority else {
             return Ok((existing.revision, settlement));
         };
         let mut brief = BriefRecord::new(
@@ -3937,7 +3937,10 @@ impl RuntimeHandle {
             });
 
         let settlement = match authority {
-            WorkItemCompletionAuthority::AgentExecution(expected_binding) => {
+            WorkItemCompletionAuthority::AgentExecution {
+                binding: expected_binding,
+                effective_work_item_id,
+            } => {
                 let Some(current_binding) = state.current_execution_binding.as_ref() else {
                     return Err(RuntimeError::policy(
                         "work_item_execution_binding_missing",
@@ -3955,7 +3958,11 @@ impl RuntimeHandle {
                     .with_recovery_hint("retry completion from the current execution")
                     .into());
                 }
-                if expected_binding.work_item_id.as_deref() == Some(existing.id.as_str()) {
+                let authorized_work_item_id = expected_binding
+                    .work_item_id
+                    .as_deref()
+                    .or(effective_work_item_id.as_deref());
+                if authorized_work_item_id == Some(existing.id.as_str()) {
                     WorkItemCompletionSettlement::BoundExecution
                 } else {
                     if target_in_flight {
@@ -4364,7 +4371,10 @@ impl RuntimeHandle {
             .transpose()?;
         let expected_agent_state = state.clone();
         let matching_execution_binding = match authority {
-            Some(WorkItemCompletionAuthority::AgentExecution(expected_binding)) => {
+            Some(WorkItemCompletionAuthority::AgentExecution {
+                binding: expected_binding,
+                ..
+            }) => {
                 let Some(current_binding) = state.current_execution_binding.as_ref() else {
                     return Err(RuntimeError::policy(
                         "work_item_execution_binding_missing",

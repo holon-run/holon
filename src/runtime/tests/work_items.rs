@@ -294,7 +294,10 @@ async fn detached_completion_rolls_back_work_item_brief_and_tool_evidence_togeth
     let mut result = crate::tool::tools::complete_work_item::complete_with_report_candidate(
         &runtime,
         detached.id.clone(),
-        WorkItemCompletionAuthority::AgentExecution(binding),
+        WorkItemCompletionAuthority::AgentExecution {
+            binding,
+            effective_work_item_id: Some(active.id.clone()),
+        },
         Some(&candidate),
         Vec::new(),
         "same_assistant_round_preceding_text",
@@ -3062,7 +3065,10 @@ async fn lifecycle_execution_can_complete_without_borrowing_work_item_authority(
     let completed = runtime
         .complete_work_item_with_report(
             work_item.id.clone(),
-            WorkItemCompletionAuthority::AgentExecution(execution_binding),
+            WorkItemCompletionAuthority::AgentExecution {
+                binding: execution_binding,
+                effective_work_item_id: None,
+            },
             "Lifecycle completion report".into(),
             Vec::new(),
             Some(4),
@@ -3214,7 +3220,10 @@ async fn work_item_execution_completes_an_unrelated_work_item_detached() {
     let completed = runtime
         .complete_work_item_with_report(
             unrelated.id.clone(),
-            WorkItemCompletionAuthority::AgentExecution(execution_binding),
+            WorkItemCompletionAuthority::AgentExecution {
+                binding: execution_binding,
+                effective_work_item_id: Some(active.id.clone()),
+            },
             "Completed detached from the active WorkItem execution.".into(),
             Vec::new(),
             Some(1),
@@ -3374,7 +3383,10 @@ async fn completion_retry_rejects_replaced_execution_binding() {
     let error = runtime
         .complete_work_item_with_report(
             target.id.clone(),
-            WorkItemCompletionAuthority::AgentExecution(execution_binding),
+            WorkItemCompletionAuthority::AgentExecution {
+                binding: execution_binding,
+                effective_work_item_id: Some(target.id.clone()),
+            },
             "Must not commit after authority changes.".into(),
             Vec::new(),
             Some(1),
@@ -4997,6 +5009,84 @@ async fn conflicting_completion_report_promotion_keeps_first_canonical_brief() {
 }
 
 #[tokio::test]
+async fn operator_prompt_completion_uses_pre_tool_effective_work_item_as_bound_target() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item("operator prompt completion".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(work_item.id.clone()).await.unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.status = AgentStatus::AwakeRunning;
+        guard.state.current_run_id = Some("run-operator-prompt".into());
+        guard.state.current_execution_binding = Some(WorkItemExecutionBinding {
+            activation_id: Some("activation-operator-prompt".into()),
+            admission_provenance: None,
+            source_message_id: "message-operator-prompt".into(),
+            turn_id: "turn-operator-prompt".into(),
+            owner: None,
+            work_item_id: None,
+            claimed_work_revision: None,
+        });
+        guard.persist_state(&runtime.inner.storage).unwrap();
+    }
+
+    let registry = crate::tool::ToolRegistry::new(runtime.workspace_root());
+    let (result, _) = registry
+        .execute_with_context(
+            &runtime,
+            "default",
+            &AuthorityClass::OperatorInstruction,
+            &crate::tool::ToolCall {
+                id: "complete-operator-prompt".into(),
+                name: "CompleteWorkItem".into(),
+                input: serde_json::json!({"work_item_id": work_item.id}),
+            },
+            &crate::tool::spec::ToolExecutionContext {
+                completion_report_candidate: Some(crate::tool::spec::CompletionReportCandidate {
+                    text: "Operator prompt work is complete.".into(),
+                    citations: Vec::new(),
+                    source_turn_index: 1,
+                    source_round: 1,
+                    source_turn_id: Some("turn-operator-prompt".into()),
+                    source_message_id: Some("message-operator-prompt".into()),
+                    source_assistant_round_id: "assistant-round-operator-prompt".into(),
+                    source_tool_call_id: "complete-operator-prompt".into(),
+                }),
+                effective_work_item_id: Some(work_item.id.clone()),
+            },
+        )
+        .await
+        .unwrap();
+
+    assert!(result.terminal_transition);
+    assert_eq!(
+        result
+            .prepared_work_item_completion
+            .as_ref()
+            .expect("bound completion should prepare a terminal commit")
+            .settlement,
+        WorkItemCompletionSettlement::BoundExecution
+    );
+    assert_eq!(
+        result.envelope.result.unwrap()["completion_mode"].as_str(),
+        Some("bound_execution")
+    );
+}
+
+#[tokio::test]
 async fn complete_work_item_with_unfinished_todos_returns_structured_warning() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
@@ -5078,6 +5168,7 @@ async fn complete_work_item_with_unfinished_todos_returns_structured_warning() {
                     source_assistant_round_id: "assistant-round-complete".into(),
                     source_tool_call_id: "complete".into(),
                 }),
+                effective_work_item_id: Some(work_item.id.clone()),
             },
         )
         .await
