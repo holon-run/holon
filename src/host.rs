@@ -2357,12 +2357,12 @@ impl RuntimeHost {
         let bootstrap = self.reconcile_agent_bootstrap(agent_id).await?;
         let bootstrap_summary = bootstrap.summary();
         Ok(AgentCreateResult {
+            identity: AgentIdentityView::from_record(&identity, &self.config().default_agent_id),
             receipt: AgentCreateReceipt {
                 receipt_id: ids::runtime_id("agent_create"),
                 agent_id: identity.agent_id.clone(),
                 name: identity.name.clone(),
                 display_name: identity.display_name(),
-                preset: AgentProfilePreset::PublicNamed,
                 stage: if bootstrap_summary.status == AgentBootstrapStatus::Ready {
                     AgentCreateStage::Bootstrapped
                 } else {
@@ -2372,7 +2372,6 @@ impl RuntimeHost {
                 created,
                 bootstrap: bootstrap_summary,
             },
-            identity,
         })
     }
 
@@ -2421,12 +2420,15 @@ impl RuntimeHost {
                 let bootstrap = self.reconcile_agent_bootstrap(&request.agent_id).await?;
                 let bootstrap_summary = bootstrap.summary();
                 return Ok(AgentCreateResult {
+                    identity: AgentIdentityView::from_record(
+                        &identity,
+                        &self.config().default_agent_id,
+                    ),
                     receipt: AgentCreateReceipt {
                         receipt_id: ids::runtime_id("agent_create"),
                         agent_id: identity.agent_id.clone(),
                         name: identity.name.clone(),
                         display_name: identity.display_name(),
-                        preset: AgentProfilePreset::PublicNamed,
                         stage: if bootstrap_summary.status == AgentBootstrapStatus::Ready {
                             AgentCreateStage::Bootstrapped
                         } else {
@@ -2436,7 +2438,6 @@ impl RuntimeHost {
                         created: false,
                         bootstrap: bootstrap_summary,
                     },
-                    identity,
                 });
             }
         }
@@ -3866,13 +3867,18 @@ impl RuntimeHost {
             .unwrap_or_else(|| build_provider_from_config(&config))?;
         let apply_patch_surface = ApplyPatchSurface::for_model_route_ref(&model_ref.as_string());
         let registry = ToolRegistry::new(execution.execution_root.clone());
+        let capability_policy = self
+            .runtime_db()
+            .agent_canonical_relations()
+            .latest(&identity.agent_id)?
+            .and_then(|relations| relations.capability_policy);
         let available_tools = registry
             .tool_specs_with_families_for_apply_patch_surface(apply_patch_surface)?
             .into_iter()
             .filter(|(family, _)| {
-                identity_view
-                    .profile_preset
-                    .allows_tool_capability_family(*family)
+                capability_policy
+                    .as_ref()
+                    .is_none_or(|policy| policy.allows(*family))
             })
             .map(|(_, tool)| tool)
             .collect::<Vec<_>>();
@@ -4989,6 +4995,16 @@ impl RuntimeHostBridge {
         agent_id: &str,
     ) -> Result<Option<AgentIdentityRecord>> {
         self.host()?.agent_identity_record(agent_id)
+    }
+
+    pub(crate) async fn canonical_relations_for_agent(
+        &self,
+        agent_id: &str,
+    ) -> Result<Option<crate::types::AgentCanonicalRelationsProjection>> {
+        self.host()?
+            .runtime_db()
+            .agent_canonical_relations()
+            .latest(agent_id)
     }
 
     pub(crate) async fn child_summaries(
@@ -6142,7 +6158,6 @@ mod tests {
         assert_eq!(created.receipt.name.as_deref(), Some("Receipt Bot"));
         assert_eq!(created.receipt.display_name, "Receipt Bot");
         assert_eq!(created.receipt.agent_id, "receipt-bot");
-        assert_eq!(created.receipt.preset, AgentProfilePreset::PublicNamed);
         assert_eq!(created.receipt.stage, AgentCreateStage::Bootstrapped);
         assert_eq!(created.receipt.lifecycle, AgentRegistryStatus::Active);
         assert!(created.receipt.created);

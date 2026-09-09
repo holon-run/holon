@@ -3175,6 +3175,19 @@ impl RuntimeHandle {
         Ok(self.fallback_identity_view(&agent_id))
     }
 
+    pub(crate) async fn agent_capability_policy(
+        &self,
+    ) -> Result<Option<crate::types::AgentCapabilityPolicyRecord>> {
+        let agent_id = self.agent_id().await?;
+        let Some(bridge) = self.inner.host_bridge.as_ref() else {
+            return Ok(None);
+        };
+        Ok(bridge
+            .canonical_relations_for_agent(&agent_id)
+            .await?
+            .and_then(|relations| relations.capability_policy))
+    }
+
     fn skill_visibility(&self, identity: &AgentIdentityView) -> SkillVisibility {
         if identity.kind == AgentKind::Default {
             SkillVisibility::DefaultAgent

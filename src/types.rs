@@ -338,29 +338,7 @@ pub enum AgentProfilePreset {
     PublicNamed,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum ToolCapabilityFamily {
-    CoreAgent,
-    LocalEnvironment,
-    Web,
-    AgentCreation,
-    AuthorityExpanding,
-    ExternalTrigger,
-}
-
-impl ToolCapabilityFamily {
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::CoreAgent => "core_agent",
-            Self::LocalEnvironment => "local_environment",
-            Self::Web => "web",
-            Self::AgentCreation => "agent_creation",
-            Self::AuthorityExpanding => "authority_expanding",
-            Self::ExternalTrigger => "external_trigger",
-        }
-    }
-}
+pub(crate) type ToolCapabilityFamily = AgentCapabilityFamily;
 
 impl AgentProfilePreset {
     pub fn label(self) -> &'static str {
@@ -654,7 +632,6 @@ pub struct AgentCreateReceipt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub display_name: String,
-    pub preset: AgentProfilePreset,
     pub stage: AgentCreateStage,
     pub lifecycle: AgentRegistryStatus,
     pub created: bool,
@@ -663,7 +640,7 @@ pub struct AgentCreateReceipt {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct AgentCreateResult {
-    pub identity: AgentIdentityRecord,
+    pub identity: AgentIdentityView,
     pub receipt: AgentCreateReceipt,
 }
 
@@ -922,9 +899,17 @@ pub struct AgentIdentityView {
     pub agent_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(skip, default = "default_agent_kind")]
+    #[schemars(skip)]
     pub kind: AgentKind,
+    #[serde(skip, default = "default_agent_visibility")]
+    #[schemars(skip)]
     pub visibility: AgentVisibility,
+    #[serde(skip, default = "default_agent_ownership")]
+    #[schemars(skip)]
     pub ownership: AgentOwnership,
+    #[serde(skip, default = "default_agent_profile_preset")]
+    #[schemars(skip)]
     pub profile_preset: AgentProfilePreset,
     pub status: AgentRegistryStatus,
     pub is_default_agent: bool,
@@ -939,6 +924,22 @@ pub struct AgentIdentityView {
     pub lineage_parent_agent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delegated_from_task_id: Option<String>,
+}
+
+fn default_agent_kind() -> AgentKind {
+    AgentKind::Named
+}
+
+fn default_agent_visibility() -> AgentVisibility {
+    AgentVisibility::Public
+}
+
+fn default_agent_ownership() -> AgentOwnership {
+    AgentOwnership::SelfOwned
+}
+
+fn default_agent_profile_preset() -> AgentProfilePreset {
+    AgentProfilePreset::PublicNamed
 }
 
 impl AgentIdentityView {
@@ -963,40 +964,11 @@ impl AgentIdentityView {
         self.name.as_deref().unwrap_or(&self.agent_id)
     }
 
-    pub fn contract_badge(&self) -> String {
-        format!(
-            "{}/{} ({})",
-            self.visibility.label(),
-            self.ownership.label(),
-            self.profile_preset.label()
-        )
-    }
-
-    pub fn contract_summary(&self) -> String {
-        match (
-            self.visibility,
-            self.ownership,
-            self.profile_preset,
-            self.kind,
-        ) {
-            (
-                AgentVisibility::Public,
-                AgentOwnership::SelfOwned,
-                AgentProfilePreset::PublicNamed,
-                _,
-            ) => "public self-owned agent addressed directly by `agent_id`".into(),
-            (
-                AgentVisibility::Private,
-                AgentOwnership::ParentSupervised,
-                AgentProfilePreset::PrivateChild,
-                AgentKind::Child,
-            ) => "private parent-supervised child that remains under a parent task handle".into(),
-            _ => format!(
-                "{} {} agent with `{}` profile",
-                self.visibility.label(),
-                self.ownership.phrase(),
-                self.profile_preset.label()
-            ),
+    pub fn relation_summary(&self) -> String {
+        if let Some(parent_agent_id) = self.lineage_parent_agent_id.as_deref() {
+            format!("agent with lineage parent `{parent_agent_id}`")
+        } else {
+            "independently addressable agent identity".into()
         }
     }
 }

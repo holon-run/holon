@@ -2414,21 +2414,11 @@ mod tests {
     }
 
     #[test]
-    fn projection_bootstrap_preserves_agent_identity_contract() {
+    fn projection_bootstrap_preserves_agent_identity() {
         let projection = TuiProjection::from_snapshot(sample_snapshot());
 
-        assert_eq!(
-            projection.agent.identity.ownership,
-            AgentOwnership::SelfOwned
-        );
-        assert_eq!(
-            projection.agent.identity.profile_preset,
-            AgentProfilePreset::PublicNamed
-        );
-        assert_eq!(
-            projection.agent.identity.contract_badge(),
-            "public/self_owned (public_named)"
-        );
+        assert_eq!(projection.agent.identity.agent_id, "default");
+        assert!(projection.agent.identity.is_default_agent);
     }
 
     #[test]

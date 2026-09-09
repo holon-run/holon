@@ -482,6 +482,7 @@ pub struct ClearAgentModelRequest {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreateAgentRequest {
     pub authority_class: Option<AuthorityClass>,
     pub template: Option<String>,

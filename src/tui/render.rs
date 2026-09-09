@@ -111,7 +111,7 @@ pub(super) fn render_agent_state_text(app: &TuiApp) -> String {
             "Agent: {} / {:?}",
             agent.identity.agent_id, agent.agent.status
         ),
-        format!("Contract: {}", agent.identity.contract_badge()),
+        format!("Identity: {}", agent.identity.relation_summary()),
         format!(
             "Queue: pending {}  active tasks {}",
             agent.agent.pending, agent.active_task_count
@@ -927,17 +927,9 @@ pub(super) fn render_summary(agent: &AgentSummary) -> String {
             agent.identity.display_name(),
             agent.identity.agent_id
         ),
-        format!("Kind: {:?}", agent.identity.kind),
-        format!("Identity contract: {}", agent.identity.contract_badge()),
-        format!("Contract summary: {}", agent.identity.contract_summary()),
-        format!(
-            "Agent tool surface: {}",
-            agent.identity.profile_preset.agent_tool_surface_summary()
-        ),
-        format!(
-            "Cleanup ownership: {}",
-            agent.identity.ownership.cleanup_summary()
-        ),
+        format!("Identity relation: {}", agent.identity.relation_summary()),
+        "Tool access: canonical capability policy".into(),
+        "Cleanup authority: canonical lifecycle attachment and supervision".into(),
         format!("Status: {:?}", agent.agent.status),
         format!(
             "Model: {} ({:?})",
@@ -1013,11 +1005,10 @@ pub(super) fn render_summary(agent: &AgentSummary) -> String {
                 .iter()
                 .map(|child| {
                     format!(
-                        "{}:{}:{:?}[{}]",
+                        "{}:{}:{:?}",
                         child.identity.display_name(),
                         child.identity.agent_id,
-                        child.status,
-                        child.identity.contract_badge()
+                        child.status
                     )
                 })
                 .collect::<Vec<_>>()

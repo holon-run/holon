@@ -30,10 +30,9 @@ use crate::{
     system::{execution_policy_summary_lines, ExecutionSnapshot},
     tool::{ApplyPatchSurface, ToolSpec},
     types::{
-        AgentIdentityView, AgentKind, AgentMemorySource, AgentState, AgentsMdKind,
-        AgentsMdLoadStatus, AgentsMdSource, ContinuationResolution, ExternalTriggerRecord,
-        LoadedAgentMemory, LoadedAgentsMd, MessageBody, MessageEnvelope, MessageOrigin,
-        SkillsRuntimeView,
+        AgentIdentityView, AgentMemorySource, AgentState, AgentsMdKind, AgentsMdLoadStatus,
+        AgentsMdSource, ContinuationResolution, ExternalTriggerRecord, LoadedAgentMemory,
+        LoadedAgentsMd, MessageBody, MessageEnvelope, MessageOrigin, SkillsRuntimeView,
     },
 };
 
@@ -322,22 +321,10 @@ impl EffectivePrompt {
         output.push("".to_string());
         output.push(format!("Agent home: {}", self.agent_home.display()));
         output.push(format!("Agent id: {}", self.identity.agent_id));
-        output.push(format!("Agent kind: {:?}", self.identity.kind));
+        output.push(format!("Identity status: {:?}", self.identity.status));
         output.push(format!(
-            "Agent contract: {}",
-            self.identity.contract_badge()
-        ));
-        output.push(format!(
-            "Contract summary: {}",
-            self.identity.contract_summary()
-        ));
-        output.push(format!(
-            "Agent tool surface: {}",
-            self.identity.profile_preset.agent_tool_surface_summary()
-        ));
-        output.push(format!(
-            "Cleanup ownership: {}",
-            self.identity.ownership.cleanup_summary()
+            "Identity relation: {}",
+            self.identity.relation_summary()
         ));
         output.push(format!(
             "Prompt cache key: {}",
@@ -1131,11 +1118,9 @@ fn agent_contract_section(identity: &AgentIdentityView) -> PromptSection {
         "agent_contract",
         PromptStability::Stable,
         format!(
-            "Current agent contract: {}. Identity badge: {}. Agent tool surface: {}. Cleanup ownership: {}.",
-            identity.contract_summary(),
-            identity.contract_badge(),
-            identity.profile_preset.agent_tool_surface_summary(),
-            identity.ownership.cleanup_summary()
+            "Current agent contract: stable identity `{}`; {}. Tool availability is determined by canonical capability policy. Lifecycle cleanup authority is determined by canonical lifecycle attachment and active supervision, not by identity labels.",
+            identity.agent_id,
+            identity.relation_summary(),
         ),
     )
 }
@@ -1179,7 +1164,7 @@ fn describe_agents_md_source(
 }
 
 fn delegated_task_section(identity: &AgentIdentityView) -> Option<PromptSection> {
-    (identity.kind == AgentKind::Child).then(|| {
+    (identity.lineage_parent_agent_id.is_some() && identity.delegated_from_task_id.is_some()).then(|| {
         section(
             "delegated_task",
             PromptStability::Stable,
@@ -2371,13 +2356,16 @@ mod tests {
             .find(|section| section.name == "agent_contract")
             .expect("agent contract section");
 
+        assert!(section.content.contains("stable identity `default`"));
         assert!(section
             .content
-            .contains("public self-owned agent addressed directly by `agent_id`"));
-        assert!(section.content.contains("public/self_owned (public_named)"));
+            .contains("independently addressable agent identity"));
+        assert!(section.content.contains("canonical capability policy"));
         assert!(section
             .content
-            .contains("CreateAgent creates independent identities"));
+            .contains("canonical lifecycle attachment and active supervision"));
+        assert!(!section.content.contains("public_named"));
+        assert!(!section.content.contains("private_child"));
     }
 
     #[test]
