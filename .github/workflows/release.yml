@@ -444,3 +444,34 @@ jobs:
             --tag "${repository}:${version}" \
             --tag "${repository}:latest" \
             "${SOURCE_IMAGE}"
+
+  publish-crate:
+    name: Publish crate to crates.io
+    runs-on: ubuntu-latest
+    needs: release
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Validate crate version matches tag
+        run: |
+          set -euo pipefail
+          crate_version="$(awk -F '"' '/^version = / { print $2; exit }' Cargo.toml)"
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [ "$crate_version" != "$tag_version" ]; then
+            echo "Cargo.toml version ($crate_version) must match tag version ($tag_version)." >&2
+            exit 1
+          fi
+
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CARGO_REGISTRY_TOKEN}" ]; then
+            echo "CARGO_REGISTRY_TOKEN is not configured; skipping crates.io publish."
+            exit 0
+          fi
+          cargo publish --locked
