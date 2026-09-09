@@ -728,29 +728,7 @@
                 "agent_id": {
                   "type": "string"
                 },
-                "created_at": {
-                  "format": "date-time",
-                  "type": "string"
-                },
                 "delegated_from_task_id": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "deleted_at": {
-                  "format": "date-time",
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "durability": {
-                  "enum": [
-                    "persistent",
-                    "ephemeral",
-                    null
-                  ],
                   "type": [
                     "string",
                     "null"
@@ -758,18 +736,13 @@
                 },
                 "incarnation": {
                   "default": 1,
-                  "description": "Monotonic incarnation counter for this agent id. Deletion does not\n reset it: recreating a fully deleted id produces incarnation + 1 so\n historical evidence stays distinguishable from the new incarnation.",
+                  "description": "Monotonic incarnation counter; 1 for the original identity and +1\n for every explicit recreation of the same agent id after a fully\n completed deletion.",
                   "format": "uint64",
                   "minimum": 0.0,
                   "type": "integer"
                 },
-                "kind": {
-                  "enum": [
-                    "default",
-                    "named",
-                    "child"
-                  ],
-                  "type": "string"
+                "is_default_agent": {
+                  "type": "boolean"
                 },
                 "lineage_parent_agent_id": {
                   "type": [
@@ -783,39 +756,11 @@
                     "null"
                   ]
                 },
-                "ownership": {
-                  "enum": [
-                    "parent_supervised",
-                    "self_owned",
-                    null
-                  ],
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
                 "parent_agent_id": {
                   "type": [
                     "string",
                     "null"
                   ]
-                },
-                "profile_preset": {
-                  "enum": [
-                    "private_child",
-                    "public_named",
-                    null
-                  ],
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "revision": {
-                  "default": 0,
-                  "format": "uint64",
-                  "minimum": 0.0,
-                  "type": "integer"
                 },
                 "status": {
                   "enum": [
@@ -824,26 +769,12 @@
                     "deleted"
                   ],
                   "type": "string"
-                },
-                "updated_at": {
-                  "format": "date-time",
-                  "type": "string"
-                },
-                "visibility": {
-                  "enum": [
-                    "public",
-                    "private"
-                  ],
-                  "type": "string"
                 }
               },
               "required": [
                 "agent_id",
-                "kind",
-                "visibility",
                 "status",
-                "created_at",
-                "updated_at"
+                "is_default_agent"
               ],
               "type": "object"
             },
@@ -1057,13 +988,6 @@
                     "null"
                   ]
                 },
-                "preset": {
-                  "enum": [
-                    "private_child",
-                    "public_named"
-                  ],
-                  "type": "string"
-                },
                 "receipt_id": {
                   "type": "string"
                 },
@@ -1082,7 +1006,6 @@
                 "receipt_id",
                 "agent_id",
                 "display_name",
-                "preset",
                 "stage",
                 "lifecycle",
                 "created",

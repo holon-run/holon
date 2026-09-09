@@ -179,14 +179,6 @@
               "is_default_agent": {
                 "type": "boolean"
               },
-              "kind": {
-                "enum": [
-                  "default",
-                  "named",
-                  "child"
-                ],
-                "type": "string"
-              },
               "lineage_parent_agent_id": {
                 "type": [
                   "string",
@@ -199,25 +191,11 @@
                   "null"
                 ]
               },
-              "ownership": {
-                "enum": [
-                  "parent_supervised",
-                  "self_owned"
-                ],
-                "type": "string"
-              },
               "parent_agent_id": {
                 "type": [
                   "string",
                   "null"
                 ]
-              },
-              "profile_preset": {
-                "enum": [
-                  "private_child",
-                  "public_named"
-                ],
-                "type": "string"
               },
               "status": {
                 "enum": [
@@ -226,21 +204,10 @@
                   "deleted"
                 ],
                 "type": "string"
-              },
-              "visibility": {
-                "enum": [
-                  "public",
-                  "private"
-                ],
-                "type": "string"
               }
             },
             "required": [
               "agent_id",
-              "kind",
-              "visibility",
-              "ownership",
-              "profile_preset",
               "status",
               "is_default_agent"
             ],
@@ -364,14 +331,6 @@
               "is_default_agent": {
                 "type": "boolean"
               },
-              "kind": {
-                "enum": [
-                  "default",
-                  "named",
-                  "child"
-                ],
-                "type": "string"
-              },
               "lineage_parent_agent_id": {
                 "type": [
                   "string",
@@ -384,25 +343,11 @@
                   "null"
                 ]
               },
-              "ownership": {
-                "enum": [
-                  "parent_supervised",
-                  "self_owned"
-                ],
-                "type": "string"
-              },
               "parent_agent_id": {
                 "type": [
                   "string",
                   "null"
                 ]
-              },
-              "profile_preset": {
-                "enum": [
-                  "private_child",
-                  "public_named"
-                ],
-                "type": "string"
               },
               "status": {
                 "enum": [
@@ -411,21 +356,10 @@
                   "deleted"
                 ],
                 "type": "string"
-              },
-              "visibility": {
-                "enum": [
-                  "public",
-                  "private"
-                ],
-                "type": "string"
               }
             },
             "required": [
               "agent_id",
-              "kind",
-              "visibility",
-              "ownership",
-              "profile_preset",
               "status",
               "is_default_agent"
             ],
@@ -1267,14 +1201,6 @@
               "is_default_agent": {
                 "type": "boolean"
               },
-              "kind": {
-                "enum": [
-                  "default",
-                  "named",
-                  "child"
-                ],
-                "type": "string"
-              },
               "lineage_parent_agent_id": {
                 "type": [
                   "string",
@@ -1287,25 +1213,11 @@
                   "null"
                 ]
               },
-              "ownership": {
-                "enum": [
-                  "parent_supervised",
-                  "self_owned"
-                ],
-                "type": "string"
-              },
               "parent_agent_id": {
                 "type": [
                   "string",
                   "null"
                 ]
-              },
-              "profile_preset": {
-                "enum": [
-                  "private_child",
-                  "public_named"
-                ],
-                "type": "string"
               },
               "status": {
                 "enum": [
@@ -1314,21 +1226,10 @@
                   "deleted"
                 ],
                 "type": "string"
-              },
-              "visibility": {
-                "enum": [
-                  "public",
-                  "private"
-                ],
-                "type": "string"
               }
             },
             "required": [
               "agent_id",
-              "kind",
-              "visibility",
-              "ownership",
-              "profile_preset",
               "status",
               "is_default_agent"
             ],
@@ -1634,14 +1535,6 @@
                         "is_default_agent": {
                           "type": "boolean"
                         },
-                        "kind": {
-                          "enum": [
-                            "default",
-                            "named",
-                            "child"
-                          ],
-                          "type": "string"
-                        },
                         "lineage_parent_agent_id": {
                           "type": [
                             "string",
@@ -1654,25 +1547,11 @@
                             "null"
                           ]
                         },
-                        "ownership": {
-                          "enum": [
-                            "parent_supervised",
-                            "self_owned"
-                          ],
-                          "type": "string"
-                        },
                         "parent_agent_id": {
                           "type": [
                             "string",
                             "null"
                           ]
-                        },
-                        "profile_preset": {
-                          "enum": [
-                            "private_child",
-                            "public_named"
-                          ],
-                          "type": "string"
                         },
                         "status": {
                           "enum": [
@@ -1681,21 +1560,10 @@
                             "deleted"
                           ],
                           "type": "string"
-                        },
-                        "visibility": {
-                          "enum": [
-                            "public",
-                            "private"
-                          ],
-                          "type": "string"
                         }
                       },
                       "required": [
                         "agent_id",
-                        "kind",
-                        "visibility",
-                        "ownership",
-                        "profile_preset",
                         "status",
                         "is_default_agent"
                       ],
@@ -2356,14 +2224,6 @@
                   "is_default_agent": {
                     "type": "boolean"
                   },
-                  "kind": {
-                    "enum": [
-                      "default",
-                      "named",
-                      "child"
-                    ],
-                    "type": "string"
-                  },
                   "lineage_parent_agent_id": {
                     "type": [
                       "string",
@@ -2376,25 +2236,11 @@
                       "null"
                     ]
                   },
-                  "ownership": {
-                    "enum": [
-                      "parent_supervised",
-                      "self_owned"
-                    ],
-                    "type": "string"
-                  },
                   "parent_agent_id": {
                     "type": [
                       "string",
                       "null"
                     ]
-                  },
-                  "profile_preset": {
-                    "enum": [
-                      "private_child",
-                      "public_named"
-                    ],
-                    "type": "string"
                   },
                   "status": {
                     "enum": [
@@ -2403,21 +2249,10 @@
                       "deleted"
                     ],
                     "type": "string"
-                  },
-                  "visibility": {
-                    "enum": [
-                      "public",
-                      "private"
-                    ],
-                    "type": "string"
                   }
                 },
                 "required": [
                   "agent_id",
-                  "kind",
-                  "visibility",
-                  "ownership",
-                  "profile_preset",
                   "status",
                   "is_default_agent"
                 ],
@@ -3399,14 +3234,6 @@
                   "is_default_agent": {
                     "type": "boolean"
                   },
-                  "kind": {
-                    "enum": [
-                      "default",
-                      "named",
-                      "child"
-                    ],
-                    "type": "string"
-                  },
                   "lineage_parent_agent_id": {
                     "type": [
                       "string",
@@ -3419,25 +3246,11 @@
                       "null"
                     ]
                   },
-                  "ownership": {
-                    "enum": [
-                      "parent_supervised",
-                      "self_owned"
-                    ],
-                    "type": "string"
-                  },
                   "parent_agent_id": {
                     "type": [
                       "string",
                       "null"
                     ]
-                  },
-                  "profile_preset": {
-                    "enum": [
-                      "private_child",
-                      "public_named"
-                    ],
-                    "type": "string"
                   },
                   "status": {
                     "enum": [
@@ -3446,21 +3259,10 @@
                       "deleted"
                     ],
                     "type": "string"
-                  },
-                  "visibility": {
-                    "enum": [
-                      "public",
-                      "private"
-                    ],
-                    "type": "string"
                   }
                 },
                 "required": [
                   "agent_id",
-                  "kind",
-                  "visibility",
-                  "ownership",
-                  "profile_preset",
                   "status",
                   "is_default_agent"
                 ],
@@ -4217,14 +4019,6 @@
                         "is_default_agent": {
                           "type": "boolean"
                         },
-                        "kind": {
-                          "enum": [
-                            "default",
-                            "named",
-                            "child"
-                          ],
-                          "type": "string"
-                        },
                         "lineage_parent_agent_id": {
                           "type": [
                             "string",
@@ -4237,25 +4031,11 @@
                             "null"
                           ]
                         },
-                        "ownership": {
-                          "enum": [
-                            "parent_supervised",
-                            "self_owned"
-                          ],
-                          "type": "string"
-                        },
                         "parent_agent_id": {
                           "type": [
                             "string",
                             "null"
                           ]
-                        },
-                        "profile_preset": {
-                          "enum": [
-                            "private_child",
-                            "public_named"
-                          ],
-                          "type": "string"
                         },
                         "status": {
                           "enum": [
@@ -4264,21 +4044,10 @@
                             "deleted"
                           ],
                           "type": "string"
-                        },
-                        "visibility": {
-                          "enum": [
-                            "public",
-                            "private"
-                          ],
-                          "type": "string"
                         }
                       },
                       "required": [
                         "agent_id",
-                        "kind",
-                        "visibility",
-                        "ownership",
-                        "profile_preset",
                         "status",
                         "is_default_agent"
                       ],
