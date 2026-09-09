@@ -4227,15 +4227,21 @@ impl RuntimeHost {
             caller,
         )?;
         let identity = self.agent_identity_record(target_agent_id)?;
-        let (identity, runtime, receipt) = match identity {
+        let (identity, runtime, child_turn_baseline, receipt) = match identity {
             Some(identity) if identity.status == AgentRegistryStatus::Active => {
                 match self.get_or_create_agent(target_agent_id).await {
                     Ok(runtime) => {
+                        let child_turn_baseline = runtime.agent_state().await?.turn_index;
                         let receipt = runtime
                             .agent_message_delivery_service()
                             .deliver(&prepared)
                             .await?;
-                        (Some(identity), Some(runtime), receipt)
+                        (
+                            Some(identity),
+                            Some(runtime),
+                            Some(child_turn_baseline),
+                            receipt,
+                        )
                     }
                     Err(activation_error) => {
                         let latest_identity = self.agent_identity_record(target_agent_id)?;
@@ -4247,7 +4253,12 @@ impl RuntimeHost {
                                 .runtime_db()
                                 .agent_message_deliveries()
                                 .admit_without_queue(&prepared.record)?;
-                            (Some(latest_identity.unwrap_or(identity)), None, receipt)
+                            (
+                                Some(latest_identity.unwrap_or(identity)),
+                                None,
+                                None,
+                                receipt,
+                            )
                         } else {
                             return Err(activation_error);
                         }
@@ -4259,7 +4270,7 @@ impl RuntimeHost {
                     .runtime_db()
                     .agent_message_deliveries()
                     .admit_without_queue(&prepared.record)?;
-                (identity, None, receipt)
+                (identity, None, None, receipt)
             }
         };
         if receipt.outcome != AgentMessageDeliveryOutcome::Accepted {
@@ -4295,13 +4306,18 @@ impl RuntimeHost {
                 "use an agent id already available through the caller's authorized agent context",
             ))
         })?;
-        let runtime = runtime.ok_or_else(|| {
+        runtime.ok_or_else(|| {
             anyhow!(
                 "accepted delivery {} targets an inactive agent",
                 receipt.delivery_id
             )
         })?;
-        let child_turn_baseline = runtime.agent_state().await?.turn_index;
+        let child_turn_baseline = child_turn_baseline.ok_or_else(|| {
+            anyhow!(
+                "accepted delivery {} is missing its pre-delivery turn baseline",
+                receipt.delivery_id
+            )
+        })?;
 
         let mut task_detail = json!({
             "target_agent_id": target_agent_id,
@@ -6458,6 +6474,86 @@ mod tests {
             .expect("terminal invocation must not delete its target during restart convergence");
         assert_eq!(restarted_identity.status, AgentRegistryStatus::Active);
         assert!(restarted.agent_data_dir(&created.agent_id).exists());
+    }
+
+    #[tokio::test]
+    async fn existing_agent_samples_child_turn_before_delivery_admission() {
+        struct DeliveryCheckpointGuard;
+
+        impl Drop for DeliveryCheckpointGuard {
+            fn drop(&mut self) {
+                crate::runtime::release_delivery_checkpoint();
+            }
+        }
+
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        let created = parent
+            .agent_invocation_service()
+            .invoke(InvokeAgentRequest {
+                target: InvokeAgentTarget::NewSubagent {
+                    template: None,
+                    workspace_mode: ChildAgentWorkspaceMode::Inherit,
+                    model_resolution: Some(inherited_model_resolution("openai", "gpt-5.4")),
+                },
+                message: "first invocation".into(),
+                authority_class: AuthorityClass::OperatorInstruction,
+            })
+            .await
+            .unwrap();
+        let first_terminal = wait_for_terminal_task(&parent, &created.task_handle.task_id).await;
+        assert_eq!(first_terminal.status, TaskStatus::Completed);
+
+        let child = host.get_or_create_agent(&created.agent_id).await.unwrap();
+        for _ in 0..100 {
+            if child.agent_state().await.unwrap().status == AgentStatus::Asleep {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let child_turn_baseline = child.agent_state().await.unwrap().turn_index;
+
+        crate::runtime::enable_delivery_checkpoint(created.agent_id.clone());
+        let _checkpoint_guard = DeliveryCheckpointGuard;
+        let parent_for_invoke = parent.clone();
+        let child_agent_id = created.agent_id.clone();
+        let invocation = tokio::spawn(async move {
+            parent_for_invoke
+                .agent_invocation_service()
+                .invoke(InvokeAgentRequest {
+                    target: InvokeAgentTarget::ExistingAgent {
+                        agent_id: child_agent_id,
+                    },
+                    message: "second invocation".into(),
+                    authority_class: AuthorityClass::OperatorInstruction,
+                })
+                .await
+        });
+
+        crate::runtime::wait_for_delivery_checkpoint().await;
+        for _ in 0..100 {
+            let state = child.agent_state().await.unwrap();
+            if state.turn_index > child_turn_baseline && state.status == AgentStatus::Asleep {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let child_state = child.agent_state().await.unwrap();
+        assert!(child_state.turn_index > child_turn_baseline);
+        assert_eq!(child_state.status, AgentStatus::Asleep);
+
+        crate::runtime::release_delivery_checkpoint();
+        let receipt = invocation.await.unwrap().unwrap();
+        let terminal = wait_for_terminal_task(&parent, &receipt.task_handle.task_id).await;
+        assert_eq!(terminal.status, TaskStatus::Completed);
+        assert_eq!(
+            terminal
+                .detail
+                .as_ref()
+                .and_then(|detail| detail.get("child_turn_baseline"))
+                .and_then(Value::as_u64),
+            Some(child_turn_baseline)
+        );
     }
 
     #[tokio::test]

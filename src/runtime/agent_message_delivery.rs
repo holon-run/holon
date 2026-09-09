@@ -2,6 +2,13 @@ use anyhow::{bail, Result};
 use chrono::Utc;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+#[cfg(test)]
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Mutex,
+};
+#[cfg(test)]
+use tokio::sync::Notify;
 
 use super::RuntimeHandle;
 use crate::types::{
@@ -11,6 +18,17 @@ use crate::types::{
 };
 
 const DELIVERY_IDEMPOTENCY_NAMESPACE: &str = "agent_message_delivery";
+
+#[cfg(test)]
+static DELIVERY_CHECKPOINT_ENABLED: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+static DELIVERY_AT_CHECKPOINT: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+static DELIVERY_CHECKPOINT_AGENT_ID: Mutex<Option<String>> = Mutex::new(None);
+#[cfg(test)]
+static DELIVERY_REACHED_CHECKPOINT: Notify = Notify::const_new();
+#[cfg(test)]
+static DELIVERY_ALLOW_CONTINUE: Notify = Notify::const_new();
 
 pub(crate) struct AgentMessageDeliveryService<'a> {
     runtime: &'a RuntimeHandle,
@@ -32,9 +50,13 @@ impl AgentMessageDeliveryService<'_> {
         &self,
         prepared: &PreparedAgentMessageDelivery,
     ) -> Result<AgentMessageDeliveryReceipt> {
-        self.runtime
+        let receipt = self
+            .runtime
             .enqueue_delivery(prepared.message.clone(), &prepared.record)
-            .await
+            .await?;
+        #[cfg(test)]
+        wait_at_delivery_checkpoint(&prepared.record.target_agent_id).await;
+        Ok(receipt)
     }
 
     pub(crate) fn prepare(
@@ -136,6 +158,42 @@ impl AgentMessageDeliveryService<'_> {
         };
         Ok(PreparedAgentMessageDelivery { message, record })
     }
+}
+
+#[cfg(test)]
+async fn wait_at_delivery_checkpoint(agent_id: &str) {
+    if !DELIVERY_CHECKPOINT_ENABLED.load(Ordering::SeqCst)
+        || DELIVERY_CHECKPOINT_AGENT_ID.lock().unwrap().as_deref() != Some(agent_id)
+    {
+        return;
+    }
+    DELIVERY_AT_CHECKPOINT.store(true, Ordering::SeqCst);
+    DELIVERY_REACHED_CHECKPOINT.notify_one();
+    DELIVERY_ALLOW_CONTINUE.notified().await;
+    DELIVERY_AT_CHECKPOINT.store(false, Ordering::SeqCst);
+}
+
+#[cfg(test)]
+pub(crate) fn enable_delivery_checkpoint(agent_id: impl Into<String>) {
+    *DELIVERY_CHECKPOINT_AGENT_ID.lock().unwrap() = Some(agent_id.into());
+    DELIVERY_AT_CHECKPOINT.store(false, Ordering::SeqCst);
+    DELIVERY_CHECKPOINT_ENABLED.store(true, Ordering::SeqCst);
+}
+
+#[cfg(test)]
+pub(crate) async fn wait_for_delivery_checkpoint() {
+    while !DELIVERY_AT_CHECKPOINT.load(Ordering::SeqCst) {
+        DELIVERY_REACHED_CHECKPOINT.notified().await;
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn release_delivery_checkpoint() {
+    if !DELIVERY_CHECKPOINT_ENABLED.swap(false, Ordering::SeqCst) {
+        return;
+    }
+    *DELIVERY_CHECKPOINT_AGENT_ID.lock().unwrap() = None;
+    DELIVERY_ALLOW_CONTINUE.notify_one();
 }
 
 #[derive(Serialize)]

@@ -35,7 +35,10 @@ mod worktree;
 
 pub(crate) use agent_message_delivery::AgentMessageDeliveryService;
 #[cfg(test)]
-pub(crate) use agent_message_delivery::PreparedAgentMessageDelivery;
+pub(crate) use agent_message_delivery::{
+    enable_delivery_checkpoint, release_delivery_checkpoint, wait_for_delivery_checkpoint,
+    PreparedAgentMessageDelivery,
+};
 pub use first_run_intro::maybe_enqueue_first_run_intro;
 pub(crate) use lifecycle::LightweightAgentStateProjection;
 pub(crate) use repair::is_wake_only_message;
