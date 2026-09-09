@@ -71,8 +71,8 @@ use crate::{
         ExternalTriggerSummary, LoadedAgentsMdView, MessageBody, MessageDeliverySurface,
         MessageEnvelope, MessageKind, MessageOrigin, OperatorNotificationRecord, Priority,
         QueueEntryStatus, RuntimeFailureSummary, TaskKind, TaskRecord, TaskStatus, TimerRecord,
-        TokenUsage, TranscriptEntry, TranscriptEntryKind,
-        WaitConditionSummary, WorkspaceEntry, WorkspaceOccupancyRecord,
+        TokenUsage, TranscriptEntry, TranscriptEntryKind, WaitConditionSummary, WorkspaceEntry,
+        WorkspaceOccupancyRecord,
     },
 };
 
@@ -7314,11 +7314,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn public_named_initial_message_is_optional_and_inherits_only_attached_workspaces() {
+    async fn independent_agent_initial_message_is_optional_and_inherits_only_attached_workspaces() {
         let (_home, host) = test_host();
         let parent = host.default_runtime().await.unwrap();
-        let named_agent_id = format!("{}-no-bootstrap", host.config().default_agent_id);
-        let bootstrap_agent_id = format!("{}-bootstrap", host.config().default_agent_id);
+        let named_agent_id = "independent-no-bootstrap".to_string();
+        let bootstrap_agent_id = "independent-bootstrap".to_string();
         let bootstrap_message_id = format!("agent_bootstrap_message:{bootstrap_agent_id}");
         let workspace_home = tempdir().unwrap();
         let workspace_path = workspace_home.path().to_path_buf();

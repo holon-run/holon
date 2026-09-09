@@ -11,10 +11,6 @@
     "agent": {
       "identity": {
         "agent_id": "worker-a",
-        "kind": "named",
-        "visibility": "public",
-        "ownership": "self_owned",
-        "profile_preset": "public_named",
         "status": "active",
         "is_default_agent": false,
         "incarnation": 1

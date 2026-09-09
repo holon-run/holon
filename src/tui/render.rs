@@ -1245,14 +1245,14 @@ mod tests {
     }
 
     #[test]
-    fn render_summary_uses_profile_and_ownership_semantics() {
+    fn render_summary_uses_canonical_identity_relations() {
         let rendered = render_summary(&sample_agent_summary());
-        assert!(rendered.contains("Identity contract: public/self_owned (public_named)"));
-        assert!(rendered.contains("public self-owned agent addressed directly by `agent_id`"));
-        assert!(rendered.contains("CreateAgent creates independent identities"));
+        assert!(rendered.contains("Identity relation: independently addressable agent identity"));
+        assert!(rendered.contains("Tool access: canonical capability policy"));
         assert!(
-            rendered.contains("child_1:AwakeRunning[private/parent_supervised (private_child)]")
+            rendered.contains("Cleanup authority: canonical lifecycle attachment and supervision")
         );
+        assert!(rendered.contains("Children: child_1:child_1:AwakeRunning"));
         assert!(rendered.contains("Execution backend: host_local"));
         assert!(rendered.contains("Process execution: runtime_shaped"));
         assert!(rendered.contains(
