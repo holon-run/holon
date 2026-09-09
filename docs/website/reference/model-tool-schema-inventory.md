@@ -49,7 +49,7 @@ families in `src/types.rs` (`ToolCapabilityFamily`):
 | `CoreAgent` | Core agent operations (state, memory, work items, scheduling, CLI/config introspection) | MemorySearch, WaitFor, ListWorkItems, ListModelProviders |
 | `LocalEnvironment` | Workspace-local operations | ExecCommand, ApplyPatch, ViewImage, GetWorkspaceState, SwitchWorkspace, CreateWorktree |
 | `Web` | Public web access | WebFetch, WebSearch |
-| `AgentCreation` | Agent spawning and delegation | SpawnAgent |
+| `AgentCreation` | Agent creation and supervised invocation | CreateAgent, InvokeAgent |
 | `AuthorityExpanding` | Tools that change workspace authority or destroy registered artifacts | AttachWorkspace, DetachWorkspace, RemoveWorktree |
 | `ExternalTrigger` | External event ingress | CreateExternalTrigger, CancelExternalTrigger |
 

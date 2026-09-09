@@ -82,7 +82,7 @@ completion report.
 A task is a **supervised execution handle**. Tasks include:
 
 - **Command tasks** — Shell commands, builds, tests, scripts
-- **Child agent tasks** — Delegated agents spawned via `SpawnAgent`
+- **Child agent tasks** — Delegated agents invoked via `InvokeAgent`
 
 Task lifecycle is independent of the agent's user-facing answer. You can:
 

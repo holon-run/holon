@@ -200,7 +200,7 @@ Holon's provenance contract:
 - When the runtime generates internal messages (system ticks, task results,
   timer fires, continuation follow-ups), it assigns runtime-owned origin and
   `RuntimeInstruction` authority.
-- When an agent delegates work via `SpawnAgent`, the child agent receives the
+- When an agent delegates work via `InvokeAgent`, the invoked agent receives the
   delegated task as bounded operator/runtime context according to the supervising
   runtime surface; it must not silently merge later external channel content into
   operator instruction.

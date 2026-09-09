@@ -39,7 +39,7 @@ Tools are grouped by capability family for authority gating:
 | `LocalEnvironment` | `ExecCommand`, `ExecCommandBatch`, `ApplyPatch`, `GetWorkspaceState`, `SwitchWorkspace`, `CreateWorktree` | All profiles |
 | `AuthorityExpanding` | `AttachWorkspace`, `DetachWorkspace`, `RemoveWorktree` | Public named agents |
 | `Web` | `WebFetch`, `WebSearch` | All profiles |
-| `AgentCreation` | `SpawnAgent` | All profiles |
+| `AgentCreation` | `CreateAgent`, `InvokeAgent` | All profiles |
 
 Operator notification records, delivery callbacks, and UI rendering remain
 runtime-owned capabilities. They are not part of the model-facing tool
@@ -79,7 +79,8 @@ registry and machine-readable schema inventory.
 | `GetAgent` | Read current agent-plane summary |
 | `WaitFor` | Signal turn-end after recording explicit wait state |
 | `Enqueue` | Schedule self-follow-up message |
-| `SpawnAgent` | Delegate work to a child agent |
+| `CreateAgent` | Create a long-lived, addressable agent |
+| `InvokeAgent` | Delegate work through a parent-supervised task handle |
 
 ### Workspace plane
 

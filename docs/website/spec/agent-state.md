@@ -33,7 +33,7 @@ single opaque status field. The key distinction is:
 
 | Layer | What | Authority |
 |-------|------|-----------|
-| **Identity** | `agent_id`, kind, visibility, ownership, profile preset | Agent registry record |
+| **Identity** | `agent_id`, kind, profile preset, and supervision metadata | Agent registry record |
 | **Identity lifecycle** | `AgentRegistryStatus` — Active, Deleting, Deleted | Agent identity repository |
 | **Lifecycle status** | `AgentStatus` — Booting, AwakeIdle, AwakeRunning, AwaitingTask, Asleep, Stopped | Scheduler executor (single writer) |
 | **Scheduling posture** | `AgentSchedulingPosture` — derived from queue, WorkItems, tasks, wait state | Scheduler `derive_posture` projection |
@@ -191,7 +191,7 @@ projection facts and current turn facts to choose a `ClosureOutcome`,
 `AgentSummary` is the stable projection returned by `GetAgent` and
 `GET /api/agents`. It includes:
 
-- `identity` — agent identity badge (visibility/ownership/profile)
+- `identity` — agent identity badge and profile
 - `agent` — core `AgentState` including status, pending count, turn index
 - `scheduling_posture` — derived posture snapshot
 - `lifecycle` — lifecycle hint (not authoritative)
@@ -211,6 +211,14 @@ projection facts and current turn facts to choose a `ClosureOutcome`,
   not as a scheduling instruction.
 - API consumers must not depend on summary field ordering or presence of
   default/empty fields.
+
+### v0.38.0 identity migration legacy
+
+`AgentVisibility`, `AgentOwnership`, `PrivateChild`, and `PublicNamed` describe
+the v0.38.0 migration surface only. They are not the current public identity
+contract and must not be used to select creation or delegation behavior.
+Current callers use `CreateAgent` for addressable agents and `InvokeAgent` for
+parent-supervised delegated execution.
 
 ## Lifecycle control
 

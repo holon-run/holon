@@ -1,23 +1,22 @@
 ---
 title: Multi-agent collaboration
-summary: Spawning child agents, supervision contracts, and workspace modes for parallel work.
+summary: Creating and invoking agents, supervision contracts, and workspace modes for parallel work.
 order: 35
 ---
 
 # Multi-Agent Collaboration
 
-Holon supports spawning child agents for parallel work, delegation, and
-specialized subtasks. Each child agent runs in its own context with a
-well-defined supervision contract.
+Holon supports creating addressable agents and invoking private supervised
+agents for parallel work, delegation, and specialized subtasks.
 
 ## Concepts
 
-### Agent Presets
+### Agent operations
 
-| Preset | Ownership | Return value | When to use |
-|--------|-----------|-------------|-------------|
-| `private_child` (default) | Parent-supervised | `agent_id` + `task_handle` | Delegated subtasks, parallel work |
-| `public_named` | Self-owned | `agent_id` only | Long-lived, addressable agents |
+| Operation | Return value | When to use |
+|-----------|--------------|-------------|
+| `CreateAgent` | `agent_id` | Create a long-lived, addressable agent |
+| `InvokeAgent` | `agent_id` + `task_handle` | Run a parent-supervised delegated task |
 
 ### Workspace Modes
 
@@ -28,8 +27,8 @@ well-defined supervision contract.
 
 ### Task Handle Supervision
 
-When spawning a `private_child`, the parent receives a `task_handle` with a
-`task_id`. Use this to:
+When calling `InvokeAgent`, the parent receives a `task_handle` with a `task_id`.
+Use this to:
 
 - **TaskStatus** — Inspect lifecycle, waiting state, and metadata
 - **TaskOutput** — Read bounded output or wait for completion
@@ -71,13 +70,13 @@ than its output warrants.
 
 ### Parallel investigation
 
-Spawn multiple children to explore different aspects simultaneously:
+Invoke multiple agents to explore different aspects simultaneously:
 
 ```
 Parent agent:
-  SpawnAgent("Review src/runtime/ for performance issues")
-  SpawnAgent("Review src/runtime/ for error handling gaps")
-  SpawnAgent("Review src/runtime/ for missing tests")
+  InvokeAgent("Review src/runtime/ for performance issues")
+  InvokeAgent("Review src/runtime/ for error handling gaps")
+  InvokeAgent("Review src/runtime/ for missing tests")
   → Wait for all task handles to complete
   → Aggregate findings into final report
 ```
@@ -88,8 +87,8 @@ Assign specialized agents for distinct concerns:
 
 ```
 Parent agent:
-  SpawnAgent("Code review", template="code-reviewer")
-  SpawnAgent("Test writing", template="test-writer")
+  InvokeAgent("Code review", template="code-reviewer")
+  InvokeAgent("Test writing", template="test-writer")
 ```
 
 ### Safe experimentation
@@ -99,8 +98,8 @@ workspace:
 
 ```
 Parent agent:
-  SpawnAgent("Try alternative implementation approach",
-             workspace_mode=worktree)
+  InvokeAgent("Try alternative implementation approach",
+              workspace_mode=worktree)
   → Child works in isolated worktree
   → Parent reviews child's output
   → Parent applies the best approach to main workspace
@@ -110,7 +109,7 @@ Parent agent:
 
 A typical parent-child interaction:
 
-1. **Spawn** — Parent calls `SpawnAgent` with `initial_message` describing the
+1. **Invoke** — Parent calls `InvokeAgent` with `initial_message` describing the
    task
 2. **Monitor** — Parent uses `TaskStatus` to check if the child is still
    working, sleeping, or waiting
@@ -131,7 +130,7 @@ The parent remains responsible for:
 - **Supervise explicitly.** Check `TaskStatus` before assuming completion.
 - **Treat child output as evidence.** Review and verify before passing to the
   user.
-- **Limit parallelism.** Spawn only as many children as the task actually
+- **Limit parallelism.** Invoke only as many agents as the task actually
   benefits from.
 - **Stop idle children.** Use `TaskStop` for children that are no longer
   needed.

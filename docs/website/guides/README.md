@@ -45,7 +45,7 @@ Wire Holon into external systems through its control plane.
 
 Work with multiple agents, durable objectives, and reusable skills.
 
-- **[Multi-agent collaboration](/guides/multi-agent)** — spawning child
+- **[Multi-agent collaboration](/guides/multi-agent)** — creating and invoking
   agents, supervision contracts, and workspace modes.
 - **[Work items guide](/guides/work-items)** — tracking durable objectives
   with plans, todo lists, and lifecycle management.

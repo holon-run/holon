@@ -361,7 +361,7 @@ treated as schema surfaces, not incidental Rust structs:
 
 | Shape | Returned by | Key stability concerns |
 |-------|-------------|------------------------|
-| `AgentSummary` | `/agents/:id/status`, `/agents/:id/state`, agent creation | Identity visibility/ownership/profile fields, status enum, model state, workspace fields. |
+| `AgentSummary` | `/agents/:id/status`, `/agents/:id/state`, agent creation | Identity/profile fields, status enum, model state, workspace fields. |
 | `AgentListEntry` | `/agents/list` | Keep lightweight; avoid reintroducing heavy runtime/model payloads. |
 | `TaskRecord` | `/agents/:id/tasks`, task creation, state snapshot, events | Task kind/status enums, detail truncation, recovery metadata, output references. |
 | `WorkItemRecord` | work-item creation, state snapshot, events | State, plan status, plan artifact, todo list, blockers/recheck timestamps. |
@@ -371,6 +371,14 @@ treated as schema surfaces, not incidental Rust structs:
 | `StreamEventEnvelope` | events page and SSE stream | Projection/redaction, provenance, payload versioning. |
 | `RuntimeStatusResponse` | runtime readiness/status | Startup/runtime config surface and credential redaction. |
 | `SkillInstallKind` | skills install | Tagged union variants and local/remote package semantics. |
+
+### v0.38.0 identity migration legacy
+
+`AgentVisibility`, `AgentOwnership`, `PrivateChild`, and `PublicNamed` are
+retained only as v0.38.0 migration vocabulary. They are not current public API
+identity discriminators. New integrations should use `CreateAgent` for
+addressable agent creation and `InvokeAgent` for parent-supervised delegated
+execution.
 
 ## Detected contract gaps
 
