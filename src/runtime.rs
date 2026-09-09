@@ -164,6 +164,7 @@ pub(super) struct WorkItemCompletionReportPromotion {
 
 #[derive(Debug, Clone)]
 pub(crate) struct PreparedWorkItemCompletion {
+    pub(crate) settlement: WorkItemCompletionSettlement,
     pub(crate) record: crate::types::WorkItemRecord,
     pub(crate) brief: crate::types::BriefRecord,
     pub(crate) expected_execution_protocol_state:
@@ -179,6 +180,18 @@ pub(crate) struct PreparedWorkItemCompletion {
     pub(crate) index_changes: Vec<crate::runtime_db::RuntimeIndexChange>,
     pub(crate) tool_execution: Option<crate::types::ToolExecutionRecord>,
     pub(crate) transcript_entries: Vec<crate::types::TranscriptEntry>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WorkItemCompletionSettlement {
+    BoundExecution,
+    Detached,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum WorkItemCompletionDispatch {
+    Unchanged(crate::types::WorkItemRecord),
+    Prepared(PreparedWorkItemCompletion),
 }
 
 fn rebase_prepared_completion_agent_state(
@@ -711,6 +724,78 @@ fn execution_protocol_completion_transition_from_prepared(
         }
     };
 
+    Ok(
+        crate::runtime_db::transitions::ExecutionProtocolTransition {
+            bootstrap: None,
+            commands,
+        },
+    )
+}
+
+fn execution_protocol_detached_completion_transition_from_prepared(
+    storage: &AppStorage,
+    runtime_db: &RuntimeDb,
+    prepared: &PreparedWorkItemCompletion,
+) -> Result<crate::runtime_db::transitions::ExecutionProtocolTransition> {
+    use crate::domain::execution_protocol::{
+        CompleteWorkItemExecution, ExecutionProtocolCommand, RegisterWorkItemExecution,
+    };
+
+    let Some(state) = prepared.expected_execution_protocol_state.as_ref() else {
+        return Ok(crate::runtime_db::transitions::ExecutionProtocolTransition::default());
+    };
+    let authoritative = state
+        .work_items
+        .get(&prepared.record.id)
+        .or(prepared.legacy_work_item_execution.as_ref())
+        .ok_or_else(|| anyhow!("detached completion WorkItem execution state is missing"))?;
+    let mut commands = Vec::new();
+    if !state.work_items.contains_key(&prepared.record.id) {
+        commands.push(ExecutionProtocolCommand::RegisterWorkItem(Box::new(
+            RegisterWorkItemExecution {
+                work_item_id: prepared.record.id.clone(),
+                record: authoritative.clone(),
+            },
+        )));
+    }
+    commands.push(ExecutionProtocolCommand::CompleteWorkItem(Box::new(
+        CompleteWorkItemExecution {
+            command_id: format!("completion:detached:{}", prepared.record.id),
+            work_item_id: prepared.record.id.clone(),
+            expected: authoritative.clone(),
+            completion: prepared.brief.id.clone(),
+        },
+    )));
+    for continuation in &prepared.continuations {
+        if continuation.state != crate::types::WorkItemContinuationState::Resumed {
+            continue;
+        }
+        let parent = state
+            .work_items
+            .get(&continuation.suspended_work_item_id)
+            .ok_or_else(|| anyhow!("completion parent execution state is missing"))?;
+        let (source, outcome) = work_item_continuation_resume_source(
+            storage,
+            runtime_db,
+            &prepared.record.agent_id,
+            &continuation.suspended_work_item_id,
+            None,
+            &prepared.wait_conditions,
+        )?;
+        commands.push(ExecutionProtocolCommand::ResumeWorkItemContinuation(
+            Box::new(
+                crate::domain::execution_protocol::ResumeWorkItemContinuation {
+                    command_id: format!("completion:resume:{}", continuation.id),
+                    work_item_id: continuation.suspended_work_item_id.clone(),
+                    active_work_item_id: continuation.active_work_item_id.clone(),
+                    continuation_id: continuation.id.clone(),
+                    expected: parent.clone(),
+                    source,
+                    outcome,
+                },
+            ),
+        ));
+    }
     Ok(
         crate::runtime_db::transitions::ExecutionProtocolTransition {
             bootstrap: None,
@@ -2675,6 +2760,22 @@ impl RuntimeHandle {
             .runtime_db
             .transitions()
             .commit_work_item_focus_with_execution_protocol(command, execution_protocol)
+    }
+
+    pub(super) fn commit_work_item_focus_transition_with_execution_and_completion_tool(
+        &self,
+        command: &crate::runtime_db::transitions::WorkItemFocusTransitionCommand,
+        execution_protocol: &crate::runtime_db::transitions::ExecutionProtocolTransition,
+        tool_execution: &crate::types::ToolExecutionRecord,
+    ) -> Result<crate::runtime_db::transitions::TransitionCommit> {
+        self.inner
+            .runtime_db
+            .transitions()
+            .commit_work_item_focus_with_execution_protocol_and_completion_tool(
+                command,
+                execution_protocol,
+                tool_execution,
+            )
     }
 
     pub(super) fn commit_task_transition(

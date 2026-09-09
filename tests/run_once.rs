@@ -322,7 +322,7 @@ async fn run_once_prefers_completed_work_item_result_brief_over_latest_turn_text
     );
     assert_eq!(
         second.raw_final_text.as_deref(),
-        Some("Implemented broad prompt/context snapshot coverage")
+        Some("Fixed two test annotation issues.")
     );
     let runtime = host
         .get_public_agent_for_external_ingress("default")

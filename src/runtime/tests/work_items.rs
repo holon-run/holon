@@ -1,9 +1,9 @@
 use super::super::*;
 use super::support::*;
 use crate::types::{
-    CompletionReportState, WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WakeSource,
-    WorkItemContinuationState, WorkItemPlanStatus, WorkItemReadiness, WorkItemSchedulingState,
-    AGENT_HOME_WORKSPACE_ID,
+    CompletionReportState, ToolExecutionStatus, WaitConditionKind, WaitConditionRecord,
+    WaitConditionStatus, WakeSource, WorkItemContinuationState, WorkItemPlanStatus,
+    WorkItemReadiness, WorkItemSchedulingState, AGENT_HOME_WORKSPACE_ID,
 };
 
 fn legacy_blocking_payload_task_for_work_item(
@@ -104,6 +104,262 @@ impl AgentProvider for CompleteWorkItemReportProvider {
             request_diagnostics: None,
         })
     }
+}
+
+async fn assert_detached_completion_continues_current_execution(
+    report_text: Option<&str>,
+    expected_provider_calls: usize,
+) {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let seed_runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let active = seed_runtime
+        .create_work_item("continue active objective".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    seed_runtime
+        .pick_work_item(active.id.clone())
+        .await
+        .unwrap();
+    let detached = seed_runtime
+        .create_work_item("complete detached target".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let provider = Arc::new(CompleteWorkItemReportProvider {
+        work_item_id: detached.id.clone(),
+        report_text: report_text.map(str::to_string),
+        calls: Mutex::new(0),
+    });
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider.clone(),
+        "default".into(),
+        continuation_context_config(),
+    )
+    .unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("control".into()),
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "continue active work while completing the detached target".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::HttpControlPrompt,
+        AdmissionContext::ControlAuthenticated,
+    );
+    message.work_item_id = Some(active.id.clone());
+
+    let mut runtime_task = tokio::spawn(runtime.clone().run());
+    runtime.enqueue(message).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let detached_completed = runtime
+                .latest_work_item(&detached.id)
+                .await
+                .unwrap()
+                .is_some_and(|record| record.state == WorkItemState::Completed);
+            let calls = *provider.calls.lock().await;
+            let turn_finished = runtime
+                .agent_state()
+                .await
+                .unwrap()
+                .current_run_id
+                .is_none();
+            if detached_completed && calls >= expected_provider_calls && turn_finished {
+                break;
+            }
+            if runtime_task.is_finished() {
+                panic!(
+                    "runtime exited before detached completion continued the current execution: {:#}",
+                    (&mut runtime_task)
+                        .await
+                        .expect("runtime task join")
+                        .expect_err("runtime unexpectedly completed")
+                );
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("detached completion should continue and finish the current execution");
+    runtime_task.abort();
+
+    assert_eq!(*provider.calls.lock().await, expected_provider_calls);
+    assert_eq!(
+        runtime
+            .latest_work_item(&active.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        WorkItemState::Open
+    );
+    assert_eq!(
+        runtime
+            .latest_work_item(&detached.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        WorkItemState::Completed
+    );
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(
+        state.current_work_item_id.as_deref(),
+        Some(active.id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn detached_complete_work_item_with_same_round_report_continues_current_execution() {
+    assert_detached_completion_continues_current_execution(Some("Detached target is complete."), 2)
+        .await;
+}
+
+#[tokio::test]
+async fn detached_complete_work_item_with_followup_report_continues_current_execution() {
+    assert_detached_completion_continues_current_execution(None, 3).await;
+}
+
+#[tokio::test]
+async fn detached_completion_rolls_back_work_item_brief_and_tool_evidence_together() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let active = runtime
+        .create_work_item("active objective".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(active.id.clone()).await.unwrap();
+    let detached = runtime
+        .create_work_item("detached target".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let binding = WorkItemExecutionBinding {
+        activation_id: Some("activation-active".into()),
+        admission_provenance: None,
+        source_message_id: "message-active".into(),
+        turn_id: "turn-active".into(),
+        owner: None,
+        work_item_id: Some(active.id.clone()),
+        claimed_work_revision: Some(active.revision),
+    };
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.status = AgentStatus::AwakeRunning;
+        guard.state.current_run_id = Some("run-active".into());
+        guard.state.current_work_item_id = Some(active.id.clone());
+        guard.state.current_turn_work_item_id = Some(active.id.clone());
+        guard.state.current_execution_binding = Some(binding.clone());
+        guard.persist_state(&runtime.inner.storage).unwrap();
+    }
+    let candidate = crate::tool::spec::CompletionReportCandidate {
+        text: "Detached target is complete.".into(),
+        citations: Vec::new(),
+        source_turn_index: 1,
+        source_round: 1,
+        source_turn_id: Some(binding.turn_id.clone()),
+        source_message_id: Some(binding.source_message_id.clone()),
+        source_assistant_round_id: "assistant-round-detached".into(),
+        source_tool_call_id: "complete-detached".into(),
+    };
+    let mut result = crate::tool::tools::complete_work_item::complete_with_report_candidate(
+        &runtime,
+        detached.id.clone(),
+        WorkItemCompletionAuthority::AgentExecution(binding),
+        Some(&candidate),
+        Vec::new(),
+        "same_assistant_round_preceding_text",
+    )
+    .await
+    .unwrap();
+    let mut prepared = *result
+        .prepared_work_item_completion
+        .take()
+        .expect("detached completion should prepare an atomic commit");
+    prepared.tool_execution = Some(ToolExecutionRecord {
+        id: "tool-execution-detached".into(),
+        agent_id: "default".into(),
+        work_item_id: Some(active.id.clone()),
+        turn_index: 1,
+        turn_id: Some("turn-active".into()),
+        tool_name: crate::tool::names::COMPLETE_WORK_ITEM.into(),
+        created_at: Utc::now(),
+        completed_at: Some(Utc::now()),
+        duration_ms: 1,
+        authority_class: AuthorityClass::OperatorInstruction,
+        status: ToolExecutionStatus::Success,
+        input: serde_json::json!({"work_item_id": detached.id}),
+        output: serde_json::json!({"envelope": result.envelope}),
+        summary: "completed detached WorkItem".into(),
+        invocation_surface: None,
+    });
+    runtime.inject_next_transition_fault(
+        crate::runtime_db::transitions::TransitionFaultPoint::AfterCanonicalWrites,
+    );
+    let error = runtime
+        .commit_prepared_detached_work_item_completion(prepared)
+        .await
+        .expect_err("injected completion fault should fail the runtime loop");
+    assert_injected_transition_fault(&error);
+
+    let target = runtime
+        .latest_work_item(&detached.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(target.state, WorkItemState::Open);
+    assert!(target.result_brief_id.is_none());
+    assert!(target.completion_intent.is_none());
+    assert!(runtime
+        .recent_briefs(20)
+        .await
+        .unwrap()
+        .iter()
+        .all(|brief| brief.work_item_id.as_deref() != Some(detached.id.as_str())));
+    assert!(runtime
+        .storage()
+        .read_recent_tool_executions(20)
+        .unwrap()
+        .iter()
+        .all(|tool| tool.tool_name != crate::tool::names::COMPLETE_WORK_ITEM));
+    assert_eq!(
+        runtime
+            .latest_work_item(&active.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        WorkItemState::Open
+    );
 }
 
 struct AbandonCompletionReportProvider {
@@ -2855,6 +3111,10 @@ async fn control_completion_ignores_unrelated_execution_binding() {
         .unwrap();
     {
         let mut guard = runtime.inner.agent.lock().await;
+        guard.state.status = AgentStatus::AwakeRunning;
+        guard.state.current_run_id = Some("run-active".into());
+        guard.state.current_work_item_id = Some(active.id.clone());
+        guard.state.current_turn_work_item_id = Some(active.id.clone());
         guard.state.current_execution_binding = Some(WorkItemExecutionBinding {
             activation_id: Some("activation-active".into()),
             admission_provenance: None,
@@ -2890,10 +3150,28 @@ async fn control_completion_ignores_unrelated_execution_binding() {
     assert_eq!(intent.source_activation_id, None);
     assert_eq!(intent.source_message_id, None);
     assert_eq!(intent.source_turn_id, None);
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(state.status, AgentStatus::AwakeRunning);
+    assert_eq!(state.current_run_id.as_deref(), Some("run-active"));
+    assert_eq!(
+        state.current_work_item_id.as_deref(),
+        Some(active.id.as_str())
+    );
+    assert_eq!(
+        state.current_turn_work_item_id.as_deref(),
+        Some(active.id.as_str())
+    );
+    assert_eq!(
+        state
+            .current_execution_binding
+            .as_ref()
+            .and_then(|binding| binding.work_item_id.as_deref()),
+        Some(active.id.as_str())
+    );
 }
 
 #[tokio::test]
-async fn work_item_execution_cannot_complete_an_unrelated_work_item() {
+async fn work_item_execution_completes_an_unrelated_work_item_detached() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -2925,15 +3203,19 @@ async fn work_item_execution_cannot_complete_an_unrelated_work_item() {
     };
     {
         let mut guard = runtime.inner.agent.lock().await;
+        guard.state.status = AgentStatus::AwakeRunning;
+        guard.state.current_run_id = Some("run-active".into());
+        guard.state.current_work_item_id = Some(active.id.clone());
+        guard.state.current_turn_work_item_id = Some(active.id.clone());
         guard.state.current_execution_binding = Some(execution_binding.clone());
         guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
-    let error = runtime
+    let completed = runtime
         .complete_work_item_with_report(
             unrelated.id.clone(),
             WorkItemCompletionAuthority::AgentExecution(execution_binding),
-            "Must be rejected".into(),
+            "Completed detached from the active WorkItem execution.".into(),
             Vec::new(),
             Some(1),
             Some(1),
@@ -2944,21 +3226,107 @@ async fn work_item_execution_cannot_complete_an_unrelated_work_item() {
             Vec::new(),
         )
         .await
-        .expect_err("unrelated WorkItem completion should fail closed");
+        .expect("unrelated WorkItem completion should use detached settlement")
+        .into_record();
+    assert_eq!(completed.state, WorkItemState::Completed);
+    assert_eq!(
+        completed
+            .completion_intent
+            .as_ref()
+            .and_then(|intent| intent.source_activation_id.as_deref()),
+        None
+    );
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(state.status, AgentStatus::AwakeRunning);
+    assert_eq!(state.current_run_id.as_deref(), Some("run-active"));
+    assert_eq!(
+        state.current_work_item_id.as_deref(),
+        Some(active.id.as_str())
+    );
+    assert_eq!(
+        state.current_turn_work_item_id.as_deref(),
+        Some(active.id.as_str())
+    );
+    assert_eq!(
+        state
+            .current_execution_binding
+            .as_ref()
+            .and_then(|binding| binding.work_item_id.as_deref()),
+        Some(active.id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn control_completion_rejects_an_active_execution_bound_target_without_side_effects() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let target = runtime
+        .create_work_item(
+            "active control completion target".into(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let binding = WorkItemExecutionBinding {
+        activation_id: Some("activation-active".into()),
+        admission_provenance: None,
+        source_message_id: "message-active".into(),
+        turn_id: "turn-active".into(),
+        owner: None,
+        work_item_id: Some(target.id.clone()),
+        claimed_work_revision: Some(target.revision),
+    };
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.status = AgentStatus::AwakeRunning;
+        guard.state.current_run_id = Some("run-active".into());
+        guard.state.current_work_item_id = Some(target.id.clone());
+        guard.state.current_turn_work_item_id = Some(target.id.clone());
+        guard.state.current_execution_binding = Some(binding);
+        guard.persist_state(&runtime.inner.storage).unwrap();
+    }
+    let before_state = runtime.agent_state().await.unwrap();
+    let before_target = runtime.latest_work_item(&target.id).await.unwrap().unwrap();
+
+    let error = runtime
+        .complete_work_item_with_report(
+            target.id.clone(),
+            WorkItemCompletionAuthority::Control,
+            "Must not complete while the target execution is active.".into(),
+            Vec::new(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .expect_err("control completion must reject an active execution-bound target");
     assert_eq!(
         error
             .downcast_ref::<crate::runtime_error::RuntimeError>()
             .map(|error| error.descriptor().code.as_str()),
-        Some("work_item_execution_binding_mismatch")
+        Some("work_item_execution_active")
     );
-    let unchanged = runtime
-        .latest_work_item(&unrelated.id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(unchanged.state, WorkItemState::Open);
-    assert!(unchanged.completion_intent.is_none());
-    assert!(unchanged.result_brief_id.is_none());
+    assert_eq!(runtime.agent_state().await.unwrap(), before_state);
+    assert_eq!(
+        runtime.latest_work_item(&target.id).await.unwrap().unwrap(),
+        before_target
+    );
 }
 
 #[tokio::test]
@@ -4714,7 +5082,7 @@ async fn complete_work_item_with_unfinished_todos_returns_structured_warning() {
         )
         .await
         .unwrap();
-    assert!(!result.terminal_transition);
+    assert!(result.terminal_transition);
     let prepared = result
         .prepared_work_item_completion
         .as_ref()
@@ -7402,6 +7770,7 @@ fn rebase_completion_accepts_diverged_baseline_after_concurrent_persist() {
         None,
     );
     let prepared = PreparedWorkItemCompletion {
+        settlement: WorkItemCompletionSettlement::BoundExecution,
         record,
         brief,
         expected_execution_protocol_state: None,
@@ -7446,6 +7815,7 @@ fn rebase_completion_rejects_mismatched_agent_id() {
         None,
     );
     let prepared = PreparedWorkItemCompletion {
+        settlement: WorkItemCompletionSettlement::BoundExecution,
         record,
         brief,
         expected_execution_protocol_state: None,

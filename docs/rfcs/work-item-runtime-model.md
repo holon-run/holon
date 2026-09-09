@@ -586,7 +586,9 @@ interpretation change visible in code, then use `UpdateWorkItem` to update
 
 ### CompleteWorkItem
 
-`CompleteWorkItem` marks a WorkItem completed.
+`CompleteWorkItem` marks the specified owned WorkItem completed. The
+`work_item_id` is a target selector, not merely an assertion about current
+focus.
 
 Shape:
 
@@ -598,9 +600,23 @@ report in a tool argument.
 Before committing `CompleteWorkItem`, the runtime requires a unique, non-empty
 operator-facing report candidate. It may come from immediately preceding
 same-round text or from a text-only follow-up round requested after a tool-only
-call. The WorkItem terminal state, completion intent binding, result brief,
-focus/wait cleanup, and continuation effects are committed atomically as one
-`Open -> Completed` transition.
+call. The runtime derives one of two settlement modes:
+
+- **bound execution** when the calling execution is bound to the target;
+- **detached** when the calling execution is bound elsewhere, or the request
+  comes from authenticated control and the target is not in flight.
+
+Both modes share target terminalization: the WorkItem terminal state,
+completion intent binding, result brief, target-owned wait cleanup, execution
+projection, and continuation effects are committed atomically as one
+`Open -> Completed` transition. Bound completion also settles the source
+execution and ends the Turn. Detached completion preserves unrelated
+execution/run/focus state and does not end the current Turn.
+
+Authenticated control completion returns conflict when the target has an open
+in-flight execution. It must not cancel that execution or clear its binding as
+a side effect. Detached completion also returns conflict instead of restoring
+a caller continuation over an unrelated active execution.
 
 A tool-only call validates ownership, execution binding, and current WorkItem
 revision, then records an `awaiting_completion_report` request and a `Deferred`
@@ -611,10 +627,10 @@ execution becomes `Interrupted`; the normal agent-tool path does not persist an
 intermediate `Completing` state.
 
 When completion succeeds, the runtime promotes the report text into the
-WorkItem completion brief.
-The promoted completion brief is the terminal user-facing delivery for that
-turn; runtime finalization should not emit a second result brief with the same
-completion.
+WorkItem completion brief. For bound completion, that brief is the terminal
+user-facing delivery for the Turn and runtime finalization must not emit a
+second result brief with the same completion. For detached completion, it is
+the completed target's canonical result while the current Turn continues.
 
 The promoted result summary is not a full progress log. Detailed evidence
 remains in transcript, tool records, briefs, verification output, PRs, issues,

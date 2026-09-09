@@ -21,14 +21,14 @@ use holon::{
     types::{
         AdmissionContext, AgentStatus, AuthorityClass, BriefKind, BriefRecord,
         CallbackDeliveryMode, CommandTaskSpec, ContinuationClass, ControlAction,
-        ExternalTriggerStatus, MessageBody, MessageDeliverySurface, MessageKind, MessageOrigin,
-        OperatorDeliveryStatus, TaskKind, TaskRecord, TaskStatus, TodoItem, TodoItemState,
-        WorkItemState,
+        ExternalTriggerStatus, MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind,
+        MessageOrigin, OperatorDeliveryStatus, Priority, TaskKind, TaskRecord, TaskStatus,
+        TodoItem, TodoItemState, WorkItemState,
     },
 };
 use reqwest::Client;
 use tokio::net::TcpListener;
-use tokio::sync::watch;
+use tokio::sync::{watch, Notify};
 #[cfg(unix)]
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -39,8 +39,33 @@ use super::{
     attach_default_workspace, connect_addr, eventually_async, git, init_git_repo,
     read_next_sse_event, spawn_server, spawn_server_for_host, spawn_server_with_config,
     spawn_server_with_runtime_config, tempdir, test_config, test_config_with_paths, test_work_item,
-    wait_until, ParsedSseEvent,
+    wait_until, HttpHarness, ParsedSseEvent,
 };
+
+struct BlockingCompletionProvider {
+    entered: Notify,
+    release: Notify,
+}
+
+#[async_trait::async_trait]
+impl AgentProvider for BlockingCompletionProvider {
+    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        self.entered.notify_one();
+        self.release.notified().await;
+        Ok(ProviderTurnResponse {
+            blocks: vec![holon::provider::ModelBlock::Text {
+                text: "active execution released".into(),
+            }],
+            stop_reason: None,
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
+            request_diagnostics: None,
+        })
+    }
+}
 
 pub async fn create_command_task_route_rejects_legacy_kind_field() -> Result<()> {
     let (_host, base, server) = spawn_server().await?;
@@ -800,6 +825,81 @@ pub async fn work_item_mutation_routes_validate_bad_requests() -> Result<()> {
     assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
 
     server.abort();
+    Ok(())
+}
+
+pub async fn complete_work_item_route_rejects_active_execution_bound_target() -> Result<()> {
+    let provider = Arc::new(BlockingCompletionProvider {
+        entered: Notify::new(),
+        release: Notify::new(),
+    });
+    let harness = HttpHarness::with_provider(provider.clone()).await?;
+    let runtime = harness.host.default_runtime().await?;
+    let target = runtime
+        .create_work_item(
+            "active HTTP completion target".into(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await?;
+    runtime.pick_work_item(target.id.clone()).await?;
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("control".into()),
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "keep this execution active".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::HttpControlPrompt,
+        AdmissionContext::ControlAuthenticated,
+    );
+    message.work_item_id = Some(target.id.clone());
+    let runtime_task = tokio::spawn(runtime.clone().run());
+    runtime.enqueue(message).await?;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        provider.entered.notified(),
+    )
+    .await?;
+    let state_before = runtime.agent_state().await?;
+    let target_before = runtime
+        .latest_work_item(&target.id)
+        .await?
+        .expect("target exists");
+
+    let response = Client::new()
+        .post(format!(
+            "{}/api/control/agents/default/work-items/{}/complete",
+            harness.base_url, target.id
+        ))
+        .json(&serde_json::json!({
+            "report_text": "must not complete an active execution"
+        }))
+        .send()
+        .await?;
+    assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
+    let body: serde_json::Value = response.json().await?;
+    assert_eq!(body["code"], "work_item_execution_active", "{body}");
+    assert_eq!(runtime.agent_state().await?, state_before);
+    assert_eq!(
+        runtime
+            .latest_work_item(&target.id)
+            .await?
+            .expect("target remains"),
+        target_before
+    );
+
+    provider.release.notify_one();
+    runtime_task.abort();
+    harness.abort();
     Ok(())
 }
 

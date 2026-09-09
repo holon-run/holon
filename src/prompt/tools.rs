@@ -433,7 +433,7 @@ mod tests {
         assert!(section.content.contains("coordination/bookkeeping"));
         assert!(section
             .content
-            .contains("same round as the focused CompleteWorkItem call"));
+            .contains("same round as the CompleteWorkItem call"));
         assert!(section
             .content
             .contains("promotes that exact text as the canonical completion report"));

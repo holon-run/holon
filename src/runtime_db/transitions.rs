@@ -706,6 +706,7 @@ impl RuntimeTransitionRepository<'_> {
             command,
             &ExecutionProtocolTransition::default(),
             false,
+            None,
         )
     }
 
@@ -714,7 +715,21 @@ impl RuntimeTransitionRepository<'_> {
         command: &WorkItemFocusTransitionCommand,
         execution_protocol: &ExecutionProtocolTransition,
     ) -> Result<TransitionCommit> {
-        self.commit_work_item_focus_internal(command, execution_protocol, true)
+        self.commit_work_item_focus_internal(command, execution_protocol, true, None)
+    }
+
+    pub fn commit_work_item_focus_with_execution_protocol_and_completion_tool(
+        &self,
+        command: &WorkItemFocusTransitionCommand,
+        execution_protocol: &ExecutionProtocolTransition,
+        tool_execution: &ToolExecutionRecord,
+    ) -> Result<TransitionCommit> {
+        self.commit_work_item_focus_internal(
+            command,
+            execution_protocol,
+            true,
+            Some(tool_execution),
+        )
     }
 
     fn commit_work_item_focus_internal(
@@ -722,6 +737,7 @@ impl RuntimeTransitionRepository<'_> {
         command: &WorkItemFocusTransitionCommand,
         execution_protocol: &ExecutionProtocolTransition,
         synchronize_execution_protocol: bool,
+        completion_tool_execution: Option<&ToolExecutionRecord>,
     ) -> Result<TransitionCommit> {
         self.db.transaction(|tx| {
             for work_item in &command.work_items {
@@ -745,6 +761,18 @@ impl RuntimeTransitionRepository<'_> {
             } else {
                 execution_protocol.clone()
             };
+            if let Some(tool_execution) = completion_tool_execution {
+                let completion = CompletionTransition {
+                    requires_execution_continuation: false,
+                    work_items: command.work_items.clone(),
+                    wait_conditions: command.wait_conditions.clone(),
+                    continuations: command.continuations.clone(),
+                    tool_execution: tool_execution.clone(),
+                    index_changes: command.index_changes.clone(),
+                };
+                validate_completion_transition_tx(tx, &command.agent_id, &completion)?;
+                validate_completion_execution_commands(&completion, &execution_protocol.commands)?;
+            }
             let execution_protocol = execution_protocol_repository::validate_execution_commands_tx(
                 tx,
                 &command.agent_id,
@@ -772,6 +800,9 @@ impl RuntimeTransitionRepository<'_> {
             }
             for continuation in &command.continuations {
                 applied |= upsert_work_item_continuation_tx(tx, continuation)?;
+            }
+            if let Some(tool_execution) = completion_tool_execution {
+                applied |= upsert_completion_tool_execution_tx(tx, tool_execution)?;
             }
             applied |= execution_protocol
                 .as_ref()
@@ -1989,6 +2020,43 @@ fn interrupt_deferred_tool_executions_for_terminal_turn_tx(
         interrupted += 1;
     }
     Ok(interrupted)
+}
+
+fn upsert_completion_tool_execution_tx(
+    tx: &Transaction<'_>,
+    tool_execution: &ToolExecutionRecord,
+) -> Result<bool> {
+    let existing = tx
+        .query_row(
+            "SELECT payload_json FROM tool_executions WHERE evidence_id = ?1",
+            [&tool_execution.id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|payload| serde_json::from_str::<ToolExecutionRecord>(&payload))
+        .transpose()?;
+    if let Some(existing) = existing {
+        if existing == *tool_execution {
+            return Ok(false);
+        }
+        anyhow::ensure!(
+            existing.status == crate::types::ToolExecutionStatus::Deferred
+                && tool_execution.status == crate::types::ToolExecutionStatus::Success
+                && existing.agent_id == tool_execution.agent_id
+                && existing.work_item_id == tool_execution.work_item_id
+                && existing.turn_index == tool_execution.turn_index
+                && existing.turn_id == tool_execution.turn_id
+                && existing.tool_name == tool_execution.tool_name
+                && existing.created_at == tool_execution.created_at
+                && existing.authority_class == tool_execution.authority_class
+                && existing.input == tool_execution.input
+                && existing.invocation_surface == tool_execution.invocation_surface,
+            "conflicting CompleteWorkItem tool execution evidence for {}",
+            tool_execution.id
+        );
+    }
+    insert_tool_evidence_tx(tx, tool_execution)?;
+    Ok(true)
 }
 
 fn validate_completion_transition_tx(

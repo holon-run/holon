@@ -57,7 +57,7 @@ registry and machine-readable schema inventory.
 | `PickWorkItem` | Set current focus |
 | `GetWorkItem` | Read single WorkItem with plan preview |
 | `ListWorkItems` | Query with filters |
-| `CompleteWorkItem` | Mark complete; promote same-round assistant text as the terminal completion report |
+| `CompleteWorkItem` | Complete an owned target by ID; promote same-round assistant text as its canonical completion report |
 | `WaitFor` | Record task, external, or operator waiting state and yield |
 
 ### Task control plane
