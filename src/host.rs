@@ -60,19 +60,19 @@ use crate::{
         AgentBootstrapInitialMessage, AgentBootstrapRecord, AgentBootstrapStatus,
         AgentBootstrapStep, AgentBootstrapStepStatus, AgentBootstrapWorkspaceState,
         AgentCanonicalDurability, AgentCreateReceipt, AgentCreateResult, AgentCreateStage,
-        AgentDeletionJob, AgentDetail, AgentDurability, AgentIdentityRecord, AgentIdentityView,
-        AgentKind, AgentLifecycleHint, AgentListEntry, AgentMessageCallerContext,
-        AgentMessageDeliveryOutcome, AgentMessageDeliveryRejectionCode, AgentMessagePrincipalKind,
-        AgentMessageSendRequest, AgentOwnership, AgentProfilePreset, AgentRegistryStatus,
-        AgentState, AgentStatus, AgentSummary, AgentSupervisionState, AgentTokenUsageSummary,
-        AgentTreeNode, AgentTreeProjection, AgentVisibility, AuthorityClass, ChildAgentSummary,
-        ClosureOutcome, CreateAgentRequest, ExternalTriggerRecord, ExternalTriggerStatus,
-        ExternalTriggerSummary, LoadedAgentsMdView, MessageBody, MessageDeliverySurface,
-        MessageEnvelope, MessageKind, MessageOrigin, OperatorNotificationRecord, Priority,
-        QueueEntryStatus, RuntimeFailureSummary, SpawnAgentModelResolution,
-        SpawnAgentModelResolutionStatus, TaskKind, TaskRecord, TaskStatus, TimerRecord, TokenUsage,
-        TranscriptEntry, TranscriptEntryKind, WaitConditionSummary, WorkspaceEntry,
-        WorkspaceOccupancyRecord,
+        AgentDeletionJob, AgentDeletionStatus, AgentDetail, AgentDurability, AgentIdentityRecord,
+        AgentIdentityView, AgentKind, AgentLifecycleHint, AgentListEntry,
+        AgentMessageCallerContext, AgentMessageDeliveryOutcome, AgentMessageDeliveryRejectionCode,
+        AgentMessagePrincipalKind, AgentMessageSendRequest, AgentOwnership, AgentProfilePreset,
+        AgentRegistryStatus, AgentState, AgentStatus, AgentSummary, AgentSupervisionState,
+        AgentTokenUsageSummary, AgentTreeNode, AgentTreeProjection, AgentVisibility,
+        AuthorityClass, ChildAgentSummary, ClosureOutcome, CreateAgentRequest,
+        ExternalTriggerRecord, ExternalTriggerStatus, ExternalTriggerSummary, LoadedAgentsMdView,
+        MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin,
+        OperatorNotificationRecord, Priority, QueueEntryStatus, RuntimeFailureSummary,
+        SpawnAgentModelResolution, SpawnAgentModelResolutionStatus, TaskKind, TaskRecord,
+        TaskStatus, TimerRecord, TokenUsage, TranscriptEntry, TranscriptEntryKind,
+        WaitConditionSummary, WorkspaceEntry, WorkspaceOccupancyRecord,
     },
 };
 
@@ -488,6 +488,43 @@ fn named_agent_name_already_exists_error(agent_id: &str, name: &str) -> anyhow::
             "preset": AgentProfilePreset::PublicNamed,
         }))
         .with_recovery_hint("choose a different name for the new public named agent"),
+    )
+}
+
+fn named_agent_deletion_incomplete_error(
+    agent_id: &str,
+    job: Option<&AgentDeletionJob>,
+) -> anyhow::Error {
+    let mut details = json!({
+        "agent_id": agent_id,
+        "preset": AgentProfilePreset::PublicNamed,
+    });
+    let message = match job {
+        Some(job) => {
+            details["deletion_id"] = json!(job.deletion_id);
+            details["deletion_status"] =
+                serde_json::to_value(job.status).unwrap_or(serde_json::Value::Null);
+            details["deletion_phase"] =
+                serde_json::to_value(job.phase).unwrap_or(serde_json::Value::Null);
+            if let Some(last_error) = &job.last_error {
+                details["last_error"] = json!(last_error);
+            }
+            format!(
+                "agent {agent_id} has an incomplete deletion (status {:?}); the id cannot be reused until the deletion completes",
+                job.status
+            )
+        }
+        None => format!(
+            "agent {agent_id} was deleted without a completed deletion job; the id cannot be reused"
+        ),
+    };
+    anyhow::Error::from(
+        ToolError::new("deletion_incomplete", message)
+            .with_domain(crate::runtime_error::RuntimeErrorDomain::Conflict)
+            .with_details(details)
+            .with_recovery_hint(
+                "inspect the agent delete-status, let the deletion complete or resolve its failure, then retry create",
+            ),
     )
 }
 
@@ -2345,34 +2382,63 @@ impl RuntimeHost {
         request: CreateAgentRequest,
     ) -> Result<AgentCreateResult> {
         if let Some(identity) = self.agent_identity_record(&request.agent_id)? {
-            anyhow::ensure!(
-                identity.status == AgentRegistryStatus::Active
-                    && identity.kind == AgentKind::Named
-                    && identity.visibility == AgentVisibility::Public
-                    && identity.ownership() == AgentOwnership::SelfOwned,
-                "agent {} already exists with an incompatible identity or lifecycle",
-                request.agent_id
-            );
-            let bootstrap = self.reconcile_agent_bootstrap(&request.agent_id).await?;
-            let bootstrap_summary = bootstrap.summary();
-            return Ok(AgentCreateResult {
-                receipt: AgentCreateReceipt {
-                    receipt_id: ids::runtime_id("agent_create"),
-                    agent_id: identity.agent_id.clone(),
-                    name: identity.name.clone(),
-                    display_name: identity.display_name(),
-                    preset: AgentProfilePreset::PublicNamed,
-                    stage: if bootstrap_summary.status == AgentBootstrapStatus::Ready {
-                        AgentCreateStage::Bootstrapped
-                    } else {
-                        AgentCreateStage::Degraded
+            if identity.status == AgentRegistryStatus::Deleting {
+                let job = self
+                    .runtime_db()
+                    .agent_deletions()
+                    .latest_for_agent(&request.agent_id)?;
+                return Err(named_agent_deletion_incomplete_error(
+                    &request.agent_id,
+                    job.as_ref(),
+                ));
+            }
+            if identity.status != AgentRegistryStatus::Deleted {
+                anyhow::ensure!(
+                    identity.kind == AgentKind::Named
+                        && identity.visibility == AgentVisibility::Public
+                        && identity.ownership() == AgentOwnership::SelfOwned,
+                    "agent {} already exists with an incompatible identity or lifecycle",
+                    request.agent_id
+                );
+            } else {
+                // A fully deleted id is creatable again. Fall through to
+                // the creation path: it routes through the reincarnation
+                // transaction when the deletion job completed and returns
+                // a typed `deletion_incomplete` error otherwise.
+                let job = self
+                    .runtime_db()
+                    .agent_deletions()
+                    .latest_for_agent(&request.agent_id)?;
+                if !matches!(job.as_ref(), Some(job) if job.status == AgentDeletionStatus::Completed)
+                {
+                    return Err(named_agent_deletion_incomplete_error(
+                        &request.agent_id,
+                        job.as_ref(),
+                    ));
+                }
+            }
+            if identity.status == AgentRegistryStatus::Active {
+                let bootstrap = self.reconcile_agent_bootstrap(&request.agent_id).await?;
+                let bootstrap_summary = bootstrap.summary();
+                return Ok(AgentCreateResult {
+                    receipt: AgentCreateReceipt {
+                        receipt_id: ids::runtime_id("agent_create"),
+                        agent_id: identity.agent_id.clone(),
+                        name: identity.name.clone(),
+                        display_name: identity.display_name(),
+                        preset: AgentProfilePreset::PublicNamed,
+                        stage: if bootstrap_summary.status == AgentBootstrapStatus::Ready {
+                            AgentCreateStage::Bootstrapped
+                        } else {
+                            AgentCreateStage::Degraded
+                        },
+                        lifecycle: identity.status,
+                        created: false,
+                        bootstrap: bootstrap_summary,
                     },
-                    lifecycle: identity.status,
-                    created: false,
-                    bootstrap: bootstrap_summary,
-                },
-                identity,
-            });
+                    identity,
+                });
+            }
         }
 
         let parent_state = parent_runtime.agent_state().await?;
@@ -2449,6 +2515,29 @@ impl RuntimeHost {
         let existing = self.agent_identity_record(agent_id)?;
         if let Some(existing) = existing {
             if existing_behavior == NamedAgentExistingBehavior::Reject {
+                if existing.status == AgentRegistryStatus::Deleted {
+                    // A fully deleted id is creatable again: route through
+                    // the reincarnation transaction when the deletion job
+                    // completed, or fail closed with a typed error.
+                    return self
+                        .reincarnate_deleted_agent(
+                            existing,
+                            lineage_parent_agent_id,
+                            requested_name,
+                            desired,
+                        )
+                        .await;
+                }
+                if existing.status == AgentRegistryStatus::Deleting {
+                    let job = self
+                        .runtime_db()
+                        .agent_deletions()
+                        .latest_for_agent(agent_id)?;
+                    return Err(named_agent_deletion_incomplete_error(
+                        agent_id,
+                        job.as_ref(),
+                    ));
+                }
                 return Err(named_agent_already_exists_error(agent_id));
             }
             if existing.status != AgentRegistryStatus::Active {
@@ -2519,6 +2608,98 @@ impl RuntimeHost {
             })?;
         self.inner.registry.cache_agent_identity(&record)?;
         Ok((record, true))
+    }
+
+    /// Creates a new incarnation of a fully deleted agent id. The latest
+    /// deletion job must be `Completed`; anything else (in-flight, failed,
+    /// or missing) fails closed with a typed `deletion_incomplete` error.
+    /// The new incarnation is a fresh agent: new AgentHome bootstrap, no
+    /// inherited WorkItems, tasks, waits, timers, triggers, or lineage
+    /// beyond the explicitly requested parent.
+    async fn reincarnate_deleted_agent(
+        &self,
+        tombstone: AgentIdentityRecord,
+        lineage_parent_agent_id: Option<&str>,
+        requested_name: Option<&str>,
+        desired: AgentBootstrapDesiredState,
+    ) -> Result<(AgentIdentityRecord, bool)> {
+        let agent_id = tombstone.agent_id.clone();
+        let job = self
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent(&agent_id)?;
+        let completed = matches!(
+            job.as_ref(),
+            Some(job) if job.status == AgentDeletionStatus::Completed
+        );
+        if !completed {
+            return Err(named_agent_deletion_incomplete_error(
+                &agent_id,
+                job.as_ref(),
+            ));
+        }
+        let normalized_name = requested_name
+            .map(|name| {
+                normalize_agent_name(name)
+                    .map_err(|error| named_agent_invalid_name_error(&agent_id, error))
+            })
+            .transpose()?;
+        ensure_agent_home_layout(&self.agent_data_dir(&agent_id)).map_err(|error| {
+            named_agent_create_failed_error(&agent_id, AgentCreateStage::Profiled, error)
+        })?;
+        let identity = self
+            .runtime_db()
+            .agent_identities()
+            .reincarnate_with_bootstrap_and_relations(&agent_id, "agent_create", |tombstone| {
+                let mut record = AgentIdentityRecord::new(
+                    &agent_id,
+                    AgentKind::Named,
+                    AgentVisibility::Public,
+                    AgentOwnership::SelfOwned,
+                    AgentProfilePreset::PublicNamed,
+                    None,
+                    None,
+                )
+                .with_lineage_parent_agent_id(lineage_parent_agent_id.map(ToString::to_string));
+                let now = std::cmp::max(
+                    chrono::Utc::now(),
+                    tombstone.updated_at + chrono::Duration::nanoseconds(1),
+                );
+                record.name = normalized_name.clone();
+                record.incarnation = tombstone.incarnation.saturating_add(1);
+                record.revision = tombstone.revision.saturating_add(1);
+                record.created_at = now;
+                record.updated_at = now;
+                let bootstrap = AgentBootstrapRecord::new(&agent_id, desired.clone());
+                let relations = independent_creation_records(
+                    &record,
+                    lineage_parent_agent_id,
+                    AgentCanonicalDurability::Persistent,
+                );
+                (record, bootstrap, relations)
+            })
+            .map_err(|error| {
+                let message = error.to_string();
+                if message.contains("agent_reincarnation_rejected") {
+                    // The tombstone or deletion job changed concurrently;
+                    // re-read the job so the typed error carries fresh state.
+                    let job = self
+                        .runtime_db()
+                        .agent_deletions()
+                        .latest_for_agent(&agent_id)
+                        .ok()
+                        .flatten();
+                    return named_agent_deletion_incomplete_error(&agent_id, job.as_ref());
+                }
+                if let Some(name) = normalized_name.as_deref() {
+                    if message.contains("UNIQUE constraint failed: agent_identities.name_key") {
+                        return named_agent_name_already_exists_error(&agent_id, name);
+                    }
+                }
+                named_agent_create_failed_error(&agent_id, AgentCreateStage::Reserved, error)
+            })?;
+        self.inner.registry.cache_agent_identity(&identity)?;
+        Ok((identity, true))
     }
 
     fn agent_bootstrap_lock(&self, agent_id: &str) -> Arc<AsyncMutex<()>> {
@@ -6110,6 +6291,93 @@ mod tests {
             rename_error,
             PublicAgentError::Deleted { ref agent_id } if agent_id == "delete-named"
         ));
+    }
+
+    #[tokio::test]
+    async fn agent_face_create_reincarnates_fully_deleted_agent_id() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+
+        let created = parent
+            .agent_creation_service()
+            .create(CreateAgentRequest {
+                agent_id: "reborn-tool".into(),
+                name: Some("First Incarnation".into()),
+                template: None,
+                initial_message: None,
+                authority_class: AuthorityClass::OperatorInstruction,
+                model_resolution: None,
+                lineage_parent_agent_id: None,
+                inherit_parent_runtime: false,
+            })
+            .await
+            .unwrap();
+        assert!(created.receipt.created);
+        assert_eq!(created.identity.incarnation, 1);
+
+        let (_identity, job, created_deletion) = host
+            .begin_public_agent_deletion("reborn-tool", false, "test-operator")
+            .await
+            .unwrap();
+        assert!(created_deletion);
+        host.execute_deletion_job(job).await.unwrap();
+        assert!(matches!(
+            host.public_agent_detail("reborn-tool")
+                .unwrap()
+                .identity
+                .status,
+            AgentRegistryStatus::Deleted
+        ));
+
+        // While the deletion job is still pending (not executed), create
+        // must fail closed with the typed deletion_incomplete error. Drive
+        // this on a second agent whose job is never executed.
+        host.create_public_named_agent_with_name("reborn-pending", None, None, None, None)
+            .await
+            .unwrap();
+        host.begin_public_agent_deletion("reborn-pending", false, "test-operator")
+            .await
+            .unwrap();
+        let pending_error = parent
+            .agent_creation_service()
+            .create(CreateAgentRequest {
+                agent_id: "reborn-pending".into(),
+                name: None,
+                template: None,
+                initial_message: None,
+                authority_class: AuthorityClass::OperatorInstruction,
+                model_resolution: None,
+                lineage_parent_agent_id: None,
+                inherit_parent_runtime: false,
+            })
+            .await
+            .expect_err("create must fail closed while deletion is incomplete");
+        assert!(
+            pending_error.to_string().contains("deletion_incomplete"),
+            "unexpected error: {pending_error:#}"
+        );
+
+        // The released id creates a brand-new incarnation.
+        let recreated = parent
+            .agent_creation_service()
+            .create(CreateAgentRequest {
+                agent_id: "reborn-tool".into(),
+                name: Some("Second Incarnation".into()),
+                template: None,
+                initial_message: None,
+                authority_class: AuthorityClass::OperatorInstruction,
+                model_resolution: None,
+                lineage_parent_agent_id: None,
+                inherit_parent_runtime: false,
+            })
+            .await
+            .unwrap();
+        assert!(recreated.receipt.created);
+        assert_eq!(recreated.identity.incarnation, 2);
+        assert_eq!(
+            recreated.identity.name.as_deref(),
+            Some("Second Incarnation")
+        );
     }
 
     #[tokio::test]

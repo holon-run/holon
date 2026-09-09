@@ -575,6 +575,49 @@ fn onboard_json_contract_is_secret_safe_and_actionable() {
 }
 
 #[test]
+fn agent_delete_then_recreate_reports_incarnation_json() {
+    let _serve_guard = serve_test_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let home = tempfile::tempdir().expect("create isolated HOLON_HOME");
+    let (_serve, addr) = spawn_local_serve(&home);
+    let envs = [("HOLON_HTTP_ADDR", addr.as_str())];
+
+    let created = run_json_with_env(&home, &["agent", "create", "reborn-cli"], &envs);
+    assert_eq!(created["identity"]["incarnation"], json!(1));
+
+    let deleted = run_json_with_env(
+        &home,
+        &["agent", "delete", "reborn-cli", "-y", "--json"],
+        &envs,
+    );
+    assert_eq!(deleted["job"]["status"], json!("pending"));
+    // `--json` prints the initial job; poll the idempotent delete surface
+    // until the background coordinator completes the job.
+    let mut completed = false;
+    for _ in 0..20 {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let polled = run_json_with_env(
+            &home,
+            &["agent", "delete", "reborn-cli", "-y", "--json"],
+            &envs,
+        );
+        if polled["job"]["status"] == json!("completed") {
+            assert_eq!(polled["identity"]["status"], json!("deleted"));
+            completed = true;
+            break;
+        }
+    }
+    assert!(completed, "deletion job should complete: {deleted}");
+
+    // The released id recreates as a new incarnation.
+    let recreated = run_json_with_env(&home, &["agent", "create", "reborn-cli"], &envs);
+    assert_eq!(recreated["identity"]["status"], json!("active"));
+    assert_eq!(recreated["identity"]["incarnation"], json!(2));
+    assert_eq!(recreated["receipt"]["created"], json!(true));
+}
+
+#[test]
 fn onboard_defaults_to_scriptable_json_when_not_a_tty() {
     let home = tempfile::tempdir().expect("create isolated HOLON_HOME");
 

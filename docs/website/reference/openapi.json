@@ -169,6 +169,13 @@
                   "null"
                 ]
               },
+              "incarnation": {
+                "default": 1,
+                "description": "Monotonic incarnation counter; 1 for the original identity and +1\n for every explicit recreation of the same agent id after a fully\n completed deletion.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
               "is_default_agent": {
                 "type": "boolean"
               },
@@ -346,6 +353,13 @@
                   "string",
                   "null"
                 ]
+              },
+              "incarnation": {
+                "default": 1,
+                "description": "Monotonic incarnation counter; 1 for the original identity and +1\n for every explicit recreation of the same agent id after a fully\n completed deletion.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
               },
               "is_default_agent": {
                 "type": "boolean"
@@ -1243,6 +1257,13 @@
                   "null"
                 ]
               },
+              "incarnation": {
+                "default": 1,
+                "description": "Monotonic incarnation counter; 1 for the original identity and +1\n for every explicit recreation of the same agent id after a fully\n completed deletion.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
               "is_default_agent": {
                 "type": "boolean"
               },
@@ -1602,6 +1623,13 @@
                             "string",
                             "null"
                           ]
+                        },
+                        "incarnation": {
+                          "default": 1,
+                          "description": "Monotonic incarnation counter; 1 for the original identity and +1\n for every explicit recreation of the same agent id after a fully\n completed deletion.",
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": "integer"
                         },
                         "is_default_agent": {
                           "type": "boolean"
@@ -2317,6 +2345,13 @@
                       "string",
                       "null"
                     ]
+                  },
+                  "incarnation": {
+                    "default": 1,
+                    "description": "Monotonic incarnation counter; 1 for the original identity and +1\n for every explicit recreation of the same agent id after a fully\n completed deletion.",
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
                   },
                   "is_default_agent": {
                     "type": "boolean"
@@ -3354,6 +3389,13 @@
                       "null"
                     ]
                   },
+                  "incarnation": {
+                    "default": 1,
+                    "description": "Monotonic incarnation counter; 1 for the original identity and +1\n for every explicit recreation of the same agent id after a fully\n completed deletion.",
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
                   "is_default_agent": {
                     "type": "boolean"
                   },
@@ -4164,6 +4206,13 @@
                             "string",
                             "null"
                           ]
+                        },
+                        "incarnation": {
+                          "default": 1,
+                          "description": "Monotonic incarnation counter; 1 for the original identity and +1\n for every explicit recreation of the same agent id after a fully\n completed deletion.",
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": "integer"
                         },
                         "is_default_agent": {
                           "type": "boolean"

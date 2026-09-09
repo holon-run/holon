@@ -117,3 +117,4 @@ Current decision notes:
 - [118 Explicit models.dev Provider Mapping](./118-explicit-models-dev-provider-mapping.md)
 - [119 models.dev Supplemental Catalog](./119-models-dev-supplemental-catalog.md)
 - [124 Ollama Tool-Only Round Placeholder User Text](./124-ollama-tool-only-round-placeholder-user-text.md)
+- [125 Agent Id Reincarnation Same Row](./125-agent-id-reincarnation-same-row.md)

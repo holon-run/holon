@@ -103,8 +103,8 @@ mod tests {
         },
         system::{WorkspaceAccessMode, WorkspaceProjectionKind},
         types::{
-            ActiveWorkspaceEntry, AgentKind, AgentOwnership, AgentProfilePreset,
-            AgentRegistryStatus, AgentStatus, AgentVisibility, BriefKind,
+            ActiveWorkspaceEntry, AgentDeletionJob, AgentDeletionStatus, AgentKind, AgentOwnership,
+            AgentProfilePreset, AgentRegistryStatus, AgentStatus, AgentVisibility, BriefKind,
         },
     };
     use rusqlite::OptionalExtension;
@@ -4964,6 +4964,257 @@ CREATE TABLE working_memory_deltas (
                 .status,
             AgentRegistryStatus::Deleting
         );
+        Ok(())
+    }
+
+    fn fully_delete_agent(
+        db: &RuntimeDb,
+        agent_id: &str,
+    ) -> Result<(AgentIdentityRecord, AgentDeletionJob)> {
+        let identity = agent_identity(agent_id, 0);
+        db.agent_identities().upsert(&identity)?;
+        let (_, job, _) =
+            db.agent_deletions()
+                .begin(agent_id, identity.revision, "operator:test", false)?;
+        db.agent_deletions().finalize(&job)
+    }
+
+    #[test]
+    fn agent_reincarnation_continues_incarnation_and_releases_reservation() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let (tombstone, job) = fully_delete_agent(&db, "reborn")?;
+        assert_eq!(tombstone.status, AgentRegistryStatus::Deleted);
+        assert_eq!(job.status, AgentDeletionStatus::Completed);
+
+        // Leave a stale per-agent state row behind: the new incarnation
+        // must never observe it.
+        db.agent_states().upsert(&AgentState::new("reborn"))?;
+
+        let identity = db
+            .agent_identities()
+            .reincarnate_with_bootstrap_and_relations("reborn", "operator:test", |tombstone| {
+                let mut record = agent_identity("reborn", 0);
+                record.incarnation = tombstone.incarnation.saturating_add(1);
+                record.revision = tombstone.revision.saturating_add(1);
+                record.updated_at = tombstone.updated_at + chrono::Duration::nanoseconds(1);
+                let bootstrap = AgentBootstrapRecord::new(
+                    "reborn",
+                    AgentBootstrapDesiredState {
+                        template: None,
+                        catalog_agent_home: None,
+                        workspace: None,
+                        model_resolution: None,
+                        initial_message: None,
+                    },
+                );
+                let relations = crate::runtime_db::agent_relations::independent_creation_records(
+                    &record,
+                    None,
+                    crate::types::AgentCanonicalDurability::Persistent,
+                );
+                (record, bootstrap, relations)
+            })?;
+        assert_eq!(identity.status, AgentRegistryStatus::Active);
+        assert_eq!(identity.incarnation, tombstone.incarnation + 1);
+        assert_eq!(identity.revision, tombstone.revision + 1);
+
+        let connection = db.connection()?;
+        let reservation: (String, Option<String>) = connection.query_row(
+            "SELECT reservation_state, retired_at FROM agent_identity_reservations WHERE agent_id = 'reborn'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(reservation, ("active".to_string(), None));
+        let recreated: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM audit_events WHERE kind = 'agent_recreated'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(recreated, 1);
+        assert_eq!(
+            db.agent_states().latest("reborn")?,
+            None,
+            "previous incarnation state must be cleared"
+        );
+
+        drop(db);
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let persisted = reopened
+            .agent_identities()
+            .latest("reborn")?
+            .expect("reincarnated identity");
+        assert_eq!(persisted.status, AgentRegistryStatus::Active);
+        assert_eq!(persisted.incarnation, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn agent_reincarnation_fails_closed_without_completed_deletion() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+
+        // Unknown agent id.
+        let unknown = db
+            .agent_identities()
+            .reincarnate_with_bootstrap_and_relations("missing", "operator:test", |tombstone| {
+                let mut record = agent_identity("missing", 0);
+                record.incarnation = tombstone.incarnation.saturating_add(1);
+                record.revision = tombstone.revision.saturating_add(1);
+                (
+                    record,
+                    AgentBootstrapRecord::new(
+                        "missing",
+                        AgentBootstrapDesiredState {
+                            template: None,
+                            catalog_agent_home: None,
+                            workspace: None,
+                            model_resolution: None,
+                            initial_message: None,
+                        },
+                    ),
+                    Default::default(),
+                )
+            });
+        assert!(unknown
+            .err()
+            .expect("unknown id rejected")
+            .to_string()
+            .contains("agent_reincarnation_rejected"));
+
+        // Still-active identity.
+        let identity = agent_identity("still-active", 0);
+        db.agent_identities().upsert(&identity)?;
+        let active = db
+            .agent_identities()
+            .reincarnate_with_bootstrap_and_relations(
+                "still-active",
+                "operator:test",
+                |tombstone| {
+                    let mut record = agent_identity("still-active", 0);
+                    record.incarnation = tombstone.incarnation.saturating_add(1);
+                    record.revision = tombstone.revision.saturating_add(1);
+                    (
+                        record,
+                        AgentBootstrapRecord::new(
+                            "still-active",
+                            AgentBootstrapDesiredState {
+                                template: None,
+                                catalog_agent_home: None,
+                                workspace: None,
+                                model_resolution: None,
+                                initial_message: None,
+                            },
+                        ),
+                        Default::default(),
+                    )
+                },
+            );
+        assert!(active
+            .err()
+            .expect("active identity rejected")
+            .to_string()
+            .contains("agent_reincarnation_rejected"));
+
+        // Deleting (deletion job never completed).
+        let deleting_identity = agent_identity("mid-delete", 0);
+        db.agent_identities().upsert(&deleting_identity)?;
+        db.agent_deletions().begin(
+            "mid-delete",
+            deleting_identity.revision,
+            "operator:test",
+            false,
+        )?;
+        let incomplete = db
+            .agent_identities()
+            .reincarnate_with_bootstrap_and_relations("mid-delete", "operator:test", |tombstone| {
+                let mut record = agent_identity("mid-delete", 0);
+                record.incarnation = tombstone.incarnation.saturating_add(1);
+                record.revision = tombstone.revision.saturating_add(1);
+                (
+                    record,
+                    AgentBootstrapRecord::new(
+                        "mid-delete",
+                        AgentBootstrapDesiredState {
+                            template: None,
+                            catalog_agent_home: None,
+                            workspace: None,
+                            model_resolution: None,
+                            initial_message: None,
+                        },
+                    ),
+                    Default::default(),
+                )
+            });
+        assert!(incomplete
+            .err()
+            .expect("incomplete deletion rejected")
+            .to_string()
+            .contains("agent_reincarnation_rejected"));
+
+        // Once the deletion finalizes, the standing guard still rejects an
+        // implicit Active registry write outside the reincarnation path.
+        let job = db
+            .agent_deletions()
+            .latest_for_agent("mid-delete")?
+            .expect("deletion job");
+        let (tombstone, _) = db.agent_deletions().finalize(&job)?;
+        assert_eq!(tombstone.status, AgentRegistryStatus::Deleted);
+        let mut implicit = agent_identity("mid-delete", 10);
+        implicit.revision = tombstone.revision.saturating_add(1);
+        implicit.updated_at = tombstone.updated_at + chrono::Duration::nanoseconds(1);
+        assert!(
+            db.agent_identities().upsert(&implicit).is_err(),
+            "retired ids must never regain availability through the plain registry write"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn agent_reincarnation_enforces_monotonic_incarnation_and_revision() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let (tombstone, _) = fully_delete_agent(&db, "reborn-guard")?;
+
+        let rejected = db
+            .agent_identities()
+            .reincarnate_with_bootstrap_and_relations("reborn-guard", "operator:test", |_| {
+                let record = agent_identity("reborn-guard", 0);
+                (
+                    record,
+                    AgentBootstrapRecord::new(
+                        "reborn-guard",
+                        AgentBootstrapDesiredState {
+                            template: None,
+                            catalog_agent_home: None,
+                            workspace: None,
+                            model_resolution: None,
+                            initial_message: None,
+                        },
+                    ),
+                    Default::default(),
+                )
+            });
+        assert!(rejected
+            .err()
+            .expect("non-monotonic builder rejected")
+            .to_string()
+            .contains("agent_reincarnation_rejected"));
+
+        // Nothing changed: the tombstone and retired reservation survive.
+        let identity = db
+            .agent_identities()
+            .latest("reborn-guard")?
+            .expect("tombstone");
+        assert_eq!(identity.status, AgentRegistryStatus::Deleted);
+        assert_eq!(identity.revision, tombstone.revision);
+        let connection = db.connection()?;
+        let retired: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM agent_identity_reservations WHERE agent_id = 'reborn-guard' AND reservation_state = 'retired'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(retired, 1);
         Ok(())
     }
 

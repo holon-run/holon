@@ -418,6 +418,29 @@ pub(crate) fn reserve_agent_identity_tx(
     Ok(())
 }
 
+/// Re-activates a retired identity reservation. This is the only sanctioned
+/// `retired -> active` transition: it runs inside the reincarnation
+/// transaction, after the latest deletion job for the agent id has fully
+/// completed, and in the same transaction as the fresh Active registry
+/// write. Every other registry write path keeps the standing invariant that
+/// a retired id never regains availability implicitly.
+pub(crate) fn release_agent_identity_reservation_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+) -> Result<()> {
+    let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    tx.execute(
+        "UPDATE agent_identity_reservations
+         SET reservation_state = 'active',
+             reserved_at = ?2,
+             retired_at = NULL,
+             source = 'reincarnation'
+         WHERE agent_id = ?1 AND reservation_state = 'retired'",
+        params![agent_id, now],
+    )?;
+    Ok(())
+}
+
 pub(crate) fn upsert_agent_identity_tx(
     tx: &Transaction<'_>,
     record: &AgentIdentityRecord,

@@ -335,6 +335,11 @@ Creates a new agent managed by the host. The agent id comes from the URL path.
 { "template": null, "authority_class": "operator_instruction" }
 ```
 
+Creating an id whose deletion job fully completed starts a new incarnation
+(`identity.incarnation` increments; the old state is never revived). While a
+deletion is still in flight or failed, the request fails with
+`409` / `deletion_incomplete`.
+
 **`POST /api/control/agents/:id/tasks`** — Create command task
 
 Starts a background command task for the agent.
