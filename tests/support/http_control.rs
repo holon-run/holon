@@ -32,6 +32,7 @@ use tokio::net::TcpListener;
 use tokio::net::UnixListener;
 use tokio::time::{sleep, Duration, Instant};
 
+use super::runtime_helpers::wait_until_async_for;
 use super::{
     attach_default_workspace, connect_addr, git, init_git_repo, spawn_server,
     spawn_server_for_host, spawn_server_with_config, spawn_server_with_runtime_config,
@@ -188,6 +189,67 @@ pub async fn control_agent_delete_rejects_default_and_reports_unknown() -> Resul
         .send()
         .await?;
     assert_eq!(unknown.status(), reqwest::StatusCode::NOT_FOUND);
+
+    server.abort();
+    Ok(())
+}
+
+#[cfg(unix)]
+pub async fn control_agent_delete_fails_closed_when_home_is_symlink() -> Result<()> {
+    let host = RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ok")))?;
+    attach_default_workspace(&host).await?;
+    host.create_named_agent("delete-symlink", None).await?;
+    host.get_or_create_agent("delete-symlink").await?;
+
+    // Tamper with the agent home: replace it with a symlink to a directory
+    // outside the agents root. Deletion must fail the job, not the victim.
+    let agents_root = host.config().data_dir.join("agents");
+    let home = agents_root.join("delete-symlink");
+    let victim = tempdir()?;
+    std::fs::write(victim.path().join("sentinel.txt"), "keep me")?;
+    std::fs::remove_dir_all(&home)?;
+    std::os::unix::fs::symlink(victim.path(), &home)?;
+
+    let (base, server) = spawn_server_for_host(host.clone()).await?;
+    let client = Client::new();
+    let response: serde_json::Value = client
+        .delete(format!("{base}/api/control/agents/delete-symlink"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let deletion_id = response["job"]["deletion_id"]
+        .as_str()
+        .expect("deletion id")
+        .to_string();
+
+    wait_until_async_for(Duration::from_secs(10), || {
+        let client = client.clone();
+        let url = format!("{base}/api/control/agents/delete-symlink/delete-status");
+        async move {
+            let status: serde_json::Value = client.get(url).send().await?.json().await?;
+            Ok(status["job"]["status"] == serde_json::json!("retryable_failed"))
+        }
+    })
+    .await?;
+
+    let status: serde_json::Value = client
+        .get(format!(
+            "{base}/api/control/agents/delete-symlink/delete-status"
+        ))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(status["identity"]["status"], "deleting");
+    assert_eq!(status["job"]["deletion_id"], deletion_id);
+    assert!(status["job"]["last_error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("is a symlink"));
+    assert!(victim.path().join("sentinel.txt").exists());
+    assert!(home.symlink_metadata().is_ok());
 
     server.abort();
     Ok(())

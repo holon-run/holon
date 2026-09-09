@@ -595,6 +595,11 @@ impl RuntimeHost {
         if !data_dir.exists() {
             return Ok(());
         }
+        // Refuse to delete anything that is not a runtime-managed directory:
+        // symlinked homes or paths resolving outside the agents root fail the
+        // job instead of removing unintended files.
+        let agents_root = self.config().data_dir.join("agents");
+        ensure_deletable_agent_home(&data_dir, &agents_root)?;
         // Rename to a trash name first to avoid partial-state visibility.
         let trash_dir = data_dir.with_extension("deleting_trash");
         if trash_dir.exists() {
@@ -695,5 +700,96 @@ impl RuntimeHost {
         // Fallback: remove directory directly.
         std::fs::remove_dir_all(path)
             .with_context(|| format!("removing worktree directory {}", path.display()))
+    }
+}
+
+/// Validate that an agent home path is safe to delete: it must be a real
+/// directory (not a symlink) that resolves inside the runtime agents root.
+/// Deletion fails closed so a tampered home cannot remove files outside the
+/// runtime data directory.
+fn ensure_deletable_agent_home(data_dir: &Path, agents_root: &Path) -> Result<()> {
+    let metadata = std::fs::symlink_metadata(data_dir)
+        .with_context(|| format!("inspecting agent home {}", data_dir.display()))?;
+    if metadata.file_type().is_symlink() {
+        anyhow::bail!(
+            "agent home {} is a symlink; refusing deletion",
+            data_dir.display()
+        );
+    }
+    if !metadata.is_dir() {
+        anyhow::bail!(
+            "agent home {} is not a directory; refusing deletion",
+            data_dir.display()
+        );
+    }
+    let canonical_home = std::fs::canonicalize(data_dir)
+        .with_context(|| format!("canonicalizing agent home {}", data_dir.display()))?;
+    let canonical_root = std::fs::canonicalize(agents_root)
+        .with_context(|| format!("canonicalizing agents root {}", agents_root.display()))?;
+    if !canonical_home.starts_with(&canonical_root) {
+        anyhow::bail!(
+            "agent home {} resolves outside agents root {}; refusing deletion",
+            canonical_home.display(),
+            canonical_root.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deletable_home_accepts_plain_directory_inside_root() {
+        let root = tempfile::tempdir().unwrap();
+        let agents = root.path().join("agents");
+        std::fs::create_dir_all(agents.join("alpha")).unwrap();
+        ensure_deletable_agent_home(&agents.join("alpha"), &agents).unwrap();
+    }
+
+    #[test]
+    fn deletable_home_rejects_missing_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let agents = root.path().join("agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        let err = ensure_deletable_agent_home(&agents.join("missing"), &agents).unwrap_err();
+        assert!(err.to_string().contains("inspecting agent home"));
+    }
+
+    #[test]
+    fn deletable_home_rejects_plain_file() {
+        let root = tempfile::tempdir().unwrap();
+        let agents = root.path().join("agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(agents.join("alpha"), "not a dir").unwrap();
+        let err = ensure_deletable_agent_home(&agents.join("alpha"), &agents).unwrap_err();
+        assert!(err.to_string().contains("is not a directory"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deletable_home_rejects_symlink_pointing_inside_root() {
+        let root = tempfile::tempdir().unwrap();
+        let agents = root.path().join("agents");
+        let real = root.path().join("real-alpha");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::create_dir_all(&agents).unwrap();
+        std::os::unix::fs::symlink(&real, agents.join("alpha")).unwrap();
+        let err = ensure_deletable_agent_home(&agents.join("alpha"), &agents).unwrap_err();
+        assert!(err.to_string().contains("is a symlink"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deletable_home_rejects_symlink_pointing_outside_root() {
+        let root = tempfile::tempdir().unwrap();
+        let agents = root.path().join("agents");
+        let outside = root.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::create_dir_all(&agents).unwrap();
+        std::os::unix::fs::symlink(&outside, agents.join("alpha")).unwrap();
+        let err = ensure_deletable_agent_home(&agents.join("alpha"), &agents).unwrap_err();
+        assert!(err.to_string().contains("is a symlink"));
     }
 }
