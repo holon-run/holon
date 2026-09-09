@@ -653,6 +653,13 @@ impl RuntimeHost {
                 .runtime_db()
                 .agent_deletions()
                 .latest_for_agent(child_id)?;
+            // A Completed job while the identity is Active means the child
+            // was re-created through the reincarnation path. Reincarnation
+            // is currently restricted to public self-owned agents, so this
+            // arm is only reachable for ids that were never re-created; if
+            // private child re-creation is ever allowed, this must create a
+            // fresh job (via `begin`, which replaces the stale Completed
+            // row) instead of silently skipping the cascade.
             let child_job = match existing {
                 Some(job) if job.status == AgentDeletionStatus::Completed => continue,
                 Some(job) => job,

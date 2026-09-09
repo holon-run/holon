@@ -200,6 +200,7 @@ interface AgentListEntryDto {
     visibility?: string;
     ownership?: string;
     profile_preset?: string;
+    incarnation?: number;
   };
   status?: string;
   scheduling_posture?: {
@@ -2211,6 +2212,7 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
   const visibility = entry.identity?.visibility;
   const ownership = entry.identity?.ownership;
   const isDefaultAgent = entry.identity?.is_default_agent ?? undefined;
+  const incarnation = entry.identity?.incarnation ?? undefined;
   const wsList = state?.workspace?.workspaces ?? [];
   const activeWs = wsList.find((w) => w.is_active);
   // Fallback to list entry's active_workspace_entry when state hasn't loaded yet.
@@ -2251,6 +2253,7 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
     visibility,
     ownership,
     isDefaultAgent,
+    incarnation,
     badge: badgeFor(id),
     badgeHue: hueFor(id),
     profile,

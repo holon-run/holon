@@ -433,6 +433,11 @@ pub struct AgentIdentityRecord {
     pub status: AgentRegistryStatus,
     #[serde(default)]
     pub revision: u64,
+    /// Monotonic incarnation counter for this agent id. Deletion does not
+    /// reset it: recreating a fully deleted id produces incarnation + 1 so
+    /// historical evidence stays distinguishable from the new incarnation.
+    #[serde(default = "default_agent_incarnation")]
+    pub incarnation: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_agent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -447,6 +452,10 @@ pub struct AgentIdentityRecord {
         skip_serializing_if = "Option::is_none"
     )]
     pub deleted_at: Option<DateTime<Utc>>,
+}
+
+fn default_agent_incarnation() -> u64 {
+    1
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -795,6 +804,7 @@ impl AgentIdentityRecord {
             durability: None,
             status: AgentRegistryStatus::Active,
             revision: 0,
+            incarnation: 1,
             parent_agent_id,
             lineage_parent_agent_id: None,
             delegated_from_task_id,
@@ -918,6 +928,11 @@ pub struct AgentIdentityView {
     pub profile_preset: AgentProfilePreset,
     pub status: AgentRegistryStatus,
     pub is_default_agent: bool,
+    /// Monotonic incarnation counter; 1 for the original identity and +1
+    /// for every explicit recreation of the same agent id after a fully
+    /// completed deletion.
+    #[serde(default = "default_agent_incarnation")]
+    pub incarnation: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_agent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -937,6 +952,7 @@ impl AgentIdentityView {
             profile_preset: record.profile_preset(),
             status: record.status,
             is_default_agent: record.agent_id == default_agent_id,
+            incarnation: record.incarnation,
             parent_agent_id: record.parent_agent_id.clone(),
             lineage_parent_agent_id: record.lineage_parent_agent_id.clone(),
             delegated_from_task_id: record.delegated_from_task_id.clone(),

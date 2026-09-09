@@ -194,6 +194,160 @@ pub async fn control_agent_delete_rejects_default_and_reports_unknown() -> Resul
     Ok(())
 }
 
+pub async fn control_agent_recreate_after_completed_deletion_reincarnates() -> Result<()> {
+    let host = RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ok")))?;
+    attach_default_workspace(&host).await?;
+    host.create_named_agent("reborn-http", None).await?;
+    host.get_or_create_agent("reborn-http").await?;
+    let (base, server) = spawn_server_for_host(host.clone()).await?;
+    let client = Client::new();
+
+    let deleted: serde_json::Value = client
+        .delete(format!("{base}/api/control/agents/reborn-http"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(deleted["identity"]["status"], "deleting");
+
+    wait_until_async_for(Duration::from_secs(15), || {
+        let client = client.clone();
+        let url = format!("{base}/api/control/agents/reborn-http/delete-status");
+        async move {
+            let status: serde_json::Value = client.get(url).send().await?.json().await?;
+            Ok(status["job"]["status"] == serde_json::json!("completed"))
+        }
+    })
+    .await?;
+
+    // While deleted, the detail view still reports the tombstone.
+    let gone = client
+        .get(format!("{base}/api/control/agents/reborn-http/detail"))
+        .send()
+        .await?;
+    assert_eq!(gone.status(), reqwest::StatusCode::OK);
+    assert_eq!(
+        gone.json::<serde_json::Value>().await?["identity"]["status"],
+        "deleted"
+    );
+
+    // Recreating the released id produces a new incarnation.
+    let recreated: serde_json::Value = client
+        .post(format!("{base}/api/control/agents/reborn-http/create"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(recreated["identity"]["status"], "active");
+    assert_eq!(recreated["identity"]["incarnation"], 2);
+    assert_eq!(recreated["receipt"]["created"], true);
+
+    // The new incarnation is a normal live agent: the detail view is active
+    // again and carries the incarnation counter.
+    let detail = client
+        .get(format!("{base}/api/control/agents/reborn-http/detail"))
+        .send()
+        .await?;
+    assert_eq!(detail.status(), reqwest::StatusCode::OK);
+    let detail: serde_json::Value = detail.json().await?;
+    assert_eq!(detail["identity"]["status"], "active");
+    assert_eq!(detail["identity"]["incarnation"], 2);
+
+    // The audit boundary event is recorded for the new incarnation.
+    let connection = host.runtime_db().connection()?;
+    let recreated_events: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM audit_events WHERE kind = 'agent_recreated' AND agent_id = 'reborn-http'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(recreated_events, 1);
+
+    // The re-created incarnation can be deleted again: the stale Completed
+    // job row from the first deletion must be replaced instead of tripping
+    // the agent_id UNIQUE constraint with a 500.
+    let deleted_again: serde_json::Value = client
+        .delete(format!("{base}/api/control/agents/reborn-http"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(deleted_again["identity"]["status"], "deleting");
+
+    wait_until_async_for(Duration::from_secs(15), || {
+        let client = client.clone();
+        let url = format!("{base}/api/control/agents/reborn-http/delete-status");
+        async move {
+            let status: serde_json::Value = client.get(url).send().await?.json().await?;
+            Ok(status["job"]["status"] == serde_json::json!("completed"))
+        }
+    })
+    .await?;
+
+    // The id can be re-created a third time from the fresh Completed job.
+    let third: serde_json::Value = client
+        .post(format!("{base}/api/control/agents/reborn-http/create"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(third["identity"]["status"], "active");
+    assert_eq!(third["identity"]["incarnation"], 3);
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn control_agent_create_returns_deletion_incomplete_until_job_completes() -> Result<()> {
+    let host = RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ok")))?;
+    attach_default_workspace(&host).await?;
+    host.create_named_agent("stuck-delete", None).await?;
+    host.get_or_create_agent("stuck-delete").await?;
+
+    // Force a deterministic deletion failure: the agent home becomes a
+    // symlink outside the agents root, so the deletion job stays
+    // retryable_failed and the id is not released.
+    let agents_root = host.config().data_dir.join("agents");
+    let home = agents_root.join("stuck-delete");
+    let victim = tempdir()?;
+    std::fs::write(victim.path().join("sentinel.txt"), "keep me")?;
+    std::fs::remove_dir_all(&home)?;
+    std::os::unix::fs::symlink(victim.path(), &home)?;
+
+    let (base, server) = spawn_server_for_host(host.clone()).await?;
+    let client = Client::new();
+    client
+        .delete(format!("{base}/api/control/agents/stuck-delete"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await?;
+    wait_until_async_for(Duration::from_secs(10), || {
+        let client = client.clone();
+        let url = format!("{base}/api/control/agents/stuck-delete/delete-status");
+        async move {
+            let status: serde_json::Value = client.get(url).send().await?.json().await?;
+            Ok(status["job"]["status"] == serde_json::json!("retryable_failed"))
+        }
+    })
+    .await?;
+
+    let response = client
+        .post(format!("{base}/api/control/agents/stuck-delete/create"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await?;
+    assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
+    let body: serde_json::Value = response.json().await?;
+    assert_eq!(body["code"], "deletion_incomplete");
+    assert!(victim.path().join("sentinel.txt").exists());
+
+    server.abort();
+    Ok(())
+}
+
 #[cfg(unix)]
 pub async fn control_agent_delete_fails_closed_when_home_is_symlink() -> Result<()> {
     let host = RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ok")))?;

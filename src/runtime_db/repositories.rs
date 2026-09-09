@@ -454,6 +454,124 @@ impl AgentIdentityRepository<'_> {
         })
     }
 
+    /// Replaces a fully deleted tombstone with a fresh Active identity for
+    /// the same agent id: a new incarnation. Requires the latest deletion
+    /// job to be `Completed`, flips the identity reservation back to
+    /// `active` in the same transaction, resets per-agent runtime
+    /// projections so no previous-incarnation state leaks, writes the fresh
+    /// bootstrap and canonical relations, and appends the `agent_recreated`
+    /// audit boundary event. This is the only sanctioned retired -> active
+    /// reservation transition; the builder callback receives the tombstone
+    /// and must return the fresh Active record with `incarnation` and
+    /// `revision` continued monotonically.
+    pub fn reincarnate_with_bootstrap_and_relations(
+        &self,
+        agent_id: &str,
+        requested_by: &str,
+        build: impl Fn(
+            &AgentIdentityRecord,
+        ) -> (
+            AgentIdentityRecord,
+            AgentBootstrapRecord,
+            AgentCanonicalRecordSet,
+        ),
+    ) -> Result<AgentIdentityRecord> {
+        self.db.transaction(|tx| {
+            let payload = tx
+                .query_row(
+                    "SELECT payload_json FROM agent_identities WHERE agent_id = ?1",
+                    [agent_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .ok_or_else(|| {
+                    anyhow!("agent_reincarnation_rejected: agent {agent_id} not found")
+                })?;
+            let tombstone = decode_agent_identity_payload(&payload)?;
+            if tombstone.status != AgentRegistryStatus::Deleted {
+                return Err(anyhow!(
+                    "agent_reincarnation_rejected: agent {agent_id} is {:?}, not deleted",
+                    tombstone.status
+                ));
+            }
+            let job_payload = tx
+                .query_row(
+                    "SELECT payload_json FROM agent_deletion_jobs WHERE agent_id = ?1",
+                    [agent_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            let job: Option<AgentDeletionJob> = job_payload
+                .map(|payload| {
+                    serde_json::from_str(&payload).context("decoding agent deletion job payload")
+                })
+                .transpose()?;
+            let job = job.ok_or_else(|| {
+                anyhow!("agent_reincarnation_rejected: agent {agent_id} has no deletion job")
+            })?;
+            if job.status != AgentDeletionStatus::Completed {
+                return Err(anyhow!(
+                    "agent_reincarnation_rejected: agent {agent_id} deletion job is {:?}",
+                    job.status
+                ));
+            }
+            let (identity, bootstrap, relations) = build(&tombstone);
+            anyhow::ensure!(
+                identity.agent_id == tombstone.agent_id,
+                "agent_reincarnation_rejected: fresh identity agent id mismatch"
+            );
+            anyhow::ensure!(
+                identity.status == AgentRegistryStatus::Active,
+                "agent_reincarnation_rejected: fresh identity must be active"
+            );
+            anyhow::ensure!(
+                identity.incarnation == tombstone.incarnation.saturating_add(1),
+                "agent_reincarnation_rejected: incarnation must continue monotonically"
+            );
+            anyhow::ensure!(
+                identity.revision > tombstone.revision,
+                "agent_reincarnation_rejected: revision must continue monotonically"
+            );
+            release_agent_identity_reservation_tx(tx, agent_id)?;
+            upsert_agent_identity_tx(tx, &identity)?;
+            // Fresh per-agent runtime projections: the previous
+            // incarnation's live state must never leak into the new one.
+            tx.execute(
+                "DELETE FROM agent_states WHERE agent_id = ?1",
+                params![agent_id],
+            )?;
+            tx.execute(
+                "DELETE FROM agent_bootstraps WHERE agent_id = ?1",
+                params![agent_id],
+            )?;
+            tx.execute(
+                "DELETE FROM agent_lineages WHERE child_agent_id = ?1",
+                params![agent_id],
+            )?;
+            tx.execute(
+                "DELETE FROM agent_supervisions WHERE child_agent_id = ?1",
+                params![agent_id],
+            )?;
+            upsert_agent_bootstrap_tx(tx, &bootstrap)?;
+            upsert_canonical_record_set_tx(tx, &relations)?;
+            append_audit_event_tx(
+                tx,
+                Some(agent_id),
+                &AuditEvent::legacy(
+                    "agent_recreated",
+                    serde_json::json!({
+                        "agent_id": agent_id,
+                        "incarnation": identity.incarnation,
+                        "previous_deleted_at": tombstone.deleted_at,
+                        "deletion_id": job.deletion_id,
+                        "requested_by": requested_by,
+                    }),
+                ),
+            )?;
+            Ok(identity)
+        })
+    }
+
     pub fn tombstone_with_closed_supervision(&self, agent_id: &str) -> Result<AgentIdentityRecord> {
         self.db.transaction(|tx| {
             let payload = tx
@@ -700,6 +818,23 @@ impl AgentDeletionRepository<'_> {
                 identity.revision,
                 now,
             )?;
+            // A reincarnated id keeps the previous incarnation's Completed
+            // job row; `agent_id` is UNIQUE so the stale row must be replaced
+            // before the new job insert. Any non-completed leftover while the
+            // identity is Active is an integrity violation and fails closed.
+            tx.execute(
+                "DELETE FROM agent_deletion_jobs WHERE agent_id = ?1 AND status = 'completed'",
+                params![agent_id],
+            )?;
+            let stale_jobs: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM agent_deletion_jobs WHERE agent_id = ?1",
+                [agent_id],
+                |row| row.get(0),
+            )?;
+            anyhow::ensure!(
+                stale_jobs == 0,
+                "agent {agent_id} has a non-completed deletion job while its identity is active"
+            );
             insert_agent_deletion_job_tx(tx, &job)?;
             crate::runtime_db::agent_message_delivery::cancel_active_deliveries_for_target_tx(
                 tx, agent_id,

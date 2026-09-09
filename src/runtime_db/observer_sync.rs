@@ -255,12 +255,20 @@ pub(crate) fn verify_observer_sync_foundations(connection: &mut Connection) -> R
     } else {
         0
     };
+    // A completed deletion job whose id is available again is only a
+    // violation when the reuse bypassed the audited reincarnation path:
+    // a sanctioned re-creation flips the identity reservation back to
+    // active with source='reincarnation' inside the reincarnation
+    // transaction. Missing reservation rows (COALESCE '') stay counted.
     let completed_deletion_with_available_registry = if missing_sources.is_empty() {
         count_rows(
             connection,
             "SELECT COUNT(*) FROM agent_deletion_jobs d
              JOIN agent_identities i ON i.agent_id = d.agent_id
-             WHERE d.status = 'completed' AND i.status != 'deleted'",
+             LEFT JOIN agent_identity_reservations r ON r.agent_id = d.agent_id
+             WHERE d.status = 'completed'
+               AND i.status != 'deleted'
+               AND NOT (i.status = 'active' AND COALESCE(r.source, '') = 'reincarnation')",
         )?
     } else {
         0
