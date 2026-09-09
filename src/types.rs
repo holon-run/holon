@@ -1222,7 +1222,7 @@ impl AgentTemplateSourceKind {
 pub struct AgentTemplateCatalogEntry {
     /// Stable source-scoped catalog identifier, such as `user:holon-reviewer`.
     pub catalog_id: String,
-    /// Preferred selector accepted by SpawnAgent.template.
+    /// Preferred selector accepted by agent creation and invocation requests.
     ///
     /// `catalog_id` is also accepted, along with source aliases such as
     /// `user:`, `agent:`, and `remote:`.
@@ -1271,7 +1271,7 @@ pub struct AgentTemplateCatalogEntry {
 pub struct AgentTemplateDetail {
     /// Stable source-scoped catalog identifier, such as `user:holon-reviewer`.
     pub catalog_id: String,
-    /// Preferred selector accepted by SpawnAgent.template.
+    /// Preferred selector accepted by agent creation and invocation requests.
     pub template: String,
     /// Human-readable local id after precedence is applied.
     pub template_id: String,
@@ -3979,31 +3979,6 @@ pub struct TaskInputResult {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GetAgentResult {
     pub agent: AgentSummary,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct SpawnAgentResult {
-    pub agent_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub create_receipt: Option<AgentCreateReceipt>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub child_agent_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task_handle: Option<TaskHandle>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub supervision_task_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub child_supervision: Option<ChildSupervisionProjection>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub summary_text: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub delegation_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_work_item_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub child_work_item_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model_resolution: Option<AgentModelResolution>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]

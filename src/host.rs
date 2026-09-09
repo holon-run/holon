@@ -5669,6 +5669,30 @@ mod tests {
         panic!("timed out waiting for task {task_id} to become terminal");
     }
 
+    async fn invoke_new_subagent(
+        runtime: &RuntimeHandle,
+        message: String,
+        authority_class: AuthorityClass,
+        template: Option<String>,
+        model_request: Option<crate::types::AgentModelRequest>,
+    ) -> anyhow::Result<crate::types::AgentInvocationReceipt> {
+        let model_resolution = runtime
+            .resolve_agent_model_request("InvokeAgent", model_request)
+            .await?;
+        runtime
+            .agent_invocation_service()
+            .invoke(InvokeAgentRequest {
+                target: InvokeAgentTarget::NewSubagent {
+                    template,
+                    workspace_mode: ChildAgentWorkspaceMode::Inherit,
+                    model_resolution: Some(model_resolution),
+                },
+                message,
+                authority_class,
+            })
+            .await
+    }
+
     struct BlockingProvider {
         started: Arc<Notify>,
     }
@@ -6890,20 +6914,17 @@ mod tests {
         let parent = host.default_runtime().await.unwrap();
         let parent_agent_id = host.config().default_agent_id.clone();
 
-        let spawned = parent
-            .spawn_agent(
-                Some("tree navigation work".into()),
-                AuthorityClass::OperatorInstruction,
-                AgentProfilePreset::PrivateChild,
-                None,
-                false,
-                None,
-                None,
-            )
-            .await
-            .unwrap();
+        let spawned = invoke_new_subagent(
+            &parent,
+            "tree navigation work".into(),
+            AuthorityClass::OperatorInstruction,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         let child_agent_id = spawned.agent_id.clone();
-        assert!(spawned.supervision_task_id.is_some());
+        assert!(!spawned.task_handle.task_id.is_empty());
 
         let tree = host.operator_agent_tree().await.unwrap();
         assert_eq!(
@@ -7035,22 +7056,16 @@ mod tests {
         let parent_agent_id = parent.agent_state().await.unwrap().id;
         let initial_message = "  investigate   remote\nTUI  access ".to_string();
 
-        let spawned = parent
-            .spawn_agent(
-                Some(initial_message.clone()),
-                AuthorityClass::ExternalEvidence,
-                AgentProfilePreset::PrivateChild,
-                None,
-                false,
-                None,
-                None,
-            )
-            .await
-            .unwrap();
-        let task_id = spawned
-            .supervision_task_id
-            .clone()
-            .expect("private child should return a supervision task");
+        let spawned = invoke_new_subagent(
+            &parent,
+            initial_message.clone(),
+            AuthorityClass::ExternalEvidence,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let task_id = spawned.task_handle.task_id.clone();
         let task = parent
             .storage()
             .latest_task_record(&task_id)
@@ -7140,24 +7155,21 @@ mod tests {
         .unwrap();
         let parent = host.default_runtime().await.unwrap();
 
-        let spawned = parent
-            .spawn_agent(
-                Some("review the implementation".into()),
-                AuthorityClass::OperatorInstruction,
-                AgentProfilePreset::PrivateChild,
-                None,
-                false,
-                Some("user_global:holon-reviewer@official".into()),
-                None,
-            )
-            .await
-            .unwrap();
+        let spawned = invoke_new_subagent(
+            &parent,
+            "review the implementation".into(),
+            AuthorityClass::OperatorInstruction,
+            Some("user_global:holon-reviewer@official".into()),
+            None,
+        )
+        .await
+        .unwrap();
 
         let child_home = host.agent_data_dir(&spawned.agent_id);
         assert!(fs::read_to_string(child_home.join("AGENTS.md"))
             .unwrap()
             .starts_with("# Official reviewer\n\nSynced reviewer template\n"));
-        assert!(spawned.supervision_task_id.is_some());
+        assert!(!spawned.task_handle.task_id.is_empty());
     }
 
     #[tokio::test]
@@ -7165,21 +7177,18 @@ mod tests {
         let (_home, host) = test_host();
         let parent = host.default_runtime().await.unwrap();
 
-        let error = parent
-            .spawn_agent(
-                Some("review the implementation".into()),
-                AuthorityClass::OperatorInstruction,
-                AgentProfilePreset::PrivateChild,
-                None,
-                false,
-                Some("user_global:reviewer%official".into()),
-                None,
-            )
-            .await
-            .expect_err("invalid template selector should fail after task creation");
+        let error = invoke_new_subagent(
+            &parent,
+            "review the implementation".into(),
+            AuthorityClass::OperatorInstruction,
+            Some("user_global:reviewer%official".into()),
+            None,
+        )
+        .await
+        .expect_err("invalid template selector should fail after task creation");
         let tool_error = crate::tool::ToolError::from_anyhow(&error);
 
-        assert_eq!(tool_error.kind, "spawn_agent_failed");
+        assert_eq!(tool_error.kind, "agent_invocation_failed");
         assert_eq!(
             tool_error.domain,
             Some(crate::runtime_error::RuntimeErrorDomain::Task)
@@ -7197,7 +7206,7 @@ mod tests {
             .and_then(|details| details.get("task_id"))
             .and_then(Value::as_str)
             .expect("tool error should identify the failed supervision task");
-        let rendered = tool_error.render_for_model(Some(crate::tool::names::SPAWN_AGENT));
+        let rendered = tool_error.render_for_model(Some("InvokeAgent"));
         assert!(rendered.contains("template install_id contains unsupported characters"));
 
         let task = parent
@@ -7228,36 +7237,22 @@ mod tests {
         let host = RuntimeHost::new(fixture.config).unwrap();
         let parent = host.default_runtime().await.unwrap();
 
-        let spawned = parent
-            .spawn_agent(
-                Some("compare implementation".into()),
-                AuthorityClass::OperatorInstruction,
-                AgentProfilePreset::PrivateChild,
-                None,
-                false,
-                None,
-                Some(crate::types::AgentModelRequest {
-                    provider: "anthropic".into(),
-                    model: "claude-haiku-4-5".into(),
-                    reasoning_effort: Some("high".into()),
-                    temperature: None,
-                    max_output_tokens: None,
-                    allow_fallback: Some(false),
-                }),
-            )
-            .await
-            .unwrap();
-
-        let resolution = spawned
-            .model_resolution
-            .as_ref()
-            .expect("spawn should return model resolution");
-        assert_eq!(
-            resolution.resolution_status,
-            AgentModelResolutionStatus::Accepted
-        );
-        assert_eq!(resolution.resolved_provider, "anthropic");
-        assert_eq!(resolution.resolved_model, "claude-haiku-4-5");
+        let spawned = invoke_new_subagent(
+            &parent,
+            "compare implementation".into(),
+            AuthorityClass::OperatorInstruction,
+            None,
+            Some(crate::types::AgentModelRequest {
+                provider: "anthropic".into(),
+                model: "claude-haiku-4-5".into(),
+                reasoning_effort: Some("high".into()),
+                temperature: None,
+                max_output_tokens: None,
+                allow_fallback: Some(false),
+            }),
+        )
+        .await
+        .unwrap();
 
         let child = host.get_or_create_agent(&spawned.agent_id).await.unwrap();
         let child_summary = child.agent_summary().await.unwrap();
@@ -7277,25 +7272,22 @@ mod tests {
         let host = RuntimeHost::new(fixture.config).unwrap();
         let parent = host.default_runtime().await.unwrap();
 
-        let error = parent
-            .spawn_agent(
-                Some("compare implementation".into()),
-                AuthorityClass::OperatorInstruction,
-                AgentProfilePreset::PrivateChild,
-                None,
-                false,
-                None,
-                Some(crate::types::AgentModelRequest {
-                    provider: "openai".into(),
-                    model: "gpt-5.4".into(),
-                    reasoning_effort: None,
-                    temperature: None,
-                    max_output_tokens: None,
-                    allow_fallback: Some(false),
-                }),
-            )
-            .await
-            .expect_err("unavailable explicit model should be rejected before child creation");
+        let error = invoke_new_subagent(
+            &parent,
+            "compare implementation".into(),
+            AuthorityClass::OperatorInstruction,
+            None,
+            Some(crate::types::AgentModelRequest {
+                provider: "openai".into(),
+                model: "gpt-5.4".into(),
+                reasoning_effort: None,
+                temperature: None,
+                max_output_tokens: None,
+                allow_fallback: Some(false),
+            }),
+        )
+        .await
+        .expect_err("unavailable explicit model should be rejected before child creation");
 
         assert!(error.to_string().contains("requested model"));
         assert!(error.to_string().contains("unavailable"));
@@ -7306,22 +7298,19 @@ mod tests {
         let (_home, host) = test_host();
         let parent = host.default_runtime().await.unwrap();
 
-        let error = parent
-            .spawn_agent(
-                Some("   \n\t  ".into()),
-                AuthorityClass::OperatorInstruction,
-                AgentProfilePreset::PrivateChild,
-                None,
-                false,
-                None,
-                None,
-            )
-            .await
-            .expect_err("blank private child initial_message should be rejected");
+        let error = invoke_new_subagent(
+            &parent,
+            "   \n\t  ".into(),
+            AuthorityClass::OperatorInstruction,
+            None,
+            None,
+        )
+        .await
+        .expect_err("blank private child initial_message should be rejected");
 
         assert!(error
             .to_string()
-            .contains("private_child spawn requires non-empty initial_message"));
+            .contains("agent invocation requires a non-empty message"));
     }
 
     #[tokio::test]

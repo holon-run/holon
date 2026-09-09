@@ -38,7 +38,6 @@ pub mod tool_names {
     pub const PICK_WORK_ITEM: &str = "PickWorkItem";
     pub const REMOVE_WORKTREE: &str = "RemoveWorktree";
     pub const SLEEP: &str = "Sleep";
-    pub(crate) const SPAWN_AGENT: &str = "SpawnAgent";
     pub const TASK_INPUT: &str = "TaskInput";
     /// Legacy alias kept for backward-compatible dispatch.
     pub const TASK_LIST: &str = "TaskList";

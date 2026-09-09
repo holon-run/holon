@@ -3,16 +3,14 @@ use super::waiting::WorkItemBlockerClearance;
 use super::{task_state_reducer, *};
 use crate::config::{ModelRef, ProviderId};
 use crate::runtime_error::{
-    describe_runtime_error, sanitize_runtime_error_text, RuntimeError, RuntimeErrorContext,
-    RuntimeErrorDomain,
+    sanitize_runtime_error_text, RuntimeError, RuntimeErrorContext, RuntimeErrorDomain,
 };
 use crate::tool::helpers::truncate_output_to_char_budget;
 use crate::tool::ToolError;
 use crate::types::{
     brief_created_event_for, AgentModelRequest, AgentModelResolution, AgentModelResolutionStatus,
-    AgentProfilePreset, BriefKind, BriefRecord, ChildAgentWorkspaceMode, CommandTaskStatusSnapshot,
-    CompletionReportRequirement, CompletionReportState, CreateAgentRequest, FailureArtifact,
-    FailureArtifactCategory, InvokeAgentRequest, InvokeAgentTarget, SpawnAgentResult,
+    BriefKind, BriefRecord, ChildAgentWorkspaceMode, CommandTaskStatusSnapshot,
+    CompletionReportRequirement, CompletionReportState, FailureArtifact, FailureArtifactCategory,
     TaskInputResult, TaskKind, TaskListEntry, TaskOutputResult, TaskOutputRetrievalStatus,
     TaskOutputSnapshot, TaskStatusSnapshot, TodoItem, ToolArtifactRef, WaitConditionRecord,
     WaitConditionStatus, WorkItemCompletionIntent, WorkItemContinuationFrame,
@@ -427,10 +425,6 @@ impl RuntimeHandle {
             .await
     }
 
-    pub(crate) fn supports_child_agent_spawning(&self) -> bool {
-        self.inner.host_bridge.is_some()
-    }
-
     pub(super) async fn ensure_background_tasks_allowed(&self, surface: &str) -> Result<()> {
         let state = self.agent_state().await?;
         crate::system::ensure_background_task_allowed(
@@ -621,178 +615,6 @@ impl RuntimeHandle {
             .insert(task_id, command_task::ManagedTaskHandle::Async(handle));
 
         Ok(task)
-    }
-
-    pub async fn spawn_agent(
-        &self,
-        initial_message: Option<String>,
-        authority_class: AuthorityClass,
-        preset: AgentProfilePreset,
-        agent_id: Option<String>,
-        worktree: bool,
-        template: Option<String>,
-        model_request: Option<AgentModelRequest>,
-    ) -> Result<SpawnAgentResult> {
-        if !self.supports_child_agent_spawning() {
-            return Err(anyhow::Error::from(
-                ToolError::new(
-                    "unsupported_runtime_capability",
-                    "SpawnAgent is not available in this runtime",
-                )
-                .with_details(serde_json::json!({
-                    "tool_name": crate::tool::names::SPAWN_AGENT,
-                    "required_capability": "child_agent_spawning",
-                }))
-                .with_recovery_hint(
-                    "run SpawnAgent from a host-managed runtime with child-agent support",
-                ),
-            ));
-        }
-        let model_resolution = self
-            .resolve_agent_model_request(crate::tool::names::SPAWN_AGENT, model_request)
-            .await?;
-        match preset {
-            AgentProfilePreset::PrivateChild => {
-                let initial_message = initial_message
-                    .ok_or_else(|| anyhow!("private_child spawn requires initial_message"))?;
-                if initial_message.trim().is_empty() {
-                    return Err(anyhow!(
-                        "private_child spawn requires non-empty initial_message"
-                    ));
-                }
-                let receipt = match self
-                    .agent_invocation_service()
-                    .invoke(InvokeAgentRequest {
-                        target: InvokeAgentTarget::NewSubagent {
-                            template,
-                            workspace_mode: if worktree {
-                                ChildAgentWorkspaceMode::Worktree
-                            } else {
-                                ChildAgentWorkspaceMode::Inherit
-                            },
-                            model_resolution: Some(model_resolution.clone()),
-                        },
-                        message: initial_message,
-                        authority_class,
-                    })
-                    .await
-                {
-                    Ok(receipt) => receipt,
-                    Err(error) => {
-                        let descriptor = describe_runtime_error(&error);
-                        let Some(task_id) = descriptor.safe_context.get("task_id") else {
-                            return Err(error);
-                        };
-                        if descriptor.code != "agent_invocation_failed" {
-                            return Err(error);
-                        }
-                        let direct_cause = descriptor
-                            .source_chain
-                            .last()
-                            .cloned()
-                            .unwrap_or_else(|| descriptor.operator_message.clone());
-                        return Err(anyhow::Error::from(
-                            ToolError::new(
-                                "spawn_agent_failed",
-                                format!("failed to spawn child agent: {direct_cause}"),
-                            )
-                            .with_domain(RuntimeErrorDomain::Task)
-                            .with_details(serde_json::json!({
-                                "task_id": task_id,
-                                "preset": AgentProfilePreset::PrivateChild,
-                                "workspace_mode": if worktree { "worktree" } else { "inherit" },
-                            }))
-                            .with_recovery_hint(
-                                "correct the child template, model, or workspace configuration and retry SpawnAgent",
-                            )
-                            .with_source_chain(descriptor.source_chain),
-                        ));
-                    }
-                };
-                let task = self
-                    .task_record(&receipt.task_handle.task_id)
-                    .await?
-                    .ok_or_else(|| anyhow!("invocation task disappeared after admission"))?;
-                let child_supervision =
-                    crate::types::ChildSupervisionProjection::from_task_record(&task);
-                let mut task_handle = receipt.task_handle.clone();
-                task_handle.task_kind = CHILD_AGENT_TASK_KIND.to_string();
-
-                Ok(SpawnAgentResult {
-                    agent_id: receipt.agent_id.clone(),
-                    create_receipt: None,
-                    child_agent_id: Some(receipt.agent_id.clone()),
-                    task_handle: Some(task_handle),
-                    supervision_task_id: Some(receipt.task_handle.task_id.clone()),
-                    child_supervision,
-                    summary_text: Some(format!(
-                        "delegated child {} started under supervision task {}",
-                        receipt.agent_id, receipt.task_handle.task_id
-                    )),
-                    delegation_id: None,
-                    parent_work_item_id: None,
-                    child_work_item_id: None,
-                    model_resolution: Some(model_resolution),
-                })
-            }
-            AgentProfilePreset::PublicNamed => {
-                let agent_id = agent_id
-                    .ok_or_else(|| anyhow!("public_named spawn requires a stable agent id"))?;
-                if worktree {
-                    return Err(anyhow!(
-                        "public_named spawn does not support workspace_mode=worktree"
-                    ));
-                }
-
-                let parent_agent_id = self.agent_id().await?;
-                let spawned_agent_id = self
-                    .agent_creation_service()
-                    .create(CreateAgentRequest {
-                        agent_id: agent_id.clone(),
-                        name: None,
-                        template,
-                        initial_message,
-                        authority_class,
-                        model_resolution: Some(model_resolution.clone()),
-                        lineage_parent_agent_id: Some(parent_agent_id),
-                        inherit_parent_runtime: true,
-                    })
-                    .await?;
-                if !spawned_agent_id.receipt.created {
-                    return Err(anyhow::Error::from(
-                        ToolError::new(
-                            "already_exists",
-                            format!("public named agent {agent_id} already exists"),
-                        )
-                        .with_domain(RuntimeErrorDomain::Conflict)
-                        .with_details(serde_json::json!({
-                            "agent_id": agent_id,
-                            "preset": AgentProfilePreset::PublicNamed,
-                        }))
-                        .with_recovery_hint(
-                            "use an explicit agent invocation or enqueue operation to deliver work to an existing agent",
-                        ),
-                    ));
-                }
-
-                Ok(SpawnAgentResult {
-                    agent_id: spawned_agent_id.identity.agent_id.clone(),
-                    create_receipt: Some(spawned_agent_id.receipt),
-                    child_agent_id: None,
-                    task_handle: None,
-                    supervision_task_id: None,
-                    child_supervision: None,
-                    summary_text: Some(format!(
-                        "spawned public named agent {} without a supervising task handle",
-                        spawned_agent_id.identity.agent_id
-                    )),
-                    delegation_id: None,
-                    parent_work_item_id: None,
-                    child_work_item_id: None,
-                    model_resolution: Some(model_resolution),
-                })
-            }
-        }
     }
 
     pub(crate) async fn resolve_agent_model_request(

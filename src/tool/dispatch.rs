@@ -119,6 +119,17 @@ impl ToolRegistry {
         context: &ToolExecutionContext,
     ) -> Result<(ToolResult, ToolExecutionRecord)> {
         let started_at = chrono::Utc::now();
+        if call.name == "SpawnAgent" {
+            return Err(ToolError::new("legacy_tool_removed", "SpawnAgent has been removed")
+                .with_details(json!({
+                    "tool_name": call.name,
+                    "replacement_tools": ["CreateAgent", "InvokeAgent"],
+                }))
+                .with_recovery_hint(
+                    "use CreateAgent for persistent named agents or InvokeAgent for child-agent work",
+                )
+                .into());
+        }
         let required_family = match self.family_for_tool(&call.name)? {
             Some(required_family) => required_family,
             None => {

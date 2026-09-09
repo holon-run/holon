@@ -85,6 +85,42 @@ fn admitted_operator_prompt(
     )
 }
 
+async fn invoke_new_subagent(
+    runtime: &holon::runtime::RuntimeHandle,
+    message: String,
+    authority_class: AuthorityClass,
+    template: Option<String>,
+    model_request: Option<holon::types::AgentModelRequest>,
+) -> Result<holon::types::AgentInvocationReceipt> {
+    let registry = ToolRegistry::new(std::path::PathBuf::new());
+    let caller_agent_id = runtime.agent_summary().await?.identity.agent_id;
+    let (result, _) = registry
+        .execute(
+            runtime,
+            &caller_agent_id,
+            &authority_class,
+            &ToolCall {
+                id: "invoke-private-child".into(),
+                name: "InvokeAgent".into(),
+                input: serde_json::json!({
+                    "target": {
+                        "kind": "new_subagent",
+                        "template": template,
+                        "workspace_mode": "inherit",
+                        "model": model_request,
+                    },
+                    "initial_message": message,
+                }),
+            },
+        )
+        .await?;
+    let value = result
+        .envelope
+        .result
+        .ok_or_else(|| anyhow::anyhow!("InvokeAgent returned no result"))?;
+    Ok(serde_json::from_value(value)?)
+}
+
 struct WaitForDispatchProvider {
     calls: Mutex<usize>,
     assistant_text: Option<&'static str>,
@@ -948,17 +984,14 @@ pub async fn notify_operator_records_default_public_and_private_child_targets() 
     assert_eq!(public_value["target_operator_boundary"], "primary_operator");
     assert_eq!(public_value["agent_id"], "public-agent");
 
-    let spawned = default_runtime
-        .spawn_agent(
-            Some("child prompt".into()),
-            AuthorityClass::OperatorInstruction,
-            AgentProfilePreset::PrivateChild,
-            None,
-            false,
-            None,
-            None,
-        )
-        .await?;
+    let spawned = invoke_new_subagent(
+        &default_runtime,
+        "child prompt".into(),
+        AuthorityClass::OperatorInstruction,
+        None,
+        None,
+    )
+    .await?;
     let child_runtime = host.get_or_create_agent(&spawned.agent_id).await?;
     let child_notification = child_runtime
         .notify_operator("Child needs supervision visibility".into())

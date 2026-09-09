@@ -1519,7 +1519,10 @@ mod tests {
         host::RuntimeHost,
         provider::StubProvider,
         runtime_error::{RuntimeError, RuntimeErrorDomain},
-        types::{AgentListEntry, AgentProfilePreset, AgentTreeProjection, AuthorityClass},
+        types::{
+            AgentListEntry, AgentTreeProjection, AuthorityClass, ChildAgentWorkspaceMode,
+            InvokeAgentRequest, InvokeAgentTarget,
+        },
     };
     use axum::{
         body::{to_bytes, Body},
@@ -1540,6 +1543,30 @@ mod tests {
         let host =
             RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
         (home, host)
+    }
+
+    async fn invoke_new_subagent(
+        runtime: &crate::runtime::RuntimeHandle,
+        message: String,
+        authority_class: AuthorityClass,
+        template: Option<String>,
+        model_request: Option<crate::types::AgentModelRequest>,
+    ) -> anyhow::Result<crate::types::AgentInvocationReceipt> {
+        let model_resolution = runtime
+            .resolve_agent_model_request("InvokeAgent", model_request)
+            .await?;
+        runtime
+            .agent_invocation_service()
+            .invoke(InvokeAgentRequest {
+                target: InvokeAgentTarget::NewSubagent {
+                    template,
+                    workspace_mode: ChildAgentWorkspaceMode::Inherit,
+                    model_resolution: Some(model_resolution),
+                },
+                message,
+                authority_class,
+            })
+            .await
     }
 
     fn oidc_test_host() -> (tempfile::TempDir, RuntimeHost) {
@@ -1830,18 +1857,15 @@ mod tests {
     async fn operator_agent_tree_requires_auth_and_does_not_expand_public_roster() {
         let (_home, host) = control_token_test_host();
         let parent = host.default_runtime().await.unwrap();
-        let spawned = parent
-            .spawn_agent(
-                Some("private tree navigation".into()),
-                AuthorityClass::OperatorInstruction,
-                AgentProfilePreset::PrivateChild,
-                None,
-                false,
-                None,
-                None,
-            )
-            .await
-            .unwrap();
+        let spawned = invoke_new_subagent(
+            &parent,
+            "private tree navigation".into(),
+            AuthorityClass::OperatorInstruction,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         let child_agent_id = spawned.agent_id;
         let app = router(AppState::for_tcp(host));
 
@@ -1925,19 +1949,16 @@ mod tests {
     async fn oidc_event_reads_require_session_before_private_child_lookup() {
         let (_home, host, session_secret) = oidc_test_host_with_session();
         let parent = host.default_runtime().await.unwrap();
-        let child_agent_id = parent
-            .spawn_agent(
-                Some("private event navigation".into()),
-                AuthorityClass::OperatorInstruction,
-                AgentProfilePreset::PrivateChild,
-                None,
-                false,
-                None,
-                None,
-            )
-            .await
-            .unwrap()
-            .agent_id;
+        let child_agent_id = invoke_new_subagent(
+            &parent,
+            "private event navigation".into(),
+            AuthorityClass::OperatorInstruction,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .agent_id;
         let app = router(AppState::for_tcp(host));
         let uri = format!("/api/agents/{child_agent_id}/events");
 
