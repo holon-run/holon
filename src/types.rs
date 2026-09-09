@@ -540,7 +540,7 @@ pub struct AgentBootstrapDesiredState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<AgentBootstrapWorkspaceState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model_resolution: Option<SpawnAgentModelResolution>,
+    pub model_resolution: Option<AgentModelResolution>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initial_message: Option<AgentBootstrapInitialMessage>,
 }
@@ -678,7 +678,7 @@ pub struct CreateAgentRequest {
     pub initial_message: Option<String>,
     pub authority_class: AuthorityClass,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model_resolution: Option<SpawnAgentModelResolution>,
+    pub model_resolution: Option<AgentModelResolution>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lineage_parent_agent_id: Option<String>,
     #[serde(default)]
@@ -697,7 +697,7 @@ pub enum InvokeAgentTarget {
         #[serde(default)]
         workspace_mode: ChildAgentWorkspaceMode,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        model_resolution: Option<SpawnAgentModelResolution>,
+        model_resolution: Option<AgentModelResolution>,
     },
 }
 
@@ -3808,7 +3808,7 @@ pub struct TaskStatusSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_usage: Option<AgentTokenUsageSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model_resolution: Option<SpawnAgentModelResolution>,
+    pub model_resolution: Option<AgentModelResolution>,
 }
 
 impl TaskStatusSnapshot {
@@ -4031,12 +4031,12 @@ pub struct SpawnAgentResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub child_work_item_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model_resolution: Option<SpawnAgentModelResolution>,
+    pub model_resolution: Option<AgentModelResolution>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct SpawnAgentModelRequest {
+pub struct AgentModelRequest {
     pub provider: String,
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -4051,7 +4051,7 @@ pub struct SpawnAgentModelRequest {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum SpawnAgentModelResolutionStatus {
+pub enum AgentModelResolutionStatus {
     Inherited,
     Accepted,
     Normalized,
@@ -4060,14 +4060,14 @@ pub enum SpawnAgentModelResolutionStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-pub struct SpawnAgentModelResolution {
+pub struct AgentModelResolution {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requested: Option<SpawnAgentModelRequest>,
+    pub requested: Option<AgentModelRequest>,
     pub resolved_provider: String,
     pub resolved_model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_parameters: Option<serde_json::Map<String, serde_json::Value>>,
-    pub resolution_status: SpawnAgentModelResolutionStatus,
+    pub resolution_status: AgentModelResolutionStatus,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub policy_notes: Vec<String>,
 }

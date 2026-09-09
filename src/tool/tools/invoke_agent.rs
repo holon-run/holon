@@ -9,8 +9,8 @@ use crate::{
     runtime_error::describe_runtime_error,
     tool::{error::ToolError, spec::typed_spec},
     types::{
-        AuthorityClass, ChildAgentWorkspaceMode, InvokeAgentRequest, InvokeAgentTarget,
-        SpawnAgentModelRequest, ToolCapabilityFamily,
+        AgentModelRequest, AuthorityClass, ChildAgentWorkspaceMode, InvokeAgentRequest,
+        InvokeAgentTarget, ToolCapabilityFamily,
     },
 };
 
@@ -31,7 +31,7 @@ pub(crate) enum InvokeAgentToolTarget {
         template: Option<String>,
         #[serde(default)]
         workspace_mode: ChildAgentWorkspaceMode,
-        model: Option<SpawnAgentModelRequest>,
+        model: Option<AgentModelRequest>,
     },
 }
 

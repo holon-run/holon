@@ -7,9 +7,8 @@ use crate::runtime_error::{
     collect_runtime_error_source_chain, describe_runtime_error, RuntimeError, RuntimeErrorDomain,
 };
 use crate::types::{
-    AgentCreateResult, AgentInvocationReceipt, ChildAgentWorkspaceMode, CreateAgentRequest,
-    InvokeAgentRequest, InvokeAgentTarget, SpawnAgentModelResolution, TaskHandle, TaskRecord,
-    TaskStatus,
+    AgentCreateResult, AgentInvocationReceipt, AgentModelResolution, ChildAgentWorkspaceMode,
+    CreateAgentRequest, InvokeAgentRequest, InvokeAgentTarget, TaskHandle, TaskRecord, TaskStatus,
 };
 
 pub(crate) struct AgentCreationService<'a> {
@@ -164,8 +163,8 @@ impl AgentInvocationService<'_> {
 }
 
 pub(super) fn required_model_resolution(
-    resolution: Option<SpawnAgentModelResolution>,
-) -> Result<SpawnAgentModelResolution> {
+    resolution: Option<AgentModelResolution>,
+) -> Result<AgentModelResolution> {
     resolution.ok_or_else(|| anyhow!("new subagent invocation requires model resolution"))
 }
 

@@ -63,15 +63,15 @@ use crate::{
         AgentDeletionJob, AgentDeletionStatus, AgentDetail, AgentDurability, AgentIdentityRecord,
         AgentIdentityView, AgentKind, AgentLifecycleHint, AgentListEntry,
         AgentMessageCallerContext, AgentMessageDeliveryOutcome, AgentMessageDeliveryRejectionCode,
-        AgentMessagePrincipalKind, AgentMessageSendRequest, AgentOwnership, AgentProfilePreset,
-        AgentRegistryStatus, AgentState, AgentStatus, AgentSummary, AgentSupervisionState,
-        AgentTokenUsageSummary, AgentTreeNode, AgentTreeProjection, AgentVisibility,
-        AuthorityClass, ChildAgentSummary, ClosureOutcome, CreateAgentRequest,
-        ExternalTriggerRecord, ExternalTriggerStatus, ExternalTriggerSummary, LoadedAgentsMdView,
-        MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin,
-        OperatorNotificationRecord, Priority, QueueEntryStatus, RuntimeFailureSummary,
-        SpawnAgentModelResolution, SpawnAgentModelResolutionStatus, TaskKind, TaskRecord,
-        TaskStatus, TimerRecord, TokenUsage, TranscriptEntry, TranscriptEntryKind,
+        AgentMessagePrincipalKind, AgentMessageSendRequest, AgentModelResolution,
+        AgentModelResolutionStatus, AgentOwnership, AgentProfilePreset, AgentRegistryStatus,
+        AgentState, AgentStatus, AgentSummary, AgentSupervisionState, AgentTokenUsageSummary,
+        AgentTreeNode, AgentTreeProjection, AgentVisibility, AuthorityClass, ChildAgentSummary,
+        ClosureOutcome, CreateAgentRequest, ExternalTriggerRecord, ExternalTriggerStatus,
+        ExternalTriggerSummary, LoadedAgentsMdView, MessageBody, MessageDeliverySurface,
+        MessageEnvelope, MessageKind, MessageOrigin, OperatorNotificationRecord, Priority,
+        QueueEntryStatus, RuntimeFailureSummary, TaskKind, TaskRecord, TaskStatus, TimerRecord,
+        TokenUsage, TranscriptEntry, TranscriptEntryKind,
         WaitConditionSummary, WorkspaceEntry, WorkspaceOccupancyRecord,
     },
 };
@@ -570,9 +570,9 @@ pub(crate) struct ChildTaskTerminalResult {
 
 async fn apply_spawn_model_resolution(
     runtime: &RuntimeHandle,
-    resolution: &SpawnAgentModelResolution,
+    resolution: &AgentModelResolution,
 ) -> Result<()> {
-    if resolution.resolution_status == SpawnAgentModelResolutionStatus::Inherited {
+    if resolution.resolution_status == AgentModelResolutionStatus::Inherited {
         return Ok(());
     }
     let provider = crate::config::ProviderId::parse(&resolution.resolved_provider)?;
@@ -2926,7 +2926,7 @@ impl RuntimeHost {
         };
         let runtime = self.get_or_create_agent(&bootstrap.agent_id).await?;
         let current = runtime.agent_state().await?;
-        if resolution.resolution_status == SpawnAgentModelResolutionStatus::Inherited {
+        if resolution.resolution_status == AgentModelResolutionStatus::Inherited {
             return Ok(());
         }
         let provider = crate::config::ProviderId::parse(&resolution.resolved_provider)?;
@@ -4252,7 +4252,7 @@ impl RuntimeHost {
         authority_class: AuthorityClass,
         worktree: bool,
         template: Option<String>,
-        model_resolution: SpawnAgentModelResolution,
+        model_resolution: AgentModelResolution,
     ) -> Result<ChildTaskSpawn> {
         let parent_state = parent_runtime.agent_state().await?;
         let parent_agent_home = self.agent_data_dir(&parent_state.id);
@@ -4529,7 +4529,7 @@ impl RuntimeHost {
         initial_message: Option<String>,
         authority_class: AuthorityClass,
         template: Option<String>,
-        model_resolution: SpawnAgentModelResolution,
+        model_resolution: AgentModelResolution,
     ) -> Result<AgentCreateResult> {
         let parent_state = parent_runtime.agent_state().await?;
         let parent_agent_home = self.agent_data_dir(&parent_state.id);
@@ -5052,7 +5052,7 @@ impl RuntimeHostBridge {
         authority_class: AuthorityClass,
         worktree: bool,
         template: Option<String>,
-        model_resolution: SpawnAgentModelResolution,
+        model_resolution: AgentModelResolution,
     ) -> Result<ChildTaskSpawn> {
         self.host()?
             .spawn_child_task(
@@ -5607,13 +5607,13 @@ mod tests {
         assert!(!rendered.contains("Current ApplyPatch surface is a JSON/function tool"));
     }
 
-    fn inherited_model_resolution(provider: &str, model: &str) -> SpawnAgentModelResolution {
-        SpawnAgentModelResolution {
+    fn inherited_model_resolution(provider: &str, model: &str) -> AgentModelResolution {
+        AgentModelResolution {
             requested: None,
             resolved_provider: provider.to_string(),
             resolved_model: model.to_string(),
             resolved_parameters: None,
-            resolution_status: SpawnAgentModelResolutionStatus::Inherited,
+            resolution_status: AgentModelResolutionStatus::Inherited,
             policy_notes: Vec::new(),
         }
     }
@@ -7221,7 +7221,7 @@ mod tests {
                 None,
                 false,
                 None,
-                Some(crate::types::SpawnAgentModelRequest {
+                Some(crate::types::AgentModelRequest {
                     provider: "anthropic".into(),
                     model: "claude-haiku-4-5".into(),
                     reasoning_effort: Some("high".into()),
@@ -7239,7 +7239,7 @@ mod tests {
             .expect("spawn should return model resolution");
         assert_eq!(
             resolution.resolution_status,
-            SpawnAgentModelResolutionStatus::Accepted
+            AgentModelResolutionStatus::Accepted
         );
         assert_eq!(resolution.resolved_provider, "anthropic");
         assert_eq!(resolution.resolved_model, "claude-haiku-4-5");
@@ -7270,7 +7270,7 @@ mod tests {
                 None,
                 false,
                 None,
-                Some(crate::types::SpawnAgentModelRequest {
+                Some(crate::types::AgentModelRequest {
                     provider: "openai".into(),
                     model: "gpt-5.4".into(),
                     reasoning_effort: None,

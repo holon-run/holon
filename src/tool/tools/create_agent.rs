@@ -7,7 +7,7 @@ use crate::{
     host_registry::validate_agent_id_format,
     runtime::RuntimeHandle,
     tool::spec::typed_spec,
-    types::{AuthorityClass, CreateAgentRequest, SpawnAgentModelRequest, ToolCapabilityFamily},
+    types::{AgentModelRequest, AuthorityClass, CreateAgentRequest, ToolCapabilityFamily},
 };
 
 use super::{serialize_success, BuiltinToolDefinition};
@@ -24,7 +24,7 @@ pub(crate) struct CreateAgentArgs {
     pub(crate) name: Option<String>,
     pub(crate) initial_message: Option<String>,
     pub(crate) template: Option<String>,
-    pub(crate) model: Option<SpawnAgentModelRequest>,
+    pub(crate) model: Option<AgentModelRequest>,
 }
 
 pub(crate) fn definition() -> Result<BuiltinToolDefinition> {

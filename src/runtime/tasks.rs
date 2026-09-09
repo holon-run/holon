@@ -9,16 +9,16 @@ use crate::runtime_error::{
 use crate::tool::helpers::truncate_output_to_char_budget;
 use crate::tool::ToolError;
 use crate::types::{
-    brief_created_event_for, AgentProfilePreset, BriefKind, BriefRecord, ChildAgentWorkspaceMode,
-    CommandTaskStatusSnapshot, CompletionReportRequirement, CompletionReportState,
-    CreateAgentRequest, FailureArtifact, FailureArtifactCategory, InvokeAgentRequest,
-    InvokeAgentTarget, SpawnAgentModelRequest, SpawnAgentModelResolution,
-    SpawnAgentModelResolutionStatus, SpawnAgentResult, TaskInputResult, TaskKind, TaskListEntry,
-    TaskOutputResult, TaskOutputRetrievalStatus, TaskOutputSnapshot, TaskStatusSnapshot, TodoItem,
-    ToolArtifactRef, WaitConditionRecord, WaitConditionStatus, WorkItemCompletionIntent,
-    WorkItemContinuationFrame, WorkItemContinuationReturnPolicy, WorkItemContinuationState,
-    WorkItemDelegationRecord, WorkItemDelegationState, WorkItemPlanStatus, WorkItemReadiness,
-    WorkItemRecord, WorkItemState, CHILD_AGENT_TASK_KIND,
+    brief_created_event_for, AgentModelRequest, AgentModelResolution, AgentModelResolutionStatus,
+    AgentProfilePreset, BriefKind, BriefRecord, ChildAgentWorkspaceMode, CommandTaskStatusSnapshot,
+    CompletionReportRequirement, CompletionReportState, CreateAgentRequest, FailureArtifact,
+    FailureArtifactCategory, InvokeAgentRequest, InvokeAgentTarget, SpawnAgentResult,
+    TaskInputResult, TaskKind, TaskListEntry, TaskOutputResult, TaskOutputRetrievalStatus,
+    TaskOutputSnapshot, TaskStatusSnapshot, TodoItem, ToolArtifactRef, WaitConditionRecord,
+    WaitConditionStatus, WorkItemCompletionIntent, WorkItemContinuationFrame,
+    WorkItemContinuationReturnPolicy, WorkItemContinuationState, WorkItemDelegationRecord,
+    WorkItemDelegationState, WorkItemPlanStatus, WorkItemReadiness, WorkItemRecord, WorkItemState,
+    CHILD_AGENT_TASK_KIND,
 };
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -146,15 +146,13 @@ fn inherited_model_parameters(
     (!parameters.is_empty()).then_some(parameters)
 }
 
-fn inherited_spawn_model_resolution(
-    model: &crate::types::AgentModelState,
-) -> SpawnAgentModelResolution {
-    SpawnAgentModelResolution {
+fn inherited_spawn_model_resolution(model: &crate::types::AgentModelState) -> AgentModelResolution {
+    AgentModelResolution {
         requested: None,
         resolved_provider: model.effective_model.provider.as_str().to_string(),
         resolved_model: model.effective_model.model.clone(),
         resolved_parameters: inherited_model_parameters(model),
-        resolution_status: SpawnAgentModelResolutionStatus::Inherited,
+        resolution_status: AgentModelResolutionStatus::Inherited,
         policy_notes: Vec::new(),
     }
 }
@@ -633,7 +631,7 @@ impl RuntimeHandle {
         agent_id: Option<String>,
         worktree: bool,
         template: Option<String>,
-        model_request: Option<SpawnAgentModelRequest>,
+        model_request: Option<AgentModelRequest>,
     ) -> Result<SpawnAgentResult> {
         if !self.supports_child_agent_spawning() {
             return Err(anyhow::Error::from(
@@ -800,8 +798,8 @@ impl RuntimeHandle {
     pub(crate) async fn resolve_agent_model_request(
         &self,
         tool_name: &str,
-        request: Option<SpawnAgentModelRequest>,
-    ) -> Result<SpawnAgentModelResolution> {
+        request: Option<AgentModelRequest>,
+    ) -> Result<AgentModelResolution> {
         let Some(request) = request else {
             let inherited = self.model_state_for(&self.agent_state().await?);
             return Ok(inherited_spawn_model_resolution(&inherited));
@@ -900,12 +898,12 @@ impl RuntimeHandle {
             );
         }
 
-        Ok(SpawnAgentModelResolution {
+        Ok(AgentModelResolution {
             requested: Some(request),
             resolved_provider: availability.policy.model_ref.provider.as_str().to_string(),
             resolved_model: availability.policy.model_ref.model,
             resolved_parameters: (!resolved_parameters.is_empty()).then_some(resolved_parameters),
-            resolution_status: SpawnAgentModelResolutionStatus::Accepted,
+            resolution_status: AgentModelResolutionStatus::Accepted,
             policy_notes,
         })
     }
