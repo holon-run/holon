@@ -13,8 +13,9 @@ PDF as a simple editable text format.
 
 Common neutral backends include `pypdf` for page and metadata operations,
 `pdfplumber` for text and table inspection, ReportLab or `pdf-lib` for
-generation, Poppler for rendering, and qpdf for structural checks. OCR is a
-separate, explicitly selected path such as local Tesseract.
+generation, HTML/CSS plus a local browser for typography-heavy documents,
+Poppler for rendering, and qpdf for structural checks. OCR is a separate,
+explicitly selected path such as local Tesseract.
 
 ## When To Use
 
@@ -46,7 +47,11 @@ operation and report the limitation.
 - Use **pypdf** for page assembly, rotation, cropping, metadata, common forms,
   and supported encryption operations.
 - Use **pdfplumber** for positioned text and rule-based table extraction.
-- Use **ReportLab** or **pdf-lib** for deliberate PDF generation and drawing.
+- Prefer **HTML/CSS plus a local browser or WeasyPrint** for reports, proposals,
+  manuals, and other prose-heavy documents where typography and page design
+  matter.
+- Use **ReportLab** or **pdf-lib** for precise drawing, overlays, labels, forms,
+  and documents whose layout is naturally coordinate-driven.
 - Use **Poppler** tools for local text extraction or rendering when installed.
 - Use **qpdf** for structural validation and supported transformations.
 - Use **Tesseract** only for explicitly requested local OCR and retain the
@@ -64,17 +69,39 @@ document change rather than in-place prose editing.
    attachments, links, page boxes, fonts, and page count.
 3. Decide whether the task is extraction, page transformation, annotation,
    redaction, generation, or reconstruction.
-4. Select the narrowest local backend that supports the operation.
-5. Produce a new output without activating links or embedded content.
-6. Reopen the result and check page count, dimensions, metadata, bookmarks,
+4. For generation, establish the document type, audience, visual tone, page
+   size, language coverage, font files, hierarchy, color tokens, and recurring
+   components before writing rendering code. Read
+   [`references/generation.md`](references/generation.md) for the required
+   typography and layout workflow. The reusable
+   [`assets/chinese-report.css`](assets/chinese-report.css) is a neutral starting
+   point for polished Chinese or mixed Chinese/Latin reports, not a substitute
+   for matching the operator's requested brand or style.
+5. Select the narrowest local backend that supports the operation.
+6. Produce a new output without activating links or embedded content.
+7. Reopen the result and check page count, dimensions, metadata, bookmarks,
    forms, attachments, encryption state, and expected text.
-7. Render every changed page when possible and compare it with the intended
-   visual result.
-8. For extraction or OCR, sample the output against rendered pages and record
+8. Render every changed or generated page to images. Inspect the actual pages,
+   not only the source HTML or drawing commands, and revise visible defects
+   before delivery.
+9. For extraction or OCR, sample the output against rendered pages and record
    ambiguous tables, reading order, missing glyphs, and low-confidence text.
 
 ## Quality Rules
 
+- Never rely on Helvetica, Times, or another Latin-only base font for Chinese,
+  Japanese, or Korean text. Discover an appropriate local font, verify glyph
+  coverage, and ensure fonts are embedded or otherwise reliably available in
+  the produced PDF.
+- Use a deliberate type scale, spacing rhythm, margins, line length, and color
+  palette. A technically valid PDF with backend-default styling is not a
+  finished generated document.
+- For prose-heavy documents, prefer semantic flow layout over manually placing
+  every line. Prevent headings, tables, figures, and callouts from splitting in
+  visually confusing ways.
+- Check rendered pages for missing-glyph boxes, substituted fonts, clipping,
+  overlap, isolated headings, sparse spill pages, inconsistent spacing, weak
+  contrast, and unreadably dense tables.
 - Preserve intended page order, orientation, crop boxes, and dimensions.
 - Distinguish visual redaction from secure content removal; verify that redacted
   text and related objects are not extractable.
@@ -88,5 +115,6 @@ document change rather than in-place prose editing.
 
 Report the output path, page range and operation, tools used, whether OCR or any
 network service was used, structural and visual checks, signature or form
-impact, and extraction or OCR limitations. State explicitly when active content
-was present but not executed.
+impact, font family and embedding status for generated documents, and extraction
+or OCR limitations. State explicitly when active content was present but not
+executed.

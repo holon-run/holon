@@ -1,0 +1,305 @@
+@page {
+  size: A4;
+  margin: 18mm 18mm 20mm;
+}
+
+:root {
+  --font-sans: "Noto Sans CJK SC", "Source Han Sans SC", "PingFang SC",
+    "Microsoft YaHei", sans-serif;
+  --font-serif: "Noto Serif CJK SC", "Source Han Serif CN", "Songti SC",
+    serif;
+  --ink: #182230;
+  --muted: #667085;
+  --accent: #175cd3;
+  --accent-dark: #1849a9;
+  --accent-soft: #eff6ff;
+  --surface: #f8fafc;
+  --border: #d0d5dd;
+  --rule: #e4e7ec;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  font-size: 10.5pt;
+}
+
+body {
+  margin: 0;
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 1rem;
+  font-weight: 400;
+  line-height: 1.68;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+p,
+li {
+  orphans: 3;
+  widows: 3;
+}
+
+p {
+  margin: 0 0 0.82em;
+}
+
+a {
+  color: var(--accent-dark);
+  text-decoration-thickness: 0.06em;
+  text-underline-offset: 0.14em;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  break-after: avoid;
+  color: var(--ink);
+  font-weight: 700;
+  letter-spacing: -0.018em;
+  line-height: 1.28;
+  text-wrap: balance;
+}
+
+h1 {
+  margin: 0 0 0.7em;
+  font-size: 26pt;
+}
+
+h2 {
+  margin: 1.65em 0 0.65em;
+  padding-bottom: 0.32em;
+  border-bottom: 1px solid var(--rule);
+  font-size: 17pt;
+}
+
+h3 {
+  margin: 1.35em 0 0.52em;
+  font-size: 13pt;
+}
+
+h4 {
+  margin: 1.1em 0 0.4em;
+  font-size: 10.5pt;
+}
+
+ul,
+ol {
+  margin: 0.2em 0 1em;
+  padding-left: 1.5em;
+}
+
+li {
+  margin: 0.22em 0;
+  padding-left: 0.12em;
+}
+
+blockquote {
+  margin: 1.2em 0;
+  padding: 0.78em 1em;
+  border-left: 3px solid var(--accent);
+  background: var(--accent-soft);
+  color: #344054;
+}
+
+code,
+pre {
+  font-family: "Noto Sans Mono CJK SC", "SFMono-Regular", Consolas, monospace;
+}
+
+code {
+  padding: 0.08em 0.3em;
+  border-radius: 3px;
+  background: #f2f4f7;
+  font-size: 0.9em;
+}
+
+pre {
+  overflow-wrap: anywhere;
+  margin: 1em 0;
+  padding: 0.9em 1em;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #101828;
+  color: #f2f4f7;
+  font-size: 8.5pt;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+table {
+  width: 100%;
+  margin: 1.15em 0 1.4em;
+  border-collapse: collapse;
+  break-inside: avoid;
+  font-size: 9.2pt;
+  line-height: 1.5;
+}
+
+thead {
+  display: table-header-group;
+}
+
+tr {
+  break-inside: avoid;
+}
+
+th,
+td {
+  padding: 0.58em 0.68em;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+th {
+  background: var(--surface);
+  color: #344054;
+  font-weight: 700;
+}
+
+img,
+svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+figure {
+  margin: 1.2em 0 1.4em;
+  break-inside: avoid;
+}
+
+figcaption,
+.caption {
+  margin-top: 0.55em;
+  color: var(--muted);
+  font-size: 8.5pt;
+  line-height: 1.45;
+}
+
+.cover {
+  display: flex;
+  min-height: 236mm;
+  flex-direction: column;
+  justify-content: center;
+  break-after: page;
+}
+
+.cover::before {
+  width: 18mm;
+  height: 3px;
+  margin-bottom: 11mm;
+  background: var(--accent);
+  content: "";
+}
+
+.cover h1 {
+  max-width: 16.5em;
+  margin-bottom: 0.45em;
+  font-size: 30pt;
+}
+
+.cover .subtitle {
+  max-width: 34em;
+  margin: 0;
+  color: #475467;
+  font-size: 13pt;
+  line-height: 1.55;
+}
+
+.cover .meta {
+  margin-top: 12mm;
+  color: var(--muted);
+  font-size: 9pt;
+}
+
+.kicker {
+  margin-bottom: 0.75em;
+  color: var(--accent-dark);
+  font-size: 8.5pt;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.lead {
+  max-width: 38em;
+  margin-bottom: 1.25em;
+  color: #344054;
+  font-size: 11.5pt;
+  line-height: 1.72;
+  text-wrap: pretty;
+}
+
+.summary {
+  margin: 1.25em 0 1.5em;
+  padding: 1em 1.1em;
+  border: 1px solid #b2ccff;
+  border-radius: 7px;
+  background: var(--accent-soft);
+  break-inside: avoid;
+}
+
+.summary > :last-child,
+.callout > :last-child {
+  margin-bottom: 0;
+}
+
+.callout {
+  margin: 1.15em 0 1.4em;
+  padding: 0.9em 1em;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  break-inside: avoid;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin: 1.2em 0 1.5em;
+}
+
+.metric {
+  padding: 0.85em 0.9em;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  break-inside: avoid;
+}
+
+.metric .value {
+  display: block;
+  color: var(--accent-dark);
+  font-size: 18pt;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.metric .label {
+  display: block;
+  margin-top: 0.3em;
+  color: var(--muted);
+  font-size: 8.5pt;
+}
+
+.page-break {
+  break-before: page;
+}
+
+.keep-together {
+  break-inside: avoid;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.small {
+  font-size: 8.5pt;
+}
