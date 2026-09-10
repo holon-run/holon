@@ -27,6 +27,10 @@ rollback; disagreement is a hard blocker, never a precedence rule.
 focus fact. It may retain the WorkItem that owns an already admitted turn even
 after durable focus changes.
 
+The runtime does not infer stalled progress from provider rounds without a
+WorkItem mutation and does not inject periodic WorkItem progress reminders.
+Waiting, handoff, and completion state remain explicit lifecycle transitions.
+
 ## Invariants
 
 For every non-null canonical focus:

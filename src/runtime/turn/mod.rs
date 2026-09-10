@@ -104,12 +104,6 @@ const MIN_EXACT_TAIL_ROUNDS: usize = 2;
 pub(super) const CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS: usize = 256;
 const DEGRADED_ROUND_PROVENANCE_MARKER: &str = "[runtime: last turn content trimmed to fit prompt budget — truncated sections are marked inline]";
 const DEGRADED_ROUND_MINIMUM_CONTENT_CHARS: usize = 200;
-const WORK_ITEM_STALE_REMINDER_ROUNDS: usize = 10;
-const WORK_ITEM_STALE_REMINDER_COOLDOWN_ROUNDS: usize = 10;
-const WORK_ITEM_STALE_REMINDER_MAX_TOKENS: usize = 512;
-const WORK_ITEM_STALE_REMINDER_PLAN_LINE_LIMIT: usize = 8;
-const WORK_ITEM_STALE_REMINDER_PLAN_CHAR_LIMIT: usize = 1_200;
-const WORK_ITEM_STALE_REMINDER_TODO_LIMIT: usize = 8;
 const TURN_RECORD_SCAN_LIMIT: usize = 4096;
 const OPERATOR_INTERJECTION_HEADER: &str =
     "[Operator message received while this turn was in progress]";

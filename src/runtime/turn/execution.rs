@@ -50,17 +50,11 @@ use super::projection::{
     build_round_estimated_tokens, build_turn_local_projection_with_runtime_reminder,
     normalize_provider_attempt_timing, provider_attempt_model_state, TurnLocalProjectionOutcome,
 };
-use super::reminders::{
-    build_turn_budget_warning, build_work_item_stale_reminder,
-    maybe_reset_work_item_stale_reminder_cooldown, round_invalidates_checkpoint_anchor,
-    round_updated_work_item, runtime_reminder_fits_baseline, work_item_plan_status_label,
-    work_item_stale_reminder_cooldown_rounds, work_item_stale_reminder_rounds,
-};
+use super::reminders::{build_turn_budget_warning, round_invalidates_checkpoint_anchor};
 use super::{
     append_follow_up_user_texts, render_operator_interjection_text, AgentLoopOutcome,
     LoopControlOptions, ProviderRecoveryDirective, TurnModelSelection, TurnRoundRecord,
     MAX_OUTPUT_RECOVERY_ATTEMPTS, ROUND_TEXT_PREVIEW_LIMIT,
-    WORK_ITEM_STALE_REMINDER_COOLDOWN_ROUNDS,
 };
 use super::{truncate_preview, CHECKPOINT_RESUME_PROMPT};
 use crate::runtime::{
@@ -1126,8 +1120,6 @@ impl TurnExecution<'_> {
         let mut last_assistant_citations = Vec::<Citation>::new();
         let mut last_assistant_round_id: Option<String> = None;
         let mut max_output_recovery_count = 0usize;
-        let mut rounds_since_work_item_update = 0usize;
-        let mut rounds_since_work_item_reminder = work_item_stale_reminder_cooldown_rounds();
         let mut checkpoint_state = {
             let guard = runtime.inner.agent.lock().await;
             checkpoint_state_from_last_terminal(guard.state.last_turn_terminal.as_ref())
@@ -1421,78 +1413,6 @@ impl TurnExecution<'_> {
                 let checkpoint_request_id =
                     Some(format!("turn-{turn_index}-round-{round}-checkpoint"));
                 let mut prompt_frame = build_provider_prompt_frame(&effective_prompt);
-                let reminder_rounds = work_item_stale_reminder_rounds();
-                let reminder_cooldown_rounds = work_item_stale_reminder_cooldown_rounds();
-                let stale_work_item_reminder = if rounds_since_work_item_update >= reminder_rounds
-                    && rounds_since_work_item_reminder >= reminder_cooldown_rounds
-                {
-                    let current_work_item_id = {
-                        let guard = runtime.inner.agent.lock().await;
-                        guard.state.current_work_item_id.clone()
-                    };
-                    current_work_item_id
-                        .as_deref()
-                        .and_then(|id| runtime.inner.storage.latest_work_item(id).ok().flatten())
-                        .map(|work_item| {
-                            let reminder = build_work_item_stale_reminder(
-                                &work_item,
-                                rounds_since_work_item_update,
-                            );
-                            (work_item, reminder)
-                        })
-                } else {
-                    None
-                };
-                let stale_work_item_reminder = if let Some((work_item, reminder)) =
-                    stale_work_item_reminder
-                {
-                    // Continuation reminders are part of the complete provider request, so this
-                    // check uses the model prompt budget rather than the recent-turns sub-budget.
-                    let request_prompt_budget = context_config.prompt_budget_estimated_tokens;
-                    if runtime_reminder_fits_baseline(
-                        &prompt_frame,
-                        &available_tools,
-                        request_prompt_budget,
-                        &reminder,
-                    ) {
-                        Some((work_item, reminder))
-                    } else {
-                        let event = AuditEvent::legacy(
-                            "work_item_stale_reminder_skipped",
-                            serde_json::json!({
-                                "agent_id": agent_id,
-                                "round": round,
-                                "work_item_id": work_item.id,
-                                "plan_status": work_item_plan_status_label(work_item.plan_status),
-                                "rounds_since_work_item_update": rounds_since_work_item_update,
-                                "cooldown_rounds": reminder_cooldown_rounds,
-                                "reason": "baseline_budget",
-                            }),
-                        );
-                        runtime.inner.storage.append_event(&event)?;
-                        None
-                    }
-                } else {
-                    None
-                };
-                if let Some((work_item, reminder)) = stale_work_item_reminder.as_ref() {
-                    runtime.inner.storage.append_event(&AuditEvent::legacy(
-                        "work_item_stale_reminder_injected",
-                        serde_json::json!({
-                            "agent_id": agent_id,
-                            "round": round,
-                            "work_item_id": work_item.id,
-                            "plan_status": work_item_plan_status_label(work_item.plan_status),
-                            "rounds_since_work_item_update": rounds_since_work_item_update,
-                            "cooldown_rounds": reminder_cooldown_rounds,
-                            "text_preview": truncate_preview(reminder, ROUND_TEXT_PREVIEW_LIMIT),
-                        }),
-                    ))?;
-                }
-                maybe_reset_work_item_stale_reminder_cooldown(
-                    &mut rounds_since_work_item_reminder,
-                    stale_work_item_reminder.is_some(),
-                );
                 let budget_warning = if let Some(budget) = turn_budget.as_ref() {
                     let turns_elapsed = turn_index.saturating_sub(budget.run_start_turn_index);
 
@@ -1515,17 +1435,7 @@ impl TurnExecution<'_> {
                 } else {
                     None
                 };
-                let runtime_reminder: Option<String> = match (
-                    stale_work_item_reminder
-                        .as_ref()
-                        .map(|(_, reminder)| reminder.as_str()),
-                    budget_warning.as_deref(),
-                ) {
-                    (Some(work_item), Some(budget)) => Some(format!("{work_item}\n\n{budget}")),
-                    (Some(reminder), None) => Some(reminder.to_string()),
-                    (None, Some(budget)) => Some(budget.to_string()),
-                    (None, None) => None,
-                };
+                let runtime_reminder = budget_warning;
                 let mut recent_turns_budget = effective_prompt.recent_turns_initial_budget();
                 let mut recent_turns_retry_attempts = 0usize;
                 let projection = loop {
@@ -3245,13 +3155,6 @@ impl TurnExecution<'_> {
             if round_invalidates_checkpoint_anchor(&round_record) {
                 checkpoint_state.anchor_generation =
                     checkpoint_state.anchor_generation.saturating_add(1);
-            }
-            if round_updated_work_item(&round_record) {
-                rounds_since_work_item_update = 0;
-                rounds_since_work_item_reminder = WORK_ITEM_STALE_REMINDER_COOLDOWN_ROUNDS;
-            } else {
-                rounds_since_work_item_update = rounds_since_work_item_update.saturating_add(1);
-                rounds_since_work_item_reminder = rounds_since_work_item_reminder.saturating_add(1);
             }
             completed_rounds.push(round_record);
 

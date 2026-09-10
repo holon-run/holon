@@ -499,10 +499,12 @@ Events:
 - `work_item_enqueue_requested`
 - `work_item_turn_end_committed`
 - `work_item_turn_end_commit_skipped`
-- `work_item_stale_reminder_injected`
-- `work_item_stale_reminder_skipped`
 - `work_item_waiting_intents_cancelled`
 - `missing_current_work_item_before_wait`
+
+Historical logs may also contain `work_item_stale_reminder_injected` and
+`work_item_stale_reminder_skipped`. The runtime no longer emits these events,
+but presentation keeps decoding them for existing audit history.
 
 Policy:
 

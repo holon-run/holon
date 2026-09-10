@@ -7,8 +7,7 @@ use crate::tool::{
     ToolError, ToolSpec,
 };
 use crate::types::{
-    AuthorityClass, MessageBody, MessageKind, MessageOrigin, Priority, TodoItemState,
-    TurnTerminalCheckpointRecord, WorkItemPlanStatus, WorkItemRecord,
+    AuthorityClass, MessageBody, MessageKind, MessageOrigin, Priority, TurnTerminalCheckpointRecord,
 };
 use chrono::Utc;
 
@@ -20,25 +19,6 @@ use super::projection::*;
 use super::reminders::*;
 use super::tool_summary::*;
 use super::*;
-
-fn fixture_plan_artifact(
-    work_item: &WorkItemRecord,
-    preview: impl Into<String>,
-) -> crate::types::WorkItemPlanArtifact {
-    let preview = preview.into();
-    crate::types::WorkItemPlanArtifact {
-        owner_agent_id: work_item.agent_id.clone(),
-        workspace_id: crate::types::agent_home_workspace_id(&work_item.agent_id),
-        workspace_alias: Some(crate::types::AGENT_HOME_WORKSPACE_ID.into()),
-        relative_path: crate::work_item_plan::plan_relative_path(&work_item.id),
-        path: std::path::PathBuf::from(format!("/tmp/{}/plan.md", work_item.id)),
-        hash: "sha256:test".into(),
-        bytes: preview.len() as u64,
-        updated_at: chrono::Utc::now(),
-        preview,
-        preview_complete: true,
-    }
-}
 
 #[tokio::test]
 async fn persist_turn_record_uses_turn_id_not_numeric_sequence_collisions() {
@@ -647,44 +627,9 @@ fn fixture_round_with_tool_result(
 }
 
 #[test]
-fn build_work_item_stale_reminder_includes_current_work_item_snapshot() {
-    let mut work_item = WorkItemRecord::new(
-        "default",
-        "Ship work item reminder tests",
-        crate::types::WorkItemState::Open,
-    );
-    work_item.id = "work_reminder".into();
-    work_item.plan_status = WorkItemPlanStatus::Ready;
-    work_item.plan_artifact = Some(fixture_plan_artifact(
-        &work_item,
-        "Patch runtime reminder.\nRun focused tests.",
-    ));
-    work_item.todo_list = vec![
-        crate::types::TodoItem {
-            text: "Patch runtime reminder".into(),
-            state: TodoItemState::InProgress,
-        },
-        crate::types::TodoItem {
-            text: "Run focused tests".into(),
-            state: TodoItemState::Pending,
-        },
-    ];
-
-    let reminder = build_work_item_stale_reminder(&work_item, 10);
-
-    assert!(reminder.contains("[Runtime-generated work item progress reminder]"));
-    assert!(reminder.contains("- Id: work_reminder"));
-    assert!(reminder.contains("- Objective: Ship work item reminder tests"));
-    assert!(reminder.contains("- Plan status: ready"));
-    assert!(reminder.contains("Patch runtime reminder."));
-    assert!(reminder.contains("  - [in_progress] Patch runtime reminder"));
-    assert!(reminder.contains("  - [pending] Run focused tests"));
-}
-
-#[test]
 fn build_turn_local_projection_includes_runtime_reminder() {
     let prompt_frame = fixture_prompt_frame();
-    let reminder = "[Runtime-generated work item progress reminder]\nCall UpdateWorkItem if material progress emerged.";
+    let reminder = build_turn_budget_warning(5, 4);
 
     let projection = build_turn_local_projection_with_runtime_reminder(
         &prompt_frame,
@@ -696,7 +641,7 @@ fn build_turn_local_projection_includes_runtime_reminder() {
         4_000,
         120,
         2_500,
-        Some(reminder),
+        Some(&reminder),
     );
 
     let TurnLocalProjectionOutcome::Projection(projection) = projection else {
@@ -704,86 +649,9 @@ fn build_turn_local_projection_includes_runtime_reminder() {
     };
     assert!(projection.conversation.iter().any(|message| matches!(
         message,
-        ConversationMessage::UserText(text) if text == reminder
-    )));
-    assert!(projection.compaction.is_none());
-}
-
-#[test]
-fn stale_reminder_cooldown_resets_only_when_reminder_is_injected() {
-    let mut rounds_since_work_item_reminder = 12usize;
-    maybe_reset_work_item_stale_reminder_cooldown(&mut rounds_since_work_item_reminder, false);
-    assert_eq!(
-        rounds_since_work_item_reminder, 12,
-        "skipped reminder must not consume cooldown"
-    );
-
-    maybe_reset_work_item_stale_reminder_cooldown(&mut rounds_since_work_item_reminder, true);
-    assert_eq!(
-        rounds_since_work_item_reminder, 0,
-        "only injected reminder should reset cooldown"
-    );
-}
-
-#[test]
-fn large_work_item_stale_reminder_does_not_force_baseline_over_budget() {
-    let mut work_item = WorkItemRecord::new(
-        "default",
-        "Keep reminder bounded with large plan and todo list",
-        crate::types::WorkItemState::Open,
-    );
-    work_item.id = "work_large_reminder".into();
-    work_item.plan_status = WorkItemPlanStatus::Ready;
-    work_item.plan_artifact = Some(fixture_plan_artifact(
-        &work_item,
-        (0..80)
-            .map(|idx| format!("step {idx}: {}", "inspect and verify ".repeat(40)))
-            .collect::<Vec<_>>()
-            .join("\n"),
-    ));
-    work_item.todo_list = (0..80)
-        .map(|idx| crate::types::TodoItem {
-            text: format!("todo {idx}: {}", "finish bounded work ".repeat(30)),
-            state: if idx % 3 == 0 {
-                TodoItemState::Completed
-            } else if idx % 3 == 1 {
-                TodoItemState::InProgress
-            } else {
-                TodoItemState::Pending
-            },
-        })
-        .collect();
-    let reminder = build_work_item_stale_reminder(&work_item, 10);
-    let prompt_frame = fixture_prompt_frame();
-
-    assert!(reminder.contains("... plan truncated"));
-    assert!(!reminder.contains("[completed]"));
-    assert!(runtime_reminder_fits_baseline(
-        &prompt_frame,
-        &[],
-        4_000,
-        &reminder
-    ));
-    let projection = build_turn_local_projection_with_runtime_reminder(
-        &prompt_frame,
-        &[],
-        &[],
-        &TurnLocalCheckpointState::default(),
-        Some("req-large".into()),
-        4_000,
-        4_000,
-        120,
-        2_500,
-        Some(&reminder),
-    );
-
-    let TurnLocalProjectionOutcome::Projection(projection) = projection else {
-        panic!("expected bounded reminder to fit baseline");
-    };
-    assert!(projection.conversation.iter().any(|message| matches!(
-        message,
         ConversationMessage::UserText(text) if text == &reminder
     )));
+    assert!(projection.compaction.is_none());
 }
 
 fn checkpoint_state_with_latest(
@@ -2995,67 +2863,6 @@ fn round_does_not_invalidate_when_no_state_mutations() {
 fn round_does_not_invalidate_when_empty_envelopes() {
     let round = fixture_round(1, "text");
     assert!(!round_invalidates_checkpoint_anchor(&round));
-}
-
-// -----------------------------------------------------------------------
-// round_updated_work_item tests
-// -----------------------------------------------------------------------
-
-#[test]
-fn round_updated_work_item_true_for_successful_work_item_tools() {
-    for tool_name in [
-        "CreateWorkItem",
-        "PickWorkItem",
-        "UpdateWorkItem",
-        "CompleteWorkItem",
-    ] {
-        let mut round = fixture_round(1, "text");
-        round.tool_result_envelopes = vec![ToolResultEnvelope {
-            tool_name: tool_name.to_string(),
-            status: ToolResultStatus::Success,
-            summary_text: None,
-            result: Some(serde_json::json!({})),
-            error: None,
-        }];
-        assert!(
-            round_updated_work_item(&round),
-            "{tool_name} success should count as work item update"
-        );
-    }
-}
-
-#[test]
-fn round_updated_work_item_false_for_apply_patch() {
-    let mut round = fixture_round(1, "text");
-    round.tool_result_envelopes = vec![ToolResultEnvelope {
-        tool_name: "ApplyPatch".to_string(),
-        status: ToolResultStatus::Success,
-        summary_text: None,
-        result: Some(serde_json::json!({})),
-        error: None,
-    }];
-    assert!(!round_updated_work_item(&round));
-}
-
-#[test]
-fn round_updated_work_item_false_for_failed_work_item_tool() {
-    let mut round = fixture_round(1, "text");
-    round.tool_result_envelopes = vec![ToolResultEnvelope {
-        tool_name: "CreateWorkItem".to_string(),
-        status: ToolResultStatus::Error,
-        summary_text: None,
-        result: None,
-        error: Some(ToolError {
-            kind: "invalid".to_string(),
-            message: "bad".to_string(),
-            domain: None,
-            details: None,
-            recovery_hint: None,
-            retryable: false,
-            source_chain: Vec::new(),
-        }),
-    }];
-    assert!(!round_updated_work_item(&round));
 }
 
 // -----------------------------------------------------------------------
