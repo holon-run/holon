@@ -250,8 +250,11 @@ One transaction:
 9. write completion/final-delivery outbox records;
 10. close the attempt and commit.
 
-Terminal tools such as `WaitFor`, `CompleteWorkItem`, execution-bound
-`PickWorkItem`, and explicit pause/fail/yield lower directly to settlement.
+Terminal tools such as `WaitFor`, execution-bound `CompleteWorkItem`,
+execution-bound `PickWorkItem`, and explicit pause/fail/yield lower directly
+to settlement. `CompleteWorkItem` targeting another owned, non-in-flight
+WorkItem is detached terminalization: it updates that target through the same
+completion planner without settling the unrelated current execution.
 The provider/tool loop may prepare a terminal intent, but it must not publish a
 successful terminal tool result until the transaction containing the source
 queue terminal state, Turn terminal record, attempt outcome, owner state, and
@@ -265,7 +268,8 @@ transition is `Deferred -> Success` inside `CompletionCommit`, or
 `Deferred -> Interrupted` inside any competing terminal Turn transaction.
 `Deferred` must never survive a terminal Turn.
 
-For `CompleteWorkItem`, this transaction is the `CompletionCommit`. It also
+For execution-bound `CompleteWorkItem`, this transaction is the
+`CompletionCommit`. It also
 binds the result brief, completes the legacy WorkItem, records the successful
 tool execution, cancels child waits, resumes or cancels the matching
 continuation frame, and applies the parent canonical transition through the
@@ -273,6 +277,13 @@ same WorkItem outcome planner used by ordinary settlement. The committed
 terminal receipt is the only authority for success. A standalone Turn writer
 must reject a prepared completion, and replay of the same command must not
 duplicate Turn, queue, audit, brief, tool, or index-outbox facts.
+
+Detached completion still atomically binds the result brief, completes the
+target WorkItem, updates its canonical execution record, cancels target-owned
+waits, and applies any safe continuation return. It must preserve unrelated
+queue claims, open attempts, Run/Turn ownership, and focus. Control completion
+of a target with an open in-flight attempt returns conflict with no partial
+terminalization.
 
 `WaitFor(task_result)` reads the task and rejoin authority inside the same
 transaction:

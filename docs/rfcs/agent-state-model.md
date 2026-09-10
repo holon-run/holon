@@ -34,7 +34,7 @@ Holon agents are long-lived runtime actors. A single agent can have:
 - active command or child-agent tasks;
 - external triggers and waiting intents;
 - active model, tool, and execution capabilities;
-- user-facing state shown through `/agents`, `/state`, `AgentGet`, or TUI.
+- user-facing state shown through `/agents`, `/state`, `GetAgent`, or TUI.
 
 Today these concepts are easy to collapse into vague labels such as
 `sleeping`, `idle`, `waiting`, or `running`. Those labels hide important
@@ -94,7 +94,7 @@ The repository already has several relevant surfaces:
 - command and child task lifecycle records;
 - waiting intents and external trigger capability records;
 - runtime closure and scheduler logic;
-- `AgentSummary`, `AgentGet`, `/agents`, `/state`, and TUI-facing projections;
+- `AgentSummary`, `GetAgent`, `/agents`, `/state`, and TUI-facing projections;
 - model/provider availability data exposed independently through the model
   capability surface.
 
@@ -224,7 +224,7 @@ Authoritative source: derived projection assembled from the above layers.
 
 This layer answers:
 
-- what should `/agents`, `/state`, `AgentGet`, and TUI show;
+- what should `/agents`, `/state`, `GetAgent`, and TUI show;
 - what status should be stable enough for clients to depend on;
 - what details are diagnostic and may remain runtime-internal.
 
@@ -361,7 +361,7 @@ Should expose the bootstrap projection needed by the current client without
 becoming the canonical store for every runtime record. Large or independently
 scoped capability data should stay on dedicated endpoints where possible.
 
-### `AgentGet`
+### `GetAgent`
 
 Should provide a richer agent-plane projection, including derived posture and
 compact lineage/task/work summaries. It should not be treated as a transcript
@@ -408,7 +408,7 @@ Scheduler does not own:
 - Add an internal derived `AgentSchedulingPosture`.
 - Compute it from lifecycle, active turn, queue, WorkItem scheduling state,
   task, and wait data.
-- Surface it in `AgentGet` and compact API projections.
+- Surface it in `GetAgent` and compact API projections.
 
 ### Phase 3: Align closure and scheduler behavior
 
@@ -444,7 +444,7 @@ Scheduler does not own:
 - Which existing `AgentSummary` fields should be classified as stable,
   diagnostic, or deprecated?
 - How much wait detail should be exposed in compact `/agents` responses versus
-  richer `AgentGet` responses?
+  richer `GetAgent` responses?
 - Should archived or terminal agents retain their last derived posture for
   historical display, or always collapse to `Archived`?
 

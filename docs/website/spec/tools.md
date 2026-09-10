@@ -35,11 +35,11 @@ Tools are grouped by capability family for authority gating:
 
 | Family | Tools | Authority |
 |--------|-------|-----------|
-| `CoreAgent` | `WaitFor`, `AgentGet`, `Enqueue`, WorkItem tools, `MemorySearch`, `MemoryGet` | All agent profiles |
+| `CoreAgent` | `WaitFor`, `GetAgent`, `Enqueue`, WorkItem tools, `MemorySearch`, `MemoryGet` | All agent profiles |
 | `LocalEnvironment` | `ExecCommand`, `ExecCommandBatch`, `ApplyPatch`, `GetWorkspaceState`, `SwitchWorkspace`, `CreateWorktree` | All profiles |
 | `AuthorityExpanding` | `AttachWorkspace`, `DetachWorkspace`, `RemoveWorktree` | Public named agents |
 | `Web` | `WebFetch`, `WebSearch` | All profiles |
-| `AgentCreation` | `SpawnAgent` | All profiles |
+| `AgentCreation` | `CreateAgent`, `InvokeAgent` | All profiles |
 
 Operator notification records, delivery callbacks, and UI rendering remain
 runtime-owned capabilities. They are not part of the model-facing tool
@@ -57,7 +57,7 @@ registry and machine-readable schema inventory.
 | `PickWorkItem` | Set current focus |
 | `GetWorkItem` | Read single WorkItem with plan preview |
 | `ListWorkItems` | Query with filters |
-| `CompleteWorkItem` | Mark complete; promote same-round assistant text as the terminal completion report |
+| `CompleteWorkItem` | Complete an owned target by ID; promote same-round assistant text as its canonical completion report |
 | `WaitFor` | Record task, external, or operator waiting state and yield |
 
 ### Task control plane
@@ -76,10 +76,11 @@ registry and machine-readable schema inventory.
 
 | Tool | Purpose |
 |------|---------|
-| `AgentGet` | Read current agent-plane summary |
+| `GetAgent` | Read current agent-plane summary |
 | `WaitFor` | Signal turn-end after recording explicit wait state |
 | `Enqueue` | Schedule self-follow-up message |
-| `SpawnAgent` | Delegate work to a child agent |
+| `CreateAgent` | Create a long-lived, addressable agent |
+| `InvokeAgent` | Delegate work through a parent-supervised task handle |
 
 ### Workspace plane
 

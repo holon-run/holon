@@ -913,6 +913,20 @@ const en = {
     deleteConfirmPrompt: "Type {{id}} to confirm deletion. This cannot be undone.",
     deleteConfirmLabel: "Type agent ID to confirm",
     cascadePrivateChildren: "Also delete private child agents",
+    // Incarnation
+    incarnationBadge: "Incarnation {{value}}",
+    incarnationTitle:
+      "This id was explicitly recreated after a completed deletion; incarnation {{value}} is a fresh identity and does not inherit the previous agent's state.",
+    // Rename
+    rename: "Rename",
+    renameAria: "Rename agent",
+    nameLabel: "Name",
+    renamePlaceholder: "Display name",
+    renameNameRequired: "Name cannot be empty.",
+    renameNameTooLong: "Name must be at most 64 characters.",
+    renameNameInvalidChars: "Name cannot contain control characters or \"/\", \"\\\", \":\".",
+    renameNameConflict: "This name is already in use.",
+    renameFailed: "Rename failed: {{message}}",
     deletingPhase: "Deleting — {{phase}}",
     switchModelHint: "Applies immediately when idle; otherwise on the next run.",
     runtimeDefault: "Runtime default",

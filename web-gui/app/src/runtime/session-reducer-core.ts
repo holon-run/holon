@@ -665,7 +665,7 @@ function projectKnownToolExecution(
   if (toolName === "UseWorkspace") return projectUseWorkspaceTool(payload);
   if (toolName === "Enqueue") return projectEnqueueTool(payload);
   if (toolName === "GenerateImage") return projectGenerateImageTool(payload);
-  if (toolName === "AgentGet") return projectAgentGetTool(payload);
+  if (toolName === "GetAgent") return projectGetAgentTool(payload);
   if (toolName === "ListModelProviders") return projectListModelProvidersTool(payload);
   if (toolName === "ListProviderModels") return projectListProviderModelsTool(payload);
   if (toolName === "WaitFor") return projectWaitForTool(payload);
@@ -741,7 +741,7 @@ function isReadControlTool(toolName: string): boolean {
     toolName === "GetWorkItem" ||
     toolName === "MemorySearch" ||
     toolName === "MemoryGet" ||
-    toolName === "AgentGet" ||
+    toolName === "GetAgent" ||
     toolName === "ListModelProviders" ||
     toolName === "ListProviderModels" ||
     isTimerTool(toolName)
@@ -1264,7 +1264,7 @@ function projectGenerateImageTool(payload: Record<string, unknown> | undefined):
   return { body, detail: undefined };
 }
 
-function projectAgentGetTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+function projectGetAgentTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
   const input = asRecord(payload?.input);
   const agentId = stringField(input, "agent_id") ?? stringField(payload, "agent_id");
   const result = unwrapToolResult(payload);
@@ -1607,7 +1607,7 @@ function toolFriendlyLabel(toolName: string, failed: boolean): string {
   if (toolName === "UseWorkspace") return failed ? "Workspace switch failed" : "Switched workspace";
   if (toolName === "Enqueue") return failed ? "Enqueue failed" : "Enqueued follow-up";
   if (toolName === "GenerateImage") return failed ? "Image generation failed" : "Generated image";
-  if (toolName === "AgentGet") return failed ? "Agent inspection failed" : "Inspected agent";
+  if (toolName === "GetAgent") return failed ? "Agent inspection failed" : "Inspected agent";
   if (toolName === "ListModelProviders") return failed ? "Provider list failed" : "Listed model providers";
   if (toolName === "ListProviderModels") return failed ? "Model list failed" : "Listed provider models";
   if (toolName === "CreateTimer") return failed ? "Timer creation failed" : "Created timer";

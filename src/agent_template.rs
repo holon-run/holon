@@ -57,6 +57,7 @@ pub const REQUIRED_AGENT_HOME_GUIDANCE: &str = r#"## Holon Agent Home
 - `notes/` is ordinary working notes.
 - `work/` is for non-project-local work artifacts. Project-scoped files and memory belong in the active project workspace.
 - `skills/` is for agent-local skills.
+- `tmp/` is for short-lived working files. Prefer it over the system temp directory for intermediate artifacts that may be referenced from tool results or history (for example images inspected with ViewImage), because system temp files can be cleaned up independently and break those references. Do not keep anything there that must survive; contents may be cleaned up at any time.
 - `.holon/` is runtime-owned state, ledger, index, and cache storage. Do not edit it as ordinary agent-authored files.
 "#;
 
@@ -2962,6 +2963,7 @@ pub fn ensure_agent_home_layout(agent_home: &Path) -> Result<()> {
         agent_home.join("memory"),
         agent_home.join("notes"),
         agent_home.join("work"),
+        agent_home.join("tmp"),
         agent_home.join("work-items"),
         agent_home.join("skills"),
         agent_home.join(".holon/state"),
@@ -3866,6 +3868,7 @@ mod tests {
         assert!(agent_memory_operator_path(&agent_home).is_file());
         assert!(agent_home.join("notes").is_dir());
         assert!(agent_home.join("work").is_dir());
+        assert!(agent_home.join("tmp").is_dir());
         assert!(agent_home.join(".holon/state").is_dir());
         assert!(agent_home.join(".holon/ledger").is_dir());
         assert!(agent_home.join(".holon/indexes").is_dir());

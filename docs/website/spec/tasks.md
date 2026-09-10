@@ -28,7 +28,7 @@ terminal re-entry, and supervision surfaces.
 | `TaskKind` | Description |
 |------------|-------------|
 | `CommandTask` | Shell command execution via `ExecCommand` |
-| `ChildAgentTask` | Parent-supervised delegated child agent via `SpawnAgent` |
+| `ChildAgentTask` | Parent-supervised delegated agent via `InvokeAgent` |
 | `SleepJob` | Internal sleep timer (not model-visible) |
 | `SubagentTask` | Legacy child agent kind (migrating to `ChildAgentTask`) |
 | `WorktreeSubagentTask` | Legacy worktree-isolated child agent (migrating) |
@@ -36,7 +36,7 @@ terminal re-entry, and supervision surfaces.
 ## Task lifecycle
 
 ```text
-              ExecCommand / SpawnAgent
+              ExecCommand / InvokeAgent
                        │
                        ▼
                  ┌──────────┐

@@ -138,7 +138,7 @@ current WorkItem is the focus for the current turn:
 | `PickWorkItem` | Set current focus to an existing open WorkItem; optionally clear a resolved blocker |
 | `GetWorkItem` | Read a single WorkItem with plan preview |
 | `ListWorkItems` | Query with filters: all, open, completed, current, queued, blocked, waiting_for_operator, runnable |
-| `CompleteWorkItem` | Mark complete; bound assistant text is promoted as the completion report |
+| `CompleteWorkItem` | Complete an owned target by ID; bound assistant text is promoted as its completion report |
 | `WaitFor` | Attach a task, external, or operator wait to the current WorkItem and yield |
 
 **Key contract:**
@@ -159,6 +159,12 @@ current WorkItem is the focus for the current turn:
   written immediately before the tool call in the same assistant round. A
   tool-only call instead returns an `awaiting_completion_report` receipt and
   requests one text-only follow-up round.
+- Completing the WorkItem bound to the current execution settles that
+  execution and ends the Turn. Completing another owned, non-in-flight target
+  is detached: the current execution, Run, focus, and Turn continue unchanged.
+- The control completion endpoint cannot complete a target with an open
+  in-flight execution; it returns conflict rather than clearing or replacing
+  the execution binding.
 - The runtime binds a non-empty report to the same execution, WorkItem revision,
   completion request, and source tool call before atomically committing the
   `Open -> Completed` transition, canonical result brief, focus and wait

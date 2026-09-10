@@ -11,7 +11,6 @@ use crate::{
     types::{AuthorityClass, ToolCapabilityFamily},
 };
 
-pub(crate) mod agent_get;
 pub(crate) mod apply_patch_tool;
 pub(crate) mod attach_workspace;
 pub(crate) mod cancel_external_trigger;
@@ -25,6 +24,7 @@ pub(crate) mod enqueue;
 pub(crate) mod exec_command;
 pub(crate) mod exec_command_batch;
 pub(crate) mod generate_image;
+pub(crate) mod get_agent;
 pub(crate) mod get_work_item;
 pub(crate) mod get_workspace_state;
 pub(crate) mod invoke_agent;
@@ -71,7 +71,7 @@ pub(crate) fn builtin_tool_definitions() -> Result<Vec<BuiltinToolDefinition>> {
         timer::list_definition()?,
         timer::get_definition()?,
         timer::cancel_definition()?,
-        agent_get::definition()?,
+        get_agent::definition()?,
         enqueue::definition()?,
         create_agent::definition()?,
         invoke_agent::definition()?,
@@ -171,7 +171,7 @@ fn execute_builtin_tool_inner<'a>(
         timer::LIST_NAME => Box::pin(timer::list(runtime, &call.input)),
         timer::GET_NAME => Box::pin(timer::get(runtime, &call.input)),
         timer::CANCEL_NAME => Box::pin(timer::cancel(runtime, &call.input)),
-        agent_get::NAME => Box::pin(agent_get::execute(
+        get_agent::NAME => Box::pin(get_agent::execute(
             runtime,
             agent_id,
             authority_class,
@@ -497,7 +497,7 @@ mod tests {
 
     fn description_path(tool_name: &str) -> Option<&'static str> {
         Some(match tool_name {
-            "AgentGet" => "src/tool/tool_descriptions/agent_get.md",
+            "GetAgent" => "src/tool/tool_descriptions/get_agent.md",
             "ApplyPatch" => "src/tool/tool_descriptions/apply_patch_unified_diff_json.md",
             "AttachWorkspace" => "src/tool/tool_descriptions/attach_workspace.md",
             "CancelExternalTrigger" => "src/tool/tool_descriptions/cancel_external_trigger.md",
@@ -575,12 +575,12 @@ mod tests {
     #[test]
     fn non_command_tools_default_to_canonical_json_render() {
         let result = ToolResult::success(
-            "AgentGet",
+            "GetAgent",
             serde_json::json!({"agent": {"id": "default"}}),
             None,
         );
         let rendered = render_tool_result_for_model(&result).unwrap();
-        assert!(rendered.starts_with("{\"tool_name\":\"AgentGet\""));
+        assert!(rendered.starts_with("{\"tool_name\":\"GetAgent\""));
     }
 
     #[test]

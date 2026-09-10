@@ -9,8 +9,8 @@ use crate::{
     runtime_error::describe_runtime_error,
     tool::{error::ToolError, spec::typed_spec},
     types::{
-        AuthorityClass, ChildAgentWorkspaceMode, InvokeAgentRequest, InvokeAgentTarget,
-        SpawnAgentModelRequest, ToolCapabilityFamily,
+        AgentModelRequest, AuthorityClass, ChildAgentWorkspaceMode, InvokeAgentRequest,
+        InvokeAgentTarget, ToolCapabilityFamily,
     },
 };
 
@@ -31,7 +31,7 @@ pub(crate) enum InvokeAgentToolTarget {
         template: Option<String>,
         #[serde(default)]
         workspace_mode: ChildAgentWorkspaceMode,
-        model: Option<SpawnAgentModelRequest>,
+        model: Option<AgentModelRequest>,
     },
 }
 
@@ -58,6 +58,7 @@ pub(crate) async fn execute(
     authority_class: &AuthorityClass,
     input: &Value,
 ) -> Result<crate::tool::ToolResult> {
+    reject_legacy_agent_invocation_input(input)?;
     let args: InvokeAgentArgs = parse_tool_args(NAME, input)?;
     let initial_message = validate_non_empty(args.initial_message, NAME, "initial_message")?;
     let target = match args.target {
@@ -103,6 +104,39 @@ pub(crate) async fn execute(
     Ok(success_from_value(NAME, value))
 }
 
+fn reject_legacy_agent_invocation_input(input: &Value) -> Result<()> {
+    let Some(object) = input.as_object() else {
+        return Ok(());
+    };
+    let top_level = ["preset", "profile_preset", "visibility", "ownership"]
+        .into_iter()
+        .find(|field| object.contains_key(*field));
+    let target_level = object
+        .get("target")
+        .and_then(Value::as_object)
+        .and_then(|target| {
+            ["preset", "profile_preset", "visibility", "ownership"]
+                .into_iter()
+                .find(|field| target.contains_key(*field))
+        });
+    let Some(field) = top_level.or(target_level) else {
+        return Ok(());
+    };
+    Err(anyhow::Error::from(
+        ToolError::new(
+            "legacy_agent_invocation_input",
+            format!("InvokeAgent no longer accepts the legacy `{field}` field"),
+        )
+        .with_details(serde_json::json!({
+            "tool_name": NAME,
+            "field": field,
+        }))
+        .with_recovery_hint(
+            "select target.kind=existing_agent or target.kind=new_subagent without legacy identity presets",
+        ),
+    ))
+}
+
 fn map_invocation_error(error: anyhow::Error) -> anyhow::Error {
     let descriptor = describe_runtime_error(&error);
     if descriptor.code == "agent_target_unavailable" {
@@ -126,7 +160,7 @@ mod tests {
 
     use crate::tool::helpers::parse_tool_args;
 
-    use super::{InvokeAgentArgs, NAME};
+    use super::{reject_legacy_agent_invocation_input, InvokeAgentArgs, NAME};
 
     #[test]
     fn invoke_agent_contract_accepts_exactly_the_two_target_variants() {
@@ -189,5 +223,22 @@ mod tests {
         .expect_err("trusted caller context must not be request-controlled");
 
         assert!(error.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn invoke_agent_rejects_legacy_identity_fields_with_stable_error() {
+        let error = reject_legacy_agent_invocation_input(&json!({
+            "initial_message": "do work",
+            "target": {
+                "kind": "new_subagent",
+                "preset": "private_child"
+            }
+        }))
+        .expect_err("legacy identity fields should have a stable typed error");
+
+        let tool_error = error
+            .downcast_ref::<crate::tool::ToolError>()
+            .expect("typed tool error");
+        assert_eq!(tool_error.kind, "legacy_agent_invocation_input");
     }
 }

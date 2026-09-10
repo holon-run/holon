@@ -16,6 +16,7 @@ http_async_tests!(
     control_agent_create_returns_degraded_receipt_and_repairs,
     agent_state_route_returns_aggregated_snapshot,
     unloaded_agent_state_route_uses_storage_without_starting_runtime,
+    unloaded_agent_detail_route_uses_storage_without_starting_runtime,
     runtime_search_route_returns_memory_search_results,
     runtime_search_route_filters_memory_results_by_agent_ids,
     agent_brief_route_returns_full_brief_by_id,
@@ -38,6 +39,7 @@ http_async_tests!(
     control_agent_model_override_validates_codex_reasoning_effort,
     control_agent_delete_fences_runtime_and_is_idempotent,
     control_agent_delete_rejects_default_and_reports_unknown,
+    control_agent_recreate_after_completed_deletion_reincarnates,
     control_agent_name_validation_and_default_rename_errors_are_typed,
     control_prompt_requires_bearer_token_when_required,
     control_prompt_rejects_oversized_body,
@@ -70,4 +72,6 @@ http_async_tests!(
     control_prompt_is_open_over_unix_socket_auto,
     control_runtime_status_is_open_over_unix_socket_when_auth_required,
     control_runtime_readiness_is_open_over_unix_socket_when_auth_required,
+    control_agent_delete_fails_closed_when_home_is_symlink,
+    control_agent_create_returns_deletion_incomplete_until_job_completes,
 );

@@ -169,16 +169,15 @@
                   "null"
                 ]
               },
+              "incarnation": {
+                "default": 1,
+                "description": "Monotonic incarnation counter; 1 for the original identity and +1\n for every explicit recreation of the same agent id after a fully\n completed deletion.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
               "is_default_agent": {
                 "type": "boolean"
-              },
-              "kind": {
-                "enum": [
-                  "default",
-                  "named",
-                  "child"
-                ],
-                "type": "string"
               },
               "lineage_parent_agent_id": {
                 "type": [
@@ -192,25 +191,11 @@
                   "null"
                 ]
               },
-              "ownership": {
-                "enum": [
-                  "parent_supervised",
-                  "self_owned"
-                ],
-                "type": "string"
-              },
               "parent_agent_id": {
                 "type": [
                   "string",
                   "null"
                 ]
-              },
-              "profile_preset": {
-                "enum": [
-                  "private_child",
-                  "public_named"
-                ],
-                "type": "string"
               },
               "status": {
                 "enum": [
@@ -219,21 +204,10 @@
                   "deleted"
                 ],
                 "type": "string"
-              },
-              "visibility": {
-                "enum": [
-                  "public",
-                  "private"
-                ],
-                "type": "string"
               }
             },
             "required": [
               "agent_id",
-              "kind",
-              "visibility",
-              "ownership",
-              "profile_preset",
               "status",
               "is_default_agent"
             ],
@@ -347,16 +321,15 @@
                   "null"
                 ]
               },
+              "incarnation": {
+                "default": 1,
+                "description": "Monotonic incarnation counter; 1 for the original identity and +1\n for every explicit recreation of the same agent id after a fully\n completed deletion.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
               "is_default_agent": {
                 "type": "boolean"
-              },
-              "kind": {
-                "enum": [
-                  "default",
-                  "named",
-                  "child"
-                ],
-                "type": "string"
               },
               "lineage_parent_agent_id": {
                 "type": [
@@ -370,25 +343,11 @@
                   "null"
                 ]
               },
-              "ownership": {
-                "enum": [
-                  "parent_supervised",
-                  "self_owned"
-                ],
-                "type": "string"
-              },
               "parent_agent_id": {
                 "type": [
                   "string",
                   "null"
                 ]
-              },
-              "profile_preset": {
-                "enum": [
-                  "private_child",
-                  "public_named"
-                ],
-                "type": "string"
               },
               "status": {
                 "enum": [
@@ -397,21 +356,10 @@
                   "deleted"
                 ],
                 "type": "string"
-              },
-              "visibility": {
-                "enum": [
-                  "public",
-                  "private"
-                ],
-                "type": "string"
               }
             },
             "required": [
               "agent_id",
-              "kind",
-              "visibility",
-              "ownership",
-              "profile_preset",
               "status",
               "is_default_agent"
             ],
@@ -1243,16 +1191,15 @@
                   "null"
                 ]
               },
+              "incarnation": {
+                "default": 1,
+                "description": "Monotonic incarnation counter; 1 for the original identity and +1\n for every explicit recreation of the same agent id after a fully\n completed deletion.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
               "is_default_agent": {
                 "type": "boolean"
-              },
-              "kind": {
-                "enum": [
-                  "default",
-                  "named",
-                  "child"
-                ],
-                "type": "string"
               },
               "lineage_parent_agent_id": {
                 "type": [
@@ -1266,25 +1213,11 @@
                   "null"
                 ]
               },
-              "ownership": {
-                "enum": [
-                  "parent_supervised",
-                  "self_owned"
-                ],
-                "type": "string"
-              },
               "parent_agent_id": {
                 "type": [
                   "string",
                   "null"
                 ]
-              },
-              "profile_preset": {
-                "enum": [
-                  "private_child",
-                  "public_named"
-                ],
-                "type": "string"
               },
               "status": {
                 "enum": [
@@ -1293,21 +1226,10 @@
                   "deleted"
                 ],
                 "type": "string"
-              },
-              "visibility": {
-                "enum": [
-                  "public",
-                  "private"
-                ],
-                "type": "string"
               }
             },
             "required": [
               "agent_id",
-              "kind",
-              "visibility",
-              "ownership",
-              "profile_preset",
               "status",
               "is_default_agent"
             ],
@@ -1603,16 +1525,15 @@
                             "null"
                           ]
                         },
+                        "incarnation": {
+                          "default": 1,
+                          "description": "Monotonic incarnation counter; 1 for the original identity and +1\n for every explicit recreation of the same agent id after a fully\n completed deletion.",
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
                         "is_default_agent": {
                           "type": "boolean"
-                        },
-                        "kind": {
-                          "enum": [
-                            "default",
-                            "named",
-                            "child"
-                          ],
-                          "type": "string"
                         },
                         "lineage_parent_agent_id": {
                           "type": [
@@ -1626,25 +1547,11 @@
                             "null"
                           ]
                         },
-                        "ownership": {
-                          "enum": [
-                            "parent_supervised",
-                            "self_owned"
-                          ],
-                          "type": "string"
-                        },
                         "parent_agent_id": {
                           "type": [
                             "string",
                             "null"
                           ]
-                        },
-                        "profile_preset": {
-                          "enum": [
-                            "private_child",
-                            "public_named"
-                          ],
-                          "type": "string"
                         },
                         "status": {
                           "enum": [
@@ -1653,21 +1560,10 @@
                             "deleted"
                           ],
                           "type": "string"
-                        },
-                        "visibility": {
-                          "enum": [
-                            "public",
-                            "private"
-                          ],
-                          "type": "string"
                         }
                       },
                       "required": [
                         "agent_id",
-                        "kind",
-                        "visibility",
-                        "ownership",
-                        "profile_preset",
                         "status",
                         "is_default_agent"
                       ],
@@ -2318,16 +2214,15 @@
                       "null"
                     ]
                   },
+                  "incarnation": {
+                    "default": 1,
+                    "description": "Monotonic incarnation counter; 1 for the original identity and +1\n for every explicit recreation of the same agent id after a fully\n completed deletion.",
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
                   "is_default_agent": {
                     "type": "boolean"
-                  },
-                  "kind": {
-                    "enum": [
-                      "default",
-                      "named",
-                      "child"
-                    ],
-                    "type": "string"
                   },
                   "lineage_parent_agent_id": {
                     "type": [
@@ -2341,25 +2236,11 @@
                       "null"
                     ]
                   },
-                  "ownership": {
-                    "enum": [
-                      "parent_supervised",
-                      "self_owned"
-                    ],
-                    "type": "string"
-                  },
                   "parent_agent_id": {
                     "type": [
                       "string",
                       "null"
                     ]
-                  },
-                  "profile_preset": {
-                    "enum": [
-                      "private_child",
-                      "public_named"
-                    ],
-                    "type": "string"
                   },
                   "status": {
                     "enum": [
@@ -2368,21 +2249,10 @@
                       "deleted"
                     ],
                     "type": "string"
-                  },
-                  "visibility": {
-                    "enum": [
-                      "public",
-                      "private"
-                    ],
-                    "type": "string"
                   }
                 },
                 "required": [
                   "agent_id",
-                  "kind",
-                  "visibility",
-                  "ownership",
-                  "profile_preset",
                   "status",
                   "is_default_agent"
                 ],
@@ -3354,16 +3224,15 @@
                       "null"
                     ]
                   },
+                  "incarnation": {
+                    "default": 1,
+                    "description": "Monotonic incarnation counter; 1 for the original identity and +1\n for every explicit recreation of the same agent id after a fully\n completed deletion.",
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
                   "is_default_agent": {
                     "type": "boolean"
-                  },
-                  "kind": {
-                    "enum": [
-                      "default",
-                      "named",
-                      "child"
-                    ],
-                    "type": "string"
                   },
                   "lineage_parent_agent_id": {
                     "type": [
@@ -3377,25 +3246,11 @@
                       "null"
                     ]
                   },
-                  "ownership": {
-                    "enum": [
-                      "parent_supervised",
-                      "self_owned"
-                    ],
-                    "type": "string"
-                  },
                   "parent_agent_id": {
                     "type": [
                       "string",
                       "null"
                     ]
-                  },
-                  "profile_preset": {
-                    "enum": [
-                      "private_child",
-                      "public_named"
-                    ],
-                    "type": "string"
                   },
                   "status": {
                     "enum": [
@@ -3404,21 +3259,10 @@
                       "deleted"
                     ],
                     "type": "string"
-                  },
-                  "visibility": {
-                    "enum": [
-                      "public",
-                      "private"
-                    ],
-                    "type": "string"
                   }
                 },
                 "required": [
                   "agent_id",
-                  "kind",
-                  "visibility",
-                  "ownership",
-                  "profile_preset",
                   "status",
                   "is_default_agent"
                 ],
@@ -4165,16 +4009,15 @@
                             "null"
                           ]
                         },
+                        "incarnation": {
+                          "default": 1,
+                          "description": "Monotonic incarnation counter; 1 for the original identity and +1\n for every explicit recreation of the same agent id after a fully\n completed deletion.",
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
                         "is_default_agent": {
                           "type": "boolean"
-                        },
-                        "kind": {
-                          "enum": [
-                            "default",
-                            "named",
-                            "child"
-                          ],
-                          "type": "string"
                         },
                         "lineage_parent_agent_id": {
                           "type": [
@@ -4188,25 +4031,11 @@
                             "null"
                           ]
                         },
-                        "ownership": {
-                          "enum": [
-                            "parent_supervised",
-                            "self_owned"
-                          ],
-                          "type": "string"
-                        },
                         "parent_agent_id": {
                           "type": [
                             "string",
                             "null"
                           ]
-                        },
-                        "profile_preset": {
-                          "enum": [
-                            "private_child",
-                            "public_named"
-                          ],
-                          "type": "string"
                         },
                         "status": {
                           "enum": [
@@ -4215,21 +4044,10 @@
                             "deleted"
                           ],
                           "type": "string"
-                        },
-                        "visibility": {
-                          "enum": [
-                            "public",
-                            "private"
-                          ],
-                          "type": "string"
                         }
                       },
                       "required": [
                         "agent_id",
-                        "kind",
-                        "visibility",
-                        "ownership",
-                        "profile_preset",
                         "status",
                         "is_default_agent"
                       ],
@@ -12004,6 +11822,66 @@
         "tags": [
           "agents"
         ]
+      }
+    },
+    "/api/agents/{agent_id}": {
+      "get": {
+        "description": "Return the canonical public AgentSummary read model.",
+        "operationId": "getAgent",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "style": "simple"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Get agent",
+        "tags": [
+          "agents"
+        ],
+        "x-holon-openapi-source": "aide::axum::ApiRouter::api_route_docs"
       }
     },
     "/api/agents/{agent_id}/briefs": {

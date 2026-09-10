@@ -49,6 +49,7 @@ pub struct CompletionReportCandidate {
 #[derive(Debug, Clone, Default)]
 pub struct ToolExecutionContext {
     pub completion_report_candidate: Option<CompletionReportCandidate>,
+    pub effective_work_item_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]

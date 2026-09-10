@@ -57,6 +57,7 @@ Every agent has exactly one **active workspace**. The active workspace defines:
 | `notes/` | Working notes |
 | `work-items/` | WorkItem plan artifacts (`plan.md`) |
 | `skills/` | Agent-local skills |
+| `tmp/` | Short-lived working files; may be cleaned up at any time |
 | `.holon/` | Runtime-owned state, ledger, index, cache |
 
 **Key contract:**

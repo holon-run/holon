@@ -231,7 +231,7 @@ mod tests {
     #[test]
     fn result_summary_falls_back_to_completed_instead_of_the_tool_name() {
         let result = ToolResult::success(
-            "AgentGet",
+            "GetAgent",
             json!({
                 "profile": {"name": "default"},
                 "active_tasks": [{"id": "task-1"}]

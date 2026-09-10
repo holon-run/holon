@@ -190,8 +190,8 @@ fact is still an explicit continuation frame rather than a synthetic blocker.
 
 ### CompleteWorkItem
 
-When `CompleteWorkItem(B)` succeeds, the following steps are one durable
-transition transaction:
+When execution-bound `CompleteWorkItem(B)` succeeds, the following steps are
+one durable transition transaction:
 
 1. Terminalize the source queue claim, Turn, and current canonical execution
    attempt with `WorkItemOutcome::Complete`.
@@ -217,6 +217,13 @@ immediately. The scheduler may then admit a new activation for `A` only when
 the committed canonical target is `Runnable`; an existing wait or blocker may
 instead leave it `Waiting`, `Paused`, or `NeedsRepair`. The agent should not
 need to call `PickWorkItem(A)` merely to restore the stack.
+
+Detached or authenticated-control completion uses the same target
+terminalization and continuation planner, but it does not settle an unrelated
+current execution. If `B` has a caller continuation while another execution is
+active, completion returns conflict rather than replacing that execution's
+focus. If the agent is quiescent, completing `B` may restore `A` without
+fabricating a source execution settlement.
 
 ### Explicit Switching
 

@@ -67,6 +67,8 @@ Use `agent_home` for durable agent-local state only.
   - light local state or indexes this agent maintains for itself
 - `tmp/`
   - short-lived working files and intermediate output that may be cleaned up
+  - prefer it over the system temp directory for artifacts that may be
+    referenced from tool results or history; do not rely on it for durable files
 
 Keep here:
 

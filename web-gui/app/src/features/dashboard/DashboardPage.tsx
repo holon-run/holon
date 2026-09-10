@@ -117,9 +117,9 @@ export function DashboardPage({ agents, metrics, connection, discovery, loading,
                 <Card className="agent-card" key={agent.id}>
                   <div className="agent-card-head">
                     <span className={`agent-badge ${agent.badgeTone ?? ""}`} style={agent.badgeHue != null && !agent.badgeTone ? ({ "--badge-hue": `${agent.badgeHue}` } as CSSProperties) : undefined}>{agent.badge}</span>
-                    <div className="agent-card-title">
-                      <strong>{agent.id}</strong>
-                      <small>{agent.profile}</small>
+                    <div className="agent-card-title" title={agent.name ? agent.profile : undefined}>
+                      <strong>{agent.name ?? agent.id}</strong>
+                      <small>{agent.name ? agent.id : agent.profile}</small>
                     </div>
                     <div className="agent-card-status">
                       <AgentStateBadge className={`state-chip ${agent.lifecycle}`} lifecycle={agent.lifecycle} posture={agent.posture} />

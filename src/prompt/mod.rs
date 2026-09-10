@@ -18,8 +18,8 @@ use sha2::{Digest, Sha256};
 use crate::{
     context::{
         build_context_with_default_external_ingress, reproject_recent_turns,
-        reproject_work_item_scoped, BuiltContext, ContextConfig, ContextPlanEvidence,
-        RecentTurnsReprojection,
+        reproject_work_item_scoped_with_limit, BuiltContext, ContextConfig, ContextPlanEvidence,
+        RecentTurnsReprojection, WorkItemScopedReprojection,
     },
     projection_eval::{
         compare_prompt_history_selectors, manifest_from_effective_prompt,
@@ -30,10 +30,9 @@ use crate::{
     system::{execution_policy_summary_lines, ExecutionSnapshot},
     tool::{ApplyPatchSurface, ToolSpec},
     types::{
-        AgentIdentityView, AgentKind, AgentMemorySource, AgentState, AgentsMdKind,
-        AgentsMdLoadStatus, AgentsMdSource, ContinuationResolution, ExternalTriggerRecord,
-        LoadedAgentMemory, LoadedAgentsMd, MessageBody, MessageEnvelope, MessageOrigin,
-        SkillsRuntimeView,
+        AgentIdentityView, AgentMemorySource, AgentState, AgentsMdKind, AgentsMdLoadStatus,
+        AgentsMdSource, ContinuationResolution, ExternalTriggerRecord, LoadedAgentMemory,
+        LoadedAgentsMd, MessageBody, MessageEnvelope, MessageOrigin, SkillsRuntimeView,
     },
 };
 
@@ -96,6 +95,20 @@ pub struct EffectivePrompt {
     pub(crate) recent_turns_reprojection: Option<RecentTurnsReprojection>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) enum HistoryReprojectionOutcome {
+    Adopted {
+        prompt: EffectivePrompt,
+        turns_loaded: usize,
+    },
+    NoCurrentWorkItem,
+    NoOwnedTurnRecords,
+    IdenticalRenderNoop {
+        prompt: EffectivePrompt,
+        turns_loaded: usize,
+    },
+}
+
 impl EffectivePrompt {
     pub fn projection_manifest(&self) -> ProjectionManifest {
         manifest_from_effective_prompt(self)
@@ -120,17 +133,45 @@ impl EffectivePrompt {
         budget: usize,
         available_tools: &[ToolSpec],
         selector: HistorySelector,
-    ) -> Option<Self> {
-        let reprojection = self.recent_turns_reprojection.as_ref()?;
-        let replacement = match selector {
-            HistorySelector::RecentTurns => reproject_recent_turns(storage, reprojection, budget),
+        work_item_scoped_window: usize,
+    ) -> Result<HistoryReprojectionOutcome> {
+        if selector == HistorySelector::WorkItemScoped
+            && !matches!(self.projection_owner, ProjectionOwner::WorkItem { .. })
+        {
+            return Ok(HistoryReprojectionOutcome::NoCurrentWorkItem);
+        }
+        let Some(reprojection) = self.recent_turns_reprojection.as_ref() else {
+            return Ok(HistoryReprojectionOutcome::NoOwnedTurnRecords);
+        };
+        let (replacement, replacement_evidence, turns_loaded) = match selector {
+            HistorySelector::RecentTurns => {
+                let Some(replacement) = reproject_recent_turns(storage, reprojection, budget)
+                else {
+                    return Ok(HistoryReprojectionOutcome::NoOwnedTurnRecords);
+                };
+                (replacement, None, reprojection.turn_count())
+            }
             HistorySelector::WorkItemScoped => {
-                reproject_work_item_scoped(storage, reprojection, budget)
+                match reproject_work_item_scoped_with_limit(
+                    storage,
+                    reprojection,
+                    budget,
+                    work_item_scoped_window,
+                )? {
+                    WorkItemScopedReprojection::NoCurrentWorkItem => {
+                        return Ok(HistoryReprojectionOutcome::NoCurrentWorkItem);
+                    }
+                    WorkItemScopedReprojection::NoOwnedTurnRecords => {
+                        return Ok(HistoryReprojectionOutcome::NoOwnedTurnRecords);
+                    }
+                    WorkItemScopedReprojection::Rendered {
+                        section,
+                        evidence,
+                        turns_loaded,
+                    } => (section, Some(evidence), turns_loaded),
+                }
             }
         };
-        // An unavailable scoped projection must fall back at the request
-        // boundary; it must never become an empty history section.
-        let replacement = replacement?;
         let replacement_for_evidence = replacement.clone();
         let mut context_sections = self
             .context_sections
@@ -146,8 +187,20 @@ impl EffectivePrompt {
             .min(context_sections.len());
         context_sections.insert(insertion_index, replacement);
         let rendered_context_attachment = render_sections(&context_sections);
+        let mut prompt = self.clone();
+        if let Some(evidence) = replacement_evidence {
+            prompt
+                .projection_evidence
+                .insert("recent_turns".to_string(), evidence);
+        }
+        prompt
+            .context_plan_evidence
+            .record_reprojection("recent_turns", Some(&replacement_for_evidence));
         if rendered_context_attachment == self.rendered_context_attachment {
-            return None;
+            return Ok(HistoryReprojectionOutcome::IdenticalRenderNoop {
+                prompt,
+                turns_loaded,
+            });
         }
         let context_fingerprint = reprojected_context_fingerprint(
             &self.cache_identity,
@@ -156,20 +209,42 @@ impl EffectivePrompt {
             &context_sections,
             available_tools,
         );
-        let mut prompt = self.clone();
         prompt.context_sections = context_sections;
         prompt.rendered_context_attachment = rendered_context_attachment;
         prompt.cache_identity.context_fingerprint = context_fingerprint;
-        prompt
-            .context_plan_evidence
-            .record_reprojection("recent_turns", Some(&replacement_for_evidence));
-        Some(prompt)
+        Ok(HistoryReprojectionOutcome::Adopted {
+            prompt,
+            turns_loaded,
+        })
     }
 
     pub(crate) fn recent_turns_initial_budget(&self) -> Option<usize> {
         self.recent_turns_reprojection
             .as_ref()
             .map(RecentTurnsReprojection::initial_budget)
+    }
+
+    pub(crate) fn recent_turn_count(&self) -> usize {
+        self.recent_turns_reprojection
+            .as_ref()
+            .map_or(0, RecentTurnsReprojection::turn_count)
+    }
+
+    pub(crate) fn history_reprojection_budget(&self, maximum: usize) -> usize {
+        let recent_turns_allocated = self
+            .context_plan_evidence
+            .decisions
+            .iter()
+            .find(|decision| decision.candidate_id == "recent_turns")
+            .map_or(0, |decision| decision.allocated_estimated_tokens);
+        let other_allocated = self
+            .context_plan_evidence
+            .allocated_estimated_tokens
+            .saturating_sub(recent_turns_allocated);
+        self.context_plan_evidence
+            .total_budget_estimated_tokens
+            .saturating_sub(other_allocated)
+            .min(maximum)
     }
 
     pub(crate) fn reproject_recent_turns(
@@ -246,22 +321,10 @@ impl EffectivePrompt {
         output.push("".to_string());
         output.push(format!("Agent home: {}", self.agent_home.display()));
         output.push(format!("Agent id: {}", self.identity.agent_id));
-        output.push(format!("Agent kind: {:?}", self.identity.kind));
+        output.push(format!("Identity status: {:?}", self.identity.status));
         output.push(format!(
-            "Agent contract: {}",
-            self.identity.contract_badge()
-        ));
-        output.push(format!(
-            "Contract summary: {}",
-            self.identity.contract_summary()
-        ));
-        output.push(format!(
-            "Agent tool surface: {}",
-            self.identity.profile_preset.agent_tool_surface_summary()
-        ));
-        output.push(format!(
-            "Cleanup ownership: {}",
-            self.identity.ownership.cleanup_summary()
+            "Identity relation: {}",
+            self.identity.relation_summary()
         ));
         output.push(format!(
             "Prompt cache key: {}",
@@ -861,7 +924,7 @@ fn build_system_sections(
         section(
             "agent_home_contract",
             PromptStability::Stable,
-            "Treat `AgentHome` as the default workspace for agent-local state, not as a replacement for an active project workspace. Treat `agent_home/AGENTS.md` as the long-lived contract for this specific agent, not as a duplicate of the system prompt, tool instructions, workspace/project guidance, or one-off task notes. It should capture durable agent-specific information such as role, standing responsibilities, granted authority, escalation boundaries, and how this agent maintains its own `agent_home`. `AGENTS.md` is loaded guidance. `agent_home/memory/operator.md` and `agent_home/memory/self.md` are curated Markdown memory; a compact high-priority slice of each is auto-loaded under a fixed per-file character budget (default 1500 chars) and the truncation status is surfaced to you, while the remainder stays searchable via `MemorySearch` and retrievable via `MemoryGet`. Use `agent_home/memory/operator.md` for stable operator preferences such as default reply language, communication style, naming conventions, and recurring collaboration expectations. Keep project-scoped work, files, rules, and memory in the active project workspace. `agent_home/work-items/<work_item_id>/plan.md` is the agent-authored durable plan artifact for that WorkItem. `.holon/` under agent_home is runtime-owned state, ledger, index, and cache storage; do not edit it as ordinary agent-authored files. `AGENTS.md` may evolve over time as the operator clarifies the agent's role. Near the end of each turn, quickly check whether the interaction revealed new durable agent-specific information worth preserving there. Update it only when that information is likely to remain useful across future turns or sessions. Do not store transient plans, temporary execution notes, copied project docs, or repeated tool guidance there.".to_string(),
+            "Treat `AgentHome` as the default workspace for agent-local state, not as a replacement for an active project workspace. Treat `agent_home/AGENTS.md` as the long-lived contract for this specific agent, not as a duplicate of the system prompt, tool instructions, workspace/project guidance, or one-off task notes. It should capture durable agent-specific information such as role, standing responsibilities, granted authority, escalation boundaries, and how this agent maintains its own `agent_home`. `AGENTS.md` is loaded guidance. `agent_home/memory/operator.md` and `agent_home/memory/self.md` are curated Markdown memory; a compact high-priority slice of each is auto-loaded under a fixed per-file character budget (default 1500 chars) and the truncation status is surfaced to you, while the remainder stays searchable via `MemorySearch` and retrievable via `MemoryGet`. Use `agent_home/memory/operator.md` for stable operator preferences such as default reply language, communication style, naming conventions, and recurring collaboration expectations. Keep project-scoped work, files, rules, and memory in the active project workspace. `agent_home/work-items/<work_item_id>/plan.md` is the agent-authored durable plan artifact for that WorkItem. `agent_home/tmp/` is for short-lived working files: prefer it over the system temp directory for intermediate artifacts that may be referenced from tool results or history, because system temp files can be cleaned up independently and break those references; do not keep anything there that must survive. `.holon/` under agent_home is runtime-owned state, ledger, index, and cache storage; do not edit it as ordinary agent-authored files. `AGENTS.md` may evolve over time as the operator clarifies the agent's role. Near the end of each turn, quickly check whether the interaction revealed new durable agent-specific information worth preserving there. Update it only when that information is likely to remain useful across future turns or sessions. Do not store transient plans, temporary execution notes, copied project docs, or repeated tool guidance there.".to_string(),
         ),
         section(
             "context_completion",
@@ -1055,11 +1118,9 @@ fn agent_contract_section(identity: &AgentIdentityView) -> PromptSection {
         "agent_contract",
         PromptStability::Stable,
         format!(
-            "Current agent contract: {}. Identity badge: {}. Agent tool surface: {}. Cleanup ownership: {}.",
-            identity.contract_summary(),
-            identity.contract_badge(),
-            identity.profile_preset.agent_tool_surface_summary(),
-            identity.ownership.cleanup_summary()
+            "Current agent contract: stable identity `{}`; {}. Tool availability is determined by canonical capability policy. Lifecycle cleanup authority is determined by canonical lifecycle attachment and active supervision, not by identity labels.",
+            identity.agent_id,
+            identity.relation_summary(),
         ),
     )
 }
@@ -1103,7 +1164,7 @@ fn describe_agents_md_source(
 }
 
 fn delegated_task_section(identity: &AgentIdentityView) -> Option<PromptSection> {
-    (identity.kind == AgentKind::Child).then(|| {
+    (identity.lineage_parent_agent_id.is_some() && identity.delegated_from_task_id.is_some()).then(|| {
         section(
             "delegated_task",
             PromptStability::Stable,
@@ -1240,6 +1301,7 @@ mod tests {
             profile_preset: AgentProfilePreset::PublicNamed,
             status: AgentRegistryStatus::Active,
             is_default_agent: true,
+            incarnation: 1,
             parent_agent_id: None,
             lineage_parent_agent_id: None,
             delegated_from_task_id: None,
@@ -1256,6 +1318,7 @@ mod tests {
             profile_preset: AgentProfilePreset::PrivateChild,
             status: AgentRegistryStatus::Active,
             is_default_agent: false,
+            incarnation: 1,
             parent_agent_id: Some("default".into()),
             lineage_parent_agent_id: Some("default".into()),
             delegated_from_task_id: Some("task-1".into()),
@@ -2293,13 +2356,16 @@ mod tests {
             .find(|section| section.name == "agent_contract")
             .expect("agent contract section");
 
+        assert!(section.content.contains("stable identity `default`"));
         assert!(section
             .content
-            .contains("public self-owned agent addressed directly by `agent_id`"));
-        assert!(section.content.contains("public/self_owned (public_named)"));
+            .contains("independently addressable agent identity"));
+        assert!(section.content.contains("canonical capability policy"));
         assert!(section
             .content
-            .contains("CreateAgent creates independent identities"));
+            .contains("canonical lifecycle attachment and active supervision"));
+        assert!(!section.content.contains("public_named"));
+        assert!(!section.content.contains("private_child"));
     }
 
     #[test]
@@ -2332,6 +2398,9 @@ mod tests {
         assert!(section
             .content
             .contains("agent-authored durable plan artifact"));
+        assert!(section
+            .content
+            .contains("agent_home/tmp/` is for short-lived working files"));
         assert!(section.content.contains("Near the end of each turn"));
         assert!(section.content.contains("Do not store transient plans"));
     }
@@ -2517,6 +2586,57 @@ mod tests {
         ));
         assert!(dump.contains("[test_section][id: test-stable-id-123][Stable]"));
         assert!(dump.contains("[context_section][id: ctx-id-456][AgentScoped]"));
+    }
+
+    #[test]
+    fn history_reprojection_budget_uses_only_remaining_context_budget() {
+        let mut prompt = EffectivePrompt {
+            identity: sample_identity(),
+            agent_home: PathBuf::from("/tmp/agent-home"),
+            execution: sample_execution_snapshot(),
+            loaded_agents_md: LoadedAgentsMd::default(),
+            loaded_agent_memory: LoadedAgentMemory::default(),
+            cache_identity: sample_cache_identity(),
+            system_sections: Vec::new(),
+            context_sections: Vec::new(),
+            rendered_system_prompt: String::new(),
+            rendered_context_attachment: String::new(),
+            projection_owner: ProjectionOwner::AgentLifecycle {
+                agent_id: "default".into(),
+            },
+            projection_binding: None,
+            projection_turn_id: None,
+            projection_evidence: ProjectionEvidenceIndex::new(),
+            context_plan_evidence: ContextPlanEvidence {
+                total_budget_estimated_tokens: 100,
+                allocated_estimated_tokens: 90,
+                decisions: vec![
+                    crate::context::ContextPlanDecision {
+                        candidate_id: "current_input".into(),
+                        section_name: "current_input".into(),
+                        requested_estimated_tokens: 70,
+                        minimum_estimated_tokens: 70,
+                        allocated_estimated_tokens: 70,
+                        outcome: crate::context::ContextPlanOutcome::Full,
+                        reason: crate::context::ContextPlanReason::SelectedFull,
+                    },
+                    crate::context::ContextPlanDecision {
+                        candidate_id: "recent_turns".into(),
+                        section_name: "recent_turns".into(),
+                        requested_estimated_tokens: 20,
+                        minimum_estimated_tokens: 0,
+                        allocated_estimated_tokens: 20,
+                        outcome: crate::context::ContextPlanOutcome::Full,
+                        reason: crate::context::ContextPlanReason::SelectedFull,
+                    },
+                ],
+            },
+            recent_turns_reprojection: None,
+        };
+
+        assert_eq!(prompt.history_reprojection_budget(64), 30);
+        prompt.context_plan_evidence.total_budget_estimated_tokens = 20;
+        assert_eq!(prompt.history_reprojection_budget(64), 0);
     }
 
     #[test]

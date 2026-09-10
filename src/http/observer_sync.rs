@@ -48,8 +48,9 @@ pub(crate) struct ObserverSyncCapabilityVerification {
     /// Stable `runtime_id` and current `event_log_epoch` are persisted and
     /// survived the latest reopen check.
     pub(crate) runtime_identity_stable: bool,
-    /// Agent identity reservation/tombstones are durable; same-epoch
-    /// `agent_id` reuse is impossible.
+    /// Agent identity reservation/tombstones are durable; a retired id is
+    /// never implicitly reused and can only return through the audited
+    /// reincarnation path after a fully completed deletion.
     pub(crate) agent_identity_reserved: bool,
     /// Roster snapshot consistent read view, authorization, all-or-nothing
     /// failure, and limit tests passed for this database.

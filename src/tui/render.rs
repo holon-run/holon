@@ -111,7 +111,7 @@ pub(super) fn render_agent_state_text(app: &TuiApp) -> String {
             "Agent: {} / {:?}",
             agent.identity.agent_id, agent.agent.status
         ),
-        format!("Contract: {}", agent.identity.contract_badge()),
+        format!("Identity: {}", agent.identity.relation_summary()),
         format!(
             "Queue: pending {}  active tasks {}",
             agent.agent.pending, agent.active_task_count
@@ -927,17 +927,9 @@ pub(super) fn render_summary(agent: &AgentSummary) -> String {
             agent.identity.display_name(),
             agent.identity.agent_id
         ),
-        format!("Kind: {:?}", agent.identity.kind),
-        format!("Identity contract: {}", agent.identity.contract_badge()),
-        format!("Contract summary: {}", agent.identity.contract_summary()),
-        format!(
-            "Agent tool surface: {}",
-            agent.identity.profile_preset.agent_tool_surface_summary()
-        ),
-        format!(
-            "Cleanup ownership: {}",
-            agent.identity.ownership.cleanup_summary()
-        ),
+        format!("Identity relation: {}", agent.identity.relation_summary()),
+        "Tool access: canonical capability policy".into(),
+        "Cleanup authority: canonical lifecycle attachment and supervision".into(),
         format!("Status: {:?}", agent.agent.status),
         format!(
             "Model: {} ({:?})",
@@ -1013,11 +1005,10 @@ pub(super) fn render_summary(agent: &AgentSummary) -> String {
                 .iter()
                 .map(|child| {
                     format!(
-                        "{}:{}:{:?}[{}]",
+                        "{}:{}:{:?}",
                         child.identity.display_name(),
                         child.identity.agent_id,
-                        child.status,
-                        child.identity.contract_badge()
+                        child.status
                     )
                 })
                 .collect::<Vec<_>>()
@@ -1088,6 +1079,7 @@ mod tests {
                 profile_preset: AgentProfilePreset::PublicNamed,
                 status: AgentRegistryStatus::Active,
                 is_default_agent: true,
+                incarnation: 1,
                 parent_agent_id: None,
                 lineage_parent_agent_id: None,
                 delegated_from_task_id: None,
@@ -1168,6 +1160,7 @@ mod tests {
                     profile_preset: AgentProfilePreset::PrivateChild,
                     status: AgentRegistryStatus::Active,
                     is_default_agent: false,
+                    incarnation: 1,
                     parent_agent_id: Some("default".into()),
                     lineage_parent_agent_id: Some("default".into()),
                     delegated_from_task_id: Some("task-1".into()),
@@ -1252,14 +1245,14 @@ mod tests {
     }
 
     #[test]
-    fn render_summary_uses_profile_and_ownership_semantics() {
+    fn render_summary_uses_canonical_identity_relations() {
         let rendered = render_summary(&sample_agent_summary());
-        assert!(rendered.contains("Identity contract: public/self_owned (public_named)"));
-        assert!(rendered.contains("public self-owned agent addressed directly by `agent_id`"));
-        assert!(rendered.contains("CreateAgent creates independent identities"));
+        assert!(rendered.contains("Identity relation: independently addressable agent identity"));
+        assert!(rendered.contains("Tool access: canonical capability policy"));
         assert!(
-            rendered.contains("child_1:AwakeRunning[private/parent_supervised (private_child)]")
+            rendered.contains("Cleanup authority: canonical lifecycle attachment and supervision")
         );
+        assert!(rendered.contains("Children: child_1:child_1:AwakeRunning"));
         assert!(rendered.contains("Execution backend: host_local"));
         assert!(rendered.contains("Process execution: runtime_shaped"));
         assert!(rendered.contains(

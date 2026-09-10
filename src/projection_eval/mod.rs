@@ -21,6 +21,15 @@ pub const PROJECTION_MANIFEST_SCHEMA_VERSION: u32 = 1;
 pub const PROJECTION_SCORECARD_SCHEMA_VERSION: u32 = 1;
 pub const HISTORY_SELECTOR_SCHEMA_VERSION: u32 = 1;
 
+const DIAGNOSTIC_INVARIANTS: [&str; 6] = [
+    "prompt_budget_respected",
+    "current_input_retained",
+    "direct_predecessor_retained",
+    "canonical_evidence_unique",
+    "evidence_owner_consistent",
+    "section_representation_exclusive",
+];
+
 /// Selects which canonical history candidates are eligible for a request
 /// projection. Selectors are pure request-scoped policy; they do not own
 /// runtime state, scheduling, settlement, or provider calls.
@@ -40,6 +49,14 @@ impl HistorySelector {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectionOutcome {
+    Projected,
+    Fallback,
+    IdenticalRenderNoop,
+}
+
 /// Request-scoped diagnostic metadata shared by all history selectors.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectionDiagnostics {
@@ -52,6 +69,20 @@ pub struct ProjectionDiagnostics {
     pub input_chars: usize,
     pub fallback_reason: Option<String>,
     pub policy_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_window_scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_window_limit: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_window_turns_loaded: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_window_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_window_budget_tokens: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projection_outcome: Option<ProjectionOutcome>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invariant_results: Option<Vec<ProjectionInvariantResult>>,
 }
 
 impl ProjectionDiagnostics {
@@ -73,11 +104,52 @@ impl ProjectionDiagnostics {
             input_chars,
             fallback_reason: None,
             policy_version: format!("history_selector_v{}", HISTORY_SELECTOR_SCHEMA_VERSION),
+            history_window_scope: None,
+            history_window_limit: None,
+            history_window_turns_loaded: None,
+            history_window_source: None,
+            history_window_budget_tokens: None,
+            projection_outcome: None,
+            invariant_results: None,
         }
     }
 
     pub fn with_fallback_reason(mut self, reason: impl Into<String>) -> Self {
         self.fallback_reason = Some(reason.into());
+        self.projection_outcome = Some(ProjectionOutcome::Fallback);
+        self
+    }
+
+    pub fn with_projection_outcome(mut self, outcome: ProjectionOutcome) -> Self {
+        self.projection_outcome = Some(outcome);
+        self
+    }
+
+    pub fn with_history_window(
+        mut self,
+        scope: impl Into<String>,
+        limit: usize,
+        turns_loaded: usize,
+        source: impl Into<String>,
+        budget_tokens: usize,
+    ) -> Self {
+        self.history_window_scope = Some(scope.into());
+        self.history_window_limit = Some(limit);
+        self.history_window_turns_loaded = Some(turns_loaded);
+        self.history_window_source = Some(source.into());
+        self.history_window_budget_tokens = Some(budget_tokens);
+        self
+    }
+
+    pub fn with_manifest_invariants(mut self, manifest: &ProjectionManifest) -> Self {
+        self.invariant_results = Some(
+            manifest
+                .invariant_results
+                .iter()
+                .filter(|result| DIAGNOSTIC_INVARIANTS.contains(&result.code.as_str()))
+                .cloned()
+                .collect(),
+        );
         self
     }
 }
@@ -557,9 +629,9 @@ fn diagnostics_for_prompt(
     ProjectionDiagnostics::new(
         selector,
         if selector == HistorySelector::RecentTurns {
-            "default_compatible_selector"
+            "agent_recent_selector"
         } else {
-            "request_scoped_comparison"
+            "work_item_scoped_selector"
         },
         current_work_item_id,
         input_message_count,
@@ -966,6 +1038,70 @@ mod tests {
             serde_json::to_string(&scoped).unwrap(),
             "\"work_item_scoped\""
         );
+    }
+
+    #[test]
+    fn projection_diagnostics_new_fields_are_backward_compatible() {
+        let diagnostics: ProjectionDiagnostics = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "history_selector": "recent_turns",
+            "selection_reason": "legacy",
+            "current_work_item_id": null,
+            "input_message_count": 1,
+            "input_estimated_tokens": 2,
+            "input_chars": 3,
+            "fallback_reason": null,
+            "policy_version": "history_selector_v1"
+        }))
+        .unwrap();
+        assert_eq!(diagnostics.history_window_limit, None);
+        assert_eq!(diagnostics.projection_outcome, None);
+        assert_eq!(diagnostics.invariant_results, None);
+    }
+
+    #[test]
+    fn identical_render_noop_is_not_reported_as_fallback() {
+        let diagnostics = ProjectionDiagnostics::new(
+            HistorySelector::WorkItemScoped,
+            "identical_render",
+            None,
+            0,
+            0,
+            0,
+        )
+        .with_projection_outcome(ProjectionOutcome::IdenticalRenderNoop);
+        assert_eq!(
+            diagnostics.projection_outcome,
+            Some(ProjectionOutcome::IdenticalRenderNoop)
+        );
+        assert_eq!(diagnostics.fallback_reason, None);
+    }
+
+    #[test]
+    fn projection_diagnostics_persist_the_six_runtime_safety_invariants() {
+        let manifest = manifest(vec![evidence(
+            "message:current",
+            ProjectionEvidenceRole::CurrentInput,
+        )]);
+        let diagnostics = ProjectionDiagnostics::new(
+            HistorySelector::WorkItemScoped,
+            "scoped",
+            Some("work-1".into()),
+            1,
+            1,
+            1,
+        )
+        .with_manifest_invariants(&manifest);
+        let invariant_results = diagnostics.invariant_results.unwrap();
+        assert_eq!(invariant_results.len(), 6);
+        assert!(!invariant_results
+            .iter()
+            .any(|result| result.code == "activation_binding_consistent"));
+        assert!(DIAGNOSTIC_INVARIANTS.iter().all(|expected| {
+            invariant_results
+                .iter()
+                .any(|result| result.code == *expected)
+        }));
     }
 
     #[test]

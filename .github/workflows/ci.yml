@@ -253,6 +253,9 @@ jobs:
       - name: Build
         run: make build
 
+      - name: Package check
+        run: cargo publish --dry-run --locked
+
       - name: Check generated snapshots
         run: make snapshots-check
 

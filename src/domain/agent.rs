@@ -103,6 +103,19 @@ pub enum AgentCapabilityFamily {
     ExternalTrigger,
 }
 
+impl AgentCapabilityFamily {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::CoreAgent => "core_agent",
+            Self::LocalEnvironment => "local_environment",
+            Self::Web => "web",
+            Self::AgentCreation => "agent_creation",
+            Self::AuthorityExpanding => "authority_expanding",
+            Self::ExternalTrigger => "external_trigger",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentPolicyEffect {
@@ -122,6 +135,16 @@ pub struct AgentCapabilityPolicyRecord {
     pub revision: u64,
     pub rules: Vec<AgentCapabilityPolicyRule>,
     pub created_at: DateTime<Utc>,
+}
+
+impl AgentCapabilityPolicyRecord {
+    pub fn allows(&self, family: AgentCapabilityFamily) -> bool {
+        self.rules
+            .iter()
+            .rev()
+            .find(|rule| rule.family == family)
+            .is_some_and(|rule| rule.effect == AgentPolicyEffect::Allow)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

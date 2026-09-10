@@ -6,7 +6,7 @@ use std::{
 use anyhow::{anyhow, Result};
 use thiserror::Error;
 
-use super::types::{WorkspaceAccessMode, WorkspaceProjectionKind};
+use super::types::{ExecutionRootRef, WorkspaceAccessMode, WorkspaceProjectionKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkspacePathErrorKind {
@@ -295,6 +295,103 @@ pub fn normalize_path(path: &Path) -> Result<PathBuf> {
     Ok(normalized)
 }
 
+/// Reverse-map a resolved filesystem path to a canonical `workspace://` URI
+/// reference so results can embed durable workspace links instead of raw
+/// local paths.
+///
+/// Priority: active workspace canonical anchor, active execution root (for
+/// worktree projections this emits `?root=<execution_root_id>`), attached
+/// workspace anchors, then registered execution roots. Returns `None` when
+/// the path is outside every workspace (for example a system temp
+/// directory); callers should then keep the local path without a workspace
+/// reference.
+pub fn workspace_uri_for_path(
+    path: &Path,
+    workspace: &WorkspaceView,
+    attached_workspaces: &[(String, PathBuf)],
+    execution_roots: &[ExecutionRootRef],
+) -> Option<String> {
+    if let Some(workspace_id) = workspace.workspace_id() {
+        if let Some(relative) = relative_under_root(path, workspace.workspace_anchor()) {
+            return Some(format_workspace_uri(workspace_id, &relative, None));
+        }
+        if let Some(root_id) = workspace.execution_root_id() {
+            if let Some(relative) = relative_under_root(path, workspace.execution_root()) {
+                return Some(format_workspace_uri(workspace_id, &relative, Some(root_id)));
+            }
+        }
+    }
+    for (workspace_id, anchor) in attached_workspaces {
+        if let Some(relative) = relative_under_root(path, anchor) {
+            return Some(format_workspace_uri(workspace_id, &relative, None));
+        }
+    }
+    for root in execution_roots {
+        if let Some(relative) = relative_under_root(path, &root.filesystem_path) {
+            return Some(format_workspace_uri(
+                &root.workspace_id,
+                &relative,
+                Some(&root.execution_root_id),
+            ));
+        }
+    }
+    None
+}
+
+/// Compute the path relative to `root` when `path` lives inside `root`.
+/// Prefers symlink-resolved comparison when both exist on disk, falling back
+/// to the normalized lexical comparison.
+fn relative_under_root(path: &Path, root: &Path) -> Option<PathBuf> {
+    let normalized_path = normalize_path(path).ok()?;
+    let normalized_root = normalize_path(root).ok()?;
+    if let (Ok(canonical_path), Ok(canonical_root)) = (
+        fs::canonicalize(&normalized_path),
+        fs::canonicalize(&normalized_root),
+    ) {
+        return canonical_path
+            .strip_prefix(&canonical_root)
+            .ok()
+            .map(Path::to_path_buf);
+    }
+    normalized_path
+        .strip_prefix(&normalized_root)
+        .ok()
+        .map(Path::to_path_buf)
+}
+
+fn format_workspace_uri(
+    workspace_id: &str,
+    relative: &Path,
+    execution_root_id: Option<&str>,
+) -> String {
+    use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
+    // Keep RFC 3986 pchar unreserved/sub-delims readable (`.` `-` `_` `~` etc.)
+    // and escape only characters that would break URI parsing.
+    const URI_SEGMENT: &AsciiSet = &CONTROLS
+        .add(b' ')
+        .add(b'"')
+        .add(b'#')
+        .add(b'%')
+        .add(b'?')
+        .add(b'\\')
+        .add(b'{')
+        .add(b'}');
+    let encoded_path = relative
+        .components()
+        .map(|component| {
+            utf8_percent_encode(&component.as_os_str().to_string_lossy(), URI_SEGMENT).to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("/");
+    match execution_root_id {
+        Some(root_id) => format!(
+            "workspace://{workspace_id}/{encoded_path}?root={}",
+            utf8_percent_encode(root_id, URI_SEGMENT)
+        ),
+        None => format!("workspace://{workspace_id}/{encoded_path}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::tempdir;
@@ -439,5 +536,123 @@ mod tests {
             discovered.projection_kind,
             WorkspaceProjectionKind::CanonicalRoot
         );
+    }
+
+    #[test]
+    fn workspace_uri_maps_canonical_workspace_path() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("repo");
+        std::fs::create_dir_all(root.join("docs")).unwrap();
+        let view = WorkspaceView::new(
+            Some("ws-1".into()),
+            root.clone(),
+            root.clone(),
+            root.clone(),
+            Some("canonical_root:ws-1".into()),
+            None,
+            WorkspaceProjectionKind::CanonicalRoot,
+            None,
+        )
+        .unwrap();
+
+        let uri = workspace_uri_for_path(&root.join("docs/chart.png"), &view, &[], &[]);
+
+        assert_eq!(uri.as_deref(), Some("workspace://ws-1/docs/chart.png"));
+    }
+
+    #[test]
+    fn workspace_uri_maps_worktree_path_with_root_param() {
+        let dir = tempdir().unwrap();
+        let anchor = dir.path().join("repo");
+        let worktree = dir.path().join("wt");
+        std::fs::create_dir_all(worktree.join("docs")).unwrap();
+        let view = WorkspaceView::new(
+            Some("ws-1".into()),
+            anchor,
+            worktree.clone(),
+            worktree.clone(),
+            Some("git_worktree_root:ws-1:/wt".into()),
+            None,
+            WorkspaceProjectionKind::GitWorktreeRoot,
+            Some(worktree.clone()),
+        )
+        .unwrap();
+
+        let uri = workspace_uri_for_path(&worktree.join("docs/chart.png"), &view, &[], &[]);
+
+        assert_eq!(
+            uri.as_deref(),
+            // root tokens stay readable; parsers percent-decode leniently.
+            Some("workspace://ws-1/docs/chart.png?root=git_worktree_root:ws-1:/wt")
+        );
+    }
+
+    #[test]
+    fn workspace_uri_maps_attached_workspace_and_registered_root() {
+        let dir = tempdir().unwrap();
+        let active = dir.path().join("active");
+        let other = dir.path().join("other");
+        let other_wt = dir.path().join("other-wt");
+        std::fs::create_dir_all(active.join("media")).unwrap();
+        std::fs::create_dir_all(other_wt.join("shots")).unwrap();
+        let view = WorkspaceView::new(
+            Some("ws-active".into()),
+            active.clone(),
+            active.clone(),
+            active.clone(),
+            Some("canonical_root:ws-active".into()),
+            None,
+            WorkspaceProjectionKind::CanonicalRoot,
+            None,
+        )
+        .unwrap();
+
+        let attached_uri = workspace_uri_for_path(
+            &other.join("media/logo.png"),
+            &view,
+            &[("ws-other".to_string(), other.clone())],
+            &[],
+        );
+        assert_eq!(
+            attached_uri.as_deref(),
+            Some("workspace://ws-other/media/logo.png")
+        );
+
+        let root_uri = workspace_uri_for_path(
+            &other_wt.join("shots/logo.png"),
+            &view,
+            &[("ws-other".to_string(), other.clone())],
+            &[ExecutionRootRef {
+                execution_root_id: "git_worktree_root:ws-other:/other-wt".to_string(),
+                workspace_id: "ws-other".to_string(),
+                filesystem_path: other_wt.clone(),
+            }],
+        );
+        assert_eq!(
+            root_uri.as_deref(),
+            Some("workspace://ws-other/shots/logo.png?root=git_worktree_root:ws-other:/other-wt")
+        );
+    }
+
+    #[test]
+    fn workspace_uri_returns_none_for_unmapped_path() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+        let outside = dir.path().join("tmp").join("scratch.png");
+        std::fs::create_dir_all(dir.path().join("tmp")).unwrap();
+        let view = WorkspaceView::new(
+            Some("ws-1".into()),
+            root.clone(),
+            root.clone(),
+            root.clone(),
+            Some("canonical_root:ws-1".into()),
+            None,
+            WorkspaceProjectionKind::CanonicalRoot,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(workspace_uri_for_path(&outside, &view, &[], &[]), None);
     }
 }

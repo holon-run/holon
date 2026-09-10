@@ -129,7 +129,7 @@ its local execution boundary.
 Typical members include:
 
 - `WaitFor`
-- `AgentGet`
+- `GetAgent`
 - `Enqueue`
 - `TaskList`
 - `TaskStatus`
@@ -335,8 +335,8 @@ just another task kind.
 
 The same plane should also own the stable inspection primitive for the current
 agent, rather than overloading task metadata surfaces for agent identity and
-work-focus questions. That inspection primitive should be `AgentGet`, returned
-through an `AgentGetResult` envelope, while task-backed handles remain the
+work-focus questions. That inspection primitive should be `GetAgent`, returned
+through a `GetAgentResult` envelope, while task-backed handles remain the
 responsibility of `TaskStatus`.
 
 ## 4. Waiting Plane

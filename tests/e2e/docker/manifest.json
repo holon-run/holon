@@ -56,7 +56,7 @@
         {
           "id": "delivery",
           "required_tools": [
-            "AgentGet",
+            "GetAgent",
             "ListModelProviders",
             "ListProviderModels"
           ],
@@ -65,7 +65,7 @@
             "ExecCommand",
             "CreateWorkItem"
           ],
-          "prompt": "Release Docker E2E case {case_id}. Call AgentGet for the current agent. Call ListModelProviders, then call ListProviderModels for provider {provider} using a small limit. Do not call mutation or shell tools. After all three tools succeed, answer with one concise sentence containing the literal marker {marker}."
+          "prompt": "Release Docker E2E case {case_id}. Call GetAgent for the current agent. Call ListModelProviders, then call ListProviderModels for provider {provider} using a small limit. Do not call mutation or shell tools. After all three tools succeed, answer with one concise sentence containing the literal marker {marker}."
         }
       ]
     },
@@ -302,7 +302,7 @@
           "id": "create-and-complete",
           "required_tools": [
             "CreateWorkItem",
-            "AgentGet",
+            "GetAgent",
             "GetWorkspaceState",
             "ListWorkItems",
             "UpdateWorkItem",
@@ -314,7 +314,7 @@
             "WaitFor",
             "PickWorkItem"
           ],
-          "prompt": "Scheduler Docker E2E case {case_id}. This is the creation phase only: create exactly two WorkItems, do not complete them in this turn. For the first, use objective {objective_a}, plan_status ready, and todos: seed-a completed, complete-a pending. For the second, use objective {objective_b}, plan_status ready, and todos: seed-b completed, complete-b pending. Do not PickWorkItem, UpdateWorkItem, CompleteWorkItem, or WaitFor in this operator-triggered turn. After both CreateWorkItem calls succeed, end this response with a concise acknowledgement. The objectives require inspection work (AgentGet, GetWorkspaceState, ListWorkItems) that must happen on the later autonomous work_queue turn, not in this creation turn. Do not modify files. The expected completion markers are {completion_a} and {completion_b}."
+          "prompt": "Scheduler Docker E2E case {case_id}. This is the creation phase only: create exactly two WorkItems, do not complete them in this turn. For the first, use objective {objective_a}, plan_status ready, and todos: seed-a completed, complete-a pending. For the second, use objective {objective_b}, plan_status ready, and todos: seed-b completed, complete-b pending. Do not PickWorkItem, UpdateWorkItem, CompleteWorkItem, or WaitFor in this operator-triggered turn. After both CreateWorkItem calls succeed, end this response with a concise acknowledgement. The objectives require inspection work (GetAgent, GetWorkspaceState, ListWorkItems) that must happen on the later autonomous work_queue turn, not in this creation turn. Do not modify files. The expected completion markers are {completion_a} and {completion_b}."
         }
       ]
     },

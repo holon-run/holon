@@ -42,7 +42,8 @@ use super::completion::{
     rejects_truncated_mutation_tool_call, result_work_item_id, truncated_mutation_recovery_hint,
 };
 use super::context_management::{
-    configured_history_selector, context_management_diagnostic, projection_diagnostic,
+    configured_history_selector, configured_work_item_scoped_window_messages,
+    context_management_diagnostic, projection_diagnostic,
     projection_fallback_reason as provider_projection_fallback_reason,
 };
 use super::projection::{
@@ -80,6 +81,7 @@ struct PendingCompletionReport {
     work_item_id: String,
     expected_work_revision: u64,
     execution_binding: WorkItemExecutionBinding,
+    effective_work_item_id: Option<String>,
     request_turn_index: u64,
     request_round: usize,
     request_assistant_round_id: String,
@@ -1149,27 +1151,73 @@ impl TurnExecution<'_> {
             .await?;
         let configured_selector =
             configured_history_selector(agent_id, &turn_model_state.effective_model);
+        let scoped_window = configured_work_item_scoped_window_messages();
+        let context_config = runtime.current_context_config().await;
+        let projection_budget =
+            effective_prompt.history_reprojection_budget(context_config.turn_projection_budget());
         let mut projection_selector = configured_selector;
         let mut projection_fallback_reason =
             provider_projection_fallback_reason(provider.as_ref(), configured_selector);
+        let mut projection_outcome = crate::projection_eval::ProjectionOutcome::Projected;
+        let mut history_window_scope =
+            if configured_selector == crate::projection_eval::HistorySelector::WorkItemScoped {
+                "work_item_owner"
+            } else {
+                "agent_recent"
+            };
+        let mut history_window_limit =
+            if configured_selector == crate::projection_eval::HistorySelector::WorkItemScoped {
+                scoped_window.limit
+            } else {
+                context_config.recent_messages
+            };
+        let mut history_window_source =
+            if configured_selector == crate::projection_eval::HistorySelector::WorkItemScoped {
+                scoped_window.source.as_str()
+            } else {
+                "context_config"
+            };
+        let mut history_window_turns_loaded = effective_prompt.recent_turn_count();
         if configured_selector == crate::projection_eval::HistorySelector::WorkItemScoped {
             if projection_fallback_reason.is_none() {
-                let context_config = runtime.current_context_config().await;
-                if effective_prompt
-                    .reproject_for_history_selector(
-                        &runtime.inner.storage,
-                        context_config.turn_projection_budget(),
-                        &available_tools,
-                        configured_selector,
-                    )
-                    .map(|projected| effective_prompt = projected)
-                    .is_none()
-                {
-                    projection_fallback_reason = Some("work_item_scoped_projection_unavailable");
+                match effective_prompt.reproject_for_history_selector(
+                    &runtime.inner.storage,
+                    projection_budget,
+                    &available_tools,
+                    configured_selector,
+                    scoped_window.limit,
+                )? {
+                    crate::prompt::HistoryReprojectionOutcome::Adopted {
+                        prompt,
+                        turns_loaded,
+                    } => {
+                        effective_prompt = prompt;
+                        history_window_turns_loaded = turns_loaded;
+                    }
+                    crate::prompt::HistoryReprojectionOutcome::IdenticalRenderNoop {
+                        prompt,
+                        turns_loaded,
+                    } => {
+                        effective_prompt = prompt;
+                        history_window_turns_loaded = turns_loaded;
+                        projection_outcome =
+                            crate::projection_eval::ProjectionOutcome::IdenticalRenderNoop;
+                    }
+                    crate::prompt::HistoryReprojectionOutcome::NoCurrentWorkItem => {
+                        projection_fallback_reason = Some("no_current_work_item");
+                    }
+                    crate::prompt::HistoryReprojectionOutcome::NoOwnedTurnRecords => {
+                        projection_fallback_reason = Some("no_owned_turn_records");
+                    }
                 }
             }
             if projection_fallback_reason.is_some() {
                 projection_selector = crate::projection_eval::HistorySelector::RecentTurns;
+                projection_outcome = crate::projection_eval::ProjectionOutcome::Fallback;
+                history_window_scope = "agent_recent";
+                history_window_limit = context_config.recent_messages;
+                history_window_source = "context_config";
+                history_window_turns_loaded = effective_prompt.recent_turn_count();
             }
         }
         let allowed_tool_names = available_tools
@@ -1289,6 +1337,12 @@ impl TurnExecution<'_> {
                     &effective_prompt,
                     projection_selector,
                     projection_fallback_reason,
+                    history_window_scope,
+                    history_window_limit,
+                    history_window_turns_loaded,
+                    history_window_source,
+                    projection_budget,
+                    projection_outcome,
                 );
                 let context_build_ms = context_build_started.elapsed().as_millis() as u64;
                 let (result, provider_started_at, provider_completed_at, provider_round_ms) =
@@ -1684,6 +1738,12 @@ impl TurnExecution<'_> {
                     &effective_prompt,
                     projection_selector,
                     projection_fallback_reason,
+                    history_window_scope,
+                    history_window_limit,
+                    history_window_turns_loaded,
+                    history_window_source,
+                    projection_budget,
+                    projection_outcome,
                 );
                 let context_build_ms = context_build_started.elapsed().as_millis() as u64;
                 let (result, provider_started_at, provider_completed_at, provider_round_ms) =
@@ -2201,9 +2261,10 @@ impl TurnExecution<'_> {
                     crate::tool::tools::complete_work_item::complete_with_report_candidate(
                         runtime,
                         pending.work_item_id.clone(),
-                        crate::runtime::WorkItemCompletionAuthority::AgentExecution(
-                            pending.execution_binding.clone(),
-                        ),
+                        crate::runtime::WorkItemCompletionAuthority::AgentExecution {
+                            binding: pending.execution_binding.clone(),
+                            effective_work_item_id: pending.effective_work_item_id.clone(),
+                        },
                         Some(&candidate),
                         warnings,
                         "followup_final_text",
@@ -2228,12 +2289,7 @@ impl TurnExecution<'_> {
                 });
                 success_record.summary =
                     crate::tool::summary::tool_result_summary(&result.envelope);
-                let mut prepared =
-                    result.prepared_work_item_completion.take().ok_or_else(|| {
-                        anyhow::anyhow!("follow-up completion did not prepare commit")
-                    })?;
-                prepared.tool_execution = Some(success_record);
-                prepared.audit_events.push(AuditEvent::legacy(
+                let completion_event = AuditEvent::legacy(
                     "completion_report_request_completed",
                     serde_json::json!({
                         "agent_id": agent_id,
@@ -2245,8 +2301,84 @@ impl TurnExecution<'_> {
                         "report_assistant_round_id": assistant_round_id,
                         "source": "followup_final_text",
                     }),
-                ));
-                prepared_work_item_completion = Some(prepared);
+                );
+                let detached_completed = if let Some(mut prepared) =
+                    result.prepared_work_item_completion.take()
+                {
+                    prepared.tool_execution = Some(success_record.clone());
+                    prepared.audit_events.push(completion_event.clone());
+                    if prepared.settlement == crate::runtime::WorkItemCompletionSettlement::Detached
+                    {
+                        runtime
+                            .commit_prepared_detached_work_item_completion(*prepared)
+                            .await?;
+                        true
+                    } else {
+                        prepared_work_item_completion = Some(prepared);
+                        false
+                    }
+                } else {
+                    runtime.persist_tool_execution_evidence(&success_record)?;
+                    runtime.inner.storage.append_event(&completion_event)?;
+                    true
+                };
+                if detached_completed {
+                    let result_content = crate::tool::tools::render_tool_result_for_model(&result)?;
+                    let tool_result = ToolResultBlock {
+                        tool_use_id: pending.request_tool_call_id.clone(),
+                        content: result_content.clone(),
+                        is_error: false,
+                        error: None,
+                    };
+                    let continuation_text = format!(
+                        "WorkItem {} was completed as a detached target. Continue the current execution objective; this completion does not end the current turn.",
+                        pending.work_item_id
+                    );
+                    use crate::types::{ToolResultData, ToolResultRef};
+                    runtime.persist_transcript_evidence(&TranscriptEntry::new(
+                        agent_id.to_string(),
+                        TranscriptEntryKind::ToolResults,
+                        Some(round),
+                        None,
+                        serde_json::to_value(ToolResultData::RefsWithWrapper {
+                            turn_id: turn_id.clone(),
+                            refs: vec![ToolResultRef {
+                                tool_call_id: pending.request_tool_call_id.clone(),
+                                tool_execution_id: Some(success_record.id.clone()),
+                                provider_visible_text: Some(result_content),
+                                content_truncated: false,
+                                is_error: false,
+                            }],
+                        })?,
+                    ))?;
+                    runtime.persist_transcript_evidence(&TranscriptEntry::new(
+                        agent_id.to_string(),
+                        TranscriptEntryKind::ContinuationPrompt,
+                        Some(round),
+                        None,
+                        serde_json::json!({
+                            "text": continuation_text,
+                            "reason": "detached_work_item_completed",
+                            "completion_request_id": pending.request_id,
+                        }),
+                    ))?;
+                    completed_rounds.push(TurnRoundRecord {
+                        round,
+                        estimated_tokens: build_round_estimated_tokens(
+                            &completed_round_assistant_blocks,
+                            std::slice::from_ref(&tool_result),
+                            std::slice::from_ref(&continuation_text),
+                        ),
+                        assistant_blocks: completed_round_assistant_blocks,
+                        text_blocks,
+                        tool_calls: Vec::new(),
+                        tool_results: vec![tool_result],
+                        tool_result_envelopes: vec![result.envelope],
+                        follow_up_user_texts: vec![continuation_text],
+                    });
+                    completed_work_item_this_turn = true;
+                    continue;
+                }
                 let final_text = combined_text;
                 let terminal = TurnTerminalRecord {
                     turn_id: state
@@ -2723,6 +2855,7 @@ impl TurnExecution<'_> {
                                 source_tool_call_id: tool_call_id.clone(),
                             },
                         ),
+                    effective_work_item_id: pre_tool_work_item_id.clone(),
                 };
                 let tool_exec_started = std::time::Instant::now();
                 let tool_execution = if let Some(snapshot) = runtime.current_run_abort_token().await
@@ -2839,7 +2972,15 @@ impl TurnExecution<'_> {
                         if let Some(mut prepared) = result.prepared_work_item_completion.take() {
                             prepared.tool_execution = Some(record.clone());
                             prepared.audit_events.push(tool_executed_event);
-                            prepared_work_item_completion = Some(prepared);
+                            if prepared.settlement
+                                == crate::runtime::WorkItemCompletionSettlement::Detached
+                            {
+                                runtime
+                                    .commit_prepared_detached_work_item_completion(*prepared)
+                                    .await?;
+                            } else {
+                                prepared_work_item_completion = Some(prepared);
+                            }
                         } else {
                             runtime.persist_tool_execution_evidence(&record)?;
                             runtime.inner.storage.append_event(&tool_executed_event)?;
@@ -2876,6 +3017,7 @@ impl TurnExecution<'_> {
                                 work_item_id: directive.work_item_id,
                                 expected_work_revision: directive.expected_work_revision,
                                 execution_binding,
+                                effective_work_item_id: pre_tool_work_item_id.clone(),
                                 request_turn_index: turn_index,
                                 request_round: round,
                                 request_assistant_round_id: assistant_round_id.clone(),

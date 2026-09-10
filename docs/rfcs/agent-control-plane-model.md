@@ -232,18 +232,18 @@ This should be the only public way to create another reasoning context.
 
 The central inspection primitive should be:
 
-- `AgentGet`
-  - Returns an `AgentGetResult` envelope carrying the current `AgentSummary`.
+- `GetAgent`
+  - Returns a `GetAgentResult` envelope carrying the current `AgentSummary`.
 
-`AgentGet` should read agent-plane state for the context-owning agent:
+`GetAgent` should read agent-plane state for the context-owning agent:
 
 - identity and visibility
 - lifecycle / closure posture
 - active work focus and waiting state
 - visible child-agent lineage where policy allows
 
-`AgentGet` is distinct from task-plane inspection. `TaskStatus` should inspect a
-managed execution handle, while `AgentGet` should inspect the agent that owns
+`GetAgent` is distinct from task-plane inspection. `TaskStatus` should inspect a
+managed execution handle, while `GetAgent` should inspect the agent that owns
 the broader context.
 
 The agent plane also owns the current-run intervention surface.
@@ -648,16 +648,16 @@ This should not replace future mailbox-style agent communication.
 
 It only defines the bounded supervision path for parent-controlled child work.
 
-### Relationship to `AgentGet`
+### Relationship to `GetAgent`
 
-`AgentGet` and task-handle inspection should answer different questions.
+`GetAgent` and task-handle inspection should answer different questions.
 
-- `AgentGet` should inspect the agent as a context-owning runtime object
+- `GetAgent` should inspect the agent as a context-owning runtime object
 - `TaskStatus` should inspect the parent-visible supervision handle
 
 For example:
 
-- `AgentGet` may expose profile, visibility, work focus, and waiting state
+- `GetAgent` may expose profile, visibility, work focus, and waiting state
 - `TaskStatus` should stay focused on lifecycle and control metadata for the
   managed execution handle
 

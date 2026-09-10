@@ -64,8 +64,10 @@ holon (v0.35.0)
 ├── control      [deprecated] use `holon agent start|stop|abort`
 ├── agent        Agent management
 │   ├── list     List all agents
+│   ├── get      Show canonical agent detail
 │   ├── status   Show agent status
 │   ├── create   Create a new agent
+│   ├── rename   Rename a public self-owned agent
 │   ├── start    Start an agent
 │   ├── stop     Stop an agent
 │   ├── delete   Permanently delete an agent and its data
@@ -167,6 +169,11 @@ non-interactive mode.
 `holon agent repair <AGENT_ID>` retries incomplete post-create template,
 runtime, workspace, model, and initial-message steps. It does not recreate the
 Agent or overwrite conflicting user-managed state.
+
+`holon agent rename <AGENT_ID> --name <NAME>` updates the display name of a
+public self-owned agent and echoes the updated agent detail. The agent id is
+permanent; the configured default agent cannot be renamed, and duplicate names
+are rejected with a readable conflict error.
 
 ### Model selection
 

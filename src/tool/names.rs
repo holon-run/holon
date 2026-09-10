@@ -8,7 +8,7 @@
 /// Importing `tool::names::TOOL_*` lets the compiler catch typos and makes
 /// renames a single-point edit.
 pub mod tool_names {
-    pub const AGENT_GET: &str = "AgentGet";
+    pub const GET_AGENT: &str = "GetAgent";
     pub const APPLY_PATCH: &str = "ApplyPatch";
     pub const ATTACH_WORKSPACE: &str = "AttachWorkspace";
     pub const CANCEL_EXTERNAL_TRIGGER: &str = "CancelExternalTrigger";
@@ -38,7 +38,6 @@ pub mod tool_names {
     pub const PICK_WORK_ITEM: &str = "PickWorkItem";
     pub const REMOVE_WORKTREE: &str = "RemoveWorktree";
     pub const SLEEP: &str = "Sleep";
-    pub(crate) const SPAWN_AGENT: &str = "SpawnAgent";
     pub const TASK_INPUT: &str = "TaskInput";
     /// Legacy alias kept for backward-compatible dispatch.
     pub const TASK_LIST: &str = "TaskList";
@@ -61,7 +60,7 @@ pub use tool_names::*;
 ///
 /// Keep alphabetically sorted for readability.
 pub const STABLE_TOOL_NAMES: &[&str] = &[
-    AGENT_GET,
+    GET_AGENT,
     APPLY_PATCH,
     ATTACH_WORKSPACE,
     CANCEL_TIMER,
@@ -127,7 +126,7 @@ pub const SLEEP_LIKE_TOOLS: &[&str] = &[SLEEP, WAIT_FOR];
 
 /// All builtin tool names, alphabetically sorted.
 pub const ALL_TOOL_NAMES: &[&str] = &[
-    AGENT_GET,
+    GET_AGENT,
     APPLY_PATCH,
     ATTACH_WORKSPACE,
     CANCEL_EXTERNAL_TRIGGER,

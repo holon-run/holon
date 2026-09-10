@@ -119,6 +119,17 @@ impl ToolRegistry {
         context: &ToolExecutionContext,
     ) -> Result<(ToolResult, ToolExecutionRecord)> {
         let started_at = chrono::Utc::now();
+        if call.name == "SpawnAgent" {
+            return Err(ToolError::new("legacy_tool_removed", "SpawnAgent has been removed")
+                .with_details(json!({
+                    "tool_name": call.name,
+                    "replacement_tools": ["CreateAgent", "InvokeAgent"],
+                }))
+                .with_recovery_hint(
+                    "use CreateAgent for persistent named agents or InvokeAgent for child-agent work",
+                )
+                .into());
+        }
         let required_family = match self.family_for_tool(&call.name)? {
             Some(required_family) => required_family,
             None => {
@@ -136,26 +147,24 @@ impl ToolRegistry {
                 .into());
             }
         };
-        let identity = runtime.agent_identity_view().await?;
-        if !identity
-            .profile_preset
-            .allows_tool_capability_family(required_family)
+        if runtime
+            .agent_capability_policy()
+            .await?
+            .is_some_and(|policy| !policy.allows(required_family))
         {
             return Err(ToolError::new(
-                "unsupported_agent_profile_capability",
+                "agent_capability_not_allowed",
                 format!(
-                    "{} is not available for agents with the `{}` profile",
-                    call.name,
-                    identity.profile_preset.label()
+                    "{} is not allowed by the agent capability policy",
+                    call.name
                 ),
             )
             .with_details(json!({
                 "tool_name": call.name,
                 "required_family": required_family.label(),
-                "profile_preset": identity.profile_preset.label(),
             }))
             .with_recovery_hint(format!(
-                "run {} from an agent whose profile allows the `{}` capability family",
+                "run {} from an agent whose capability policy allows the `{}` family",
                 call.name,
                 required_family.label()
             ))
@@ -339,7 +348,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         for expected in [
-            "AgentGet",
+            "GetAgent",
             "WaitFor",
             "CreateAgent",
             "InvokeAgent",

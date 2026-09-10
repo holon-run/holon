@@ -153,7 +153,7 @@ manifest hash, the canonical scheduler label, and per-case evidence identities.
    token.
 2. Assert the configured model route is exact and provider fallback is
    disabled.
-3. Ask the real model to use `AgentGet`, `ListModelProviders`, and
+3. Ask the real model to use `GetAgent`, `ListModelProviders`, and
    `ListProviderModels`.
 4. Assert one provider attempt, positive token usage, the exact winning model,
    successful tool events, a correlated assistant round, and one canonical

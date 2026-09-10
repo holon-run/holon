@@ -409,6 +409,7 @@ impl RuntimeHandle {
             profile_preset: crate::types::AgentProfilePreset::PrivateChild,
             status: crate::types::AgentRegistryStatus::Active,
             is_default_agent: false,
+            incarnation: 1,
             parent_agent_id: None,
             lineage_parent_agent_id: None,
             delegated_from_task_id: None,

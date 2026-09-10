@@ -804,6 +804,9 @@ pub enum RuntimeDbAuditCheckArg {
 #[derive(Debug, Subcommand)]
 pub enum AgentCommands {
     List,
+    Get {
+        agent_id: Option<String>,
+    },
     Status {
         agent_id: Option<String>,
     },
@@ -811,6 +814,14 @@ pub enum AgentCommands {
         agent_id: String,
         #[arg(long)]
         template: Option<String>,
+    },
+    /// Rename a public self-owned agent (display name only; the agent id is permanent)
+    #[command(name = "rename")]
+    Rename {
+        agent_id: String,
+        /// New display name (trimmed, 1-64 chars, no control characters or `/ \ :`)
+        #[arg(long = "name", value_name = "NAME")]
+        name: String,
     },
     /// Retry incomplete post-create bootstrap steps
     Repair {

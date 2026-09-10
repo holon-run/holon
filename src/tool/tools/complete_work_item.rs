@@ -79,13 +79,16 @@ pub(crate) async fn execute(
                 "CompleteWorkItem requires an active agent execution binding",
             )
         })?;
-    let authority = WorkItemCompletionAuthority::AgentExecution(execution_binding);
+    let authority = WorkItemCompletionAuthority::AgentExecution {
+        binding: execution_binding,
+        effective_work_item_id: context.effective_work_item_id.clone(),
+    };
     if candidate.is_none()
         && before
             .as_ref()
             .is_some_and(|record| record.state != WorkItemState::Completed)
     {
-        let expected_work_revision = runtime
+        let (expected_work_revision, settlement) = runtime
             .validate_work_item_completion_request(&work_item_id, &authority)
             .await?;
         let request_id = crate::ids::completion_report_request_id();
@@ -96,6 +99,7 @@ pub(crate) async fn execute(
                 "completion_request_id": request_id,
                 "work_item_id": work_item_id,
                 "completed_transition": false,
+                "completion_mode": completion_mode_name(settlement),
                 "expected_output": "final_text_only",
                 "warnings": warnings_json(&warnings),
             }),
@@ -127,7 +131,7 @@ pub(crate) async fn complete_with_report_candidate(
     warnings: Vec<WorkItemCompletionWarning>,
     report_source: &'static str,
 ) -> Result<crate::tool::ToolResult> {
-    let prepared = runtime
+    let dispatch = runtime
         .prepare_work_item_completion_with_report(
             work_item_id.clone(),
             authority,
@@ -147,27 +151,36 @@ pub(crate) async fn complete_with_report_candidate(
             warnings_json(&warnings),
         )
         .await?;
-    let (completed, completed_transition, completion_report_promoted, continuation_resumed) =
-        match prepared.as_ref() {
-            Some(prepared) => (
+    let (
+        completed,
+        completed_transition,
+        completion_report_promoted,
+        continuation_resumed,
+        settlement,
+        prepared,
+    ) = match dispatch {
+        crate::runtime::WorkItemCompletionDispatch::Prepared(prepared) => {
+            let settlement = prepared.settlement;
+            (
                 prepared.record.clone(),
                 true,
                 true,
                 prepared.continuation_resumed.clone(),
-            ),
-            None => (
-                runtime
-                    .latest_work_item(&work_item_id)
-                    .await?
-                    .ok_or_else(|| anyhow::anyhow!("work item {work_item_id} not found"))?,
-                false,
-                false,
-                None,
-            ),
-        };
+                settlement,
+                Some(prepared),
+            )
+        }
+        crate::runtime::WorkItemCompletionDispatch::Unchanged(completed) => (
+            completed,
+            false,
+            false,
+            None,
+            crate::runtime::WorkItemCompletionSettlement::Detached,
+            None,
+        ),
+    };
     let context = query_context(runtime).await?;
     let work_item = view_for_record(runtime, &context, completed, true, None, None).await?;
-    let terminal_transition = continuation_resumed.is_some();
     let mut result = serde_json::to_value(
         WorkItemMutationResult::with_completion_transition(
             work_item,
@@ -187,14 +200,27 @@ pub(crate) async fn complete_with_report_candidate(
                 serde_json::json!(report_source),
             );
         }
+        object.insert(
+            "completion_mode".into(),
+            serde_json::json!(completion_mode_name(settlement)),
+        );
     }
     let mut result = serialize_success(NAME, &result)?;
+    let terminal_transition =
+        settlement == crate::runtime::WorkItemCompletionSettlement::BoundExecution;
     if terminal_transition {
         result.should_sleep = true;
         result.terminal_transition = true;
     }
     result.prepared_work_item_completion = prepared.map(Box::new);
     Ok(result)
+}
+
+fn completion_mode_name(settlement: crate::runtime::WorkItemCompletionSettlement) -> &'static str {
+    match settlement {
+        crate::runtime::WorkItemCompletionSettlement::BoundExecution => "bound_execution",
+        crate::runtime::WorkItemCompletionSettlement::Detached => "detached",
+    }
 }
 
 pub(crate) fn completion_warnings(record: &WorkItemRecord) -> Vec<WorkItemCompletionWarning> {

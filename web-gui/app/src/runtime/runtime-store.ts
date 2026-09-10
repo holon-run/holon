@@ -473,6 +473,7 @@ export interface RuntimeStoreState {
   clearAgentModel: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
   controlAgent: (agentId: string | undefined, action: AgentControlAction) => Promise<void>;
   deleteAgent: (agentId: string | undefined, cascadePrivateChildren?: boolean) => Promise<void>;
+  renameAgent: (agentId: string | undefined, name: string) => Promise<void>;
   // Debug inspector compatibility path; globalSyncCoordinator owns default correctness.
   startAgentEventStream: (agentId: string | undefined, displayLevel: DisplayLevel) => void;
   stopAgentEventStream: (agentId: string | undefined) => void;
@@ -3609,6 +3610,25 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
       await request.client.controlAgent(agentId, action);
       if (!isCurrentClientRequest(request)) return;
       await get().refreshBootstrap({ background: true });
+    } catch (error) {
+      if (!isCurrentClientRequest(request)) return;
+      throw error;
+    }
+  },
+  renameAgent: async (agentId, name) => {
+    if (!agentId) return;
+    const request = captureClientRequest();
+    try {
+      await request.client.renameAgent(agentId, name);
+      if (!isCurrentClientRequest(request)) return;
+      await get().refreshAgentDetail(agentId, get().displayLevel, { force: true });
+      if (get().discovery.mode === "authoritative") {
+        // The authoritative roster owns the displayed identity; one snapshot
+        // refresh applies the new name (and any concurrent roster change).
+        globalSyncCoordinator.refreshRoster(get, set);
+      } else {
+        await get().refreshBootstrap({ background: true });
+      }
     } catch (error) {
       if (!isCurrentClientRequest(request)) return;
       throw error;

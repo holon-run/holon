@@ -294,7 +294,7 @@ describe("reduceAgentSessionTimeline", () => {
             input: { name: "timeline", size: "1536x1024", prompt: "A tool execution timeline" },
             summary: "completed",
           }),
-          toolEvent("agent-get-5", "AgentGet", {
+          toolEvent("agent-get-5", "GetAgent", {
             input: { agent_id: "holon-dev" },
             summary: "completed",
           }),

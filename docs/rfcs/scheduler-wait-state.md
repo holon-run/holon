@@ -583,7 +583,7 @@ derived `external_recoverability` value:
 - `explicit_no_fallback` when opaque metadata records that no fallback exists
   and includes a reason.
 
-Agent-facing projections such as `AgentGet` and `ListWorkItems` should preserve
+Agent-facing projections such as `GetAgent` and `ListWorkItems` should preserve
 the opaque wait metadata alongside the derived classification so agents and
 skills can reconcile provider-specific details without teaching the scheduler
 about GitHub, CI, or other providers.
@@ -719,7 +719,7 @@ Surface weak external waits that have no timer, durable queue, or explicit
   reconciliation?
 - Should system tick be a first-class `WakeSource` for agent-facing waits, or
   remain scheduler-only?
-- How should weak external waits be shown in `ListWorkItems`, `AgentGet`, and
+- How should weak external waits be shown in `ListWorkItems`, `GetAgent`, and
   TUI surfaces?
 
 ## Relationship to existing RFCs

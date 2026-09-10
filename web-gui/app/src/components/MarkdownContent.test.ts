@@ -30,6 +30,23 @@ describe("parseWorkspaceImageRef", () => {
     expect(parseWorkspaceImageRef("https://example.com/chart.png")).toBeUndefined();
     expect(parseWorkspaceImageRef("workspace://agent_home:holon-pm/../secret.png")).toBeUndefined();
   });
+
+  it("extracts the ?root= execution-root token and keeps it opaque", () => {
+    expect(parseWorkspaceImageRef("workspace://ws_1/docs/a.png?root=git_worktree_root:ws_1:/tmp/wt")).toEqual({
+      workspaceId: "ws_1",
+      path: "docs/a.png",
+      executionRootId: "git_worktree_root:ws_1:/tmp/wt",
+    });
+    expect(parseWorkspaceImageRef("workspace://ws_1/docs/a.png?root=git%5Fworktree%3Aws")).toEqual({
+      workspaceId: "ws_1",
+      path: "docs/a.png",
+      executionRootId: "git_worktree:ws",
+    });
+    expect(parseWorkspaceImageRef("workspace://ws_1/docs/a.png#frag")).toEqual({
+      workspaceId: "ws_1",
+      path: "docs/a.png",
+    });
+  });
 });
 
 describe("resolveWorkspaceRelativePath", () => {

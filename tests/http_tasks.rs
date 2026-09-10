@@ -26,6 +26,7 @@ http_async_tests!(
     create_work_item_route_rejects_empty_objective_with_bad_request,
     work_item_mutation_routes_pick_update_and_complete,
     work_item_mutation_routes_validate_bad_requests,
+    complete_work_item_route_rejects_active_execution_bound_target,
     timer_detail_route_returns_latest_timer_record,
     timer_cancel_route_is_idempotent_and_updates_projection,
 );

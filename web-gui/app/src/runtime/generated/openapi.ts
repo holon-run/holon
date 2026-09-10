@@ -61,6 +61,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/agents/{agent_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get agent
+         * @description Return the canonical public AgentSummary read model.
+         */
+        get: operations["getAgent"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agents/{agent_id}/briefs": {
         parameters: {
             query?: never;
@@ -2231,20 +2251,20 @@ export interface components {
             identity: {
                 agent_id: string;
                 delegated_from_task_id?: string | null;
+                /**
+                 * Format: uint64
+                 * @description Monotonic incarnation counter; 1 for the original identity and +1
+                 *      for every explicit recreation of the same agent id after a fully
+                 *      completed deletion.
+                 * @default 1
+                 */
+                incarnation: number;
                 is_default_agent: boolean;
-                /** @enum {string} */
-                kind: "default" | "named" | "child";
                 lineage_parent_agent_id?: string | null;
                 name?: string | null;
-                /** @enum {string} */
-                ownership: "parent_supervised" | "self_owned";
                 parent_agent_id?: string | null;
                 /** @enum {string} */
-                profile_preset: "private_child" | "public_named";
-                /** @enum {string} */
                 status: "active" | "deleting" | "deleted";
-                /** @enum {string} */
-                visibility: "public" | "private";
             };
             job: {
                 agent_id: string;
@@ -2274,20 +2294,20 @@ export interface components {
             identity: {
                 agent_id: string;
                 delegated_from_task_id?: string | null;
+                /**
+                 * Format: uint64
+                 * @description Monotonic incarnation counter; 1 for the original identity and +1
+                 *      for every explicit recreation of the same agent id after a fully
+                 *      completed deletion.
+                 * @default 1
+                 */
+                incarnation: number;
                 is_default_agent: boolean;
-                /** @enum {string} */
-                kind: "default" | "named" | "child";
                 lineage_parent_agent_id?: string | null;
                 name?: string | null;
-                /** @enum {string} */
-                ownership: "parent_supervised" | "self_owned";
                 parent_agent_id?: string | null;
                 /** @enum {string} */
-                profile_preset: "private_child" | "public_named";
-                /** @enum {string} */
                 status: "active" | "deleting" | "deleted";
-                /** @enum {string} */
-                visibility: "public" | "private";
             };
             job?: {
                 agent_id: string;
@@ -2507,20 +2527,20 @@ export interface components {
             identity: {
                 agent_id: string;
                 delegated_from_task_id?: string | null;
+                /**
+                 * Format: uint64
+                 * @description Monotonic incarnation counter; 1 for the original identity and +1
+                 *      for every explicit recreation of the same agent id after a fully
+                 *      completed deletion.
+                 * @default 1
+                 */
+                incarnation: number;
                 is_default_agent: boolean;
-                /** @enum {string} */
-                kind: "default" | "named" | "child";
                 lineage_parent_agent_id?: string | null;
                 name?: string | null;
-                /** @enum {string} */
-                ownership: "parent_supervised" | "self_owned";
                 parent_agent_id?: string | null;
                 /** @enum {string} */
-                profile_preset: "private_child" | "public_named";
-                /** @enum {string} */
                 status: "active" | "deleting" | "deleted";
-                /** @enum {string} */
-                visibility: "public" | "private";
             };
             lineage_children?: {
                 child_agent_id: string;
@@ -2608,20 +2628,20 @@ export interface components {
                     identity: {
                         agent_id: string;
                         delegated_from_task_id?: string | null;
+                        /**
+                         * Format: uint64
+                         * @description Monotonic incarnation counter; 1 for the original identity and +1
+                         *      for every explicit recreation of the same agent id after a fully
+                         *      completed deletion.
+                         * @default 1
+                         */
+                        incarnation: number;
                         is_default_agent: boolean;
-                        /** @enum {string} */
-                        kind: "default" | "named" | "child";
                         lineage_parent_agent_id?: string | null;
                         name?: string | null;
-                        /** @enum {string} */
-                        ownership: "parent_supervised" | "self_owned";
                         parent_agent_id?: string | null;
                         /** @enum {string} */
-                        profile_preset: "private_child" | "public_named";
-                        /** @enum {string} */
                         status: "active" | "deleting" | "deleted";
-                        /** @enum {string} */
-                        visibility: "public" | "private";
                     };
                     observability: {
                         /** @enum {string|null} */
@@ -2769,20 +2789,20 @@ export interface components {
                 identity: {
                     agent_id: string;
                     delegated_from_task_id?: string | null;
+                    /**
+                     * Format: uint64
+                     * @description Monotonic incarnation counter; 1 for the original identity and +1
+                     *      for every explicit recreation of the same agent id after a fully
+                     *      completed deletion.
+                     * @default 1
+                     */
+                    incarnation: number;
                     is_default_agent: boolean;
-                    /** @enum {string} */
-                    kind: "default" | "named" | "child";
                     lineage_parent_agent_id?: string | null;
                     name?: string | null;
-                    /** @enum {string} */
-                    ownership: "parent_supervised" | "self_owned";
                     parent_agent_id?: string | null;
                     /** @enum {string} */
-                    profile_preset: "private_child" | "public_named";
-                    /** @enum {string} */
                     status: "active" | "deleting" | "deleted";
-                    /** @enum {string} */
-                    visibility: "public" | "private";
                 };
                 /**
                  * @default {
@@ -3026,20 +3046,20 @@ export interface components {
                 identity: {
                     agent_id: string;
                     delegated_from_task_id?: string | null;
+                    /**
+                     * Format: uint64
+                     * @description Monotonic incarnation counter; 1 for the original identity and +1
+                     *      for every explicit recreation of the same agent id after a fully
+                     *      completed deletion.
+                     * @default 1
+                     */
+                    incarnation: number;
                     is_default_agent: boolean;
-                    /** @enum {string} */
-                    kind: "default" | "named" | "child";
                     lineage_parent_agent_id?: string | null;
                     name?: string | null;
-                    /** @enum {string} */
-                    ownership: "parent_supervised" | "self_owned";
                     parent_agent_id?: string | null;
                     /** @enum {string} */
-                    profile_preset: "private_child" | "public_named";
-                    /** @enum {string} */
                     status: "active" | "deleting" | "deleted";
-                    /** @enum {string} */
-                    visibility: "public" | "private";
                 };
                 /**
                  * @default {
@@ -3221,20 +3241,20 @@ export interface components {
                     identity: {
                         agent_id: string;
                         delegated_from_task_id?: string | null;
+                        /**
+                         * Format: uint64
+                         * @description Monotonic incarnation counter; 1 for the original identity and +1
+                         *      for every explicit recreation of the same agent id after a fully
+                         *      completed deletion.
+                         * @default 1
+                         */
+                        incarnation: number;
                         is_default_agent: boolean;
-                        /** @enum {string} */
-                        kind: "default" | "named" | "child";
                         lineage_parent_agent_id?: string | null;
                         name?: string | null;
-                        /** @enum {string} */
-                        ownership: "parent_supervised" | "self_owned";
                         parent_agent_id?: string | null;
                         /** @enum {string} */
-                        profile_preset: "private_child" | "public_named";
-                        /** @enum {string} */
                         status: "active" | "deleting" | "deleted";
-                        /** @enum {string} */
-                        visibility: "public" | "private";
                     };
                     /**
                      * @default {
@@ -5346,6 +5366,47 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AgentRosterSnapshot"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getAgent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Agent id. */
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JsonValue"];
                 };
             };
             /** @description Client error JSON response. */

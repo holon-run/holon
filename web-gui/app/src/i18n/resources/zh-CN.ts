@@ -914,6 +914,20 @@ const zh: Record<string, any> = {
     deleteConfirmPrompt: "输入 {{id}} 以确认删除。此操作不可撤销。",
     deleteConfirmLabel: "输入智能体 ID 以确认",
     cascadePrivateChildren: "同时删除私有子智能体",
+    // 转世（删除后重建）
+    incarnationBadge: "第 {{value}} 代身份",
+    incarnationTitle:
+      "该 ID 在删除清理完成后被显式重建；第 {{value}} 代是全新身份，不继承原智能体的任何状态。",
+    // Rename
+    rename: "重命名",
+    renameAria: "重命名 agent",
+    nameLabel: "名称",
+    renamePlaceholder: "显示名称",
+    renameNameRequired: "名称不能为空。",
+    renameNameTooLong: "名称最多 64 个字符。",
+    renameNameInvalidChars: "名称不能包含控制字符或 \"/\"、\"\\\"、\":\"。",
+    renameNameConflict: "该名称已被占用。",
+    renameFailed: "重命名失败：{{message}}",
     deletingPhase: "删除中 — {{phase}}",
     switchModelHint: "空闲时立即生效；否则在下次运行时生效。",
     runtimeDefault: "运行时默认",

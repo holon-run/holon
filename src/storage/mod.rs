@@ -20,7 +20,7 @@ use crate::{
         ContextEpisodeRecord, DeliverySummaryRecord, ExternalTriggerRecord, MessageEnvelope,
         OperatorDeliveryRecord, OperatorNotificationRecord, OperatorTransportBinding,
         QueueEntryRecord, TaskRecord, TaskStatus, TimerRecord, ToolExecutionRecord,
-        TranscriptEntry, TurnRecord, WaitConditionRecord, WorkItemContinuationFrame,
+        TranscriptEntry, TurnOwner, TurnRecord, WaitConditionRecord, WorkItemContinuationFrame,
         WorkItemDelegationRecord, WorkItemDelegationState, WorkItemRecord, WorkspaceEntry,
         WorkspaceOccupancyRecord,
     },
@@ -706,6 +706,16 @@ impl AppStorage {
         return runtime_db.turn_records().recent(limit);
     }
 
+    pub fn read_recent_turns_for_owner(
+        &self,
+        owner: &TurnOwner,
+        limit: usize,
+    ) -> Result<Vec<TurnRecord>> {
+        self.runtime_db
+            .turn_records()
+            .recent_for_owner(&self.storage_agent_id()?, owner, limit)
+    }
+
     pub fn read_turn_by_id(&self, turn_id: &str) -> Result<Option<TurnRecord>> {
         self.runtime_db
             .turn_records()
@@ -724,6 +734,12 @@ impl AppStorage {
         return runtime_db
             .transcript_entries()
             .all(self.current_agent_id()?.as_deref());
+    }
+
+    pub fn read_transcript_for_turns(&self, turn_ids: &[String]) -> Result<Vec<TranscriptEntry>> {
+        self.runtime_db
+            .transcript_entries()
+            .for_turn_ids(&self.storage_agent_id()?, turn_ids)
     }
 
     pub fn read_transcript_entry_by_id(&self, entry_id: &str) -> Result<Option<TranscriptEntry>> {

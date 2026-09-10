@@ -48,6 +48,7 @@ interface RightSidePanelProps {
   onOpenPlanFile?: (workspaceId: string, filePath: string) => void;
   onControlAgent?: (action: AgentControlAction) => Promise<void>;
   onDeleteAgent?: (cascadePrivateChildren: boolean) => Promise<void>;
+  onRenameAgent?: (name: string) => Promise<void>;
   onClose: () => void;
 }
 
@@ -85,6 +86,7 @@ export function RightSidePanel({
   onOpenPlanFile,
   onControlAgent,
   onDeleteAgent,
+  onRenameAgent,
   onClose,
 }: RightSidePanelProps) {
   const { t } = useTranslation();
@@ -317,6 +319,7 @@ export function RightSidePanel({
             onBrowseFiles={onBrowseFiles}
             onControlAgent={onControlAgent}
             onDeleteAgent={onDeleteAgent}
+            onRenameAgent={onRenameAgent}
           />
         )}
       </div>

@@ -1230,6 +1230,7 @@ mod tests {
                 profile_preset: AgentProfilePreset::PublicNamed,
                 status: AgentRegistryStatus::Active,
                 is_default_agent: true,
+                incarnation: 1,
                 parent_agent_id: None,
                 lineage_parent_agent_id: None,
                 delegated_from_task_id: None,

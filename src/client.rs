@@ -17,8 +17,9 @@ use crate::{
         BatchGetTranscriptEntriesResponse, CancelTimerRequest, ClearAgentModelRequest,
         ControlPromptRequest, CreateAgentRequest, CreateTimerRequest, DebugPromptRequest,
         DeleteAgentRequest, DetachWorkspaceRequest, ExitWorkspaceRequest,
-        ModelConfigMigrationRequest, RuntimeConfigReadResponse, RuntimeConfigUpdateRequest,
-        RuntimeConfigUpdateResponse, SetAgentModelRequest, TaskInputRequest, TaskStopRequest,
+        ModelConfigMigrationRequest, RenameAgentRequest, RuntimeConfigReadResponse,
+        RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse, SetAgentModelRequest,
+        TaskInputRequest, TaskStopRequest,
     },
     http_dto::AgentStateSnapshotDto,
     model_catalog::BuiltInModelMetadata,
@@ -477,6 +478,10 @@ impl LocalClient {
         self.get_json(&format!("/agents/{agent_id}/status")).await
     }
 
+    pub async fn get_agent(&self, agent_id: &str) -> Result<AgentSummary> {
+        self.get_json(&format!("/agents/{agent_id}")).await
+    }
+
     pub async fn agent_state_snapshot(&self, agent_id: &str) -> Result<AgentStateSnapshotDto> {
         self.get_json(&format!("/agents/{agent_id}/state")).await
     }
@@ -755,6 +760,18 @@ impl LocalClient {
         self.post_control_json(
             &format!("/control/agents/{agent_id}/repair"),
             &serde_json::json!({}),
+        )
+        .await
+    }
+
+    /// Rename a public self-owned agent. Only the display name changes; the
+    /// agent id stays permanent. Typed errors flow through `decode_or_error`.
+    pub async fn rename_agent(&self, agent_id: &str, name: &str) -> Result<AgentDetail> {
+        self.patch_control_json(
+            &format!("/control/agents/{agent_id}/name"),
+            &RenameAgentRequest {
+                name: name.to_string(),
+            },
         )
         .await
     }
@@ -1057,7 +1074,7 @@ impl LocalClient {
             .with_context(|| format!("failed to decode response body for DELETE {}", path))
     }
 
-    async fn patch_control_json<B: Serialize, T: DeserializeOwned>(
+    pub async fn patch_control_json<B: Serialize, T: DeserializeOwned>(
         &self,
         path: &str,
         payload: &B,

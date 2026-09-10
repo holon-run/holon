@@ -60,18 +60,18 @@ use crate::{
         AgentBootstrapInitialMessage, AgentBootstrapRecord, AgentBootstrapStatus,
         AgentBootstrapStep, AgentBootstrapStepStatus, AgentBootstrapWorkspaceState,
         AgentCanonicalDurability, AgentCreateReceipt, AgentCreateResult, AgentCreateStage,
-        AgentDeletionJob, AgentDetail, AgentDurability, AgentIdentityRecord, AgentIdentityView,
-        AgentKind, AgentLifecycleHint, AgentListEntry, AgentMessageCallerContext,
-        AgentMessageDeliveryOutcome, AgentMessageDeliveryRejectionCode, AgentMessagePrincipalKind,
-        AgentMessageSendRequest, AgentOwnership, AgentProfilePreset, AgentRegistryStatus,
+        AgentDeletionJob, AgentDeletionStatus, AgentDetail, AgentDurability, AgentIdentityRecord,
+        AgentIdentityView, AgentKind, AgentLifecycleHint, AgentListEntry,
+        AgentMessageCallerContext, AgentMessageDeliveryOutcome, AgentMessageDeliveryRejectionCode,
+        AgentMessagePrincipalKind, AgentMessageSendRequest, AgentModelResolution,
+        AgentModelResolutionStatus, AgentOwnership, AgentProfilePreset, AgentRegistryStatus,
         AgentState, AgentStatus, AgentSummary, AgentSupervisionState, AgentTokenUsageSummary,
         AgentTreeNode, AgentTreeProjection, AgentVisibility, AuthorityClass, ChildAgentSummary,
         ClosureOutcome, CreateAgentRequest, ExternalTriggerRecord, ExternalTriggerStatus,
         ExternalTriggerSummary, LoadedAgentsMdView, MessageBody, MessageDeliverySurface,
         MessageEnvelope, MessageKind, MessageOrigin, OperatorNotificationRecord, Priority,
-        QueueEntryStatus, RuntimeFailureSummary, SpawnAgentModelResolution,
-        SpawnAgentModelResolutionStatus, TaskKind, TaskRecord, TaskStatus, TimerRecord, TokenUsage,
-        TranscriptEntry, TranscriptEntryKind, WaitConditionSummary, WorkspaceEntry,
+        QueueEntryStatus, RuntimeFailureSummary, TaskKind, TaskRecord, TaskStatus, TimerRecord,
+        TokenUsage, TranscriptEntry, TranscriptEntryKind, WaitConditionSummary, WorkspaceEntry,
         WorkspaceOccupancyRecord,
     },
 };
@@ -491,6 +491,43 @@ fn named_agent_name_already_exists_error(agent_id: &str, name: &str) -> anyhow::
     )
 }
 
+fn named_agent_deletion_incomplete_error(
+    agent_id: &str,
+    job: Option<&AgentDeletionJob>,
+) -> anyhow::Error {
+    let mut details = json!({
+        "agent_id": agent_id,
+        "preset": AgentProfilePreset::PublicNamed,
+    });
+    let message = match job {
+        Some(job) => {
+            details["deletion_id"] = json!(job.deletion_id);
+            details["deletion_status"] =
+                serde_json::to_value(job.status).unwrap_or(serde_json::Value::Null);
+            details["deletion_phase"] =
+                serde_json::to_value(job.phase).unwrap_or(serde_json::Value::Null);
+            if let Some(last_error) = &job.last_error {
+                details["last_error"] = json!(last_error);
+            }
+            format!(
+                "agent {agent_id} has an incomplete deletion (status {:?}); the id cannot be reused until the deletion completes",
+                job.status
+            )
+        }
+        None => format!(
+            "agent {agent_id} was deleted without a completed deletion job; the id cannot be reused"
+        ),
+    };
+    anyhow::Error::from(
+        ToolError::new("deletion_incomplete", message)
+            .with_domain(crate::runtime_error::RuntimeErrorDomain::Conflict)
+            .with_details(details)
+            .with_recovery_hint(
+                "inspect the agent delete-status, let the deletion complete or resolve its failure, then retry create",
+            ),
+    )
+}
+
 fn named_agent_invalid_name_error(agent_id: &str, error: anyhow::Error) -> anyhow::Error {
     anyhow::Error::from(
         ToolError::new("agent_name_invalid", error.to_string())
@@ -533,9 +570,9 @@ pub(crate) struct ChildTaskTerminalResult {
 
 async fn apply_spawn_model_resolution(
     runtime: &RuntimeHandle,
-    resolution: &SpawnAgentModelResolution,
+    resolution: &AgentModelResolution,
 ) -> Result<()> {
-    if resolution.resolution_status == SpawnAgentModelResolutionStatus::Inherited {
+    if resolution.resolution_status == AgentModelResolutionStatus::Inherited {
         return Ok(());
     }
     let provider = crate::config::ProviderId::parse(&resolution.resolved_provider)?;
@@ -2320,12 +2357,12 @@ impl RuntimeHost {
         let bootstrap = self.reconcile_agent_bootstrap(agent_id).await?;
         let bootstrap_summary = bootstrap.summary();
         Ok(AgentCreateResult {
+            identity: AgentIdentityView::from_record(&identity, &self.config().default_agent_id),
             receipt: AgentCreateReceipt {
                 receipt_id: ids::runtime_id("agent_create"),
                 agent_id: identity.agent_id.clone(),
                 name: identity.name.clone(),
                 display_name: identity.display_name(),
-                preset: AgentProfilePreset::PublicNamed,
                 stage: if bootstrap_summary.status == AgentBootstrapStatus::Ready {
                     AgentCreateStage::Bootstrapped
                 } else {
@@ -2335,7 +2372,6 @@ impl RuntimeHost {
                 created,
                 bootstrap: bootstrap_summary,
             },
-            identity,
         })
     }
 
@@ -2345,34 +2381,65 @@ impl RuntimeHost {
         request: CreateAgentRequest,
     ) -> Result<AgentCreateResult> {
         if let Some(identity) = self.agent_identity_record(&request.agent_id)? {
-            anyhow::ensure!(
-                identity.status == AgentRegistryStatus::Active
-                    && identity.kind == AgentKind::Named
-                    && identity.visibility == AgentVisibility::Public
-                    && identity.ownership() == AgentOwnership::SelfOwned,
-                "agent {} already exists with an incompatible identity or lifecycle",
-                request.agent_id
-            );
-            let bootstrap = self.reconcile_agent_bootstrap(&request.agent_id).await?;
-            let bootstrap_summary = bootstrap.summary();
-            return Ok(AgentCreateResult {
-                receipt: AgentCreateReceipt {
-                    receipt_id: ids::runtime_id("agent_create"),
-                    agent_id: identity.agent_id.clone(),
-                    name: identity.name.clone(),
-                    display_name: identity.display_name(),
-                    preset: AgentProfilePreset::PublicNamed,
-                    stage: if bootstrap_summary.status == AgentBootstrapStatus::Ready {
-                        AgentCreateStage::Bootstrapped
-                    } else {
-                        AgentCreateStage::Degraded
+            if identity.status == AgentRegistryStatus::Deleting {
+                let job = self
+                    .runtime_db()
+                    .agent_deletions()
+                    .latest_for_agent(&request.agent_id)?;
+                return Err(named_agent_deletion_incomplete_error(
+                    &request.agent_id,
+                    job.as_ref(),
+                ));
+            }
+            if identity.status != AgentRegistryStatus::Deleted {
+                anyhow::ensure!(
+                    identity.kind == AgentKind::Named
+                        && identity.visibility == AgentVisibility::Public
+                        && identity.ownership() == AgentOwnership::SelfOwned,
+                    "agent {} already exists with an incompatible identity or lifecycle",
+                    request.agent_id
+                );
+            } else {
+                // A fully deleted id is creatable again. Fall through to
+                // the creation path: it routes through the reincarnation
+                // transaction when the deletion job completed and returns
+                // a typed `deletion_incomplete` error otherwise.
+                let job = self
+                    .runtime_db()
+                    .agent_deletions()
+                    .latest_for_agent(&request.agent_id)?;
+                if !matches!(job.as_ref(), Some(job) if job.status == AgentDeletionStatus::Completed)
+                {
+                    return Err(named_agent_deletion_incomplete_error(
+                        &request.agent_id,
+                        job.as_ref(),
+                    ));
+                }
+            }
+            if identity.status == AgentRegistryStatus::Active {
+                let bootstrap = self.reconcile_agent_bootstrap(&request.agent_id).await?;
+                let bootstrap_summary = bootstrap.summary();
+                return Ok(AgentCreateResult {
+                    identity: AgentIdentityView::from_record(
+                        &identity,
+                        &self.config().default_agent_id,
+                    ),
+                    receipt: AgentCreateReceipt {
+                        receipt_id: ids::runtime_id("agent_create"),
+                        agent_id: identity.agent_id.clone(),
+                        name: identity.name.clone(),
+                        display_name: identity.display_name(),
+                        stage: if bootstrap_summary.status == AgentBootstrapStatus::Ready {
+                            AgentCreateStage::Bootstrapped
+                        } else {
+                            AgentCreateStage::Degraded
+                        },
+                        lifecycle: identity.status,
+                        created: false,
+                        bootstrap: bootstrap_summary,
                     },
-                    lifecycle: identity.status,
-                    created: false,
-                    bootstrap: bootstrap_summary,
-                },
-                identity,
-            });
+                });
+            }
         }
 
         let parent_state = parent_runtime.agent_state().await?;
@@ -2449,6 +2516,29 @@ impl RuntimeHost {
         let existing = self.agent_identity_record(agent_id)?;
         if let Some(existing) = existing {
             if existing_behavior == NamedAgentExistingBehavior::Reject {
+                if existing.status == AgentRegistryStatus::Deleted {
+                    // A fully deleted id is creatable again: route through
+                    // the reincarnation transaction when the deletion job
+                    // completed, or fail closed with a typed error.
+                    return self
+                        .reincarnate_deleted_agent(
+                            existing,
+                            lineage_parent_agent_id,
+                            requested_name,
+                            desired,
+                        )
+                        .await;
+                }
+                if existing.status == AgentRegistryStatus::Deleting {
+                    let job = self
+                        .runtime_db()
+                        .agent_deletions()
+                        .latest_for_agent(agent_id)?;
+                    return Err(named_agent_deletion_incomplete_error(
+                        agent_id,
+                        job.as_ref(),
+                    ));
+                }
                 return Err(named_agent_already_exists_error(agent_id));
             }
             if existing.status != AgentRegistryStatus::Active {
@@ -2519,6 +2609,98 @@ impl RuntimeHost {
             })?;
         self.inner.registry.cache_agent_identity(&record)?;
         Ok((record, true))
+    }
+
+    /// Creates a new incarnation of a fully deleted agent id. The latest
+    /// deletion job must be `Completed`; anything else (in-flight, failed,
+    /// or missing) fails closed with a typed `deletion_incomplete` error.
+    /// The new incarnation is a fresh agent: new AgentHome bootstrap, no
+    /// inherited WorkItems, tasks, waits, timers, triggers, or lineage
+    /// beyond the explicitly requested parent.
+    async fn reincarnate_deleted_agent(
+        &self,
+        tombstone: AgentIdentityRecord,
+        lineage_parent_agent_id: Option<&str>,
+        requested_name: Option<&str>,
+        desired: AgentBootstrapDesiredState,
+    ) -> Result<(AgentIdentityRecord, bool)> {
+        let agent_id = tombstone.agent_id.clone();
+        let job = self
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent(&agent_id)?;
+        let completed = matches!(
+            job.as_ref(),
+            Some(job) if job.status == AgentDeletionStatus::Completed
+        );
+        if !completed {
+            return Err(named_agent_deletion_incomplete_error(
+                &agent_id,
+                job.as_ref(),
+            ));
+        }
+        let normalized_name = requested_name
+            .map(|name| {
+                normalize_agent_name(name)
+                    .map_err(|error| named_agent_invalid_name_error(&agent_id, error))
+            })
+            .transpose()?;
+        ensure_agent_home_layout(&self.agent_data_dir(&agent_id)).map_err(|error| {
+            named_agent_create_failed_error(&agent_id, AgentCreateStage::Profiled, error)
+        })?;
+        let identity = self
+            .runtime_db()
+            .agent_identities()
+            .reincarnate_with_bootstrap_and_relations(&agent_id, "agent_create", |tombstone| {
+                let mut record = AgentIdentityRecord::new(
+                    &agent_id,
+                    AgentKind::Named,
+                    AgentVisibility::Public,
+                    AgentOwnership::SelfOwned,
+                    AgentProfilePreset::PublicNamed,
+                    None,
+                    None,
+                )
+                .with_lineage_parent_agent_id(lineage_parent_agent_id.map(ToString::to_string));
+                let now = std::cmp::max(
+                    chrono::Utc::now(),
+                    tombstone.updated_at + chrono::Duration::nanoseconds(1),
+                );
+                record.name = normalized_name.clone();
+                record.incarnation = tombstone.incarnation.saturating_add(1);
+                record.revision = tombstone.revision.saturating_add(1);
+                record.created_at = now;
+                record.updated_at = now;
+                let bootstrap = AgentBootstrapRecord::new(&agent_id, desired.clone());
+                let relations = independent_creation_records(
+                    &record,
+                    lineage_parent_agent_id,
+                    AgentCanonicalDurability::Persistent,
+                );
+                (record, bootstrap, relations)
+            })
+            .map_err(|error| {
+                let message = error.to_string();
+                if message.contains("agent_reincarnation_rejected") {
+                    // The tombstone or deletion job changed concurrently;
+                    // re-read the job so the typed error carries fresh state.
+                    let job = self
+                        .runtime_db()
+                        .agent_deletions()
+                        .latest_for_agent(&agent_id)
+                        .ok()
+                        .flatten();
+                    return named_agent_deletion_incomplete_error(&agent_id, job.as_ref());
+                }
+                if let Some(name) = normalized_name.as_deref() {
+                    if message.contains("UNIQUE constraint failed: agent_identities.name_key") {
+                        return named_agent_name_already_exists_error(&agent_id, name);
+                    }
+                }
+                named_agent_create_failed_error(&agent_id, AgentCreateStage::Reserved, error)
+            })?;
+        self.inner.registry.cache_agent_identity(&identity)?;
+        Ok((identity, true))
     }
 
     fn agent_bootstrap_lock(&self, agent_id: &str) -> Arc<AsyncMutex<()>> {
@@ -2745,7 +2927,7 @@ impl RuntimeHost {
         };
         let runtime = self.get_or_create_agent(&bootstrap.agent_id).await?;
         let current = runtime.agent_state().await?;
-        if resolution.resolution_status == SpawnAgentModelResolutionStatus::Inherited {
+        if resolution.resolution_status == AgentModelResolutionStatus::Inherited {
             return Ok(());
         }
         let provider = crate::config::ProviderId::parse(&resolution.resolved_provider)?;
@@ -3685,13 +3867,18 @@ impl RuntimeHost {
             .unwrap_or_else(|| build_provider_from_config(&config))?;
         let apply_patch_surface = ApplyPatchSurface::for_model_route_ref(&model_ref.as_string());
         let registry = ToolRegistry::new(execution.execution_root.clone());
+        let capability_policy = self
+            .runtime_db()
+            .agent_canonical_relations()
+            .latest(&identity.agent_id)?
+            .and_then(|relations| relations.capability_policy);
         let available_tools = registry
             .tool_specs_with_families_for_apply_patch_surface(apply_patch_surface)?
             .into_iter()
             .filter(|(family, _)| {
-                identity_view
-                    .profile_preset
-                    .allows_tool_capability_family(*family)
+                capability_policy
+                    .as_ref()
+                    .is_none_or(|policy| policy.allows(*family))
             })
             .map(|(_, tool)| tool)
             .collect::<Vec<_>>();
@@ -4071,7 +4258,7 @@ impl RuntimeHost {
         authority_class: AuthorityClass,
         worktree: bool,
         template: Option<String>,
-        model_resolution: SpawnAgentModelResolution,
+        model_resolution: AgentModelResolution,
     ) -> Result<ChildTaskSpawn> {
         let parent_state = parent_runtime.agent_state().await?;
         let parent_agent_home = self.agent_data_dir(&parent_state.id);
@@ -4227,15 +4414,21 @@ impl RuntimeHost {
             caller,
         )?;
         let identity = self.agent_identity_record(target_agent_id)?;
-        let (identity, runtime, receipt) = match identity {
+        let (identity, runtime, child_turn_baseline, receipt) = match identity {
             Some(identity) if identity.status == AgentRegistryStatus::Active => {
                 match self.get_or_create_agent(target_agent_id).await {
                     Ok(runtime) => {
+                        let child_turn_baseline = runtime.agent_state().await?.turn_index;
                         let receipt = runtime
                             .agent_message_delivery_service()
                             .deliver(&prepared)
                             .await?;
-                        (Some(identity), Some(runtime), receipt)
+                        (
+                            Some(identity),
+                            Some(runtime),
+                            Some(child_turn_baseline),
+                            receipt,
+                        )
                     }
                     Err(activation_error) => {
                         let latest_identity = self.agent_identity_record(target_agent_id)?;
@@ -4247,7 +4440,12 @@ impl RuntimeHost {
                                 .runtime_db()
                                 .agent_message_deliveries()
                                 .admit_without_queue(&prepared.record)?;
-                            (Some(latest_identity.unwrap_or(identity)), None, receipt)
+                            (
+                                Some(latest_identity.unwrap_or(identity)),
+                                None,
+                                None,
+                                receipt,
+                            )
                         } else {
                             return Err(activation_error);
                         }
@@ -4259,7 +4457,7 @@ impl RuntimeHost {
                     .runtime_db()
                     .agent_message_deliveries()
                     .admit_without_queue(&prepared.record)?;
-                (identity, None, receipt)
+                (identity, None, None, receipt)
             }
         };
         if receipt.outcome != AgentMessageDeliveryOutcome::Accepted {
@@ -4295,13 +4493,18 @@ impl RuntimeHost {
                 "use an agent id already available through the caller's authorized agent context",
             ))
         })?;
-        let runtime = runtime.ok_or_else(|| {
+        runtime.ok_or_else(|| {
             anyhow!(
                 "accepted delivery {} targets an inactive agent",
                 receipt.delivery_id
             )
         })?;
-        let child_turn_baseline = runtime.agent_state().await?.turn_index;
+        let child_turn_baseline = child_turn_baseline.ok_or_else(|| {
+            anyhow!(
+                "accepted delivery {} is missing its pre-delivery turn baseline",
+                receipt.delivery_id
+            )
+        })?;
 
         let mut task_detail = json!({
             "target_agent_id": target_agent_id,
@@ -4332,7 +4535,7 @@ impl RuntimeHost {
         initial_message: Option<String>,
         authority_class: AuthorityClass,
         template: Option<String>,
-        model_resolution: SpawnAgentModelResolution,
+        model_resolution: AgentModelResolution,
     ) -> Result<AgentCreateResult> {
         let parent_state = parent_runtime.agent_state().await?;
         let parent_agent_home = self.agent_data_dir(&parent_state.id);
@@ -4794,6 +4997,16 @@ impl RuntimeHostBridge {
         self.host()?.agent_identity_record(agent_id)
     }
 
+    pub(crate) async fn canonical_relations_for_agent(
+        &self,
+        agent_id: &str,
+    ) -> Result<Option<crate::types::AgentCanonicalRelationsProjection>> {
+        self.host()?
+            .runtime_db()
+            .agent_canonical_relations()
+            .latest(agent_id)
+    }
+
     pub(crate) async fn child_summaries(
         &self,
         parent_agent_id: &str,
@@ -4801,14 +5014,16 @@ impl RuntimeHostBridge {
         self.host()?.child_agent_summaries(parent_agent_id).await
     }
 
-    /// Get a full AgentSummary for a given agent_id through the local trusted
-    /// control boundary. This allows private child agent observation.
+    /// Get a full AgentSummary for a given agent_id without starting an
+    /// unloaded target runtime.
     pub(crate) async fn agent_summary_for(
         &self,
         agent_id: &str,
     ) -> Result<crate::types::AgentSummary> {
-        let runtime = self.host()?.get_agent_for_local_status(agent_id).await?;
-        runtime.agent_summary().await
+        self.host()?
+            .local_agent_summary(agent_id)
+            .await
+            .map_err(Into::into)
     }
 
     pub(crate) async fn child_observability(
@@ -4853,7 +5068,7 @@ impl RuntimeHostBridge {
         authority_class: AuthorityClass,
         worktree: bool,
         template: Option<String>,
-        model_resolution: SpawnAgentModelResolution,
+        model_resolution: AgentModelResolution,
     ) -> Result<ChildTaskSpawn> {
         self.host()?
             .spawn_child_task(
@@ -5408,13 +5623,13 @@ mod tests {
         assert!(!rendered.contains("Current ApplyPatch surface is a JSON/function tool"));
     }
 
-    fn inherited_model_resolution(provider: &str, model: &str) -> SpawnAgentModelResolution {
-        SpawnAgentModelResolution {
+    fn inherited_model_resolution(provider: &str, model: &str) -> AgentModelResolution {
+        AgentModelResolution {
             requested: None,
             resolved_provider: provider.to_string(),
             resolved_model: model.to_string(),
             resolved_parameters: None,
-            resolution_status: SpawnAgentModelResolutionStatus::Inherited,
+            resolution_status: AgentModelResolutionStatus::Inherited,
             policy_notes: Vec::new(),
         }
     }
@@ -5452,6 +5667,30 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         panic!("timed out waiting for task {task_id} to become terminal");
+    }
+
+    async fn invoke_new_subagent(
+        runtime: &RuntimeHandle,
+        message: String,
+        authority_class: AuthorityClass,
+        template: Option<String>,
+        model_request: Option<crate::types::AgentModelRequest>,
+    ) -> anyhow::Result<crate::types::AgentInvocationReceipt> {
+        let model_resolution = runtime
+            .resolve_agent_model_request("InvokeAgent", model_request)
+            .await?;
+        runtime
+            .agent_invocation_service()
+            .invoke(InvokeAgentRequest {
+                target: InvokeAgentTarget::NewSubagent {
+                    template,
+                    workspace_mode: ChildAgentWorkspaceMode::Inherit,
+                    model_resolution: Some(model_resolution),
+                },
+                message,
+                authority_class,
+            })
+            .await
     }
 
     struct BlockingProvider {
@@ -5595,6 +5834,7 @@ mod tests {
         assert!(agent_home.join("memory/operator.md").is_file());
         assert!(agent_home.join("notes").is_dir());
         assert!(agent_home.join("work").is_dir());
+        assert!(agent_home.join("tmp").is_dir());
         assert!(agent_home.join("skills").is_dir());
         assert!(agent_home.join(".holon/state").is_dir());
         assert!(agent_home.join(".holon/ledger").is_dir());
@@ -5871,6 +6111,7 @@ mod tests {
         assert!(agent_home.join("memory/operator.md").is_file());
         assert!(agent_home.join("notes").is_dir());
         assert!(agent_home.join("work").is_dir());
+        assert!(agent_home.join("tmp").is_dir());
         assert!(agent_home.join("skills").is_dir());
         assert!(!agent_home.join(".holon/state/agent.json").exists());
         assert!(agent_home.join(".holon/ledger").is_dir());
@@ -5942,7 +6183,6 @@ mod tests {
         assert_eq!(created.receipt.name.as_deref(), Some("Receipt Bot"));
         assert_eq!(created.receipt.display_name, "Receipt Bot");
         assert_eq!(created.receipt.agent_id, "receipt-bot");
-        assert_eq!(created.receipt.preset, AgentProfilePreset::PublicNamed);
         assert_eq!(created.receipt.stage, AgentCreateStage::Bootstrapped);
         assert_eq!(created.receipt.lifecycle, AgentRegistryStatus::Active);
         assert!(created.receipt.created);
@@ -6091,6 +6331,93 @@ mod tests {
             rename_error,
             PublicAgentError::Deleted { ref agent_id } if agent_id == "delete-named"
         ));
+    }
+
+    #[tokio::test]
+    async fn agent_face_create_reincarnates_fully_deleted_agent_id() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+
+        let created = parent
+            .agent_creation_service()
+            .create(CreateAgentRequest {
+                agent_id: "reborn-tool".into(),
+                name: Some("First Incarnation".into()),
+                template: None,
+                initial_message: None,
+                authority_class: AuthorityClass::OperatorInstruction,
+                model_resolution: None,
+                lineage_parent_agent_id: None,
+                inherit_parent_runtime: false,
+            })
+            .await
+            .unwrap();
+        assert!(created.receipt.created);
+        assert_eq!(created.identity.incarnation, 1);
+
+        let (_identity, job, created_deletion) = host
+            .begin_public_agent_deletion("reborn-tool", false, "test-operator")
+            .await
+            .unwrap();
+        assert!(created_deletion);
+        host.execute_deletion_job(job).await.unwrap();
+        assert!(matches!(
+            host.public_agent_detail("reborn-tool")
+                .unwrap()
+                .identity
+                .status,
+            AgentRegistryStatus::Deleted
+        ));
+
+        // While the deletion job is still pending (not executed), create
+        // must fail closed with the typed deletion_incomplete error. Drive
+        // this on a second agent whose job is never executed.
+        host.create_public_named_agent_with_name("reborn-pending", None, None, None, None)
+            .await
+            .unwrap();
+        host.begin_public_agent_deletion("reborn-pending", false, "test-operator")
+            .await
+            .unwrap();
+        let pending_error = parent
+            .agent_creation_service()
+            .create(CreateAgentRequest {
+                agent_id: "reborn-pending".into(),
+                name: None,
+                template: None,
+                initial_message: None,
+                authority_class: AuthorityClass::OperatorInstruction,
+                model_resolution: None,
+                lineage_parent_agent_id: None,
+                inherit_parent_runtime: false,
+            })
+            .await
+            .expect_err("create must fail closed while deletion is incomplete");
+        assert!(
+            pending_error.to_string().contains("deletion_incomplete"),
+            "unexpected error: {pending_error:#}"
+        );
+
+        // The released id creates a brand-new incarnation.
+        let recreated = parent
+            .agent_creation_service()
+            .create(CreateAgentRequest {
+                agent_id: "reborn-tool".into(),
+                name: Some("Second Incarnation".into()),
+                template: None,
+                initial_message: None,
+                authority_class: AuthorityClass::OperatorInstruction,
+                model_resolution: None,
+                lineage_parent_agent_id: None,
+                inherit_parent_runtime: false,
+            })
+            .await
+            .unwrap();
+        assert!(recreated.receipt.created);
+        assert_eq!(recreated.identity.incarnation, 2);
+        assert_eq!(
+            recreated.identity.name.as_deref(),
+            Some("Second Incarnation")
+        );
     }
 
     #[tokio::test]
@@ -6458,6 +6785,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn existing_agent_samples_child_turn_before_delivery_admission() {
+        struct DeliveryCheckpointGuard;
+
+        impl Drop for DeliveryCheckpointGuard {
+            fn drop(&mut self) {
+                crate::runtime::release_delivery_checkpoint();
+            }
+        }
+
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        let created = parent
+            .agent_invocation_service()
+            .invoke(InvokeAgentRequest {
+                target: InvokeAgentTarget::NewSubagent {
+                    template: None,
+                    workspace_mode: ChildAgentWorkspaceMode::Inherit,
+                    model_resolution: Some(inherited_model_resolution("openai", "gpt-5.4")),
+                },
+                message: "first invocation".into(),
+                authority_class: AuthorityClass::OperatorInstruction,
+            })
+            .await
+            .unwrap();
+        let first_terminal = wait_for_terminal_task(&parent, &created.task_handle.task_id).await;
+        assert_eq!(first_terminal.status, TaskStatus::Completed);
+
+        let child = host.get_or_create_agent(&created.agent_id).await.unwrap();
+        for _ in 0..100 {
+            if child.agent_state().await.unwrap().status == AgentStatus::Asleep {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let child_turn_baseline = child.agent_state().await.unwrap().turn_index;
+
+        crate::runtime::enable_delivery_checkpoint(created.agent_id.clone());
+        let _checkpoint_guard = DeliveryCheckpointGuard;
+        let parent_for_invoke = parent.clone();
+        let child_agent_id = created.agent_id.clone();
+        let invocation = tokio::spawn(async move {
+            parent_for_invoke
+                .agent_invocation_service()
+                .invoke(InvokeAgentRequest {
+                    target: InvokeAgentTarget::ExistingAgent {
+                        agent_id: child_agent_id,
+                    },
+                    message: "second invocation".into(),
+                    authority_class: AuthorityClass::OperatorInstruction,
+                })
+                .await
+        });
+
+        crate::runtime::wait_for_delivery_checkpoint().await;
+        for _ in 0..100 {
+            let state = child.agent_state().await.unwrap();
+            if state.turn_index > child_turn_baseline && state.status == AgentStatus::Asleep {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let child_state = child.agent_state().await.unwrap();
+        assert!(child_state.turn_index > child_turn_baseline);
+        assert_eq!(child_state.status, AgentStatus::Asleep);
+
+        crate::runtime::release_delivery_checkpoint();
+        let receipt = invocation.await.unwrap().unwrap();
+        let terminal = wait_for_terminal_task(&parent, &receipt.task_handle.task_id).await;
+        assert_eq!(terminal.status, TaskStatus::Completed);
+        assert_eq!(
+            terminal
+                .detail
+                .as_ref()
+                .and_then(|detail| detail.get("child_turn_baseline"))
+                .and_then(Value::as_u64),
+            Some(child_turn_baseline)
+        );
+    }
+
+    #[tokio::test]
     async fn spawn_public_named_records_lineage_without_supervision() {
         let (_home, host) = test_host();
         let parent = host.default_runtime().await.unwrap();
@@ -6508,20 +6915,17 @@ mod tests {
         let parent = host.default_runtime().await.unwrap();
         let parent_agent_id = host.config().default_agent_id.clone();
 
-        let spawned = parent
-            .spawn_agent(
-                Some("tree navigation work".into()),
-                AuthorityClass::OperatorInstruction,
-                AgentProfilePreset::PrivateChild,
-                None,
-                false,
-                None,
-                None,
-            )
-            .await
-            .unwrap();
+        let spawned = invoke_new_subagent(
+            &parent,
+            "tree navigation work".into(),
+            AuthorityClass::OperatorInstruction,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         let child_agent_id = spawned.agent_id.clone();
-        assert!(spawned.supervision_task_id.is_some());
+        assert!(!spawned.task_handle.task_id.is_empty());
 
         let tree = host.operator_agent_tree().await.unwrap();
         assert_eq!(
@@ -6653,22 +7057,16 @@ mod tests {
         let parent_agent_id = parent.agent_state().await.unwrap().id;
         let initial_message = "  investigate   remote\nTUI  access ".to_string();
 
-        let spawned = parent
-            .spawn_agent(
-                Some(initial_message.clone()),
-                AuthorityClass::ExternalEvidence,
-                AgentProfilePreset::PrivateChild,
-                None,
-                false,
-                None,
-                None,
-            )
-            .await
-            .unwrap();
-        let task_id = spawned
-            .supervision_task_id
-            .clone()
-            .expect("private child should return a supervision task");
+        let spawned = invoke_new_subagent(
+            &parent,
+            initial_message.clone(),
+            AuthorityClass::ExternalEvidence,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let task_id = spawned.task_handle.task_id.clone();
         let task = parent
             .storage()
             .latest_task_record(&task_id)
@@ -6758,24 +7156,21 @@ mod tests {
         .unwrap();
         let parent = host.default_runtime().await.unwrap();
 
-        let spawned = parent
-            .spawn_agent(
-                Some("review the implementation".into()),
-                AuthorityClass::OperatorInstruction,
-                AgentProfilePreset::PrivateChild,
-                None,
-                false,
-                Some("user_global:holon-reviewer@official".into()),
-                None,
-            )
-            .await
-            .unwrap();
+        let spawned = invoke_new_subagent(
+            &parent,
+            "review the implementation".into(),
+            AuthorityClass::OperatorInstruction,
+            Some("user_global:holon-reviewer@official".into()),
+            None,
+        )
+        .await
+        .unwrap();
 
         let child_home = host.agent_data_dir(&spawned.agent_id);
         assert!(fs::read_to_string(child_home.join("AGENTS.md"))
             .unwrap()
             .starts_with("# Official reviewer\n\nSynced reviewer template\n"));
-        assert!(spawned.supervision_task_id.is_some());
+        assert!(!spawned.task_handle.task_id.is_empty());
     }
 
     #[tokio::test]
@@ -6783,21 +7178,18 @@ mod tests {
         let (_home, host) = test_host();
         let parent = host.default_runtime().await.unwrap();
 
-        let error = parent
-            .spawn_agent(
-                Some("review the implementation".into()),
-                AuthorityClass::OperatorInstruction,
-                AgentProfilePreset::PrivateChild,
-                None,
-                false,
-                Some("user_global:reviewer%official".into()),
-                None,
-            )
-            .await
-            .expect_err("invalid template selector should fail after task creation");
+        let error = invoke_new_subagent(
+            &parent,
+            "review the implementation".into(),
+            AuthorityClass::OperatorInstruction,
+            Some("user_global:reviewer%official".into()),
+            None,
+        )
+        .await
+        .expect_err("invalid template selector should fail after task creation");
         let tool_error = crate::tool::ToolError::from_anyhow(&error);
 
-        assert_eq!(tool_error.kind, "spawn_agent_failed");
+        assert_eq!(tool_error.kind, "agent_invocation_failed");
         assert_eq!(
             tool_error.domain,
             Some(crate::runtime_error::RuntimeErrorDomain::Task)
@@ -6815,7 +7207,7 @@ mod tests {
             .and_then(|details| details.get("task_id"))
             .and_then(Value::as_str)
             .expect("tool error should identify the failed supervision task");
-        let rendered = tool_error.render_for_model(Some(crate::tool::names::SPAWN_AGENT));
+        let rendered = tool_error.render_for_model(Some("InvokeAgent"));
         assert!(rendered.contains("template install_id contains unsupported characters"));
 
         let task = parent
@@ -6846,36 +7238,22 @@ mod tests {
         let host = RuntimeHost::new(fixture.config).unwrap();
         let parent = host.default_runtime().await.unwrap();
 
-        let spawned = parent
-            .spawn_agent(
-                Some("compare implementation".into()),
-                AuthorityClass::OperatorInstruction,
-                AgentProfilePreset::PrivateChild,
-                None,
-                false,
-                None,
-                Some(crate::types::SpawnAgentModelRequest {
-                    provider: "anthropic".into(),
-                    model: "claude-haiku-4-5".into(),
-                    reasoning_effort: Some("high".into()),
-                    temperature: None,
-                    max_output_tokens: None,
-                    allow_fallback: Some(false),
-                }),
-            )
-            .await
-            .unwrap();
-
-        let resolution = spawned
-            .model_resolution
-            .as_ref()
-            .expect("spawn should return model resolution");
-        assert_eq!(
-            resolution.resolution_status,
-            SpawnAgentModelResolutionStatus::Accepted
-        );
-        assert_eq!(resolution.resolved_provider, "anthropic");
-        assert_eq!(resolution.resolved_model, "claude-haiku-4-5");
+        let spawned = invoke_new_subagent(
+            &parent,
+            "compare implementation".into(),
+            AuthorityClass::OperatorInstruction,
+            None,
+            Some(crate::types::AgentModelRequest {
+                provider: "anthropic".into(),
+                model: "claude-haiku-4-5".into(),
+                reasoning_effort: Some("high".into()),
+                temperature: None,
+                max_output_tokens: None,
+                allow_fallback: Some(false),
+            }),
+        )
+        .await
+        .unwrap();
 
         let child = host.get_or_create_agent(&spawned.agent_id).await.unwrap();
         let child_summary = child.agent_summary().await.unwrap();
@@ -6895,25 +7273,22 @@ mod tests {
         let host = RuntimeHost::new(fixture.config).unwrap();
         let parent = host.default_runtime().await.unwrap();
 
-        let error = parent
-            .spawn_agent(
-                Some("compare implementation".into()),
-                AuthorityClass::OperatorInstruction,
-                AgentProfilePreset::PrivateChild,
-                None,
-                false,
-                None,
-                Some(crate::types::SpawnAgentModelRequest {
-                    provider: "openai".into(),
-                    model: "gpt-5.4".into(),
-                    reasoning_effort: None,
-                    temperature: None,
-                    max_output_tokens: None,
-                    allow_fallback: Some(false),
-                }),
-            )
-            .await
-            .expect_err("unavailable explicit model should be rejected before child creation");
+        let error = invoke_new_subagent(
+            &parent,
+            "compare implementation".into(),
+            AuthorityClass::OperatorInstruction,
+            None,
+            Some(crate::types::AgentModelRequest {
+                provider: "openai".into(),
+                model: "gpt-5.4".into(),
+                reasoning_effort: None,
+                temperature: None,
+                max_output_tokens: None,
+                allow_fallback: Some(false),
+            }),
+        )
+        .await
+        .expect_err("unavailable explicit model should be rejected before child creation");
 
         assert!(error.to_string().contains("requested model"));
         assert!(error.to_string().contains("unavailable"));
@@ -6924,30 +7299,27 @@ mod tests {
         let (_home, host) = test_host();
         let parent = host.default_runtime().await.unwrap();
 
-        let error = parent
-            .spawn_agent(
-                Some("   \n\t  ".into()),
-                AuthorityClass::OperatorInstruction,
-                AgentProfilePreset::PrivateChild,
-                None,
-                false,
-                None,
-                None,
-            )
-            .await
-            .expect_err("blank private child initial_message should be rejected");
+        let error = invoke_new_subagent(
+            &parent,
+            "   \n\t  ".into(),
+            AuthorityClass::OperatorInstruction,
+            None,
+            None,
+        )
+        .await
+        .expect_err("blank private child initial_message should be rejected");
 
         assert!(error
             .to_string()
-            .contains("private_child spawn requires non-empty initial_message"));
+            .contains("agent invocation requires a non-empty message"));
     }
 
     #[tokio::test]
-    async fn public_named_initial_message_is_optional_and_inherits_only_attached_workspaces() {
+    async fn independent_agent_initial_message_is_optional_and_inherits_only_attached_workspaces() {
         let (_home, host) = test_host();
         let parent = host.default_runtime().await.unwrap();
-        let named_agent_id = format!("{}-no-bootstrap", host.config().default_agent_id);
-        let bootstrap_agent_id = format!("{}-bootstrap", host.config().default_agent_id);
+        let named_agent_id = "independent-no-bootstrap".to_string();
+        let bootstrap_agent_id = "independent-bootstrap".to_string();
         let bootstrap_message_id = format!("agent_bootstrap_message:{bootstrap_agent_id}");
         let workspace_home = tempdir().unwrap();
         let workspace_path = workspace_home.path().to_path_buf();

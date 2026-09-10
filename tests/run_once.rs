@@ -1211,11 +1211,11 @@ impl AgentProvider for TwoRoundProvider {
         let mut calls = self.calls.lock().await;
         *calls += 1;
         if *calls == 1 {
-            assert!(request.tools.iter().any(|tool| tool.name == "AgentGet"));
+            assert!(request.tools.iter().any(|tool| tool.name == "GetAgent"));
             return Ok(ProviderTurnResponse {
                 blocks: vec![ModelBlock::ToolUse {
                     id: "tool-1".into(),
-                    name: "AgentGet".into(),
+                    name: "GetAgent".into(),
                     input: json!({}),
                     kind: holon::provider::ModelToolCallKind::Function,
                 }],

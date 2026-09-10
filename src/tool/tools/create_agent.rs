@@ -7,7 +7,7 @@ use crate::{
     host_registry::validate_agent_id_format,
     runtime::RuntimeHandle,
     tool::spec::typed_spec,
-    types::{AuthorityClass, CreateAgentRequest, SpawnAgentModelRequest, ToolCapabilityFamily},
+    types::{AgentModelRequest, AuthorityClass, CreateAgentRequest, ToolCapabilityFamily},
 };
 
 use super::{serialize_success, BuiltinToolDefinition};
@@ -24,7 +24,7 @@ pub(crate) struct CreateAgentArgs {
     pub(crate) name: Option<String>,
     pub(crate) initial_message: Option<String>,
     pub(crate) template: Option<String>,
-    pub(crate) model: Option<SpawnAgentModelRequest>,
+    pub(crate) model: Option<AgentModelRequest>,
 }
 
 pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
@@ -43,6 +43,7 @@ pub(crate) async fn execute(
     authority_class: &AuthorityClass,
     input: &Value,
 ) -> Result<crate::tool::ToolResult> {
+    reject_legacy_agent_creation_input(input)?;
     let args: CreateAgentArgs = parse_tool_args(NAME, input)?;
     let agent_id = validate_non_empty(args.agent_id, NAME, "agent_id")?;
     if let Err(error) = validate_agent_id_format(&agent_id) {
@@ -75,13 +76,43 @@ pub(crate) async fn execute(
     serialize_success(NAME, &result)
 }
 
+fn reject_legacy_agent_creation_input(input: &Value) -> Result<()> {
+    let Some(object) = input.as_object() else {
+        return Ok(());
+    };
+    let Some(field) = [
+        "kind",
+        "visibility",
+        "ownership",
+        "profile_preset",
+        "preset",
+    ]
+    .into_iter()
+    .find(|field| object.contains_key(*field)) else {
+        return Ok(());
+    };
+    Err(anyhow::Error::from(
+        crate::tool::ToolError::new(
+            "legacy_agent_creation_input",
+            format!("CreateAgent no longer accepts the legacy `{field}` field"),
+        )
+        .with_details(json!({
+            "tool_name": NAME,
+            "field": field,
+        }))
+        .with_recovery_hint(
+            "use CreateAgent for an independent identity or InvokeAgent with target.kind=new_subagent for supervised delegation",
+        ),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
     use crate::tool::helpers::parse_tool_args;
 
-    use super::{CreateAgentArgs, NAME};
+    use super::{reject_legacy_agent_creation_input, CreateAgentArgs, NAME};
 
     #[test]
     fn create_agent_rejects_caller_controlled_provenance() {
@@ -114,5 +145,19 @@ mod tests {
         .expect_err("nested model typos should be rejected");
 
         assert!(error.to_string().contains("max_output_token"));
+    }
+
+    #[test]
+    fn create_agent_rejects_legacy_identity_fields_with_stable_error() {
+        let error = reject_legacy_agent_creation_input(&json!({
+            "agent_id": "release-bot",
+            "profile_preset": "public_named"
+        }))
+        .expect_err("legacy identity fields should have a stable typed error");
+
+        let tool_error = error
+            .downcast_ref::<crate::tool::ToolError>()
+            .expect("typed tool error");
+        assert_eq!(tool_error.kind, "legacy_agent_creation_input");
     }
 }

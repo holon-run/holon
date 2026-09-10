@@ -9,7 +9,7 @@ use std::{
     io::{BufRead, BufReader},
     path::PathBuf,
     process::{Child, Command, Output, Stdio},
-    sync::mpsc,
+    sync::{mpsc, Mutex, OnceLock},
     thread,
     time::{Duration, Instant},
 };
@@ -51,6 +51,14 @@ impl Drop for ServeChild {
     }
 }
 
+/// Serialize tests that spawn `holon serve`: concurrent instrumented servers
+/// (for example under llvm-cov) compete for CPU on CI runners and can exceed
+/// the startup deadline even though a single server starts well within it.
+fn serve_test_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
 fn spawn_local_serve(home: &tempfile::TempDir) -> (ServeChild, String) {
     let mut child = isolated_holon_command(home)
         .args(["serve", "--listen", "127.0.0.1:0"])
@@ -89,7 +97,7 @@ fn spawn_local_serve(home: &tempfile::TempDir) -> (ServeChild, String) {
         }
         let _ = stderr_tx.send(captured);
     });
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(30);
     let mut addr = None;
     while Instant::now() < deadline {
         if let Some(status) = child.try_wait().expect("poll holon serve") {
@@ -396,6 +404,9 @@ fn config_set_unset_reports_offline_application_path_on_stderr() {
 
 #[test]
 fn config_set_prefers_running_daemon_runtime_config_api() {
+    let _serve_guard = serve_test_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let home = tempfile::tempdir().expect("create isolated HOLON_HOME");
     let (_serve, addr) = spawn_local_serve(&home);
 
@@ -465,6 +476,9 @@ fn config_set_prefers_running_daemon_runtime_config_api() {
 
 #[test]
 fn config_set_surfaces_daemon_rejection_reason() {
+    let _serve_guard = serve_test_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let home = tempfile::tempdir().expect("create isolated HOLON_HOME");
     let (_serve, addr) = spawn_local_serve(&home);
 
@@ -490,6 +504,9 @@ fn config_set_surfaces_daemon_rejection_reason() {
 
 #[test]
 fn config_set_rejects_runtime_scheduler_while_daemon_is_running() {
+    let _serve_guard = serve_test_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let home = tempfile::tempdir().expect("create isolated HOLON_HOME");
     let (_serve, addr) = spawn_local_serve(&home);
 
@@ -558,6 +575,49 @@ fn onboard_json_contract_is_secret_safe_and_actionable() {
 }
 
 #[test]
+fn agent_delete_then_recreate_reports_incarnation_json() {
+    let _serve_guard = serve_test_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let home = tempfile::tempdir().expect("create isolated HOLON_HOME");
+    let (_serve, addr) = spawn_local_serve(&home);
+    let envs = [("HOLON_HTTP_ADDR", addr.as_str())];
+
+    let created = run_json_with_env(&home, &["agent", "create", "reborn-cli"], &envs);
+    assert_eq!(created["identity"]["incarnation"], json!(1));
+
+    let deleted = run_json_with_env(
+        &home,
+        &["agent", "delete", "reborn-cli", "-y", "--json"],
+        &envs,
+    );
+    assert_eq!(deleted["job"]["status"], json!("pending"));
+    // `--json` prints the initial job; poll the idempotent delete surface
+    // until the background coordinator completes the job.
+    let mut completed = false;
+    for _ in 0..20 {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let polled = run_json_with_env(
+            &home,
+            &["agent", "delete", "reborn-cli", "-y", "--json"],
+            &envs,
+        );
+        if polled["job"]["status"] == json!("completed") {
+            assert_eq!(polled["identity"]["status"], json!("deleted"));
+            completed = true;
+            break;
+        }
+    }
+    assert!(completed, "deletion job should complete: {deleted}");
+
+    // The released id recreates as a new incarnation.
+    let recreated = run_json_with_env(&home, &["agent", "create", "reborn-cli"], &envs);
+    assert_eq!(recreated["identity"]["status"], json!("active"));
+    assert_eq!(recreated["identity"]["incarnation"], json!(2));
+    assert_eq!(recreated["receipt"]["created"], json!(true));
+}
+
+#[test]
 fn onboard_defaults_to_scriptable_json_when_not_a_tty() {
     let home = tempfile::tempdir().expect("create isolated HOLON_HOME");
 
@@ -567,5 +627,58 @@ fn onboard_defaults_to_scriptable_json_when_not_a_tty() {
     assert!(
         value["sections"].as_array().is_some(),
         "non-TTY onboard output should remain scriptable JSON: {value}"
+    );
+}
+
+#[test]
+fn agent_rename_reports_detail_json_and_readable_errors() {
+    let _serve_guard = serve_test_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let home = tempfile::tempdir().expect("create isolated HOLON_HOME");
+    let (_serve, addr) = spawn_local_serve(&home);
+    let envs = [("HOLON_HTTP_ADDR", addr.as_str())];
+
+    let created = run_json_with_env(&home, &["agent", "create", "rename-one"], &envs);
+    assert_eq!(created["identity"]["agent_id"], json!("rename-one"));
+
+    let renamed = run_json_with_env(
+        &home,
+        &["agent", "rename", "rename-one", "--name", "First Name"],
+        &envs,
+    );
+    assert_eq!(renamed["identity"]["agent_id"], json!("rename-one"));
+    assert_eq!(renamed["name"], json!("First Name"));
+    assert_eq!(renamed["identity"]["name"], json!("First Name"));
+    assert!(
+        renamed["display_name"]
+            .as_str()
+            .is_some_and(|value| value.contains("First Name")),
+        "rename should echo the updated agent detail: {renamed}"
+    );
+
+    // Duplicate names are rejected with the server's typed conflict message.
+    run_json_with_env(&home, &["agent", "create", "rename-two"], &envs);
+    let (conflict_stdout, conflict_stderr) = run_failure_with_env(
+        &home,
+        &["agent", "rename", "rename-two", "--name", "First Name"],
+        &envs,
+    );
+    assert!(
+        conflict_stdout.is_empty(),
+        "failed rename should not emit JSON stdout: {conflict_stdout}"
+    );
+    assert!(
+        conflict_stderr.contains("already in use"),
+        "conflict stderr should stay readable: {conflict_stderr}"
+    );
+
+    // The configured default agent keeps its identity.
+    let (default_stdout, default_stderr) =
+        run_failure_with_env(&home, &["agent", "rename", "main", "--name", "Nope"], &envs);
+    assert!(default_stdout.is_empty());
+    assert!(
+        default_stderr.contains("default agent cannot be renamed"),
+        "default-agent stderr should stay readable: {default_stderr}"
     );
 }

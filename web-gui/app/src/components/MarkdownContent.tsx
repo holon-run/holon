@@ -5,6 +5,7 @@ import { memo, useEffect, useState, type ImgHTMLAttributes, type ReactNode } fro
 
 import { useRuntimeStore } from "../runtime/runtime-store";
 import type { RuntimeCitation } from "../runtime/types";
+import { isHttpNotFoundError } from "../runtime/client";
 
 const WORKSPACE_URL_RE = /workspace:\/\/[^\s<>"')\]]+/g;
 // Inline code spans only become links when the whole span is exactly one URL.
@@ -19,6 +20,7 @@ interface MarkdownContentProps {
 export interface WorkspaceImageRef {
   workspaceId: string;
   path: string;
+  executionRootId?: string;
 }
 
 export function parseWorkspaceImageRef(src: string | undefined): WorkspaceImageRef | undefined {
@@ -28,8 +30,25 @@ export function parseWorkspaceImageRef(src: string | undefined): WorkspaceImageR
   if (pathStart <= 0) return undefined;
 
   const workspaceId = value.slice(0, pathStart);
-  const rawPath = value.slice(pathStart + 1).split(/[?#]/, 1)[0];
+  const remainder = value.slice(pathStart + 1).split("#", 1)[0];
+  const queryStart = remainder.indexOf("?");
+  const rawPath = queryStart >= 0 ? remainder.slice(0, queryStart) : remainder;
   if (!workspaceId || !rawPath) return undefined;
+
+  // Opaque execution-root token from `?root=`; percent-decode leniently the
+  // same way the runtime-side parser does.
+  let executionRootId: string | undefined;
+  if (queryStart >= 0) {
+    for (const pair of remainder.slice(queryStart + 1).split("&")) {
+      const eq = pair.indexOf("=");
+      if (eq <= 0 || pair.slice(0, eq) !== "root") continue;
+      try {
+        executionRootId = decodeURIComponent(pair.slice(eq + 1));
+      } catch {
+        return undefined;
+      }
+    }
+  }
 
   try {
     const path = rawPath
@@ -42,7 +61,7 @@ export function parseWorkspaceImageRef(src: string | undefined): WorkspaceImageR
       })
       .join("/");
     if (!path) return undefined;
-    return { workspaceId, path };
+    return executionRootId ? { workspaceId, path, executionRootId } : { workspaceId, path };
   } catch {
     return undefined;
   }
@@ -125,6 +144,13 @@ export function WorkspaceImage({
   }, [fetchWorkspaceFileBlob, workspaceId, path, executionRootId]);
 
   if (error) {
+    if (isHttpNotFoundError(error)) {
+      return (
+        <span className="workspace-image-error" title={error}>
+          {alt ?? path} image file not found (moved, cleaned up, or root removed)
+        </span>
+      );
+    }
     return (
       <span className="workspace-image-error" title={error}>
         {alt ?? path} image unavailable

@@ -979,7 +979,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
             "scheduler-multi": [
                 "CreateWorkItem",
                 "CreateWorkItem",
-                "AgentGet",
+                "GetAgent",
                 "ListWorkItems",
                 "UpdateWorkItem",
                 "CompleteWorkItem",

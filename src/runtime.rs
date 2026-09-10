@@ -35,7 +35,10 @@ mod worktree;
 
 pub(crate) use agent_message_delivery::AgentMessageDeliveryService;
 #[cfg(test)]
-pub(crate) use agent_message_delivery::PreparedAgentMessageDelivery;
+pub(crate) use agent_message_delivery::{
+    enable_delivery_checkpoint, release_delivery_checkpoint, wait_for_delivery_checkpoint,
+    PreparedAgentMessageDelivery,
+};
 pub use first_run_intro::maybe_enqueue_first_run_intro;
 pub(crate) use lifecycle::LightweightAgentStateProjection;
 pub(crate) use repair::is_wake_only_message;
@@ -161,6 +164,7 @@ pub(super) struct WorkItemCompletionReportPromotion {
 
 #[derive(Debug, Clone)]
 pub(crate) struct PreparedWorkItemCompletion {
+    pub(crate) settlement: WorkItemCompletionSettlement,
     pub(crate) record: crate::types::WorkItemRecord,
     pub(crate) brief: crate::types::BriefRecord,
     pub(crate) expected_execution_protocol_state:
@@ -176,6 +180,18 @@ pub(crate) struct PreparedWorkItemCompletion {
     pub(crate) index_changes: Vec<crate::runtime_db::RuntimeIndexChange>,
     pub(crate) tool_execution: Option<crate::types::ToolExecutionRecord>,
     pub(crate) transcript_entries: Vec<crate::types::TranscriptEntry>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WorkItemCompletionSettlement {
+    BoundExecution,
+    Detached,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum WorkItemCompletionDispatch {
+    Unchanged(crate::types::WorkItemRecord),
+    Prepared(PreparedWorkItemCompletion),
 }
 
 fn rebase_prepared_completion_agent_state(
@@ -273,7 +289,10 @@ pub(super) enum WorkItemCompletionReportPromotionOutcome {
 
 #[derive(Debug, Clone)]
 pub(crate) enum WorkItemCompletionAuthority {
-    AgentExecution(WorkItemExecutionBinding),
+    AgentExecution {
+        binding: WorkItemExecutionBinding,
+        effective_work_item_id: Option<String>,
+    },
     Control,
 }
 
@@ -708,6 +727,78 @@ fn execution_protocol_completion_transition_from_prepared(
         }
     };
 
+    Ok(
+        crate::runtime_db::transitions::ExecutionProtocolTransition {
+            bootstrap: None,
+            commands,
+        },
+    )
+}
+
+fn execution_protocol_detached_completion_transition_from_prepared(
+    storage: &AppStorage,
+    runtime_db: &RuntimeDb,
+    prepared: &PreparedWorkItemCompletion,
+) -> Result<crate::runtime_db::transitions::ExecutionProtocolTransition> {
+    use crate::domain::execution_protocol::{
+        CompleteWorkItemExecution, ExecutionProtocolCommand, RegisterWorkItemExecution,
+    };
+
+    let Some(state) = prepared.expected_execution_protocol_state.as_ref() else {
+        return Ok(crate::runtime_db::transitions::ExecutionProtocolTransition::default());
+    };
+    let authoritative = state
+        .work_items
+        .get(&prepared.record.id)
+        .or(prepared.legacy_work_item_execution.as_ref())
+        .ok_or_else(|| anyhow!("detached completion WorkItem execution state is missing"))?;
+    let mut commands = Vec::new();
+    if !state.work_items.contains_key(&prepared.record.id) {
+        commands.push(ExecutionProtocolCommand::RegisterWorkItem(Box::new(
+            RegisterWorkItemExecution {
+                work_item_id: prepared.record.id.clone(),
+                record: authoritative.clone(),
+            },
+        )));
+    }
+    commands.push(ExecutionProtocolCommand::CompleteWorkItem(Box::new(
+        CompleteWorkItemExecution {
+            command_id: format!("completion:detached:{}", prepared.record.id),
+            work_item_id: prepared.record.id.clone(),
+            expected: authoritative.clone(),
+            completion: prepared.brief.id.clone(),
+        },
+    )));
+    for continuation in &prepared.continuations {
+        if continuation.state != crate::types::WorkItemContinuationState::Resumed {
+            continue;
+        }
+        let parent = state
+            .work_items
+            .get(&continuation.suspended_work_item_id)
+            .ok_or_else(|| anyhow!("completion parent execution state is missing"))?;
+        let (source, outcome) = work_item_continuation_resume_source(
+            storage,
+            runtime_db,
+            &prepared.record.agent_id,
+            &continuation.suspended_work_item_id,
+            None,
+            &prepared.wait_conditions,
+        )?;
+        commands.push(ExecutionProtocolCommand::ResumeWorkItemContinuation(
+            Box::new(
+                crate::domain::execution_protocol::ResumeWorkItemContinuation {
+                    command_id: format!("completion:resume:{}", continuation.id),
+                    work_item_id: continuation.suspended_work_item_id.clone(),
+                    active_work_item_id: continuation.active_work_item_id.clone(),
+                    continuation_id: continuation.id.clone(),
+                    expected: parent.clone(),
+                    source,
+                    outcome,
+                },
+            ),
+        ));
+    }
     Ok(
         crate::runtime_db::transitions::ExecutionProtocolTransition {
             bootstrap: None,
@@ -2674,6 +2765,22 @@ impl RuntimeHandle {
             .commit_work_item_focus_with_execution_protocol(command, execution_protocol)
     }
 
+    pub(super) fn commit_work_item_focus_transition_with_execution_and_completion_tool(
+        &self,
+        command: &crate::runtime_db::transitions::WorkItemFocusTransitionCommand,
+        execution_protocol: &crate::runtime_db::transitions::ExecutionProtocolTransition,
+        tool_execution: &crate::types::ToolExecutionRecord,
+    ) -> Result<crate::runtime_db::transitions::TransitionCommit> {
+        self.inner
+            .runtime_db
+            .transitions()
+            .commit_work_item_focus_with_execution_protocol_and_completion_tool(
+                command,
+                execution_protocol,
+                tool_execution,
+            )
+    }
+
     pub(super) fn commit_task_transition(
         &self,
         command: &crate::runtime_db::transitions::TaskTransitionCommand,
@@ -3152,6 +3259,7 @@ impl RuntimeHandle {
             profile_preset: crate::types::AgentProfilePreset::PublicNamed,
             status: crate::types::AgentRegistryStatus::Active,
             is_default_agent: agent_id == self.inner.default_agent_id,
+            incarnation: 1,
             parent_agent_id: None,
             lineage_parent_agent_id: None,
             delegated_from_task_id: None,
@@ -3169,6 +3277,19 @@ impl RuntimeHandle {
             }
         }
         Ok(self.fallback_identity_view(&agent_id))
+    }
+
+    pub(crate) async fn agent_capability_policy(
+        &self,
+    ) -> Result<Option<crate::types::AgentCapabilityPolicyRecord>> {
+        let agent_id = self.agent_id().await?;
+        let Some(bridge) = self.inner.host_bridge.as_ref() else {
+            return Ok(None);
+        };
+        Ok(bridge
+            .canonical_relations_for_agent(&agent_id)
+            .await?
+            .and_then(|relations| relations.capability_policy))
     }
 
     fn skill_visibility(&self, identity: &AgentIdentityView) -> SkillVisibility {
@@ -3326,6 +3447,29 @@ impl RuntimeHandle {
         workspace::workspace_view_for_root(&self.inner.storage, execution_root, cwd, worktree_root)
     }
 
+    /// Registered execution roots for the given workspaces. Used to populate
+    /// execution snapshots and to reverse-map resolved paths (for example
+    /// ViewImage results) into `workspace://` URIs with `?root=` parameters.
+    pub(crate) fn execution_root_refs_for_workspaces(
+        &self,
+        workspace_ids: &[String],
+    ) -> Vec<crate::system::ExecutionRootRef> {
+        let repo = self.inner.runtime_db.execution_root_entries();
+        let mut roots = Vec::new();
+        for ws_id in workspace_ids {
+            if let Ok(entries) = repo.active_for_workspace(ws_id) {
+                for entry in entries {
+                    roots.push(crate::system::ExecutionRootRef {
+                        execution_root_id: entry.execution_root_id,
+                        workspace_id: entry.workspace_id,
+                        filesystem_path: entry.filesystem_path,
+                    });
+                }
+            }
+        }
+        roots
+    }
+
     fn workspace_view_from_state(&self, state: &AgentState) -> Result<WorkspaceView> {
         workspace::workspace_view_from_state(state, self.inner.storage.data_dir().to_path_buf())
     }
@@ -3345,20 +3489,7 @@ impl RuntimeHandle {
         // Populate execution_roots from the runtime DB registry for all
         // attached workspaces, so the provider turn resolver can resolve
         // `?root=` parameters in workspace:// URIs.
-        let repo = self.inner.runtime_db.execution_root_entries();
-        let mut roots = Vec::new();
-        for ws_id in attached_workspace_ids {
-            if let Ok(entries) = repo.active_for_workspace(ws_id) {
-                for entry in entries {
-                    roots.push(crate::system::ExecutionRootRef {
-                        execution_root_id: entry.execution_root_id,
-                        workspace_id: entry.workspace_id,
-                        filesystem_path: entry.filesystem_path,
-                    });
-                }
-            }
-        }
-        snapshot.execution_roots = roots;
+        snapshot.execution_roots = self.execution_root_refs_for_workspaces(attached_workspace_ids);
         snapshot
     }
 

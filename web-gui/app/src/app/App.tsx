@@ -232,6 +232,7 @@ export function App() {
   const clearAgentModel = useRuntimeStore((state) => state.clearAgentModel);
   const controlAgent = useRuntimeStore((state) => state.controlAgent);
   const deleteAgent = useRuntimeStore((state) => state.deleteAgent);
+  const renameAgentAction = useRuntimeStore((state) => state.renameAgent);
   const loadOlderAgentEvents = useRuntimeStore((state) => state.loadOlderAgentEvents);
   const loadAgentWorkItemDetail = useRuntimeStore((state) => state.loadAgentWorkItemDetail);
   const loadAgentTaskDetail = useRuntimeStore((state) => state.loadAgentTaskDetail);
@@ -655,7 +656,7 @@ export function App() {
                 </Button>
               ) : null}
               <div>
-                <strong>{route === "agent" ? (selectedAgent?.id ?? selectedAgentId) || t("rightPanel.agent") : route === "search" ? t("nav.search") : route === "skills" || route === "skillDetail" ? t("nav.skills") : route === "templates" || route === "templateDetail" ? t("nav.templates") : route === "settings" ? t("nav.settings") : t("nav.dashboard")}</strong>
+                <strong title={route === "agent" && selectedAgent?.name ? `${selectedAgent.name} (${selectedAgent.id})` : undefined}>{route === "agent" ? (selectedAgent?.name ?? selectedAgent?.id ?? selectedAgentId) || t("rightPanel.agent") : route === "search" ? t("nav.search") : route === "skills" || route === "skillDetail" ? t("nav.skills") : route === "templates" || route === "templateDetail" ? t("nav.templates") : route === "settings" ? t("nav.settings") : t("nav.dashboard")}</strong>
                 {route === "agent" && selectedAgentStatus ? (
                   <span className={`header-status ${selectedAgentStatus.tone}`} title={selectedAgentStatus.title} data-tooltip={selectedAgentStatus.title} data-tooltip-pos="bottom">
                     <StatusDotIcon tone={selectedAgentStatus.tone} />
@@ -853,6 +854,7 @@ export function App() {
             await deleteAgent(selectedAgent.id, cascade);
             pushBrowserRoute("dashboard");
           }}
+          onRenameAgent={async (name) => { await renameAgentAction(selectedAgent.id, name); }}
           connection={bootstrap.connection}
           skillCatalog={agentSkillCatalog}
           availableSkillCatalog={skillCatalog}
