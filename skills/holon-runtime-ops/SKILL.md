@@ -73,6 +73,36 @@ Direct database writes are not a diagnostic technique. They are H3 recovery
 actions requiring exact approval, a snapshot, a bounded mutation, rollback,
 and verification.
 
+## Live Runtime Database Diagnosis
+
+Keep the runtime database readable under its existing deployment permissions,
+but do not treat direct access to a live `runtime.sqlite` as the default
+diagnostic path. Prefer native runtime tools and APIs.
+
+If direct structural inspection is necessary:
+
+- require the direct runtime-database read authority gate
+- inspect a verified offline backup unless separate maintenance authority has
+  been granted to stop the Holon service
+- if maintenance authority has not been granted and no verified backup exists,
+  request authorization instead of stopping the service
+- do not open the live database with an unmanaged SQLite client while Holon is
+  running, even in read-only mode
+- never delete, rename, replace, restore, or copy over live `-wal` or `-shm`
+  sidecars
+
+If Holon reports a deleted-open WAL/SHM file or an inode divergence:
+
+1. do not delete files or immediately restart over the evidence
+2. record the database path, sidecar path, process ID, FD, device, and inode
+3. preserve the main database and both sidecars before recovery
+4. perform recovery or restart only under explicit maintenance authority,
+   using the preserved files and an offline verification step
+
+These are operational safety rules, not access-control requirements. Do not
+change directory ownership or permissions unless the operator separately
+authorizes that deployment change.
+
 ## Installation Inventory
 
 Keep one record per Holon installation:

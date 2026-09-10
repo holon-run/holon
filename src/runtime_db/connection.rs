@@ -1,6 +1,8 @@
 //! SQLite connection setup, transaction retry, and file locking.
 
 use std::fs::{self, File};
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -27,11 +29,204 @@ pub(crate) fn open_connection(path: &Path) -> Result<Connection> {
         fs::create_dir_all(parent)
             .with_context(|| format!("creating runtime db directory {}", parent.display()))?;
     }
+    ensure_runtime_db_sidecars_are_consistent(path)?;
     let connection =
         Connection::open(path).with_context(|| format!("opening runtime db {}", path.display()))?;
+    enable_persistent_wal(&connection, path)?;
     configure_connection(&connection)?;
+    ensure_runtime_db_sidecars_are_consistent(path)?;
     crate::diagnostics::record_runtime_db_connection_open(started_at.elapsed());
     Ok(connection)
+}
+
+fn enable_persistent_wal(connection: &Connection, path: &Path) -> Result<()> {
+    const MAIN_SCHEMA: &[u8] = b"main\0";
+
+    let mut enabled = 1_i32;
+    // SAFETY: `connection.handle()` remains valid for this call, `MAIN_SCHEMA` is
+    // nul-terminated, and SQLite only reads/writes `enabled` before returning.
+    let result = unsafe {
+        rusqlite::ffi::sqlite3_file_control(
+            connection.handle(),
+            MAIN_SCHEMA.as_ptr().cast(),
+            rusqlite::ffi::SQLITE_FCNTL_PERSIST_WAL,
+            (&mut enabled as *mut i32).cast(),
+        )
+    };
+    if result != rusqlite::ffi::SQLITE_OK {
+        return Err(anyhow!(rusqlite::ffi::Error::new(result))).with_context(|| {
+            format!(
+                "enabling persistent WAL lifecycle for runtime db {}",
+                path.display()
+            )
+        });
+    }
+
+    let mut current = -1_i32;
+    // SAFETY: same pointer and connection lifetime guarantees as the setting
+    // call above. A value of -1 queries the current file-control setting.
+    let result = unsafe {
+        rusqlite::ffi::sqlite3_file_control(
+            connection.handle(),
+            MAIN_SCHEMA.as_ptr().cast(),
+            rusqlite::ffi::SQLITE_FCNTL_PERSIST_WAL,
+            (&mut current as *mut i32).cast(),
+        )
+    };
+    if result != rusqlite::ffi::SQLITE_OK {
+        return Err(anyhow!(rusqlite::ffi::Error::new(result))).with_context(|| {
+            format!(
+                "verifying persistent WAL lifecycle for runtime db {}",
+                path.display()
+            )
+        });
+    }
+    if current != 1 {
+        bail_persistent_wal_not_enabled(path, current)?;
+    }
+    Ok(())
+}
+
+fn bail_persistent_wal_not_enabled(path: &Path, current: i32) -> Result<()> {
+    anyhow::bail!(
+        "persistent WAL lifecycle is not enabled for runtime db {}: file-control value {current}",
+        path.display()
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn ensure_runtime_db_sidecars_are_consistent(path: &Path) -> Result<()> {
+    let db_path = match path.canonicalize() {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let parent = path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .canonicalize()
+                .with_context(|| {
+                    format!(
+                        "resolving runtime db directory for sidecar inspection: {}",
+                        path.display()
+                    )
+                })?;
+            let file_name = path.file_name().ok_or_else(|| {
+                anyhow!(
+                    "runtime db path has no file name for sidecar inspection: {}",
+                    path.display()
+                )
+            })?;
+            parent.join(file_name)
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "resolving runtime db path for sidecar inspection: {}",
+                    path.display()
+                )
+            });
+        }
+    };
+
+    for suffix in ["-wal", "-shm"] {
+        ensure_runtime_db_sidecar_is_consistent(&db_path, suffix)?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn runtime_db_sidecar_identity(path: &Path) -> Result<Option<(u64, u64)>> {
+    match fs::metadata(path) {
+        Ok(metadata) => Ok(Some((metadata.dev(), metadata.ino()))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error)
+            .with_context(|| format!("reading runtime db sidecar metadata: {}", path.display())),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn ensure_runtime_db_sidecar_is_consistent(db_path: &Path, suffix: &str) -> Result<()> {
+    use std::ffi::OsString;
+
+    let mut name: OsString = db_path.as_os_str().to_owned();
+    name.push(suffix);
+    let sidecar_path = Path::new(&name);
+    let deleted_path = format!("{} (deleted)", sidecar_path.display());
+
+    for entry in fs::read_dir("/proc/self/fd").context("reading /proc/self/fd")? {
+        let entry = entry.context("reading entry from /proc/self/fd")?;
+        let target = match fs::read_link(entry.path()) {
+            Ok(target) => target,
+            Err(_) => continue,
+        };
+        let target_display = target.to_string_lossy();
+        if target != sidecar_path && target_display != deleted_path {
+            continue;
+        }
+        let canonical_before = runtime_db_sidecar_identity(sidecar_path)?;
+        let metadata = match fs::metadata(entry.path()) {
+            Ok(metadata) => metadata,
+            Err(_) => continue,
+        };
+        let open_identity = (metadata.dev(), metadata.ino());
+        let canonical_after = runtime_db_sidecar_identity(sidecar_path)?;
+        let fd = entry.file_name().to_string_lossy().into_owned();
+
+        if canonical_before != canonical_after {
+            return runtime_db_sidecar_divergence(
+                db_path,
+                suffix,
+                &fd,
+                open_identity,
+                canonical_after,
+                "canonical sidecar changed during inspection",
+            );
+        }
+        if target_display == deleted_path {
+            return runtime_db_sidecar_divergence(
+                db_path,
+                suffix,
+                &fd,
+                open_identity,
+                canonical_after,
+                "deleted-open sidecar",
+            );
+        }
+        if canonical_after.is_some_and(|identity| identity != open_identity) {
+            return runtime_db_sidecar_divergence(
+                db_path,
+                suffix,
+                &fd,
+                open_identity,
+                canonical_after,
+                "open/canonical inode mismatch",
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn runtime_db_sidecar_divergence(
+    db_path: &Path,
+    suffix: &str,
+    fd: &str,
+    open_identity: (u64, u64),
+    canonical_identity: Option<(u64, u64)>,
+    reason: &str,
+) -> Result<()> {
+    let error = anyhow!(
+        "runtime db sidecar divergence detected ({reason}); refusing a new connection: db={}, sidecar={suffix}, fd={fd}, open_dev={}, open_inode={}, canonical_identity={canonical_identity:?}; preserve the files and FD/inode evidence, then perform offline recovery or restart",
+        db_path.display(),
+        open_identity.0,
+        open_identity.1,
+    );
+    tracing::error!(error = %error, "runtime db sidecar divergence");
+    Err(error)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn ensure_runtime_db_sidecars_are_consistent(_path: &Path) -> Result<()> {
+    Ok(())
 }
 
 pub(crate) fn configure_connection(connection: &Connection) -> Result<()> {
@@ -267,4 +462,217 @@ pub(crate) fn flock(_file: &File, _mode: LockMode) -> Result<()> {
 #[cfg(not(unix))]
 pub(crate) fn unlock(_file: &File) -> Result<()> {
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::OpenFlags;
+    use std::ffi::OsString;
+    use std::process::{Command, Stdio};
+    use tempfile::tempdir;
+
+    const OBSERVER_CHILD_DB_ENV: &str = "HOLON_RUNTIME_DB_OBSERVER_CHILD_DB";
+    const OBSERVER_CHILD_READY_ENV: &str = "HOLON_RUNTIME_DB_OBSERVER_CHILD_READY";
+    const OBSERVER_CHILD_RELEASE_ENV: &str = "HOLON_RUNTIME_DB_OBSERVER_CHILD_RELEASE";
+    const OBSERVER_TEST_NAME: &str =
+        "runtime_db::connection::tests::external_observer_does_not_replace_runtime_db_sidecars";
+
+    fn persistent_wal_setting(connection: &Connection) -> Result<i32> {
+        const MAIN_SCHEMA: &[u8] = b"main\0";
+        let mut current = -1_i32;
+        // SAFETY: the connection remains alive for the call, the schema name is
+        // nul-terminated, and SQLite writes the result before returning.
+        let result = unsafe {
+            rusqlite::ffi::sqlite3_file_control(
+                connection.handle(),
+                MAIN_SCHEMA.as_ptr().cast(),
+                rusqlite::ffi::SQLITE_FCNTL_PERSIST_WAL,
+                (&mut current as *mut i32).cast(),
+            )
+        };
+        if result != rusqlite::ffi::SQLITE_OK {
+            return Err(anyhow!(rusqlite::ffi::Error::new(result)));
+        }
+        Ok(current)
+    }
+
+    fn sidecar_path(db_path: &Path, suffix: &str) -> std::path::PathBuf {
+        let mut path: OsString = db_path.as_os_str().to_owned();
+        path.push(suffix);
+        path.into()
+    }
+
+    #[test]
+    fn every_runtime_db_connection_enables_persistent_wal() -> Result<()> {
+        let directory = tempdir()?;
+        let db_path = directory.path().join("runtime.sqlite");
+        let first = open_connection(&db_path)?;
+        let second = open_connection(&db_path)?;
+
+        assert_eq!(persistent_wal_setting(&first)?, 1);
+        assert_eq!(persistent_wal_setting(&second)?, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn closing_last_runtime_db_connection_preserves_wal_sidecars() -> Result<()> {
+        let directory = tempdir()?;
+        let db_path = directory.path().join("runtime.sqlite");
+        let connection = open_connection(&db_path)?;
+        configure_persistent_database(&connection)?;
+        connection.execute_batch(
+            "CREATE TABLE values_seen(value INTEGER NOT NULL);
+             INSERT INTO values_seen(value) VALUES (1);",
+        )?;
+
+        let wal_path = sidecar_path(&db_path, "-wal");
+        let shm_path = sidecar_path(&db_path, "-shm");
+        assert!(wal_path.is_file());
+        assert!(shm_path.is_file());
+
+        drop(connection);
+
+        assert!(wal_path.is_file());
+        assert!(shm_path.is_file());
+        let reader = open_connection(&db_path)?;
+        assert_eq!(
+            reader.query_row("SELECT MAX(value) FROM values_seen", [], |row| row
+                .get::<_, i64>(0))?,
+            1
+        );
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn deleted_open_sidecar_prevents_new_runtime_db_connection() -> Result<()> {
+        let directory = tempdir()?;
+        let db_path = directory.path().join("runtime.sqlite");
+        let wal_path = sidecar_path(&db_path, "-wal");
+        let _deleted_open_file = File::create(&wal_path)?;
+        fs::remove_file(&wal_path)?;
+        File::create(&wal_path)?;
+
+        let error = open_connection(&db_path).expect_err("deleted-open WAL must be rejected");
+        let message = format!("{error:#}");
+        assert!(message.contains("sidecar divergence detected"));
+        assert!(message.contains("deleted-open sidecar"));
+        assert!(message.contains("sidecar=-wal"));
+        assert!(message.contains("open_inode="));
+        assert!(message.contains("canonical_identity="));
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sidecar_divergence_detection_resolves_runtime_db_symlink() -> Result<()> {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempdir()?;
+        let db_path = directory.path().join("runtime.sqlite");
+        let alias_path = directory.path().join("runtime-alias.sqlite");
+        let connection = open_connection(&db_path)?;
+        configure_persistent_database(&connection)?;
+        connection.execute_batch("CREATE TABLE values_seen(value INTEGER NOT NULL);")?;
+        drop(connection);
+        symlink(&db_path, &alias_path)?;
+
+        let wal_path = sidecar_path(&db_path, "-wal");
+        let _deleted_open_file = File::open(&wal_path)?;
+        fs::remove_file(&wal_path)?;
+        File::create(&wal_path)?;
+
+        let error =
+            open_connection(&alias_path).expect_err("deleted-open WAL through alias must fail");
+        assert!(format!("{error:#}").contains("deleted-open sidecar"));
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn external_observer_does_not_replace_runtime_db_sidecars() -> Result<()> {
+        if let Some(db_path) = std::env::var_os(OBSERVER_CHILD_DB_ENV) {
+            let connection =
+                Connection::open_with_flags(Path::new(&db_path), OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+            let max_value =
+                connection.query_row("SELECT MAX(value) FROM values_seen", [], |row| {
+                    row.get::<_, i64>(0)
+                })?;
+            assert_eq!(max_value, 1);
+            let ready_path = std::env::var_os(OBSERVER_CHILD_READY_ENV)
+                .ok_or_else(|| anyhow!("observer child ready path is missing"))?;
+            let release_path = std::env::var_os(OBSERVER_CHILD_RELEASE_ENV)
+                .ok_or_else(|| anyhow!("observer child release path is missing"))?;
+            File::create(ready_path)?;
+            let started_at = Instant::now();
+            while !Path::new(&release_path).exists() {
+                if started_at.elapsed() > Duration::from_secs(10) {
+                    anyhow::bail!("timed out waiting to release observer child");
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            drop(connection);
+            return Ok(());
+        }
+
+        let directory = tempdir()?;
+        let db_path = directory.path().join("runtime.sqlite");
+        let ready_path = directory.path().join("observer-ready");
+        let release_path = directory.path().join("observer-release");
+        let writer = open_connection(&db_path)?;
+        configure_persistent_database(&writer)?;
+        writer.execute_batch(
+            "CREATE TABLE values_seen(value INTEGER NOT NULL);
+             INSERT INTO values_seen(value) VALUES (1);",
+        )?;
+
+        let wal_path = sidecar_path(&db_path, "-wal");
+        let shm_path = sidecar_path(&db_path, "-shm");
+        let wal_identity = fs::metadata(&wal_path)?.ino();
+        let shm_identity = fs::metadata(&shm_path)?.ino();
+        let mut child = Command::new(std::env::current_exe()?)
+            .arg("--exact")
+            .arg(OBSERVER_TEST_NAME)
+            .arg("--nocapture")
+            .env(OBSERVER_CHILD_DB_ENV, &db_path)
+            .env(OBSERVER_CHILD_READY_ENV, &ready_path)
+            .env(OBSERVER_CHILD_RELEASE_ENV, &release_path)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let started_at = Instant::now();
+        while !ready_path.exists() {
+            if let Some(status) = child.try_wait()? {
+                anyhow::bail!("observer child exited before ready: {status}");
+            }
+            if started_at.elapsed() > Duration::from_secs(10) {
+                child.kill()?;
+                anyhow::bail!("timed out waiting for observer child");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        drop(writer);
+        File::create(&release_path)?;
+        let output = child.wait_with_output()?;
+        assert!(
+            output.status.success(),
+            "observer child failed: stdout={}; stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        assert_eq!(fs::metadata(&wal_path)?.ino(), wal_identity);
+        assert_eq!(fs::metadata(&shm_path)?.ino(), shm_identity);
+        ensure_runtime_db_sidecars_are_consistent(&db_path)?;
+
+        let reader = open_connection(&db_path)?;
+        assert_eq!(
+            reader.query_row("SELECT MAX(value) FROM values_seen", [], |row| row
+                .get::<_, i64>(0))?,
+            1
+        );
+        Ok(())
+    }
 }
