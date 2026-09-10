@@ -549,11 +549,19 @@ async fn invoke_agent_hides_unknown_and_unauthorized_targets() {
         .create_named_agent("unauthorized-target", None)
         .await
         .unwrap();
+    let message_policy_revision = host
+        .runtime_db()
+        .agent_canonical_relations()
+        .latest(&unauthorized_target.agent_id)
+        .unwrap()
+        .and_then(|relations| relations.message_policy)
+        .map_or(0, |policy| policy.revision)
+        .saturating_add(1);
     host.runtime_db()
         .agent_canonical_relations()
         .upsert_message_policy(&crate::types::AgentMessagePolicyRecord {
             agent_id: unauthorized_target.agent_id,
-            revision: 1,
+            revision: message_policy_revision,
             default_effect: crate::types::AgentPolicyEffect::Deny,
             rules: vec![crate::types::AgentMessagePolicyRule {
                 principal_kind: crate::types::AgentMessagePrincipalKind::PeerAgent,
