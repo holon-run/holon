@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   buildWorkspaceFileUrl,
   createRuntimeClient,
+  httpRetryAfterMs,
   projectModelOptions,
   REQUIRED_OBSERVER_SYNC_CAPABILITIES,
 } from "./client";
@@ -437,11 +438,17 @@ describe("createRuntimeClient", () => {
         )) as typeof fetch,
     });
 
-    await expect(client.getAgentState("agent-one")).rejects.toMatchObject({
+    const error = await client.getAgentState("agent-one").then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(error).toMatchObject({
       name: "RuntimeHttpError",
       status: 429,
       code: "projection_busy",
+      retryAfterSeconds: 1,
     });
+    expect(httpRetryAfterMs(error)).toBe(1_000);
   });
 
   it("loads agent detail without fetching the full roster", async () => {

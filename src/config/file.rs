@@ -88,11 +88,43 @@ impl XSearchConfigFile {
 pub struct ApiConfigFile {
     #[serde(default, skip_serializing_if = "ApiCorsConfigFile::is_empty")]
     pub cors: ApiCorsConfigFile,
+    #[serde(default, skip_serializing_if = "ApiProjectionConfigFile::is_empty")]
+    pub projection: ApiProjectionConfigFile,
 }
 
 impl ApiConfigFile {
     pub fn is_empty(&self) -> bool {
-        self.cors.is_empty()
+        self.cors.is_empty() && self.projection.is_empty()
+    }
+}
+
+pub const DEFAULT_API_PROJECTION_MAX_LEADERS: u64 = 16;
+pub const DEFAULT_API_PROJECTION_CACHE_TTL_MS: u64 = 500;
+
+/// HTTP API projection gate capacity. Projection builds are read-only;
+/// these knobs bound concurrent distinct builds and how long a finished
+/// build is reused.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct ApiProjectionConfigFile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_leaders: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_ttl_ms: Option<u64>,
+}
+
+impl ApiProjectionConfigFile {
+    pub fn is_empty(&self) -> bool {
+        self.max_leaders.is_none() && self.cache_ttl_ms.is_none()
+    }
+
+    pub fn max_leaders(&self) -> usize {
+        self.max_leaders
+            .unwrap_or(DEFAULT_API_PROJECTION_MAX_LEADERS) as usize
+    }
+
+    pub fn cache_ttl_ms(&self) -> u64 {
+        self.cache_ttl_ms
+            .unwrap_or(DEFAULT_API_PROJECTION_CACHE_TTL_MS)
     }
 }
 

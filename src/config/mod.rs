@@ -64,6 +64,7 @@ pub struct AppConfig {
     pub control_auth_mode: ControlAuthMode,
     pub auth: AuthConfig,
     pub api_cors: ApiCorsConfigFile,
+    pub api_projection: ApiProjectionConfigFile,
     pub config_file_path: PathBuf,
     pub stored_config: HolonConfigFile,
     pub web_config: crate::web::WebConfig,
@@ -167,6 +168,7 @@ impl AppConfig {
         let config_file_path = persisted_config_path(&home_dir);
         let stored_config = load_persisted_config_at(&config_file_path)?;
         validate_api_cors_config(&stored_config.api.cors)?;
+        validate_api_projection_config(&stored_config.api.projection)?;
         let credential_store_path = credential_store_path(&home_dir);
         let credential_store =
             if config_uses_credential_profiles(&stored_config) || credential_store_path.exists() {
@@ -333,6 +335,7 @@ impl AppConfig {
             control_auth_mode,
             auth,
             api_cors: stored_config.api.cors.clone(),
+            api_projection: stored_config.api.projection.clone(),
             config_file_path,
             stored_config,
             web_config,

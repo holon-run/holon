@@ -155,6 +155,7 @@ fn test_app_config(default_model: &str, fallback_models: &[&str]) -> TestAppConf
         control_auth_mode: ControlAuthMode::Auto,
         auth: Default::default(),
         api_cors: Default::default(),
+        api_projection: Default::default(),
         config_file_path: home_path.join("config.json"),
         stored_config: Default::default(),
         default_model: route_ref(default_model),
@@ -2270,6 +2271,8 @@ fn schema_contains_expected_keys() {
     assert!(keys.contains(&"auth.session.absolute_ttl_seconds"));
     assert!(keys.contains(&"models.catalog"));
     assert!(keys.contains(&"model.unknown_fallback"));
+    assert!(keys.contains(&"api.projection.max_leaders"));
+    assert!(keys.contains(&"api.projection.cache_ttl_ms"));
     assert!(keys.contains(&"providers.<id>.endpoints.<endpoint_id>.transport"));
     assert!(keys.contains(&"providers.<id>.endpoints.<endpoint_id>.base_url"));
     assert!(keys.contains(&"providers.<id>.plans.<plan_id>.endpoint"));
@@ -2287,6 +2290,50 @@ fn schema_contains_expected_keys() {
     assert!(keys.contains(&"web.fetch.max_redirects"));
     assert!(keys.contains(&"web.search.provider"));
     assert!(keys.contains(&"web.providers.<name>.capabilities"));
+}
+
+#[test]
+fn api_projection_config_round_trips_and_validates() {
+    let mut config = HolonConfigFile::default();
+    set_config_key(&mut config, "api.projection.max_leaders", "32").unwrap();
+    set_config_key(&mut config, "api.projection.cache_ttl_ms", "1000").unwrap();
+
+    assert_eq!(
+        get_config_key(&config, "api.projection.max_leaders").unwrap(),
+        json!(32)
+    );
+    assert_eq!(
+        get_config_key(&config, "api.projection.cache_ttl_ms").unwrap(),
+        json!(1000)
+    );
+
+    unset_config_key(&mut config, "api.projection.max_leaders").unwrap();
+    unset_config_key(&mut config, "api.projection.cache_ttl_ms").unwrap();
+    assert_eq!(
+        get_config_key(&config, "api.projection.max_leaders").unwrap(),
+        Value::Null
+    );
+    assert_eq!(
+        get_config_key(&config, "api.projection.cache_ttl_ms").unwrap(),
+        Value::Null
+    );
+
+    let mut invalid = HolonConfigFile::default();
+    assert!(set_config_key(&mut invalid, "api.projection.max_leaders", "0").is_err());
+    assert!(set_config_key(&mut invalid, "api.projection.cache_ttl_ms", "0").is_err());
+}
+
+#[test]
+fn api_projection_defaults_match_gate_constants() {
+    let projection = crate::config::ApiProjectionConfigFile::default();
+    assert_eq!(
+        projection.max_leaders(),
+        crate::config::DEFAULT_API_PROJECTION_MAX_LEADERS as usize
+    );
+    assert_eq!(
+        projection.cache_ttl_ms(),
+        crate::config::DEFAULT_API_PROJECTION_CACHE_TTL_MS
+    );
 }
 
 #[test]

@@ -369,6 +369,8 @@ TUI debug instrumentation is controlled by environment variables:
 | `api.cors.allowed_headers` | string_list | `["content-type","authorization"]` | Request headers allowed by CORS preflight |
 | `api.cors.allow_credentials` | boolean | `false` | Allow credentialed CORS requests; incompatible with wildcard origins |
 | `api.cors.max_age_seconds` | integer | `600` | Browser cache lifetime for preflight responses |
+| `api.projection.max_leaders` | integer | `16` | Max concurrent projection builds; more distinct keys get `429 projection_busy` until a leader frees up |
+| `api.projection.cache_ttl_ms` | integer | `500` | Milliseconds a finished projection build is cached and reused |
 | `web.fetch.enabled` | boolean | `true` | Enable WebFetch tool |
 | `web.fetch.max_chars` | integer | `20000` | Max characters returned to model |
 | `web.fetch.max_response_bytes` | integer | `750000` | Max response bytes before truncation |

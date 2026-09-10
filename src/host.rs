@@ -5504,6 +5504,7 @@ mod tests {
             control_auth_mode: ControlAuthMode::Auto,
             auth: Default::default(),
             api_cors: Default::default(),
+            api_projection: Default::default(),
             config_file_path: home_path.join("config.json"),
             stored_config: Default::default(),
             default_model: ModelRouteRef::parse_compatible("anthropic/claude-sonnet-5").unwrap(),

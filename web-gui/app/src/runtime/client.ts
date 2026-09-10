@@ -2618,6 +2618,7 @@ function stringValue(value: unknown): string | undefined {
 class RuntimeHttpError extends Error {
   readonly status: number;
   readonly code?: string;
+  readonly retryAfterSeconds?: number;
   /**
    * Known rich cursor extensions from `cursor_not_found` bodies (S2): the
    * recovery layer uses them to distinguish a retained-prefix gap from an
@@ -2636,12 +2637,14 @@ class RuntimeHttpError extends Error {
     status: number,
     reason?: string,
     code?: string,
+    retryAfterSeconds?: number,
     cursorExtensions?: RuntimeHttpError["cursorExtensions"],
   ) {
     super(reason ? `${method} ${path} failed with ${status}: ${reason}` : `${method} ${path} failed with ${status}`);
     this.name = "RuntimeHttpError";
     this.status = status;
     this.code = code;
+    this.retryAfterSeconds = retryAfterSeconds;
     this.cursorExtensions = cursorExtensions;
   }
 }
@@ -2654,8 +2657,25 @@ async function httpRequestError(method: string, path: string, response: Response
     response.status,
     envelope?.error,
     envelope?.code,
+    parseRetryAfterSeconds(response),
     envelope?.extensions,
   );
+}
+
+/** Parse the delta-seconds form of the Retry-After response header. */
+function parseRetryAfterSeconds(response: Response): number | undefined {
+  const raw = response.headers.get("retry-after");
+  if (!raw) return undefined;
+  const seconds = Number(raw.trim());
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds : undefined;
+}
+
+/** Server retry hint carried by the response (Retry-After), in milliseconds. */
+export function httpRetryAfterMs(error: unknown): number | undefined {
+  if (error instanceof RuntimeHttpError && error.retryAfterSeconds != null) {
+    return Math.ceil(error.retryAfterSeconds * 1000);
+  }
+  return undefined;
 }
 
 async function readErrorEnvelope(

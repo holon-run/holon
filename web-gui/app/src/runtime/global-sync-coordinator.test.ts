@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ROSTER_STALE_EXTENDED_RETRY_ATTEMPTS } from "./global-sync-coordinator";
+import {
+  ROSTER_STALE_EXTENDED_RETRY_ATTEMPTS,
+  retryDelayWithServerHintMs,
+} from "./global-sync-coordinator";
+import { createRuntimeClient } from "./client";
 import { useRuntimeStore, type AgentSessionState } from "./runtime-store";
 import { createSessionProjectionState } from "./session-projection";
 
@@ -810,3 +814,35 @@ function errorJsonResponse(status: number, body: unknown): Response {
     headers: { "content-type": "application/json" },
   });
 }
+
+describe("retryDelayWithServerHintMs", () => {
+  it("keeps the computed backoff when no server hint is present", () => {
+    expect(retryDelayWithServerHintMs(1)).toBe(1_000);
+    expect(retryDelayWithServerHintMs(2, new Error("offline"))).toBe(2_000);
+  });
+
+  it("waits at least the server Retry-After hint from a projection_busy response", async () => {
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: (async () =>
+        Response.json(
+          {
+            ok: false,
+            error: "projection capacity is busy; retry later",
+            code: "projection_busy",
+            retryable: true,
+          },
+          { status: 429, headers: { "retry-after": "5" } },
+        )) as typeof fetch,
+    });
+    const error = await client.getAgentState("agent-one").then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    expect(retryDelayWithServerHintMs(1, error)).toBe(5_000);
+    // Computed exponential backoff eventually overtakes a small hint.
+    expect(retryDelayWithServerHintMs(5, error)).toBe(15_000);
+  });
+});

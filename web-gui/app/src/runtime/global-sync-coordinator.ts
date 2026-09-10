@@ -1,5 +1,6 @@
 import {
   createRuntimeClient,
+  httpRetryAfterMs,
   isAuthRequiredError,
   rosterAgentEntries,
   type AgentEventStreamSubscription,
@@ -387,7 +388,7 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
     // Transient failure: keep the last complete roster, mark discovery
     // stale, and retry with bounded backoff. Nothing is purged.
     this.rosterRetryAttempt += 1;
-    const delay = backfillRetryDelayMs(this.rosterRetryAttempt);
+    const delay = retryDelayWithServerHintMs(this.rosterRetryAttempt, error);
     if (this.rosterRetryTimer != null) window.clearTimeout(this.rosterRetryTimer);
     set((state) => ({
       discovery: {
@@ -779,7 +780,7 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
     if (!this.subscribedAgents.has(agentId) || this.backfillRetryTimers.has(agentId)) return;
     const attempt = (this.backfillRetryAttempts.get(agentId) ?? 0) + 1;
     this.backfillRetryAttempts.set(agentId, attempt);
-    const delay = backfillRetryDelayMs(attempt);
+    const delay = retryDelayWithServerHintMs(attempt, error);
     this.dependencies.setStreamState(set, agentId, "recovering", {
       syncError: error == null ? undefined : error instanceof Error ? error.message : String(error),
       syncRetryAttempt: attempt,
@@ -875,6 +876,16 @@ export function backfillRetryDelayMs(attempt: number): number {
     STREAM_RECONNECT_MAX_MS,
     STREAM_RECONNECT_BASE_MS * 2 ** Math.max(0, attempt - 1),
   );
+}
+
+/**
+ * Retry delay that never undercuts the server's Retry-After hint (for
+ * example 429 projection_busy): wait at least as long as the server asks.
+ */
+export function retryDelayWithServerHintMs(attempt: number, error?: unknown): number {
+  const computed = backfillRetryDelayMs(attempt);
+  const hintMs = httpRetryAfterMs(error);
+  return hintMs == null ? computed : Math.max(computed, hintMs);
 }
 
 export function streamEventFromBackfill(

@@ -117,6 +117,20 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
+            key: "api.projection.max_leaders",
+            kind: "positive_integer",
+            description: "Maximum concurrent projection builds in the HTTP API projection gate. Additional distinct keys receive 429 projection_busy until a leader frees up.",
+            default: json!(DEFAULT_API_PROJECTION_MAX_LEADERS),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "api.projection.cache_ttl_ms",
+            kind: "positive_integer",
+            description: "Milliseconds a finished projection build is cached and served without rebuilding.",
+            default: json!(DEFAULT_API_PROJECTION_CACHE_TTL_MS),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
             key: "model.default",
             kind: "model_route_ref",
             description: "Explicit default provider@endpoint/model route ref. Legacy provider/model input remains accepted. When unset, the runtime derives one from authenticated providers.",
@@ -754,6 +768,18 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
             .max_age_seconds
             .map(|value| json!(value))
             .unwrap_or(Value::Null)),
+        "api.projection.max_leaders" => Ok(config
+            .api
+            .projection
+            .max_leaders
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
+        "api.projection.cache_ttl_ms" => Ok(config
+            .api
+            .projection
+            .cache_ttl_ms
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
         "model.default" => Ok(config
             .model
             .default
@@ -1139,6 +1165,12 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
         "api.cors.max_age_seconds" => {
             config.api.cors.max_age_seconds = Some(parse_positive_u64_key(key, raw_value)?);
         }
+        "api.projection.max_leaders" => {
+            config.api.projection.max_leaders = Some(parse_positive_u64_key(key, raw_value)?);
+        }
+        "api.projection.cache_ttl_ms" => {
+            config.api.projection.cache_ttl_ms = Some(parse_positive_u64_key(key, raw_value)?);
+        }
         "model.default" => {
             let parsed = ModelRouteRef::parse_compatible(raw_value)?;
             config.model.default = Some(parsed.as_string());
@@ -1487,6 +1519,8 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
         }
         "api.cors.allow_credentials" => config.api.cors.allow_credentials = None,
         "api.cors.max_age_seconds" => config.api.cors.max_age_seconds = Some(600),
+        "api.projection.max_leaders" => config.api.projection.max_leaders = None,
+        "api.projection.cache_ttl_ms" => config.api.projection.cache_ttl_ms = None,
         "model.default" => config.model.default = None,
         "model.fallbacks" => config.model.fallbacks.clear(),
         "vision.default" => config.vision.default = None,
@@ -1657,6 +1691,7 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
         _ => return Err(unknown_config_key(key)),
     }
     validate_api_cors_config(&config.api.cors)?;
+    validate_api_projection_config(&config.api.projection)?;
     Ok(())
 }
 
@@ -1682,6 +1717,24 @@ pub fn validate_api_cors_config(cors: &ApiCorsConfigFile) -> Result<()> {
         header
             .parse::<HeaderName>()
             .with_context(|| format!("invalid api.cors.allowed_headers entry {header:?}"))?;
+    }
+    Ok(())
+}
+
+pub fn validate_api_projection_config(projection: &ApiProjectionConfigFile) -> Result<()> {
+    if let Some(max_leaders) = projection.max_leaders {
+        if max_leaders == 0 {
+            return Err(anyhow!(
+                "api.projection.max_leaders must be a positive integer; 0 would reject every projection build"
+            ));
+        }
+    }
+    if let Some(cache_ttl_ms) = projection.cache_ttl_ms {
+        if cache_ttl_ms == 0 {
+            return Err(anyhow!(
+                "api.projection.cache_ttl_ms must be a positive integer"
+            ));
+        }
     }
     Ok(())
 }

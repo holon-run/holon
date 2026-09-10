@@ -13,8 +13,9 @@ use tokio::{
 
 use crate::diagnostics;
 
-const DEFAULT_MAX_LEADERS: usize = 4;
-const DEFAULT_TTL: Duration = Duration::from_millis(250);
+const DEFAULT_MAX_LEADERS: usize = crate::config::DEFAULT_API_PROJECTION_MAX_LEADERS as usize;
+const DEFAULT_TTL: Duration =
+    Duration::from_millis(crate::config::DEFAULT_API_PROJECTION_CACHE_TTL_MS);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum ProjectionKey {

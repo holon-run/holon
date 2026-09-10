@@ -299,7 +299,11 @@ impl AppState {
         let jobs = JobRegistry::default();
         let skill_library_write_jobs = Arc::new(tokio::sync::Semaphore::new(1));
         let template_remote_source_sync_jobs = Arc::new(tokio::sync::Semaphore::new(1));
-        let projection_gate = Arc::new(ProjectionGate::default());
+        let projection_config = host.config().api_projection.clone();
+        let projection_gate = Arc::new(ProjectionGate::new(
+            projection_config.max_leaders(),
+            Duration::from_millis(projection_config.cache_ttl_ms()),
+        ));
         Self {
             host,
             require_control_token,
@@ -329,7 +333,11 @@ impl AppState {
         let jobs = JobRegistry::default();
         let skill_library_write_jobs = Arc::new(tokio::sync::Semaphore::new(1));
         let template_remote_source_sync_jobs = Arc::new(tokio::sync::Semaphore::new(1));
-        let projection_gate = Arc::new(ProjectionGate::default());
+        let projection_config = host.config().api_projection.clone();
+        let projection_gate = Arc::new(ProjectionGate::new(
+            projection_config.max_leaders(),
+            Duration::from_millis(projection_config.cache_ttl_ms()),
+        ));
         Self {
             host,
             require_control_token: false,
