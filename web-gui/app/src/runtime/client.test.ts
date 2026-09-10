@@ -18,10 +18,6 @@ function agentStateFixture(agentId: string): components["schemas"]["AgentStateSn
     agent: {
       identity: {
         agent_id: agentId,
-        kind: "named",
-        visibility: "public",
-        ownership: "self_owned",
-        profile_preset: "public_named",
         status: "active",
         is_default_agent: false,
         incarnation: 1,
@@ -416,7 +412,7 @@ describe("createRuntimeClient", () => {
     await expect(client.getAgentState("agent-one")).resolves.toEqual(
       expect.objectContaining({
         id: "agent-one",
-        profile: "public · self_owned · public_named",
+        profile: "public",
       }),
     );
     expect(seen).toEqual(["http://example.test:7878/api/agents/agent-one/state"]);

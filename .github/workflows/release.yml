@@ -328,18 +328,18 @@ jobs:
         run: |
           set -euo pipefail
           cat > release-notes.md <<EOF
-          This release introduces the canonical Agent identity and invocation model, including named Agent creation, Agent tree and detail APIs, native CreateAgent and InvokeAgent tools, reliable Agent messaging, and a restart-safe migration bridge that backfills legacy Agent metadata without rebuilding Agent state.
+          This release completes the current Agent identity model with canonical detail, rename, recreation, and incarnation-aware surfaces, removes the legacy identity compatibility model after its migration window, and strengthens long-lived Agent lifecycle, delivery, history, workspace, and Web GUI behavior.
 
           Supported binary assets for this release are Linux amd64, macOS amd64, and macOS arm64. The macOS app DMG is a universal binary supporting both x86_64 and arm64. The Linux amd64 binary supports Ubuntu 22.04 or newer (glibc 2.35 or newer).
 
           ## Changes
 
-          - Add canonical Agent names, detail and tree APIs, duplicate-name protection, and typed name errors ([#2796](https://github.com/holon-run/holon/pull/2796), [#2801](https://github.com/holon-run/holon/pull/2801), [#2802](https://github.com/holon-run/holon/pull/2802), [#2813](https://github.com/holon-run/holon/pull/2813)).
-          - Centralize Agent creation and invocation, add reconciliation, and expose native CreateAgent and InvokeAgent tools ([#2799](https://github.com/holon-run/holon/pull/2799), [#2804](https://github.com/holon-run/holon/pull/2804), [#2815](https://github.com/holon-run/holon/pull/2815), [#2824](https://github.com/holon-run/holon/pull/2824)).
-          - Persist canonical Agent relations and policies, switch new writes to the canonical model, and add restart-safe dry-run/apply/retry backfill for legacy Agent metadata ([#2812](https://github.com/holon-run/holon/pull/2812), [#2825](https://github.com/holon-run/holon/pull/2825)).
-          - Add reliable Agent message delivery with durable ledger-backed retry and recovery behavior ([#2822](https://github.com/holon-run/holon/pull/2822)).
-          - Improve provider and transport reliability, including request-send disconnect retries, partial Ollama discovery tolerance, browser-compatible WebFetch headers and TLS fingerprinting, and raw workspace file streaming ([#2816](https://github.com/holon-run/holon/pull/2816), [#2818](https://github.com/holon-run/holon/pull/2818), [#2821](https://github.com/holon-run/holon/pull/2821), [#2823](https://github.com/holon-run/holon/pull/2823), [#2826](https://github.com/holon-run/holon/pull/2826)).
-          - Add Holon operations, server operations, and office assistant templates, plus multilingual documentation and web file-browser improvements ([#2805](https://github.com/holon-run/holon/pull/2805), [#2807](https://github.com/holon-run/holon/pull/2807), [#2808](https://github.com/holon-run/holon/pull/2808), [#2814](https://github.com/holon-run/holon/pull/2814), [#2817](https://github.com/holon-run/holon/pull/2817), [#2820](https://github.com/holon-run/holon/pull/2820)).
+          - Add canonical Agent detail and rename surfaces across HTTP, CLI, native tools, and the Web GUI ([#2842](https://github.com/holon-run/holon/pull/2842), [#2843](https://github.com/holon-run/holon/pull/2843), [#2844](https://github.com/holon-run/holon/pull/2844), [#2846](https://github.com/holon-run/holon/pull/2846)).
+          - Make fully deleted Agent IDs safely recreatable as new incarnations and expose incarnation state in the Web GUI ([#2851](https://github.com/holon-run/holon/pull/2851), [#2855](https://github.com/holon-run/holon/pull/2855)).
+          - Remove the legacy Agent identity model after the v0.38.0 migration bridge, while retaining stable upgrade and typed-error boundaries ([#2856](https://github.com/holon-run/holon/pull/2856)).
+          - Strengthen Agent and WorkItem lifecycle behavior with pre-delivery turn sampling, deeper WorkItem-scoped history, and detached WorkItem completion support ([#2845](https://github.com/holon-run/holon/pull/2845), [#2848](https://github.com/holon-run/holon/pull/2848), [#2854](https://github.com/holon-run/holon/pull/2854)).
+          - Harden Agent workspace handling by rejecting symlinked homes during deletion and initializing an explicit agent-local temporary directory ([#2839](https://github.com/holon-run/holon/pull/2839), [#2849](https://github.com/holon-run/holon/pull/2849)).
+          - Return canonical workspace URIs from ViewImage for Web GUI consumption and add crates.io publishing to the release pipeline ([#2836](https://github.com/holon-run/holon/pull/2836), [#2853](https://github.com/holon-run/holon/pull/2853)).
 
           ## Install
 

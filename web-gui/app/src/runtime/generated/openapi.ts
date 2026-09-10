@@ -2260,19 +2260,11 @@ export interface components {
                  */
                 incarnation: number;
                 is_default_agent: boolean;
-                /** @enum {string} */
-                kind: "default" | "named" | "child";
                 lineage_parent_agent_id?: string | null;
                 name?: string | null;
-                /** @enum {string} */
-                ownership: "parent_supervised" | "self_owned";
                 parent_agent_id?: string | null;
                 /** @enum {string} */
-                profile_preset: "private_child" | "public_named";
-                /** @enum {string} */
                 status: "active" | "deleting" | "deleted";
-                /** @enum {string} */
-                visibility: "public" | "private";
             };
             job: {
                 agent_id: string;
@@ -2311,19 +2303,11 @@ export interface components {
                  */
                 incarnation: number;
                 is_default_agent: boolean;
-                /** @enum {string} */
-                kind: "default" | "named" | "child";
                 lineage_parent_agent_id?: string | null;
                 name?: string | null;
-                /** @enum {string} */
-                ownership: "parent_supervised" | "self_owned";
                 parent_agent_id?: string | null;
                 /** @enum {string} */
-                profile_preset: "private_child" | "public_named";
-                /** @enum {string} */
                 status: "active" | "deleting" | "deleted";
-                /** @enum {string} */
-                visibility: "public" | "private";
             };
             job?: {
                 agent_id: string;
@@ -2552,19 +2536,11 @@ export interface components {
                  */
                 incarnation: number;
                 is_default_agent: boolean;
-                /** @enum {string} */
-                kind: "default" | "named" | "child";
                 lineage_parent_agent_id?: string | null;
                 name?: string | null;
-                /** @enum {string} */
-                ownership: "parent_supervised" | "self_owned";
                 parent_agent_id?: string | null;
                 /** @enum {string} */
-                profile_preset: "private_child" | "public_named";
-                /** @enum {string} */
                 status: "active" | "deleting" | "deleted";
-                /** @enum {string} */
-                visibility: "public" | "private";
             };
             lineage_children?: {
                 child_agent_id: string;
@@ -2661,19 +2637,11 @@ export interface components {
                          */
                         incarnation: number;
                         is_default_agent: boolean;
-                        /** @enum {string} */
-                        kind: "default" | "named" | "child";
                         lineage_parent_agent_id?: string | null;
                         name?: string | null;
-                        /** @enum {string} */
-                        ownership: "parent_supervised" | "self_owned";
                         parent_agent_id?: string | null;
                         /** @enum {string} */
-                        profile_preset: "private_child" | "public_named";
-                        /** @enum {string} */
                         status: "active" | "deleting" | "deleted";
-                        /** @enum {string} */
-                        visibility: "public" | "private";
                     };
                     observability: {
                         /** @enum {string|null} */
@@ -2830,19 +2798,11 @@ export interface components {
                      */
                     incarnation: number;
                     is_default_agent: boolean;
-                    /** @enum {string} */
-                    kind: "default" | "named" | "child";
                     lineage_parent_agent_id?: string | null;
                     name?: string | null;
-                    /** @enum {string} */
-                    ownership: "parent_supervised" | "self_owned";
                     parent_agent_id?: string | null;
                     /** @enum {string} */
-                    profile_preset: "private_child" | "public_named";
-                    /** @enum {string} */
                     status: "active" | "deleting" | "deleted";
-                    /** @enum {string} */
-                    visibility: "public" | "private";
                 };
                 /**
                  * @default {
@@ -3095,19 +3055,11 @@ export interface components {
                      */
                     incarnation: number;
                     is_default_agent: boolean;
-                    /** @enum {string} */
-                    kind: "default" | "named" | "child";
                     lineage_parent_agent_id?: string | null;
                     name?: string | null;
-                    /** @enum {string} */
-                    ownership: "parent_supervised" | "self_owned";
                     parent_agent_id?: string | null;
                     /** @enum {string} */
-                    profile_preset: "private_child" | "public_named";
-                    /** @enum {string} */
                     status: "active" | "deleting" | "deleted";
-                    /** @enum {string} */
-                    visibility: "public" | "private";
                 };
                 /**
                  * @default {
@@ -3298,19 +3250,11 @@ export interface components {
                          */
                         incarnation: number;
                         is_default_agent: boolean;
-                        /** @enum {string} */
-                        kind: "default" | "named" | "child";
                         lineage_parent_agent_id?: string | null;
                         name?: string | null;
-                        /** @enum {string} */
-                        ownership: "parent_supervised" | "self_owned";
                         parent_agent_id?: string | null;
                         /** @enum {string} */
-                        profile_preset: "private_child" | "public_named";
-                        /** @enum {string} */
                         status: "active" | "deleting" | "deleted";
-                        /** @enum {string} */
-                        visibility: "public" | "private";
                     };
                     /**
                      * @default {
