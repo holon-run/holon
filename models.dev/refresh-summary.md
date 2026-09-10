@@ -1,12 +1,12 @@
 # models.dev refresh summary
 
-- Supplement models: 26 (drafted this run: 0, retained: 26, removed: 0)
+- Supplement models: 27 (drafted this run: 1, retained: 26, removed: 0)
 - Deferred candidates: 167 (not auto-drafted; see below)
 - Mapped providers without auto-supplement (aggregators etc.): 9
 
 ## Auto-drafted supplement models
 
-(none this run)
+- `deepseek/deepseek-flash` — DeepSeek V4.1 Flash (context 1000000, reasoning true, image input true)
 
 ## Deferred (needs human decision or outside policy)
 

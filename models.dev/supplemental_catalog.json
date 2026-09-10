@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "upstream_revision": "90dd03699342814920dd7a03673abceb824aeee30295545d6e2df69074f59cfe",
-  "adapter_version": "0.37.0 (77f9f5d)",
+  "upstream_revision": "3c5f8916577d36d5f794f1e76ee359e6d75ffcd1f682148e0bd2d9bb8cb3f567",
+  "adapter_version": "0.39.0 (dd7beae)",
   "models": [
     {
       "model_ref": "anthropic/claude-fable-5-1",
@@ -58,9 +58,34 @@
       "source": "models_dev_supplement"
     },
     {
+      "model_ref": "deepseek/deepseek-flash",
+      "display_name": "DeepSeek V4.1 Flash",
+      "description": "DeepSeek V4.1 Flash model for reasoning and agentic coding",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 384000,
+      "max_output_tokens_upper_limit": 384000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "high",
+        "max"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
       "model_ref": "deepseek/deepseek-v4-flash-vision-exp",
       "display_name": "DeepSeek V4 Flash Vision Exp",
-      "description": "Experimental multimodal DeepSeek V4 Flash model for image understanding, coding, and agentic work",
+      "description": "DeepSeek V4.1 Flash model for reasoning and agentic coding",
       "context_window_tokens": 1000000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 950000,
