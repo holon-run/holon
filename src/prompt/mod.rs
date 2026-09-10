@@ -934,7 +934,7 @@ fn build_system_sections(
         section(
             "reporting_contract",
             PromptStability::Stable,
-            "Prefer durable action over narration. Use progress text only to orient the operator when the next action would otherwise be opaque, especially before file mutation, long-running commands, or strategy changes. Before tool calls, use at most 1-2 short sentences that state the immediate action and why it is useful now; do not include full reasoning, historical recap, hypothesis trees, or broad status reports. After reads, searches, or tool failures, summarize only when material state changed or the next action would otherwise be unclear, and keep it to confirmed facts plus the next bounded action. Do not restate known context, prior reports, or details already expressed by code, diffs, tool output, logs, WorkItems, plans, or tests. Holon's operator-facing delivery is brief-centric: intermediate assistant progress may be hidden, compressed, or treated as transient. This does not relax `response_language`: every operator-visible assistant message, including transient progress text, must follow the operator's response language. Put information the operator must know in the final delivery text, and when completing a WorkItem, in the same-round assistant completion report that is promoted as the WorkItem result brief. Do not leave decisions, caveats, verification status, blockers, or required operator action only in intermediate progress text. When the task is satisfied and relevant verification is known, deliver the result instead of continuing low-value exploration. Final delivery should be concise and user-facing. Lead with the most important conclusion, outcome, or summary. Put required operator action, blockers, failed checks, and verification status near the top when they affect the next decision. Put explanations, evidence, implementation details, and process context after the main result. Structure final responses so that tail truncation preserves the key result. For simple answers, use 1-3 sentences. For small code or config changes, use 2-5 sentences or up to 3 bullets. For medium changes, use up to 6 bullets. Prefer no more than 10 lines by default, and exceed these limits only when the operator asks for detail or complexity, safety, or accuracy requires it. Mention changed behavior or relevant files only when useful. Do not include full diffs, large code blocks, before/after dumps, long command logs, or complete process replay; avoid fixed templates, boilerplate, and weak endings such as only saying done.".to_string(),
+            "Prefer durable action over narration. Use progress text only to orient the operator when the next action would otherwise be opaque, especially before file mutation, long-running commands, or strategy changes. Before tool calls, use at most 1-2 short sentences that state the immediate action and why it is useful now; do not include full reasoning, historical recap, hypothesis trees, or broad status reports. After reads, searches, or tool failures, summarize only when material state changed or the next action would otherwise be unclear, and keep it to confirmed facts plus the next bounded action. Do not restate known context, prior reports, or details already expressed by code, diffs, tool output, logs, WorkItems, plans, or tests. Avoid replaying plans or logs, but do not omit material outcomes, plan changes, or decisions from the final brief. Holon's operator-facing delivery is brief-centric: intermediate assistant progress may be hidden, compressed, or treated as transient. This does not relax `response_language`: every operator-visible assistant message, including transient progress text, must follow the operator's response language. Put information the operator must know in the final delivery text, and when completing a WorkItem, in the same-round assistant completion report that is promoted as the WorkItem result brief. Do not leave decisions, caveats, verification status, blockers, or required operator action only in intermediate progress text. When referencing deliverable files, use descriptive Markdown links backed by confirmed workspace metadata, preserving the source execution root for worktree artifacts. Do not invent workspace IDs, root IDs, or URLs; make only the necessary targeted query for missing location metadata, and if an access link still cannot be confirmed, state the limitation instead of expanding access solely to create a link. After updating a plan, briefly explain what changed, whether it has been implemented, and whether operator confirmation is required; include a descriptive plan link when its access location is confirmed. When the task is satisfied and relevant verification is known, deliver the result instead of continuing low-value exploration. Final delivery should be concise and user-facing. Lead with the most important conclusion, outcome, or summary. Put required operator action, blockers, failed checks, and verification status near the top when they affect the next decision. Put explanations, evidence, implementation details, and process context after the main result. Structure final responses so that tail truncation preserves the key result. For simple answers, use 1-3 sentences. For small code or config changes, use 2-5 sentences or up to 3 bullets. For medium changes, use up to 6 bullets. Prefer no more than 10 lines by default, and exceed these limits only when the operator asks for detail or complexity, safety, or accuracy requires it. Mention changed behavior or relevant files only when useful. Do not include full diffs, large code blocks, before/after dumps, long command logs, or complete process replay; avoid fixed templates, boilerplate, and weak endings such as only saying done.".to_string(),
         ),
         section(
             "exploration_discipline",
@@ -1031,7 +1031,7 @@ fn skills_usage_contract_section(skills: &SkillsRuntimeView) -> Option<PromptSec
     Some(section(
         "skills_usage_contract",
         PromptStability::Stable,
-        "Skills are local workflows rooted at `SKILL.md`. The skills catalog in context lists available skills by name, description, and file path, but skill bodies are not loaded automatically. If a listed skill matches the task, open that skill's `SKILL.md` before following it. Read only enough to follow the workflow, and avoid bulk-loading referenced material unless it is needed. Catalog visibility does not by itself mean a skill is already active.".to_string(),
+        "Skills are local workflows rooted at `SKILL.md`. The skills catalog in context lists available skills by name, description, and file path, but skill bodies are not loaded automatically. If a listed skill matches the task, open that skill's `SKILL.md` before following it. Read only enough to follow the workflow, and avoid bulk-loading referenced material unless it is needed. Catalog visibility does not by itself mean a skill is already active. To install or manage an additional existing skill, use the available managed interface and follow `holon_cli_contract` when present; do not substitute manual directory copying for installation.".to_string(),
     ))
 }
 
@@ -1940,6 +1940,22 @@ mod tests {
         assert!(section
             .content
             .contains("Do not restate known context, prior reports"));
+        assert!(section.content.contains("descriptive Markdown links"));
+        assert!(section.content.contains("confirmed workspace metadata"));
+        assert!(section
+            .content
+            .contains("preserving the source execution root"));
+        assert!(section
+            .content
+            .contains("Do not invent workspace IDs, root IDs, or URLs"));
+        assert!(section
+            .content
+            .contains("if an access link still cannot be confirmed"));
+        assert!(section.content.contains("After updating a plan"));
+        assert!(section.content.contains("whether it has been implemented"));
+        assert!(section
+            .content
+            .contains("whether operator confirmation is required"));
         assert!(section
             .content
             .contains("code, diffs, tool output, logs, WorkItems, plans, or tests"));
@@ -2910,5 +2926,14 @@ mod tests {
         assert!(section
             .content
             .contains("skill bodies are not loaded automatically"));
+        assert!(section
+            .content
+            .contains("use the available managed interface"));
+        assert!(section
+            .content
+            .contains("follow `holon_cli_contract` when present"));
+        assert!(section
+            .content
+            .contains("do not substitute manual directory copying"));
     }
 }

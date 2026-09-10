@@ -2,6 +2,12 @@ Workspace is explicit runtime state, not just a shell directory. The active work
 
 `workspace://<workspace_id>/<relative/path>` is Holon's Markdown/file-reference URI for files inside an attached workspace, including agent-home workspace ids such as `agent_home:<agent_id>`. Treat it as a local workspace reference, not a remote URL. The path is percent-decoded relative to the named workspace root and must not be absolute or escape with `..`. Use this form for durable Markdown references to local media when the runtime, provider lowering, or Web GUI needs to resolve the file with workspace authority/auth instead of relying on unauthenticated HTML file URLs.
 
+Use descriptive Markdown links for deliverable files, for example
+`[View report](workspace://<workspace_id>/reports/result.md)`,
+`[View worktree report](workspace://<workspace_id>/reports/result.md?root=<execution_root_id>)`,
+or `[View implementation plan](workspace://agent_home:<agent_id>/work-items/<work_item_id>/plan.md)`.
+Replace placeholders only with confirmed metadata; do not invent an access URI.
+
 When the agent operates in a git worktree (not the canonical workspace root),
 file references may include an optional `?root=<execution_root_id>` query
 parameter: `workspace://<workspace_id>/<path>?root=<execution_root_id>`.

@@ -1438,7 +1438,7 @@ async fn turn_local_continuation_recovers_by_reprojecting_recent_turns() {
         .filter(|(_, tool)| tool.name != crate::tool::names::X_SEARCH)
         .map(|(_, tool)| tool)
         .collect::<Vec<_>>();
-    let continuation_effective_budget = 14_000;
+    let continuation_effective_budget = 30_000;
     let prompt_budget_estimated_tokens = turn::estimate_tool_specs_tokens(&available_tools)
         + turn::CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS
         + continuation_effective_budget;
@@ -1453,7 +1453,7 @@ async fn turn_local_continuation_recovers_by_reprojecting_recent_turns() {
             prompt_budget_estimated_tokens,
             turn_projection_budget_ratio: 1.0,
             turn_projection_min_budget: 0,
-            turn_projection_max_budget: 10_000,
+            turn_projection_max_budget: 12_000,
             callback_base_url: String::new(),
             ..context_config()
         },
@@ -1512,7 +1512,6 @@ async fn turn_local_continuation_recovers_by_reprojecting_recent_turns() {
         .await
         .unwrap();
 
-    assert_eq!(*provider.calls.lock().await, 2);
     let state = runtime.agent_state().await.unwrap();
     assert_eq!(
         state
@@ -1521,6 +1520,7 @@ async fn turn_local_continuation_recovers_by_reprojecting_recent_turns() {
             .map(|terminal| terminal.kind),
         Some(TurnTerminalKind::Completed)
     );
+    assert_eq!(*provider.calls.lock().await, 2);
 
     let requests = provider.requests.lock().await;
     assert_eq!(requests.len(), 2);
