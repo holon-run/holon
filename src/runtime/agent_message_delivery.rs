@@ -147,6 +147,7 @@ impl AgentMessageDeliveryService<'_> {
                 principal_id: Some(principal_id),
                 route: caller.route,
                 matched_rule_index: None,
+                derived_grant: None,
             },
             rejection_code: None,
             retryable: false,

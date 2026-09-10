@@ -315,6 +315,7 @@ agent. The first implementation is deny-by-default and evaluates these grants:
 
 - authenticated operator control;
 - supervising parent;
+- peer invocation of active persistent independent agents;
 - explicitly authorized peer agents;
 - external ingress bindings; and
 - future scoped runtime capabilities.
@@ -331,7 +332,8 @@ The initial send policy is:
 | authenticated operator control with `agent.message.send` scope | allow unless an applicable explicit deny exists |
 | active supervising parent using the supervision follow-up route | allow while that supervision remains active |
 | lineage parent without active supervision | deny unless an explicit scoped allow exists |
-| peer agent | deny unless an explicit scoped allow exists |
+| peer agent using the `agent_invocation` route to an active persistent independent target | allow unless an applicable explicit rule overrides it |
+| any other peer-agent message | deny unless an explicit scoped allow exists |
 | configured external ingress binding | allow only within that binding's target and content scope |
 | any other caller | deny |
 
@@ -378,9 +380,10 @@ The ordinary tree hides `Deleted` identities. Historical lineage, task
 evidence, deletion jobs, and tombstones remain queryable through their
 authorized historical surfaces.
 
-Operator visibility does not imply peer visibility. An agent must not gain the
-ability to enumerate or message every tree node merely because the operator can
-see it.
+Operator visibility does not imply peer visibility. The narrow peer invocation
+grant is derived from canonical `persistent + independent` lifecycle facts, not
+from tree visibility, and does not grant peer enumeration or other message
+routes.
 
 ## 4. Operator Interaction With Subagents
 
@@ -562,7 +565,7 @@ The service evaluates one request in this order:
 4. begin the atomic admission transaction and read and fence the target
    identity lifecycle;
 5. authorize message admission under relation and message policy from the same
-   transaction snapshot;
+   transaction snapshot, recording any derived grant in admission evidence;
 6. atomically create or reuse the delivery and queue record;
 7. commit the admission transaction; and
 8. trigger post-commit scheduler reconciliation.
@@ -1056,8 +1059,8 @@ not be combined with first introducing the replacement state.
 - retryable stopped/queue-unavailable rejection can succeed later with the same
   key, while a response-lost committed admission still replays one delivery;
 - authenticated operator control, active supervision, lineage-only parent,
-  explicitly authorized peer, external binding, and unknown caller follow the
-  initial authorization matrix;
+  persistent independent peer invocation, explicitly authorized peer, external
+  binding, and unknown caller follow the initial authorization matrix;
 - an applicable explicit deny overrides an allow and supervision close removes
   the derived parent grant; when detach is implemented, lifecycle detach does
   not recreate it;

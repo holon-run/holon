@@ -5317,10 +5317,9 @@ mod tests {
         storage::AppStorage,
         system::WorkspaceProjectionKind,
         types::{
-            AgentDeletionPhase, AgentDeletionStatus, AgentKind, AgentMessagePolicyRecord,
-            AgentMessagePolicyRule, AgentMessagePrincipalKind, AgentOwnership, AgentPolicyEffect,
-            AgentProfilePreset, AgentRegistryStatus, AgentStatus, AgentVisibility, AuthorityClass,
-            BriefKind, BriefRecord, ChildAgentWorkspaceMode, ControlAction, DeliverySummaryRecord,
+            AgentDeletionPhase, AgentDeletionStatus, AgentKind, AgentOwnership, AgentProfilePreset,
+            AgentRegistryStatus, AgentStatus, AgentVisibility, AuthorityClass, BriefKind,
+            BriefRecord, ChildAgentWorkspaceMode, ControlAction, DeliverySummaryRecord,
             InvokeAgentRequest, InvokeAgentTarget, MessageBody, MessageEnvelope, MessageKind,
             MessageOrigin, Priority, QueueEntryRecord, QueueEntryStatus, TaskRecord,
             TaskRecoverySpec, TaskStatus, TurnTerminalKind, WaitConditionKind, WaitConditionRecord,
@@ -6647,26 +6646,6 @@ mod tests {
             })
             .await
             .unwrap();
-        let identity = host
-            .agent_identity_record("canonical-existing")
-            .unwrap()
-            .unwrap();
-        host.runtime_db()
-            .agent_canonical_relations()
-            .upsert_message_policy(&AgentMessagePolicyRecord {
-                agent_id: identity.agent_id.clone(),
-                revision: 1,
-                default_effect: AgentPolicyEffect::Deny,
-                rules: vec![AgentMessagePolicyRule {
-                    principal_kind: AgentMessagePrincipalKind::PeerAgent,
-                    principal_id: Some(parent_agent_id),
-                    route: Some("agent_invocation".into()),
-                    effect: AgentPolicyEffect::Allow,
-                }],
-                created_at: identity.created_at,
-            })
-            .unwrap();
-
         let target = host.get_public_agent("canonical-existing").await.unwrap();
         let before_summary = target.agent_summary().await.unwrap();
         let before_relations = host

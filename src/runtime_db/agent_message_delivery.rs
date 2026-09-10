@@ -8,10 +8,11 @@ use crate::{
     runtime_db::agent_relations::canonical_relations_from_connection,
     runtime_db::AgentMessageDeliveryRepository,
     types::{
-        AgentIdentityLifecycle, AgentIdentityRecord, AgentMessageAdmissionEvidence,
-        AgentMessageDeliveryError, AgentMessageDeliveryOutcome, AgentMessageDeliveryReceipt,
-        AgentMessageDeliveryRecord, AgentMessageDeliveryRejectionCode, AgentMessageDeliveryState,
-        AgentPolicyEffect, AgentRegistryStatus, AgentState, AgentStatus,
+        AgentCanonicalDurability, AgentIdentityLifecycle, AgentIdentityRecord,
+        AgentLifecycleAttachment, AgentMessageAdmissionEvidence, AgentMessageDeliveryError,
+        AgentMessageDeliveryOutcome, AgentMessageDeliveryReceipt, AgentMessageDeliveryRecord,
+        AgentMessageDeliveryRejectionCode, AgentMessageDeliveryState, AgentMessageDerivedGrant,
+        AgentMessagePrincipalKind, AgentPolicyEffect, AgentRegistryStatus, AgentState, AgentStatus,
     },
 };
 
@@ -217,8 +218,29 @@ pub(crate) fn prepare_delivery_admission_tx(
                     .is_none_or(|expected| expected == candidate.caller.route)
         })
     });
+    let derived_grant = matched_rule.is_none()
+        && identity
+            .as_ref()
+            .is_some_and(|identity| identity.status == AgentRegistryStatus::Active)
+        && candidate.caller.principal_kind == AgentMessagePrincipalKind::PeerAgent
+        && candidate.caller.route == "agent_invocation"
+        && relations.as_ref().is_some_and(|relations| {
+            relations
+                .durability
+                .as_ref()
+                .is_some_and(|record| record.durability == AgentCanonicalDurability::Persistent)
+                && relations
+                    .lifecycle_attachment
+                    .as_ref()
+                    .is_some_and(|record| {
+                        record.attachment == AgentLifecycleAttachment::Independent
+                    })
+        });
     let allowed = matched_rule.map_or_else(
-        || policy.is_some_and(|policy| policy.default_effect == AgentPolicyEffect::Allow),
+        || {
+            derived_grant
+                || policy.is_some_and(|policy| policy.default_effect == AgentPolicyEffect::Allow)
+        },
         |(_, rule)| rule.effect == AgentPolicyEffect::Allow,
     );
     let evidence = AgentMessageAdmissionEvidence {
@@ -237,6 +259,8 @@ pub(crate) fn prepare_delivery_admission_tx(
         principal_id: Some(principal_id.to_string()),
         route: candidate.caller.route.clone(),
         matched_rule_index: matched_rule.map(|(index, _)| index),
+        derived_grant: derived_grant
+            .then_some(AgentMessageDerivedGrant::PersistentIndependentPeerInvocation),
     };
     let rejection = match identity.as_ref().map(|identity| identity.status) {
         None => Some((
@@ -542,11 +566,14 @@ mod tests {
             RuntimeDb,
         },
         types::{
-            AdmissionContext, AgentKind, AgentMessageCallerContext, AgentMessageDeliveryError,
-            AgentMessageDeliveryOutcome, AgentMessageDeliveryRejectionCode,
-            AgentMessagePrincipalKind, AgentMessageSendRequest, AgentOwnership, AgentProfilePreset,
-            AgentState, AgentStatus, AgentVisibility, AuthorityClass, MessageBody,
-            MessageDeliverySurface, MessageOrigin, Priority, QueueEntryRecord, QueueEntryStatus,
+            AdmissionContext, AgentCanonicalDurability, AgentDurabilityRecord, AgentKind,
+            AgentLifecycleAttachment, AgentLifecycleAttachmentRecord, AgentMessageCallerContext,
+            AgentMessageDeliveryError, AgentMessageDeliveryOutcome,
+            AgentMessageDeliveryRejectionCode, AgentMessageDerivedGrant, AgentMessagePolicyRecord,
+            AgentMessagePolicyRule, AgentMessagePrincipalKind, AgentMessageSendRequest,
+            AgentOwnership, AgentPolicyEffect, AgentProfilePreset, AgentState, AgentStatus,
+            AgentVisibility, AuthorityClass, MessageBody, MessageDeliverySurface, MessageOrigin,
+            Priority, QueueEntryRecord, QueueEntryStatus,
         },
     };
     use tempfile::TempDir;
@@ -593,6 +620,24 @@ mod tests {
         }
     }
 
+    fn peer_caller() -> AgentMessageCallerContext {
+        AgentMessageCallerContext {
+            caller_principal: "agent:caller-agent".into(),
+            caller_agent_id: Some("caller-agent".into()),
+            principal_kind: AgentMessagePrincipalKind::PeerAgent,
+            route: "agent_invocation".into(),
+            origin: MessageOrigin::Task {
+                task_id: "task-peer-delivery".into(),
+            },
+            authority_class: AuthorityClass::ExternalEvidence,
+            delivery_surface: MessageDeliverySurface::RuntimeSystem,
+            admission_context: AdmissionContext::RuntimeOwned,
+            current_turn_id: Some("turn-peer-delivery".into()),
+            current_task_id: Some("task-peer-delivery".into()),
+            current_work_item_id: Some("work-peer-delivery".into()),
+        }
+    }
+
     fn request(key: &str, text: &str) -> AgentMessageSendRequest {
         AgentMessageSendRequest {
             target_agent_id: "target-agent".into(),
@@ -606,6 +651,13 @@ mod tests {
 
     fn prepare(key: &str, text: &str) -> Result<crate::runtime::PreparedAgentMessageDelivery> {
         AgentMessageDeliveryService::prepare(request(key, text), caller())
+    }
+
+    fn prepare_from_peer(
+        key: &str,
+        text: &str,
+    ) -> Result<crate::runtime::PreparedAgentMessageDelivery> {
+        AgentMessageDeliveryService::prepare(request(key, text), peer_caller())
     }
 
     fn admission_command(
@@ -750,6 +802,126 @@ mod tests {
             receipt.correlation_id.as_deref(),
             Some("correlation-delivery")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn persistent_independent_peer_invocation_uses_auditable_derived_grant() -> Result<()> {
+        let (dir, db) = runtime_db()?;
+        seed_target(&db, AgentStatus::AwakeIdle)?;
+        let prepared = prepare_from_peer("peer-default", "delegate work")?;
+        let accepted = db.transitions().commit_delivery_admission(
+            &admission_command(&prepared),
+            None,
+            &prepared.record,
+        )?;
+        let delivery_id = accepted
+            .delivery_receipt
+            .context("missing accepted peer receipt")?
+            .delivery_id;
+        let stored = db
+            .agent_message_deliveries()
+            .latest(&delivery_id)?
+            .context("missing peer delivery")?;
+        assert_eq!(stored.outcome, AgentMessageDeliveryOutcome::Accepted);
+        assert_eq!(stored.admission_evidence.matched_rule_index, None);
+        assert_eq!(
+            stored.admission_evidence.derived_grant,
+            Some(AgentMessageDerivedGrant::PersistentIndependentPeerInvocation)
+        );
+
+        let database_path = dir.path().join("state/runtime.sqlite");
+        let lock_path = dir.path().join("state/runtime.lock");
+        drop(db);
+        let reopened = RuntimeDb::open_and_migrate(database_path, lock_path)?;
+        assert_eq!(
+            reopened
+                .agent_message_deliveries()
+                .latest(&delivery_id)?
+                .context("peer delivery did not survive restart")?
+                .admission_evidence
+                .derived_grant,
+            Some(AgentMessageDerivedGrant::PersistentIndependentPeerInvocation)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_peer_deny_overrides_the_derived_grant() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        seed_target(&db, AgentStatus::AwakeIdle)?;
+        let identity = db
+            .agent_identities()
+            .latest("target-agent")?
+            .context("missing target identity")?;
+        db.agent_canonical_relations()
+            .upsert_message_policy(&AgentMessagePolicyRecord {
+                agent_id: identity.agent_id,
+                revision: 1,
+                default_effect: AgentPolicyEffect::Deny,
+                rules: vec![AgentMessagePolicyRule {
+                    principal_kind: AgentMessagePrincipalKind::PeerAgent,
+                    principal_id: Some("caller-agent".into()),
+                    route: Some("agent_invocation".into()),
+                    effect: AgentPolicyEffect::Deny,
+                }],
+                created_at: identity.created_at,
+            })?;
+
+        let prepared = prepare_from_peer("peer-deny", "delegate work")?;
+        let rejected = db
+            .agent_message_deliveries()
+            .admit_without_queue(&prepared.record)?;
+        assert_eq!(
+            rejected.rejection_code,
+            Some(AgentMessageDeliveryRejectionCode::MessageNotAuthorized)
+        );
+        let stored = db
+            .agent_message_deliveries()
+            .latest(&rejected.delivery_id)?
+            .context("missing rejected peer delivery")?;
+        assert_eq!(stored.admission_evidence.matched_rule_index, Some(0));
+        assert_eq!(stored.admission_evidence.derived_grant, None);
+        Ok(())
+    }
+
+    #[test]
+    fn ephemeral_independent_target_has_no_peer_invocation_default() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        seed_target(&db, AgentStatus::AwakeIdle)?;
+        let identity = db
+            .agent_identities()
+            .latest("target-agent")?
+            .context("missing target identity")?;
+        db.agent_canonical_relations()
+            .upsert_durability(&AgentDurabilityRecord {
+                agent_id: identity.agent_id.clone(),
+                durability: AgentCanonicalDurability::Ephemeral,
+                revision: 1,
+                created_at: identity.created_at,
+            })?;
+        db.agent_canonical_relations().upsert_lifecycle_attachment(
+            &AgentLifecycleAttachmentRecord {
+                agent_id: identity.agent_id,
+                attachment: AgentLifecycleAttachment::Independent,
+                revision: 1,
+                created_at: identity.created_at,
+            },
+        )?;
+
+        let prepared = prepare_from_peer("peer-ephemeral", "delegate work")?;
+        let rejected = db
+            .agent_message_deliveries()
+            .admit_without_queue(&prepared.record)?;
+        assert_eq!(
+            rejected.rejection_code,
+            Some(AgentMessageDeliveryRejectionCode::MessageNotAuthorized)
+        );
+        let stored = db
+            .agent_message_deliveries()
+            .latest(&rejected.delivery_id)?
+            .context("missing ephemeral rejection")?;
+        assert_eq!(stored.admission_evidence.derived_grant, None);
         Ok(())
     }
 
