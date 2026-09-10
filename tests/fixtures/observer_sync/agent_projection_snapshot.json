@@ -11,6 +11,7 @@
     "agent": {
       "identity": {
         "agent_id": "worker-a",
+        "can_rename": false,
         "status": "active",
         "is_default_agent": false,
         "incarnation": 1

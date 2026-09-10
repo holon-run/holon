@@ -8,6 +8,7 @@
       "agent": {
         "identity": {
           "agent_id": "worker-a",
+          "can_rename": false,
           "status": "active",
           "is_default_agent": false,
           "incarnation": 1
@@ -43,6 +44,7 @@
       "agent": {
         "identity": {
           "agent_id": "worker-b",
+          "can_rename": false,
           "status": "active",
           "is_default_agent": false,
           "incarnation": 1

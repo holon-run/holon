@@ -728,6 +728,11 @@
                 "agent_id": {
                   "type": "string"
                 },
+                "can_rename": {
+                  "default": false,
+                  "description": "True when this identity satisfies the backend rename guard (public,\n self-owned, not the configured default agent). UI surfaces use this to\n show the rename entry point; the rename endpoint stays authoritative.",
+                  "type": "boolean"
+                },
                 "delegated_from_task_id": {
                   "type": [
                     "string",
