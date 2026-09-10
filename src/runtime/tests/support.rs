@@ -1169,7 +1169,7 @@ impl AgentProvider for RecentTurnsRecoveryProbeProvider {
                     id: "exec-recent-turns-recovery".into(),
                     name: "ExecCommand".into(),
                     input: serde_json::json!({
-                        "cmd": "printf 'recent-turns-recovery:'; awk 'BEGIN { for (i = 0; i < 8000; i++) printf \"x \" }'"
+                        "cmd": "printf 'recent-turns-recovery:'; awk 'BEGIN { for (i = 0; i < 1000; i++) printf \"x \" }'"
                     }),
                     kind: crate::provider::ModelToolCallKind::Function,
                 }],

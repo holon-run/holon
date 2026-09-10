@@ -1428,20 +1428,6 @@ async fn turn_local_continuation_recovers_by_reprojecting_recent_turns() {
         calls: Mutex::new(0),
         requests: Mutex::new(Vec::new()),
     });
-    let available_tools = crate::tool::ToolRegistry::new(workspace.path().to_path_buf())
-        .tool_specs_with_families()
-        .unwrap()
-        .into_iter()
-        .filter(|(family, _)| {
-            AgentProfilePreset::PublicNamed.allows_tool_capability_family(*family)
-        })
-        .filter(|(_, tool)| tool.name != crate::tool::names::X_SEARCH)
-        .map(|(_, tool)| tool)
-        .collect::<Vec<_>>();
-    let continuation_effective_budget = 30_000;
-    let prompt_budget_estimated_tokens = turn::estimate_tool_specs_tokens(&available_tools)
-        + turn::CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS
-        + continuation_effective_budget;
     let runtime = RuntimeHandle::new(
         "default",
         dir.path().to_path_buf(),
@@ -1450,7 +1436,8 @@ async fn turn_local_continuation_recovers_by_reprojecting_recent_turns() {
         provider.clone(),
         "default".into(),
         ContextConfig {
-            prompt_budget_estimated_tokens,
+            // Assemble history independently of the continuation budget calibrated below.
+            prompt_budget_estimated_tokens: 128_000,
             turn_projection_budget_ratio: 1.0,
             turn_projection_min_budget: 0,
             turn_projection_max_budget: 12_000,
@@ -1460,6 +1447,8 @@ async fn turn_local_continuation_recovers_by_reprojecting_recent_turns() {
     )
     .unwrap();
 
+    let identity = runtime.agent_identity_view().await.unwrap();
+    let (_, available_tools, _, _, _) = runtime.provider_tool_selection(&identity).await.unwrap();
     let mut historical_message = MessageEnvelope::new(
         "default",
         MessageKind::OperatorPrompt,
@@ -1488,23 +1477,49 @@ async fn turn_local_continuation_recovers_by_reprojecting_recent_turns() {
     ));
     runtime.storage().append_turn(&historical_turn).unwrap();
 
-    let current_message = MessageEnvelope::new(
-        "default",
-        MessageKind::OperatorPrompt,
-        MessageOrigin::Operator {
-            actor_id: None,
-            actor_display_name: None,
-        },
-        AuthorityClass::OperatorInstruction,
-        Priority::Normal,
-        MessageBody::Text {
-            text: "continue after the large historical turn".into(),
-        },
+    let prompt = runtime
+        .preview_prompt(
+            "continue after the large historical turn".into(),
+            AuthorityClass::OperatorInstruction,
+        )
+        .await
+        .unwrap();
+    let reduced_prompt = prompt
+        .reproject_recent_turns(runtime.storage(), 0, &available_tools)
+        .expect("fixture must contain removable recent turns");
+    let baseline_tokens = |prompt: &crate::prompt::EffectivePrompt| {
+        let frame = super::super::provider_turn::build_provider_prompt_frame(prompt);
+        frame
+            .system_blocks
+            .iter()
+            .chain(&frame.context_blocks)
+            // Match turn::projection's character-based estimator, not the
+            // byte-based estimator used for initial prompt assembly.
+            .map(|block| block.text.chars().count().saturating_add(3) / 4)
+            .sum::<usize>()
+    };
+    let initial_baseline = baseline_tokens(&prompt);
+    let reduced_baseline = baseline_tokens(&reduced_prompt);
+    // The initial request fits, but the bounded tool output alone exceeds this
+    // headroom. Removing history leaves ample room for the entire exact round.
+    let continuation_effective_budget = initial_baseline + 128;
+    assert!(
+        reduced_baseline + 4096 < continuation_effective_budget,
+        "fixture must leave recovery headroom after removing history"
     );
     runtime
-        .process_interactive_message(
-            &current_message,
-            None,
+        .inner
+        .context_config
+        .write()
+        .await
+        .prompt_budget_estimated_tokens = turn::estimate_tool_specs_tokens(&available_tools)
+        + turn::CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS
+        + continuation_effective_budget;
+    runtime
+        .run_agent_loop(
+            "default",
+            AuthorityClass::OperatorInstruction,
+            prompt,
             LoopControlOptions {
                 max_tool_rounds: None,
             },
@@ -1574,6 +1589,16 @@ async fn turn_local_continuation_recovers_by_reprojecting_recent_turns() {
         .find(|event| event.kind == "turn_local_recent_turns_retry")
         .expect("missing recent-turns recovery event");
     assert_eq!(retry_event.data["attempt"].as_u64(), Some(1));
+    assert_eq!(
+        retry_event.data["reason"].as_str(),
+        Some("minimum_exact_round_unfit")
+    );
+    assert!(
+        retry_event.data["deficit_estimated_tokens"]
+            .as_u64()
+            .unwrap_or_default()
+            > 0
+    );
     assert!(
         retry_event.data["next_recent_turns_budget"]
             .as_u64()
