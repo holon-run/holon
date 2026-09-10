@@ -1284,6 +1284,24 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       }
       return { messageId: response.message_id };
     },
+    async abortCurrentRun(agentId: string, runId: string): Promise<void> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      await postJson<unknown>(
+        fetchImpl,
+        baseUrl,
+        `/control/agents/${encodeURIComponent(agentId)}/current-run/abort`,
+        {
+          // Turn-scoped interrupt: the agent stays schedulable so the next
+          // operator prompt does not require a lifecycle start.
+          run_id: runId,
+          mode: "idle_after_abort",
+          authority_class: "operator_instruction",
+        },
+        requestHeaders,
+      );
+    },
     async setAgentModel(agentId: string, model: string, reasoningEffort?: string): Promise<AgentModelStateDto | undefined> {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
@@ -2641,7 +2659,7 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 
-class RuntimeHttpError extends Error {
+export class RuntimeHttpError extends Error {
   readonly status: number;
   readonly code?: string;
   /**

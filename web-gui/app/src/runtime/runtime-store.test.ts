@@ -84,6 +84,7 @@ function sessionState(overrides: Partial<AgentSessionState> = {}): AgentSessionS
     contentStatus: "unknown",
     syncStatus: "idle",
     sendingPrompt: false,
+    abortingRun: false,
     detail: null,
     workItemDetailsById: {},
     taskDetailsById: {},
@@ -119,6 +120,140 @@ describe("sendOperatorPrompt", () => {
     } finally {
       useRuntimeStore.setState(previous, true);
     }
+  });
+});
+
+describe("abortCurrentRun", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function abortFetchMock(handlers: {
+    abort?: (init?: RequestInit) => Response;
+  } = {}) {
+    vi.stubGlobal("window", {
+      localStorage: new MemoryStorage(),
+      sessionStorage: new MemoryStorage(),
+      setTimeout,
+      clearTimeout,
+      location: { hostname: "localhost", protocol: "http:" },
+    });
+    return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/control/agents/agent-a/current-run/abort")) {
+        return handlers.abort
+          ? handlers.abort(init)
+          : jsonResponse({ ok: true, aborted: true });
+      }
+      if (url.endsWith("/handshake")) {
+        return jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES });
+      }
+      if (url.endsWith("/agents/list")) return jsonResponse([]);
+      if (url.endsWith("/agents/snapshot")) {
+        return jsonResponse({
+          contract_version: 1,
+          runtime_id: "runtime-1",
+          event_log_epoch: "epoch-1",
+          visibility_scope_id: "scope-1",
+          agents: [],
+        });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+  }
+
+  it("posts a turn-scoped abort with the current run id", async () => {
+    const bodies: unknown[] = [];
+    const fetchMock = abortFetchMock({
+      abort: (init) => {
+        bodies.push(init?.body ? JSON.parse(String(init.body)) : undefined);
+        return jsonResponse({ ok: true, aborted: true });
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+
+    useRuntimeStore.setState({
+      sessionsByAgentId: { "agent-a": sessionState() },
+    });
+
+    await useRuntimeStore.getState().abortCurrentRun("agent-a", "run-1");
+
+    expect(bodies).toEqual([
+      { run_id: "run-1", mode: "idle_after_abort", authority_class: "operator_instruction" },
+    ]);
+    expect(useRuntimeStore.getState().sessionsByAgentId["agent-a"]).toMatchObject({
+      abortingRun: false,
+      abortError: undefined,
+    });
+  });
+
+  it("treats stale run conflicts as benign convergence instead of an error", async () => {
+    const fetchMock = abortFetchMock({
+      abort: () =>
+        new Response(
+          JSON.stringify({
+            error: "stale run_id run-old; current run is run-new",
+            code: "stale_run_id",
+          }),
+          { status: 409, headers: { "content-type": "application/json" } },
+        ),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+
+    useRuntimeStore.setState({
+      sessionsByAgentId: { "agent-a": sessionState() },
+    });
+
+    await useRuntimeStore.getState().abortCurrentRun("agent-a", "run-old");
+
+    expect(useRuntimeStore.getState().sessionsByAgentId["agent-a"]).toMatchObject({
+      abortingRun: false,
+      abortError: undefined,
+    });
+  });
+
+  it("surfaces abort failures as abortError and rethrows", async () => {
+    const fetchMock = abortFetchMock({
+      abort: () =>
+        new Response(JSON.stringify({ error: "gateway exploded" }), {
+          status: 502,
+          headers: { "content-type": "application/json" },
+        }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+
+    useRuntimeStore.setState({
+      sessionsByAgentId: { "agent-a": sessionState() },
+    });
+
+    await expect(
+      useRuntimeStore.getState().abortCurrentRun("agent-a", "run-1"),
+    ).rejects.toThrow("current-run/abort failed with 502");
+
+    expect(useRuntimeStore.getState().sessionsByAgentId["agent-a"]).toMatchObject({
+      abortingRun: false,
+    });
+    expect(
+      useRuntimeStore.getState().sessionsByAgentId["agent-a"]?.abortError,
+    ).toContain("gateway exploded");
+  });
+
+  it("ignores abort requests without an agent or run id", async () => {
+    const fetchMock = abortFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+
+    await useRuntimeStore.getState().abortCurrentRun(undefined, "run-1");
+    await useRuntimeStore.getState().abortCurrentRun("agent-a", null);
+    await useRuntimeStore.getState().abortCurrentRun("agent-a", undefined);
+
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      expect.stringContaining("current-run/abort"),
+      expect.anything(),
+    );
   });
 });
 
@@ -1169,6 +1304,7 @@ describe("brief projection and hydration", () => {
       contentStatus: "unknown",
       syncStatus: "idle",
       sendingPrompt: false,
+    abortingRun: false,
       detail: null,
       eventsBySeq: {
         23: {

@@ -228,6 +228,7 @@ export function App() {
   const startCodexDeviceLogin = useRuntimeStore((state) => state.startCodexDeviceLogin);
   const clearCodexDeviceLogin = useRuntimeStore((state) => state.clearCodexDeviceLogin);
   const sendOperatorPrompt = useRuntimeStore((state) => state.sendOperatorPrompt);
+  const abortCurrentRun = useRuntimeStore((state) => state.abortCurrentRun);
   const setAgentModel = useRuntimeStore((state) => state.setAgentModel);
   const clearAgentModel = useRuntimeStore((state) => state.clearAgentModel);
   const controlAgent = useRuntimeStore((state) => state.controlAgent);
@@ -719,6 +720,8 @@ export function App() {
             syncStatus={agentSyncStatus}
             displayLevel={effectiveDisplayLevel}
             sendingPrompt={selectedAgentSession?.sendingPrompt ?? false}
+            abortingRun={selectedAgentSession?.abortingRun ?? false}
+            abortError={selectedAgentSession?.abortError}
             promptError={selectedAgentSession?.promptError}
             modelCatalog={modelCatalog}
             modelCatalogLoading={modelCatalogLoading}
@@ -740,6 +743,7 @@ export function App() {
             onLoadOlderEvents={() => loadOlderAgentEvents(activeAgent.id, effectiveDisplayLevel)}
             onRetrySync={() => retryAgentSync(activeAgent.id)}
             onSendPrompt={(text, attachments) => sendOperatorPrompt(activeAgent.id, text, effectiveDisplayLevel, attachments)}
+            onAbortCurrentRun={(runId) => abortCurrentRun(activeAgent.id, runId)}
             onConversationRead={markSelectedAgentConversationRead}
             onOpenInspector={() => {
               showAgentOverview(activeAgent.id);

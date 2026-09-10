@@ -36,6 +36,8 @@ function sessionFor(req, url) {
   if (!session) {
     session = {
       requests: [],
+      abortRequests: [],
+      abortResponse: null,
       globalStreams: new Set(),
       agentStreams: new Set(),
       visibleAgentIds: ["bootstrap-agent"],
@@ -48,6 +50,7 @@ function sessionFor(req, url) {
       eventLogEpoch: "e2e-epoch",
       visibilityScopeId: "e2e-scope",
       oldestRetainedSeqByAgentId: new Map(),
+      currentRunIdByAgentId: new Map(),
       snapshotThroughSeqByAgentId: new Map(),
       projectionLatestBriefByAgentId: new Map(),
     };
@@ -89,7 +92,8 @@ function eventHead(session, agentId) {
   );
 }
 
-function listEntry(agentId) {
+function listEntry(agentId, session) {
+  const currentRunId = session ? (session.currentRunIdByAgentId.get(agentId) ?? null) : null;
   return {
     identity: {
       agent_id: agentId,
@@ -97,29 +101,31 @@ function listEntry(agentId) {
       ownership: "self_owned",
       profile_preset: "public_named",
     },
-    status: "awake_idle",
+    status: currentRunId ? "awake_running" : "awake_idle",
+    current_run_id: currentRunId,
     pending: 0,
   };
 }
 
-function agentState(agentId) {
+function agentState(agentId, session) {
+  const running = Boolean(session?.currentRunIdByAgentId.get(agentId));
   return {
     agent: {
       identity: {
-        ...listEntry(agentId).identity,
+        ...listEntry(agentId, session).identity,
         kind: "named",
         status: "active",
         is_default_agent: false,
       },
       agent: {
         id: agentId,
-        status: "awake_idle",
-        current_run_id: null,
+        status: running ? "awake_running" : "awake_idle",
+        current_run_id: running ? (session.currentRunIdByAgentId.get(agentId) ?? null) : null,
         pending: 0,
         attached_workspaces: [],
         turn_index: 0,
       },
-      scheduling_posture: { posture: "idle", reason: "idle" },
+      scheduling_posture: { posture: running ? "active-turn" : "idle", reason: running ? "model_turn" : "idle" },
       active_task_count: 0,
       lifecycle: { accepts_external_messages: true },
       model: {
@@ -130,7 +136,7 @@ function agentState(agentId) {
       },
       closure: { outcome: "completed", runtime_posture: "awake" },
     },
-    session: { current_run_id: null, pending_count: 0, last_turn: null },
+    session: { current_run_id: running ? (session.currentRunIdByAgentId.get(agentId) ?? null) : null, pending_count: 0, last_turn: null },
     tasks: [],
     timers: [],
     work_items: [],
@@ -146,7 +152,7 @@ function rosterSnapshot(session) {
     event_log_epoch: session.eventLogEpoch,
     visibility_scope_id: session.visibilityScopeId,
     agents: session.visibleAgentIds.map((agentId) => ({
-          agent: listEntry(agentId),
+          agent: listEntry(agentId, session),
           event_window: {
             event_head_seq: eventHead(session, agentId),
             oldest_retained_seq: session.oldestRetainedSeqByAgentId.get(agentId) ?? 0,
@@ -196,7 +202,7 @@ function projectionSnapshot(session, agentId) {
     event_head_seq: eventHead(session, agentId),
     oldest_retained_seq: session.oldestRetainedSeqByAgentId.get(agentId) ?? 0,
     projection: {
-      agent: listEntry(agentId),
+      agent: listEntry(agentId, session),
       conversation: { latest_message_id: null, latest_transcript_entry_id: null },
       current_work_item: null,
       hydration_references: [],
@@ -224,6 +230,7 @@ async function handleControl(req, res, url) {
     const session = sessionFor(req, url);
     json(res, {
       requests: session.requests,
+      abortRequests: session.abortRequests,
       visibleAgentIds: session.visibleAgentIds,
       globalStreamCount: session.globalStreams.size,
       agentStreamCount: session.agentStreams.size,
@@ -268,6 +275,9 @@ async function handleControl(req, res, url) {
     if (Array.isArray(body.blockedBriefIds)) {
       session.blockedBriefIds = new Set(body.blockedBriefIds);
     }
+    if (body.abortResponse && typeof body.abortResponse === "object") {
+      session.abortResponse = body.abortResponse;
+    }
     if (typeof body.runtimeId === "string") session.runtimeId = body.runtimeId;
     if (typeof body.eventLogEpoch === "string") session.eventLogEpoch = body.eventLogEpoch;
     if (typeof body.visibilityScopeId === "string") {
@@ -303,6 +313,17 @@ async function handleControl(req, res, url) {
     if (!events.some((event) => event.event_seq === envelope.event_seq)) {
       events.push(envelope);
       session.eventsByAgentId.set(envelope.agent_id, events);
+    }
+    if (envelope.type === "message_processing_started" && typeof envelope.payload?.run_id === "string") {
+      session.currentRunIdByAgentId.set(envelope.agent_id, envelope.payload.run_id);
+    }
+    if (
+      envelope.type === "turn_terminal"
+      || envelope.type === "turn_terminal_aborted"
+      || envelope.type === "message_processing_aborted"
+      || envelope.type === "runtime_error"
+    ) {
+      session.currentRunIdByAgentId.delete(envelope.agent_id);
     }
     if (body.broadcast !== false) writeEvent(session.globalStreams, envelope);
     json(res, { appended: true });
@@ -357,7 +378,7 @@ async function handleApi(req, res, url) {
     return true;
   }
   if (url.pathname === "/api/agents/list") {
-    json(res, session.visibleAgentIds.map(listEntry));
+    json(res, session.visibleAgentIds.map((agentId) => listEntry(agentId, session)));
     return true;
   }
   if (url.pathname === "/api/agents/snapshot") {
@@ -366,12 +387,33 @@ async function handleApi(req, res, url) {
   }
   const stateMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/state$/);
   if (stateMatch) {
-    json(res, agentState(decodeURIComponent(stateMatch[1])));
+    json(res, agentState(decodeURIComponent(stateMatch[1]), session));
     return true;
   }
   if (url.pathname === "/api/events/stream") {
     session.streamGeneration += 1;
     openEventStream(req, res, session.globalStreams);
+    return true;
+  }
+  const abortMatch = url.pathname.match(
+    /^\/api\/control\/agents\/([^/]+)\/current-run\/abort$/,
+  );
+  if (abortMatch && req.method === "POST") {
+    const body = await requestBody(req);
+    session.abortRequests.push({
+      agentId: decodeURIComponent(abortMatch[1]),
+      body,
+    });
+    const response = session.abortResponse ?? {
+      status: 200,
+      body: { ok: true, aborted: true },
+    };
+    if (!session.abortResponse && session.currentRunIdByAgentId.get(abortMatch[1]) === body.run_id) {
+      // Turn-scoped abort: the run ends and the agent stays schedulable, so
+      // the next roster/state projection no longer reports a current run.
+      session.currentRunIdByAgentId.delete(abortMatch[1]);
+    }
+    json(res, response.body ?? {}, response.status ?? 200);
     return true;
   }
   const projectionMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/projection-snapshot$/);

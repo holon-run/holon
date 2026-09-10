@@ -648,10 +648,11 @@ pub async fn abort_current_run(
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let mode = match request.mode.as_deref().unwrap_or("stop_after_abort") {
         "stop_after_abort" => CurrentRunAbortMode::StopAfterAbort,
+        "idle_after_abort" => CurrentRunAbortMode::IdleAfterAbort,
         "pause_after_abort" => CurrentRunAbortMode::StopAfterAbort,
         other => {
             return Err(bad_request(format!(
-                "unsupported abort mode {other}; expected stop_after_abort or deprecated alias pause_after_abort"
+                "unsupported abort mode {other}; expected stop_after_abort, idle_after_abort, or deprecated alias pause_after_abort"
             )))
         }
     };

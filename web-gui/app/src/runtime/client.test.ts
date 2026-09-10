@@ -850,6 +850,42 @@ describe("createRuntimeClient", () => {
     );
   });
 
+  it("aborts the current run with the run id and turn-scoped mode", async () => {
+    const seen: Array<{ url: string; method: string; body: unknown; authorization?: string }> = [];
+    const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      seen.push({
+        url: `${url.origin}${url.pathname}`,
+        method: String(init?.method ?? "GET"),
+        body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        authorization: init?.headers ? String((init.headers as Record<string, string>).Authorization) : undefined,
+      });
+      return Response.json({ ok: true, aborted: true });
+    };
+
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      token: "secret-token",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    await client.abortCurrentRun("agent one", "run-42");
+
+    expect(seen).toEqual([
+      {
+        url: "http://example.test:7878/api/control/agents/agent%20one/current-run/abort",
+        method: "POST",
+        body: {
+          run_id: "run-42",
+          mode: "idle_after_abort",
+          authority_class: "operator_instruction",
+        },
+        authorization: "Bearer secret-token",
+      },
+    ]);
+  });
+
   it("fetches full tool execution detail for inspector hydration", async () => {
     const seen: string[] = [];
     const fetchImpl = async (input: RequestInfo | URL) => {

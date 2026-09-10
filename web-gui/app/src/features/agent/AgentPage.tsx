@@ -2,6 +2,7 @@ import {
   ArrowUp,
   LoaderCircle,
   Paperclip,
+  Square,
   Unplug,
 } from "lucide-react";
 import {
@@ -39,6 +40,8 @@ interface AgentPageProps {
   syncStatus?: "idle" | "refreshing" | "streaming" | "recovering" | "stale" | "error";
   displayLevel: DisplayLevel;
   sendingPrompt: boolean;
+  abortingRun?: boolean;
+  abortError?: string;
   hasOlderEvents: boolean;
   loadingOlderEvents: boolean;
   promptError?: string;
@@ -59,6 +62,7 @@ interface AgentPageProps {
   onRetrySync: () => void;
   onAcknowledgeTruncation?: () => void;
   onSendPrompt: (text: string, attachments?: OperatorPromptAttachment[]) => Promise<void>;
+  onAbortCurrentRun: (runId: string) => Promise<void>;
   onConversationRead: () => void;
   onOpenInspector: () => void;
   onInspectActivity: (activity: AgentTimelineActivity) => void;
@@ -84,6 +88,22 @@ export function historyLoadDecision(hasHiddenTimelineItems: boolean, hasOlderEve
   if (hasHiddenTimelineItems) return "expand-local";
   if (hasOlderEvents) return "load-network";
   return "none";
+}
+
+export type ComposerPrimaryAction = "send" | "stop-run";
+
+/**
+ * The composer reuses the send button slot: while the agent is executing a
+ * turn and the operator has not typed anything, the button interrupts the
+ * current turn; as soon as a draft exists it becomes the send button again.
+ */
+export function composerPrimaryAction(state: {
+  currentRunId?: string | null;
+  hasDraft: boolean;
+  sendingPrompt: boolean;
+}): ComposerPrimaryAction {
+  if (state.sendingPrompt || state.hasDraft) return "send";
+  return state.currentRunId ? "stop-run" : "send";
 }
 
 export function storedComposerDraftKey(agentId: string): string {
@@ -312,6 +332,8 @@ export function AgentPage({
   syncStatus = "idle",
   displayLevel,
   sendingPrompt,
+  abortingRun = false,
+  abortError,
   hasOlderEvents,
   loadingOlderEvents,
   promptError,
@@ -331,6 +353,7 @@ export function AgentPage({
   onRetrySync,
   onAcknowledgeTruncation,
   onSendPrompt,
+  onAbortCurrentRun,
   onConversationRead,
   onOpenInspector,
   onInspectActivity,
@@ -403,7 +426,14 @@ export function AgentPage({
   const timelineTurns = useMemo(() => groupTimelineTurns(timeline), [timeline]);
   const targetTimelineItemId = useMemo(() => timeline.find((item) => itemHasEventSeq(item, targetEventSeq))?.id, [targetEventSeq, timeline]);
   const trimmedPrompt = prompt.trim();
-  const canSendPrompt = (trimmedPrompt.length > 0 || attachments.length > 0) && !sendingPrompt;
+  const composerHasDraft = trimmedPrompt.length > 0 || attachments.length > 0;
+  const composerAction = composerPrimaryAction({
+    currentRunId: activeAgent.currentRunId,
+    hasDraft: composerHasDraft,
+    sendingPrompt,
+  });
+  const canStopCurrentRun = composerAction === "stop-run" && Boolean(activeAgent.currentRunId) && !abortingRun;
+  const canSendPrompt = composerHasDraft && !sendingPrompt;
   const newestTimelineItem = timeline[timeline.length - 1];
   const timelineVersion = `${timeline.length}:${newestTimelineItem?.id ?? ""}:${timeline[0]?.id ?? ""}:${detail?.events?.length ?? 0}:${hasOlderEvents}`;
   const timelineLayoutVersion = useMemo(() => `${resumeRevision}:${timelineLayoutRevision(timelineTurns)}`, [resumeRevision, timelineTurns]);
@@ -613,6 +643,16 @@ export function AgentPage({
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     await sendDraftPrompt();
+  }
+
+  async function stopCurrentRun() {
+    const runId = activeAgent.currentRunId;
+    if (!runId || abortingRun) return;
+    try {
+      await onAbortCurrentRun(runId);
+    } catch {
+      // Keep the composer usable; runtime-store exposes the user-facing error.
+    }
   }
 
   async function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -946,6 +986,11 @@ export function AgentPage({
                 {promptError}
               </div>
             ) : null}
+            {abortError ? (
+              <div className="composer-status" role="alert">
+                {abortError}
+              </div>
+            ) : null}
             <div className="composer-toolbar">
               <div className="composer-right">
                 <Button
@@ -1106,9 +1151,24 @@ export function AgentPage({
                     )
                   ) : null}
                 </div>
-                <Button className="send-button" type="submit" size="icon" variant="accent" aria-label={t("common.send")} disabled={!canSendPrompt}>
-                  {sendingPrompt ? <LoaderCircle size={16} className="animate-spin" /> : <ArrowUp size={16} />}
-                </Button>
+                {composerAction === "stop-run" ? (
+                  <Button
+                    className="send-button send-button--stop"
+                    type="button"
+                    size="icon"
+                    variant="accent"
+                    aria-label={t("agent.stopCurrentTurn")}
+                    title={t("agent.stopCurrentTurnHint")}
+                    disabled={!canStopCurrentRun}
+                    onClick={() => void stopCurrentRun()}
+                  >
+                    {abortingRun ? <LoaderCircle size={16} className="animate-spin" /> : <Square size={14} />}
+                  </Button>
+                ) : (
+                  <Button className="send-button" type="submit" size="icon" variant="accent" aria-label={t("agentPage.send")} disabled={!canSendPrompt}>
+                    {sendingPrompt ? <LoaderCircle size={16} className="animate-spin" /> : <ArrowUp size={16} />}
+                  </Button>
+                )}
               </div>
             </div>
           </form>

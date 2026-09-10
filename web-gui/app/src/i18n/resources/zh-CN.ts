@@ -945,6 +945,8 @@ const zh: Record<string, any> = {
     retrySync: "立即重试同步",
     // 输入框
     sendInputAria: "向 {{id}} 发送操作者消息",
+    stopCurrentTurn: "停止本轮",
+    stopCurrentTurnHint: "仅中断当前这一轮执行；智能体保持可用，可直接发送下一条消息",
     sendInputPlaceholder: "向 {{id}} 发送操作者消息…",
     dropImageHint: "拖放文件以添加附件",
     // 思考级别

@@ -56,6 +56,10 @@ export interface AgentSessionState extends SessionProjectionState {
   detailValidatedAt?: number;
   eventsValidatedAt?: number;
   sendingPrompt: boolean;
+  /** A turn-scoped current-run abort request is in flight for this agent. */
+  abortingRun: boolean;
+  /** Last non-conflict abort failure surfaced to the composer. */
+  abortError?: string;
   detail: AgentDetail | null;
   targetEventSeq?: number;
   lastStreamActivityAt?: string;

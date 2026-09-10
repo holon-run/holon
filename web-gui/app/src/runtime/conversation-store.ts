@@ -42,6 +42,7 @@ export function emptyAgentSession(): AgentSessionState {
     contentStatus: "unknown",
     syncStatus: "idle",
     sendingPrompt: false,
+    abortingRun: false,
     detail: null,
     workItemDetailsById: {},
     taskDetailsById: {},
@@ -73,6 +74,7 @@ export function mergeCachedSessionIntoCurrent(
     targetEventLoading: current.targetEventLoading,
     liveStatus: current.liveStatus,
     sendingPrompt: current.sendingPrompt,
+    abortingRun: current.abortingRun,
   };
 }
 

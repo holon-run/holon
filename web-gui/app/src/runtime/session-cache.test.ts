@@ -27,6 +27,7 @@ function makeSession(overrides: Partial<AgentSessionState> = {}): AgentSessionSt
     contentStatus: "unknown",
     syncStatus: "idle",
     sendingPrompt: false,
+    abortingRun: false,
     detail: null,
     workItemDetailsById: {},
     taskDetailsById: {},

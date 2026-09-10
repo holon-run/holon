@@ -5314,6 +5314,10 @@ code {
   opacity: 0.45;
 }
 
+.send-button--stop {
+  background: var(--danger) !important;
+}
+
 .side-panel {
   display: flex;
   position: relative;

@@ -944,6 +944,8 @@ const en = {
     retrySync: "Retry sync now",
     // Composer
     sendInputAria: "Send operator input to {{id}}",
+    stopCurrentTurn: "Stop this turn",
+    stopCurrentTurnHint: "Interrupt the current turn only; the agent stays available for your next message",
     sendInputPlaceholder: "Send operator input to {{id}}…",
     dropImageHint: "Drop files to attach",
     // Thinking

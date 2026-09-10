@@ -7,6 +7,7 @@ import "../../i18n";
 import {
   attachmentKindForFile,
   captureScrollAnchor,
+  composerPrimaryAction,
   historyLoadDecision,
   isScrollKey,
   looksLikeProgrammaticBottomScroll,
@@ -72,6 +73,29 @@ describe("sync recovery status", () => {
     expect(markup).toContain("Conversation sync recovery failed (attempt 3)");
     expect(markup).toContain("baseline unavailable");
     expect(markup).toContain("Retry sync now");
+  });
+});
+
+describe("composer primary action", () => {
+  it("switches the send button to stop-run while a turn is running and the input is empty", () => {
+    expect(composerPrimaryAction({ currentRunId: "run-1", hasDraft: false, sendingPrompt: false })).toBe("stop-run");
+  });
+
+  it("reverts to send as soon as the operator types a draft", () => {
+    expect(composerPrimaryAction({ currentRunId: "run-1", hasDraft: true, sendingPrompt: false })).toBe("send");
+  });
+
+  it("returns to stop-run once the draft is cleared while the turn still runs", () => {
+    expect(composerPrimaryAction({ currentRunId: "run-1", hasDraft: false, sendingPrompt: false })).toBe("stop-run");
+  });
+
+  it("keeps the send action when no run is active", () => {
+    expect(composerPrimaryAction({ currentRunId: null, hasDraft: false, sendingPrompt: false })).toBe("send");
+    expect(composerPrimaryAction({ currentRunId: undefined, hasDraft: true, sendingPrompt: false })).toBe("send");
+  });
+
+  it("keeps the send action while a prompt submission is in flight", () => {
+    expect(composerPrimaryAction({ currentRunId: "run-1", hasDraft: false, sendingPrompt: true })).toBe("send");
   });
 });
 

@@ -495,12 +495,27 @@ impl RuntimeHandle {
                     reason: Some("builtin web search is not requested by current config".into()),
                 }
             } else {
-                probe_builtin_web_search_capability(
+                let probe = probe_builtin_web_search_capability(
                     provider.as_ref(),
                     capability,
                     web_config.search.max_results,
-                )
-                .await
+                );
+                // The probe issues a live provider request during context
+                // build, before the abort-aware provider rounds start. Race
+                // it against the current-run abort token so a turn-scoped
+                // stop cannot hang on this phase until the provider timeout.
+                match self.current_run_abort_token().await {
+                    Some(snapshot) => tokio::select! {
+                        result = probe => result,
+                        _ = snapshot.token.cancelled() => {
+                            return Err(CurrentRunAborted {
+                                run_id: snapshot.run_id.clone(),
+                                reason: snapshot.reason(),
+                            }.into());
+                        }
+                    },
+                    None => probe.await,
+                }
             }
         } else {
             BuiltinWebSearchProbeCacheEntry {

@@ -25,6 +25,8 @@ interface DaemonController {
 
 interface DaemonOptions {
   webDist: string;
+  /** Extra environment variables for the daemon process (e.g. provider overrides). */
+  env?: Record<string, string>;
 }
 
 type Fixtures = {
@@ -136,6 +138,7 @@ async function createDaemon(
         HOLON_MODEL: "openai/gpt-5.4",
         HOLON_CONTROL_AUTH_MODE: "required",
         HOLON_CALLBACK_BASE_URL: baseUrl,
+        ...(options.env ?? {}),
       },
       stdio: ["ignore", "pipe", "pipe"],
     });

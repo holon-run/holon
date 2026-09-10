@@ -2559,12 +2559,14 @@ struct CurrentRunAbortHandle {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CurrentRunAbortMode {
     StopAfterAbort,
+    IdleAfterAbort,
 }
 
 impl CurrentRunAbortMode {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::StopAfterAbort => "stop_after_abort",
+            Self::IdleAfterAbort => "idle_after_abort",
         }
     }
 }
@@ -3036,7 +3038,16 @@ impl RuntimeHandle {
             *reason = "operator_aborted".into();
         }
         handle.token.cancel();
-        scheduler::apply_stop_projection(&mut guard.state);
+        match request.mode {
+            CurrentRunAbortMode::StopAfterAbort => {
+                scheduler::apply_stop_projection(&mut guard.state);
+            }
+            // Turn-scoped interrupt: the agent stays awake so the operator can
+            // immediately submit the next prompt without a lifecycle start.
+            CurrentRunAbortMode::IdleAfterAbort => {
+                scheduler::apply_idle_projection(&mut guard.state, &self.inner.storage)?;
+            }
+        }
         guard.persist_state(&self.inner.storage)?;
         drop(guard);
 

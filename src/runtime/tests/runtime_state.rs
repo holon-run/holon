@@ -13392,6 +13392,146 @@ async fn abort_current_run_aborts_provider_turn_and_stops_agent() {
 }
 
 #[tokio::test]
+async fn abort_current_run_idle_after_abort_keeps_agent_awake_and_accepts_next_prompt() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let started = Arc::new(tokio::sync::Notify::new());
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(BlockingProvider {
+            started: started.clone(),
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    append_default_host_identity(&runtime);
+    runtime
+        .enqueue(
+            MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "block".into(),
+                },
+            )
+            .with_admission(
+                MessageDeliverySurface::CliPrompt,
+                AdmissionContext::LocalProcess,
+            ),
+        )
+        .await
+        .unwrap();
+
+    let mut runner = tokio::spawn(runtime.clone().run());
+    tokio::select! {
+        _ = started.notified() => {}
+        result = &mut runner => panic!("runtime exited before provider start: {result:?}"),
+    }
+    let run_id = runtime
+        .agent_state()
+        .await
+        .unwrap()
+        .current_run_id
+        .expect("run id should be active");
+
+    let outcome = runtime
+        .abort_current_run(CurrentRunAbortRequest {
+            run_id: Some(run_id.clone()),
+            mode: CurrentRunAbortMode::IdleAfterAbort,
+        })
+        .await
+        .unwrap();
+    assert_eq!(outcome.run_id, run_id);
+
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            let state = runtime.agent_state().await.unwrap();
+            if state
+                .last_turn_terminal
+                .as_ref()
+                .is_some_and(|terminal| terminal.reason.as_deref() == Some("operator_aborted"))
+            {
+                break state;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("aborted terminal should be persisted");
+
+    let state = runtime.agent_state().await.unwrap();
+    // The idle projection lands as awake-idle and may then settle into a
+    // natural sleep once the scheduler finds no pending work. Both differ
+    // from the lifecycle Stop path, which leaves the agent Stopped and
+    // requiring an explicit start before the next prompt.
+    assert_ne!(state.status, AgentStatus::Stopped);
+    assert_eq!(state.current_run_id, None);
+    assert_eq!(
+        state
+            .last_turn_terminal
+            .as_ref()
+            .and_then(|terminal| terminal.reason.as_deref()),
+        Some("operator_aborted")
+    );
+    let queue_entries = runtime.storage().latest_queue_entries().unwrap();
+    assert!(queue_entries
+        .iter()
+        .any(|entry| entry.status == QueueEntryStatus::Interrupted));
+
+    // The turn-scoped abort must not require a lifecycle start: the next
+    // operator prompt is admitted and starts a fresh provider turn.
+    runtime
+        .enqueue(
+            MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "block again".into(),
+                },
+            )
+            .with_admission(
+                MessageDeliverySurface::CliPrompt,
+                AdmissionContext::LocalProcess,
+            ),
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            let state = runtime.agent_state().await.unwrap();
+            if state.current_run_id.is_some() {
+                break state;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("next prompt should start a new run");
+
+    runtime
+        .control(crate::types::ControlAction::Stop)
+        .await
+        .unwrap();
+    runner.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn operator_interjection_prompt_is_interjected_before_next_provider_round() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();

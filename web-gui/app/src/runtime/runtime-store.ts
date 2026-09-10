@@ -5,6 +5,7 @@ import {
   createRuntimeClient,
   isProjectionBusyError,
   projectRosterAgents,
+  RuntimeHttpError,
   type AgentEventStreamSubscription,
   type OperatorPromptAttachment,
   type AgentRosterSnapshotDto,
@@ -469,6 +470,7 @@ export interface RuntimeStoreState {
   loadAgentToolExecutionDetail: (agentId: string | undefined, toolExecutionId: string | undefined, fallbackActivity?: AgentTimelineActivity) => Promise<void>;
   loadOlderAgentEvents: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
   sendOperatorPrompt: (agentId: string | undefined, text: string, displayLevel: DisplayLevel, attachments?: OperatorPromptAttachment[]) => Promise<void>;
+  abortCurrentRun: (agentId: string | undefined, runId: string | null | undefined) => Promise<void>;
   setAgentModel: (agentId: string | undefined, model: string, displayLevel: DisplayLevel, reasoningEffort?: string) => Promise<void>;
   clearAgentModel: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
   controlAgent: (agentId: string | undefined, action: AgentControlAction) => Promise<void>;
@@ -685,6 +687,7 @@ export function resetSessionsForResume(
         ),
         targetEventLoading: false,
         sendingPrompt: false,
+        abortingRun: false,
         liveStatus: "stale" as const,
         reconnectAttempt: 0,
         briefHydrationById: Object.fromEntries(
@@ -3546,6 +3549,63 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
         },
       }));
       throw error;
+    }
+  },
+
+  abortCurrentRun: async (agentId, runId) => {
+    if (!agentId || !runId) return;
+    if (get().sessionsByAgentId[agentId]?.abortingRun) return;
+
+    const request = captureClientRequest();
+    set((state) => ({
+      sessionsByAgentId: {
+        ...state.sessionsByAgentId,
+        [agentId]: {
+          ...emptyAgentSession(),
+          ...state.sessionsByAgentId[agentId],
+          abortingRun: true,
+          abortError: undefined,
+        },
+      },
+    }));
+
+    try {
+      await request.client.abortCurrentRun(agentId, runId);
+      if (!isCurrentClientRequest(request)) return;
+      set((state) => ({
+        sessionsByAgentId: {
+          ...state.sessionsByAgentId,
+          [agentId]: {
+            ...emptyAgentSession(),
+            ...state.sessionsByAgentId[agentId],
+            abortingRun: false,
+            abortError: undefined,
+          },
+        },
+      }));
+      scheduleBootstrapRefresh(get, 250);
+    } catch (error) {
+      if (!isCurrentClientRequest(request)) return;
+      // The run already ended or the run_id expired: the event stream
+      // converges the composer state, so a conflict is not surfaced as an
+      // operator-facing failure.
+      const conflict =
+        error instanceof RuntimeHttpError &&
+        error.status === 409 &&
+        (error.code === "stale_run_id" || error.code === "no_current_run");
+      const message = error instanceof Error ? error.message : String(error);
+      set((state) => ({
+        sessionsByAgentId: {
+          ...state.sessionsByAgentId,
+          [agentId]: {
+            ...emptyAgentSession(),
+            ...state.sessionsByAgentId[agentId],
+            abortingRun: false,
+            abortError: conflict ? undefined : message,
+          },
+        },
+      }));
+      if (!conflict) throw error;
     }
   },
 
