@@ -753,7 +753,9 @@ mod tests {
         let (dir, db) = runtime_db()?;
         seed_target(&db, AgentStatus::AwakeIdle)?;
         let prepared = prepare("stable-key", "hello")?;
-        assert_eq!(prepared.message.turn_id.as_deref(), Some("turn-delivery"));
+        assert_eq!(prepared.message.turn_id, None);
+        assert_eq!(prepared.message.task_id, None);
+        assert_eq!(prepared.message.work_item_id, None);
         let first = db.transitions().commit_delivery_admission(
             &admission_command(&prepared),
             None,
@@ -787,6 +789,18 @@ mod tests {
         assert_eq!(
             stored.caller.caller_agent_id.as_deref(),
             Some("caller-agent")
+        );
+        assert_eq!(
+            stored.caller.current_turn_id.as_deref(),
+            Some("turn-delivery")
+        );
+        assert_eq!(
+            stored.caller.current_task_id.as_deref(),
+            Some("task-delivery")
+        );
+        assert_eq!(
+            stored.caller.current_work_item_id.as_deref(),
+            Some("work-delivery")
         );
 
         let database_path = dir.path().join("state/runtime.sqlite");

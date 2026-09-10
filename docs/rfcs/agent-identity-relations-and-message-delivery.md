@@ -539,6 +539,16 @@ AgentMessageEnvelope
   admission_evidence
 ```
 
+Caller execution identifiers are provenance, not target execution bindings.
+`current_turn_id`, `current_task_id`, and `current_work_item_id` remain in the
+durable caller context and must not populate the target message's `turn_id`,
+`task_id`, or `work_item_id`. The target runtime allocates its own turn and
+derives any task or WorkItem execution binding from target-owned admission
+state. During upgrade, a queued delivery may clear the legacy bindings only
+when its trusted delivery ledger record proves that all present target fields
+were copied exactly from a different caller agent; ordinary message metadata
+is not sufficient evidence.
+
 `admission_evidence` identifies the policy grant or active relation used for
 admission and the lifecycle fence observed by the transaction. The immutable
 origin, authority class, correlation, causation, and admission evidence enter

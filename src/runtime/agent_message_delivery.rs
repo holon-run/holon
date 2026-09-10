@@ -105,11 +105,6 @@ impl AgentMessageDeliveryService<'_> {
             request.content,
         )
         .with_admission(caller.delivery_surface, caller.admission_context);
-        message.turn_id.clone_from(&caller.current_turn_id);
-        message.task_id.clone_from(&caller.current_task_id);
-        message
-            .work_item_id
-            .clone_from(&caller.current_work_item_id);
         message.correlation_id.clone_from(&request.correlation_id);
         message.causation_id.clone_from(&request.causation_id);
         message.metadata = Some(serde_json::json!({
@@ -159,6 +154,39 @@ impl AgentMessageDeliveryService<'_> {
         };
         Ok(PreparedAgentMessageDelivery { message, record })
     }
+}
+
+pub(crate) fn isolate_legacy_cross_agent_execution_bindings(
+    message: &mut MessageEnvelope,
+    delivery: &AgentMessageDeliveryRecord,
+) -> bool {
+    let Some(caller_agent_id) = delivery.caller.caller_agent_id.as_deref() else {
+        return false;
+    };
+    if caller_agent_id == message.agent_id
+        || delivery.target_agent_id != message.agent_id
+        || delivery.message_id.as_deref() != Some(message.id.as_str())
+        || delivery.outcome != AgentMessageDeliveryOutcome::Accepted
+        || delivery.state != AgentMessageDeliveryState::Queued
+    {
+        return false;
+    }
+
+    let caller = &delivery.caller;
+    let has_source_binding = caller.current_turn_id.is_some()
+        || caller.current_task_id.is_some()
+        || caller.current_work_item_id.is_some();
+    let bindings_match = message.turn_id == caller.current_turn_id
+        && message.task_id == caller.current_task_id
+        && message.work_item_id == caller.current_work_item_id;
+    if !has_source_binding || !bindings_match {
+        return false;
+    }
+
+    message.turn_id = None;
+    message.task_id = None;
+    message.work_item_id = None;
+    true
 }
 
 #[cfg(test)]
@@ -217,4 +245,62 @@ fn digest<T: Serialize>(domain: &[u8], value: &T) -> Result<String> {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{
+        AdmissionContext, AgentMessagePrincipalKind, AuthorityClass, MessageBody,
+        MessageDeliverySurface, MessageOrigin,
+    };
+
+    #[test]
+    fn dispatched_legacy_delivery_keeps_execution_bindings_for_replay() {
+        let caller = AgentMessageCallerContext {
+            caller_principal: "runtime:agent-invocation".into(),
+            caller_agent_id: Some("caller-agent".into()),
+            principal_kind: AgentMessagePrincipalKind::RuntimeCapability,
+            route: "agent_invocation".into(),
+            origin: MessageOrigin::Task {
+                task_id: "task-caller".into(),
+            },
+            authority_class: AuthorityClass::RuntimeInstruction,
+            delivery_surface: MessageDeliverySurface::RuntimeSystem,
+            admission_context: AdmissionContext::RuntimeOwned,
+            current_turn_id: Some("turn-caller".into()),
+            current_task_id: Some("task-caller".into()),
+            current_work_item_id: Some("work-caller".into()),
+        };
+        let mut prepared = AgentMessageDeliveryService::prepare(
+            AgentMessageSendRequest {
+                target_agent_id: "target-agent".into(),
+                content: MessageBody::Text {
+                    text: "legacy interrupted invocation".into(),
+                },
+                client_idempotency_key: "legacy-dispatched-bindings".into(),
+                correlation_id: None,
+                causation_id: None,
+                requested_priority: None,
+            },
+            caller.clone(),
+        )
+        .unwrap();
+        prepared.message.turn_id.clone_from(&caller.current_turn_id);
+        prepared.message.task_id.clone_from(&caller.current_task_id);
+        prepared
+            .message
+            .work_item_id
+            .clone_from(&caller.current_work_item_id);
+        prepared.record.outcome = AgentMessageDeliveryOutcome::Accepted;
+        prepared.record.state = AgentMessageDeliveryState::Dispatched;
+
+        assert!(!isolate_legacy_cross_agent_execution_bindings(
+            &mut prepared.message,
+            &prepared.record,
+        ));
+        assert_eq!(prepared.message.turn_id, caller.current_turn_id);
+        assert_eq!(prepared.message.task_id, caller.current_task_id);
+        assert_eq!(prepared.message.work_item_id, caller.current_work_item_id);
+    }
 }

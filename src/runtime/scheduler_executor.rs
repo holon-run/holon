@@ -437,12 +437,43 @@ impl<'a> SchedulerDecisionExecutor<'a> {
     }
 
     async fn prepare_message(&self, candidate: QueueCandidate) -> Result<PrepareMessageOutcome> {
+        let queue_entry = self
+            .runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&candidate.message.id)?;
+        let mut persisted_message = self
+            .runtime
+            .inner
+            .storage
+            .read_message_by_id(&candidate.message.id)?
+            .ok_or_else(|| anyhow!("claimed message is missing persisted ingress evidence"))?;
+        let isolated_legacy_execution_bindings = if queue_entry
+            .as_ref()
+            .is_some_and(|entry| entry.status == QueueEntryStatus::Queued)
+        {
+            self.runtime
+                .inner
+                .runtime_db
+                .agent_message_deliveries()
+                .latest_for_message(&persisted_message.id)?
+                .as_ref()
+                .is_some_and(|delivery| {
+                    super::agent_message_delivery::isolate_legacy_cross_agent_execution_bindings(
+                        &mut persisted_message,
+                        delivery,
+                    )
+                })
+        } else {
+            false
+        };
         let prior_closure = self
             .runtime
             .closure_decision_for_state(&candidate.prior_state, None)
             .await?;
         let mut dispatch_plan = self.runtime.build_message_dispatch_plan(
-            &candidate.message,
+            &persisted_message,
             prior_closure,
             &candidate.prior_state,
         )?;
@@ -456,25 +487,14 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             &projection,
             scheduler::SchedulerBoundary::RunLoop,
             scheduler::SchedulerInput::Message {
-                message: &candidate.message,
+                message: &persisted_message,
                 model_turn_allowed: dispatch_plan.model_turn_allowed,
                 continuation_resolution: dispatch_plan.continuation_resolution.as_ref(),
             },
         );
         let scheduler_decision_events =
-            scheduler::scheduler_decision_events(&candidate.message.agent_id, &legacy_decision)?;
-        let persisted_message = self
-            .runtime
-            .inner
-            .storage
-            .read_message_by_id(&candidate.message.id)?
-            .ok_or_else(|| anyhow!("claimed message is missing persisted ingress evidence"))?;
-        let replay_source_turn_id = self
-            .runtime
-            .inner
-            .runtime_db
-            .queue_entries()
-            .latest(&candidate.message.id)?
+            scheduler::scheduler_decision_events(&persisted_message.agent_id, &legacy_decision)?;
+        let replay_source_turn_id = queue_entry
             .filter(|entry| entry.status == QueueEntryStatus::Interrupted)
             .and_then(|_| persisted_message.turn_id.clone());
         let canonical_claim = match self.canonical_activation_plan(
@@ -592,7 +612,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             };
             let run_id = crate::ids::run_id();
             let abort_token = CancellationToken::new();
-            let claim_audit_events = vec![
+            let mut claim_audit_events = vec![
                 scheduler_decision_events[0].clone(),
                 scheduler_decision_events[1].clone(),
                 AuditEvent::legacy(
@@ -605,6 +625,16 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     }),
                 ),
             ];
+            if isolated_legacy_execution_bindings {
+                claim_audit_events.push(AuditEvent::legacy(
+                    "agent_message_execution_bindings_isolated",
+                    serde_json::json!({
+                        "message_id": persisted_message.id,
+                        "agent_id": persisted_message.agent_id,
+                        "reason": "legacy_cross_agent_caller_bindings",
+                    }),
+                ));
+            }
             let agent_id = candidate.message.agent_id.clone();
             let mut attempt = 0;
             loop {
@@ -2435,6 +2465,130 @@ mod tests {
             assert_eq!(cause.scenario_class(), scenario_class);
             assert_eq!(cause.reason(), reason);
         }
+    }
+
+    #[tokio::test]
+    async fn queued_legacy_cross_agent_delivery_isolated_before_target_turn() {
+        use crate::{
+            runtime::tests::support::{context_config, CountingProvider},
+            types::{
+                AgentMessageCallerContext, AgentMessagePrincipalKind, AgentMessageSendRequest,
+            },
+        };
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(CountingProvider {
+                calls: Mutex::new(0),
+                reply: "unused",
+            }),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        let caller = AgentMessageCallerContext {
+            caller_principal: "runtime:agent-invocation".into(),
+            caller_agent_id: Some("caller-agent".into()),
+            principal_kind: AgentMessagePrincipalKind::RuntimeCapability,
+            route: "agent_invocation".into(),
+            origin: MessageOrigin::Task {
+                task_id: "task-caller".into(),
+            },
+            authority_class: AuthorityClass::RuntimeInstruction,
+            delivery_surface: MessageDeliverySurface::RuntimeSystem,
+            admission_context: AdmissionContext::RuntimeOwned,
+            current_turn_id: Some("turn-caller".into()),
+            current_task_id: Some("task-caller".into()),
+            current_work_item_id: Some("work-caller".into()),
+        };
+        let mut prepared = AgentMessageDeliveryService::prepare(
+            AgentMessageSendRequest {
+                target_agent_id: "default".into(),
+                content: MessageBody::Text {
+                    text: "legacy queued invocation".into(),
+                },
+                client_idempotency_key: "legacy-cross-agent-bindings".into(),
+                correlation_id: None,
+                causation_id: None,
+                requested_priority: None,
+            },
+            caller.clone(),
+        )
+        .unwrap();
+        prepared.message.turn_id.clone_from(&caller.current_turn_id);
+        prepared.message.task_id.clone_from(&caller.current_task_id);
+        prepared
+            .message
+            .work_item_id
+            .clone_from(&caller.current_work_item_id);
+        runtime
+            .agent_message_delivery_service()
+            .deliver(&prepared)
+            .await
+            .unwrap();
+        let message_id = prepared.message.id.clone();
+        drop(runtime);
+
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(CountingProvider {
+                calls: Mutex::new(0),
+                reply: "unused",
+            }),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        let RunLoopPoll::Message(scheduled) = SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap()
+        else {
+            panic!("legacy queued delivery should remain executable");
+        };
+        assert_eq!(scheduled.message.turn_id, None);
+        assert_eq!(scheduled.message.task_id, None);
+        assert_eq!(scheduled.message.work_item_id, None);
+        let stored = runtime
+            .inner
+            .storage
+            .read_message_by_id(&message_id)
+            .unwrap()
+            .expect("claimed message remains durable");
+        assert_eq!(stored.turn_id.as_deref(), Some("turn-caller"));
+        assert_eq!(stored.task_id.as_deref(), Some("task-caller"));
+        assert_eq!(stored.work_item_id.as_deref(), Some("work-caller"));
+        let delivery = runtime
+            .inner
+            .runtime_db
+            .agent_message_deliveries()
+            .latest_for_message(&message_id)
+            .unwrap()
+            .expect("delivery provenance remains durable");
+        assert_eq!(delivery.caller, caller);
+
+        runtime
+            .begin_interactive_turn(Some(&scheduled.message), None, None)
+            .await
+            .unwrap();
+        assert_ne!(
+            runtime
+                .agent_state()
+                .await
+                .unwrap()
+                .current_turn_id
+                .as_deref(),
+            Some("turn-caller")
+        );
     }
 
     #[tokio::test]
