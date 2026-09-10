@@ -327,10 +327,8 @@ export interface AgentSummary {
   id: string;
   /** Operator-facing display name; the technical identity stays `id`. */
   name?: string;
-  visibility?: string;
-  ownership?: string;
-  /** True for the runtime default agent, which cannot be renamed. */
-  isDefaultAgent?: boolean;
+  /** Backend-computed rename eligibility (public, self-owned, non-default). */
+  canRename?: boolean;
   /** Monotonic incarnation counter; 1 unless the id was recreated after a completed deletion. */
   incarnation?: number;
   badge: string;

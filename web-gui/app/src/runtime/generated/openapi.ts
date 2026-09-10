@@ -2250,6 +2250,13 @@ export interface components {
             created: boolean;
             identity: {
                 agent_id: string;
+                /**
+                 * @description True when this identity satisfies the backend rename guard (public,
+                 *      self-owned, not the configured default agent). UI surfaces use this to
+                 *      show the rename entry point; the rename endpoint stays authoritative.
+                 * @default false
+                 */
+                can_rename: boolean;
                 delegated_from_task_id?: string | null;
                 /**
                  * Format: uint64
@@ -2293,6 +2300,13 @@ export interface components {
         AgentDeletionStatusResponse: {
             identity: {
                 agent_id: string;
+                /**
+                 * @description True when this identity satisfies the backend rename guard (public,
+                 *      self-owned, not the configured default agent). UI surfaces use this to
+                 *      show the rename entry point; the rename endpoint stays authoritative.
+                 * @default false
+                 */
+                can_rename: boolean;
                 delegated_from_task_id?: string | null;
                 /**
                  * Format: uint64
@@ -2526,6 +2540,13 @@ export interface components {
             display_name: string;
             identity: {
                 agent_id: string;
+                /**
+                 * @description True when this identity satisfies the backend rename guard (public,
+                 *      self-owned, not the configured default agent). UI surfaces use this to
+                 *      show the rename entry point; the rename endpoint stays authoritative.
+                 * @default false
+                 */
+                can_rename: boolean;
                 delegated_from_task_id?: string | null;
                 /**
                  * Format: uint64
@@ -2627,6 +2648,13 @@ export interface components {
                     current_run_id?: string | null;
                     identity: {
                         agent_id: string;
+                        /**
+                         * @description True when this identity satisfies the backend rename guard (public,
+                         *      self-owned, not the configured default agent). UI surfaces use this to
+                         *      show the rename entry point; the rename endpoint stays authoritative.
+                         * @default false
+                         */
+                        can_rename: boolean;
                         delegated_from_task_id?: string | null;
                         /**
                          * Format: uint64
@@ -2788,6 +2816,13 @@ export interface components {
                 };
                 identity: {
                     agent_id: string;
+                    /**
+                     * @description True when this identity satisfies the backend rename guard (public,
+                     *      self-owned, not the configured default agent). UI surfaces use this to
+                     *      show the rename entry point; the rename endpoint stays authoritative.
+                     * @default false
+                     */
+                    can_rename: boolean;
                     delegated_from_task_id?: string | null;
                     /**
                      * Format: uint64
@@ -3045,6 +3080,13 @@ export interface components {
                 current_run_id?: string | null;
                 identity: {
                     agent_id: string;
+                    /**
+                     * @description True when this identity satisfies the backend rename guard (public,
+                     *      self-owned, not the configured default agent). UI surfaces use this to
+                     *      show the rename entry point; the rename endpoint stays authoritative.
+                     * @default false
+                     */
+                    can_rename: boolean;
                     delegated_from_task_id?: string | null;
                     /**
                      * Format: uint64
@@ -3240,6 +3282,13 @@ export interface components {
                     current_run_id?: string | null;
                     identity: {
                         agent_id: string;
+                        /**
+                         * @description True when this identity satisfies the backend rename guard (public,
+                         *      self-owned, not the configured default agent). UI surfaces use this to
+                         *      show the rename entry point; the rename endpoint stays authoritative.
+                         * @default false
+                         */
+                        can_rename: boolean;
                         delegated_from_task_id?: string | null;
                         /**
                          * Format: uint64

@@ -32,6 +32,7 @@ fn minimal_agent_summary(agent_id: &str) -> AgentSummary {
             visibility: AgentVisibility::Public,
             ownership: AgentOwnership::SelfOwned,
             profile_preset: AgentProfilePreset::PublicNamed,
+            can_rename: agent_id != "default",
             status: AgentRegistryStatus::Active,
             is_default_agent: agent_id == "default",
             incarnation: 1,

@@ -61,6 +61,7 @@ fn sample_identity() -> AgentIdentityView {
         visibility: AgentVisibility::Public,
         ownership: AgentOwnership::SelfOwned,
         profile_preset: AgentProfilePreset::PublicNamed,
+        can_rename: false,
         status: AgentRegistryStatus::Active,
         is_default_agent: true,
         incarnation: 1,

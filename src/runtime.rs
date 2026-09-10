@@ -3268,6 +3268,7 @@ impl RuntimeHandle {
             visibility: crate::types::AgentVisibility::Public,
             ownership: crate::types::AgentOwnership::SelfOwned,
             profile_preset: crate::types::AgentProfilePreset::PublicNamed,
+            can_rename: agent_id != self.inner.default_agent_id,
             status: crate::types::AgentRegistryStatus::Active,
             is_default_agent: agent_id == self.inner.default_agent_id,
             incarnation: 1,

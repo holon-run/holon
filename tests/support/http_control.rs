@@ -435,6 +435,41 @@ pub async fn control_agent_name_validation_and_default_rename_errors_are_typed()
         "agent_rename_forbidden"
     );
 
+    // The agents list reports rename eligibility so UIs can gate the entry
+    // point: the configured default agent is not renameable, a created named
+    // agent is.
+    let created: serde_json::Value = client
+        .post(format!("{base}/api/control/agents/renamable-http/create"))
+        .json(&serde_json::json!({ "name": "Renamable One" }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(created["identity"]["status"], "active");
+
+    let list: serde_json::Value = client
+        .get(format!("{base}/api/agents/list"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let identities = list
+        .as_array()
+        .expect("agents list array")
+        .iter()
+        .map(|entry| &entry["identity"])
+        .collect::<Vec<_>>();
+    let default_identity = identities
+        .iter()
+        .find(|identity| identity["is_default_agent"] == serde_json::json!(true))
+        .expect("default agent identity");
+    assert_eq!(default_identity["can_rename"], serde_json::json!(false));
+    let named_identity = identities
+        .iter()
+        .find(|identity| identity["agent_id"] == serde_json::json!("renamable-http"))
+        .expect("named agent identity");
+    assert_eq!(named_identity["can_rename"], serde_json::json!(true));
+
     server.abort();
     Ok(())
 }

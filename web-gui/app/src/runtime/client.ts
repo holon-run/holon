@@ -196,10 +196,8 @@ interface AgentListEntryDto {
   identity?: {
     agent_id?: string;
     name?: string | null;
-    is_default_agent?: boolean;
-    visibility?: string;
-    ownership?: string;
-    profile_preset?: string;
+    /** Backend-computed rename eligibility; the rename endpoint stays authoritative. */
+    can_rename?: boolean;
     incarnation?: number;
   };
   status?: string;
@@ -2225,11 +2223,11 @@ function projectMemorySourceContent(response: MemorySourceContentDto): MemorySou
 function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: BriefRecordDto, workItemRecords?: WorkItemDto[]): AgentSummary {
   const id = entry.identity?.agent_id ?? state?.agent?.agent?.id ?? "unknown-agent";
   const status = state?.agent?.agent?.status ?? entry.status ?? "unknown";
-  const profile = compactJoin([entry.identity?.visibility ?? "public", entry.identity?.ownership, entry.identity?.profile_preset]);
+  // Legacy display field: identity visibility/ownership enums left the public
+  // API surface, so the profile summary stays "public".
+  const profile = "public";
   const name = entry.identity?.name ?? undefined;
-  const visibility = entry.identity?.visibility;
-  const ownership = entry.identity?.ownership;
-  const isDefaultAgent = entry.identity?.is_default_agent ?? undefined;
+  const canRename = entry.identity?.can_rename ?? undefined;
   const incarnation = entry.identity?.incarnation ?? undefined;
   const wsList = state?.workspace?.workspaces ?? [];
   const activeWs = wsList.find((w) => w.is_active);
@@ -2268,9 +2266,7 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
   return {
     id,
     name,
-    visibility,
-    ownership,
-    isDefaultAgent,
+    canRename,
     incarnation,
     badge: badgeFor(id),
     badgeHue: hueFor(id),

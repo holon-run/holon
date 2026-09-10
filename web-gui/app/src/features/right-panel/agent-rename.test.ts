@@ -26,13 +26,12 @@ describe("validateAgentDisplayName", () => {
 });
 
 describe("isAgentRenameable", () => {
-  it("allows public self-owned named agents", () => {
-    expect(isAgentRenameable({ visibility: "public", ownership: "self_owned", isDefaultAgent: false })).toBe(true);
+  it("allows agents flagged renameable by the backend", () => {
+    expect(isAgentRenameable({ canRename: true })).toBe(true);
   });
 
-  it("blocks default agents and private children", () => {
-    expect(isAgentRenameable({ visibility: "public", ownership: "self_owned", isDefaultAgent: true })).toBe(false);
-    expect(isAgentRenameable({ visibility: "private", ownership: "parent_supervised", isDefaultAgent: false })).toBe(false);
+  it("blocks default agents and private children via the backend flag", () => {
+    expect(isAgentRenameable({ canRename: false })).toBe(false);
   });
 
   it("blocks agents whose identity details have not loaded", () => {

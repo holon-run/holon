@@ -407,6 +407,7 @@ impl RuntimeHandle {
             visibility: crate::types::AgentVisibility::Private,
             ownership: crate::types::AgentOwnership::ParentSupervised,
             profile_preset: crate::types::AgentProfilePreset::PrivateChild,
+            can_rename: false,
             status: crate::types::AgentRegistryStatus::Active,
             is_default_agent: false,
             incarnation: 1,

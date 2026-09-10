@@ -20,6 +20,7 @@ function agentStateFixture(agentId: string): components["schemas"]["AgentStateSn
       identity: {
         agent_id: agentId,
         status: "active",
+        can_rename: true,
         is_default_agent: false,
         incarnation: 1,
       },
@@ -1440,10 +1441,7 @@ describe("createRuntimeClient agent naming", () => {
                 agent_id: "alpha",
                 name: "Alpha One",
                 incarnation: 2,
-                is_default_agent: false,
-                visibility: "public",
-                ownership: "self_owned",
-                profile_preset: "public_named",
+                can_rename: true,
               },
               status: "awake_idle",
             },
@@ -1451,9 +1449,7 @@ describe("createRuntimeClient agent naming", () => {
               identity: {
                 agent_id: "main",
                 name: null,
-                is_default_agent: true,
-                visibility: "public",
-                ownership: "self_owned",
+                can_rename: false,
               },
               status: "awake_idle",
             },
@@ -1468,14 +1464,12 @@ describe("createRuntimeClient agent naming", () => {
       expect.objectContaining({
         id: "alpha",
         name: "Alpha One",
-        visibility: "public",
-        ownership: "self_owned",
-        isDefaultAgent: false,
+        canRename: true,
         incarnation: 2,
       }),
     );
     expect(bootstrap.agents[1]).toEqual(
-      expect.objectContaining({ id: "main", isDefaultAgent: true, incarnation: undefined }),
+      expect.objectContaining({ id: "main", canRename: false, incarnation: undefined }),
     );
     expect(bootstrap.agents[1].name).toBeUndefined();
   });

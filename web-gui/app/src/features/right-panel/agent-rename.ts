@@ -28,14 +28,8 @@ export function validateAgentDisplayName(input: string): AgentNameValidationErro
  * Renaming is an operator surface for public self-owned named agents; the
  * backend stays authoritative and rejects anything this gating misses.
  */
-export function isAgentRenameable(
-  agent: Pick<AgentSummary, "visibility" | "ownership" | "isDefaultAgent">,
-): boolean {
-  return (
-    agent.visibility === "public" &&
-    agent.ownership === "self_owned" &&
-    agent.isDefaultAgent !== true
-  );
+export function isAgentRenameable(agent: Pick<AgentSummary, "canRename">): boolean {
+  return agent.canRename === true;
 }
 
 /** Map a rename failure's error-envelope code to a stable i18n suffix. */
