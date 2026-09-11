@@ -638,6 +638,13 @@ rejected
 `consumed` means that the admitted message was incorporated into a target turn.
 It does not mean that requested work completed successfully.
 
+When a delivery backs a result-bearing actor invocation, queue claim also binds
+the delivery to the canonical execution activation and turn in the same
+transaction. The invocation observes that activation's execution outcome and
+continuations; it must not infer completion from the target agent's latest turn,
+global idle state, or a later unrelated runtime error. Delivery state remains
+the incorporation ledger: `consumed` alone is never an invocation result.
+
 Adapters may initially return only `queued` or `rejected`, while later
 observation surfaces expose subsequent state.
 

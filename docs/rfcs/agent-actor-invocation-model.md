@@ -496,6 +496,13 @@ Simple public prompts can default to `auto_on_agent_result`.
 Parent-supervised child work should usually default to `caller_acceptance`,
 because the parent may need to review the child result and request fixes.
 
+For an existing-agent invocation, `auto_on_agent_result` is scoped to the
+specific admitted delivery. The runtime durably binds that delivery to its
+canonical execution activation and turn, then follows any typed wait, task
+rejoin, or WorkItem continuation until that execution lineage reaches a
+terminal result. A newer unrelated target turn cannot complete or fail the
+invocation, and delivery consumption is not itself successful task completion.
+
 ## Agent Lifecycle
 
 Agent lifecycle is separate from task lifecycle.

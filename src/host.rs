@@ -63,16 +63,16 @@ use crate::{
         AgentDeletionJob, AgentDeletionStatus, AgentDetail, AgentDurability, AgentIdentityRecord,
         AgentIdentityView, AgentKind, AgentLifecycleHint, AgentListEntry,
         AgentMessageCallerContext, AgentMessageDeliveryOutcome, AgentMessageDeliveryRejectionCode,
-        AgentMessagePrincipalKind, AgentMessageSendRequest, AgentModelResolution,
-        AgentModelResolutionStatus, AgentOwnership, AgentProfilePreset, AgentRegistryStatus,
-        AgentState, AgentStatus, AgentSummary, AgentSupervisionState, AgentTokenUsageSummary,
-        AgentTreeNode, AgentTreeProjection, AgentVisibility, AuthorityClass, ChildAgentSummary,
-        ClosureOutcome, CreateAgentRequest, ExternalTriggerRecord, ExternalTriggerStatus,
-        ExternalTriggerSummary, LoadedAgentsMdView, MessageBody, MessageDeliverySurface,
-        MessageEnvelope, MessageKind, MessageOrigin, OperatorNotificationRecord, Priority,
-        QueueEntryStatus, RuntimeFailureSummary, TaskKind, TaskRecord, TaskStatus, TimerRecord,
-        TokenUsage, TranscriptEntry, TranscriptEntryKind, WaitConditionSummary, WorkspaceEntry,
-        WorkspaceOccupancyRecord,
+        AgentMessageDeliveryState, AgentMessagePrincipalKind, AgentMessageSendRequest,
+        AgentModelResolution, AgentModelResolutionStatus, AgentOwnership, AgentProfilePreset,
+        AgentRegistryStatus, AgentState, AgentStatus, AgentSummary, AgentSupervisionState,
+        AgentTokenUsageSummary, AgentTreeNode, AgentTreeProjection, AgentVisibility,
+        AuthorityClass, ChildAgentSummary, ClosureOutcome, CreateAgentRequest,
+        ExternalTriggerRecord, ExternalTriggerStatus, ExternalTriggerSummary, LoadedAgentsMdView,
+        MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin,
+        OperatorNotificationRecord, Priority, QueueEntryStatus, RuntimeFailureSummary, TaskKind,
+        TaskRecord, TaskStatus, TimerRecord, TokenUsage, TranscriptEntry, TranscriptEntryKind,
+        WaitConditionSummary, WorkspaceEntry, WorkspaceOccupancyRecord,
     },
 };
 
@@ -418,6 +418,7 @@ pub(crate) struct RuntimeHostBridge {
 pub(crate) struct ChildTaskSpawn {
     pub child_agent_id: String,
     pub child_turn_baseline: u64,
+    pub delivery_id: Option<String>,
     pub task_detail: Value,
 }
 
@@ -566,6 +567,21 @@ pub(crate) struct ChildTaskTerminalResult {
     pub status: TaskStatus,
     pub text: String,
     pub task_detail: Option<Value>,
+}
+
+#[derive(Debug, Clone)]
+struct InvocationTerminalEvidence {
+    status: TaskStatus,
+    text: String,
+    activation_id: Option<String>,
+    turn_id: Option<String>,
+    completion_ref: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+enum InvocationSettlementCursor {
+    Attempt(String),
+    WorkItem(String),
 }
 
 async fn apply_spawn_model_resolution(
@@ -4349,6 +4365,7 @@ impl RuntimeHost {
         Ok(ChildTaskSpawn {
             child_agent_id: child_identity.agent_id,
             child_turn_baseline,
+            delivery_id: None,
             task_detail,
         })
     }
@@ -4523,6 +4540,7 @@ impl RuntimeHost {
         Ok(ChildTaskSpawn {
             child_agent_id: target_agent_id.to_string(),
             child_turn_baseline,
+            delivery_id: Some(receipt.delivery_id),
             task_detail,
         })
     }
@@ -4715,6 +4733,681 @@ impl RuntimeHost {
                 task_detail,
             });
         }
+    }
+
+    async fn await_invocation_delivery_terminal_result(
+        &self,
+        child_agent_id: &str,
+        delivery_id: &str,
+        invocation_task_id: &str,
+        worktree: bool,
+    ) -> Result<ChildTaskTerminalResult> {
+        let storage = self.agent_storage(child_agent_id)?;
+        let identity = self
+            .active_agent_identity(child_agent_id)
+            .map_err(anyhow::Error::from)?;
+        if let Some(evidence) = self.invocation_delivery_terminal_evidence(
+            &storage,
+            child_agent_id,
+            delivery_id,
+            invocation_task_id,
+        )? {
+            return self
+                .invocation_terminal_result(&storage, &identity, delivery_id, evidence, worktree)
+                .await;
+        }
+
+        let _runtime = self.get_or_create_agent(child_agent_id).await?;
+        loop {
+            if let Some(evidence) = self.invocation_delivery_terminal_evidence(
+                &storage,
+                child_agent_id,
+                delivery_id,
+                invocation_task_id,
+            )? {
+                return self
+                    .invocation_terminal_result(
+                        &storage,
+                        &identity,
+                        delivery_id,
+                        evidence,
+                        worktree,
+                    )
+                    .await;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    fn invocation_delivery_terminal_evidence(
+        &self,
+        storage: &AppStorage,
+        child_agent_id: &str,
+        delivery_id: &str,
+        invocation_task_id: &str,
+    ) -> Result<Option<InvocationTerminalEvidence>> {
+        use crate::domain::execution_protocol::{
+            ConversationOutcome, ExecutionAttemptState, ExecutionBinding, ExecutionOutcome,
+            ExecutionSourceIdentity, WorkItemExecutionState, WorkItemOutcome,
+        };
+
+        let Some(delivery) = self
+            .runtime_db()
+            .agent_message_deliveries()
+            .latest(delivery_id)?
+        else {
+            return Ok(Some(InvocationTerminalEvidence {
+                status: TaskStatus::Failed,
+                text: format!(
+                    "agent invocation failed: delivery {delivery_id} is missing from the durable ledger"
+                ),
+                activation_id: None,
+                turn_id: None,
+                completion_ref: None,
+            }));
+        };
+        anyhow::ensure!(
+            delivery.target_agent_id == child_agent_id,
+            "delivery {delivery_id} targets {}, not {child_agent_id}",
+            delivery.target_agent_id
+        );
+        anyhow::ensure!(
+            delivery.caller.current_task_id.as_deref() == Some(invocation_task_id)
+                && delivery.correlation_id.as_deref() == Some(invocation_task_id),
+            "delivery {delivery_id} does not belong to invocation task {invocation_task_id}"
+        );
+        match delivery.state {
+            AgentMessageDeliveryState::Failed | AgentMessageDeliveryState::Rejected => {
+                return Ok(Some(InvocationTerminalEvidence {
+                    status: TaskStatus::Failed,
+                    text: format!(
+                        "agent invocation delivery {delivery_id} failed: {}",
+                        delivery
+                            .diagnostic
+                            .as_deref()
+                            .unwrap_or("target execution was rejected before completion")
+                    ),
+                    activation_id: delivery.activation_id,
+                    turn_id: delivery.turn_id,
+                    completion_ref: None,
+                }));
+            }
+            AgentMessageDeliveryState::CancelledByDeletion => {
+                return Ok(Some(InvocationTerminalEvidence {
+                    status: TaskStatus::Cancelled,
+                    text: format!(
+                        "agent invocation delivery {delivery_id} was cancelled because the target agent was deleted"
+                    ),
+                    activation_id: delivery.activation_id,
+                    turn_id: delivery.turn_id,
+                    completion_ref: None,
+                }));
+            }
+            AgentMessageDeliveryState::Queued | AgentMessageDeliveryState::Dispatched
+                if delivery.activation_id.is_none() =>
+            {
+                return Ok(None);
+            }
+            AgentMessageDeliveryState::Queued
+            | AgentMessageDeliveryState::Dispatched
+            | AgentMessageDeliveryState::Consumed => {}
+        }
+        let Some(root_activation_id) = delivery.activation_id.clone() else {
+            return Ok(Some(InvocationTerminalEvidence {
+                status: TaskStatus::Failed,
+                text: format!(
+                    "agent invocation delivery {delivery_id} was consumed without a canonical execution binding"
+                ),
+                activation_id: None,
+                turn_id: delivery.turn_id,
+                completion_ref: None,
+            }));
+        };
+        let Some(execution) = self
+            .runtime_db()
+            .transitions()
+            .load_execution_protocol_state_if_initialized(child_agent_id)?
+        else {
+            return Ok(None);
+        };
+        let mut cursor = InvocationSettlementCursor::Attempt(root_activation_id.clone());
+        let mut visited = HashSet::new();
+        for _ in 0..128 {
+            let cursor_key = match &cursor {
+                InvocationSettlementCursor::Attempt(attempt_id) => {
+                    format!("attempt:{attempt_id}")
+                }
+                InvocationSettlementCursor::WorkItem(work_item_id) => {
+                    format!("work_item:{work_item_id}")
+                }
+            };
+            if !visited.insert(cursor_key) {
+                return Ok(Some(InvocationTerminalEvidence {
+                    status: TaskStatus::Failed,
+                    text: format!(
+                        "agent invocation delivery {delivery_id} has a cyclic execution continuation"
+                    ),
+                    activation_id: Some(root_activation_id),
+                    turn_id: delivery.turn_id,
+                    completion_ref: None,
+                }));
+            }
+            match cursor.clone() {
+                InvocationSettlementCursor::Attempt(attempt_id) => {
+                    let Some(attempt) = execution.attempts.get(&attempt_id).cloned() else {
+                        return Ok(Some(InvocationTerminalEvidence {
+                            status: TaskStatus::Failed,
+                            text: format!(
+                                "agent invocation delivery {delivery_id} references missing activation {attempt_id}"
+                            ),
+                            activation_id: Some(attempt_id),
+                            turn_id: delivery.turn_id,
+                            completion_ref: None,
+                        }));
+                    };
+                    match attempt.state {
+                        ExecutionAttemptState::Open => return Ok(None),
+                        ExecutionAttemptState::Interrupted => {
+                            if let Some(recovery) = execution
+                                .attempts
+                                .values()
+                                .filter(|candidate| {
+                                    candidate.recovery_of_attempt_id.as_deref()
+                                        == Some(attempt.attempt_id.as_str())
+                                })
+                                .max_by_key(|candidate| candidate.source.generation)
+                            {
+                                cursor = InvocationSettlementCursor::Attempt(
+                                    recovery.attempt_id.clone(),
+                                );
+                                continue;
+                            }
+                            if matches!(
+                                delivery.state,
+                                AgentMessageDeliveryState::Queued
+                                    | AgentMessageDeliveryState::Dispatched
+                            ) {
+                                return Ok(None);
+                            }
+                            return Ok(Some(InvocationTerminalEvidence {
+                                status: TaskStatus::Failed,
+                                text: format!(
+                                    "agent invocation activation {} was interrupted before recovery",
+                                    attempt.attempt_id
+                                ),
+                                activation_id: Some(attempt.attempt_id),
+                                turn_id: attempt.turn_id,
+                                completion_ref: None,
+                            }));
+                        }
+                        ExecutionAttemptState::ProtocolViolation => {
+                            return Ok(Some(InvocationTerminalEvidence {
+                                status: TaskStatus::Failed,
+                                text: format!(
+                                    "agent invocation activation {} ended in a protocol violation",
+                                    attempt.attempt_id
+                                ),
+                                activation_id: Some(attempt.attempt_id),
+                                turn_id: attempt.turn_id,
+                                completion_ref: None,
+                            }));
+                        }
+                        ExecutionAttemptState::Settled => {}
+                    }
+                    let Some(outcome_id) = attempt.terminal_outcome_id.as_deref() else {
+                        return Ok(None);
+                    };
+                    let Some(outcome) = execution.outcomes.get(outcome_id) else {
+                        return Ok(None);
+                    };
+                    match &outcome.outcome {
+                        ExecutionOutcome::Conversation(ConversationOutcome::Replied)
+                        | ExecutionOutcome::Command(_) => {
+                            let Some(turn_id) = attempt.turn_id.as_deref() else {
+                                return Ok(Some(InvocationTerminalEvidence {
+                                    status: TaskStatus::Failed,
+                                    text: format!(
+                                        "agent invocation activation {} settled without a turn identity",
+                                        attempt.attempt_id
+                                    ),
+                                    activation_id: Some(attempt.attempt_id),
+                                    turn_id: None,
+                                    completion_ref: None,
+                                }));
+                            };
+                            let tasks = self
+                                .runtime_db()
+                                .tasks()
+                                .latest_for_agent(child_agent_id, usize::MAX)?
+                                .into_iter()
+                                .filter(|task| {
+                                    task.detail
+                                        .as_ref()
+                                        .and_then(|detail| detail.get("parent_turn_id"))
+                                        .and_then(Value::as_str)
+                                        == Some(turn_id)
+                                })
+                                .collect::<Vec<_>>();
+                            if tasks.iter().any(|task| {
+                                matches!(
+                                    task.status,
+                                    TaskStatus::Queued
+                                        | TaskStatus::Running
+                                        | TaskStatus::Cancelling
+                                )
+                            }) {
+                                return Ok(None);
+                            }
+                            if !tasks.is_empty() {
+                                let task_ids = tasks
+                                    .iter()
+                                    .map(|task| task.id.as_str())
+                                    .collect::<HashSet<_>>();
+                                let continuations = execution
+                                    .attempts
+                                    .values()
+                                    .filter(|candidate| {
+                                        matches!(
+                                            &candidate.source.identity,
+                                            ExecutionSourceIdentity::TaskResult {
+                                                task_id,
+                                                ..
+                                            } if task_ids.contains(task_id.as_str())
+                                        )
+                                    })
+                                    .collect::<Vec<_>>();
+                                if tasks.iter().any(|task| {
+                                    !continuations.iter().any(|candidate| {
+                                        matches!(
+                                            &candidate.source.identity,
+                                            ExecutionSourceIdentity::TaskResult {
+                                                task_id,
+                                                ..
+                                            } if task_id == &task.id
+                                        )
+                                    })
+                                }) {
+                                    return Ok(None);
+                                }
+                                if let Some(continuation) = continuations
+                                    .into_iter()
+                                    .max_by_key(|candidate| candidate.source.generation)
+                                {
+                                    cursor = InvocationSettlementCursor::Attempt(
+                                        continuation.attempt_id.clone(),
+                                    );
+                                    continue;
+                                }
+                            }
+                            return self.invocation_terminal_evidence_for_turn(
+                                child_agent_id,
+                                delivery_id,
+                                &attempt,
+                            );
+                        }
+                        ExecutionOutcome::Conversation(ConversationOutcome::Wait { wait }) => {
+                            let Some(next) = execution
+                                .attempts
+                                .values()
+                                .filter(|candidate| {
+                                    matches!(
+                                        &candidate.source.identity,
+                                        ExecutionSourceIdentity::TriggeredWait {
+                                            wait_id,
+                                            ..
+                                        } if wait_id == &wait.wait_id
+                                    )
+                                })
+                                .max_by_key(|candidate| candidate.source.generation)
+                            else {
+                                return Ok(None);
+                            };
+                            cursor = InvocationSettlementCursor::Attempt(next.attempt_id.clone());
+                        }
+                        ExecutionOutcome::Conversation(
+                            ConversationOutcome::HandoffToWorkItemWait { work_item_id, .. },
+                        ) => {
+                            cursor = InvocationSettlementCursor::WorkItem(work_item_id.clone());
+                        }
+                        ExecutionOutcome::Conversation(ConversationOutcome::Paused { reason }) => {
+                            return Ok(Some(InvocationTerminalEvidence {
+                                status: TaskStatus::Failed,
+                                text: format!(
+                                    "agent invocation paused without a wake path: {reason}"
+                                ),
+                                activation_id: Some(attempt.attempt_id),
+                                turn_id: attempt.turn_id,
+                                completion_ref: None,
+                            }));
+                        }
+                        ExecutionOutcome::Conversation(ConversationOutcome::Interrupted {
+                            reason,
+                        }) => {
+                            return Ok(Some(InvocationTerminalEvidence {
+                                status: TaskStatus::Interrupted,
+                                text: format!("agent invocation was interrupted: {reason}"),
+                                activation_id: Some(attempt.attempt_id),
+                                turn_id: attempt.turn_id,
+                                completion_ref: None,
+                            }));
+                        }
+                        ExecutionOutcome::Conversation(ConversationOutcome::Failed { policy }) => {
+                            return Ok(Some(InvocationTerminalEvidence {
+                                status: TaskStatus::Failed,
+                                text: format!("agent invocation failed under policy {policy}"),
+                                activation_id: Some(attempt.attempt_id),
+                                turn_id: attempt.turn_id,
+                                completion_ref: None,
+                            }));
+                        }
+                        ExecutionOutcome::WorkItem(WorkItemOutcome::Complete { completion }) => {
+                            return Ok(Some(self.invocation_terminal_evidence_for_completion(
+                                storage, &attempt, completion,
+                            )?));
+                        }
+                        ExecutionOutcome::WorkItem(
+                            WorkItemOutcome::Continue
+                            | WorkItemOutcome::Wait { .. }
+                            | WorkItemOutcome::Yield { .. },
+                        ) => {
+                            let ExecutionBinding::WorkItem { work_item_id } = &attempt.binding
+                            else {
+                                return Ok(Some(InvocationTerminalEvidence {
+                                    status: TaskStatus::Failed,
+                                    text: "agent invocation WorkItem outcome lost its execution binding"
+                                        .into(),
+                                    activation_id: Some(attempt.attempt_id),
+                                    turn_id: attempt.turn_id,
+                                    completion_ref: None,
+                                }));
+                            };
+                            cursor = InvocationSettlementCursor::WorkItem(work_item_id.clone());
+                        }
+                        ExecutionOutcome::WorkItem(WorkItemOutcome::Pause { reason }) => {
+                            return Ok(Some(InvocationTerminalEvidence {
+                                status: TaskStatus::Failed,
+                                text: format!("agent invocation WorkItem paused: {reason}"),
+                                activation_id: Some(attempt.attempt_id),
+                                turn_id: attempt.turn_id,
+                                completion_ref: None,
+                            }));
+                        }
+                        ExecutionOutcome::WorkItem(WorkItemOutcome::Failed { policy }) => {
+                            return Ok(Some(InvocationTerminalEvidence {
+                                status: TaskStatus::Failed,
+                                text: format!(
+                                    "agent invocation WorkItem failed under policy {policy}"
+                                ),
+                                activation_id: Some(attempt.attempt_id),
+                                turn_id: attempt.turn_id,
+                                completion_ref: None,
+                            }));
+                        }
+                        ExecutionOutcome::WorkItem(WorkItemOutcome::Interrupted { reason }) => {
+                            return Ok(Some(InvocationTerminalEvidence {
+                                status: TaskStatus::Interrupted,
+                                text: format!(
+                                    "agent invocation WorkItem was interrupted: {reason}"
+                                ),
+                                activation_id: Some(attempt.attempt_id),
+                                turn_id: attempt.turn_id,
+                                completion_ref: None,
+                            }));
+                        }
+                        ExecutionOutcome::WorkItem(WorkItemOutcome::NeedsRepair { repair_id }) => {
+                            return Ok(Some(InvocationTerminalEvidence {
+                                status: TaskStatus::Failed,
+                                text: format!(
+                                    "agent invocation WorkItem requires repair: {repair_id}"
+                                ),
+                                activation_id: Some(attempt.attempt_id),
+                                turn_id: attempt.turn_id,
+                                completion_ref: None,
+                            }));
+                        }
+                    }
+                }
+                InvocationSettlementCursor::WorkItem(work_item_id) => {
+                    let Some(work_item) = execution.work_items.get(&work_item_id) else {
+                        return Ok(Some(InvocationTerminalEvidence {
+                            status: TaskStatus::Failed,
+                            text: format!(
+                                "agent invocation references missing WorkItem execution {work_item_id}"
+                            ),
+                            activation_id: Some(root_activation_id),
+                            turn_id: delivery.turn_id,
+                            completion_ref: None,
+                        }));
+                    };
+                    match &work_item.state {
+                        WorkItemExecutionState::InFlight { attempt_id, .. } => {
+                            cursor = InvocationSettlementCursor::Attempt(attempt_id.clone());
+                        }
+                        WorkItemExecutionState::Waiting { wait, .. } => {
+                            let Some(next) = execution
+                                .attempts
+                                .values()
+                                .filter(|candidate| {
+                                    matches!(
+                                        &candidate.source.identity,
+                                        ExecutionSourceIdentity::TriggeredWait {
+                                            wait_id,
+                                            ..
+                                        } if wait_id == &wait.wait_id
+                                    ) && matches!(
+                                        &candidate.binding,
+                                        ExecutionBinding::WorkItem {
+                                            work_item_id: candidate_work_item_id
+                                        } if candidate_work_item_id == &work_item_id
+                                    )
+                                })
+                                .max_by_key(|candidate| candidate.source.generation)
+                            else {
+                                return Ok(None);
+                            };
+                            cursor = InvocationSettlementCursor::Attempt(next.attempt_id.clone());
+                        }
+                        WorkItemExecutionState::Terminal { completion, .. } => {
+                            let attempt = execution
+                                .attempts
+                                .values()
+                                .filter(|candidate| {
+                                    matches!(
+                                        &candidate.binding,
+                                        ExecutionBinding::WorkItem {
+                                            work_item_id: candidate_work_item_id
+                                        } if candidate_work_item_id == &work_item_id
+                                    )
+                                })
+                                .max_by_key(|candidate| candidate.source.generation);
+                            return Ok(Some(if let Some(attempt) = attempt {
+                                self.invocation_terminal_evidence_for_completion(
+                                    storage, attempt, completion,
+                                )?
+                            } else {
+                                InvocationTerminalEvidence {
+                                    status: TaskStatus::Completed,
+                                    text: storage
+                                        .read_brief_by_id(completion)?
+                                        .map(|brief| brief.text)
+                                        .unwrap_or_default(),
+                                    activation_id: Some(root_activation_id),
+                                    turn_id: delivery.turn_id,
+                                    completion_ref: Some(completion.clone()),
+                                }
+                            }));
+                        }
+                        WorkItemExecutionState::NeedsRepair { repair_id, .. } => {
+                            return Ok(Some(InvocationTerminalEvidence {
+                                status: TaskStatus::Failed,
+                                text: format!(
+                                    "agent invocation WorkItem requires repair: {repair_id}"
+                                ),
+                                activation_id: Some(root_activation_id),
+                                turn_id: delivery.turn_id,
+                                completion_ref: None,
+                            }));
+                        }
+                        WorkItemExecutionState::Runnable { .. }
+                        | WorkItemExecutionState::Paused { .. } => return Ok(None),
+                    }
+                }
+            }
+        }
+        Ok(Some(InvocationTerminalEvidence {
+            status: TaskStatus::Failed,
+            text: format!(
+                "agent invocation delivery {delivery_id} exceeded the bounded continuation chain"
+            ),
+            activation_id: Some(root_activation_id),
+            turn_id: delivery.turn_id,
+            completion_ref: None,
+        }))
+    }
+
+    fn invocation_terminal_evidence_for_turn(
+        &self,
+        child_agent_id: &str,
+        delivery_id: &str,
+        attempt: &crate::domain::execution_protocol::ExecutionAttempt,
+    ) -> Result<Option<InvocationTerminalEvidence>> {
+        let Some(turn_id) = attempt.turn_id.as_deref() else {
+            return Ok(None);
+        };
+        let Some(turn) = self
+            .runtime_db()
+            .turn_records()
+            .by_id(Some(child_agent_id), turn_id)?
+        else {
+            return Ok(None);
+        };
+        let Some(terminal) = turn.terminal else {
+            return Ok(None);
+        };
+        let status = if terminal.kind.is_failure() {
+            TaskStatus::Failed
+        } else {
+            TaskStatus::Completed
+        };
+        let text = self
+            .assistant_text_for_turn(child_agent_id, turn_id)?
+            .or(terminal.reason)
+            .unwrap_or_else(|| {
+                format!(
+                    "agent invocation delivery {delivery_id} completed without additional output"
+                )
+            });
+        Ok(Some(InvocationTerminalEvidence {
+            status,
+            text,
+            activation_id: Some(attempt.attempt_id.clone()),
+            turn_id: Some(turn_id.to_string()),
+            completion_ref: None,
+        }))
+    }
+
+    fn invocation_terminal_evidence_for_completion(
+        &self,
+        storage: &AppStorage,
+        attempt: &crate::domain::execution_protocol::ExecutionAttempt,
+        completion: &str,
+    ) -> Result<InvocationTerminalEvidence> {
+        Ok(InvocationTerminalEvidence {
+            status: TaskStatus::Completed,
+            text: storage
+                .read_brief_by_id(completion)?
+                .map(|brief| brief.text)
+                .unwrap_or_default(),
+            activation_id: Some(attempt.attempt_id.clone()),
+            turn_id: attempt.turn_id.clone(),
+            completion_ref: Some(completion.to_string()),
+        })
+    }
+
+    fn assistant_text_for_turn(&self, agent_id: &str, turn_id: &str) -> Result<Option<String>> {
+        let text = self
+            .runtime_db()
+            .transcript_entries()
+            .for_turn_ids(agent_id, &[turn_id.to_string()])?
+            .into_iter()
+            .filter(|entry| {
+                entry.kind == TranscriptEntryKind::AssistantRound
+                    && entry.data.get("round_purpose").and_then(Value::as_str)
+                        != Some("runtime_checkpoint")
+            })
+            .flat_map(|entry| {
+                entry
+                    .data
+                    .get("blocks")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .filter_map(|block| {
+                (block.get("type").and_then(Value::as_str) == Some("text"))
+                    .then(|| block.get("text").and_then(Value::as_str))
+                    .flatten()
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .map(ToString::to_string)
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        Ok((!text.is_empty()).then_some(text))
+    }
+
+    async fn invocation_terminal_result(
+        &self,
+        storage: &AppStorage,
+        identity: &AgentIdentityRecord,
+        delivery_id: &str,
+        evidence: InvocationTerminalEvidence,
+        worktree: bool,
+    ) -> Result<ChildTaskTerminalResult> {
+        let state = storage
+            .read_agent()?
+            .unwrap_or_else(|| stopped_unloaded_agent(&identity.agent_id));
+        let mut metadata = json!({
+            "target_agent_id": identity.agent_id,
+            "target_agent_kind": identity.kind,
+            "target_agent_visibility": identity.visibility,
+            "target_agent_ownership": identity.ownership(),
+            "target_agent_profile_preset": identity.profile_preset(),
+            "delivery_id": delivery_id,
+            "activation_id": evidence.activation_id,
+            "turn_id": evidence.turn_id,
+            "completion_ref": evidence.completion_ref,
+            "token_usage": json!({
+                "total": crate::types::TokenUsage::new(state.total_input_tokens, state.total_output_tokens),
+                "last_turn": state.last_turn_token_usage.clone(),
+                "total_model_rounds": state.total_model_rounds,
+            }),
+        });
+        if identity.kind == AgentKind::Child {
+            metadata["child_agent_id"] = json!(identity.agent_id);
+            metadata["child_kind"] = json!(identity.kind);
+            metadata["child_visibility"] = json!(identity.visibility);
+            metadata["child_ownership"] = json!(identity.ownership());
+            metadata["child_profile_preset"] = json!(identity.profile_preset());
+        }
+        if worktree {
+            if let Some(worktree) = state.worktree_session.as_ref() {
+                let changed_files =
+                    Self::detect_changed_files_for_worktree(&worktree.worktree_path)
+                        .await
+                        .unwrap_or_default();
+                metadata["worktree"] = json!({
+                    "worktree_path": worktree.worktree_path,
+                    "worktree_branch": worktree.worktree_branch,
+                    "changed_files": changed_files,
+                });
+            }
+        }
+        Ok(ChildTaskTerminalResult {
+            status: evidence.status,
+            text: evidence.text,
+            task_detail: Some(metadata),
+        })
     }
 
     async fn completed_child_terminal_from_storage(
@@ -5133,13 +5826,26 @@ impl RuntimeHostBridge {
         Ok(())
     }
 
-    pub(crate) async fn await_child_terminal_result(
+    pub(crate) async fn await_agent_invocation_terminal_result(
         &self,
         child_agent_id: &str,
         child_turn_baseline: u64,
+        delivery_id: Option<&str>,
+        invocation_task_id: &str,
         worktree: bool,
         cleanup_agent_on_terminal: bool,
     ) -> Result<ChildTaskTerminalResult> {
+        if let Some(delivery_id) = delivery_id {
+            return self
+                .host()?
+                .await_invocation_delivery_terminal_result(
+                    child_agent_id,
+                    delivery_id,
+                    invocation_task_id,
+                    worktree,
+                )
+                .await;
+        }
         self.host()?
             .await_child_terminal_result(
                 child_agent_id,
@@ -6828,6 +7534,43 @@ mod tests {
         let child_state = child.agent_state().await.unwrap();
         assert!(child_state.turn_index > child_turn_baseline);
         assert_eq!(child_state.status, AgentStatus::Asleep);
+        let invocation_turn_index = child_state.turn_index;
+
+        child
+            .enqueue(
+                MessageEnvelope::new(
+                    created.agent_id.clone(),
+                    MessageKind::InternalFollowup,
+                    MessageOrigin::System {
+                        subsystem: "unrelated-test-message".into(),
+                    },
+                    AuthorityClass::RuntimeInstruction,
+                    Priority::Normal,
+                    MessageBody::Text {
+                        text: "unrelated turn after invocation".into(),
+                    },
+                )
+                .with_admission(
+                    MessageDeliverySurface::RuntimeSystem,
+                    AdmissionContext::RuntimeOwned,
+                ),
+            )
+            .await
+            .unwrap();
+        for _ in 0..100 {
+            let state = child.agent_state().await.unwrap();
+            if state.turn_index > invocation_turn_index && state.status == AgentStatus::Asleep {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let unrelated_turn_id = child
+            .agent_state()
+            .await
+            .unwrap()
+            .last_turn_terminal
+            .expect("unrelated turn should complete")
+            .turn_id;
 
         crate::runtime::release_delivery_checkpoint();
         let receipt = invocation.await.unwrap().unwrap();
@@ -6841,6 +7584,228 @@ mod tests {
                 .and_then(Value::as_u64),
             Some(child_turn_baseline)
         );
+        let detail = terminal.detail.as_ref().unwrap();
+        let delivery_id = detail["delivery_id"].as_str().unwrap();
+        let delivery = host
+            .runtime_db()
+            .agent_message_deliveries()
+            .latest(delivery_id)
+            .unwrap()
+            .expect("invocation delivery should remain persisted");
+        assert!(delivery.activation_id.is_some());
+        assert_eq!(detail["activation_id"], delivery.activation_id.unwrap());
+        assert_eq!(detail["turn_id"], delivery.turn_id.unwrap());
+        assert_ne!(detail["turn_id"], unrelated_turn_id);
+    }
+
+    #[tokio::test]
+    async fn concurrent_existing_agent_invocations_keep_distinct_execution_results() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        let created = parent
+            .agent_invocation_service()
+            .invoke(InvokeAgentRequest {
+                target: InvokeAgentTarget::NewSubagent {
+                    template: None,
+                    workspace_mode: ChildAgentWorkspaceMode::Inherit,
+                    model_resolution: Some(inherited_model_resolution("openai", "gpt-5.4")),
+                },
+                message: "bootstrap invocation target".into(),
+                authority_class: AuthorityClass::OperatorInstruction,
+            })
+            .await
+            .unwrap();
+        let bootstrap = wait_for_terminal_task(&parent, &created.task_handle.task_id).await;
+        assert_eq!(bootstrap.status, TaskStatus::Completed);
+
+        let first_service = parent.agent_invocation_service();
+        let second_service = parent.agent_invocation_service();
+        let first = first_service.invoke(InvokeAgentRequest {
+            target: InvokeAgentTarget::ExistingAgent {
+                agent_id: created.agent_id.clone(),
+            },
+            message: "first concurrent invocation".into(),
+            authority_class: AuthorityClass::OperatorInstruction,
+        });
+        let second = second_service.invoke(InvokeAgentRequest {
+            target: InvokeAgentTarget::ExistingAgent {
+                agent_id: created.agent_id.clone(),
+            },
+            message: "second concurrent invocation".into(),
+            authority_class: AuthorityClass::OperatorInstruction,
+        });
+        let (first, second) = tokio::join!(first, second);
+        let first = first.unwrap();
+        let second = second.unwrap();
+        let first_task = wait_for_terminal_task(&parent, &first.task_handle.task_id).await;
+        let second_task = wait_for_terminal_task(&parent, &second.task_handle.task_id).await;
+        assert_eq!(first_task.status, TaskStatus::Completed);
+        assert_eq!(second_task.status, TaskStatus::Completed);
+
+        let first_detail = first_task.detail.as_ref().unwrap();
+        let second_detail = second_task.detail.as_ref().unwrap();
+        let first_delivery = host
+            .runtime_db()
+            .agent_message_deliveries()
+            .latest(first_detail["delivery_id"].as_str().unwrap())
+            .unwrap()
+            .unwrap();
+        let second_delivery = host
+            .runtime_db()
+            .agent_message_deliveries()
+            .latest(second_detail["delivery_id"].as_str().unwrap())
+            .unwrap()
+            .unwrap();
+        assert_ne!(first_delivery.delivery_id, second_delivery.delivery_id);
+        assert_ne!(first_delivery.activation_id, second_delivery.activation_id);
+        assert_ne!(first_delivery.turn_id, second_delivery.turn_id);
+        assert_eq!(
+            first_detail["activation_id"],
+            first_delivery.activation_id.unwrap()
+        );
+        assert_eq!(first_detail["turn_id"], first_delivery.turn_id.unwrap());
+        assert_eq!(
+            second_detail["activation_id"],
+            second_delivery.activation_id.unwrap()
+        );
+        assert_eq!(second_detail["turn_id"], second_delivery.turn_id.unwrap());
+    }
+
+    #[tokio::test]
+    async fn failed_existing_agent_delivery_terminates_without_a_target_turn() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        let created = parent
+            .agent_invocation_service()
+            .invoke(InvokeAgentRequest {
+                target: InvokeAgentTarget::NewSubagent {
+                    template: None,
+                    workspace_mode: ChildAgentWorkspaceMode::Inherit,
+                    model_resolution: Some(inherited_model_resolution("openai", "gpt-5.4")),
+                },
+                message: "bootstrap invocation target".into(),
+                authority_class: AuthorityClass::OperatorInstruction,
+            })
+            .await
+            .unwrap();
+        let bootstrap = wait_for_terminal_task(&parent, &created.task_handle.task_id).await;
+        assert_eq!(bootstrap.status, TaskStatus::Completed);
+        let child = host.get_or_create_agent(&created.agent_id).await.unwrap();
+        let child_turn_baseline = child.agent_state().await.unwrap().turn_index;
+        let parent_agent_id = host.config().default_agent_id.clone();
+
+        let task_id = "task-failed-existing-delivery";
+        let prepared = crate::runtime::AgentMessageDeliveryService::prepare(
+            AgentMessageSendRequest {
+                target_agent_id: created.agent_id.clone(),
+                content: MessageBody::Text {
+                    text: "must fail before execution".into(),
+                },
+                client_idempotency_key: task_id.into(),
+                correlation_id: Some(task_id.into()),
+                causation_id: None,
+                requested_priority: Some(Priority::Normal),
+            },
+            AgentMessageCallerContext {
+                caller_principal: format!("agent:{parent_agent_id}"),
+                caller_agent_id: Some(parent_agent_id),
+                principal_kind: AgentMessagePrincipalKind::SupervisingParent,
+                route: "supervision_follow_up".into(),
+                origin: MessageOrigin::Task {
+                    task_id: task_id.into(),
+                },
+                authority_class: AuthorityClass::OperatorInstruction,
+                delivery_surface: MessageDeliverySurface::RuntimeSystem,
+                admission_context: AdmissionContext::RuntimeOwned,
+                current_turn_id: None,
+                current_task_id: Some(task_id.into()),
+                current_work_item_id: None,
+            },
+        )
+        .unwrap();
+        let now = Utc::now();
+        let admitted = host
+            .runtime_db()
+            .transitions()
+            .commit_delivery_admission(
+                &crate::runtime_db::transitions::QueueTransitionCommand {
+                    agent_id: created.agent_id.clone(),
+                    operation: crate::runtime_db::transitions::QueueOperation::Admit,
+                    mutation: crate::runtime_db::transitions::QueueMutation::Upsert(
+                        crate::types::QueueEntryRecord {
+                            message_id: prepared.message.id.clone(),
+                            agent_id: created.agent_id.clone(),
+                            priority: Priority::Normal,
+                            status: QueueEntryStatus::Queued,
+                            created_at: now,
+                            updated_at: now,
+                        },
+                    ),
+                    scheduler_claim_work_item: None,
+                    agent_state: None,
+                    message_evidence: vec![prepared.message.clone()],
+                    transcript_entries: Vec::new(),
+                    turn_record: None,
+                    audit_events: Vec::new(),
+                    notify_scheduler: false,
+                    fault: None,
+                    brief_evidence: Vec::new(),
+                },
+                None,
+                &prepared.record,
+            )
+            .unwrap()
+            .delivery_receipt
+            .unwrap();
+        let queued = host
+            .runtime_db()
+            .queue_entries()
+            .latest(&prepared.message.id)
+            .unwrap()
+            .unwrap();
+        let mut dropped = queued.clone();
+        dropped.status = QueueEntryStatus::Dropped;
+        dropped.updated_at = Utc::now();
+        host.runtime_db()
+            .transitions()
+            .commit_queue(&crate::runtime_db::transitions::QueueTransitionCommand {
+                agent_id: created.agent_id.clone(),
+                operation: crate::runtime_db::transitions::QueueOperation::RepairDrop,
+                mutation: crate::runtime_db::transitions::QueueMutation::CompareAndSet {
+                    expected: queued,
+                    record: dropped,
+                },
+                scheduler_claim_work_item: None,
+                agent_state: None,
+                message_evidence: Vec::new(),
+                transcript_entries: Vec::new(),
+                turn_record: None,
+                audit_events: Vec::new(),
+                notify_scheduler: false,
+                fault: None,
+                brief_evidence: Vec::new(),
+            })
+            .unwrap();
+
+        let result = host
+            .await_invocation_delivery_terminal_result(
+                &created.agent_id,
+                &admitted.delivery_id,
+                task_id,
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.status, TaskStatus::Failed);
+        assert!(result.text.contains("queue processing terminated"));
+        assert_eq!(
+            child.agent_state().await.unwrap().turn_index,
+            child_turn_baseline
+        );
+        let detail = result.task_detail.unwrap();
+        assert_eq!(detail["delivery_id"], admitted.delivery_id);
+        assert!(detail["activation_id"].is_null());
+        assert!(detail["turn_id"].is_null());
     }
 
     #[tokio::test]

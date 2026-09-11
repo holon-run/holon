@@ -500,6 +500,51 @@ pub(crate) fn advance_delivery_state_for_message_tx(
     compare_and_set_delivery_state_tx(tx, &record.delivery_id, expected_state, &record)
 }
 
+pub(crate) fn bind_delivery_execution_for_message_tx(
+    tx: &Transaction<'_>,
+    message_id: &str,
+    attempt: &crate::domain::execution_protocol::ExecutionAttempt,
+) -> Result<bool> {
+    let Some(mut record) = delivery_by_message_id_tx(tx, message_id)? else {
+        return Ok(false);
+    };
+    if !matches!(
+        record.state,
+        AgentMessageDeliveryState::Queued | AgentMessageDeliveryState::Dispatched
+    ) {
+        return Ok(false);
+    }
+    anyhow::ensure!(
+        attempt.source_message_id.as_deref() == Some(message_id),
+        "delivery execution attempt does not reference its message"
+    );
+    if let Some(existing) = record.activation_id.as_deref() {
+        anyhow::ensure!(
+            existing == attempt.attempt_id
+                || attempt.recovery_of_attempt_id.as_deref() == Some(existing),
+            "delivery execution attempt conflicts with its canonical activation"
+        );
+    }
+    if let (Some(existing), Some(turn_id)) = (record.turn_id.as_deref(), attempt.turn_id.as_deref())
+    {
+        anyhow::ensure!(
+            existing == turn_id || attempt.recovery_of_attempt_id.is_some(),
+            "delivery execution turn conflicts with its canonical activation"
+        );
+    }
+
+    let changed = record.activation_id.as_deref() != Some(attempt.attempt_id.as_str())
+        || record.turn_id != attempt.turn_id;
+    if !changed {
+        return Ok(false);
+    }
+    record.activation_id = Some(attempt.attempt_id.clone());
+    record.turn_id.clone_from(&attempt.turn_id);
+    record.updated_at = Utc::now();
+    replace_delivery_tx(tx, &record)?;
+    Ok(true)
+}
+
 pub(crate) fn cancel_active_deliveries_for_target_tx(
     tx: &Transaction<'_>,
     target_agent_id: &str,

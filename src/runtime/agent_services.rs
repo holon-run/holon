@@ -150,6 +150,7 @@ impl AgentInvocationService<'_> {
                     workspace_mode.is_worktree(),
                     admitted.child_agent_id.clone(),
                     admitted.child_turn_baseline,
+                    admitted.delivery_id,
                     admitted.task_detail,
                 )
                 .await?;

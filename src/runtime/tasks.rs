@@ -377,6 +377,7 @@ impl RuntimeHandle {
         worktree: bool,
         child_agent_id: String,
         child_turn_baseline: u64,
+        delivery_id: Option<String>,
         task_detail: serde_json::Value,
     ) -> Result<TaskRecord> {
         let queued_task = TaskRecord {
@@ -403,6 +404,7 @@ impl RuntimeHandle {
                     false,
                     child_agent_id,
                     child_turn_baseline,
+                    delivery_id,
                     task_detail,
                 )
                 .await;
@@ -1074,6 +1076,7 @@ impl RuntimeHandle {
                     true,
                     child_agent_id,
                     child_turn_baseline,
+                    None,
                     task_detail,
                 )
                 .await;
@@ -1101,6 +1104,7 @@ impl RuntimeHandle {
         cleanup_agent_on_terminal: bool,
         child_agent_id: String,
         child_turn_baseline: u64,
+        delivery_id: Option<String>,
         task_detail: serde_json::Value,
     ) -> Result<()> {
         let Some(bridge) = self.inner.host_bridge.clone() else {
@@ -1159,9 +1163,11 @@ impl RuntimeHandle {
 
         let task_detail_for_result = task_detail.clone();
         let result = bridge
-            .await_child_terminal_result(
+            .await_agent_invocation_terminal_result(
                 &child_agent_id,
                 child_turn_baseline,
+                delivery_id.as_deref(),
+                &task_record.id,
                 worktree,
                 cleanup_agent_on_terminal,
             )
@@ -1401,19 +1407,27 @@ impl RuntimeHandle {
                     .detail
                     .as_ref()
                     .and_then(|detail| detail.get("child_turn_baseline"))
-                    .and_then(serde_json::Value::as_u64)
-                    .unwrap_or(bridge.child_turn_index(&target_agent_id).await?);
-                let task_detail = task.detail.clone().unwrap_or_else(|| serde_json::json!({}));
-                self.start_agent_invocation_monitor(
-                    task.clone(),
-                    authority_class,
-                    worktree,
-                    target_agent_id.clone(),
-                    child_turn_baseline,
-                    task_detail,
-                )
-                .await
-                .map(|_| ())
+                    .and_then(serde_json::Value::as_u64);
+                if let Some(child_turn_baseline) = child_turn_baseline {
+                    let delivery_id = detail_string(&task.detail, "delivery_id");
+                    let task_detail = task.detail.clone().unwrap_or_else(|| serde_json::json!({}));
+                    self.start_agent_invocation_monitor(
+                        task.clone(),
+                        authority_class,
+                        worktree,
+                        target_agent_id.clone(),
+                        child_turn_baseline,
+                        delivery_id,
+                        task_detail,
+                    )
+                    .await
+                    .map(|_| ())
+                } else {
+                    Err(anyhow!(
+                        "legacy existing-agent invocation {} is missing its durable turn baseline",
+                        task.id
+                    ))
+                }
             } else {
                 self.spawn_child_agent_task(task.clone(), prompt, authority_class, worktree, true)
                     .await

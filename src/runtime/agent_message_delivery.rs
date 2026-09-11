@@ -124,6 +124,8 @@ impl AgentMessageDeliveryService<'_> {
             delivery_id,
             target_agent_id: request.target_agent_id,
             message_id: Some(message.id.clone()),
+            activation_id: None,
+            turn_id: None,
             correlation_id: request.correlation_id,
             causation_id: request.causation_id,
             idempotency_scope,

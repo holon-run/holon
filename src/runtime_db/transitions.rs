@@ -15,8 +15,8 @@ use std::collections::BTreeMap;
 use crate::{
     runtime_db::{
         agent_message_delivery::{
-            advance_delivery_state_for_message_tx, delivery_by_message_id_tx,
-            persist_completed_admission_tx, persist_queued_admission_tx,
+            advance_delivery_state_for_message_tx, bind_delivery_execution_for_message_tx,
+            delivery_by_message_id_tx, persist_completed_admission_tx, persist_queued_admission_tx,
             prepare_delivery_admission_tx, AgentMessageDeliveryAdmissionDecision,
         },
         evidence::{
@@ -1184,7 +1184,7 @@ impl RuntimeTransitionRepository<'_> {
     fn commit_queue_transaction_with_delivery(
         &self,
         command: &QueueTransitionCommand,
-        execution_protocol: &ExecutionProtocolTransition,
+        execution_protocol_transition: &ExecutionProtocolTransition,
         wait_transition: Option<&QueueWaitTransition>,
         task_expectation: Option<&TaskExpectation>,
         completion: Option<&CompletionTransition>,
@@ -1243,7 +1243,7 @@ impl RuntimeTransitionRepository<'_> {
                 if completion.requires_execution_continuation {
                     validate_completion_execution_commands(
                         completion,
-                        &execution_protocol.commands,
+                        &execution_protocol_transition.commands,
                     )?;
                 }
                 for work_item in &completion.work_items {
@@ -1335,8 +1335,8 @@ impl RuntimeTransitionRepository<'_> {
             let execution_protocol = execution_protocol_repository::validate_execution_commands_tx(
                 tx,
                 &command.agent_id,
-                execution_protocol.bootstrap.as_ref(),
-                &execution_protocol.commands,
+                execution_protocol_transition.bootstrap.as_ref(),
+                &execution_protocol_transition.commands,
                 execution_work_items,
                 execution_wait_conditions,
                 execution_continuations,
@@ -1362,7 +1362,11 @@ impl RuntimeTransitionRepository<'_> {
                 return Ok(TransitionCommit::default());
             }
             if synchronize_delivery {
-                advance_delivery_for_queue_transition_tx(tx, command)?;
+                advance_delivery_for_queue_transition_tx(
+                    tx,
+                    command,
+                    execution_protocol_transition,
+                )?;
             }
             let agent_state_applied =
                 apply_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
@@ -2360,8 +2364,43 @@ fn queue_mutation_record(mutation: &QueueMutation) -> &QueueEntryRecord {
 fn advance_delivery_for_queue_transition_tx(
     tx: &Transaction<'_>,
     command: &QueueTransitionCommand,
+    execution_protocol: &ExecutionProtocolTransition,
 ) -> Result<bool> {
     let record = queue_mutation_record(&command.mutation);
+    let mut changed = false;
+    if command.operation == QueueOperation::Claim && record.status == QueueEntryStatus::Dequeued {
+        let admitted_attempt = execution_protocol.commands.iter().find_map(|command| {
+            let crate::domain::execution_protocol::ExecutionProtocolCommand::Admit(command) =
+                command
+            else {
+                return None;
+            };
+            (command.attempt.source_message_id.as_deref() == Some(record.message_id.as_str()))
+                .then_some(&command.attempt)
+        });
+        let bound_activation_id = delivery_by_message_id_tx(tx, &record.message_id)?
+            .and_then(|delivery| delivery.activation_id);
+        let stored_state = (admitted_attempt.is_none() && bound_activation_id.is_some())
+            .then(|| execution_protocol_repository::load_state_tx(tx, &record.agent_id))
+            .transpose()?;
+        let attempt = admitted_attempt.or_else(|| {
+            stored_state.as_ref().and_then(|state| {
+                bound_activation_id
+                    .as_deref()
+                    .and_then(|attempt_id| state.attempts.get(attempt_id))
+                    .or_else(|| {
+                        state.attempts.values().find(|attempt| {
+                            attempt.source_message_id.as_deref() == Some(record.message_id.as_str())
+                            && attempt.state
+                                == crate::domain::execution_protocol::ExecutionAttemptState::Open
+                        })
+                    })
+            })
+        });
+        if let Some(attempt) = attempt {
+            changed |= bind_delivery_execution_for_message_tx(tx, &record.message_id, attempt)?;
+        }
+    }
     let next = match (command.operation, &record.status) {
         (QueueOperation::Claim, QueueEntryStatus::Dequeued) => {
             Some(AgentMessageDeliveryState::Dispatched)
@@ -2376,17 +2415,19 @@ fn advance_delivery_for_queue_transition_tx(
         ) => Some(AgentMessageDeliveryState::Failed),
         _ => None,
     };
-    next.map(|next| {
-        advance_delivery_state_for_message_tx(
-            tx,
-            &record.message_id,
-            next,
-            (next == AgentMessageDeliveryState::Failed)
-                .then_some("message queue processing terminated before consumption"),
-        )
-    })
-    .transpose()
-    .map(Option::unwrap_or_default)
+    let advanced = next
+        .map(|next| {
+            advance_delivery_state_for_message_tx(
+                tx,
+                &record.message_id,
+                next,
+                (next == AgentMessageDeliveryState::Failed)
+                    .then_some("message queue processing terminated before consumption"),
+            )
+        })
+        .transpose()
+        .map(Option::unwrap_or_default)?;
+    Ok(changed || advanced)
 }
 
 fn validate_delivery_queue_admission(
