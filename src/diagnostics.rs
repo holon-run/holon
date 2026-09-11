@@ -27,6 +27,8 @@ static OBJECT_QUERY_CACHE_HIT: MetricAccumulator = MetricAccumulator::new("objec
 static OBJECT_QUERY_CACHE_MISS: MetricAccumulator =
     MetricAccumulator::new("object_query_cache.miss");
 static DB_CONNECTION_OPEN: MetricAccumulator = MetricAccumulator::new("db.connection.open");
+static DB_SIDECAR_CONSISTENCY_SCAN: MetricAccumulator =
+    MetricAccumulator::new("db.sidecar_consistency_scan");
 
 static SCHEDULER_POLL_ALL: MetricAccumulator = MetricAccumulator::new("scheduler.poll.all");
 static SCHEDULER_POLL_MESSAGE: MetricAccumulator = MetricAccumulator::new("scheduler.poll.message");
@@ -232,6 +234,11 @@ pub fn record_object_query_cache_miss() {
 pub fn record_runtime_db_connection_open(elapsed: Duration) {
     process_started_at();
     DB_CONNECTION_OPEN.record(elapsed, None);
+}
+
+pub fn record_runtime_db_sidecar_consistency_scan(elapsed: Duration) {
+    process_started_at();
+    DB_SIDECAR_CONSISTENCY_SCAN.record(elapsed, None);
 }
 
 pub fn record_scheduler_poll(outcome: &'static str, elapsed: Duration) {
@@ -510,7 +517,10 @@ pub fn performance_snapshot() -> PerformanceDiagnosticsSnapshot {
             active_permits: PROJECTION_GATE_ACTIVE_PERMITS.load(Ordering::Relaxed),
             max_active_permits: PROJECTION_GATE_MAX_ACTIVE_PERMITS.load(Ordering::Relaxed),
         },
-        db: vec![DB_CONNECTION_OPEN.snapshot(false)],
+        db: vec![
+            DB_CONNECTION_OPEN.snapshot(false),
+            DB_SIDECAR_CONSISTENCY_SCAN.snapshot(false),
+        ],
         scheduler: vec![
             SCHEDULER_POLL_ALL.snapshot(false),
             SCHEDULER_POLL_MESSAGE.snapshot(false),

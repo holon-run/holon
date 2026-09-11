@@ -1,11 +1,17 @@
 //! SQLite connection setup, transaction retry, and file locking.
 
+#[cfg(target_os = "linux")]
+use std::collections::HashMap;
 use std::fs::{self, File};
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
 #[cfg(target_os = "linux")]
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
+#[cfg(target_os = "linux")]
+use std::path::PathBuf;
+#[cfg(target_os = "linux")]
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -129,9 +135,18 @@ fn ensure_runtime_db_sidecars_are_consistent(path: &Path) -> Result<()> {
         }
     };
 
+    let identities = runtime_db_sidecar_identities(&db_path)?;
+    if verified_runtime_db_sidecars(&db_path)
+        .is_some_and(|verified| verified.identities == identities)
+    {
+        return Ok(());
+    }
+
     for suffix in ["-wal", "-shm"] {
         ensure_runtime_db_sidecar_is_consistent(&db_path, suffix)?;
     }
+    crate::diagnostics::record_runtime_db_sidecar_consistency_scan(Instant::now().elapsed());
+    remember_verified_runtime_db_sidecars(&db_path, identities);
     Ok(())
 }
 
@@ -143,6 +158,80 @@ fn runtime_db_sidecar_identity(path: &Path) -> Result<Option<(u64, u64)>> {
         Err(error) => Err(error)
             .with_context(|| format!("reading runtime db sidecar metadata: {}", path.display())),
     }
+}
+
+/// Canonical `-wal`/`-shm` identities for one runtime db path.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RuntimeDbSidecarIdentities {
+    wal: Option<(u64, u64)>,
+    shm: Option<(u64, u64)>,
+}
+
+/// Identities verified by the last full fd-table scan for one db path, plus
+/// how many scans that path has needed.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug)]
+struct VerifiedRuntimeDbSidecars {
+    identities: RuntimeDbSidecarIdentities,
+    fd_scans: u64,
+}
+
+// Sidecar identities verified by a full `/proc/self/fd` scan, kept for the
+// process lifetime per canonical db path. Connection opens re-stat the
+// canonical sidecars and skip the scan while identities are unchanged;
+// replacing or deleting a sidecar changes identities and re-triggers the
+// scan, so the #2850 fail-closed divergence detection is preserved without
+// O(process FDs) work on every connection open (#2888).
+#[cfg(target_os = "linux")]
+static VERIFIED_RUNTIME_DB_SIDECARS: OnceLock<Mutex<HashMap<PathBuf, VerifiedRuntimeDbSidecars>>> =
+    OnceLock::new();
+
+#[cfg(target_os = "linux")]
+fn runtime_db_sidecar_file_path(db_path: &Path, suffix: &str) -> PathBuf {
+    let mut name = db_path.as_os_str().to_owned();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
+#[cfg(target_os = "linux")]
+fn runtime_db_sidecar_identities(db_path: &Path) -> Result<RuntimeDbSidecarIdentities> {
+    Ok(RuntimeDbSidecarIdentities {
+        wal: runtime_db_sidecar_identity(&runtime_db_sidecar_file_path(db_path, "-wal"))?,
+        shm: runtime_db_sidecar_identity(&runtime_db_sidecar_file_path(db_path, "-shm"))?,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn verified_runtime_db_sidecars(db_path: &Path) -> Option<VerifiedRuntimeDbSidecars> {
+    let map = VERIFIED_RUNTIME_DB_SIDECARS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .ok()?;
+    map.get(db_path).cloned()
+}
+
+#[cfg(target_os = "linux")]
+fn remember_verified_runtime_db_sidecars(
+    db_path: &Path,
+    identities: RuntimeDbSidecarIdentities,
+) -> u64 {
+    let Ok(mut map) = VERIFIED_RUNTIME_DB_SIDECARS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    else {
+        // A poisoned lock only costs a redundant rescan on the next open.
+        return 0;
+    };
+    let entry = map
+        .entry(db_path.to_path_buf())
+        .and_modify(|entry| entry.fd_scans += 1)
+        .or_insert(VerifiedRuntimeDbSidecars {
+            identities: identities.clone(),
+            fd_scans: 1,
+        });
+    entry.identities = identities;
+    entry.fd_scans
 }
 
 #[cfg(target_os = "linux")]
@@ -201,11 +290,7 @@ fn inspect_runtime_db_sidecar_fd_with_hook(
 
 #[cfg(target_os = "linux")]
 fn ensure_runtime_db_sidecar_is_consistent(db_path: &Path, suffix: &str) -> Result<()> {
-    use std::ffi::OsString;
-
-    let mut name: OsString = db_path.as_os_str().to_owned();
-    name.push(suffix);
-    let sidecar_path = Path::new(&name);
+    let sidecar_path = runtime_db_sidecar_file_path(db_path, suffix);
     let deleted_path = format!("{} (deleted)", sidecar_path.display());
 
     let fd_entries = fs::read_dir("/proc/self/fd")
@@ -213,12 +298,12 @@ fn ensure_runtime_db_sidecar_is_consistent(db_path: &Path, suffix: &str) -> Resu
         .collect::<std::io::Result<Vec<_>>>()
         .context("reading entries from /proc/self/fd")?;
     for entry in fd_entries {
-        let canonical_before = runtime_db_sidecar_identity(sidecar_path)?;
-        let Some(open) = inspect_runtime_db_sidecar_fd(&entry.path(), sidecar_path, &deleted_path)
+        let canonical_before = runtime_db_sidecar_identity(&sidecar_path)?;
+        let Some(open) = inspect_runtime_db_sidecar_fd(&entry.path(), &sidecar_path, &deleted_path)
         else {
             continue;
         };
-        let canonical_after = runtime_db_sidecar_identity(sidecar_path)?;
+        let canonical_after = runtime_db_sidecar_identity(&sidecar_path)?;
         let fd = entry.file_name().to_string_lossy().into_owned();
 
         if canonical_before != canonical_after {
@@ -613,6 +698,79 @@ mod tests {
         assert!(message.contains("sidecar=-wal"));
         assert!(message.contains("open_inode="));
         assert!(message.contains("canonical_identity="));
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn runtime_db_sidecar_fd_scans(db_path: &Path) -> Result<u64> {
+        let canonical = db_path.canonicalize()?;
+        Ok(verified_runtime_db_sidecars(&canonical)
+            .map(|verified| verified.fd_scans)
+            .unwrap_or(0))
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sidecar_fd_scans_are_skipped_while_identities_are_unchanged() -> Result<()> {
+        let directory = tempdir()?;
+        let db_path = directory.path().join("runtime.sqlite");
+        let writer = open_connection(&db_path)?;
+        configure_persistent_database(&writer)?;
+        writer.execute_batch(
+            "CREATE TABLE values_seen(value INTEGER NOT NULL);
+             INSERT INTO values_seen(value) VALUES (1);",
+        )?;
+        drop(writer);
+
+        // Absorb the one scan owed to the (absent -> present) sidecar
+        // transition so the cache reflects the live sidecar identities.
+        let settled = open_connection(&db_path)?;
+        drop(settled);
+        let scans_before = runtime_db_sidecar_fd_scans(&db_path)?;
+
+        let reader = open_connection(&db_path)?;
+        let reader_two = open_connection(&db_path)?;
+        assert_eq!(
+            runtime_db_sidecar_fd_scans(&db_path)?,
+            scans_before,
+            "opens with unchanged sidecar identities must not rescan /proc/self/fd"
+        );
+        assert_eq!(
+            reader.query_row("SELECT MAX(value) FROM values_seen", [], |row| row
+                .get::<_, i64>(0))?,
+            1
+        );
+        assert_eq!(
+            reader_two.query_row("SELECT MAX(value) FROM values_seen", [], |row| row
+                .get::<_, i64>(0))?,
+            1
+        );
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn replaced_sidecar_identity_retriggers_the_fd_scan() -> Result<()> {
+        let directory = tempdir()?;
+        let db_path = directory.path().join("runtime.sqlite");
+        let writer = open_connection(&db_path)?;
+        configure_persistent_database(&writer)?;
+        writer.execute_batch("CREATE TABLE values_seen(value INTEGER NOT NULL);")?;
+        drop(writer);
+        // Warm the verified-identity cache for the current sidecars.
+        let settled = open_connection(&db_path)?;
+        drop(settled);
+
+        let wal_path = sidecar_path(&db_path, "-wal");
+        let _held_open_sidecar = File::open(&wal_path)?;
+        fs::remove_file(&wal_path)?;
+        File::create(&wal_path)?;
+
+        // The refusal itself proves the identity change re-ran the fd scan;
+        // a wrongly trusted cache would have opened without detecting the
+        // deleted-open sidecar.
+        let error = open_connection(&db_path).expect_err("deleted-open WAL must be rejected");
+        assert!(format!("{error:#}").contains("deleted-open sidecar"));
         Ok(())
     }
 
