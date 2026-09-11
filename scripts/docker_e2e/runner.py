@@ -1886,6 +1886,10 @@ class CaseHarness:
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master "
                 "WHERE type = 'table' AND name = 'schema_migration_baselines')"
             ).fetchone()[0]
+            has_canonical_relations = connection.execute(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'agent_durability_records')"
+            ).fetchone()[0]
             snapshot = {
                 "integrity_check": connection.execute(
                     "PRAGMA integrity_check"
@@ -1899,6 +1903,17 @@ class CaseHarness:
                         "SELECT agent_id FROM agent_states ORDER BY agent_id"
                     )
                 ],
+                "canonical_relation_agents": (
+                    [
+                        row[0]
+                        for row in connection.execute(
+                            "SELECT DISTINCT agent_id FROM agent_durability_records "
+                            "ORDER BY agent_id"
+                        )
+                    ]
+                    if has_canonical_relations
+                    else []
+                ),
                 "messages": sqlite_rows(
                     connection,
                     "SELECT evidence_id, message_id, turn_id, payload_json "
@@ -2681,6 +2696,12 @@ def run_runtime_upgrade_previous_release_case(
     )
 
     harness.stop()
+    # Releases at or after the relation-write cutover (#2825, first shipped
+    # in v0.38.0) persist canonical relations at agent creation, so upgrades
+    # from those databases must report no legacy migration work.
+    previous_writes_canonical_relations = bool(
+        set(old_snapshot["canonical_relation_agents"]) & old_agent_ids
+    )
     relation_report = harness.offline_debug(
         "upgrade-v030-agent-relations-report",
         "runtime-db",
@@ -2688,12 +2709,24 @@ def run_runtime_upgrade_previous_release_case(
         "--diagnostic-sample-limit",
         "100",
     )
-    require(
-        relation_report["apply"] is False
-        and relation_report["scanned_agents"] >= len(old_agent_ids)
-        and relation_report["changed_agents"] > 0,
-        f"legacy agent relation report did not find migration work: {relation_report}",
-    )
+    if previous_writes_canonical_relations:
+        require(
+            relation_report["apply"] is False
+            and relation_report["scanned_agents"] >= len(old_agent_ids)
+            and relation_report["changed_agents"] == 0
+            and relation_report["unchanged_agents"] >= len(old_agent_ids)
+            and relation_report["diagnostic_agents"] == 0,
+            "agent relation report found unexpected migration work on a "
+            f"canonical database: {relation_report}",
+        )
+    else:
+        require(
+            relation_report["apply"] is False
+            and relation_report["scanned_agents"] >= len(old_agent_ids)
+            and relation_report["changed_agents"] > 0,
+            "legacy agent relation report did not find migration work: "
+            f"{relation_report}",
+        )
     require(
         legacy_agent_id
         not in {
@@ -2710,11 +2743,16 @@ def run_runtime_upgrade_previous_release_case(
         "--diagnostic-sample-limit",
         "100",
     )
+    expected_backfill_changes = (
+        0
+        if previous_writes_canonical_relations
+        else relation_report["changed_agents"]
+    )
     require(
         relation_apply["apply"] is True
         and relation_apply["run_id"]
         and relation_apply["backup_path"]
-        and relation_apply["changed_agents"] > 0,
+        and relation_apply["changed_agents"] == expected_backfill_changes,
         f"legacy agent relation backfill did not apply: {relation_apply}",
     )
     relation_retry = harness.offline_debug(
