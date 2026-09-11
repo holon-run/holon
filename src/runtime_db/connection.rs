@@ -142,10 +142,11 @@ fn ensure_runtime_db_sidecars_are_consistent(path: &Path) -> Result<()> {
         return Ok(());
     }
 
+    let scan_start = Instant::now();
     for suffix in ["-wal", "-shm"] {
         ensure_runtime_db_sidecar_is_consistent(&db_path, suffix)?;
     }
-    crate::diagnostics::record_runtime_db_sidecar_consistency_scan(Instant::now().elapsed());
+    crate::diagnostics::record_runtime_db_sidecar_consistency_scan(scan_start.elapsed());
     remember_verified_runtime_db_sidecars(&db_path, identities);
     Ok(())
 }
