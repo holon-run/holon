@@ -68,3 +68,37 @@ To push benchmark branches and create draft PRs, either:
 
 - set `pr.submit_pr: true` and `pr.draft_pr: true` in the suite file, or
 - override on the CLI with `--push-branch --github-pr`.
+
+## Local runtime performance baseline
+
+The Rust runtime database and summary-storage projection baseline is local and
+does not use provider traffic:
+
+```bash
+cargo bench --bench runtime_db
+cargo bench --bench scheduler
+cargo bench --bench http_control
+cargo bench --bench memory_lifecycle
+```
+
+It emits one JSON artifact to stdout. Set `HOLON_BENCH_SAMPLES` to change the
+default ten measured repetitions; each benchmark also performs one warmup.
+The multi-workload targets accept `HOLON_BENCH_FILTER` as a comma-separated
+list of exact benchmark IDs, and do not execute unselected workloads. The
+scheduler suite covers SQLite-backed work-queue projection, due recheck and
+active wait scans, plus concurrent projection reads with FIFO-order validation.
+The HTTP suite constructs 101 visible agents and 200 work items before timing,
+then covers the runtime performance snapshot, agent roster, and single or
+repeated large work-item responses through in-process `Router::oneshot`
+requests. It does not bind a socket or include network transfer time.
+The memory suite isolates every sample in a child process, grows a session with
+1,000 events and 100 briefs, repeatedly reads bounded history windows, and
+records current/peak RSS plus SQLite directory growth before and after dropping
+the runtime storage handle.
+
+`Benchmark CI` runs a stable subset with broad catastrophic-regression limits.
+It excludes the scheduler `concurrent_8x25` workload because its runtime and
+variance are strongly machine-dependent. JSON artifacts are uploaded for trend
+analysis; initial hard limits catch order-of-magnitude wall-time,
+retained-memory, or database-size regressions rather than small cross-run
+changes.

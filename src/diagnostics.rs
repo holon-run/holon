@@ -6,6 +6,8 @@ use chrono::Utc;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+pub mod attribution;
+
 static PROCESS_STARTED_AT: OnceLock<Instant> = OnceLock::new();
 
 static HTTP_ALL: MetricAccumulator = MetricAccumulator::new("http.json.all");
@@ -113,6 +115,8 @@ pub struct PerformanceDiagnosticsSnapshot {
     pub scheduler: Vec<MetricSnapshot>,
     pub turn: Vec<MetricSnapshot>,
     pub provider: Vec<MetricSnapshot>,
+    #[serde(default)]
+    pub attribution: Vec<attribution::StageSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -470,6 +474,7 @@ pub fn record_projection_gate_leader_finished() {
 pub fn performance_snapshot() -> PerformanceDiagnosticsSnapshot {
     let started_at = process_started_at();
     PerformanceDiagnosticsSnapshot {
+        attribution: attribution::snapshot(),
         captured_at: Utc::now().to_rfc3339(),
         process_uptime_ms: started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
         http: vec![

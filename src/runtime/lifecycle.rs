@@ -1,6 +1,7 @@
 use super::*;
 use std::path::{Path, PathBuf};
 
+use crate::diagnostics::attribution;
 use crate::runtime::closure::{derive_closure_decision, ClosureFacts};
 use crate::storage::AppStorage;
 use crate::types::{
@@ -434,7 +435,10 @@ impl RuntimeHandle {
     }
 
     pub async fn agent_state(&self) -> Result<AgentState> {
+        let lock_wait = attribution::AGENT_LOCK.start();
         let guard = self.inner.agent.lock().await;
+        drop(lock_wait);
+        let _clone = attribution::AGENT_CLONE.start();
         Ok(guard.state.clone())
     }
 
@@ -511,21 +515,33 @@ impl RuntimeHandle {
     ) -> Result<LightweightAgentStateProjection> {
         let agent = self.agent_state().await?;
         let work_queue = self.inner.storage.work_queue_read_model()?;
+        let posture_timer = attribution::POSTURE.start();
         let scheduling_posture = self
             .inner
             .storage
             .agent_posture_projection_with_work_queue(&agent, &work_queue)?;
+        drop(posture_timer);
+        let closure_timer = attribution::CLOSURE.start();
         let closure = self
             .closure_decision_for_state_with_work_queue(&agent, None, work_queue.clone())
             .await?;
+        drop(closure_timer);
+        let children_timer = attribution::CHILDREN.start();
         let active_children = if let Some(bridge) = self.inner.host_bridge.as_ref() {
             bridge.child_summaries(&agent.id).await?
         } else {
             Vec::new()
         };
+        drop(children_timer);
+        let identity_timer = attribution::IDENTITY.start();
+        let identity = self.agent_identity_view().await?;
+        drop(identity_timer);
+        let tasks_timer = attribution::ACTIVE_TASKS.start();
+        let active_task_count = self.inner.storage.active_task_count_for_agent(&agent.id)?;
+        drop(tasks_timer);
         Ok(LightweightAgentStateProjection {
-            identity: self.agent_identity_view().await?,
-            active_task_count: self.inner.storage.active_task_count_for_agent(&agent.id)?,
+            identity,
+            active_task_count,
             lifecycle: crate::types::AgentLifecycleHint::from_status(
                 &agent.id,
                 agent.status.clone(),

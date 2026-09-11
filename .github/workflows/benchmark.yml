@@ -6,11 +6,21 @@ on:
     paths:
       - ".github/workflows/benchmark.yml"
       - "benchmark/**"
+      - "benches/**"
+      - "scripts/check-performance-gate.py"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src/**"
   pull_request:
     branches: [main]
     paths:
       - ".github/workflows/benchmark.yml"
       - "benchmark/**"
+      - "benches/**"
+      - "scripts/check-performance-gate.py"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src/**"
 
 permissions:
   contents: read
@@ -38,3 +48,43 @@ jobs:
       - name: Test benchmark harness
         working-directory: benchmark
         run: npm test
+
+  rust-performance:
+    name: Rust Performance Gate
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run stable performance subset
+        run: |
+          set -euo pipefail
+          mkdir -p target/performance
+          HOLON_BENCH_SAMPLES=5 \
+            HOLON_BENCH_FILTER="runtime_db.open_and_migrate.fresh,projection.agent_summary_storage.50_briefs_100_events" \
+            cargo bench --locked --bench runtime_db > target/performance/runtime_db.json
+          HOLON_BENCH_SAMPLES=5 \
+            HOLON_BENCH_FILTER="scheduler.work_queue_read_model.200,scheduler.due_rechecks.50,scheduler.active_waits.50" \
+            cargo bench --locked --bench scheduler > target/performance/scheduler.json
+          HOLON_BENCH_SAMPLES=5 \
+            HOLON_BENCH_FILTER="http.runtime_performance.100,http.work_items.200x10" \
+            cargo bench --locked --bench http_control > target/performance/http_control.json
+          HOLON_BENCH_SAMPLES=3 \
+            cargo bench --locked --bench memory_lifecycle > target/performance/memory_lifecycle.json
+
+      - name: Enforce catastrophic regression limits
+        run: |
+          python3 scripts/check-performance-gate.py target/performance \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload performance artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-performance
+          path: target/performance
+          if-no-files-found: error

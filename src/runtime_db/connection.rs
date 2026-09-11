@@ -26,16 +26,22 @@ pub(crate) enum LockMode {
 }
 
 pub(crate) fn open_connection(path: &Path) -> Result<Connection> {
+    use crate::diagnostics::attribution;
+    let _attempt = attribution::CONNECTION.start();
     let started_at = Instant::now();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("creating runtime db directory {}", parent.display()))?;
     }
     ensure_runtime_db_sidecars_are_consistent(path)?;
+    let sqlite_open = attribution::SQLITE_OPEN.start();
     let connection =
         Connection::open(path).with_context(|| format!("opening runtime db {}", path.display()))?;
+    drop(sqlite_open);
+    let configure = attribution::CONFIGURE.start();
     enable_persistent_wal(&connection, path)?;
     configure_connection(&connection)?;
+    drop(configure);
     ensure_runtime_db_sidecars_are_consistent(path)?;
     crate::diagnostics::record_runtime_db_connection_open(started_at.elapsed());
     Ok(connection)
@@ -98,6 +104,7 @@ fn bail_persistent_wal_not_enabled(path: &Path, current: i32) -> Result<()> {
 
 #[cfg(target_os = "linux")]
 fn ensure_runtime_db_sidecars_are_consistent(path: &Path) -> Result<()> {
+    let _timer = crate::diagnostics::attribution::SIDECAR.start();
     let db_path = match path.canonicalize() {
         Ok(path) => path,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {

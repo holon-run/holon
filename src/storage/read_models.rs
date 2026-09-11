@@ -4,6 +4,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use anyhow::Result;
 
+use crate::diagnostics::attribution;
+
 use crate::{
     runtime_db::RuntimeDb,
     types::{
@@ -42,11 +44,13 @@ impl RuntimeReadModels {
     }
 
     pub fn work_queue(&self) -> Result<WorkQueueReadModel> {
+        let _timer = attribution::WORK_QUEUE.start();
         let current_work_item_id = self
             .read_agent()?
             .and_then(|agent| agent.current_work_item_id);
         let mut latest = HashMap::<String, WorkItemRecord>::new();
         if let Some(agent_id) = self.agent_id.as_deref() {
+            let mut timer = attribution::WORK_ITEMS.start();
             for record in self.runtime_db.work_items().open_for_agent(agent_id)? {
                 latest.insert(record.id.clone(), record);
             }
@@ -57,6 +61,7 @@ impl RuntimeReadModels {
             {
                 latest.insert(record.id.clone(), record);
             }
+            timer.rows(latest.len());
         }
 
         let current = current_work_item_id
@@ -419,7 +424,10 @@ impl RuntimeReadModels {
     }
 
     pub(crate) fn active_wait_conditions(&self) -> Result<Vec<WaitConditionRecord>> {
+        let mut timer = attribution::WAIT_QUERY.start();
         let records = self.runtime_db.wait_conditions().active_all()?;
+        timer.rows(records.len());
+        drop(timer);
         self.filter_active_wait_conditions_for_live_scope(records)
     }
 
@@ -427,19 +435,26 @@ impl RuntimeReadModels {
         &self,
         records: Vec<WaitConditionRecord>,
     ) -> Result<Vec<WaitConditionRecord>> {
+        let mut timer = attribution::WAIT_FILTER.start();
+        timer.rows(records.len());
         let referenced_ids = records
             .iter()
             .filter_map(|record| record.work_item_id.clone())
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
-        let work_item_is_open = self
-            .runtime_db
-            .work_items()
-            .latest_many(&referenced_ids)?
-            .into_iter()
-            .map(|item| (item.id, item.state == WorkItemState::Open))
-            .collect::<BTreeMap<_, _>>();
+        let work_item_is_open = {
+            let mut lookup = attribution::WAIT_ITEM.start();
+            let items = self
+                .runtime_db
+                .work_items()
+                .latest_many(&referenced_ids)?;
+            lookup.rows(items.len());
+            items
+                .into_iter()
+                .map(|item| (item.id, item.state == WorkItemState::Open))
+                .collect::<BTreeMap<_, _>>()
+        };
         let mut live = Vec::new();
         for record in records {
             let Some(work_item_id) = record.work_item_id.as_deref() else {

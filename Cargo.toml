@@ -69,3 +69,23 @@ path = "src/lib.rs"
 [[bin]]
 name = "holon"
 path = "src/main.rs"
+
+[[bench]]
+name = "runtime_db"
+harness = false
+
+[[bench]]
+name = "scheduler"
+harness = false
+
+[[bench]]
+name = "http_control"
+harness = false
+
+[[bench]]
+name = "memory_lifecycle"
+harness = false
+
+[[bench]]
+name = "performance_attribution"
+harness = false
